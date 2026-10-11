@@ -42,6 +42,7 @@ fn main() {
     shaders.sort_by(|x, y| x.0.cmp(&y.0));
     let mut buf = String::default();
     write_types(&mut buf, &shaders).unwrap();
+    write_fingerprint(&mut buf, &shaders).unwrap();
     write_shaders(&mut buf, &shaders).unwrap();
     std::fs::write(dest_path, &buf).unwrap();
 }
@@ -52,6 +53,27 @@ fn write_types(buf: &mut String, shaders: &[(String, ShaderInfo)]) -> Result<(),
         writeln!(buf, "    pub {name}: ComputeShader<'a>,")?;
     }
     writeln!(buf, "}}")?;
+    Ok(())
+}
+
+/// FNV-1a over every shader's name and WGSL text, in name order: a stable
+/// identity of the pipelines this build creates, for callers that keep
+/// compiled pipelines across processes.
+fn write_fingerprint(buf: &mut String, shaders: &[(String, ShaderInfo)]) -> Result<(), fmt::Error> {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for (name, info) in shaders {
+        for part in [name.as_bytes(), &[0], info.source.as_bytes(), &[0]] {
+            for byte in part {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+    }
+    writeln!(
+        buf,
+        "/// A stable identity of every shader's name and WGSL text in this build."
+    )?;
+    writeln!(buf, "pub const SOURCE_FINGERPRINT: u64 = {hash:#018x};")?;
     Ok(())
 }
 

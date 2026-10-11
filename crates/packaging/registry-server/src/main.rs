@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! tilo-registry-server serve --port 8443 --identity <path>
-//! tilo-registry-server add-publisher --pubkey <hex> [--can-add-new] [--note ...]
+//! tilo-registry-server add-publisher --pubkey <hex> --namespace <ns> [--first-party] [--can-add-new] [--note ...]
 //! tilo-registry-server remove-publisher --pubkey <hex>
 //! tilo-registry-server list-publishers
 //! tilo-registry-server init --owner-pubkey <hex> --name <n> --description <d> --base-url <url>
@@ -12,11 +12,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -94,6 +90,12 @@ enum Cmd {
         /// The full .tapp to host.
         file: PathBuf,
     },
+    /// Write the compressed twin (`<blake3>.zst`, `<blake3>.tapp.zst`) of
+    /// every stored payload object and imported package that lacks one, and
+    /// print what was written. Objects stored from now on get theirs when
+    /// they are stored; run this once for those stored before. Safe to rerun
+    /// and to run while `serve` runs.
+    CompressPayloads,
     /// Bootstrap a fresh data-dir with a `handshake.toml`.
     /// Idempotent — writing over an existing file is not the
     /// intended flow; use `--overwrite` explicitly.
@@ -130,10 +132,16 @@ enum Cmd {
         #[arg(long, default_value = "")]
         note: String,
         /// Reverse-DNS namespace the publisher's package ids must lie in
-        /// (`com.example`, `io.github.<account>`); repeatable. Defaults to
-        /// `so.tilo`, Tilo's own.
-        #[arg(long = "namespace")]
+        /// (`com.example`, `io.github.<account>`); repeatable and required.
+        /// Tilo's own publishers are added with `--namespace so.tilo
+        /// --first-party`.
+        #[arg(long = "namespace", required = true)]
         namespaces: Vec<String>,
+        /// Confirm a grant of Tilo's own namespace `so.tilo` (or one inside
+        /// it). Required whenever such a namespace is named, so the
+        /// first-party grant is always deliberate.
+        #[arg(long)]
+        first_party: bool,
     },
     /// Remove an unreferenced publisher from the allowlist. Public entries,
     /// the current snapshot, and pending requests must be drained first.
@@ -368,6 +376,11 @@ async fn serve_cli() -> anyhow::Result<()> {
             cors_origins,
         } => cmd_serve(storage, bind, port, cors_origins).await,
         Cmd::ImportArtifact { file } => cmd_import_artifact(&storage, &file),
+        Cmd::CompressPayloads => {
+            let report = storage.compress_stored_objects()?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
         Cmd::Init {
             owner_pubkey,
             name,
@@ -387,7 +400,17 @@ async fn serve_cli() -> anyhow::Result<()> {
             can_add_new,
             note,
             namespaces,
-        } => cmd_add_publisher(&storage, &pubkey, can_add_new, note, namespaces),
+            first_party,
+        } => cmd_add_publisher(
+            &storage,
+            &pubkey,
+            can_add_new,
+            note,
+            NamespaceGrant {
+                namespaces,
+                first_party,
+            },
+        ),
         Cmd::RemovePublisher { pubkey } => cmd_remove_publisher(&storage, &pubkey),
         Cmd::ListPublishers => cmd_list_publishers(&storage),
         Cmd::AuthorizeChannel {
@@ -797,9 +820,12 @@ fn cmd_sign_delegated_snapshot(
     let identity = storage.load_identity()?;
     let writer = storage.lock_snapshot()?;
     recover_snapshot_transaction(&writer, &identity.owner_pubkey_hex)?;
-    if storage.load_promotion_transaction()?.is_some() || storage.load_staged_promotion()?.is_some()
-    {
-        anyhow::bail!("staged first-party promotion must publish before a delegated refresh");
+    // A collected batch has not changed the public catalogue. Refreshing only
+    // the current entries keeps it available while an incomplete batch waits
+    // for its runtime. An active transaction owns a candidate/sequence and
+    // must complete before any independent snapshot can advance that sequence.
+    if storage.load_promotion_transaction()?.is_some() {
+        anyhow::bail!("active first-party promotion must publish before a delegated refresh");
     }
     let authorization = storage
         .load_channel_authorization()?
@@ -1078,6 +1104,7 @@ fn compact_after_prune(
         "staged_artifacts": pruned.staged_artifacts,
         "thin_packages": pruned.thin_packages,
         "payload_blobs": pruned.payload_blobs,
+        "payload_twins": pruned.payload_twins,
         "bytes": pruned.bytes,
         "compacted_staged_artifacts": compacted,
     }))
@@ -1707,6 +1734,7 @@ async fn cmd_serve(
         allow.publishers.len(),
         storage.publishers_path().display()
     );
+    allow.warn_rows_without_namespaces();
     if !cors_origins.is_empty() {
         info!("cross-origin GET reads allowed for {cors_origins:?}");
     }
@@ -1776,23 +1804,52 @@ fn cmd_init(
     Ok(())
 }
 
+/// The namespaces `add-publisher` grants, and whether the operator confirmed
+/// that a grant of Tilo's own namespace is meant.
+struct NamespaceGrant {
+    namespaces: Vec<String>,
+    first_party: bool,
+}
+
+impl NamespaceGrant {
+    /// The granted namespaces, once each is valid and any first-party one is
+    /// confirmed. An empty list is refused: a row that owns nothing is never
+    /// what `add-publisher` was asked for.
+    fn validated(self) -> anyhow::Result<Vec<String>> {
+        use registry_types::namespace::{TILO_NAMESPACE, namespace_owns, valid_namespace};
+        if self.namespaces.is_empty() {
+            anyhow::bail!(
+                "name at least one --namespace the publisher's package ids must lie in, such as com.example"
+            );
+        }
+        if let Some(bad) = self
+            .namespaces
+            .iter()
+            .find(|namespace| !valid_namespace(namespace))
+        {
+            anyhow::bail!("{bad:?} is not a reverse-DNS namespace such as com.example");
+        }
+        if let Some(first_party) = self.namespaces.iter().find(|namespace| {
+            namespace.as_str() == TILO_NAMESPACE || namespace_owns(TILO_NAMESPACE, namespace)
+        }) && !self.first_party
+        {
+            anyhow::bail!(
+                "{first_party:?} is Tilo's own namespace; pass --first-party to confirm this key publishes first-party apps"
+            );
+        }
+        Ok(self.namespaces)
+    }
+}
+
 /// `Cmd::AddPublisher` — add or replace one allowlist row.
 fn cmd_add_publisher(
     storage: &Storage,
     pubkey: &str,
     can_add_new: bool,
     note: String,
-    mut namespaces: Vec<String>,
+    grant: NamespaceGrant,
 ) -> anyhow::Result<()> {
-    if namespaces.is_empty() {
-        namespaces.push(registry_types::namespace::TILO_NAMESPACE.to_owned());
-    }
-    if let Some(bad) = namespaces
-        .iter()
-        .find(|namespace| !registry_types::namespace::valid_namespace(namespace))
-    {
-        anyhow::bail!("{bad:?} is not a reverse-DNS namespace such as com.example");
-    }
+    let namespaces = grant.validated()?;
     let transaction = storage.lock_snapshot()?;
     refuse_active_promotion(storage)?;
     let mut allow: PublisherAllowlist = storage
@@ -1991,6 +2048,7 @@ fn cmd_list_publishers(storage: &Storage) -> anyhow::Result<()> {
         .to_toml()
         .map_err(|e| anyhow::anyhow!("encode allowlist: {e}"))?;
     print!("{s}");
+    allow.warn_rows_without_namespaces();
     Ok(())
 }
 
@@ -2393,7 +2451,17 @@ mod tests {
             base_url: "http://127.0.0.1".into(),
         };
         storage.save_identity(&identity).unwrap();
-        cmd_add_publisher(&storage, &publisher_hex, true, String::new(), Vec::new()).unwrap();
+        cmd_add_publisher(
+            &storage,
+            &publisher_hex,
+            true,
+            String::new(),
+            NamespaceGrant {
+                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
+                first_party: true,
+            },
+        )
+        .unwrap();
         let entry = publisher_entry(&publisher);
         storage.save_entry(&entry).unwrap();
 

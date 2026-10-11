@@ -107,15 +107,6 @@ impl DocumentMedia {
         Ok(hash)
     }
 
-    /// Whole content of a readable, resident blob.
-    pub async fn resident(&self, scope: &BlobScope, hash: Hash) -> Option<Bytes> {
-        if references(&self.store, scope, hash).await {
-            self.store.local(hash).await
-        } else {
-            None
-        }
-    }
-
     /// Read a range; content this scope does not reference here is
     /// unavailable.
     pub async fn read_range(
@@ -125,19 +116,14 @@ impl DocumentMedia {
         offset: u64,
         max_len: u32,
     ) -> ReadOutcome {
-        if let Some(bytes) = self.resident(&scope, hash).await {
-            let start = usize::try_from(offset)
-                .unwrap_or(usize::MAX)
-                .min(bytes.len());
-            let end = start
-                .saturating_add(usize::try_from(max_len).unwrap_or(usize::MAX))
-                .min(bytes.len());
-            return ReadOutcome::Ready {
-                bytes: bytes.slice(start..end).to_vec(),
-                total_len: bytes.len() as u64,
-            };
+        if !references(&self.store, &scope, hash).await {
+            return ReadOutcome::Unavailable;
         }
-        ReadOutcome::Unavailable
+        let end = offset.saturating_add(u64::from(max_len));
+        match self.store.read_blob_range(hash, offset..end).await {
+            Some((bytes, total_len)) => ReadOutcome::Ready { bytes, total_len },
+            None => ReadOutcome::Unavailable,
+        }
     }
 
     /// Readable through `scope` and resident here.
@@ -250,5 +236,6 @@ pub fn serve_socket(
     Ok(handle)
 }
 
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 mod tests;

@@ -5,6 +5,7 @@
 )]
 use super::*;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 
 /// The parent exchange test's state directory, device identity, endpoint,
@@ -54,7 +55,7 @@ pub(super) async fn restart_after_offline_snapshot(
             let heads = doc.get_heads();
             doc.put(ROOT, "real-clock-offline-edit", "retained across restart")
                 .unwrap();
-            doc.commit();
+            doc.commit_edit("fixture", "real-clock-offline-edit");
             let expected = doc.get_heads();
             let mut message = view.peer().clone().publish_incremental(
                 "so.tilo.chat",
@@ -111,9 +112,10 @@ pub(super) async fn restart_after_offline_snapshot(
     let path = directory.path().join("state.json");
     let mut tree = crate::shell::persist::load_tree_from(&path).unwrap();
     tree.persist_path = Some(path);
-    let owner =
-        crate::shell::native_workspace_owner::open(Arc::new(parking_lot::RwLock::new(tree)))
-            .unwrap();
+    let owner = crate::shell::native_workspace_owner::open(
+        crate::shell::state::WorkspaceTreeHandle::new(tree),
+    )
+    .unwrap();
     owner
         .with_current(room, |view| {
             assert_eq!(view.peer().replay_floors(), floors);
@@ -262,18 +264,41 @@ pub(super) async fn refresh_on_request(
     request: tilo_relay::peer::sync_refresh::Request,
 ) -> Result<(), String> {
     request
+        .execute(|workspace, certificate| refresh_turn(governor, workspace, certificate))
+        .await
+}
+
+/// Refresh with a governor other tasks share, holding it only for the owner
+/// turn itself. `execute` awaits the relay's membership before that turn; a
+/// governor taken out of the shared slot across that await is missing for the
+/// member audits the receipt governor commits meanwhile, which then refuse.
+pub(super) async fn refresh_shared_on_request(
+    authority: &ActualAuthority,
+    request: tilo_relay::peer::sync_refresh::Request,
+) -> Result<(), String> {
+    request
         .execute(|workspace, certificate| {
-            if workspace != governor.workspace_id() {
-                return Err("checkpoint refresh owner is unavailable".into());
-            }
-            let peer = governor.peer();
-            peer.permissions(certificate.device_public_key, SystemTime::now())?;
-            if !peer.certificates().contains(certificate) {
-                return Err("checkpoint refresh certificate is no longer current".into());
-            }
-            governor.refresh_checkpoint()
+            let mut state = authority.lock().map_err(|_| "governor fixture poisoned")?;
+            let governor = state.as_mut().ok_or("governor fixture unavailable")?;
+            refresh_turn(governor, workspace, certificate)
         })
         .await
+}
+
+fn refresh_turn(
+    governor: &mut TestGovernor,
+    workspace: u64,
+    certificate: &tilo_user_identity::DeviceCert,
+) -> Result<(), String> {
+    if workspace != governor.workspace_id() {
+        return Err("checkpoint refresh owner is unavailable".into());
+    }
+    let peer = governor.peer();
+    peer.permissions(certificate.device_public_key, SystemTime::now())?;
+    if !peer.certificates().contains(certificate) {
+        return Err("checkpoint refresh certificate is no longer current".into());
+    }
+    governor.refresh_checkpoint()
 }
 
 pub(super) fn publish_committed(

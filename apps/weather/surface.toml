@@ -1,0 +1,177 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "weather.locations"
+label = "Weather"
+version = 1
+
+[[resources.fields]]
+owner = "weather"
+path = "places"
+stored = "collection"
+title = "Places"
+type = "Collection<Place>"
+
+[[resources.fields]]
+label = true
+owner = "place"
+path = "places.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "place"
+path = "places.*.region"
+stored = "value"
+title = "Region"
+type = "String"
+
+[[resources.fields]]
+owner = "place"
+path = "places.*.country"
+stored = "value"
+title = "Country"
+type = "String"
+
+[[resources.fields]]
+owner = "place"
+path = "places.*.country_code"
+stored = "value"
+title = "ISO country code"
+type = "Atom"
+
+[[resources.fields]]
+owner = "place"
+path = "places.*.latitude"
+stored = "value"
+title = "Latitude"
+type = "f64"
+
+[[resources.fields]]
+owner = "place"
+path = "places.*.longitude"
+stored = "value"
+title = "Longitude"
+type = "f64"
+
+[[resources.fields]]
+owner = "place"
+path = "places.*.timezone"
+stored = "value"
+title = "IANA timezone, or `auto`"
+type = "Atom"
+
+[[resources.fields]]
+owner = "weather"
+path = "default_place"
+stored = "value"
+title = "The id of the default place; empty for the first"
+type = "Atom"
+
+[[resources.verbs]]
+description = "A place already saved near the same coordinates is kept, not saved twice."
+id = "save-location"
+kind = "undoable"
+label = "Save a place to follow"
+
+[[resources.verbs.params]]
+name = "place"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "A place to save, as found by the search or named by an agent."
+required = [
+    "name",
+    "country",
+    "latitude",
+    "longitude",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.country]
+description = "Country name"
+type = "string"
+
+[resources.verbs.params.schema.properties.country_code]
+description = "ISO country code"
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.latitude]
+description = "Latitude from -90 to 90"
+type = "number"
+
+[resources.verbs.params.schema.properties.longitude]
+description = "Longitude from -180 to 180"
+type = "number"
+
+[resources.verbs.params.schema.properties.name]
+description = "City or place name"
+type = "string"
+
+[resources.verbs.params.schema.properties.region]
+description = "Administrative region"
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.timezone]
+description = "IANA timezone; defaults to auto"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "make_default"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs]]
+id = "use-as-default"
+kind = "undoable"
+label = "Use as default location"
+
+[[resources.verbs.params]]
+name = "place"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "move-to-top"
+kind = "undoable"
+label = "Move to top"
+
+[[resources.verbs.params]]
+name = "place"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "remove"
+kind = "undoable"
+label = "Remove location"
+
+[[resources.verbs.params]]
+name = "place"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"

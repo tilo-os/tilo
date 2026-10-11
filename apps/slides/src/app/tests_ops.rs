@@ -57,7 +57,7 @@ fn slide_ops_update_the_deck_and_the_current_slide() {
     bench
         .app
         .invoke_confirmed(
-            ui::tilo_resource::Invoke::apply(&actions::delete_slide_action(2, current)).unwrap(),
+            ui::tilo_resource::Invoke::apply(&actions::delete_slide_action(&current)).unwrap(),
         )
         .unwrap();
     assert_eq!(bench.deck().slides.len(), n0 + 1);
@@ -193,17 +193,9 @@ fn the_selection_publishes_its_bound_edits() {
             "`{id}` in {ids:?}"
         );
     }
-    let instance_id = bench.app.harness().component_instance_id().unwrap();
     bench
         .app
-        .harness()
-        .invoke_bound_action(
-            &ui::bound_dispatch::BoundActionAddress {
-                instance_id,
-                address: tilo_actions::ActionAddress::new("slides.deck", "bring-selection-front"),
-            },
-            &serde_json::Map::new(),
-        )
+        .call("bring-selection-front", serde_json::json!({}))
         .expect("bring to front applies");
     bench.frame();
     let deck = bench.deck();

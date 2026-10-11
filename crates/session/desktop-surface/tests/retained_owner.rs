@@ -135,11 +135,7 @@ impl TileSource for Source {
                 .unwrap(),
         );
         let permissions = Rc::new(RefCell::new(
-            ui::permissions::PermissionContext::from_capabilities(
-                ui::permissions::Actor::person(None, "retained-author"),
-                vec![],
-            )
-            .at_unix_time(100),
+            ui::permissions::PermissionContext::stranger("retained-author").at_unix_time(100),
         ));
         let context = HostContext::prepare(
             &definition,
@@ -199,7 +195,7 @@ fn inactive_retained_workspace_services_only_its_exact_current_checked_owner_bef
     };
     let (surface, handle) = DesktopSurface::new(tree, 23, Box::new(source));
     handle.set_viewport_width(1200.0);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
         Box::new(surface),
         (1200, 800),

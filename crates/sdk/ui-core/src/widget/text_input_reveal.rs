@@ -36,7 +36,7 @@ pub(super) struct RevealToggle {
     enabled: bool,
     rect: Rect,
     hovered: bool,
-    pressed: bool,
+    pressed: crate::pointer_replay::HeldPress,
     focused: bool,
     /// A finger that went down on the control; it toggles on release.
     touch: Option<u64>,
@@ -50,7 +50,7 @@ impl RevealToggle {
             enabled: true,
             rect: Rect::ZERO,
             hovered: false,
-            pressed: false,
+            pressed: crate::pointer_replay::HeldPress::default(),
             focused: false,
             touch: None,
             test_id: "text_input_reveal".to_string(),
@@ -69,7 +69,7 @@ impl RevealToggle {
         self.enabled = enabled;
         if !enabled {
             self.hovered = false;
-            self.pressed = false;
+            self.pressed.cancel();
             self.focused = false;
             self.touch = None;
         }
@@ -136,16 +136,15 @@ impl Widget for RevealToggle {
             reason = "the control is a few dozen logical pixels, far inside f32"
         )]
         let width = Self::width_for(self.rect.height().max(40.0)) as f32;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             position: Position::Absolute,
             size: Size {
                 width: Dimension::length(width),
                 height: Dimension::percent(1.0),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// The owning field places this control in its own `apply_layout`.
@@ -171,14 +170,14 @@ impl Widget for RevealToggle {
             f64::from(theme.tokens.radii.item),
         );
         let glyph = f64::from(metrics.icon_md).min(side);
-        if self.enabled && (self.hovered || self.pressed) {
+        if self.enabled && (self.hovered || self.pressed.is_held()) {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
                 // The field is the raised face; the control lifts off it.
                 theme.tokens.colors.lift_on(
                     theme.tokens.colors.surfaces.raised,
-                    if self.pressed { 1.0 } else { 0.5 },
+                    if self.pressed.is_held() { 1.0 } else { 0.5 },
                 ),
                 None,
                 &face,
@@ -233,21 +232,27 @@ impl Widget for RevealToggle {
                 button: MouseButton::Left,
                 ..
             } => {
-                let pressed = *state == ElementState::Pressed;
-                if self.hovered {
+                use crate::pointer_replay::{PressAt, Release};
+                // The field's id names the control across a rebuild.
+                let at = self
+                    .hovered
+                    .then_some(PressAt::one(&self.test_id, self.rect));
+                match state {
                     // Keyboard focus deliberately stays where it was: a
                     // pointer reveal must not pull the caret out of the field.
-                    if pressed {
-                        self.pressed = true;
-                        *ctx.handled = true;
-                    } else if self.pressed {
-                        self.pressed = false;
-                        self.toggle();
-                        *ctx.handled = true;
+                    ElementState::Pressed => {
+                        if let Some(at) = at {
+                            self.pressed.press(at);
+                            *ctx.handled = true;
+                        }
                     }
-                } else if !pressed && self.pressed {
-                    self.pressed = false;
-                    *ctx.handled = true;
+                    ElementState::Released => {
+                        let release = self.pressed.release(at);
+                        *ctx.handled |= release.ended();
+                        if release == Release::Click(()) {
+                            self.toggle();
+                        }
+                    }
                 }
             }
             WindowEvent::Touch(touch) => {
@@ -321,6 +326,7 @@ impl Widget for RevealToggle {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {

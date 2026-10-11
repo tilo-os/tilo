@@ -96,6 +96,11 @@ pub fn workspace_view_descriptors(
                 ActivityView::CatchUp,
             ),
             (
+                "room.activity.tasks",
+                crate::i18n::t("activity-title-tasks"),
+                ActivityView::Tasks,
+            ),
+            (
                 "room.activity.explore",
                 crate::i18n::t("desktop-view-explore-activity"),
                 ActivityView::Explore,

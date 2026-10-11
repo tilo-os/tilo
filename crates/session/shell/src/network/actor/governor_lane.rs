@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
 use tilo_delivery_protocol::transport_v2::EnvelopeV2;
-use tilo_relay::RelayCoeditSession;
+use tilo_relay_session::RelayCoeditSession;
 use tokio::sync::{mpsc, oneshot};
 
 /// Most requests one lane keeps waiting for an answer.

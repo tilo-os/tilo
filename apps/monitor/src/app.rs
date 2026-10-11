@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
@@ -27,19 +27,19 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::ActionAddress;
+use ui::tilo_resource::{self, Model};
 use ui::time::{Duration, Instant};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     AppModel, Button, ButtonRole, ControlSize, Element, InspectorPlacement, ModelPath, NavShell,
-    Popover, TaffyTreeExt, ToggleGroup, Widget,
+    Popover, Switch, TaffyTreeExt, ToggleGroup, Widget,
 };
 
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo};
 use crate::prefs::{MonitorPreferences, Prefs};
-use crate::resource::{Monitor, MonitorAction, MonitorEffect, MonitorState};
+use crate::resource::{Monitor, MonitorEffect};
 use crate::sampler::{Sampler, StopKind};
 use crate::tree::{FlattenOpts, Forest, Row, SumMode};
 use crate::view::{
@@ -81,11 +81,13 @@ impl Tab {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// The column the process table sorts by.
+#[derive(Model, Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SortKey {
     Pid,
     Name,
     User,
+    #[default]
     Cpu,
     Mem,
     Threads,
@@ -97,35 +99,10 @@ impl SortKey {
     fn default_desc(self) -> bool {
         !matches!(self, SortKey::Name | SortKey::User)
     }
-
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Pid => "pid",
-            Self::Name => "name",
-            Self::User => "user",
-            Self::Cpu => "cpu",
-            Self::Mem => "mem",
-            Self::Threads => "threads",
-        }
-    }
-
-    pub(crate) fn parse(s: &str) -> Self {
-        match s {
-            "pid" => Self::Pid,
-            "name" => Self::Name,
-            "user" => Self::User,
-            "mem" => Self::Mem,
-            "threads" => Self::Threads,
-            _ => Self::Cpu,
-        }
-    }
 }
 
 /// The header's cadence button, by its test id.
 const CADENCE_BUTTON_ID: &str = "monitor.cadence";
-
-/// How long the "PID copied" toast stays up after a Copy PID action.
-const TOAST_MS: u64 = 2200;
 
 /// A process table can contain thousands of kernel entries. Keep the
 /// contextual resource projection small; exact process resources remain
@@ -205,7 +182,7 @@ fn process_search_entry(process: &ProcessInfo) -> ui::tilo_resource::SearchEntry
             process.pid
         ),
     )
-    .invoking(ActionAddress::new(id, "inspect"))
+    .anchored(id)
     .grouped("Processes")
     .subtitled(format!(
         "PID {} owned by {}",
@@ -237,173 +214,21 @@ enum Inspected {
     Process(u64),
 }
 
-/// The content column: the active tab's pane.
-struct TabContent {
-    processes: ProcessesPane,
-    resources: ResourcesPane,
-    tab: Rc<std::cell::Cell<Tab>>,
-    shown: Tab,
-    rect: Rect,
-    structure_dirty: bool,
-}
-
-impl TabContent {
-    fn new(shared: &Shared, tab: Rc<std::cell::Cell<Tab>>) -> Self {
-        Self {
-            processes: ProcessesPane::new(Rc::clone(shared)),
-            resources: ResourcesPane::new(Rc::clone(shared)),
-            shown: tab.get(),
-            tab,
-            rect: Rect::ZERO,
-            structure_dirty: true,
-        }
-    }
-
-    fn active(&self) -> &dyn Widget {
-        match self.shown {
-            Tab::Processes => &self.processes,
-            Tab::Resources => &self.resources,
-        }
-    }
-
-    fn active_mut(&mut self) -> &mut dyn Widget {
-        match self.shown {
-            Tab::Processes => &mut self.processes,
-            Tab::Resources => &mut self.resources,
-        }
-    }
-
-    fn follow_tab(&mut self) {
-        let tab = self.tab.get();
-        if tab != self.shown {
-            self.shown = tab;
-            self.structure_dirty = true;
-        }
-    }
-}
-
-impl Widget for TabContent {
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.follow_tab();
-        self.active_mut().sync(state, path);
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.active_mut().update(state, path)
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.follow_tab();
-        self.structure_dirty = false;
-        let child = self.active_mut().build_layout(taffy, theme, node_map);
-        let node = fill_node(taffy, child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
-        if let Some(child) = first_child(taffy, node) {
-            let origin = self.rect.origin();
-            self.active_mut().apply_layout(taffy, child, origin);
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.active_mut()
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(child) = first_child(ctx.taffy, ctx.node_id) {
-            self.active_mut()
-                .handle_event(event, &mut ctx.reborrow(ctx.path, child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.active()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.active());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.active_mut()]
-    }
-
-    fn wants_pointer_capture(&self) -> bool {
-        self.active().wants_pointer_capture()
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        self.active().needs_animation_frame()
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.structure_dirty || self.tab.get() != self.shown || self.active().is_layout_dirty()
-    }
-
-    fn layout_needs_measure(&self) -> bool {
-        self.is_layout_dirty() || self.active().layout_needs_measure()
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        self.follow_tab();
-        let mut dirty = std::mem::take(&mut self.structure_dirty);
-        dirty |= self.active_mut().take_structure_dirty();
-        dirty
-    }
-
-    fn name(&self) -> &'static str {
-        "TabContent"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
 /// The first child of `node`.
 fn first_child(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
     taffy.children(node).ok()?.first().copied()
 }
 
-/// A single-child parent node that fills its parent.
-fn fill_node(taffy: &mut TaffyTree<()>, child: NodeId) -> NodeId {
-    taffy.parent_node(
-        Style {
-            display: taffy::Display::Flex,
-            flex_grow: 1.0,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
+/// The content column: the active tab's pane.
+fn tab_content(shared: &Shared, shown_tab: &Rc<std::cell::Cell<Tab>>) -> Switch<Tab> {
+    let shared = Rc::clone(shared);
+    let shown_tab = Rc::clone(shown_tab);
+    Switch::new(
+        move || shown_tab.get(),
+        move |tab| match tab {
+            Tab::Processes => Box::new(ProcessesPane::new(Rc::clone(&shared))) as Element,
+            Tab::Resources => Box::new(ResourcesPane::new(Rc::clone(&shared))),
         },
-        &[child],
     )
 }
 
@@ -442,9 +267,6 @@ pub struct MonitorApp {
     context: ContextMenu,
     context_pid: Option<u32>,
     context_choices: Vec<Option<MenuChoice>>,
-    /// The pid most recently copied, for the transient toast.
-    copied_pid: Option<u32>,
-    copied_at: Option<Instant>,
 
     // ---- sampling ----
     last_refresh: Instant,
@@ -541,7 +363,7 @@ impl MonitorApp {
         let prefs = Prefs::default();
         let shell = NavShell::new()
             .with_id("monitor.shell")
-            .content(Box::new(TabContent::new(&shared, Rc::clone(&shown_tab))));
+            .content(Box::new(tab_content(&shared, &shown_tab)));
         Self {
             model,
             sampler,
@@ -559,8 +381,6 @@ impl MonitorApp {
             context: ContextMenu::new(),
             context_pid: None,
             context_choices: Vec::new(),
-            copied_pid: None,
-            copied_at: None,
             last_refresh,
             sample_only: false,
             rect: Rect::ZERO,
@@ -885,22 +705,34 @@ impl MonitorApp {
     }
 
     /// Adopt the shared table layout; never touch the process catalogue.
-    pub(crate) fn adopt_resource_state(&mut self, state: &MonitorState) {
-        let (sort_key, sort_desc) = (SortKey::parse(&state.sort_key), state.sort_desc);
-        if (self.sort_key, self.sort_desc, self.tree_mode) == (sort_key, sort_desc, state.tree_mode)
-        {
+    pub(crate) fn adopt_resource_state(&mut self, state: &Monitor) {
+        let layout = (state.sort, !state.ascending, !state.flat);
+        if (self.sort_key, self.sort_desc, self.tree_mode) == layout {
             return;
         }
-        self.sort_key = sort_key;
-        self.sort_desc = sort_desc;
-        self.tree_mode = state.tree_mode;
+        (self.sort_key, self.sort_desc, self.tree_mode) = layout;
         self.clear_selection_if_filtered_out();
     }
 
-    /// Submit an edit of the shared table layout.
-    fn commit_layout(&self, action: &MonitorAction) {
+    /// Submit edits of the shared table layout, as one step.
+    fn commit_layout(&self, edits: Vec<ui::tilo_resource::Edit<Monitor>>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.group(|| {
+                for edit in edits {
+                    dispatcher.submit(edit);
+                }
+            });
+        }
+    }
+
+    /// What a search hit or an agent's `open` runs: inspect the process
+    /// row its anchor names.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) -> Result<(), &'static str> + 'static {
+        let shared = Rc::clone(&self.shared);
+        move |anchor| {
+            parse_process_resource_id(anchor).ok_or("not a process of this machine")?;
+            shared.borrow_mut().push(Request::Open(anchor.to_owned()));
+            Ok(())
         }
     }
 
@@ -969,7 +801,7 @@ impl MonitorApp {
         }
         self.tree_mode = tree;
         self.stale = true;
-        self.commit_layout(&MonitorAction::SetTreeMode { tree });
+        self.commit_layout(vec![Monitor::paths().flat.set(!tree)]);
     }
 
     fn commit_selected(&mut self, pid: Option<u32>) {
@@ -989,17 +821,18 @@ impl MonitorApp {
     }
 
     fn set_sort(&mut self, key: SortKey) {
+        let paths = Monitor::paths();
+        let mut edits = Vec::new();
         if self.sort_key == key {
             self.sort_desc = !self.sort_desc;
         } else {
             self.sort_key = key;
             self.sort_desc = key.default_desc();
+            edits.push(paths.sort.set(key));
         }
+        edits.push(paths.ascending.set(!self.sort_desc));
         self.stale = true;
-        self.commit_layout(&MonitorAction::SetSort {
-            key: key.as_str().into(),
-            desc: self.sort_desc,
-        });
+        self.commit_layout(edits);
     }
 
     fn set_cadence(&mut self, cadence: Cadence) {
@@ -1127,22 +960,19 @@ impl MonitorApp {
     /// the current process resource and its availability contract.
     fn copy_pid(&mut self, pid: u32) {
         ui::clipboard_copy(&pid.to_string());
-        self.copied_pid = Some(pid);
-        self.copied_at = Some(ui::time::now());
+        self.shell
+            .toast(format!("Copied PID {pid}"), ToastKind::Success);
         self.selected_pid = Some(pid);
         self.stale = true;
-    }
-
-    fn copy_toast_active(&self) -> bool {
-        self.copied_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(TOAST_MS))
     }
 
     // ---- the cadence menu -------------------------------------------------
 
     /// Open the cadence menu under the header's button.
     fn open_cadence_menu(&mut self) {
-        let Some(anchor) = find_widget(&self.shell, CADENCE_BUTTON_ID).map(Widget::get_rect) else {
+        let Some(anchor) =
+            ui::widget::find_test_id(&self.shell, CADENCE_BUTTON_ID).map(Widget::get_rect)
+        else {
             return;
         };
         let choices = Cadence::all();
@@ -1320,7 +1150,7 @@ impl MonitorApp {
     /// follow it.
     fn show_header(&mut self) {
         let host = self.model.metrics.host.clone();
-        let shown = (host.clone(), self.tab, self.cadence());
+        let shown = (host, self.tab, self.cadence());
         if self.header_shown.as_ref() == Some(&shown) {
             return;
         }
@@ -1347,14 +1177,18 @@ impl MonitorApp {
         };
         let cadence = {
             let requests = Rc::clone(&self.shared);
-            // A short row shows its icon alone, named for the frequency.
-            Button::new(CADENCE_BUTTON_ID, &self.cadence().short_label())
-                .with_icon(Icon::Timer)
-                .role(ButtonRole::Plain)
-                .control_size(ControlSize::Small)
-                .with_accessible_name(&format!("Update frequency: {}", self.cadence().label()))
-                .tooltip("Update frequency")
-                .on_view(move || requests.borrow_mut().push(Request::ChooseCadence))
+            // The frequency remains the accessible name while its icon
+            // leaves the full mode switcher room on a narrow window.
+            Button::icon_only(
+                CADENCE_BUTTON_ID,
+                Icon::Timer,
+                &self.cadence().short_label(),
+            )
+            .role(ButtonRole::Plain)
+            .control_size(ControlSize::Small)
+            .with_accessible_name(&format!("Update frequency: {}", self.cadence().label()))
+            .tooltip("Update frequency")
+            .on_view(move || requests.borrow_mut().push(Request::ChooseCadence))
         };
         let refresh = {
             let requests = Rc::clone(&self.shared);
@@ -1362,11 +1196,11 @@ impl MonitorApp {
                 .on_view(move || requests.borrow_mut().push(Request::Refresh))
         };
         let actions: Vec<Element> = vec![Box::new(cadence), Box::new(refresh)];
-        // The content is this machine's activity, so the column is titled
-        // with the machine's name and the tabs follow it; the window's
-        // History control follows the actions at the trailing edge. A short
-        // row shows the actions' icons, then moves them into More.
-        self.shell.set_content_header(host, actions);
+        // Modes occupy the header's leading fill at every width. The host
+        // name remains in Resources, where all machine identity is shown.
+        // Keeping these controls retained also preserves their touch/focus
+        // state through resize instead of replacing the whole header.
+        self.shell.set_content_header("", actions);
         self.shell.set_content_header_leading(Some(Box::new(tabs)));
     }
 
@@ -1468,6 +1302,11 @@ impl MonitorApp {
                 Request::Select(pid) => {
                     self.commit_selected(Some(pid));
                     self.reveal_inspector();
+                }
+                Request::Open(process) => {
+                    if let Err(error) = self.answer(MonitorEffect::Inspect { process }) {
+                        tracing::debug!(%error, "nothing to open");
+                    }
                 }
                 Request::Activate(pid) => {
                     if self.tree_mode && self.row_has_children(pid) {
@@ -1619,7 +1458,7 @@ impl Widget for MonitorApp {
         self.publish();
         self.layout_dirty = false;
         let shell = self.shell.build_layout(taffy, theme, node_map);
-        let node = fill_node(taffy, shell);
+        let node = taffy.fill_node(shell);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -1628,12 +1467,7 @@ impl Widget for MonitorApp {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         if let Some(shell) = first_child(taffy, node) {
             self.shell
                 .apply_layout(taffy, shell, Point::new(self.rect.x0, self.rect.y0));
@@ -1668,25 +1502,6 @@ impl Widget for MonitorApp {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.shell.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -1704,20 +1519,6 @@ impl Widget for MonitorApp {
         if self.context.is_open() {
             self.context
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
-        if self.copy_toast_active()
-            && let Some(pid) = self.copied_pid
-        {
-            let label = format!("Copied PID {pid}");
-            paint_transient(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                self.rect,
-                ToastAnchor::BottomCenter,
-                &ToastCard::new(&label, ToastKind::Success),
-            );
         }
     }
 
@@ -1803,7 +1604,7 @@ impl Widget for MonitorApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.copy_toast_active() || self.shell.needs_animation_frame()
+        self.shell.needs_animation_frame()
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -1815,15 +1616,6 @@ impl Widget for MonitorApp {
             consider(
                 self.last_refresh
                     .checked_add(Duration::from_millis(self.prefs.interval_ms))
-                    .unwrap_or_else(Instant::now),
-            );
-        }
-        if let Some(copied_at) = self.copied_at
-            && self.copy_toast_active()
-        {
-            consider(
-                copied_at
-                    .checked_add(Duration::from_millis(TOAST_MS))
                     .unwrap_or_else(Instant::now),
             );
         }
@@ -1841,17 +1633,6 @@ impl Widget for MonitorApp {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-}
-
-/// The descendant of `widget` whose test id is `id`.
-fn find_widget<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-    if widget.test_id() == Some(id) {
-        return Some(widget);
-    }
-    widget
-        .children()
-        .into_iter()
-        .find_map(|child| find_widget(child, id))
 }
 
 #[cfg(test)]
@@ -1903,12 +1684,14 @@ mod tests {
 
     /// The centre of the first widget whose test id or accessible name is
     /// `name`, or of the first accessible node naming it or holding it as
-    /// its value (a table cell).
+    /// its value (a table cell), among those on screen.
     fn center_of(harness: &FrameHarness, name: &str) -> Option<(f64, f64)> {
         fn number(value: &serde_json::Value, key: &str) -> Option<f64> {
             value.get(key)?.as_f64()
         }
-        fn find(value: &serde_json::Value, name: &str) -> Option<(f64, f64)> {
+        fn find(value: &serde_json::Value, name: &str, window: Rect) -> Option<(f64, f64)> {
+            let on_screen =
+                |(x, y): (f64, f64)| window.contains(Point::new(x, y)).then_some((x, y));
             let text = |node: &serde_json::Value, key: &str| {
                 node.get(key)
                     .and_then(serde_json::Value::as_str)
@@ -1921,26 +1704,33 @@ mod tests {
                     let r: Vec<f64> = r.iter().filter_map(serde_json::Value::as_f64).collect();
                     <[f64; 4]>::try_from(r).ok()
                 })
+                && let Some(center) = on_screen((x + w / 2.0, y + h / 2.0))
             {
-                return Some((x + w / 2.0, y + h / 2.0));
+                return Some(center);
             }
             if (text(value, "name").as_deref() == Some(name)
                 || text(value, "value").as_deref() == Some(name))
                 && let Some(bounds) = value.get("bounds").filter(|b| !b.is_null())
-            {
-                return Some((
+                && let Some(center) = on_screen((
                     f64::midpoint(number(bounds, "x0")?, number(bounds, "x1")?),
                     f64::midpoint(number(bounds, "y0")?, number(bounds, "y1")?),
-                ));
+                ))
+            {
+                return Some(center);
             }
             match value {
-                serde_json::Value::Array(values) => values.iter().find_map(|v| find(v, name)),
-                serde_json::Value::Object(values) => values.values().find_map(|v| find(v, name)),
+                serde_json::Value::Array(values) => {
+                    values.iter().find_map(|v| find(v, name, window))
+                }
+                serde_json::Value::Object(values) => {
+                    values.values().find_map(|v| find(v, name, window))
+                }
                 _ => None,
             }
         }
         let inspection = harness.inspection_json().ok()?;
-        find(&serde_json::from_str(&inspection).ok()?, name)
+        let window = harness.root::<MonitorApp>().get_rect();
+        find(&serde_json::from_str(&inspection).ok()?, name, window)
     }
 
     fn click(harness: &mut FrameHarness, name: &str) {
@@ -2225,14 +2015,13 @@ mod tests {
             let hit = ui::search::SearchProvider::search_limited(&provider, "tail-worker", 1)
                 .pop()
                 .expect("the omitted catalogue tail remains globally searchable");
-            let address = hit.action_address().expect("search result has an action");
             assert_eq!(
-                address.resource,
-                process_resource_id(tail.pid, tail.started_at)
+                hit.action_id,
+                process_resource_id(tail.pid, tail.started_at),
+                "a hit is anchored at the process row"
             );
-            assert_eq!(address.action, "inspect");
             assert!(
-                a.live_process_row(&address.resource).is_some(),
+                a.live_process_row(&hit.action_id).is_some(),
                 "the search address materializes the exact resource, not a PID-only fallback"
             );
         }
@@ -2260,7 +2049,7 @@ mod tests {
             assert!(a.model.processes.iter().any(|p| p.pid == process.pid));
         }
 
-        // Phase `copy_pid_records_the_copy_and_its_toast_expires`.
+        // Phase `copy_pid_selects_the_process_and_shows_a_toast`.
         {
             let mut a = app();
             let process = a.model.processes[3].clone();
@@ -2268,10 +2057,9 @@ mod tests {
                 process: process_resource_id(process.pid, process.started_at),
             })
             .unwrap();
-            assert_eq!(a.copied_pid, Some(process.pid));
-            assert!(a.copy_toast_active());
-            a.copied_at = ui::time::now().checked_sub(Duration::from_millis(TOAST_MS + 100));
-            assert!(!a.copy_toast_active());
+            assert_eq!(a.selected_pid, Some(process.pid));
+            let copied = format!("Copied PID {}", process.pid);
+            assert_eq!(a.shell.toast_text(), Some(copied.as_str()));
         }
 
         // Phase `inspect_selects_the_process_and_an_unknown_tab_is_refused`.
@@ -2337,6 +2125,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn narrow_header_keeps_both_modes_readable_and_clickable() {
+        fn named_rect(widget: &dyn Widget, id: &str) -> Option<Rect> {
+            ui::widget::find_test_id(widget, id).map(Widget::get_rect)
+        }
+        let mut harness = window(app(), (390, 844));
+        let tabs = named_rect(harness.root::<MonitorApp>(), "monitor.tabs").unwrap();
+        assert!(
+            tabs.width() >= 160.0,
+            "both labels need real room: {tabs:?}"
+        );
+        assert!(tabs.x0 >= 0.0 && tabs.x1 <= 390.0);
+        click(&mut harness, "Resources");
+        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Resources);
+        click(&mut harness, "Processes");
+        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Processes);
+        click(&mut harness, CADENCE_BUTTON_ID);
+        assert!(harness.root::<MonitorApp>().cadence_menu.is_open());
+    }
+
     /// The window's controls act through the panes: the tabs, a summary
     /// tile, the cadence menu, the row menu, the filter and the tree keys.
     #[test]
@@ -2349,7 +2157,7 @@ mod tests {
         click(&mut harness, "Processes");
         assert_eq!(harness.root::<MonitorApp>().tab, Tab::Processes);
 
-        click(&mut harness, "Every 1.5 s");
+        click(&mut harness, CADENCE_BUTTON_ID);
         assert!(harness.root::<MonitorApp>().cadence_menu.is_open());
         let paused = harness
             .root::<MonitorApp>()

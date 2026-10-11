@@ -4,30 +4,7 @@
 
 use ui::i18n::{ArgValue, EmbeddedCatalog};
 
-static CATALOG: EmbeddedCatalog = catalog();
-
-const fn catalog() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new(
-        "en-US",
-        &[
-            ("en-US", include_str!("../locales/en-US.ftl")),
-            ("de-DE", include_str!("../locales/de-DE.ftl")),
-        ],
-        "device-consent-question",
-    )
-    .with_system_locale();
-    #[cfg(test)]
-    let catalog = catalog.with_pinned_locale("en-US");
-    catalog
-}
-
-pub(crate) fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-
-pub(crate) fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
-}
+ui::embedded_catalog!(pub(crate) fn, "device-consent-question", ["en-US", "de-DE"]);
 
 /// The arguments of a message about `app` and `device`: each catalogue
 /// selects its own sentence on the device, since a spliced-in noun does not

@@ -84,93 +84,23 @@ pub const SCREENCAST_VERSION: u32 = 4;
 /// Per-session negotiated selection, keyed by the frontend's `session_handle` object path.
 #[derive(Clone, Debug, Default)]
 struct ScreenCastSession {
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     owner: String,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     app_id: String,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     caller: Option<PortalCaller>,
     /// Bitmask of requested source types (`SelectSources` `types`).
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     source_types: u32,
     /// Requested cursor mode.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     cursor_mode: u32,
     /// Whether the app allowed selecting multiple sources.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     multiple: bool,
     /// Requested persistence: 0 none, 1 while-running, 2 until-revoked.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     persist_mode: u32,
     /// True once valid standard `restore_data` pre-approved this session, so
     /// `Start` skips the consent prompt (persisted-share fast path).
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     restored: bool,
     /// Consent is requested exactly once, at Start (unless restored).
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     consented: bool,
     /// Serializes concurrent Start calls across the async prompt.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     starting: bool,
     /// PipeWire nodes owned by this session, released on lifecycle close.
     streams: Vec<u32>,
@@ -295,7 +225,7 @@ impl RestoreStore {
 
 #[cfg(target_os = "linux")]
 fn restore_path() -> Option<PathBuf> {
-    let root = xdg_paths::state_dir()?;
+    let root = tilo_paths::state_dir()?;
     Some(root.join("tilo/portal/screencast-restore.json"))
 }
 

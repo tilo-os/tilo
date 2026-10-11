@@ -11,6 +11,57 @@ description = "Verified, content-addressed local-model runtime service for Tilo.
 [package.metadata.cargo-machete]
 ignored = ["cc"]
 
+[features]
+default = ["whisper"]
+whisper = []
+# Explicit isolated native qualification; never selected by normal consumers.
+nemo-review = []
+# Isolated public-module interpretation; never selected by the speech worker.
+whistle-wasm-review = []
+# Explicit private-pipe qualification; no production worker or catalogue admission.
+whistle-v8-review = []
+whistle-aot-review = []
+# Production handler requires the immutable image runtime and signed weights.
+# Preparing a package does not enable this feature or admit a catalogue entry.
+whistle-aot = ["whisper"]
+
+[[bin]]
+name = "tilo-speech-worker"
+path = "src/bin/tilo-speech-worker.rs"
+required-features = ["whisper"]
+
+[[example]]
+name = "speech_qualify"
+required-features = ["whisper"]
+
+[[example]]
+name = "speech_benchmark"
+required-features = ["whisper"]
+
+[[example]]
+name = "nemo_speech_worker"
+required-features = ["nemo-review"]
+
+[[example]]
+name = "whistle_wasm_review"
+required-features = ["whistle-wasm-review"]
+
+[[example]]
+name = "whistle_v8_worker_review"
+required-features = ["whistle-v8-review"]
+
+[[example]]
+name = "whistle_aot_review"
+required-features = ["whistle-aot-review"]
+
+[[example]]
+name = "whistle_aot_worker_review"
+required-features = ["whistle-aot-review"]
+
+[[example]]
+name = "whistle_aot_image_review"
+required-features = ["whistle-aot"]
+
 [lib]
 name = "local_model_service"
 path = "src/lib.rs"
@@ -20,10 +71,11 @@ name = "tilo-model-manager"
 path = "src/main.rs"
 
 [dependencies]
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 agent-provider-config = { path = "../provider-config" }
 system-extension = { path = "../../system/system-extension" }
 tilo-files = { path = "../../platform/tilo-files" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 bounded-command = { path = "../../system/bounded-command" }
 serde.workspace = true
 serde_json.workspace = true
@@ -45,10 +97,12 @@ zstd.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+wasmi = { version = "=1.1.0", default-features = false, features = ["std", "simd"] }
 tempfile.workspace = true
 
 [build-dependencies]
 cc = "=1.2.56"
+libc.workspace = true
 
 [lints]
 workspace = true

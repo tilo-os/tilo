@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use super::{Strip, TabId, TileContent, WorkspaceTree};
+use super::{DesktopTree, Strip, TabId, TileContent, WorkspaceTree};
 
 /// This device as the host of its legacy windows: its device key and name.
 /// Set at session start; absent (tests, offscreen renderer) every window is
@@ -67,8 +67,16 @@ impl WorkspaceTree {
 
     /// Forget launches whose tab is gone or now shows another app.
     pub(crate) fn prune_package_launches(&mut self) {
-        let live: HashMap<TabId, &str> = self
-            .desktop
+        Self::prune_package_launches_of(&self.desktop, &mut self.package_launches);
+    }
+
+    /// Drop the launches in `launches` whose tab is gone from `desktop` or
+    /// now shows another app.
+    pub(crate) fn prune_package_launches_of(
+        desktop: &DesktopTree,
+        launches: &mut HashMap<TabId, String>,
+    ) {
+        let live: HashMap<TabId, &str> = desktop
             .workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)
@@ -81,8 +89,7 @@ impl WorkspaceTree {
                 _ => None,
             })
             .collect();
-        self.package_launches
-            .retain(|tab, package| live.get(tab) == Some(&package.as_str()));
+        launches.retain(|tab, package| live.get(tab) == Some(&package.as_str()));
     }
 }
 

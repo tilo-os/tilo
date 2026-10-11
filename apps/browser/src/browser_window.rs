@@ -93,7 +93,7 @@ impl BrowserWindow {
     }
 
     /// Present the document's bookmarks, preferences and site exceptions.
-    pub(crate) fn present_state(&mut self, state: &crate::resource::BrowserState) {
+    pub(crate) fn present_state(&mut self, state: &crate::resource::Browser) {
         self.page.present_state(state);
     }
 
@@ -370,32 +370,24 @@ impl Widget for BrowserWindow {
                 (widget.test_id() == Some("browser.url_input")).then_some(*id)
             });
         }
-        let root = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Column,
-                min_size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(0.0),
-                },
-                ..full
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            min_size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::length(0.0),
             },
+            ..full
+        };
+        taffy.widget_node(
+            style,
             &panel.map_or_else(|| vec![page], |panel| vec![panel, page]),
-        );
-        nodes.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+            nodes,
+            self,
+        )
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let Ok(children) = taffy.children(node) else {
             return;
         };
@@ -855,18 +847,7 @@ mod tests {
     }
 
     fn key_event_with_state(key: Key, state: ElementState) -> WindowEvent {
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = key;
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = state;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(key, None, state))
     }
 
     fn key_event(named: NamedKey) -> WindowEvent {
@@ -910,21 +891,11 @@ mod tests {
         event: &WindowEvent,
         modifiers: winit::keyboard::ModifiersState,
     ) -> bool {
-        let mut handled = false;
-        window.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::from(modifiers),
-                state: Edits::lend(&mut AutoCommit::new()),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: root,
-                taffy: tree,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .modifiers(modifiers)
+            .layout(tree, root)
+            .send(window, event)
+            .handled
     }
 
     fn invoke_exit_choice(window: &mut BrowserWindow, id: &str, doc: &mut AutoCommit) {
@@ -936,6 +907,7 @@ mod tests {
         assert!(unsafe {
             (&mut *button).perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut Edits::lend(doc),
                 &automerge::ROOT,
             )

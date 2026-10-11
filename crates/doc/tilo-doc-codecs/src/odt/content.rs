@@ -146,7 +146,7 @@ fn open_para(
     reg: &StyleRegistry,
     style: Option<&str>,
 ) -> Vec<(String, MarkValue)> {
-    let level = style.and_then(|s| reg.heading_level(s));
+    let level = style.and_then(|s| reg.table.heading_level(s, |_| None));
     let id = start_block(
         doc,
         prev,
@@ -162,7 +162,7 @@ fn open_para(
         doc.set_attr(&id, "level", l);
     }
     // Line spacing rides as a direct `line_spacing` attr, not a CRDT named-style prop, so it's always lifted onto the block even when the paragraph references a named style below.
-    if let Some(lh) = style.and_then(|s| reg.para_line_height(s)) {
+    if let Some(lh) = style.and_then(|s| reg.table.para_line_height(s)) {
         doc.set_attr(&id, "line_spacing", lh);
     }
     // A *named* (common) non-heading paragraph style becomes a real CRDT-native style: lifted
@@ -170,21 +170,23 @@ fn open_para(
     // carrying alignment/formatting as direct attrs — keeping the round-trip idempotent.
     if level.is_none()
         && let Some(s) = style
-        && reg.is_named_para(s)
-        && let Some(props) = reg.style_props(s)
+        && reg.table.is_named_para(s)
+        && let Some(props) = reg.table.style_props(s, super::styles::decode_style_name)
     {
         let key = super::styles::decode_style_name(s);
         doc.set_style(&key, &props);
         doc.set_attr(&id, "style", key.as_str());
         return Vec::new();
     }
-    if let Some(a) = style.and_then(|s| reg.para_align(s)) {
+    if let Some(a) = style.and_then(|s| reg.table.para_align(s)) {
         doc.set_attr(&id, "align", a.as_str());
     }
     if level.is_some() {
         Vec::new()
     } else {
-        style.map(|s| reg.para_text_marks(s)).unwrap_or_default()
+        style
+            .map(|s| reg.table.para_text_marks(s))
+            .unwrap_or_default()
     }
 }
 
@@ -742,7 +744,11 @@ impl BodyState {
             b"text:h" if self.in_text => {
                 let style = attr_val(e, b"text:style-name");
                 let lvl = outline_level(e)
-                    .or_else(|| style.as_deref().and_then(|s| reg.heading_level(s)))
+                    .or_else(|| {
+                        style
+                            .as_deref()
+                            .and_then(|s| reg.table.heading_level(s, |_| None))
+                    })
                     .unwrap_or(1)
                     .clamp(1, 6);
                 let id = start_block(
@@ -753,7 +759,7 @@ impl BodyState {
                     "heading",
                 );
                 doc.set_attr(&id, "level", lvl);
-                if let Some(a) = style.as_deref().and_then(|s| reg.para_align(s)) {
+                if let Some(a) = style.as_deref().and_then(|s| reg.table.para_align(s)) {
                     doc.set_attr(&id, "align", a.as_str());
                 }
                 self.cur_para_marks.clear();
@@ -846,7 +852,7 @@ impl BodyState {
                 if let Some(id) = self.cur.clone()
                     && let Some(a) = attr_val(e, b"text:style-name")
                         .as_deref()
-                        .and_then(|s| reg.para_align(s))
+                        .and_then(|s| reg.table.para_align(s))
                 {
                     doc.set_attr(&id, "align", a.as_str());
                 }
@@ -857,7 +863,7 @@ impl BodyState {
                 if let Some(id) = self.cur.clone()
                     && let Some(a) = attr_val(e, b"text:style-name")
                         .as_deref()
-                        .and_then(|s| reg.para_align(s))
+                        .and_then(|s| reg.table.para_align(s))
                 {
                     doc.set_attr(&id, "align", a.as_str());
                 }
@@ -879,7 +885,7 @@ impl BodyState {
                 let style = attr_val(e, b"text:style-name");
                 let mut marks = style
                     .as_deref()
-                    .map(|s| reg.text_marks(s))
+                    .map(|s| reg.table.text_marks(s))
                     .unwrap_or_default();
                 // A style that says more than its marks (a character style, unmodeled text
                 // properties) is referenced again on export.
@@ -892,7 +898,7 @@ impl BodyState {
                 // A hyperlink: model the href as an inline `link` mark over the linked range (so it merges with concurrent text edits), plus any text marks the link's own style carries.
                 let href = attr_val(e, b"xlink:href");
                 let marks = attr_val(e, b"text:style-name")
-                    .map(|s| reg.text_marks(&s))
+                    .map(|s| reg.table.text_marks(&s))
                     .unwrap_or_default();
                 self.link_stack.push((href, marks, self.cur_len));
             }
@@ -953,7 +959,7 @@ impl BodyState {
                 let first = !(self.in_item || self.table_id.is_some()) || self.item_paras == 1;
                 if first
                     && let (Some(s), Some(id)) = (style, self.cur.as_deref())
-                    && reg.para.get(&s).is_some_and(|p| !p.named)
+                    && reg.table.para.get(&s).is_some_and(|p| !p.named)
                     && !is_generated_style(&s)
                 {
                     doc.set_attr(id, ODT_STYLE, s.as_str());
@@ -1025,7 +1031,11 @@ impl BodyState {
             b"text:h" if self.in_text => {
                 let style = attr_val(e, b"text:style-name");
                 let lvl = outline_level(e)
-                    .or_else(|| style.as_deref().and_then(|s| reg.heading_level(s)))
+                    .or_else(|| {
+                        style
+                            .as_deref()
+                            .and_then(|s| reg.table.heading_level(s, |_| None))
+                    })
                     .unwrap_or(1)
                     .clamp(1, 6);
                 let id = start_block(

@@ -6,8 +6,9 @@
 //! path ([`crate::backend`]) would
 //! replace these with live YouTube-Music ids resolved from a search.
 
-use crate::actions::{self, MusicAction};
-use crate::model::{Album, Artist, Library, Playlist, Track};
+use ui::tilo_resource::{Id, Invoke};
+
+use crate::model::{Album, Artist, CatalogueTrack, Library, Playlist, Track};
 
 fn artist(id: &str, name: &str, genre: &str, listeners: u64) -> Artist {
     Artist {
@@ -415,51 +416,33 @@ fn neon_harbor_tracks() -> Vec<Track> {
 }
 
 fn seed_playlists(lib: &mut Library) {
-    lib.playlists = vec![
-        Playlist {
-            id: "pl_focus".into(),
-            name: "Deep Focus".into(),
-            description: "Long-form instrumentals for heads-down work.".into(),
-            track_ids: vec![
-                "tk_u1".into(),
-                "tk_n1".into(),
-                "tk_s1".into(),
-                "tk_u4".into(),
-                "tk_n2".into(),
-                "tk_g3".into(),
-            ],
-            track_ranks: std::collections::BTreeMap::new(),
-            cover: String::new(),
-        },
-        Playlist {
-            id: "pl_drive".into(),
-            name: "Night Drive".into(),
-            description: "Synthwave and city pop for the open road.".into(),
-            track_ids: vec![
-                "tk_a1".into(),
-                "tk_h1".into(),
-                "tk_a4".into(),
-                "tk_v1".into(),
-                "tk_h4".into(),
-                "tk_a2".into(),
-            ],
-            track_ranks: std::collections::BTreeMap::new(),
-            cover: String::new(),
-        },
-        Playlist {
-            id: "pl_morning".into(),
-            name: "Slow Morning".into(),
-            description: "Easing into the day.".into(),
-            track_ids: vec![
-                "tk_p1".into(),
-                "tk_r1".into(),
-                "tk_g2".into(),
-                "tk_r3".into(),
-            ],
-            track_ranks: std::collections::BTreeMap::new(),
-            cover: String::new(),
-        },
-    ];
+    for (id, name, description, tracks) in [
+        (
+            "pl_focus",
+            "Deep Focus",
+            "Long-form instrumentals for heads-down work.",
+            &["tk_u1", "tk_n1", "tk_s1", "tk_u4", "tk_n2", "tk_g3"][..],
+        ),
+        (
+            "pl_drive",
+            "Night Drive",
+            "Synthwave and city pop for the open road.",
+            &["tk_a1", "tk_h1", "tk_a4", "tk_v1", "tk_h4", "tk_a2"][..],
+        ),
+        (
+            "pl_morning",
+            "Slow Morning",
+            "Easing into the day.",
+            &["tk_p1", "tk_r1", "tk_g2", "tk_r3"][..],
+        ),
+    ] {
+        let mut playlist = Playlist::named(id, name);
+        description.clone_into(&mut playlist.description);
+        for track in tracks {
+            playlist.push(track);
+        }
+        lib.playlists.push(Id::from_raw(id), playlist);
+    }
 }
 
 /// A populated "Liked Songs" + a couple saved albums so the screenshots show
@@ -474,11 +457,12 @@ fn seed_liked_and_saved(lib: &mut Library) {
 }
 
 /// The sample catalogue as the actions that build it in a library: every
-/// track imported with its album and artist, the playlists created and
-/// filled, and the likes, saved albums and followed artists set. Screenshot
-/// scenarios stage it through the same door as every edit.
-pub fn sample_actions() -> Vec<MusicAction> {
+/// track imported with its album and artist, the playlists put in place
+/// with their tracks, and the likes, saved albums and followed artists set.
+/// Screenshot scenarios stage it through the same door as every edit.
+pub fn sample_actions() -> Vec<Invoke<Library>> {
     let lib = sample_library();
+    let paths = Library::paths();
     let mut actions = Vec::new();
     for track in lib.tracks.values() {
         let (Some(album), Some(artist)) = (
@@ -487,27 +471,51 @@ pub fn sample_actions() -> Vec<MusicAction> {
         ) else {
             continue;
         };
-        actions.push(actions::import_track_action(track, album, artist));
+        actions.push(Library::IMPORT_TRACK.with(CatalogueTrack {
+            track: track.clone(),
+            album: album.clone(),
+            artist: artist.clone(),
+        }));
     }
-    for playlist in &lib.playlists {
-        actions.push(actions::create_playlist_action(
-            &playlist.id,
-            &playlist.name,
-        ));
-        let mut rank = 0;
-        for track in &playlist.track_ids {
-            rank += Playlist::ORDER_STEP;
-            actions.push(actions::add_track_action(&playlist.id, track, rank));
-        }
+    let mut edits = Vec::new();
+    for (at, (id, playlist)) in lib.playlists.iter().enumerate() {
+        edits.push(paths.playlists.insert_as(id, at, playlist));
     }
-    for track in &lib.liked {
-        actions.push(actions::set_liked_action(track, true));
-    }
-    for album in &lib.saved_albums {
-        actions.push(actions::set_saved_album_action(album, true));
-    }
-    for artist in &lib.followed_artists {
-        actions.push(actions::set_followed_artist_action(artist, true));
-    }
+    edits.extend(lib.liked.iter().map(|track| paths.liked.insert(track)));
+    edits.extend(
+        lib.saved_albums
+            .iter()
+            .map(|album| paths.saved_albums.insert(album)),
+    );
+    edits.extend(
+        lib.followed_artists
+            .iter()
+            .map(|artist| paths.followed_artists.insert(artist)),
+    );
+    actions.extend(edits.iter().filter_map(|edit| Invoke::edit(edit).ok()));
     actions
+}
+
+/// A document holding the sample library.
+#[cfg(test)]
+pub(crate) fn sample_document() -> automerge::AutoCommit {
+    let mut doc = automerge::AutoCommit::new();
+    ui::tilo_resource::Fields::write_fields(&sample_library(), &mut doc, &automerge::ROOT)
+        .expect("the sample library writes");
+    doc
+}
+
+/// The library `doc` holds.
+#[cfg(test)]
+pub(crate) fn library_of(doc: &automerge::AutoCommit) -> Library {
+    <Library as ui::tilo_resource::Resource>::read(doc).expect("a music library")
+}
+
+/// A document holding a new, empty library.
+#[cfg(test)]
+pub(crate) fn empty_document() -> automerge::AutoCommit {
+    let mut doc = automerge::AutoCommit::new();
+    ui::tilo_resource::Fields::write_fields(&Library::default(), &mut doc, &automerge::ROOT)
+        .expect("an empty library writes");
+    doc
 }

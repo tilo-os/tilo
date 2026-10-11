@@ -80,39 +80,7 @@ pub fn merge(
     let (model_redactions, model_titles) =
         model.map_or_else(Default::default, |model| (model.redactions, model.titles));
 
-    let mut unique: BTreeMap<(u32, String, Span), RedactionProposal> = BTreeMap::new();
-    for proposal in floor.into_iter().chain(model_redactions) {
-        if request.redacted(&proposal).is_none() {
-            continue;
-        }
-        let key = (proposal.step, proposal.node.clone(), proposal.span);
-        match unique.get_mut(&key) {
-            Some(existing) => {
-                let confidence = existing.confidence.max(proposal.confidence);
-                if proposal.basis < existing.basis {
-                    *existing = proposal;
-                }
-                existing.confidence = confidence;
-            }
-            None => {
-                unique.insert(key, proposal);
-            }
-        }
-    }
-    let declared: Vec<(u32, String, Span)> = unique
-        .values()
-        .filter(|proposal| proposal.basis == RedactionBasis::Declared)
-        .map(|proposal| (proposal.step, proposal.node.clone(), proposal.span))
-        .collect();
-    let redactions: Vec<RedactionProposal> = unique
-        .into_values()
-        .filter(|proposal| {
-            proposal.basis == RedactionBasis::Declared
-                || !declared.iter().any(|(step, node, span)| {
-                    *step == proposal.step && *node == proposal.node && span.contains(proposal.span)
-                })
-        })
-        .collect();
+    let redactions = merge_redactions(request, floor, model_redactions);
 
     let mut redacted: Vec<&str> = redactions
         .iter()
@@ -152,6 +120,48 @@ pub fn merge(
         .collect();
 
     ReviewProposals { redactions, titles }
+}
+
+/// Collapse and validate proposal addresses identically for text-only review
+/// and a recording review with model proposals and walkthrough titles.
+pub(crate) fn merge_redactions(
+    request: &ReviewTraceRequest,
+    floor: Vec<RedactionProposal>,
+    model_redactions: Vec<RedactionProposal>,
+) -> Vec<RedactionProposal> {
+    let mut unique: BTreeMap<(u32, String, Span), RedactionProposal> = BTreeMap::new();
+    for proposal in floor.into_iter().chain(model_redactions) {
+        if request.redacted(&proposal).is_none() {
+            continue;
+        }
+        let key = (proposal.step, proposal.node.clone(), proposal.span);
+        match unique.get_mut(&key) {
+            Some(existing) => {
+                let confidence = existing.confidence.max(proposal.confidence);
+                if proposal.basis < existing.basis {
+                    *existing = proposal;
+                }
+                existing.confidence = confidence;
+            }
+            None => {
+                unique.insert(key, proposal);
+            }
+        }
+    }
+    let declared: Vec<(u32, String, Span)> = unique
+        .values()
+        .filter(|proposal| proposal.basis == RedactionBasis::Declared)
+        .map(|proposal| (proposal.step, proposal.node.clone(), proposal.span))
+        .collect();
+    unique
+        .into_values()
+        .filter(|proposal| {
+            proposal.basis == RedactionBasis::Declared
+                || !declared.iter().any(|(step, node, span)| {
+                    *step == proposal.step && *node == proposal.node && span.contains(proposal.span)
+                })
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -13,13 +13,14 @@
 )]
 
 use std::collections::BTreeMap;
+use ui::tilo_resource::Invoke;
 
 use canvas::actions::{AddLayer, EditMarks, NewStroke, Paint, RemoveMarks};
 use canvas::model::Shape;
 use canvas::render::Renderer;
 use canvas::resource::Look;
-use canvas::{ArtworkResource, CanvasAction, view_ops};
-use ui::prelude::{Invoke, Replica};
+use canvas::{Artwork, view_ops};
+use ui::prelude::Replica;
 
 #[test]
 fn choosing_pixel_starts_at_one_artwork_cell_on_every_canvas_size() {
@@ -35,8 +36,8 @@ fn choosing_pixel_starts_at_one_artwork_cell_on_every_canvas_size() {
     }
 }
 
-fn apply(art: &mut Replica<ArtworkResource>, action: CanvasAction) -> Result<(), String> {
-    art.apply(Invoke::apply(&action).unwrap())
+fn apply(art: &mut Replica<Artwork>, action: Invoke<Artwork>) -> Result<(), String> {
+    art.apply(action)
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
@@ -68,10 +69,10 @@ fn brushed(stroke: NewStroke, brush: &str) -> NewStroke {
     }
 }
 
-fn paint(art: &mut Replica<ArtworkResource>, layer: Option<&str>, strokes: Vec<NewStroke>) {
+fn paint(art: &mut Replica<Artwork>, layer: Option<&str>, strokes: Vec<NewStroke>) {
     apply(
         art,
-        CanvasAction::Paint(Paint {
+        Artwork::PAINT.with(Paint {
             layer: layer.map(Into::into),
             strokes,
             group: None,
@@ -81,7 +82,7 @@ fn paint(art: &mut Replica<ArtworkResource>, layer: Option<&str>, strokes: Vec<N
 }
 
 /// The artwork as exact pixels, a unit to a pixel.
-fn pixels(art: &Replica<ArtworkResource>, name: &str) -> image::RgbaImage {
+fn pixels(art: &Replica<Artwork>, name: &str) -> image::RgbaImage {
     let state = art.state().unwrap();
     let mut renderer = Renderer::default();
     let mut text = ui::TextRenderer::new();
@@ -105,11 +106,11 @@ fn darkness(picture: &image::RgbaImage, [x, y]: [u32; 2]) -> f64 {
     (0.93 - light).max(0.0) / 0.93
 }
 
-fn sheet(width: f64, height: f64) -> Replica<ArtworkResource> {
-    let mut art = Replica::<ArtworkResource>::new();
+fn sheet(width: f64, height: f64) -> Replica<Artwork> {
+    let mut art = Replica::<Artwork>::new();
     apply(
         &mut art,
-        CanvasAction::SetArtwork(canvas::actions::SetArtwork {
+        Artwork::SET_ARTWORK.with(canvas::actions::SetArtwork {
             width: Some(width),
             height: Some(height),
             ..Default::default()
@@ -187,7 +188,7 @@ fn an_eraser_clears_what_is_under_it_on_its_layer() {
     let mut art = sheet(300.0, 200.0);
     apply(
         &mut art,
-        CanvasAction::AddLayer(AddLayer {
+        Artwork::ADD_LAYER.with(AddLayer {
             id: Some("oil".into()),
             name: "Oil".into(),
             medium: Some("oil".into()),
@@ -251,7 +252,7 @@ fn an_eraser_clears_what_is_under_it_on_its_layer() {
 
     let refused = apply(
         &mut art,
-        CanvasAction::Paint(Paint {
+        Artwork::PAINT.with(Paint {
             layer: None,
             strokes: vec![NewStroke {
                 colour: String::new(),
@@ -264,7 +265,7 @@ fn an_eraser_clears_what_is_under_it_on_its_layer() {
     assert!(refused.contains("only an eraser"), "{refused}");
     let unknown = apply(
         &mut art,
-        CanvasAction::Paint(Paint {
+        Artwork::PAINT.with(Paint {
             layer: Some("layer-1".into()),
             strokes: vec![brushed(
                 line("crayon", [0.0, 0.0], [10.0, 0.0], 1.0),
@@ -280,7 +281,7 @@ fn an_eraser_clears_what_is_under_it_on_its_layer() {
     );
     let medium = apply(
         &mut art,
-        CanvasAction::Paint(Paint {
+        Artwork::PAINT.with(Paint {
             layer: Some("layer-1".into()),
             strokes: vec![NewStroke {
                 params: Some(BTreeMap::from([("load".to_owned(), 0.3)])),
@@ -330,7 +331,7 @@ fn an_eraser_is_listed_with_what_it_erases_and_removed_by_id() {
     assert_eq!(rub["erases"], serde_json::json!(["crossed"]), "{rub}");
     apply(
         &mut art,
-        CanvasAction::RemoveMarks(RemoveMarks {
+        Artwork::REMOVE_MARKS.with(RemoveMarks {
             ids: vec!["rub".into()],
             ..RemoveMarks::default()
         }),
@@ -356,7 +357,7 @@ fn a_stroke_eraser_takes_whole_strokes_it_crosses() {
     let steps = art.log().len();
     apply(
         &mut art,
-        CanvasAction::RemoveMarks(RemoveMarks {
+        Artwork::REMOVE_MARKS.with(RemoveMarks {
             along: Some(vec![[150.0, 20.0], [150.0, 120.0]]),
             ..RemoveMarks::default()
         }),
@@ -368,7 +369,7 @@ fn a_stroke_eraser_takes_whole_strokes_it_crosses() {
     assert_eq!(art.log().len(), steps + 1, "one undo step");
     let missed = apply(
         &mut art,
-        CanvasAction::RemoveMarks(RemoveMarks {
+        Artwork::REMOVE_MARKS.with(RemoveMarks {
             along: Some(vec![[10.0, 190.0], [12.0, 190.0]]),
             ..RemoveMarks::default()
         }),
@@ -377,7 +378,7 @@ fn a_stroke_eraser_takes_whole_strokes_it_crosses() {
     assert!(missed.contains("crosses no brush stroke"), "{missed}");
 }
 
-fn points(art: &Replica<ArtworkResource>, id: &str) -> Vec<Vec<f64>> {
+fn points(art: &Replica<Artwork>, id: &str) -> Vec<Vec<f64>> {
     match &art.state().unwrap().mark(id).unwrap().shape {
         Shape::Stroke { points, .. } => points.clone(),
         _ => Vec::new(),
@@ -402,7 +403,7 @@ fn strokes_are_rebrushed_and_reshaped_after_the_fact() {
         ..NewStroke::default()
     };
     paint(&mut art, None, vec![wobbly]);
-    let edit = |edit: EditMarks| CanvasAction::edit(edit);
+    let edit = |edit: EditMarks| Artwork::EDIT_MARKS.with(edit);
     apply(
         &mut art,
         edit(EditMarks {
@@ -504,7 +505,7 @@ fn a_live_view_does_not_wait_for_paint_and_a_look_does() {
     let mut art = sheet(300.0, 200.0);
     apply(
         &mut art,
-        CanvasAction::AddLayer(AddLayer {
+        Artwork::ADD_LAYER.with(AddLayer {
             id: Some("oil".into()),
             name: "Oil".into(),
             medium: Some("oil".into()),

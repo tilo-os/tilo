@@ -6,59 +6,25 @@
 )]
 
 use crate::widget::ModelPath;
-use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, Circle, ParamCurve, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::color_compat::ColorCompat;
+use crate::paint::with_alpha;
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::Widget;
+use crate::widget::chart_data::ChartItem;
+use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
+    ChartNavAction, ChartTouchTracker, InteractiveChart, chart_leaf, handle_chart_event,
+    moved_index,
 };
-use crate::widget::{TaffyTreeExt, Widget};
-
-fn alpha(color: Color, value: u8) -> Color {
-    Color::from_rgba8(color.r(), color.g(), color.b(), value)
-}
-
-#[derive(Clone, Debug)]
-pub struct PolarAreaDatum {
-    pub id: String,
-    pub label: String,
-    pub value: f64,
-    pub color: Option<Color>,
-    pub detail: String,
-}
-
-impl PolarAreaDatum {
-    pub fn new(id: impl Into<String>, label: impl Into<String>, value: f64) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-            value,
-            color: None,
-            detail: String::new(),
-        }
-    }
-    #[must_use]
-    pub fn colored(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-    #[must_use]
-    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = detail.into();
-        self
-    }
-}
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -105,7 +71,7 @@ struct Sector {
 }
 
 pub struct PolarAreaChart {
-    data: Vec<PolarAreaDatum>,
+    data: Vec<ChartItem>,
     style: PolarAreaStyle,
     title: String,
     center_title: String,
@@ -121,7 +87,7 @@ pub struct PolarAreaChart {
 }
 
 impl PolarAreaChart {
-    pub fn new(data: Vec<PolarAreaDatum>) -> Self {
+    pub fn new(data: Vec<ChartItem>) -> Self {
         Self {
             data,
             style: PolarAreaStyle::default(),
@@ -169,7 +135,7 @@ impl PolarAreaChart {
         self.height = height.max(140.0);
         self
     }
-    pub fn set_data(&mut self, data: Vec<PolarAreaDatum>) {
+    pub fn set_data(&mut self, data: Vec<ChartItem>) {
         self.data = data;
         self.hovered = None;
     }
@@ -305,10 +271,10 @@ impl PolarAreaChart {
                     .max(1.0)
             })
     }
-    fn datum(&self, id: &str) -> Option<&PolarAreaDatum> {
+    fn datum(&self, id: &str) -> Option<&ChartItem> {
         self.data.iter().find(|d| d.id == id)
     }
-    fn color(datum: &PolarAreaDatum, index: usize, theme: &Theme) -> Color {
+    fn color(datum: &ChartItem, index: usize, theme: &Theme) -> Color {
         datum
             .color
             .unwrap_or_else(|| theme.tokens.colors.presence.series(index))
@@ -350,32 +316,48 @@ fn sector_path(
     path
 }
 
+impl InteractiveChart for PolarAreaChart {
+    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
+        (
+            &mut self.pointer,
+            &mut self.keyboard_inspection,
+            &mut self.touch,
+        )
+    }
+    fn update_hover(&mut self) {
+        self.hovered = self.hit(self.pointer).map(str::to_owned);
+    }
+    fn clear_hover(&mut self) {
+        self.hovered = None;
+    }
+    fn activate_hovered(&mut self) -> bool {
+        let Some(id) = &self.hovered else {
+            return false;
+        };
+        self.activated = Some(id.clone());
+        true
+    }
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
+        let candidates = self
+            .data
+            .iter()
+            .filter(|datum| datum.value.is_finite() && datum.value >= 0.0)
+            .map(|datum| datum.id.as_str())
+            .collect::<Vec<_>>();
+        let current = self
+            .hovered
+            .as_deref()
+            .and_then(|id| candidates.iter().position(|candidate| *candidate == id));
+        self.hovered = moved_index(current, candidates.len(), action)
+            .and_then(|index| candidates.get(index))
+            .map(|id| (*id).to_owned());
+        self.update_inspection_anchor();
+        self.hovered.is_some()
+    }
+}
+
 impl Widget for PolarAreaChart {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        });
-        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-    }
+    chart_leaf!();
     #[allow(
         clippy::too_many_lines,
         reason = "rings, sectors, radial labels, center copy, and inspector share polar geometry"
@@ -407,7 +389,7 @@ impl Widget for PolarAreaChart {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                alpha(theme.tokens.colors.text_dim, 45),
+                with_alpha(theme.tokens.colors.text_dim, 45),
                 None,
                 &Circle::new(center, radius),
             );
@@ -459,7 +441,7 @@ impl Widget for PolarAreaChart {
             });
             if self.style.show_labels {
                 let label = if self.style.show_values {
-                    format!("{}  {}", datum.label, format_value(datum.value))
+                    format!("{}  {}", datum.label, format_compact(datum.value))
                 } else {
                     datum.label.clone()
                 };
@@ -489,112 +471,24 @@ impl Widget for PolarAreaChart {
             .filter(|_| self.style.tooltip)
         {
             let detail = if datum.detail.is_empty() {
-                format_value(datum.value)
+                format_compact(datum.value)
             } else {
-                format!("{} · {}", format_value(datum.value), datum.detail)
+                format!("{} · {}", format_compact(datum.value), datum.detail)
             };
-            let (label_width, _) =
-                tr.measure_style(&datum.label, None, &theme.text(TextRole::Caption));
-            let (detail_width, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
-            let width = f64::from(label_width.max(detail_width)).max(140.0) + 28.0;
-            let x = (self.pointer.x + 16.0)
-                .min(self.rect.x1 - width - 8.0)
-                .max(self.rect.x0 + 8.0);
-            let y = (self.pointer.y + 16.0)
-                .min(self.rect.y1 - 72.0)
-                .max(self.rect.y0 + 8.0);
-            let tip = Rect::new(x, y, x + width, y + 64.0);
-            scene.fill(
-                Fill::NonZero,
+            crate::widget::chart_labels::draw_tooltip(
+                scene,
                 transform,
-                theme.tokens.colors.surfaces.overlay,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(tip, f64::from(theme.tokens.radii.control)),
-            );
-            tr.draw_style(
-                scene,
-                &datum.label,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((x + 14.0, y + 11.0)),
-                None,
-                &theme
-                    .text(TextRole::Label)
-                    .with_weight(TextWeight::Semibold),
-            );
-            tr.draw_style(
-                scene,
-                &detail,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x + 14.0, y + 37.0)),
-                None,
-                &theme.text(TextRole::Caption),
+                tr,
+                theme,
+                self.pointer,
+                self.rect,
+                140.0,
+                (&datum.label, &detail),
             );
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.hovered = self.hit(point).map(str::to_owned);
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.hovered = self.hit(point).map(str::to_owned);
-                    if let Some(id) = &self.hovered {
-                        self.activated = Some(id.clone());
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            self.hovered = self.hit(self.pointer).map(str::to_owned);
-            self.keyboard_inspection = false;
-        }
-        if matches!(event, WindowEvent::CursorLeft { .. }) && !self.keyboard_inspection {
-            self.hovered = None;
-        }
-        if matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            }
-        ) && let Some(id) = self.hit(self.pointer).map(str::to_owned)
-        {
-            self.activated = Some(id);
-            *ctx.handled = true;
-        }
-        if let Some(action) = chart_nav_action(event) {
-            if action == ChartNavAction::Activate {
-                self.activated.clone_from(&self.hovered);
-            } else {
-                let candidates = self
-                    .data
-                    .iter()
-                    .filter(|datum| datum.value.is_finite() && datum.value >= 0.0)
-                    .map(|datum| datum.id.as_str())
-                    .collect::<Vec<_>>();
-                let current = self
-                    .hovered
-                    .as_deref()
-                    .and_then(|id| candidates.iter().position(|candidate| *candidate == id));
-                self.hovered = moved_index(current, candidates.len(), action)
-                    .and_then(|index| candidates.get(index))
-                    .map(|id| (*id).to_owned());
-                self.keyboard_inspection = self.hovered.is_some();
-                self.update_inspection_anchor();
-            }
-            *ctx.handled = true;
-            *ctx.focus_target = Some(ctx.node_id);
-        }
+        handle_chart_event(self, event, ctx);
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let mut root = AccessNode::new(Role::Group).with_name(if self.title.is_empty() {
@@ -611,7 +505,7 @@ impl Widget for PolarAreaChart {
                     .with_action_target(&d.id)
                     .with_name(&d.label)
                     .with_description(if d.detail.is_empty() {
-                        format_value(d.value)
+                        format_compact(d.value)
                     } else {
                         d.detail.clone()
                     })
@@ -623,53 +517,28 @@ impl Widget for PolarAreaChart {
             .collect();
         Some(root)
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         keys: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = keys.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            keys,
+            self.data.iter().map(|d| &d.id),
+        ) else {
             return false;
         };
-        if let Some(datum) = self
-            .data
-            .iter()
-            .find(|d| crate::a11y::hash_key(&d.id) == *key)
-        {
-            self.activated = Some(datum.id.clone());
-            true
-        } else {
-            false
-        }
+        self.activated = Some(id.clone());
+        true
     }
     fn name(&self) -> &'static str {
         "PolarAreaChart"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
-    }
-}
-
-fn format_value(value: f64) -> String {
-    if value.abs() >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if value.abs() >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
-    } else if value.fract().abs() < 0.001 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.1}")
     }
 }
 
@@ -678,7 +547,7 @@ mod tests {
     use super::*;
     #[test]
     fn explicit_max_requires_positive_finite_value() {
-        let mut chart = PolarAreaChart::new(vec![PolarAreaDatum::new("a", "A", 7.0)]);
+        let mut chart = PolarAreaChart::new(vec![ChartItem::new("a", "A", 7.0)]);
         chart.style.max = Some(-2.0);
         assert_eq!(chart.max(), 7.0);
         chart.style.max = Some(10.0);

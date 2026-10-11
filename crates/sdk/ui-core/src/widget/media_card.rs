@@ -851,7 +851,7 @@ pub struct MediaCard {
     creator_rect: Rect,
     badges: Vec<OwnedBadge>,
     hover_action: Option<(Icon, String, Box<dyn FnMut()>)>,
-    pressed_action: bool,
+    pressed_action: crate::pointer_replay::HeldPress,
     selected: bool,
     activation: Activation,
     metrics: Option<MediaMetrics>,
@@ -880,7 +880,7 @@ impl MediaCard {
             creator_rect: Rect::ZERO,
             badges: Vec::new(),
             hover_action: None,
-            pressed_action: false,
+            pressed_action: crate::pointer_replay::HeldPress::default(),
             selected: false,
             activation: Activation::new(id),
             metrics: None,
@@ -935,15 +935,6 @@ impl MediaCard {
             image: None,
             image_url: None,
         });
-        self
-    }
-
-    /// The creator's decoded picture; otherwise their shared avatar shows initials.
-    #[must_use]
-    pub fn creator_image(mut self, image: peniko::ImageData) -> Self {
-        if let Some(creator) = &mut self.creator {
-            creator.image = Some(image);
-        }
         self
     }
 
@@ -1083,7 +1074,7 @@ impl Widget for MediaCard {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.metrics = Some(MediaMetrics::new(theme));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
                 height: auto(),
@@ -1094,9 +1085,8 @@ impl Widget for MediaCard {
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -1130,14 +1120,7 @@ impl Widget for MediaCard {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        let rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        let rect = crate::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.dirty = true;
         }
@@ -1190,22 +1173,36 @@ impl Widget for MediaCard {
             && shown
             && let Some(target) = target
         {
+            use crate::pointer_replay::{PressAt, Release};
             let over = target.contains(self.activation.cursor());
+            // The card's id names its hover action across a rebuild.
+            let key = if self.activation.id().is_empty() {
+                String::new()
+            } else {
+                format!("{}/action", self.activation.id())
+            };
+            let at = over.then_some(PressAt::one(&key, target));
             match state {
                 ElementState::Pressed if over => {
-                    self.pressed_action = true;
-                    *ctx.handled = true;
-                    return;
-                }
-                ElementState::Released if self.pressed_action => {
-                    self.pressed_action = false;
-                    *ctx.handled = true;
-                    if over && let Some((_, _, on_activate)) = &mut self.hover_action {
-                        on_activate();
+                    if let Some(at) = at {
+                        self.pressed_action.press(at);
                     }
+                    *ctx.handled = true;
                     return;
                 }
-                _ => {}
+                ElementState::Released => match self.pressed_action.release(at) {
+                    Release::NotHeld => {}
+                    release => {
+                        *ctx.handled = true;
+                        if release == Release::Click(())
+                            && let Some((_, _, on_activate)) = &mut self.hover_action
+                        {
+                            on_activate();
+                        }
+                        return;
+                    }
+                },
+                ElementState::Pressed => {}
             }
         }
         let exclude: Vec<Rect> = target.filter(|_| shown).into_iter().collect();
@@ -1240,6 +1237,7 @@ impl Widget for MediaCard {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &crate::widget::ModelPath,
     ) -> bool {
@@ -1484,7 +1482,7 @@ impl Widget for MediaGrid {
         node
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -1582,14 +1580,7 @@ impl Widget for MediaGrid {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         let origin = self.rect.origin();
         for (card, &child) in self.cards.iter_mut().zip(&self.nodes) {
             card.apply_layout(taffy, child, origin);

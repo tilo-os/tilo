@@ -12,12 +12,12 @@ use std::path::{Path, PathBuf};
 use tilo_app_package::Manifest;
 use tilo_app_package::interfaces::{InterfaceRequirement, ProvidedInterfaces, Unmet};
 
-use crate::layout::{DEV_ENV_OVERRIDES, system_override_from};
+use crate::dev_env::dev_override;
 
 /// Where the image declares the system interfaces it serves.
 pub const SYSTEM_INTERFACES_FILE: &str = "/usr/share/tilo/system-interfaces.toml";
 /// Names another declaration instead of [`SYSTEM_INTERFACES_FILE`], in
-/// builds that honour developer overrides ([`DEV_ENV_OVERRIDES`]).
+/// builds that honour developer overrides ([`crate::dev_env::DEV_ENV_OVERRIDES`]).
 pub const SYSTEM_INTERFACES_ENV: &str = "TILO_SYSTEM_INTERFACES";
 
 #[derive(Debug, thiserror::Error)]
@@ -34,12 +34,8 @@ pub enum InterfacesError {
 
 /// The declaration this session reads.
 pub fn system_interfaces_path() -> PathBuf {
-    system_override_from(
-        DEV_ENV_OVERRIDES,
-        SYSTEM_INTERFACES_ENV,
-        std::env::var_os(SYSTEM_INTERFACES_ENV),
-    )
-    .map_or_else(|| PathBuf::from(SYSTEM_INTERFACES_FILE), PathBuf::from)
+    dev_override(SYSTEM_INTERFACES_ENV)
+        .map_or_else(|| PathBuf::from(SYSTEM_INTERFACES_FILE), PathBuf::from)
 }
 
 /// The declaration at `path`; `None` when there is none.

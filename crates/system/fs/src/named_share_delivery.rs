@@ -12,9 +12,9 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use collab_types::{
-    Ed25519PublicKey, FileInviteSubject, FileInviteV1, Signature, VerifyError, canonical_bytes,
-    sign_event, verify_event,
+    Ed25519PublicKey, Signature, VerifyError, canonical_bytes, sign_event, verify_event,
 };
+use fs_protocol::{FileInviteSubject, FileInviteV1};
 use iroh::endpoint::{Connection, Endpoint};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_base::EndpointAddr;
@@ -160,6 +160,8 @@ pub struct NamedShareInbox {
     path: PathBuf,
     local_person: Ed25519PublicKey,
     entries: Mutex<BTreeMap<Uuid, NamedShareEnvelopeV1>>,
+    /// Rung when an envelope is accepted ([`Self::arrival`]).
+    arrivals: tokio::sync::Notify,
 }
 
 /// One crash-safe delivery job. A job is complete after one currently
@@ -186,6 +188,8 @@ struct OutboxDocumentV1 {
 pub struct NamedShareOutbox {
     path: PathBuf,
     entries: Mutex<BTreeMap<Uuid, NamedShareOutboxEntryV1>>,
+    /// Rung when a delivery is enqueued ([`Self::arrival`]).
+    arrivals: tokio::sync::Notify,
 }
 
 impl NamedShareOutbox {
@@ -226,6 +230,7 @@ impl NamedShareOutbox {
         let outbox = Self {
             path,
             entries: Mutex::new(entries),
+            arrivals: tokio::sync::Notify::new(),
         };
         if !outbox.path.exists() {
             outbox.persist(&BTreeMap::new())?;
@@ -282,7 +287,15 @@ impl NamedShareOutbox {
         );
         self.persist(&next)?;
         *current = next;
+        self.arrivals.notify_one();
         Ok(true)
+    }
+
+    /// Resolves once a delivery has been enqueued since the last time this
+    /// resolved (or since the outbox opened). The delivery loop waits on it
+    /// instead of polling an empty outbox (TIL-750).
+    pub async fn arrival(&self) {
+        self.arrivals.notified().await;
     }
 
     /// Return non-expired deliveries that have not yet succeeded.
@@ -731,6 +744,7 @@ impl NamedShareInbox {
             path,
             local_person,
             entries: Mutex::new(entries),
+            arrivals: tokio::sync::Notify::new(),
         };
         if !inbox.path.exists() {
             inbox.persist(&BTreeMap::new())?;
@@ -772,7 +786,15 @@ impl NamedShareInbox {
         next.insert(envelope.invite.id, envelope);
         self.persist(&next)?;
         *current = next;
+        self.arrivals.notify_one();
         Ok(true)
+    }
+
+    /// Resolves once an envelope has been accepted since the last time this
+    /// resolved (or since the inbox opened), so the recipient service mounts
+    /// it at once instead of on its next pass (TIL-750).
+    pub async fn arrival(&self) {
+        self.arrivals.notified().await;
     }
 
     /// Return envelopes that remain valid at `now_ms`.
@@ -889,7 +911,7 @@ pub enum NamedShareInboxError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{FileInviteSpec, FilePermission, mint_file_invite};
+    use fs_protocol::{FileInviteSpec, FilePermission, mint_file_invite};
     use iroh::address_lookup::memory::MemoryLookup;
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
@@ -958,7 +980,7 @@ mod tests {
         let invite = mint_file_invite(
             FileInviteSpec {
                 workspace_id: Uuid::from_u128(1),
-                record_id: collab_types::FileRecordId(Uuid::from_u128(id_seed)),
+                record_id: fs_protocol::FileRecordId(Uuid::from_u128(id_seed)),
                 subject: FileInviteSubject::Person(person),
                 permission: FilePermission::View,
                 expires_at_ms: Some(NOW + 100),
@@ -1115,7 +1137,7 @@ mod tests {
         let invite = mint_file_invite(
             FileInviteSpec {
                 workspace_id: Uuid::new_v4(),
-                record_id: collab_types::FileRecordId::new(),
+                record_id: fs_protocol::FileRecordId::new(),
                 subject: FileInviteSubject::Person(person),
                 permission: FilePermission::View,
                 expires_at_ms: Some(unix_now_ms() + 60_000),

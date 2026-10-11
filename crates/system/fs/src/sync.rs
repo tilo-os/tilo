@@ -400,6 +400,38 @@ impl Ticket {
 ///
 /// Returns an error if the endpoint fails to bind.
 pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint, MemoryLookup)> {
+    let lookup = MemoryLookup::new();
+    let endpoint = endpoint_builder(secret, &lookup).bind().await?;
+    Ok((endpoint, lookup))
+}
+
+/// [`bind_endpoint_with_key`], with the default relays held back until
+/// something may need to dial this device: no home relay, net report,
+/// address discovery or port mapping until the returned
+/// [`crate::reachability::Reachability`] is woken (TIL-774). For a daemon
+/// that waits to be dialled (`fs serve`); one that dials out at once has
+/// no reason to wait.
+///
+/// # Errors
+///
+/// Returns an error if the endpoint fails to bind.
+pub async fn bind_dormant_endpoint_with_key(
+    secret: iroh::SecretKey,
+) -> Result<(Endpoint, MemoryLookup, crate::reachability::Reachability)> {
+    let lookup = MemoryLookup::new();
+    let endpoint = endpoint_builder(secret, &lookup)
+        .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()))
+        .bind()
+        .await?;
+    let reachability = crate::reachability::Reachability::defer(
+        &endpoint,
+        &iroh::endpoint::default_relay_mode().relay_map(),
+        tokio::runtime::Handle::current(),
+    );
+    Ok((endpoint, lookup, reachability))
+}
+
+fn endpoint_builder(secret: iroh::SecretKey, lookup: &MemoryLookup) -> iroh::endpoint::Builder {
     use iroh::endpoint::{QuicTransportConfig, VarInt};
     /// Unacknowledged bytes one stream, and one connection, may have in
     /// flight. QUIC's defaults (1.25 MB per stream, 10 MB per connection)
@@ -413,14 +445,10 @@ pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint
         .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
         .send_window(u64::from(CONNECTION_WINDOW))
         .build();
-    let lookup = MemoryLookup::new();
-    let endpoint = Endpoint::builder(presets::N0)
+    Endpoint::builder(presets::N0)
         .transport_config(transport)
         .secret_key(secret)
         .address_lookup(lookup.clone())
-        .bind()
-        .await?;
-    Ok((endpoint, lookup))
 }
 
 /// Bind an endpoint under a freshly-generated key. **The node id differs
@@ -558,9 +586,16 @@ async fn sync_with_peer_at_boundaries(
             },
         )
         .await?;
-        let mut state = automerge::sync::State::new();
+        let (before, mut state) = {
+            let mut namespace = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (
+                namespace.heads(),
+                namespace.begin_sync_with(&remote.device_public_key),
+            )
+        };
         // Initiator: write-then-read each round; the responder mirrors.
-        let mut received_change = false;
         for _ in 0..200 {
             let msg = {
                 let _gate = changeset_boundary(repository).await;
@@ -599,18 +634,28 @@ async fn sync_with_peer_at_boundaries(
                 }
             };
             if !peer_msg.is_empty() {
-                received_change = true;
                 let _ = namespace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .sync_receive(&mut state, &peer_msg);
             }
             if sent_nothing && peer_msg.is_empty() {
+                // Complete: the next exchange with this device resumes here.
+                namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .finish_sync_with(remote.device_public_key, &state);
                 break;
             }
         }
         let _ = send.finish();
-        Ok::<bool, anyhow::Error>(received_change)
+        // An idle exchange's replies carry heads; only changes that moved
+        // this document's heads count as received.
+        let heads = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .heads();
+        Ok::<bool, anyhow::Error>(heads != before)
     })
     .await
     .map_err(|_| anyhow::anyhow!("sync exchange timed out"))?
@@ -681,16 +726,6 @@ async fn prefetch_namespace_thumbnails(
         }
     }
     Ok(())
-}
-
-/// The namespace's current generation: its Automerge heads, which change
-/// with every change (reading them commits any open transaction). Cheap,
-/// unlike hashing a full save of the document.
-fn namespace_generation(namespace: &Arc<Mutex<Namespace>>) -> Vec<automerge::ChangeHash> {
-    namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .heads()
 }
 
 /// The policy the network planes serve through, or `None` for an
@@ -795,7 +830,11 @@ impl SyncProtocol {
         recv: &mut RecvStream,
     ) -> Result<(), AcceptError> {
         // Responder: read-then-write each round (mirrors the initiator).
-        let mut state = automerge::sync::State::new();
+        let mut state = self
+            .namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .begin_sync_with(&peer.device_public_key);
         for _ in 0..200 {
             // The authority handle is live. A newer signed
             // tombstone/revocation cuts an already-connected
@@ -855,6 +894,11 @@ impl SyncProtocol {
                 .await
                 .map_err(AcceptError::from_err)?;
             if peer_msg.is_empty() && sent_nothing {
+                // Complete: the next exchange with this device resumes here.
+                self.namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .finish_sync_with(peer.device_public_key, &state);
                 break;
             }
         }
@@ -1441,6 +1485,9 @@ fn blob_guard(
 pub struct SyncHandle {
     local_tx: mpsc::UnboundedSender<Bytes>,
     record_index_generation: tokio::sync::watch::Sender<u64>,
+    /// Woken when peers are heard from outside the reconciliation loop (a
+    /// gossip delta, a neighbour), so its idle timer stops backing off.
+    activity: Arc<tokio::sync::Notify>,
 }
 
 impl SyncHandle {
@@ -1464,6 +1511,11 @@ impl SyncHandle {
             .send_modify(|generation| *generation = generation.wrapping_add(1));
     }
 
+    /// Peers were heard from outside the reconciliation loop.
+    fn notify_activity(&self) {
+        self.activity.notify_one();
+    }
+
     #[cfg(test)]
     pub(crate) fn test_handle() -> Arc<Self> {
         let (local_tx, _local_rx) = mpsc::unbounded_channel();
@@ -1471,6 +1523,7 @@ impl SyncHandle {
         Arc::new(Self {
             local_tx,
             record_index_generation,
+            activity: Arc::new(tokio::sync::Notify::new()),
         })
     }
 }
@@ -1684,7 +1737,7 @@ async fn replica_ack_response(
     if request.validate().is_err() || request.workspace_id != workspace_id {
         return ReplicaAckResponseV1::Denied;
     }
-    let requester = collab_types::FileActor {
+    let requester = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(peer.user_public_key),
         device: collab_types::Ed25519PublicKey(peer.device_public_key),
     };
@@ -1719,7 +1772,7 @@ async fn replica_ack_response(
     {
         return ReplicaAckResponseV1::Unavailable;
     }
-    let actor = collab_types::FileActor {
+    let actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(identity.user_public_key()),
         device: collab_types::Ed25519PublicKey(identity.device_public_key()),
     };
@@ -2213,6 +2266,7 @@ impl Workspace {
         let sync = Arc::new(SyncHandle {
             local_tx,
             record_index_generation,
+            activity: Arc::new(tokio::sync::Notify::new()),
         });
         let mut tasks = Vec::new();
         let (gossip_sender, reconcile_rx) = if policy.is_none() {
@@ -2242,9 +2296,9 @@ impl Workspace {
             // prompt retry after a transient exchange failure.
             (None, Some(local_rx))
         };
-        // Anti-entropy backstop: periodically pull+merge peers' full docs and
-        // resolve conflicts, so a missed gossip delta or a mid-join window
-        // can't leave a peer permanently diverged.
+        // Anti-entropy backstop: periodically exchange namespace changes and
+        // records with every peer and resolve conflicts, so a missed delta
+        // or a mid-join window can't leave a peer permanently diverged.
         tasks.push(AbortOnDrop(tokio::spawn(reconcile_loop(ReconcileLoop {
             endpoint,
             namespace: namespace.clone(),
@@ -2311,6 +2365,7 @@ async fn pump_loop(
                         // one: never send it in the middle of a changeset.
                         let _gate = changeset_boundary(records.as_deref()).await;
                         let _ = sender.broadcast(delta).await;
+                        sync.notify_activity();
                     }
                     None => break, // all SyncHandles dropped
                 }
@@ -2329,6 +2384,7 @@ async fn pump_loop(
                                 .unwrap_or_default()
                         };
                         sync.notify_record_index_changed();
+                        sync.notify_activity();
                         if !resolve_delta.is_empty() {
                             let _gate = changeset_boundary(records.as_deref()).await;
                             let _ = sender.broadcast(Bytes::from(resolve_delta)).await;
@@ -2336,6 +2392,7 @@ async fn pump_loop(
                     }
                     Some(Ok(Event::NeighborUp(id))) => {
                         hydrator.add_peer(EndpointAddr::new(id));
+                        sync.notify_activity();
                     }
                     Some(Ok(_)) => {}
                     Some(Err(_)) => {
@@ -2360,7 +2417,7 @@ struct DirectMeshAuthorizer<'a> {
 }
 
 impl RecordAuthorizer for DirectMeshAuthorizer<'_> {
-    fn actor_is_certified(&self, actor: &collab_types::FileActor) -> bool {
+    fn actor_is_certified(&self, actor: &fs_protocol::FileActor) -> bool {
         // A home peer is commonly a second device certified to the same
         // human as the desktop which authored the record. The envelope still
         // verifies the original device signature; the live transport cert
@@ -2377,8 +2434,8 @@ impl RecordAuthorizer for DirectMeshAuthorizer<'_> {
 
     fn allows(
         &self,
-        actor: &collab_types::FileActor,
-        _record_id: collab_types::FileRecordId,
+        actor: &fs_protocol::FileActor,
+        _record_id: fs_protocol::FileRecordId,
         action: RecordAction,
     ) -> bool {
         self.actor_is_certified(actor)
@@ -2515,7 +2572,7 @@ async fn pull_record_mesh_from_peer(
             RecordMeshResultV1::Denied => return Ok(false),
             _ => anyhow::bail!("record mesh returned an invalid inventory response"),
         };
-        let direct_actor = collab_types::FileActor {
+        let direct_actor = fs_protocol::FileActor {
             person: collab_types::Ed25519PublicKey(inventory_peer.user_public_key),
             device: collab_types::Ed25519PublicKey(inventory_peer.device_public_key),
         };
@@ -2672,7 +2729,7 @@ fn revisions_awaiting_receipt(
     records: &RecordPlane,
     registry: &Mutex<crate::availability::AvailabilityRegistry>,
     device: collab_types::Ed25519PublicKey,
-) -> Vec<collab_types::ContentRevisionV1> {
+) -> Vec<fs_protocol::ContentRevisionV1> {
     let revisions = records
         .repository
         .current_content_revisions(records.workspace_id);
@@ -2732,7 +2789,7 @@ async fn collect_replica_acks_from_peer(
 )]
 fn persist_workspace_replica_observation(
     registry: &Arc<Mutex<crate::availability::AvailabilityRegistry>>,
-    revision: collab_types::ContentRevisionV1,
+    revision: fs_protocol::ContentRevisionV1,
     local_device: collab_types::Ed25519PublicKey,
     observation: crate::availability::ReplicaObservation,
     observed_at: u64,
@@ -2753,7 +2810,7 @@ fn persist_workspace_replica_observation(
 /// when this registry has no row for it yet.
 fn record_replica_observation(
     registry: &mut crate::availability::AvailabilityRegistry,
-    revision: collab_types::ContentRevisionV1,
+    revision: fs_protocol::ContentRevisionV1,
     local_device: collab_types::Ed25519PublicKey,
     observation: crate::availability::ReplicaObservation,
     observed_at: u64,
@@ -2776,8 +2833,31 @@ fn record_replica_observation(
     registry.observe_replica(revision.record_id, local_device, observation, observed_at)
 }
 
-/// How often every peer is reconciled without a change or announcement.
+/// How soon every peer is reconciled again after anything happened (a
+/// local change, an announcement, a gossip delta, a pass that changed
+/// something). While nothing happens the wait doubles per timer pass up to
+/// [`IDLE_RECONCILE_CEILING`] ([`IdleBackoff`]).
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(3);
+/// The longest an idle device waits between two timer passes: how long a
+/// change whose announcement was lost can take to arrive.
+const IDLE_RECONCILE_CEILING: Duration = Duration::from_secs(30);
+/// How long after an exchange first fails passes keep the short interval,
+/// so a peer that drops briefly is caught up with at once.
+const FAILURE_RETRY_WINDOW: Duration = Duration::from_secs(60);
+/// The longest a quiet timer pass leaves a peer without a namespace
+/// exchange although both sides agreed on this device's heads
+/// ([`Namespace::in_sync_with`]). Not what keeps peers converged (each
+/// side's own changes move its heads off the agreed ones, so its passes
+/// exchange); a bound for anything that bypasses that, such as a peer
+/// restored from an older copy without restarting.
+const NAMESPACE_BACKSTOP: Duration = Duration::from_secs(300);
+/// Peers one pass exchanges with at once.
+const PASS_CONCURRENCY: usize = 8;
+/// How long a pass waits for one peer's exchange once it has begun. The
+/// exchange is not cancelled (that could stop between a durable record and
+/// its projection); it finishes on its own and holds its slot, and its peer
+/// is not started again until it has. The pass moves on without it.
+const PEER_DEADLINE: Duration = Duration::from_secs(20);
 
 /// One peer's share of a reconciliation pass.
 struct PeerPass<'a> {
@@ -2797,9 +2877,39 @@ struct PeerPass<'a> {
     /// Which records to project again even if nothing new arrives: all of
     /// them on the first pass, the ones still unplaced on timer passes.
     reconcile: crate::record_materializer::ReconcileScope,
+    /// A timer pass: the namespace exchange is skipped with a peer known to
+    /// hold this device's heads ([`Self::namespace_exchange_due`]).
+    quiet: bool,
+    /// When each peer last completed a namespace exchange with this loop.
+    namespace_exchanged: &'a Mutex<HashMap<[u8; 32], Instant>>,
 }
 
 impl PeerPass<'_> {
+    /// Whether this pass exchanges namespace changes with `peer`: always,
+    /// unless it is a timer pass, the last exchange with the peer (in this
+    /// loop's lifetime, so never on its first pass) agreed on this
+    /// device's current heads, and that was less than
+    /// [`NAMESPACE_BACKSTOP`] ago. Nothing here is then new to the peer, and
+    /// what is new on the peer moves its own heads, so its own pass
+    /// brings it.
+    fn namespace_exchange_due(&self, peer: &[u8; 32]) -> bool {
+        if !self.quiet {
+            return true;
+        }
+        let recent = self
+            .namespace_exchanged
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(peer)
+            .is_some_and(|at| at.elapsed() < NAMESPACE_BACKSTOP);
+        !recent
+            || !self
+                .namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .in_sync_with(peer)
+    }
+
     async fn broadcast(&self, delta: Vec<u8>) {
         if !delta.is_empty()
             && let Some(sender) = self.sender
@@ -2812,17 +2922,19 @@ impl PeerPass<'_> {
     }
 
     /// The pass over the peer's session: every exchange on its one
-    /// connection. Returns whether namespace or records changed.
-    async fn over_session(&self, sessions: &SessionPool, peer: &session::Session) -> bool {
+    /// connection.
+    async fn over_session(&self, sessions: &SessionPool, peer: &session::Session) -> PassOutcome {
         // Each exchange stands on its own, as with the per-request
         // protocols: one the peer refuses does not hold back the others.
+        let failed = std::sync::atomic::AtomicBool::new(false);
         let report = |what: &str, error: &anyhow::Error| {
+            failed.store(true, std::sync::atomic::Ordering::Relaxed);
             if !self.identity.partitioned() {
                 eprintln!("{what} with {} failed: {error:#}", peer.addr.id);
             }
         };
         let mut changed = false;
-        if self.exchange_namespace {
+        if self.exchange_namespace && self.namespace_exchange_due(&peer.peer.device_public_key) {
             // Automerge sync is symmetric; only between two writers, which
             // the serving side checks independently.
             match session::sync_namespace(
@@ -2835,6 +2947,10 @@ impl PeerPass<'_> {
             .await
             {
                 Ok(received) => {
+                    self.namespace_exchanged
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(peer.peer.device_public_key, Instant::now());
                     changed |= received;
                     let resolution = self
                         .namespace
@@ -2906,13 +3022,17 @@ impl PeerPass<'_> {
                 );
             }
         }
-        changed
+        PassOutcome {
+            changed,
+            failed: failed.into_inner(),
+        }
     }
 
     /// The pass through the per-request protocols, for a peer without the
-    /// session protocol. Returns whether namespace or records changed.
-    async fn per_request(&self, peer: EndpointAddr) -> bool {
+    /// session protocol.
+    async fn per_request(&self, peer: EndpointAddr) -> PassOutcome {
         let mut changed = false;
+        let mut failed = false;
         if self.exchange_namespace {
             match sync_with_peer_at_boundaries(
                 self.endpoint,
@@ -2933,50 +3053,28 @@ impl PeerPass<'_> {
                         .post_sync_resolve();
                     self.broadcast(resolution).await;
                 }
-                Err(error) if !self.identity.partitioned() => {
-                    eprintln!("namespace sync with {} failed: {error:#}", peer.id);
-                }
-                Err(_) => {}
-            }
-        } else if self.read_only {
-            // Read-only peers pull a full snapshot and never upload local
-            // changes. It is merged only from a peer this device's policy
-            // lets read the whole workspace, bound to this workspace.
-            let doc = match fetch_remote_doc(
-                self.endpoint,
-                peer.clone(),
-                self.identity,
-                self.workspace_id,
-                self.policy,
-            )
-            .await
-            {
-                Ok(doc) => doc,
                 Err(error) => {
+                    failed = true;
                     if !self.identity.partitioned() {
-                        eprintln!("namespace pull from {} failed: {error:#}", peer.id);
+                        eprintln!("namespace sync with {} failed: {error:#}", peer.id);
                     }
-                    return self.per_request_records(peer, changed).await;
                 }
-            };
-            let before_merge = namespace_generation(self.namespace);
-            let resolution = self
-                .namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .merge_remote_and_resolve(&doc)
-                .unwrap_or_default();
-            // A clean merge commonly needs no conflict-resolution delta;
-            // compare the document generation so its previews are still
-            // scheduled on a fresh collaborator.
-            changed |= before_merge != namespace_generation(self.namespace);
-            self.broadcast(resolution).await;
+            }
         }
-        self.per_request_records(peer, changed).await
+        // A read-only device takes namespace changes only over a session,
+        // as the changes beyond its own heads ([`session::pull_namespace`]).
+        // A peer without the session protocol is never asked for its whole
+        // document on every pass; it serves this device records only.
+        let records = self.per_request_records(peer, changed).await;
+        PassOutcome {
+            changed: records.changed,
+            failed: failed || records.failed,
+        }
     }
 
     /// The record part of [`Self::per_request`].
-    async fn per_request_records(&self, peer: EndpointAddr, mut changed: bool) -> bool {
+    async fn per_request_records(&self, peer: EndpointAddr, mut changed: bool) -> PassOutcome {
+        let mut failed = false;
         if let Some(records) = self.records {
             if let Some(authority) = &records.workspace_authority
                 && let Err(error) = pull_workspace_authority_from_peer(
@@ -3001,10 +3099,12 @@ impl PeerPass<'_> {
             .await
             {
                 Ok(pulled) => changed |= pulled,
-                Err(error) if !self.identity.partitioned() => {
-                    eprintln!("record mesh reconciliation failed: {error}");
+                Err(error) => {
+                    failed = true;
+                    if !self.identity.partitioned() {
+                        eprintln!("record mesh reconciliation failed: {error}");
+                    }
                 }
-                Err(_) => {}
             }
             collect_replica_acks_from_peer(
                 self.endpoint,
@@ -3015,7 +3115,267 @@ impl PeerPass<'_> {
             )
             .await;
         }
-        changed
+        PassOutcome { changed, failed }
+    }
+}
+
+/// What every peer exchange of the reconciliation loop works on. Owned, so
+/// an exchange can outlive the pass that stopped waiting for it.
+struct PassShared {
+    endpoint: Endpoint,
+    namespace: Arc<Mutex<Namespace>>,
+    hydrator: Arc<Hydrator>,
+    sender: Option<GossipSender>,
+    identity: FsTransportIdentity,
+    policy: PeerPolicy,
+    workspace_id: uuid::Uuid,
+    records: Option<RecordPlane>,
+    sessions: Arc<SessionPool>,
+    /// This device may write the whole workspace.
+    may_write: bool,
+    /// When each peer last completed a namespace exchange with this loop.
+    namespace_exchanged: Mutex<HashMap<[u8; 32], Instant>>,
+}
+
+/// What one pass does with each peer.
+#[derive(Clone, Copy, Debug)]
+struct PassPlan {
+    /// Tell the peer first that this device published changes, so it pulls
+    /// them without waiting for its own timer.
+    announce: bool,
+    reconcile: crate::record_materializer::ReconcileScope,
+    /// A timer pass, started by nothing that happened: the namespace
+    /// exchange may be skipped with peers in sync
+    /// ([`PeerPass::namespace_exchange_due`]).
+    quiet: bool,
+}
+
+/// What a pass, or one peer's share of it, came to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PassOutcome {
+    /// Namespace or records changed.
+    changed: bool,
+    /// An exchange failed or a peer could not be reached.
+    failed: bool,
+}
+
+/// When the reconciliation loop's next timer pass is due. After anything
+/// happens it is [`RECONCILE_INTERVAL`]; each timer pass that changes
+/// nothing doubles the wait, up to [`IDLE_RECONCILE_CEILING`], so an idle
+/// device wakes twice a minute rather than twenty times. A pass where an
+/// exchange failed keeps the short wait for [`FAILURE_RETRY_WINDOW`] after
+/// the first failure in a row, then backs off as well, so an absent peer is
+/// not dialled every few seconds forever. Collaborators' changes do not
+/// wait on this: announcements, gossip and peers' own passes act at once.
+#[derive(Debug)]
+struct IdleBackoff {
+    interval: Duration,
+    failing_since: Option<Instant>,
+}
+
+impl Default for IdleBackoff {
+    fn default() -> Self {
+        Self {
+            interval: RECONCILE_INTERVAL,
+            failing_since: None,
+        }
+    }
+}
+
+impl IdleBackoff {
+    /// How long after the last pass the next timer pass is due.
+    const fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    /// Something happened outside a pass (a gossip delta, a neighbour):
+    /// the next timer pass is due soon again.
+    const fn activity(&mut self) {
+        self.interval = RECONCILE_INTERVAL;
+    }
+
+    /// A pass ended at `now`; `timer` says whether the timer started it
+    /// (rather than a local change or an announcement).
+    fn after_pass(&mut self, timer: bool, outcome: PassOutcome, now: Instant) {
+        if outcome.failed {
+            let since = *self.failing_since.get_or_insert(now);
+            if now.saturating_duration_since(since) < FAILURE_RETRY_WINDOW {
+                self.interval = RECONCILE_INTERVAL;
+                return;
+            }
+        } else {
+            self.failing_since = None;
+        }
+        self.interval = if timer && !outcome.changed {
+            self.interval.saturating_mul(2).min(IDLE_RECONCILE_CEILING)
+        } else {
+            RECONCILE_INTERVAL
+        };
+    }
+}
+
+/// When a timer of `interval` started now runs out.
+fn timer_due(interval: Duration) -> tokio::time::Instant {
+    let now = tokio::time::Instant::now();
+    now.checked_add(interval).unwrap_or(now)
+}
+
+impl PassShared {
+    /// One peer's share of a pass: the announcement if `plan` asks for it,
+    /// then every exchange over the peer's session, or through the
+    /// per-request protocols when it speaks no session.
+    async fn exchange(&self, peer: EndpointAddr, plan: PassPlan) -> PassOutcome {
+        let session = match self.sessions.get(&peer).await {
+            Ok(session) => session,
+            Err(error) => {
+                if !self.identity.partitioned() {
+                    eprintln!("no session with {}: {error:#}", peer.id);
+                }
+                return PassOutcome {
+                    changed: false,
+                    failed: true,
+                };
+            }
+        };
+        let remote_may_write = self.policy.is_none()
+            || self
+                .identity
+                .certified_peer_for_device(*peer.id.as_bytes())
+                .is_some_and(|remote| {
+                    authenticated_peer_may_write_whole_workspace(&self.policy, &remote)
+                });
+        let context = PeerPass {
+            endpoint: &self.endpoint,
+            namespace: &self.namespace,
+            hydrator: &self.hydrator,
+            sender: self.sender.as_ref(),
+            identity: &self.identity,
+            policy: &self.policy,
+            workspace_id: self.workspace_id,
+            records: self.records.as_ref(),
+            exchange_namespace: self.may_write && remote_may_write,
+            read_only: !self.may_write,
+            reconcile: plan.reconcile,
+            quiet: plan.quiet,
+            namespace_exchanged: &self.namespace_exchanged,
+        };
+        let Some(session) = session else {
+            // The peer speaks only the per-request protocols.
+            return context.per_request(peer).await;
+        };
+        if plan.announce
+            && let Err(error) = session::announce(&self.sessions, &session).await
+        {
+            eprintln!("announcing to {} failed: {error:#}", session.addr.id);
+        }
+        let outcome = context.over_session(&self.sessions, &session).await;
+        if session.is_closed() {
+            // The next pass connects afresh.
+            self.sessions.forget(&session).await;
+        }
+        outcome
+    }
+}
+
+/// Runs each pass's peer exchanges concurrently: at most
+/// [`PASS_CONCURRENCY`] at once, at most one per peer at a time, and each
+/// waited for at most `deadline`, so one unreachable or stalled peer holds
+/// back neither the others nor the pass.
+struct PeerExchanges {
+    shared: Arc<PassShared>,
+    slots: Arc<tokio::sync::Semaphore>,
+    /// Peers with an exchange in progress, possibly from an earlier pass.
+    busy: Arc<Mutex<HashSet<iroh_base::PublicKey>>>,
+    /// Set by an exchange that changed namespace or records; taken by the
+    /// pass that next looks, which covers exchanges that outlived their
+    /// own pass.
+    changed: Arc<std::sync::atomic::AtomicBool>,
+    /// Set, and taken, the same way by an exchange that failed.
+    failed: Arc<std::sync::atomic::AtomicBool>,
+    deadline: Duration,
+}
+
+/// A peer's place in [`PeerExchanges::busy`], given back when its exchange
+/// ends however it ends.
+struct BusyPeer {
+    busy: Arc<Mutex<HashSet<iroh_base::PublicKey>>>,
+    peer: iroh_base::PublicKey,
+}
+
+impl Drop for BusyPeer {
+    fn drop(&mut self) {
+        self.busy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.peer);
+    }
+}
+
+impl PeerExchanges {
+    fn new(shared: PassShared, deadline: Duration) -> Self {
+        Self {
+            shared: Arc::new(shared),
+            slots: Arc::new(tokio::sync::Semaphore::new(PASS_CONCURRENCY)),
+            busy: Arc::new(Mutex::new(HashSet::new())),
+            changed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            deadline,
+        }
+    }
+
+    /// One pass over `peers`, skipping any still exchanging since an
+    /// earlier pass. Says whether namespace or records changed, and whether
+    /// an exchange failed, since the previous pass looked.
+    async fn run(&self, peers: Vec<EndpointAddr>, plan: PassPlan) -> PassOutcome {
+        let started: Vec<_> = peers
+            .into_iter()
+            .filter_map(|peer| {
+                let claimed = self
+                    .busy
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(peer.id);
+                claimed.then(|| {
+                    let busy = BusyPeer {
+                        busy: Arc::clone(&self.busy),
+                        peer: peer.id,
+                    };
+                    self.start(peer, busy, plan)
+                })
+            })
+            .collect();
+        futures_util::future::join_all(started).await;
+        PassOutcome {
+            changed: self
+                .changed
+                .swap(false, std::sync::atomic::Ordering::AcqRel),
+            failed: self.failed.swap(false, std::sync::atomic::Ordering::AcqRel),
+        }
+    }
+
+    /// Starts the exchange with `peer` once a slot is free, and waits for it
+    /// at most the deadline.
+    async fn start(&self, peer: EndpointAddr, busy: BusyPeer, plan: PassPlan) {
+        let Ok(slot) = Arc::clone(&self.slots).acquire_owned().await else {
+            return;
+        };
+        let shared = Arc::clone(&self.shared);
+        let changed = Arc::clone(&self.changed);
+        let failed = Arc::clone(&self.failed);
+        let exchange = tokio::spawn(async move {
+            let outcome = shared.exchange(peer, plan).await;
+            if outcome.changed {
+                changed.store(true, std::sync::atomic::Ordering::Release);
+            }
+            if outcome.failed {
+                failed.store(true, std::sync::atomic::Ordering::Release);
+            }
+            drop(busy);
+            drop(slot);
+        });
+        // On timeout the task carries on detached; dropping its handle does
+        // not abort it.
+        let _ = tokio::time::timeout(self.deadline, exchange).await;
     }
 }
 
@@ -3088,17 +3448,37 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
     } = reconcile;
     let may_write = peer_may_write_whole_workspace(&policy, &identity.user_public_key())
         || peer_may_write_whole_workspace(&policy, &identity.device_public_key());
+    let exchanges = PeerExchanges::new(
+        PassShared {
+            endpoint,
+            namespace: namespace.clone(),
+            hydrator: hydrator.clone(),
+            sender: sender.clone(),
+            identity: identity.clone(),
+            policy,
+            workspace_id,
+            records: records.clone(),
+            sessions,
+            may_write,
+            namespace_exchanged: Mutex::new(HashMap::new()),
+        },
+        PEER_DEADLINE,
+    );
+    let mut backoff = IdleBackoff::default();
+    let mut due = timer_due(backoff.interval());
     let mut pending_thumbnails = HashMap::new();
     // `mount` bootstraps a namespace before this task starts, so schedule its
     // previews once even if the first anti-entropy exchange is clean.
     let mut refresh_thumbnails = true;
     let mut first_pass = true;
+    let mut conflict_watch = conflict_watch::ConflictWatch::default();
     let trace = std::env::var_os("TILO_FS_NATIVE_TRACE").is_some();
     loop {
         // A local change or a peer's announcement starts a pass at once;
-        // otherwise the timer does.
+        // otherwise the timer does. Peers heard from elsewhere (gossip)
+        // bring the timer back to its short interval without a pass.
         let (local_change, timer) = tokio::select! {
-            () = tokio::time::sleep(RECONCILE_INTERVAL) => (false, true),
+            () = tokio::time::sleep_until(due) => (false, true),
             mutation = async {
                 match &mut local_rx {
                     Some(receiver) => receiver.recv().await,
@@ -3111,6 +3491,11 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 (true, false)
             }
             Some(_) = announcements.recv() => (false, false),
+            () = sync.activity.notified() => {
+                backoff.activity();
+                due = due.min(timer_due(backoff.interval()));
+                continue;
+            }
         };
         // A burst of changes is one pass: what arrived meanwhile is covered.
         let local_change = local_change
@@ -3126,70 +3511,36 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
             hydrator.add_peer(peer);
         }
         let known_peers = hydrator.known_peers();
+        let peer_count = known_peers.len();
         // Peers pull what this device just published without waiting for
-        // their own timer, or for this pass: announce first, opening the
-        // session this pass then uses.
-        if local_change {
-            for peer in &known_peers {
-                let Ok(Some(session)) = sessions.get(peer).await else {
-                    continue;
-                };
-                if let Err(error) = session::announce(&sessions, &session).await {
-                    eprintln!("announcing to {} failed: {error:#}", session.addr.id);
-                }
-            }
-        }
-        let mut namespace_changed = false;
-        for peer in known_peers {
-            let remote_may_write = policy.is_none()
-                || identity
-                    .certified_peer_for_device(*peer.id.as_bytes())
-                    .is_some_and(|remote| {
-                        authenticated_peer_may_write_whole_workspace(&policy, &remote)
-                    });
-            let context = PeerPass {
-                endpoint: &endpoint,
-                namespace: &namespace,
-                hydrator: &hydrator,
-                sender: sender.as_ref(),
-                identity: &identity,
-                policy: &policy,
-                workspace_id,
-                records: records.as_ref(),
-                exchange_namespace: may_write && remote_may_write,
-                read_only: !may_write,
-                // Namespace changes can also arrive through a peer's own
-                // exchange with this device; timer passes heal whatever
-                // they placed.
-                reconcile: if first_pass {
-                    crate::record_materializer::ReconcileScope::Everything
-                } else if timer {
-                    crate::record_materializer::ReconcileScope::Unplaced
-                } else {
-                    crate::record_materializer::ReconcileScope::Touched
-                },
-            };
-            match sessions.get(&peer).await {
-                Ok(Some(session)) => {
-                    namespace_changed |= context.over_session(&sessions, &session).await;
-                    if session.is_closed() {
-                        // The next pass connects afresh.
-                        sessions.forget(&session).await;
-                    }
-                }
-                // The peer speaks only the per-request protocols.
-                Ok(None) => namespace_changed |= context.per_request(peer).await,
-                Err(error) if !identity.partitioned() => {
-                    eprintln!("no session with {}: {error:#}", peer.id);
-                }
-                Err(_) => {}
-            }
-        }
+        // their own timer, or for this pass: each is announced to first, on
+        // the session its exchange then uses.
+        let plan = PassPlan {
+            announce: local_change,
+            // Namespace changes can also arrive through a peer's own
+            // exchange with this device; timer passes heal whatever they
+            // placed.
+            reconcile: if first_pass {
+                crate::record_materializer::ReconcileScope::Everything
+            } else if timer {
+                crate::record_materializer::ReconcileScope::Unplaced
+            } else {
+                crate::record_materializer::ReconcileScope::Touched
+            },
+            quiet: timer && !first_pass,
+        };
+        let outcome = exchanges.run(known_peers, plan).await;
+        let namespace_changed = outcome.changed;
         first_pass = false;
+        backoff.after_pass(timer, outcome, Instant::now());
+        due = timer_due(backoff.interval());
         if trace {
             eprintln!(
-                "  sync pass exchanged with every peer in {} ms (changed {namespace_changed})",
-                pass_started.elapsed().as_millis()
+                "  sync pass over {peer_count} peer(s) took {} ms (changed {namespace_changed}, \
+                 failed {}); next timer pass in {} s",
+                pass_started.elapsed().as_millis(),
+                outcome.failed,
+                backoff.interval().as_secs()
             );
         }
 
@@ -3211,13 +3562,15 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
 
         // Conflicts come from what peers sent: a pass that only announced
         // this device's own changes and received nothing has none to find,
-        // and a burst of local changes must not rescan every record per
-        // change. Timer passes still look.
+        // and a burst of local changes must not recheck records per change.
+        // Other passes look only at what was written or merged since the
+        // last look ([`conflict_watch`]), so an idle pass does nothing.
         if !may_write || (local_change && !namespace_changed) {
             continue;
         }
+        conflict_watch.begin_pass(Instant::now());
         if let Some(records) = &records {
-            let actor = collab_types::FileActor {
+            let actor = fs_protocol::FileActor {
                 person: collab_types::Ed25519PublicKey(identity.user_public_key()),
                 device: collab_types::Ed25519PublicKey(identity.device_public_key()),
             };
@@ -3228,15 +3581,11 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 identity.credentials().signing_key().clone(),
             ) {
                 Ok(publisher) => {
-                    let mut conflict_published = false;
-                    for key in records.repository.reconciliation_keys(records.workspace_id) {
-                        match publisher.publish_concurrent_head_conflict(key.record_id) {
-                            Ok(changed) => conflict_published |= changed,
-                            Err(error) => {
-                                eprintln!("record conflict publication failed: {error}");
-                            }
-                        }
-                    }
+                    let conflict_published = conflict_watch.publish_record_conflicts(
+                        &publisher,
+                        &records.repository,
+                        records.workspace_id,
+                    );
                     if conflict_published
                         && let Some(materializer) = &records.materializer
                         && let Err(error) = materializer.reconcile_repository(&records.repository)
@@ -3247,27 +3596,36 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 Err(error) => eprintln!("record conflict publisher unavailable: {error}"),
             }
         }
-        let conflicts = crate::conflict::detect(
-            &namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        // Takes the namespace lock a step at a time: FUSE requests between
+        // the steps never wait for the whole walk.
+        let conflicts = conflict_watch.namespace_conflicts(&namespace);
+        if trace {
+            let pass = conflict_watch.namespace_pass();
+            eprintln!(
+                "  conflict scan: {} node(s) in {} lock hold(s), longest {} us",
+                pass.nodes,
+                pass.lock_holds,
+                pass.longest_hold.as_micros()
+            );
+        }
         for c in conflicts {
             // Fetch just the loser's manifest for its length (chunks hydrate
             // lazily on read). Skipped if no peer can serve it yet; retried next pass.
-            if let Ok(len) = hydrator.content_len(c.loser).await {
-                let delta = {
-                    let mut ns = namespace
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    crate::conflict::materialize(&mut ns, &c, len, unix_now_ms())
-                };
-                if !delta.is_empty()
-                    && let Some(sender) = &sender
-                {
-                    let _gate = changeset_boundary(records.as_ref().map(|r| &*r.repository)).await;
-                    let _ = sender.broadcast(Bytes::from(delta)).await;
-                }
+            let Ok(len) = hydrator.content_len(c.loser).await else {
+                conflict_watch.retry_namespace();
+                continue;
+            };
+            let delta = {
+                let mut ns = namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                crate::conflict::materialize(&mut ns, &c, len, unix_now_ms())
+            };
+            if !delta.is_empty()
+                && let Some(sender) = &sender
+            {
+                let _gate = changeset_boundary(records.as_ref().map(|r| &*r.repository)).await;
+                let _ = sender.broadcast(Bytes::from(delta)).await;
             }
         }
     }
@@ -3329,6 +3687,7 @@ async fn bind_certified_test_endpoint_with_root() -> (
     (endpoint, lookup, transport, root, device)
 }
 
+mod conflict_watch;
 mod session;
 pub use session::TILO_FS_SESSION_ALPN;
 

@@ -16,37 +16,19 @@ use ui::widget::{Column, EmptyState, Field, Form, FormPage, FormSection, LabelPl
 
 /// A durable document. Text fields are collaborative text: two people typing
 /// in the same field merge character by character.
+///
+/// Each field is edited at its path (`Document::paths().title`); the one
+/// verb is clearing it, which is more than setting a field.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Document {
+    /// Title
     pub title: String,
+    /// Body
     pub body: String,
 }
 
-#[resource(kind = "so.tilo.hot-reload-demo.document", label = "Document")]
+#[resource(kind = "hot-reload-demo.document", label = "Document")]
 impl Document {
-    /// Set the document title.
-    #[action]
-    pub fn set_title(&mut self, #[param("Document title")] title: String) {
-        self.title = title;
-    }
-
-    /// Set the document body.
-    #[action]
-    pub fn set_body(&mut self, #[param("Document body")] body: String) {
-        self.body = body;
-    }
-
-    /// Set the document content.
-    #[action]
-    pub fn set_content(
-        &mut self,
-        #[param("Document title")] title: String,
-        #[param("Document body")] body: String,
-    ) {
-        self.title = title;
-        self.body = body;
-    }
-
     /// Clear the document.
     #[action(destructive)]
     pub fn clear(&mut self) {
@@ -79,27 +61,33 @@ impl ResourceApp for App {
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<Document>> {
         match name {
-            Some("filled") => vec![
-                Document::SET_CONTENT.with((
-                    "Quarterly planning notes".into(),
-                    "Three priorities for the next quarter: ship the offline editor, \
-                 move the sync service to the new relay, and cut cold-start time \
-                 in half. Each has an owner and a review date."
-                        .into(),
-                )),
-            ],
+            Some("filled") => {
+                let paths = Document::paths();
+                [
+                    paths.title.replace("Quarterly planning notes"),
+                    paths.body.replace(
+                        "Three priorities for the next quarter: ship the offline editor, \
+                         move the sync service to the new relay, and cut cold-start time \
+                         in half. Each has an owner and a review date.",
+                    ),
+                ]
+                .iter()
+                .filter_map(|edit| Invoke::edit(edit).ok())
+                .collect()
+            }
             _ => Vec::new(),
         }
     }
 
     fn view(cx: &mut ViewCx<Document>) -> Element {
         crate::install_catalog();
+        let paths = cx.paths();
         let title = cx
-            .input(|document| document.title.clone(), Document::SET_TITLE)
+            .input(paths.title)
             .with_id("document-title-input")
             .with_placeholder("document-title-placeholder");
         let body = cx
-            .input(|document| document.body.clone(), Document::SET_BODY)
+            .input(paths.body)
             .with_id("document-body-input")
             .with_placeholder("document-body-placeholder")
             .with_min_lines(6);

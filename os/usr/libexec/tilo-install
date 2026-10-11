@@ -1823,6 +1823,10 @@ if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]
   [ -n "$DEPLOY_ETC" ] || die "setup handoff is present but the installed /etc was not found"
   HANDOFF_VAR="$(find "$MNT/state/os" "$MNT/ostree/deploy" -mindepth 2 -maxdepth 2 -type d -name var -print -quit 2>/dev/null || true)"
   [ -n "$HANDOFF_VAR" ] || die "setup handoff is present but the installed /var was not found"
+  if [ -e "$HANDOFF_SRC/var/lib/tilo/user-identity/privkey.bin" ] \
+     || [ -L "$HANDOFF_SRC/var/lib/tilo/user-identity/privkey.bin" ]; then
+    die "setup handoff contains the human root secret"
+  fi
   if [ -d "$HANDOFF_SRC/etc" ]; then
     python3 /usr/libexec/tilo-install-handoff-copy.py "$HANDOFF_SRC/etc" "$DEPLOY_ETC"
   fi
@@ -1833,6 +1837,20 @@ if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]
   if [ -f "$key" ]; then
     chgrp tilo-identity "$key" || die "tilo-identity group is missing; cannot install the device key"
     chmod 0640 "$key"
+  fi
+  # The copy leaves every new file private. The enrolled person's public key,
+  # the device certificates and the peer and workspace lists are public; a
+  # root-only copy makes the session fall back to the Unix account instead of
+  # the enrolled person, and it never dials its peers.
+  for public in user-identity/pubkey.bin device/cert.bin personal-device-peers.json \
+      personal-rooms.json home-peers.json; do
+    path="$HANDOFF_VAR/lib/tilo/$public"
+    if [ -f "$path" ] && [ ! -L "$path" ]; then
+      chmod 0644 "$path"
+    fi
+  done
+  if [ -d "$HANDOFF_VAR/lib/tilo/device/certs" ] && [ ! -L "$HANDOFF_VAR/lib/tilo/device/certs" ]; then
+    find "$HANDOFF_VAR/lib/tilo/device/certs" -maxdepth 1 -type f -name '*.bin' -exec chmod 0644 {} +
   fi
   if [ -d "$DEPLOY_ETC/NetworkManager/system-connections" ]; then
     find "$DEPLOY_ETC/NetworkManager/system-connections" -type f -name 'tilo-setup.nmconnection' -exec chmod 0600 {} +

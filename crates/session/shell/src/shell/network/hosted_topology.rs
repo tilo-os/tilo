@@ -26,6 +26,20 @@ struct Room {
     checked: Option<Instant>,
     claimed_at: Option<Instant>,
     sent_at: Option<Instant>,
+    settled: Option<Settled>,
+}
+
+/// What a look at a room last found nothing to do for. The outcome is a
+/// function of exactly these, so while they hold the next look would find
+/// nothing again, and the room's document is not copied to find that out.
+#[derive(PartialEq, Eq)]
+struct Settled {
+    /// The admitted room document's heads.
+    heads: Vec<automerge::ChangeHash>,
+    device: [u8; 32],
+    salt: u16,
+    /// [`own_legacy_windows`], serialised: `Strip` has no `Eq` of its own.
+    windows: Vec<u8>,
 }
 
 #[derive(Default)]
@@ -94,9 +108,17 @@ impl ShellNetwork {
     }
 
     /// Keep `room`'s document showing this session's legacy windows among
-    /// `strips` (its workspace's layout, ids minted in `salt`), when another
-    /// device governs `room`. Cheap when nothing changed; call every tick.
-    pub fn publish_hosted_legacy_windows(&self, room: RoomId, strips: &[Strip], salt: u16) {
+    /// its workspace's layout in `tree`, when another device governs `room`.
+    /// Only such a room's layout is read, and only this session's own legacy
+    /// tabs are copied out of it ([`own_legacy_windows`]). Cheap when nothing
+    /// changed: while neither those windows nor the admitted room document
+    /// moved since a look found nothing to publish, the document is not
+    /// copied. Call every tick.
+    pub fn publish_hosted_legacy_windows(
+        &self,
+        room: RoomId,
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+    ) {
         let now = Instant::now();
         {
             let Ok(mut rooms) = self.hosted_topology.rooms.lock() else {
@@ -111,49 +133,50 @@ impl ShellNetwork {
             }
             state.checked = Some(now);
         }
-        if salt == 0 || !self.governed_elsewhere(room) {
+        if !self.governed_elsewhere(room) {
+            return;
+        }
+        let (salt, windows) = {
+            let tree = tree.read();
+            let salt = tree.local_salt();
+            let windows = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == room)
+                .map(|workspace| own_legacy_windows(&workspace.strips, salt))
+                .unwrap_or_default();
+            drop(tree);
+            (salt, windows)
+        };
+        if salt == 0 {
             return;
         }
         let Ok(owner) = self.native_owner() else {
             return;
         };
-        let windows = own_legacy_windows(strips, salt);
+        let mut settled = self
+            .hosted_topology
+            .rooms
+            .lock()
+            .ok()
+            .and_then(|mut rooms| rooms.get_mut(&room)?.settled.take());
         let planned = owner.with_current(room, |view| {
             let admitted = view
                 .peer()
                 .admitted_room()
                 .ok_or("room governance missing")?;
-            let device = view.device().device_public_key;
-            let registered = tilo_desktop_model::projection::contents_owners_of(admitted);
-            match registered.get(&salt) {
-                Some(key) if key == &hex::encode(device) => {}
-                Some(_) => {
-                    return Err(
-                        "this session's topology namespace belongs to another device".into(),
-                    );
-                }
-                None if windows.is_empty() => return Ok(None),
-                None => return Ok(Some(Plan::Claim)),
-            }
-            let mut doc = admitted.clone();
-            let heads = doc.get_heads();
-            doc.set_actor(automerge::ActorId::from(device.to_vec()));
-            tilo_desktop_model::projection::project_owned_contents(
-                &mut doc,
+            plan(
+                admitted,
+                view.device().device_public_key,
                 &windows,
                 salt,
-                None,
-                tilo_desktop_model::projection::EmptyStrips::Skip,
+                &mut settled,
             )
-            .map_err(|error| error.to_string())?;
-            doc.commit();
-            let changes = doc
-                .get_changes(&heads)
-                .iter()
-                .map(|change| change.raw_bytes().to_vec())
-                .collect::<Vec<_>>();
-            Ok((!changes.is_empty()).then_some(Plan::Publish(changes)))
         });
+        if let Ok(mut rooms) = self.hosted_topology.rooms.lock() {
+            rooms.entry(room).or_default().settled = settled;
+        }
         match planned {
             Ok(Some(Plan::Claim)) => self.claim_namespace(room, salt, now),
             Ok(Some(Plan::Publish(changes))) => self.send_topology(room, changes, now),
@@ -186,13 +209,15 @@ impl ShellNetwork {
         let Ok(command) = serde_json::to_string(&bound) else {
             return;
         };
-        let answer = self.invoke_governor(
-            room,
-            tilo_desktop_model::commands::APP_ID,
-            tilo_desktop_model::commands::RESOURCE,
-            tilo_desktop_model::commands::ACTION,
-            Some(serde_json::json!({ "command": command })),
-        );
+        let answer = self.claim_namespace_at_host(room, salt).unwrap_or_else(|| {
+            self.invoke_governor(
+                room,
+                tilo_desktop_model::commands::APP_ID,
+                tilo_desktop_model::commands::RESOURCE,
+                tilo_desktop_model::commands::ACTION,
+                Some(serde_json::json!({ "command": command })),
+            )
+        });
         let Some(runtime) = self.runtime.as_ref() else {
             return;
         };
@@ -240,6 +265,79 @@ enum Plan {
 }
 
 #[cfg(test)]
+thread_local! {
+    /// Room documents [`plan`] copied to project into, on this thread.
+    static PROJECTIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// What keeping `admitted` showing `windows`, this session's own legacy
+/// tabs with ids minted in `salt`, takes from `device`: claiming the
+/// namespace, publishing changes, or nothing. `settled` is what the last
+/// look found nothing to do for; while `admitted`, `windows`, `device` and
+/// `salt` are still that, nothing is done again without copying `admitted`,
+/// and a look that finds nothing to do records itself there.
+///
+/// The changes are the projection onto a copy of `admitted` as `device`,
+/// byte for byte what the governor admits; only how often it runs changes.
+fn plan(
+    admitted: &automerge::AutoCommit,
+    device: [u8; 32],
+    windows: &[Strip],
+    salt: u16,
+    settled: &mut Option<Settled>,
+) -> Result<Option<Plan>, String> {
+    use automerge::transaction::Transactable as _;
+    let looked_at = Settled {
+        heads: admitted.base_heads(),
+        device,
+        salt,
+        windows: serde_json::to_vec(windows).map_err(|error| error.to_string())?,
+    };
+    if settled.as_ref() == Some(&looked_at) {
+        return Ok(None);
+    }
+    *settled = None;
+    let registered = tilo_desktop_model::projection::contents_owners_of(admitted);
+    match registered.get(&salt) {
+        Some(key) if key == &hex::encode(device) => {}
+        Some(_) => {
+            return Err("this session's topology namespace belongs to another device".into());
+        }
+        None if windows.is_empty() => {
+            *settled = Some(looked_at);
+            return Ok(None);
+        }
+        None => return Ok(Some(Plan::Claim)),
+    }
+    #[cfg(test)]
+    PROJECTIONS.with(|count| count.set(count.get().saturating_add(1)));
+    let mut doc = admitted.clone();
+    let heads = doc.get_heads();
+    doc.set_actor(automerge::ActorId::from(device.to_vec()));
+    tilo_desktop_model::projection::project_owned_contents(
+        &mut doc,
+        windows,
+        salt,
+        None,
+        tilo_desktop_model::projection::EmptyStrips::Skip,
+    )
+    .map_err(|error| error.to_string())?;
+    doc.commit();
+    let changes = doc
+        .get_changes(&heads)
+        .iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect::<Vec<_>>();
+    if changes.is_empty() {
+        // The room already shows these windows. Changes not yet admitted
+        // are planned again on every look, which is how they are resent.
+        *settled = Some(looked_at);
+        return Ok(None);
+    }
+    Ok(Some(Plan::Publish(changes)))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::shell::state::{Tab, WindowGroup, WindowWidth};
@@ -252,12 +350,13 @@ mod tests {
         }
     }
 
-    /// A device host forwards a viewer's input with the wire vocabulary and
-    /// the governor's handle; both must be what this session decodes.
+    /// A device host forwards a viewer's input with the relay's legacy-window
+    /// vocabulary and the governor's handle; both must be what this session
+    /// decodes.
     #[test]
     fn viewer_input_from_a_device_host_decodes_as_remote_input() {
         use crate::network::streaming::InputEvent as Session;
-        use tilo_delivery_protocol::delivery_v3::live_wire::legacy_window::InputEvent as Wire;
+        use tilo_relay_protocol::legacy_window::InputEvent as Wire;
         let pairs = [
             (
                 Session::PointerMotion { x: 1.5, y: -2.0 },
@@ -414,5 +513,195 @@ mod tests {
         );
         assert_eq!(groups[0].active_tab, own(3));
         assert!(own_legacy_windows(&strips, 0x0099).is_empty());
+    }
+
+    #[test]
+    fn unchanged_legacy_windows_do_not_copy_the_room() {
+        use automerge::transaction::Transactable as _;
+        let salt = 0x0042;
+        let device = [0x5a; 32];
+        let own = |counter: u64| (u64::from(salt) << 48) | counter;
+        let windows = |surface: u64| {
+            own_legacy_windows(
+                &[Strip {
+                    id: crate::shell::state::StripId(own(1)),
+                    name: "Workspace".into(),
+                    window_groups: vec![WindowGroup {
+                        id: own(2),
+                        tabs: vec![tab(
+                            own(3),
+                            TileContent::Foreign {
+                                app_id: "org.gimp.GIMP".into(),
+                                surface_id: surface,
+                            },
+                        )],
+                        active_tab: own(3),
+                        width: WindowWidth::Normal,
+                        maximized: false,
+                    }],
+                }],
+                salt,
+            )
+        };
+        let projections = || PROJECTIONS.with(std::cell::Cell::get);
+        // The governor has registered this session's namespace to this device.
+        let mut room = automerge::AutoCommit::new();
+        let owners = room
+            .put_object(
+                automerge::ROOT,
+                tilo_desktop_model::projection::ROOM_CONTENTS_OWNERS_KEY,
+                automerge::ObjType::Map,
+            )
+            .expect("a map");
+        room.put(&owners, format!("{salt:x}"), hex::encode(device))
+            .expect("an owner");
+        room.commit();
+        let mut settled = None;
+
+        // Phase `windows_the_room_lacks_are_published_on_every_look`.
+        let first = windows(7);
+        let Ok(Some(Plan::Publish(changes))) = plan(&room, device, &first, salt, &mut settled)
+        else {
+            panic!("a window the room does not show yet is published");
+        };
+        assert!(
+            matches!(
+                plan(&room, device, &first, salt, &mut settled),
+                Ok(Some(Plan::Publish(_)))
+            ),
+            "until the governor admits it, it is planned again so it is resent",
+        );
+        assert_eq!(projections(), 2);
+
+        // Phase `an_admitted_room_is_looked_at_once`. The governor admits
+        // the changes: one more look finds nothing, and every look after
+        // it copies nothing while neither side moved.
+        for change in &changes {
+            tilo_automerge::ApplyIncoming::load_incoming(&mut room, change)
+                .expect("the governor admits them");
+        }
+        assert!(matches!(
+            plan(&room, device, &first, salt, &mut settled),
+            Ok(None)
+        ));
+        assert_eq!(projections(), 3);
+        for _ in 0..100 {
+            assert!(matches!(
+                plan(&room, device, &windows(7), salt, &mut settled),
+                Ok(None)
+            ));
+        }
+        assert_eq!(projections(), 3, "a settled room is not copied again");
+
+        // Phase `a_window_or_room_change_is_looked_at_again`.
+        assert!(matches!(
+            plan(&room, device, &windows(8), salt, &mut settled),
+            Ok(Some(Plan::Publish(_)))
+        ));
+        assert_eq!(projections(), 4, "a changed window is projected");
+        assert!(matches!(
+            plan(&room, device, &first, salt, &mut settled),
+            Ok(None)
+        ));
+        assert_eq!(projections(), 5);
+        room.put(automerge::ROOT, "unrelated", 1_u64)
+            .expect("another write");
+        room.commit();
+        assert!(matches!(
+            plan(&room, device, &first, salt, &mut settled),
+            Ok(None)
+        ));
+        assert_eq!(projections(), 6, "a moved room document is looked at again");
+    }
+
+    /// What one look at a settled room cost before (copying and projecting
+    /// the admitted document every time) against now, for a room document
+    /// with some history. Printed for the record.
+    #[test]
+    fn a_settled_room_is_looked_at_without_copying_it() {
+        use automerge::transaction::Transactable as _;
+        const LOOKS: u32 = 50;
+        let salt = 0x0042;
+        let device = [0x5a; 32];
+        let own = |counter: u64| (u64::from(salt) << 48) | counter;
+        let mut room = automerge::AutoCommit::new();
+        let owners = room
+            .put_object(
+                automerge::ROOT,
+                tilo_desktop_model::projection::ROOM_CONTENTS_OWNERS_KEY,
+                automerge::ObjType::Map,
+            )
+            .expect("a map");
+        room.put(&owners, format!("{salt:x}"), hex::encode(device))
+            .expect("an owner");
+        // A room that has been in use: a few thousand edits of history.
+        let notes = room
+            .put_object(automerge::ROOT, "history", automerge::ObjType::Map)
+            .expect("a map");
+        for edit in 0..4_000_u64 {
+            room.put(&notes, format!("k{}", edit % 64), edit)
+                .expect("an edit");
+            if edit % 8 == 0 {
+                room.commit();
+            }
+        }
+        room.commit();
+        let windows = own_legacy_windows(
+            &[Strip {
+                id: crate::shell::state::StripId(own(1)),
+                name: "Workspace".into(),
+                window_groups: vec![WindowGroup {
+                    id: own(2),
+                    tabs: vec![tab(
+                        own(3),
+                        TileContent::Foreign {
+                            app_id: "org.gimp.GIMP".into(),
+                            surface_id: 7,
+                        },
+                    )],
+                    active_tab: own(3),
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                }],
+            }],
+            salt,
+        );
+        let mut settled = None;
+        let Ok(Some(Plan::Publish(changes))) = plan(&room, device, &windows, salt, &mut settled)
+        else {
+            panic!("the window is published once");
+        };
+        for change in &changes {
+            tilo_automerge::ApplyIncoming::load_incoming(&mut room, change).expect("admitted");
+        }
+
+        let started = Instant::now();
+        for _ in 0..LOOKS {
+            let mut fresh = None;
+            assert!(matches!(
+                plan(&room, device, &windows, salt, &mut fresh),
+                Ok(None)
+            ));
+        }
+        let copied = started.elapsed();
+        assert!(matches!(
+            plan(&room, device, &windows, salt, &mut settled),
+            Ok(None)
+        ));
+        let started = Instant::now();
+        for _ in 0..LOOKS {
+            assert!(matches!(
+                plan(&room, device, &windows, salt, &mut settled),
+                Ok(None)
+            ));
+        }
+        let skipped = started.elapsed();
+        eprintln!(
+            "TIL-136 hosted topology look at a settled room ({} changes): copied and projected {:?}, settled {:?}",
+            room.get_changes(&[]).len(),
+            copied / LOOKS,
+            skipped / LOOKS,
+        );
+        assert!(skipped < copied, "settled {skipped:?} vs copied {copied:?}");
     }
 }

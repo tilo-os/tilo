@@ -34,6 +34,7 @@ impl Cursor {
             }
             send(bytes, channel, retention)?;
             self.sent.insert(id);
+            tracing::debug!(id = %blake3::Hash::from_bytes(id), "native publication enqueued on this cursor");
         }
         Ok(())
     }

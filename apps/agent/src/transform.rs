@@ -31,8 +31,8 @@ use ui::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::contract::{
-    ActionContract, ConfirmationPolicy, DiscoveryScope, ExecutionMode, PROGRAMMATIC_TAG,
-    PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
+    ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, PROGRAMMATIC_TAG, ResultSpec,
+    RetryPolicy, RiskLevel,
 };
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
@@ -235,12 +235,11 @@ fn contract_of(action: &str) -> ActionContract {
     ActionContract {
         // Spending the person's model budget is an act, even though nothing
         // is edited: a read-only guest does not get to run it.
-        permission: PermissionRequirement::Write,
+        kind: ActionKind::Undoable,
         risk: RiskLevel::Low,
         confirmation: ConfirmationPolicy::None,
         retry: RetryPolicy::Idempotent,
         execution: ExecutionMode::Immediate,
-        discovery: DiscoveryScope::Live,
         result: ResultSpec::Json {
             schema: result_schema_of(action),
         },
@@ -273,18 +272,9 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
 
 fn exported(descriptor: &ActionDescriptor) -> ExportedAction {
     ExportedAction {
-        resource: descriptor.address.resource.clone(),
-        semantic_identity: descriptor.semantic_identity.clone(),
-        action: descriptor.address.action.clone(),
-        resource_kind: descriptor.resource_kind.clone(),
-        resource_label: descriptor.resource_label.clone(),
-        action_label: descriptor.action_label.clone(),
-        description: descriptor.description.clone(),
-        operation_kind: descriptor.kind.as_str().to_string(),
-        params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
-        contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
         view: None,
         input: ExportedInput::None,
+        ..ExportedAction::from(descriptor)
     }
 }
 

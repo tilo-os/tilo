@@ -812,6 +812,16 @@ impl Worker {
     pub fn poll(&self) -> Vec<Update> {
         self.rx.try_iter().take(MAX_UPDATES_PER_POLL).collect()
     }
+
+    /// A worker that fetches nothing: its results are what the returned
+    /// sender sends. For a test that lands a result at a moment it chooses.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn scripted() -> (Self, SyncSender<Update>) {
+        let (tx, _requests) = std::sync::mpsc::sync_channel::<Request>(REQUEST_QUEUE_CAPACITY);
+        let (results, rx) = std::sync::mpsc::sync_channel::<Update>(UPDATE_QUEUE_CAPACITY);
+        (Self { tx, rx }, results)
+    }
 }
 
 /// Short `host…` label for a resolved URL, for the status log.
@@ -1226,7 +1236,7 @@ async fn invidious_json(
     query: &[(&str, &str)],
 ) -> anyhow::Result<serde_json::Value> {
     let mut last = anyhow::anyhow!("no Invidious instance answered");
-    for instance in crate::backend::proxy::instances() {
+    for instance in tilo_invidious::instances() {
         let url = format!("{}{path}", instance.trim_end_matches('/'));
         match get_json(client, &url, query).await {
             Ok(Some(value)) if value.get("error").is_none() => return Ok(value),

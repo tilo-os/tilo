@@ -562,10 +562,6 @@ impl ExportJob {
         self.shared.cancel.store(true, Ordering::Relaxed);
     }
 
-    pub fn was_cancelled(&self) -> bool {
-        self.shared.cancel.load(Ordering::Relaxed)
-    }
-
     /// Block until the worker finishes, returning its outcome. Mostly for
     /// tests; the UI polls [`Self::status`] instead.
     pub fn join(mut self) -> ExportStatus {
@@ -1509,7 +1505,6 @@ mod tests {
             fps: 0.0,
             palette: 0,
             path: tone.to_string_lossy().into_owned(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let tid = Uuid::new_v4();
@@ -2110,7 +2105,6 @@ mod tests {
             fps: 30.0,
             palette: 3,
             path: path.to_string(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let tid = Uuid::new_v4();
@@ -2160,7 +2154,6 @@ mod tests {
                 fps: 30.0,
                 palette: 3,
                 path: String::new(),
-                hydration: crate::media::Hydration::Local,
                 text: Some(TextSource::new("EXPORT")),
                 ..Default::default()
             });
@@ -2299,7 +2292,8 @@ mod tests {
                 id: uuid::Uuid::new_v4(),
                 kind: crate::model::EffectKind::Grayscale,
                 amount: 1.0,
-            }];
+            }]
+            .into();
 
             let dir = std::env::temp_dir();
             let pid = std::process::id();
@@ -2377,7 +2371,8 @@ mod tests {
                         id: uuid::Uuid::new_v4(),
                         kind: crate::model::EffectKind::Invert,
                         amount: 1.0,
-                    }];
+                    }]
+                    .into();
                 }
                 p
             };
@@ -2488,7 +2483,6 @@ mod tests {
             fps: f64::from(generated_clip::FPS),
             palette: 3,
             path: path.to_string_lossy().into_owned(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let tid = Uuid::new_v4();

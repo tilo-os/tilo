@@ -13,7 +13,6 @@ use winit::keyboard::{Key, NamedKey};
 use super::SlidesApp;
 use crate::SlidesShell;
 use crate::actions::replace_deck_action;
-use crate::doc::SlidesDoc;
 use crate::model::{Deck, PaletteKind, Slide};
 
 /// The window most tests use.
@@ -134,8 +133,7 @@ impl Bench {
 
     /// The deck the document holds.
     pub(super) fn deck(&self) -> Deck {
-        self.app
-            .read_document(|doc| SlidesDoc::load(doc).expect("the document holds a deck"))
+        crate::deck::mirror(&self.app.state())
     }
 
     pub(super) fn undo(&mut self) -> bool {
@@ -178,16 +176,8 @@ pub(super) fn release_ev() -> WindowEvent {
 /// A key event as the window delivers it: `logical` pressed or released,
 /// typing `text`.
 pub(super) fn key_event(logical: Key, text: Option<&str>, state: ElementState) -> WindowEvent {
-    // SAFETY: every field of the event is a plain value, and each one a key
-    // event carries is set below; the zeroed platform part is never read.
-    let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = logical;
-    event.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = winit::keyboard::KeyLocation::Standard;
-    event.state = state;
-    event.repeat = false;
-    event.text = text.map(winit::keyboard::SmolStr::new);
+    let event =
+        ui::synthetic_input::key_event(logical, text.map(winit::keyboard::SmolStr::new), state);
     WindowEvent::KeyboardInput {
         device_id: winit::event::DeviceId::dummy(),
         event,

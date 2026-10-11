@@ -1,19 +1,22 @@
 //! Governed agent membership through the ordinary durable invocation surface.
 //! Public arguments select only a closed command; caller custody and signing
 //! authority remain host-owned.
+use super::room_service::{ServiceOutcome, refused};
 use super::{
     Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
     PublishedSurface,
 };
+use tilo_action_policy::roles::AgentPreset;
 use tilo_peer_state::{
     owner_commit::{CommitOperation, OwnerCommitRequest},
-    workspace_membership::{AgentMembershipPreset, WorkspaceMembershipCommand},
+    workspace_membership::WorkspaceMembershipCommand,
 };
 
 const APP: &str = "so.tilo.desktop";
 const RECORD: &str = "membership";
 const WORKSPACE: &str = "desktop:workspace";
 const AGENT_PREFIX: &str = "desktop:agent:";
+const TASK_PREFIX: &str = "desktop:task:";
 
 impl CapnpBrokerState {
     pub(crate) fn invoke_workspace_membership(
@@ -42,6 +45,43 @@ impl CapnpBrokerState {
                     serde_json::json!({"app": app})
                 );
                 (WORKSPACE.into(), "grant-app-authorship", Some(argument))
+            }
+            WorkspaceMembershipCommand::GrantForTask {
+                task,
+                node,
+                kinds,
+                answer,
+            } => {
+                let argument = format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::json!({"node": node, "kinds": kinds, "answer": answer})
+                );
+                (format!("desktop:{task}"), "grant", Some(argument))
+            }
+            WorkspaceMembershipCommand::Grant { grant } => {
+                let argument = format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::json!({ "grant": grant })
+                );
+                (WORKSPACE.into(), "grant", Some(argument))
+            }
+            WorkspaceMembershipCommand::Revoke { grant } => {
+                let argument = format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::json!({ "grant": grant })
+                );
+                (WORKSPACE.into(), "revoke", Some(argument))
+            }
+            WorkspaceMembershipCommand::RevokeForTask { task, grant } => {
+                let argument = format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::json!({"grant": grant})
+                );
+                (format!("desktop:{task}"), "revoke", Some(argument))
             }
         };
         self.invoke_workspace_person_action(
@@ -101,15 +141,14 @@ impl CapnpBrokerState {
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?;
-        let mut admitted = super::admit_verified_join_at(
-            &membership.snapshot()?,
-            &route,
-            super::VerifiedJoinIdentity::of(
-                certificate,
-                super::cert_capped_in(Some(authority.as_ref()), room, certificate),
-            ),
-            now / 1_000_000_000,
-        )?;
+        let verified = super::VerifiedJoinIdentity::of(
+            certificate,
+            super::cert_capped_in(Some(authority.as_ref()), room, certificate),
+        );
+        let mut admitted = membership.decide_in_room(&route.cluster_id, |workspace| {
+            super::admit_verified_join_at(workspace, &route, verified, now / 1_000_000_000)
+        })??;
+
         admitted.certificate = Some(certificate.clone());
         let actor = admitted.broker_actor();
         self.start_invocation_confirmed_for_origin(
@@ -140,12 +179,29 @@ impl CapnpBrokerState {
             return Ok(());
         };
         let now = self.policy_now_ns()?;
-        for workspace in authority.snapshot()?.workspaces {
-            let room = workspace.room.to_string();
+        // Describe every room on one borrowed sample; the membership
+        // service is asked about each room only after the borrow ends.
+        let rooms = authority.decide_in_tree(|tree| {
+            tree.workspaces
+                .iter()
+                .map(|workspace| {
+                    (
+                        workspace.room.to_string(),
+                        workspace.name.clone(),
+                        membership_actions(workspace, now / 1_000_000_000),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })?;
+        for (room, name, mut actions) in rooms {
             if !service.requires_room(&room) {
                 continue;
             }
-            let actions = membership_actions(&workspace, now / 1_000_000_000);
+            actions.extend(super::workspace_tasks::actions(
+                &service.task_snapshot(&room)?,
+                &name,
+            ));
+
             let existing = self
                 .workspace_membership_peers
                 .lock()
@@ -183,78 +239,42 @@ impl CapnpBrokerState {
         service: Arc<dyn crate::services::WorkspaceMemberships>,
     ) -> Result<(), String> {
         let peer = self.next_service_peer_id();
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        self.invocation_subscribers
-            .lock()
-            .map_err(|_| "invocation subscribers unavailable")?
-            .insert(peer, sender);
-        self.stable_invocation_subscribers
-            .lock()
-            .map_err(|_| "stable invocation registry unavailable")?
-            .insert(peer);
-        self.surfaces
-            .lock()
-            .map_err(|_| "membership surfaces unavailable")?
-            .insert(
-                peer,
-                PublishedSurface {
-                    peer_id: peer,
-                    app_id: APP.into(),
-                    route: CrdtRoute::record(APP, &room, RECORD),
-                    live: true,
-                    actions,
-                },
-            );
+        let surface = PublishedSurface {
+            peer_id: peer,
+            app_id: APP.into(),
+            route: CrdtRoute::record(APP, &room, RECORD),
+            live: true,
+            actions,
+        };
         self.workspace_membership_peers
             .lock()
             .map_err(|_| "membership service registry unavailable")?
             .insert(room.clone(), peer);
-        self.publish_changed_action_catalogue();
-        let state = self.clone();
-        tokio::task::spawn_local(async move {
-            while let Some(envelope) = receiver.recv().await {
-                let result = state
-                    .execute_workspace_membership(peer, &room, &envelope, service.as_ref())
-                    .await;
-                let update = match result {
-                    Ok(generation) => tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: envelope.invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(serde_json::json!({"generation": generation})),
-                            resources: Vec::new(),
-                        },
-                    },
-                    Err(error) => tilo_actions::InvocationUpdate::Failed {
-                        invocation: envelope.invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "workspace_membership_refused".into(),
-                            message: error,
-                            retryable: false,
-                            details: None,
-                        },
-                    },
-                };
-                if let Err(error) = state
-                    .apply_invocation_update(peer, envelope.id, update, None)
-                    .await
-                {
-                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                        failure.get_or_insert(error.to_string());
+        let serve_room = room.clone();
+        self.serve_room(
+            surface,
+            move |state, envelope| {
+                let (service, room) = (service.clone(), serve_room.clone());
+                async move {
+                    match state
+                        .execute_workspace_membership(peer, &room, &envelope, service.as_ref())
+                        .await
+                    {
+                        Ok(value) => ServiceOutcome::Succeeded(value),
+                        Err(error) => refused("workspace_membership_refused", error),
                     }
-                    break;
                 }
-            }
-            let removed = state
-                .surfaces
-                .lock()
-                .is_ok_and(|mut surfaces| surfaces.remove(&peer).is_some());
-            if removed {
-                state.publish_changed_action_catalogue();
-            }
-            if let Ok(mut peers) = state.workspace_membership_peers.lock() {
-                peers.remove(&room);
-            }
-        });
+            },
+            move |state, removed| {
+                if removed {
+                    state.publish_changed_action_catalogue();
+                }
+                if let Ok(mut peers) = state.workspace_membership_peers.lock() {
+                    peers.remove(&room);
+                }
+            },
+        )?;
+        self.publish_changed_action_catalogue();
         Ok(())
     }
 
@@ -264,7 +284,7 @@ impl CapnpBrokerState {
         room: &str,
         envelope: &InvocationEnvelope,
         service: &dyn crate::services::WorkspaceMemberships,
-    ) -> Result<u64, String> {
+    ) -> Result<serde_json::Value, String> {
         let pending = self
             .pending_invocations
             .lock()
@@ -275,6 +295,18 @@ impl CapnpBrokerState {
             })
             .cloned()
             .ok_or("membership invocation is no longer admitted")?;
+        if super::workspace_tasks::is_inspect(envelope) {
+            let original = pending
+                .original
+                .as_ref()
+                .ok_or("task inspection custody unavailable")?;
+            original.owner_person_certificate(self, room, envelope)?;
+            if !service.requires_room(room) {
+                return Err("task inspection room changed".into());
+            }
+            service.health()?;
+            return super::workspace_tasks::inspect(&service.task_snapshot(room)?, envelope);
+        }
         let key = pending
             .journal_key
             .as_ref()
@@ -291,6 +323,27 @@ impl CapnpBrokerState {
             .as_ref()
             .ok_or("membership original custody unavailable")?;
         let caller = original.owner_person_certificate(self, room, envelope)?;
+        if let Some(command) = super::workspace_tasks::command(envelope)? {
+            let request = OwnerCommitRequest {
+                room: room.into(),
+                operation: CommitOperation::WorkspaceTaskCommand {
+                    invocation: envelope.invocation.0,
+                    authority: tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person {
+                        caller: caller.clone(),
+                    },
+                    command,
+                },
+            };
+            let receipt = service.execute(request.clone()).await?;
+            receipt.validate_for(&request)?;
+            let snapshot = service.task_snapshot(room)?;
+            return super::workspace_tasks::result(
+                &snapshot,
+                envelope,
+                caller.device_public_key,
+                receipt.generation,
+            );
+        }
         let command = membership_command(envelope)?;
         let request = OwnerCommitRequest {
             room: room.into(),
@@ -302,7 +355,7 @@ impl CapnpBrokerState {
         };
         let receipt = service.execute(request.clone()).await?;
         receipt.validate_for(&request)?;
-        Ok(receipt.generation)
+        Ok(serde_json::json!({"generation": receipt.generation}))
     }
 }
 
@@ -318,8 +371,7 @@ fn membership_command(envelope: &InvocationEnvelope) -> Result<WorkspaceMembersh
         let input: AddAgent = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
         WorkspaceMembershipCommand::AddAgent {
             agent: input.agent.trim().to_lowercase(),
-            preset: AgentMembershipPreset::parse(&input.preset)
-                .ok_or("unknown agent membership preset")?,
+            preset: AgentPreset::parse(&input.preset).ok_or("unknown agent membership preset")?,
         }
     } else if envelope.resource == WORKSPACE && envelope.action == "grant-app-authorship" {
         #[derive(serde::Deserialize)]
@@ -331,6 +383,56 @@ fn membership_command(envelope: &InvocationEnvelope) -> Result<WorkspaceMembersh
         let input: AppAuthorship =
             serde_json::from_str(encoded).map_err(|error| error.to_string())?;
         WorkspaceMembershipCommand::GrantAppAuthorship { app: input.app }
+    } else if envelope.resource == WORKSPACE && envelope.action == "grant" {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Give {
+            grant: tilo_action_policy::Grant,
+        }
+        let encoded = bounded_argument(envelope, "grant")?;
+        let input: Give = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+        WorkspaceMembershipCommand::Grant { grant: input.grant }
+    } else if envelope.resource == WORKSPACE && envelope.action == "revoke" {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct TakeBack {
+            grant: tilo_action_policy::GrantId,
+        }
+        let encoded = bounded_argument(envelope, "grant")?;
+        let input: TakeBack = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+        WorkspaceMembershipCommand::Revoke { grant: input.grant }
+    } else if let Some(task) = envelope.resource.strip_prefix(TASK_PREFIX)
+        && envelope.action == "grant"
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct TaskGrant {
+            node: tilo_action_policy::TreePath,
+            kinds: tilo_action_policy::KindSet,
+            answer: tilo_action_policy::Answer,
+        }
+        let encoded = bounded_argument(envelope, "task grant")?;
+        let input: TaskGrant = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+        WorkspaceMembershipCommand::GrantForTask {
+            task: format!("task:{task}"),
+            node: input.node,
+            kinds: input.kinds,
+            answer: input.answer,
+        }
+    } else if let Some(task) = envelope.resource.strip_prefix(TASK_PREFIX)
+        && envelope.action == "revoke"
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct TaskRevoke {
+            grant: tilo_action_policy::GrantId,
+        }
+        let encoded = bounded_argument(envelope, "task grant")?;
+        let input: TaskRevoke = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+        WorkspaceMembershipCommand::RevokeForTask {
+            task: format!("task:{task}"),
+            grant: input.grant,
+        }
     } else if let Some(agent) = envelope.resource.strip_prefix(AGENT_PREFIX)
         && envelope.action == "remove"
         && envelope.argument.is_none()
@@ -388,6 +490,28 @@ fn membership_actions(workspace: &tilo_desktop_model::Workspace, now: u64) -> Ve
             "Application id",
         )],
     ));
+    actions.push(membership_action(
+        WORKSPACE,
+        "grant",
+        "Workspace",
+        "Give a grant",
+        vec![tilo_actions::ActionParam::required(
+            "grant",
+            tilo_actions::ParamType::Object,
+            "The grant: id, subject, node, kinds, answer, lifetime",
+        )],
+    ));
+    actions.push(membership_action(
+        WORKSPACE,
+        "revoke",
+        "Workspace",
+        "Take back a grant",
+        vec![tilo_actions::ActionParam::required(
+            "grant",
+            tilo_actions::ParamType::Text,
+            "The grant's id",
+        )],
+    ));
     actions.extend(
         workspace
             .agent_members_at(now)
@@ -423,7 +547,7 @@ fn membership_action(
         operation_kind: tilo_actions::OperationKind::Effect,
         params,
         contract: tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Admin,
+            kind: tilo_actions::ActionKind::Outside,
             result: tilo_actions::ResultSpec::Json {
                 schema: serde_json::json!({"type": "object"}),
             },
@@ -450,6 +574,17 @@ mod tests {
             Ok(())
         }
 
+        fn task_snapshot(
+            &self,
+            _: &str,
+        ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String> {
+            Ok(tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
+                tasks: Vec::new(),
+                controls: std::collections::BTreeMap::default(),
+                grants: Vec::new(),
+            })
+        }
+
         fn execute(&self, _: OwnerCommitRequest) -> tilo_peer_state::owner_commit::CommitFuture {
             Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
         }
@@ -469,6 +604,34 @@ mod tests {
             matching.len(),
             matching.iter().map(|surface| surface.actions.len()).sum(),
         )
+    }
+
+    fn assert_membership_action_set(
+        state: &CapnpBrokerState,
+        room: &str,
+        expected: &[(&str, &str)],
+    ) {
+        let mut actual = state
+            .published_surfaces()
+            .iter()
+            .filter(|surface| {
+                surface.app_id == APP
+                    && surface.route.record_id == RECORD
+                    && surface.route.cluster_id == room
+            })
+            .flat_map(|surface| &surface.actions)
+            .map(|action| (action.resource.clone(), action.action.clone()))
+            .collect::<Vec<_>>();
+        let mut expected = expected
+            .iter()
+            .map(|(resource, action)| ((*resource).to_owned(), (*action).to_owned()))
+            .collect::<Vec<_>>();
+        actual.sort();
+        expected.sort();
+        assert_eq!(
+            actual, expected,
+            "discovery exposes the exact action contract"
+        );
     }
 
     #[tokio::test]
@@ -502,29 +665,39 @@ mod tests {
                 assert_eq!(state.published_surfaces_generation(), 0);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 1);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 2));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 6));
+                let mut expected = vec![
+                    (WORKSPACE, "add-agent"),
+                    (WORKSPACE, "grant-app-authorship"),
+                    (WORKSPACE, "grant"),
+                    (WORKSPACE, "revoke"),
+                    (WORKSPACE, "create-task"),
+                    (WORKSPACE, "queue-agent-task"),
+                ];
+                assert_membership_action_set(&state, &room, &expected);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(
                     state.published_surfaces_generation(),
                     1,
                     "unchanged polling is not a source mutation"
                 );
-                tree.write()
-                    .desktop
-                    .workspaces
-                    .first_mut()
-                    .unwrap()
-                    .capabilities
-                    .push(collab_types::CapOverride::membership(
-                        collab_types::Subject::agent("scribe"),
-                        room.clone(),
-                        collab_types::Verb::Read,
-                    ));
+                {
+                    use crate::test_support::{Grants as _, KindSet};
+                    tree.write()
+                        .desktop
+                        .workspaces
+                        .first_mut()
+                        .unwrap()
+                        .admit_agent("scribe", KindSet::READ);
+                }
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 2);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 3));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 7));
+                expected.push(("desktop:agent:scribe", "remove"));
+                assert_membership_action_set(&state, &room, &expected);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 2);
+                assert_membership_action_set(&state, &room, &expected);
                 let peer = *state
                     .workspace_membership_peers
                     .lock()
@@ -544,6 +717,7 @@ mod tests {
                     "real service retirement invalidates discovery"
                 );
                 assert_eq!(membership_surface_counts(&state, &room), (0, 0));
+                assert_membership_action_set(&state, &room, &[]);
                 drop(state);
             })
             .await;
@@ -577,7 +751,7 @@ mod tests {
             membership_command(&add).unwrap(),
             WorkspaceMembershipCommand::AddAgent {
                 agent: "scribe".into(),
-                preset: AgentMembershipPreset::Custom,
+                preset: AgentPreset::Custom,
             }
         );
         for field in ["caller", "certificate", "room", "capability", "signing_key"] {
@@ -600,7 +774,7 @@ mod tests {
             tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId(1), "Membership");
         let actions = membership_actions(&workspace, 0);
         assert!(actions.iter().all(|action| {
-            action.contract.permission == tilo_actions::PermissionRequirement::Admin
+            action.contract.kind == tilo_actions::ActionKind::Outside
                 && action.operation_kind == tilo_actions::OperationKind::Effect
         }));
         assert!(actions.iter().any(|action| {

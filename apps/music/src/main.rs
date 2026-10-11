@@ -8,5 +8,8 @@
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+// Spotify playback comes from its engine library, not this executable.
+#[cfg(feature = "runtime-engine")]
+extern crate tilo_spotify_engine;
 
 ui::main!(music::MusicShell);

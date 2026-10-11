@@ -324,21 +324,13 @@ impl TrackTableHost {
     /// of row `index` stands, while the row shows its actions.
     #[cfg(test)]
     pub(super) fn control_rect(&self, index: usize, name: &str) -> Option<Rect> {
-        fn find(widget: &dyn Widget, id: &str) -> Option<Rect> {
-            if widget.test_id() == Some(id) {
-                return Some(widget.get_rect());
-            }
-            widget
-                .children()
-                .into_iter()
-                .find_map(|child| find(child, id))
-        }
         let id = format!("music.track.{index}.{name}");
         self.host
             .widget()
             .children()
             .into_iter()
-            .find_map(|cell| find(cell, &id))
+            .find_map(|cell| ui::widget::find_test_id(cell, &id))
+            .map(Widget::get_rect)
     }
 
     /// Whether a control of a row (not the row itself) is under `point`,

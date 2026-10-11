@@ -1,3 +1,4 @@
+use crate::num::f32_of_f64;
 use cosmic_text::fontdb::Weight;
 use cosmic_text::{
     Align, Attrs, Buffer, Family, FontFeatures as CosmicFontFeatures, FontSystem, Metrics, Shaping,
@@ -223,29 +224,43 @@ pub fn configured_font_system() -> FontSystem {
     FontSystem::new_with_locale_and_db(locale.clone(), database.clone())
 }
 
+/// Read the product font catalog into memory and set every renderer this
+/// process makes in it from now on: for a process about to lose the
+/// filesystem (a confined app worker) whose views still lay out text.
+/// Returns whether a catalog loaded.
+#[cfg(not(test))]
+pub fn hold_catalog_fonts_in_memory() -> bool {
+    let Some(font_system) =
+        crate::font_catalog::catalog_in_memory(&crate::i18n::I18nManager::current_locale())
+    else {
+        return false;
+    };
+    share_host_font_database(&font_system);
+    true
+}
+
+/// Unit tests already set text in the fixture catalog, held in memory.
+#[cfg(test)]
+pub fn hold_catalog_fonts_in_memory() -> bool {
+    true
+}
+
+/// Build the font database [`configured_font_system`] copies into every
+/// renderer now, and throw the font system away: a native launch runs this
+/// in the background from process start, so the main thread's first
+/// renderer finds the catalog verified and every font file read instead of
+/// doing both itself (TIL-775). The database is a process-wide `OnceLock`, so
+/// a renderer asked for meanwhile waits for this one: nothing is loaded
+/// twice, and it is the database the main thread would have built.
+pub fn prepare_font_database() {
+    drop(configured_font_system());
+}
+
 /// The system's fonts, scanned once per process. A scan parses every
 /// installed font file, and each renderer would otherwise repeat it.
 #[cfg(not(test))]
 static SYSTEM_FONT_DATABASE: std::sync::OnceLock<(String, cosmic_text::fontdb::Database)> =
     std::sync::OnceLock::new();
-
-/// The toolkit's color emoji face for engines that load their own fonts, as
-/// font data and face index.
-///
-/// The toolkit sets text in its font catalog, so this is the catalog's Noto
-/// Color Emoji face rather than whatever the machine has installed. `None`
-/// only when no emoji face is loaded at all.
-#[must_use]
-pub fn bundled_emoji_face() -> Option<(Vec<u8>, u32)> {
-    let system = configured_font_system();
-    let database = system.db();
-    let face = database.faces().find(|face| {
-        face.families
-            .iter()
-            .any(|(name, _)| name == "Noto Color Emoji")
-    })?;
-    database.with_face_data(face.id, |data, index| (data.to_vec(), index))
-}
 
 pub(crate) fn balance_buffer(buffer: &mut Buffer, font_system: &mut FontSystem, max_width: f32) {
     if max_width <= 0.0 {
@@ -1035,13 +1050,6 @@ impl TextStyle {
         self
     }
 
-    /// Disable discretionary hyphenation while retaining the rest of a style.
-    #[must_use]
-    pub fn without_hyphenation(mut self) -> Self {
-        self.hyphenation = Hyphenation::None;
-        self
-    }
-
     pub fn line_height_px(&self) -> f32 {
         self.size * self.line_height
     }
@@ -1395,14 +1403,6 @@ fn float_range(start: f64, end: f64) -> std::ops::Range<f32> {
     start as f32..end as f32
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "validated finite flow-region coordinates are ordinary logical pixels"
-)]
-fn flow_pixel(value: f64) -> f32 {
-    value as f32
-}
-
 fn intersect_spans(
     left: &[std::ops::Range<f32>],
     right: &[std::ops::Range<f32>],
@@ -1465,11 +1465,11 @@ impl PolygonTextLayout {
         }
         let max_width = constraints
             .max_width
-            .unwrap_or_else(|| flow_pixel(self.region.bounds.x1))
+            .unwrap_or_else(|| f32_of_f64(self.region.bounds.x1))
             .max(0.0);
         let max_height = constraints
             .max_height
-            .unwrap_or_else(|| flow_pixel(self.region.bounds.y1))
+            .unwrap_or_else(|| f32_of_f64(self.region.bounds.y1))
             .max(0.0);
         let line_height = style.line_height_px().max(1.0);
         let mut opportunities = BTreeMap::new();
@@ -1488,8 +1488,8 @@ impl PolygonTextLayout {
 
         let mut layout = FlowLayout::default();
         let mut source = 0_usize;
-        let mut y = flow_pixel(self.region.bounds.y0.max(0.0));
-        let bottom = max_height.min(flow_pixel(self.region.bounds.y1));
+        let mut y = f32_of_f64(self.region.bounds.y0.max(0.0));
+        let bottom = max_height.min(f32_of_f64(self.region.bounds.y1));
         while source < text.len() && y + line_height <= bottom + f32::EPSILON {
             let spans = self.region.spans_for_band(y, line_height, max_width);
             let mut forced_next_line = false;

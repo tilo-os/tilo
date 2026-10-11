@@ -634,7 +634,8 @@ pub(super) fn trusted_identity_complete() -> Result<(), String> {
 }
 
 // Migration fixtures exercise Linux directory handles and session sockets.
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use crate::setup::controller::{FolderChoice, FolderDestination};

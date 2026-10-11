@@ -79,6 +79,11 @@ pub fn remote_error(remote: &Remote, error: &str) -> String {
             "store-device-repository-refresh",
             &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
         )
+    } else if error.contains("command timed out after ") {
+        ui::i18n::I18nManager::format(
+            "store-repository-timeout",
+            &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
+        )
     } else {
         ui::i18n::I18nManager::format(
             "store-repository-read-error",
@@ -451,6 +456,32 @@ pub fn list_remotes(output: &str) -> Vec<Remote> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repository_timeout_explains_retry_without_rpc_internals() {
+        crate::resource::STORE_CATALOG.ensure();
+        let remote = Remote {
+            name: "fedora".into(),
+            url: "https://example.invalid/fedora".into(),
+            title: "Fedora Flatpaks".into(),
+            disabled: false,
+            user_managed: false,
+        };
+        let message = remote_error(
+            &remote,
+            "Failed: remote exception: remote exception: command timed out after 8000 ms",
+        );
+        assert_eq!(
+            message,
+            ui::i18n::I18nManager::format(
+                "store-repository-timeout",
+                &[("name", ui::i18n::ArgValue::Text("Fedora Flatpaks".into()))],
+            )
+        );
+        assert!(message.contains("Fedora Flatpaks"));
+        assert!(!message.contains("remote exception"));
+        assert!(!message.contains("8000"));
+    }
 
     #[test]
     fn installed_account_copy_wins_over_device_copy_in_either_row_order() {

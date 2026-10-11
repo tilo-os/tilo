@@ -1,0 +1,46 @@
+# Price sheet for the relay hosting-cost records (TIL-592), read by
+# tools/perf/adapters.py hosting-load.
+#
+# The VM prices are the cost model's assumptions (TIL-625, "Hosting cost model
+# ($/active user/month)", 2026-10-09). Change a price here, with its date and
+# source, when the provider changes it; the records name the sheet's date.
+#
+# How a measurement becomes dollars, per provider:
+#
+#   capacity     = min(vCPU-seconds the VM sells per hour / CPU-seconds per
+#                      collaborator-hour,
+#                      (memory - the idle relay) / resident MiB per collaborator)
+#                  at `target_utilisation`: collaborators one VM carries at once
+#   compute      = VM price per hour / capacity
+#   egress       = transport bytes per collaborator-hour beyond the VM's
+#                  included traffic (spread over a VM-month at capacity)
+#                  x price per GB
+#   $ per collaborator-hour = compute + egress
+#   $ per active user-month = $ per collaborator-hour x active_hours_per_user_month
+#
+# The VM is priced as if kept at the target utilisation around the clock;
+# peak-to-average provisioning and storage growth are not modelled.
+
+checked = "2026-10-09"
+hours_per_month = 730.0
+# An active user: 4 collaborative hours a day, 22 days a month (TIL-625).
+active_hours_per_user_month = 88.0
+# Headroom: plan a VM to this share of its CPU and memory.
+target_utilisation = 0.7
+
+[provider.hetzner-cx22]
+description = "Hetzner Cloud CX22: 2 shared vCPU, 4 GB RAM, 40 GB NVMe, 20 TB traffic included"
+monthly_usd = 5.0
+vcpus = 2.0
+memory_gib = 4.0
+included_egress_gb_month = 20000.0
+# Hetzner's EU rate beyond the included traffic, EUR 1 per TB.
+egress_usd_per_gb = 0.0011
+
+[provider.aws-t4g-small]
+description = "AWS EC2 t4g.small on demand with 40 GB gp3: 2 vCPU, 2 GiB RAM, internet egress billed"
+monthly_usd = 15.5
+vcpus = 2.0
+memory_gib = 2.0
+included_egress_gb_month = 0.0
+egress_usd_per_gb = 0.09

@@ -2,55 +2,245 @@
 //!
 //! Each theme is one theme document (`ui::theme::ThemeDocument`) stored role
 //! by role, so two people tuning different roles of the same theme merge
-//! instead of overwriting each other. Every edit is an action, so the
+//! instead of overwriting each other. Every role is a field edited at its
+//! path (`Studio::paths().themes.item(&id).density.set(1.2)`), so the
 //! palette, an agent or a script shapes a theme exactly as the controls do.
-//! An edit that would take a role outside the band the document admits is
-//! refused; legibility is measured on the whole document
-//! ([`Theme::findings`]) and gates applying and exporting, not editing.
+//! A change that would take a role outside the band the document admits is
+//! refused by the theme's invariant, whichever way it comes; legibility is
+//! measured on the whole document ([`Theme::findings`]) and gates applying
+//! and exporting, not editing.
 
 use ui::prelude::*;
 use ui::theme::{
     Preset, THEME_SCHEMA_VERSION, ThemeDensity, ThemeDocument, ThemeMaterial, ThemeMotion,
     ThemeShape, ThemeType,
 };
-use ui::tokens::{Emphasis, Palette, Tone};
+use ui::tilo_resource::{Path, Refusal};
+use ui::tokens::{Emphasis, InkLadder, Palette, StatusTones, SurfaceLadder, Tone};
+
+/// OKLCH lightness of every surface, `0` black to `1` white.
+#[derive(Model, Default, Debug, Clone, Copy, PartialEq)]
+pub struct Surfaces {
+    /// Desktop
+    pub base: f64,
+    /// Window
+    pub content: f64,
+    /// Sidebar
+    pub sidebar: f64,
+    /// Inspector
+    pub inspector: f64,
+    /// Raised
+    pub raised: f64,
+    /// Floating chrome
+    pub overlay: f64,
+}
+
+impl Surfaces {
+    /// Every rung's lightness, the desktop's first.
+    fn lightnesses(self) -> [f64; 6] {
+        let Self {
+            base,
+            content,
+            sidebar,
+            inspector,
+            raised,
+            overlay,
+        } = self;
+        [base, content, sidebar, inspector, raised, overlay]
+    }
+
+    /// The ladder a palette is built from.
+    fn ladder(self) -> SurfaceLadder {
+        let [base, content, sidebar, inspector, raised, overlay] = self.lightnesses().map(narrow);
+        SurfaceLadder {
+            base,
+            content,
+            sidebar,
+            inspector,
+            raised,
+            overlay,
+        }
+    }
+}
+
+impl From<SurfaceLadder> for Surfaces {
+    fn from(ladder: SurfaceLadder) -> Self {
+        let SurfaceLadder {
+            base,
+            content,
+            sidebar,
+            inspector,
+            raised,
+            overlay,
+        } = ladder;
+        Self {
+            base: f64::from(base),
+            content: f64::from(content),
+            sidebar: f64::from(sidebar),
+            inspector: f64::from(inspector),
+            raised: f64::from(raised),
+            overlay: f64::from(overlay),
+        }
+    }
+}
+
+/// OKLCH lightness of the three ink tiers, on the content surface.
+#[derive(Model, Default, Debug, Clone, Copy, PartialEq)]
+pub struct Ink {
+    /// Primary ink
+    pub primary: f64,
+    /// Secondary ink
+    pub secondary: f64,
+    /// Tertiary ink
+    pub tertiary: f64,
+}
+
+/// The presence colours' OKLCH lightness and chroma.
+#[derive(Model, Default, Debug, Clone, Copy, PartialEq)]
+pub struct Presence {
+    /// Presence lightness
+    pub lightness: f64,
+    /// Presence chroma
+    pub chroma: f64,
+}
+
+/// One status colour's OKLCH lightness and chroma; its hue is the status's.
+#[derive(Model, Default, Debug, Clone, Copy, PartialEq)]
+pub struct StatusTone {
+    pub lightness: f64,
+    pub chroma: f64,
+}
+
+impl StatusTone {
+    fn of(tone: Tone) -> Self {
+        Self {
+            lightness: f64::from(tone.lightness),
+            chroma: f64::from(tone.chroma),
+        }
+    }
+
+    fn tone(self) -> Tone {
+        Tone::new(narrow(self.lightness), narrow(self.chroma))
+    }
+}
+
+/// The four status tones.
+#[derive(Model, Default, Debug, Clone, Copy, PartialEq)]
+pub struct Status {
+    pub danger: StatusTone,
+    pub warning: StatusTone,
+    pub success: StatusTone,
+    pub info: StatusTone,
+}
 
 /// One theme being written.
 #[derive(Model, Debug, Clone, PartialEq)]
+#[model(check = Theme::admitted)]
 pub struct Theme {
+    /// Name
+    #[model(label)]
     pub name: String,
-    pub palette: Json<Palette>,
-    pub emphasis: Json<Emphasis>,
-    pub presence: Json<Tone>,
-    pub window_radius: f32,
-    pub density: f32,
+    /// Ink is light on the surfaces. Switching flips the ladder
+    /// ([`Studio::switch_polarity`]), so it is not set on its own.
+    #[model(readonly)]
+    pub dark: bool,
+    /// Every text pairing holds AAA.
+    pub high_contrast: bool,
+    /// The hue every neutral shares, in degrees; none until something gives
+    /// the material a temperature.
+    pub hue: Option<f64>,
+    /// Neutral chroma
+    pub chroma: f64,
+    pub surfaces: Surfaces,
+    pub ink: Ink,
+    pub status: Status,
+    /// The hue primary actions, selection and on states are tinted with;
+    /// none shows them inverted.
+    pub tint: Option<f64>,
+    pub presence: Presence,
+    /// Window radius
+    pub window_radius: f64,
+    /// Density
+    pub density: f64,
+    /// Typeface
     pub face: String,
-    pub base_size: f32,
+    /// Body size
+    pub base_size: f64,
     /// "Always distinguish similar letters": `Some(true)` always, `None`
     /// with the typeface (on with Hyperlegible).
-    pub distinct_letters: Json<Option<bool>>,
-    pub motion: f32,
-    pub blur: f32,
-    pub tint_opacity: f32,
+    pub distinct_letters: Option<bool>,
+    /// Motion
+    pub motion: f64,
+    /// Blur
+    pub blur: f64,
+    /// Tint opacity
+    pub tint_opacity: f64,
 }
 
 impl Theme {
     /// A theme with every role of `document`.
     #[must_use]
     pub fn from_document(document: &ThemeDocument) -> Self {
+        let palette = &document.palette;
+        let surfaces = palette.surfaces;
+        let ink = palette.ink;
         Self {
             name: document.name.clone(),
-            palette: Json(document.palette),
-            emphasis: Json(document.emphasis),
-            presence: Json(document.presence),
-            window_radius: document.shape.window_radius,
-            density: document.density.spacing,
+            dark: palette.dark,
+            high_contrast: palette.high_contrast,
+            hue: palette.hue.map(f64::from),
+            chroma: f64::from(palette.chroma),
+            surfaces: Surfaces::from(surfaces),
+            ink: Ink {
+                primary: f64::from(ink.primary),
+                secondary: f64::from(ink.secondary),
+                tertiary: f64::from(ink.tertiary),
+            },
+            status: Status {
+                danger: StatusTone::of(palette.status.danger),
+                warning: StatusTone::of(palette.status.warning),
+                success: StatusTone::of(palette.status.success),
+                info: StatusTone::of(palette.status.info),
+            },
+            tint: match document.emphasis {
+                Emphasis::Inverted => None,
+                Emphasis::Tinted { hue } => Some(f64::from(hue)),
+            },
+            presence: Presence {
+                lightness: f64::from(document.presence.lightness),
+                chroma: f64::from(document.presence.chroma),
+            },
+            window_radius: f64::from(document.shape.window_radius),
+            density: f64::from(document.density.spacing),
             face: document.type_.face.clone(),
-            base_size: document.type_.base_size,
-            distinct_letters: Json(document.type_.distinct_letters),
-            motion: document.motion.character,
-            blur: document.material.blur,
-            tint_opacity: document.material.tint_opacity,
+            base_size: f64::from(document.type_.base_size),
+            distinct_letters: document.type_.distinct_letters,
+            motion: f64::from(document.motion.character),
+            blur: f64::from(document.material.blur),
+            tint_opacity: f64::from(document.material.tint_opacity),
+        }
+    }
+
+    /// The palette this theme's roles make.
+    #[must_use]
+    pub fn palette(&self) -> Palette {
+        Palette {
+            dark: self.dark,
+            high_contrast: self.high_contrast,
+            hue: self.hue.map(narrow),
+            chroma: narrow(self.chroma),
+            surfaces: self.surfaces.ladder(),
+            ink: InkLadder {
+                primary: narrow(self.ink.primary),
+                secondary: narrow(self.ink.secondary),
+                tertiary: narrow(self.ink.tertiary),
+            },
+            status: StatusTones {
+                danger: self.status.danger.tone(),
+                warning: self.status.warning.tone(),
+                success: self.status.success.tone(),
+                info: self.status.info.tone(),
+            },
         }
     }
 
@@ -65,27 +255,34 @@ impl Theme {
             } else {
                 self.name.trim().to_owned()
             },
-            palette: self.palette.0,
-            emphasis: self.emphasis.0,
-            presence: self.presence.0,
+            palette: self.palette(),
+            emphasis: self
+                .tint
+                .map_or(Emphasis::Inverted, |hue| Emphasis::Tinted {
+                    hue: narrow(hue),
+                }),
+            presence: Tone::new(
+                narrow(self.presence.lightness),
+                narrow(self.presence.chroma),
+            ),
             shape: ThemeShape {
-                window_radius: self.window_radius,
+                window_radius: narrow(self.window_radius),
             },
             density: ThemeDensity {
-                spacing: self.density,
+                spacing: narrow(self.density),
             },
             type_: ThemeType {
                 face: self.face.clone(),
                 reading: ThemeType::default_reading(),
-                base_size: self.base_size,
-                distinct_letters: self.distinct_letters.0,
+                base_size: narrow(self.base_size),
+                distinct_letters: self.distinct_letters,
             },
             motion: ThemeMotion {
-                character: self.motion,
+                character: narrow(self.motion),
             },
             material: ThemeMaterial {
-                blur: self.blur,
-                tint_opacity: self.tint_opacity,
+                blur: narrow(self.blur),
+                tint_opacity: narrow(self.tint_opacity),
             },
         }
     }
@@ -103,6 +300,43 @@ impl Theme {
                 .collect(),
         }
     }
+
+    /// Every role is a number inside the band the document admits.
+    fn admitted(&self) -> Result<(), Refusal> {
+        let numbers = [
+            self.chroma,
+            self.ink.primary,
+            self.ink.secondary,
+            self.ink.tertiary,
+            self.presence.lightness,
+            self.presence.chroma,
+            self.window_radius,
+            self.density,
+            self.base_size,
+            self.motion,
+            self.blur,
+            self.tint_opacity,
+        ];
+        if numbers
+            .into_iter()
+            .chain(self.surfaces.lightnesses())
+            .chain(self.hue)
+            .chain(self.tint)
+            .any(|value| !value.is_finite())
+        {
+            return Err(Refusal::new("every role of a theme is a number"));
+        }
+        self.document("theme").validate().map_err(Refusal::from)
+    }
+}
+
+/// A role's value as the theme document holds it.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "theme roles are small numbers; f32 holds them exactly enough"
+)]
+fn narrow(value: f64) -> f32 {
+    value as f32
 }
 
 /// A rung of the surface ladder, as actions name it.
@@ -153,33 +387,28 @@ impl Rung {
             .find(|rung| rung.id() == id)
     }
 
-    /// The lightness this rung holds in `palette`.
+    /// The path of this rung's lightness in `theme`.
     #[must_use]
-    pub fn of(self, palette: &Palette) -> f32 {
+    pub fn path<R>(self, theme: &ThemePaths<R>) -> Path<R, f64> {
+        let SurfacesPaths {
+            base,
+            content,
+            sidebar,
+            inspector,
+            raised,
+            overlay,
+            ..
+        } = &theme.surfaces;
         match self {
-            Self::Base => palette.surfaces.base,
-            Self::Content => palette.surfaces.content,
-            Self::Sidebar => palette.surfaces.sidebar,
-            Self::Inspector => palette.surfaces.inspector,
-            Self::Raised => palette.surfaces.raised,
-            Self::Overlay => palette.surfaces.overlay,
-            Self::Primary => palette.ink.primary,
-            Self::Secondary => palette.ink.secondary,
-            Self::Tertiary => palette.ink.tertiary,
-        }
-    }
-
-    fn slot(self, palette: &mut Palette) -> &mut f32 {
-        match self {
-            Self::Base => &mut palette.surfaces.base,
-            Self::Content => &mut palette.surfaces.content,
-            Self::Sidebar => &mut palette.surfaces.sidebar,
-            Self::Inspector => &mut palette.surfaces.inspector,
-            Self::Raised => &mut palette.surfaces.raised,
-            Self::Overlay => &mut palette.surfaces.overlay,
-            Self::Primary => &mut palette.ink.primary,
-            Self::Secondary => &mut palette.ink.secondary,
-            Self::Tertiary => &mut palette.ink.tertiary,
+            Self::Base => base.clone(),
+            Self::Content => content.clone(),
+            Self::Sidebar => sidebar.clone(),
+            Self::Inspector => inspector.clone(),
+            Self::Raised => raised.clone(),
+            Self::Overlay => overlay.clone(),
+            Self::Primary => theme.ink.primary.clone(),
+            Self::Secondary => theme.ink.secondary.clone(),
+            Self::Tertiary => theme.ink.tertiary.clone(),
         }
     }
 }
@@ -188,39 +417,6 @@ impl Rung {
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Studio {
     pub themes: Collection<Theme>,
-}
-
-fn theme_mut<'a>(studio: &'a mut Studio, theme: &Id) -> Result<&'a mut Theme, Refusal> {
-    studio
-        .themes
-        .get_mut(theme)
-        .ok_or_else(|| Refusal::from("there is no such theme"))
-}
-
-/// Apply `edit` to a copy of `theme` and keep it only if the document it
-/// makes is still admitted.
-fn edit(studio: &mut Studio, theme: &Id, edit: impl FnOnce(&mut Theme)) -> Result<(), Refusal> {
-    let current = theme_mut(studio, theme)?;
-    let mut next = current.clone();
-    edit(&mut next);
-    next.document(theme.as_str())
-        .validate()
-        .map_err(Refusal::from)?;
-    *current = next;
-    Ok(())
-}
-
-fn finite(value: f64, what: &str) -> Result<f32, Refusal> {
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "theme roles are small numbers; f32 holds them exactly enough"
-    )]
-    let value = value as f32;
-    if value.is_finite() {
-        Ok(value)
-    } else {
-        Err(Refusal::new(format!("{what} must be a number")))
-    }
 }
 
 /// The theme a new one starts from: a preset id, or another theme's id.
@@ -236,7 +432,7 @@ fn base_document(studio: &Studio, base: &str) -> Result<ThemeDocument, Refusal> 
         .ok_or_else(|| Refusal::new(format!("no preset or theme is called {base:?}")))
 }
 
-#[resource(kind = "so.tilo.themes.studio", label = "Themes")]
+#[resource(kind = "themes.studio", label = "Themes")]
 impl Studio {
     /// Start a theme from a preset or from one of your themes.
     #[action]
@@ -255,249 +451,91 @@ impl Studio {
         Ok(())
     }
 
-    /// Rename a theme.
-    #[action]
-    pub fn rename(&mut self, theme: Id, #[param("New name")] name: String) -> Result<(), Refusal> {
-        edit(self, &theme, |t| t.name = name)
-    }
-
     /// Reset the editable properties to the graphite preset, preserving its name.
     #[action]
-    pub fn reset(&mut self, theme: Id) -> Result<(), Refusal> {
+    pub fn reset(&mut self, theme: &Id) -> Result<(), Refusal> {
         let document = base_document(self, "dark-graphite")?;
-        edit(self, &theme, |current| {
-            let name = current.name.clone();
-            *current = Theme::from_document(&document);
-            current.name = name;
-        })
+        let current = theme_mut(self, theme)?;
+        *current = Theme {
+            name: current.name.clone(),
+            ..Theme::from_document(&document)
+        };
+        Ok(())
     }
 
     /// Delete a theme.
     #[action(destructive)]
-    pub fn delete(&mut self, theme: Id) -> Result<(), Refusal> {
+    pub fn delete(&mut self, theme: &Id) -> Result<(), Refusal> {
         self.themes
-            .remove(&theme)
+            .remove(theme)
             .map(|_| ())
             .ok_or_else(|| Refusal::from("there is no such theme"))
     }
 
-    /// Make a theme dark (ink light on its surfaces) or light. The ladder
-    /// flips to the stock ladder of that polarity, keeping hue and chroma.
+    /// Switch a theme between dark (ink light on its surfaces) and light.
+    /// The ladder flips to the stock ladder of that polarity, keeping hue and
+    /// chroma.
     #[action]
-    pub fn set_dark(
+    pub fn switch_polarity(
         &mut self,
-        theme: Id,
+        theme: &Id,
         #[param("Whether the theme is dark")] dark: bool,
     ) -> Result<(), Refusal> {
-        edit(self, &theme, |t| {
-            if t.palette.0.dark == dark {
-                return;
-            }
-            let stock = if dark {
-                Palette::dark()
-            } else {
-                Palette::light()
-            };
-            let chroma = t.palette.0.chroma;
-            t.palette = Json(Palette {
-                hue: t.palette.0.hue,
-                chroma,
-                ..stock
-            });
-            t.presence = Json(stock.stock_presence());
-        })
+        let current = theme_mut(self, theme)?;
+        if current.dark == dark {
+            return Ok(());
+        }
+        let stock = if dark {
+            Palette::dark()
+        } else {
+            Palette::light()
+        };
+        let mut document = current.document(theme.as_str());
+        document.palette = Palette {
+            hue: document.palette.hue,
+            chroma: document.palette.chroma,
+            ..stock
+        };
+        document.presence = stock.stock_presence();
+        let name = current.name.clone();
+        *current = Theme {
+            name,
+            ..Theme::from_document(&document)
+        };
+        Ok(())
     }
+}
 
-    /// Set the hue every neutral shares, in degrees.
-    #[action]
-    pub fn set_hue(
-        &mut self,
-        theme: Id,
-        #[param("Hue in degrees, 0 to 360")] hue: f64,
-    ) -> Result<(), Refusal> {
-        let hue = finite(hue, "a hue")?.rem_euclid(360.0);
-        edit(self, &theme, |t| t.palette.0.hue = Some(hue))
-    }
-
-    /// Set the neutrals' chroma: 0 is pure grey, 0.01 the most temperature
-    /// a neutral may carry.
-    #[action]
-    pub fn set_chroma(
-        &mut self,
-        theme: Id,
-        #[param("Chroma, 0 to 0.01")] chroma: f64,
-    ) -> Result<(), Refusal> {
-        let chroma = finite(chroma, "a chroma")?;
-        edit(self, &theme, |t| t.palette.0.chroma = chroma)
-    }
-
-    /// Set the lightness of one surface or ink tier: `base`, `content`,
-    /// `sidebar`, `inspector`, `raised`, `overlay`, `primary`, `secondary`
-    /// or `tertiary`.
-    #[action]
-    pub fn set_lightness(
-        &mut self,
-        theme: Id,
-        #[param("Surface or ink tier")] rung: String,
-        #[param("OKLCH lightness, 0 to 1")] lightness: f64,
-    ) -> Result<(), Refusal> {
-        let rung = Rung::from_id(&rung).ok_or_else(|| Refusal::new(format!("no tier {rung:?}")))?;
-        let lightness = finite(lightness, "a lightness")?;
-        edit(self, &theme, |t| *rung.slot(&mut t.palette.0) = lightness)
-    }
-
-    /// Show primary actions, selection and on states inverted (no colour),
-    /// or tinted with one hue.
-    #[action]
-    pub fn set_tinted(
-        &mut self,
-        theme: Id,
-        #[param("Whether actions and selection are tinted")] tinted: bool,
-    ) -> Result<(), Refusal> {
-        edit(self, &theme, |t| {
-            t.emphasis = Json(match (tinted, t.emphasis.0) {
-                (false, _) => Emphasis::Inverted,
-                (true, Emphasis::Tinted { hue }) => Emphasis::Tinted { hue },
-                (true, Emphasis::Inverted) => Emphasis::Tinted { hue: 150.0 },
-            });
-        })
-    }
-
-    /// Set the tint of a tinted emphasis, in degrees.
-    #[action]
-    pub fn set_tint_hue(
-        &mut self,
-        theme: Id,
-        #[param("Hue in degrees, 0 to 360")] hue: f64,
-    ) -> Result<(), Refusal> {
-        let hue = finite(hue, "a hue")?.rem_euclid(360.0);
-        edit(self, &theme, |t| {
-            t.emphasis = Json(Emphasis::Tinted { hue });
-        })
-    }
-
-    /// Set the lightness of the twelve presence colours.
-    #[action]
-    pub fn set_presence_lightness(
-        &mut self,
-        theme: Id,
-        #[param("OKLCH lightness, 0.35 to 0.9")] lightness: f64,
-    ) -> Result<(), Refusal> {
-        let lightness = finite(lightness, "a lightness")?;
-        edit(self, &theme, |t| t.presence.0.lightness = lightness)
-    }
-
-    /// Set the chroma of the twelve presence colours.
-    #[action]
-    pub fn set_presence_chroma(
-        &mut self,
-        theme: Id,
-        #[param("OKLCH chroma, 0.04 to 0.2")] chroma: f64,
-    ) -> Result<(), Refusal> {
-        let chroma = finite(chroma, "a chroma")?;
-        edit(self, &theme, |t| t.presence.0.chroma = chroma)
-    }
-
-    /// Set the window radius; every other radius follows from it.
-    #[action]
-    pub fn set_window_radius(
-        &mut self,
-        theme: Id,
-        #[param("Window radius in pixels, 0 to 28")] radius: f64,
-    ) -> Result<(), Refusal> {
-        let radius = finite(radius, "a radius")?;
-        edit(self, &theme, |t| t.window_radius = radius)
-    }
-
-    /// Set the spacing scale, as a multiple of the stock scale.
-    #[action]
-    pub fn set_density(
-        &mut self,
-        theme: Id,
-        #[param("Spacing, 0.75 to 1.5")] density: f64,
-    ) -> Result<(), Refusal> {
-        let density = finite(density, "a density")?;
-        edit(self, &theme, |t| t.density = density)
-    }
-
-    /// Set the interface typeface.
-    #[action]
-    pub fn set_face(
-        &mut self,
-        theme: Id,
-        #[param("Font family")] face: String,
-    ) -> Result<(), Refusal> {
-        edit(self, &theme, |t| face.trim().clone_into(&mut t.face))
-    }
-
-    /// Set whether the theme sets I, l, 1 and 0, O apart in all text, or
-    /// leaves that to the typeface (on with Hyperlegible).
-    #[action]
-    pub fn set_distinct_letters(
-        &mut self,
-        theme: Id,
-        #[param("Whether similar letters are always told apart")] always: bool,
-    ) -> Result<(), Refusal> {
-        edit(self, &theme, |t| {
-            t.distinct_letters = Json(always.then_some(true));
-        })
-    }
-
-    /// Set the body text size every text role derives from.
-    #[action]
-    pub fn set_base_size(
-        &mut self,
-        theme: Id,
-        #[param("Body size in pixels, 12 to 18")] size: f64,
-    ) -> Result<(), Refusal> {
-        let size = finite(size, "a size")?;
-        edit(self, &theme, |t| t.base_size = size)
-    }
-
-    /// Set the character of motion: 0 is calm, 1 the stock motion, 2 lively.
-    #[action]
-    pub fn set_motion(
-        &mut self,
-        theme: Id,
-        #[param("Motion character, 0 to 2")] character: f64,
-    ) -> Result<(), Refusal> {
-        let character = finite(character, "a motion character")?;
-        edit(self, &theme, |t| t.motion = character)
-    }
-
-    /// Set how strongly floating chrome blurs what is behind it.
-    #[action]
-    pub fn set_blur(
-        &mut self,
-        theme: Id,
-        #[param("Blur in pixels, 0 to 48")] blur: f64,
-    ) -> Result<(), Refusal> {
-        let blur = finite(blur, "a blur")?;
-        edit(self, &theme, |t| t.blur = blur)
-    }
-
-    /// Set how opaque floating chrome's tint is over the blurred backdrop.
-    #[action]
-    pub fn set_tint_opacity(
-        &mut self,
-        theme: Id,
-        #[param("Opacity, 0.6 to 1")] opacity: f64,
-    ) -> Result<(), Refusal> {
-        let opacity = finite(opacity, "an opacity")?;
-        edit(self, &theme, |t| t.tint_opacity = opacity)
-    }
+fn theme_mut<'a>(studio: &'a mut Studio, theme: &Id) -> Result<&'a mut Theme, Refusal> {
+    studio
+        .themes
+        .get_mut(theme)
+        .ok_or_else(|| Refusal::from("there is no such theme"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::tilo_resource::{Edit, Replica};
 
-    fn studio_with(base: &str) -> (Studio, Id) {
-        let mut studio = Studio::default();
+    fn studio_with(base: &str) -> (Replica<Studio>, Id) {
+        let mut studio = Replica::<Studio>::new();
         studio
-            .new_theme("mine".into(), base.into())
+            .apply(Studio::NEW_THEME.with(("mine".to_owned(), base.to_owned())))
             .expect("a preset is a base");
         (studio, Id::from_raw("mine"))
+    }
+
+    fn edit(studio: &mut Replica<Studio>, edit: &Edit<Studio>) -> Result<(), String> {
+        let invoke = Invoke::edit(edit).map_err(|error| error.to_string())?;
+        studio
+            .apply(invoke)
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    fn theme(studio: &Replica<Studio>, id: &Id) -> Theme {
+        studio.state().unwrap().themes[id].clone()
     }
 
     #[test]
@@ -513,55 +551,55 @@ mod tests {
     #[test]
     fn edits_stay_inside_the_admitted_bands() {
         let (mut studio, id) = studio_with("dark-soft");
-        assert_eq!(studio.themes[&id].name, "Dark soft copy");
-        studio.set_hue(id.clone(), 400.0).unwrap();
+        assert_eq!(theme(&studio, &id).name, "Dark soft copy");
+        let paths = Studio::paths().themes.item(&id);
+        edit(&mut studio, &paths.hue.set(Some(40.0))).unwrap();
+        assert_eq!(theme(&studio, &id).hue, Some(40.0));
         assert!(
-            studio.themes[&id]
-                .palette
-                .0
-                .hue
-                .is_some_and(|hue| (hue - 40.0).abs() < 1e-4)
-        );
-        assert!(
-            studio.set_chroma(id.clone(), 0.2).is_err(),
+            edit(&mut studio, &paths.chroma.set(0.2)).is_err(),
             "too much colour"
         );
-        assert!(studio.set_window_radius(id.clone(), 90.0).is_err());
-        assert!(studio.set_density(id.clone(), f64::NAN).is_err());
+        assert!(edit(&mut studio, &paths.window_radius.set(90.0)).is_err());
+        assert!(edit(&mut studio, &paths.density.set(f64::NAN)).is_err());
         assert!(
-            studio
-                .set_lightness(id.clone(), "tertiary".into(), 0.1)
-                .is_err(),
+            edit(&mut studio, &Rung::Tertiary.path(&paths).set(0.1)).is_err(),
             "ink may not cross to the surfaces' side"
         );
-        studio
-            .set_lightness(id.clone(), "content".into(), 0.24)
-            .unwrap();
-        assert!((studio.themes[&id].palette.0.surfaces.content - 0.24).abs() < 1e-6);
-        assert!(studio.rename(Id::from_raw("nobody"), "x".into()).is_err());
+        edit(&mut studio, &Rung::Content.path(&paths).set(0.24)).unwrap();
+        assert!((theme(&studio, &id).surfaces.content - 0.24).abs() < 1e-6);
+        assert!(
+            edit(&mut studio, &paths.dark.set(false)).is_err(),
+            "polarity is switched, never set alone"
+        );
+        let nobody = Studio::paths().themes.item(&Id::from_raw("nobody"));
+        assert!(edit(&mut studio, &nobody.name.replace("x")).is_err());
     }
 
     #[test]
     fn emphasis_polarity_and_findings_follow_the_edits() {
         let (mut studio, id) = studio_with("dark");
-        studio.set_tinted(id.clone(), true).unwrap();
-        studio.set_tint_hue(id.clone(), 30.0).unwrap();
+        let paths = Studio::paths().themes.item(&id);
+        edit(&mut studio, &paths.tint.set(Some(30.0))).unwrap();
         assert_eq!(
-            studio.themes[&id].emphasis.0,
+            theme(&studio, &id).document("mine").emphasis,
             Emphasis::Tinted { hue: 30.0 }
         );
-        studio.set_tinted(id.clone(), false).unwrap();
-        assert_eq!(studio.themes[&id].emphasis.0, Emphasis::Inverted);
-
-        studio.set_dark(id.clone(), false).unwrap();
-        let theme = &studio.themes[&id];
-        assert!(!theme.palette.0.dark);
-        assert_eq!(theme.findings("mine"), Vec::<String>::new());
+        edit(&mut studio, &paths.tint.set(None)).unwrap();
+        assert_eq!(
+            theme(&studio, &id).document("mine").emphasis,
+            Emphasis::Inverted
+        );
 
         studio
-            .set_lightness(id.clone(), "tertiary".into(), 0.80)
+            .apply(Studio::SWITCH_POLARITY.with((id.clone(), false)))
             .unwrap();
-        let findings = studio.themes[&id].findings("mine");
+        let light = theme(&studio, &id);
+        assert!(!light.dark);
+        assert_eq!(light.name, "Dark copy", "switching keeps the name");
+        assert_eq!(light.findings("mine"), Vec::<String>::new());
+
+        edit(&mut studio, &Rung::Tertiary.path(&paths).set(0.80)).unwrap();
+        let findings = theme(&studio, &id).findings("mine");
         assert!(
             findings.iter().any(|f| f.starts_with("text_tertiary")),
             "{findings:?}"
@@ -569,16 +607,41 @@ mod tests {
     }
 
     #[test]
+    fn two_people_tuning_different_roles_merge() {
+        let (mut ours, id) = studio_with("dark");
+        let mut theirs = ours.fork();
+        let paths = Studio::paths().themes.item(&id);
+        edit(&mut ours, &paths.density.set(1.2)).unwrap();
+        edit(&mut theirs, &Rung::Content.path(&paths).set(0.24)).unwrap();
+        ours.sync_with(&mut theirs).unwrap();
+        let merged = theme(&ours, &id);
+        assert!((merged.density - 1.2).abs() < 1e-6);
+        assert!((merged.surfaces.content - 0.24).abs() < 1e-6);
+        assert_eq!(ours.state().unwrap(), theirs.state().unwrap());
+    }
+
+    #[test]
     fn a_new_theme_starts_from_a_preset_or_a_theme_and_ids_are_unique() {
         let (mut studio, id) = studio_with("light");
-        studio.set_density(id.clone(), 1.2).unwrap();
-        studio.new_theme("second".into(), "mine".into()).unwrap();
-        let second = &studio.themes[&Id::from_raw("second")];
+        edit(
+            &mut studio,
+            &Studio::paths().themes.item(&id).density.set(1.2),
+        )
+        .unwrap();
+        studio
+            .apply(Studio::NEW_THEME.with(("second".to_owned(), "mine".to_owned())))
+            .unwrap();
+        let second = theme(&studio, &Id::from_raw("second"));
         assert!((second.density - 1.2).abs() < 1e-6);
-        assert!(studio.new_theme("mine".into(), "dark".into()).is_err());
-        assert!(studio.new_theme("dark".into(), "dark".into()).is_err());
-        assert!(studio.new_theme("third".into(), "nord".into()).is_err());
-        studio.delete(id).unwrap();
-        assert_eq!(studio.themes.len(), 1);
+        for (new, base) in [("mine", "dark"), ("dark", "dark"), ("third", "nord")] {
+            assert!(
+                studio
+                    .apply(Studio::NEW_THEME.with((new.to_owned(), base.to_owned())))
+                    .is_err(),
+                "{new} from {base}"
+            );
+        }
+        studio.apply_confirmed(Studio::DELETE.with(id)).unwrap();
+        assert_eq!(studio.state().unwrap().themes.len(), 1);
     }
 }

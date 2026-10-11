@@ -13,7 +13,7 @@ use std::{
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_peer_state::{NeighbourMsg, Reseal, TransportOrigin, join::TransportHint};
-use tilo_relay::{RelayClient, RelayCoeditSession};
+use tilo_relay_session::{RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 /// An enrolled room to hold a session for.
@@ -280,7 +280,9 @@ impl Scope {
                                 session.publish_retained_delta(channel, bytes.to_vec())
                             }
                             // Members never republish a governor checkpoint with
-                            // their own relay author, even if a producer errs.
+                            // their own relay author, even if a producer errs. A
+                            // sealed checkpoint already arrives here as a delta
+                            // (`publication::member_publishes_as_delta`).
                             tilo_peer_state::transport::Retention::Checkpoint => {
                                 return Err("native member checkpoint publication refused".into());
                             }
@@ -328,6 +330,16 @@ impl Input {
     pub fn retained(&self) -> bool {
         self.retained
     }
+    /// Observe the actual committed owner generation, without granting admission.
+    ///
+    /// # Errors
+    /// The enrolled room is unavailable or fenced.
+    pub fn generation(&self) -> Result<u64, String> {
+        self.scope
+            .connect
+            .owner
+            .with_current(self.room(), |view| Ok(view.generation()))
+    }
     /// Admit the delta into the owner while the session is still live and
     /// pinned to the owner's current material.
     ///
@@ -365,15 +377,16 @@ impl Input {
             std::time::SystemTime::now(),
         )
     }
-    /// The author's current role in the room.
+    /// The author's current standing in the room: the room's policy, and
+    /// the bound on a device not theirs.
     ///
     /// # Errors
     /// The room is fenced or the author is not a member.
-    pub fn role(&self) -> Result<collab_types::Role, String> {
+    pub fn standing(&self) -> Result<tilo_action_policy::Standing, String> {
         self.scope.connect.owner.with_current(self.room(), |view| {
             view.peer()
                 .permissions(self.author, std::time::SystemTime::now())
-                .map(|(role, _, _)| role)
+                .map(tilo_peer_state::MemberAuthority::standing)
         })
     }
 }

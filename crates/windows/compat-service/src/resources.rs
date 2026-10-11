@@ -102,7 +102,9 @@ impl LaunchResourceBroker for SystemResourceBroker {
             let host_socket = PathBuf::from(LEASE_ROOT).join(&id).join("net.sock");
             let gate = match NetGate::start(
                 &host_socket,
-                EgressPolicy::new(request.capabilities.net_hosts.clone()),
+                EgressPolicy::from_grants(
+                    request.capabilities.net_hosts.iter().map(String::as_str),
+                ),
             ) {
                 Ok(gate) => gate,
                 Err(error) => return Err(ResourceError::Refused(error.to_string())),

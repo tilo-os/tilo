@@ -9,79 +9,38 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tilo_nm::{NetworkState, NmWatch};
+
 use crate::smart::{DEFAULT_MAX_QUEUED_PREDICTIVE_BYTES, Heuristics, PredictivePolicy};
 
 const MIN_FREE_BYTES: u64 = 1024 * 1024 * 1024;
 const MIN_FREE_PERCENT: u64 = 10;
 const MIN_BATTERY_PERCENT: u8 = 25;
+/// Power and storage are sampled on this interval while files are being
+/// opened, and a missing `NetworkManager` connection is retried on it.
+/// Network changes apply as they are signalled.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(15);
-const NETWORK_PROBE_LIMIT: usize = 1024 * 1024;
-const NETWORK_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn connected_unmetered_device(output: &str) -> bool {
-    let mut connected = false;
-    let mut unmetered = false;
-    for line in output.lines() {
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        match key {
-            "GENERAL.STATE" => {
-                if connected && unmetered {
-                    return true;
-                }
-                connected = value.trim_start().starts_with("100");
-                unmetered = false;
+/// The network gate: the internet is reachable and the primary connection,
+/// the one traffic actually leaves on, is known not to be metered. A second
+/// unmetered device does not make a metered primary tether free, and an
+/// unreadable `NetworkManager` reads as unknown, which denies.
+fn network_allows(state: &NetworkState) -> bool {
+    state.allows_speculative_traffic()
+}
+
+/// Wait for the followed network state to change. A follower that stopped
+/// (its bus connection closed) is dropped, so the next sample denies and the
+/// loop reconnects.
+async fn network_changed(network: &mut Option<NmWatch>) {
+    match network {
+        Some(watch) => {
+            if watch.changed().await.is_none() {
+                *network = None;
             }
-            "GENERAL.METERED" => {
-                let value = value.trim().to_ascii_lowercase();
-                unmetered = value == "no" || value.starts_with("no (");
-            }
-            _ => {}
         }
+        None => std::future::pending().await,
     }
-    connected && unmetered
-}
-
-fn full_connectivity(output: &str) -> bool {
-    output.trim().eq_ignore_ascii_case("full")
-}
-
-async fn network_allows() -> bool {
-    let Ok((connectivity, devices)) = tokio::task::spawn_blocking(|| {
-        let connectivity = bounded_command::run(
-            "nmcli",
-            &["-t", "-f", "CONNECTIVITY", "general"],
-            None,
-            NETWORK_PROBE_LIMIT,
-            NETWORK_PROBE_TIMEOUT,
-        );
-        let devices = bounded_command::run(
-            "nmcli",
-            &[
-                "-t",
-                "-f",
-                "GENERAL.STATE,GENERAL.METERED",
-                "device",
-                "show",
-            ],
-            None,
-            NETWORK_PROBE_LIMIT,
-            NETWORK_PROBE_TIMEOUT,
-        );
-        (connectivity, devices)
-    })
-    .await
-    else {
-        return false;
-    };
-    let (Ok(connectivity), Ok(devices)) = (connectivity, devices) else {
-        return false;
-    };
-    connectivity.status.success()
-        && devices.status.success()
-        && std::str::from_utf8(&connectivity.stdout).is_ok_and(full_connectivity)
-        && std::str::from_utf8(&devices.stdout).is_ok_and(connected_unmetered_device)
 }
 
 fn battery_allows(on_battery: bool, present: bool, percent: u8) -> bool {
@@ -129,10 +88,10 @@ fn storage_allows(path: &Path) -> bool {
     storage_values_allow(blocks, available, stats.f_frsize)
 }
 
-async fn sample(cache_root: &Path) -> PredictivePolicy {
+fn sample(cache_root: &Path, network: Option<&NmWatch>) -> PredictivePolicy {
     PredictivePolicy {
         enabled: true,
-        network_allows: network_allows().await,
+        network_allows: network.is_some_and(|watch| network_allows(&watch.current())),
         power_allows: power_allows(),
         storage_allows: storage_allows(cache_root),
         max_queued_bytes: DEFAULT_MAX_QUEUED_PREDICTIVE_BYTES,
@@ -156,14 +115,33 @@ pub async fn start(
         });
         return None;
     };
-    heuristics.set_policy(sample(&cache_root).await);
+    let mut network = tilo_nm::watch().await.ok();
+    let mut applied = sample(&cache_root, network.as_ref());
+    heuristics.set_policy(applied);
     Some(tokio::spawn(async move {
-        let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
-        // The initial sample was applied synchronously above.
-        interval.tick().await;
         loop {
-            interval.tick().await;
-            heuristics.set_policy(sample(&cache_root).await);
+            // Power and storage only matter to an open's predictions, so
+            // they are sampled every interval while files are opened, and
+            // at the first open after a quiet interval; an idle mount
+            // sleeps (TIL-774). That first open is judged by the previous
+            // sample, and a gate the fresh one closes cancels what it
+            // queued. Network changes apply as signalled.
+            let busy = heuristics.take_opened();
+            tokio::select! {
+                () = tokio::time::sleep(SAMPLE_INTERVAL), if busy => {}
+                () = heuristics.opened(), if !busy => {}
+                () = network_changed(&mut network) => {}
+            }
+            if network.is_none() {
+                network = tilo_nm::watch().await.ok();
+            }
+            let policy = sample(&cache_root, network.as_ref());
+            // An unchanged policy is not re-applied: applying one cancels
+            // every queued and running prediction.
+            if policy != applied {
+                heuristics.set_policy(policy);
+                applied = policy;
+            }
         }
     }))
 }
@@ -171,24 +149,51 @@ pub async fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_nm::{LinkKind, NmConnectivity, NmState, PrimaryLink};
+
+    fn online(kind: LinkKind, metered: Option<bool>) -> NetworkState {
+        NetworkState {
+            state: NmState::ConnectedGlobal,
+            connectivity: NmConnectivity::Full,
+            metered,
+            primary: Some(PrimaryLink {
+                kind,
+                name: None,
+                device: None,
+            }),
+        }
+    }
 
     #[test]
-    fn smart_monitor_policies_require_good_network_battery_and_storage() {
-        // Phase `network_requires_full_connectivity_and_a_connected_unmetered_device`.
-        {
-            assert!(full_connectivity("full\n"));
-            assert!(!full_connectivity("limited\n"));
-            assert!(connected_unmetered_device(
-                "GENERAL.STATE:100 (connected)\nGENERAL.METERED:no (guessed)\n"
-            ));
-            assert!(!connected_unmetered_device(
-                "GENERAL.STATE:100 (connected)\nGENERAL.METERED:yes\n"
-            ));
-            assert!(connected_unmetered_device(
-                "GENERAL.STATE:30 (disconnected)\nGENERAL.METERED:no\n\
-                 GENERAL.STATE:100 (connected)\nGENERAL.METERED:no\n"
-            ));
-        }
+    fn network_allows_requires_full_and_unmetered_primary() {
+        assert!(network_allows(&online(LinkKind::Wired, Some(false))));
+        assert!(network_allows(&online(LinkKind::Wifi, Some(false))));
+        // Ethernet (unmetered) and a phone tether (metered) are both up, and
+        // NetworkManager made the tether primary: its global Metered is the
+        // tether's. The idle Ethernet must not license traffic on the tether.
+        assert!(
+            !network_allows(&online(LinkKind::Wired, Some(true))),
+            "a metered primary connection denies speculation"
+        );
+        assert!(
+            !network_allows(&online(LinkKind::Wifi, None)),
+            "unknown metering denies speculation"
+        );
+        assert!(
+            !network_allows(&NetworkState {
+                connectivity: NmConnectivity::Limited,
+                ..online(LinkKind::Wired, Some(false))
+            }),
+            "limited connectivity denies speculation"
+        );
+        assert!(
+            !network_allows(&NetworkState::unknown()),
+            "an unreadable NetworkManager denies speculation"
+        );
+    }
+
+    #[test]
+    fn smart_monitor_policies_require_good_battery_and_storage() {
         // Phase `battery_policy_is_conservative_while_discharging`.
         {
             assert!(battery_allows(false, false, 0));

@@ -9,7 +9,7 @@ use tilo_ui::application::{
 use tilo_ui::application_view::InstanceViewStore;
 use tilo_ui::launch::LaunchError;
 use tilo_ui::local_state::LocalState;
-use tilo_ui::permissions::{Actor, PermissionContext, PermissionScope, UserId, Verb};
+use tilo_ui::permissions::{ActionKind, PermissionContext, PermissionScope, UserId};
 use tilo_ui::record::{RecordCheckout, RecordKind, RecordOwners, RecordStore};
 use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
@@ -225,7 +225,13 @@ pub fn local_state() -> LocalState<String> {
 }
 pub fn permissions() -> Rc<RefCell<PermissionContext>> {
     Rc::new(RefCell::new(
-        PermissionContext::from_capabilities(Actor::person(None, "probe-author"), vec![])
+        PermissionContext::stranger("probe-author").at_unix_time(100),
+    ))
+}
+/// The author as an Editor of the room: may make undoable changes.
+pub fn editor_permissions() -> Rc<RefCell<PermissionContext>> {
+    Rc::new(RefCell::new(
+        PermissionContext::member("probe-author", tilo_ui::permissions::Role::Editor)
             .at_unix_time(100),
     ))
 }
@@ -236,7 +242,7 @@ pub fn provenance() -> tilo_actions::ActionContext {
     tilo_actions::ActionContext::default().with_app(APP, "Probe")
 }
 pub fn denied_scope() -> PermissionScope {
-    PermissionScope::workspace(Verb::Write)
+    PermissionScope::workspace(ActionKind::Undoable)
 }
 pub fn definition(create: tilo_ui::application::ComponentFactory) -> ApplicationDefinition {
     ApplicationDefinition {
@@ -272,11 +278,8 @@ pub fn runner_inputs() -> tilo_ui::application::ComponentRunnerInputs {
 }
 pub fn runner_permissions() -> Rc<RefCell<PermissionContext>> {
     Rc::new(RefCell::new(
-        PermissionContext::from_capabilities(
-            Actor::person(Some(tilo_ui::permissions::Role::Owner), "probe-author"),
-            vec![],
-        )
-        .at_unix_time(100),
+        PermissionContext::member("probe-author", tilo_ui::permissions::Role::Owner)
+            .at_unix_time(100),
     ))
 }
 pub struct ProbeHost {
@@ -625,15 +628,7 @@ impl Widget for ProbeRoot {
         node: taffy::NodeId,
         origin: vello::kurbo::Point,
     ) {
-        let layout = tree.layout(node).unwrap();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = vello::kurbo::Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
+        self.rect = tilo_ui::widget::layout_rect(tree, node, origin);
     }
     fn draw(
         &mut self,
@@ -741,8 +736,7 @@ impl tilo_ui::resources::PublishesResources for ProbeRoot {
                         &ProbeAction("edited".into()),
                     )
                     .unwrap()
-                    .with_description(self.local_snapshot.clone())
-                    .requiring(tilo_actions::PermissionRequirement::Write),
+                    .with_description(self.local_snapshot.clone()),
                 )
                 .with_action(
                     tilo_actions::ActionSpec::operation(
@@ -781,52 +775,46 @@ impl tilo_ui::resources::PublishesResources for ProbeRoot {
                         ..tilo_actions::ActionContract::view()
                     }),
                 )
-                .with_action(
-                    tilo_actions::ActionSpec::prompted(
-                        "prompt",
-                        "Prompt",
-                        "Value",
-                        "Value",
-                        tilo_actions::ExecutionLocus::ClientLocal,
-                        |value| {
-                            tilo_actions::EncodedAction::encode(
-                                "probe.edit",
-                                &ProbeAction(value.into()),
-                            )
-                            .unwrap()
-                        },
-                    )
-                    .requiring(tilo_actions::PermissionRequirement::Write),
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::typed(
-                        "typed",
-                        "Typed",
-                        "Value",
-                        tilo_actions::ExecutionLocus::ClientLocal,
-                        vec![
-                            tilo_actions::ActionParam::required(
-                                "value",
-                                tilo_actions::ParamType::Text,
-                                "Value",
-                            ),
-                            tilo_actions::ActionParam::required(
-                                "enabled",
-                                tilo_actions::ParamType::Boolean,
-                                "Enabled",
-                            ),
-                        ],
-                        |args| {
-                            assert_eq!(args.boolean("enabled"), Some(true));
-                            tilo_actions::EncodedAction::encode(
-                                "probe.edit",
-                                &ProbeAction(args.text("value").unwrap().into()),
-                            )
-                            .unwrap()
-                        },
-                    )
-                    .requiring(tilo_actions::PermissionRequirement::Write),
-                )
+                .with_action(tilo_actions::ActionSpec::prompted(
+                    "prompt",
+                    "Prompt",
+                    "Value",
+                    "Value",
+                    tilo_actions::ExecutionLocus::ClientLocal,
+                    |value| {
+                        tilo_actions::EncodedAction::encode(
+                            "probe.edit",
+                            &ProbeAction(value.into()),
+                        )
+                        .unwrap()
+                    },
+                ))
+                .with_action(tilo_actions::ActionSpec::typed(
+                    "typed",
+                    "Typed",
+                    "Value",
+                    tilo_actions::ExecutionLocus::ClientLocal,
+                    vec![
+                        tilo_actions::ActionParam::required(
+                            "value",
+                            tilo_actions::ParamType::Text,
+                            "Value",
+                        ),
+                        tilo_actions::ActionParam::required(
+                            "enabled",
+                            tilo_actions::ParamType::Boolean,
+                            "Enabled",
+                        ),
+                    ],
+                    |args| {
+                        assert_eq!(args.boolean("enabled"), Some(true));
+                        tilo_actions::EncodedAction::encode(
+                            "probe.edit",
+                            &ProbeAction(args.text("value").unwrap().into()),
+                        )
+                        .unwrap()
+                    },
+                ))
                 .with_action(
                     tilo_actions::ActionSpec::immediate(
                         "confirm",

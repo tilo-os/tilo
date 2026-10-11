@@ -65,6 +65,12 @@ and explicit full-native builds use native amd64 and ARM64 runners. Weekly and d
 PRs run preflight only. Desktop package publication requires a tag.
 No package or artifact definition needs to change if scheduling is paused.
 
+This describes workflow selection, not accepted release support:
+[the install contract](install-contract.json) still marks ARM64 desktop sessions as
+planned. Architecture-specific install/release receipts and the product owner's
+[TIL-359 support-matrix decision](https://linear.app/tilo-os/issue/TIL-359) remain
+separate from enabling the lane.
+
 The Fedora desktop lane also emits a small deterministic OS payload containing
 the same install-tested `shell`, `tilo-launcher`, and `tilo-unlock-helper`
 binaries. A successful `main` build publishes it immutably and advances
@@ -262,6 +268,17 @@ without waiting for the nightly run.
 This runs the same image, reproducibility, and VM gates as a safe integration
 rehearsal while the production signing key is unavailable.
 
+A dispatch builds `main`'s head and takes only an app collection published
+for that head's app inputs. Release / apps publishes it about 40 minutes after
+the commit lands, by which time `main` has usually moved on. So dispatch while
+the Release / apps run for the head is running: the `await-app-collection` job
+waits for that run, and `plan` then reads the collection it published. A
+queued run is not enough: the next push to `main` that changes app inputs
+supersedes it, and no collection is published for the head (run 98378).
+When no Release / apps run is building the head (a quiet `main` whose last
+collection failed), dispatch Release / apps on `main` with `publish` first,
+then Release / OS; the wait covers dispatched runs too.
+
 A tag publication allocates both `imager-linux-x86_64` and
 `imager-linux-aarch64`; a manual or nightly `main` publication uses
 `runner-large` and `runner-large-arm64`. Each native lane independently rebuilds, reseals,
@@ -383,3 +400,26 @@ To find the current tag, read the `org.opencontainers.image.version` label of
   GitHub Artifact API is not compatible with this instance.
 - Use artifacts for jobs in one workflow and the generic package registry for
   outputs consumed by later workflow runs.
+
+## Lenovo board successors
+
+An explicit **Release / OS** main dispatch with `release=true` and
+`hardware_profile=lenovo-83ed` publishes a separate signed dense board series.
+Its fixed repository is `code.tilo.so/tilo/tilo`: each release retains both
+`lenovo-83ed-<source>` and `lenovo-83ed-gen<N>`. `lenovo-83ed-latest` is a
+registry discovery hint, never permission to install an image. A consumer must
+verify the exact image signature, profile/architecture/source/generation-bound
+SLSA provenance and repository/digest-bound release-freshness attestation, then
+complete the existing owner image-trust and measured-boot checks.
+
+Initializing this series requires the `board_series_seed` dispatch input: an
+operator-reviewed immutable historical Lenovo image reference ending in
+`@sha256:<digest>`, verified as the existing signed generation 1. There is no
+fallback to tag order, commit counts or timestamps. Missing or conflicting
+history refuses allocation; the next successful release is generation 2.
+Generic OS generation allocation and Orange Pi one-off publication are unchanged.
+
+This publication prerequisite does not change an installed immutable board
+origin, authorize a new owner endorsement, or retire retained development
+cohorts. On-device successor selection and compatible cohort retirement must
+be qualified before claiming the ordinary Updates button delivers this series.

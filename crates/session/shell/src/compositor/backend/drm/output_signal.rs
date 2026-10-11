@@ -3,8 +3,10 @@
 //!
 //! Every write goes through the legacy `SETPROPERTY` ioctl, which atomic
 //! drivers turn into a one-property atomic commit. None of these properties
-//! is atomic-only, so this works on the legacy page-flip path Tilo uses (the
-//! same route xf86-video-amdgpu takes for `VRR_ENABLED`). Legacy commits may
+//! is atomic-only, so this works whether an output's flips are atomic or
+//! legacy ([`super::kms_flip`]), and an atomic flip writes none of them, so
+//! it never undoes one (the same route xf86-video-amdgpu takes for
+//! `VRR_ENABLED`). Legacy commits may
 //! modeset, so entering or leaving HDR can blank the panel briefly.
 //!
 //! The decisions — which value to write, when to stop retrying — are kept in

@@ -16,7 +16,7 @@ class FeedbackScopeTests(unittest.TestCase):
             self.assertIn("if: contains(matrix.test_packages, '-p app-cli')", workflow)
             # A shard's affected apps pass the nightly's native certification.
             self.assertIn('certify --workspace ${{ matrix.test_packages }}', workflow)
-            self.assertIn('needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins]', workflow)
+            self.assertIn('needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins, tapps]', workflow)
             self.assertIn('test "$BUILDER_RESULT" = success', workflow)
             self.assertIn('*:true:success)', workflow)
             self.assertIn('pull_request:false:skipped)', workflow)

@@ -8,19 +8,18 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use crate::automerge::{AutoCommit, ObjId};
-use crate::kurbo::{Affine, Point, Rect};
+use crate::kurbo::Rect;
 use crate::taffy::{NodeId, TaffyTree};
 use crate::tilo_actions::{
     ActionBinding, ActionBindingError, ActionContract, ActionOutput, ActionParam, ActionSpec,
-    DiscoveryScope, EncodedAction, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
+    EncodedAction, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
 };
-use crate::vello::Scene;
 use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Widget};
 
 /// Shared effect-operation type used by the one-resource app host.
 pub const OPERATION_TYPE: &str = "tilo.app.operation";
 
-/// Build one launchable resource with a unit operation.
+/// Build one resource with a unit operation.
 ///
 /// # Panics
 ///
@@ -40,7 +39,6 @@ pub fn resource(kind: &str, label: &str, action_id: &str, action_label: &str) ->
     )
     .expect("the unit operation is serializable");
     action.contract = ActionContract {
-        discovery: DiscoveryScope::Launchable,
         execution: ExecutionMode::Immediate,
         result: ResultSpec::None,
         ..ActionContract::default()
@@ -48,7 +46,7 @@ pub fn resource(kind: &str, label: &str, action_id: &str, action_label: &str) ->
     Resource::new(format!("{kind}:root"), kind, label).with_action(action)
 }
 
-/// Build one launchable resource whose arguments are schema-bound.
+/// Build one resource whose arguments are schema-bound.
 ///
 /// # Panics
 ///
@@ -65,7 +63,7 @@ pub fn typed_resource(
     action_label: &str,
     params: Vec<ActionParam>,
 ) -> Resource {
-    let mut action = ActionSpec::typed_operation(
+    let action = ActionSpec::typed_operation(
         action_id,
         action_label,
         "Enter action arguments",
@@ -77,7 +75,6 @@ pub fn typed_resource(
                 .expect("bound arguments are serializable")
         },
     );
-    action.contract.discovery = DiscoveryScope::Launchable;
     Resource::new(format!("{kind}:root"), kind, label).with_action(action)
 }
 
@@ -355,75 +352,17 @@ impl Widget for ResourceActionHost {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.root.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(
-            crate::taffy::Style {
-                size: crate::taffy::Size {
-                    width: crate::taffy::style_helpers::percent(1.0_f32),
-                    height: crate::taffy::style_helpers::percent(1.0_f32),
-                },
-                ..Default::default()
+        let style = crate::taffy::Style {
+            size: crate::taffy::Size {
+                width: crate::taffy::style_helpers::percent(1.0_f32),
+                height: crate::taffy::style_helpers::percent(1.0_f32),
             },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.root
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &crate::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.root
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &crate::winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
-    ) {
-        let node_id = ctx
-            .taffy
-            .children(ctx.node_id)
-            .ok()
-            .and_then(|children| children.first().copied())
-            .unwrap_or(ctx.node_id);
-        let path = ctx.path;
-        self.root
-            .handle_event(event, &mut ctx.reborrow(path, node_id));
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.root.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.root.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.root.as_mut()]
-    }
+    crate::forward_to_child!(root, rect);
 
     fn is_focusable(&self) -> bool {
         self.root.is_focusable()
@@ -454,6 +393,10 @@ impl Widget for ResourceActionHost {
         self.root.ime_purpose()
     }
 
+    fn ime_multiline(&self) -> bool {
+        self.root.ime_multiline()
+    }
+
     fn traps_focus(&self) -> bool {
         self.root.traps_focus()
     }
@@ -469,20 +412,11 @@ impl Widget for ResourceActionHost {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        self.root.perform_action(action, state, path)
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        self.root.perform_action_at(action, key_path, state, path)
+        self.root.perform_action(action, key_path, state, path)
     }
 
     fn perform_semantic_action(
@@ -555,10 +489,6 @@ impl Widget for ResourceActionHost {
 
     fn name(&self) -> &'static str {
         "ResourceActionHost"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

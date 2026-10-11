@@ -11,11 +11,11 @@
 
 pub mod action_api;
 pub mod files_index;
+pub mod invocation_wake;
 pub mod providers;
 pub mod visibility;
 
 use std::cell::RefCell;
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -31,45 +31,6 @@ use ui::search::system::{self, query_input_is_bounded};
 pub use ui::search::system::{ResourceKind, SearchBudget, SearchCursor};
 pub type SearchPage = system::SearchPage<SearchResult>;
 pub type KindGroup = system::KindGroup<SearchResult>;
-
-/// Provider-independent lexical fit used at the global merge boundary. A
-/// provider still contributes domain knowledge through its normalized score,
-/// but an exact visible title must beat a weak metadata/fuzzy match from a
-/// different source.
-fn lexical_strength(needle: &str, result: &SearchResult) -> f32 {
-    use ui::search::MatchTier;
-    let needle = ui::search::fold_search_text(needle.trim());
-    if needle.is_empty() {
-        return 0.0;
-    }
-    let title = ui::search::fold_search_text(&result.title);
-    // Application providers decorate the app name with the launch verb.
-    // Compare its name on the same basis as a file or note title.
-    let title = if matches!(
-        result.kind,
-        ResourceKind::Application | ResourceKind::HostApplication
-    ) {
-        title.strip_prefix("open ").unwrap_or(&title)
-    } else {
-        &title
-    };
-    match ui::search::rank::match_tier(&needle, title) {
-        Some(MatchTier::Exact) => 4.0,
-        Some(MatchTier::Prefix) => 2.5,
-        Some(MatchTier::WordPrefix) => 1.5,
-        Some(_) => 1.0,
-        None => {
-            result.subtitle.as_deref().map_or(0.0, |subtitle| {
-                match ui::search::rank::match_tier(&needle, &ui::search::fold_search_text(subtitle))
-                {
-                    Some(MatchTier::Exact) => 0.7,
-                    Some(_) => 0.4,
-                    None => 0.0,
-                }
-            })
-        }
-    }
-}
 
 /// Map a field rank onto the provider scale; see
 /// [`ui::search::system::provider_score`].
@@ -118,16 +79,6 @@ pub(crate) fn rank_rows(
         .collect()
 }
 
-/// A deliberately small contextual preference: proximity should settle close
-/// matches, never make a weak metadata hit beat an exact visible title.
-const ACTIVE_APP_PROXIMITY_BOOST: f32 = 0.25;
-
-/// A provider-perfect application-name match represents launch intent, not a
-/// coincidental lexical occurrence. It must beat an exact filename/note with
-/// the same word, while an exact action (strength 5.0) still beats an
-/// unrelated app that merely received a weak provider score.
-const PERFECT_APPLICATION_INTENT_BOOST: f32 = 3.0;
-
 /// The chip strip's and group headers' wording for a [`ResourceKind`], in
 /// the desktop's language. [`ResourceKind::id`] stays the stable English
 /// address; `Custom` kinds surface their own string verbatim.
@@ -174,7 +125,8 @@ pub type InvokeFn = dyn Fn(
 pub const RESOLVE_INDEX_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// A non-blocking admission poll. `None` means the broker has not answered
-/// yet; the compositor keeps the ticket and polls again next frame.
+/// yet; the compositor keeps the ticket and polls it again when
+/// [`invocation_wake`] wakes it, or when something else does.
 pub type PendingInvocation = Rc<dyn Fn() -> Result<Option<ActionReceipt>, ActionError>>;
 pub enum InvocationDisposition {
     Accepted(ActionReceipt),
@@ -437,6 +389,16 @@ pub trait SearchProvider {
         "static".into()
     }
 
+    /// Whether the retained index behind [`Self::query_page`] still has
+    /// work outstanding for `ctx` — a build in flight, a source reply not yet
+    /// in — so an answer given now may be missing rows that are on their
+    /// way. A provider that reports settling must wake the loop that asked
+    /// when that work lands (`invocation_wake`), since that is what a
+    /// waiting caller sleeps on.
+    fn index_settling(&self, _ctx: &SearchContext<'_>) -> bool {
+        false
+    }
+
     /// Page a retained search index.  This is the canonical shell query
     /// surface.  `query` remains for small, direct callers and backwards
     /// compatible provider tests; registry/palette/agent discovery always
@@ -540,19 +502,6 @@ pub struct QueryArgs<'a> {
     pub chrome: &'a ChromeState,
     pub doc: &'a AutoCommit,
     pub doc_root: &'a ObjId,
-}
-
-/// A [`SearchResult::score`]/[`SearchProvider::max_score`] value as a
-/// fraction of `[0.0, 1.0]`-scale `f32`. Provider score scales are
-/// small (files top out at 120, apps at 100 — see `max_score`'s doc),
-/// well under `f32`'s 24-bit mantissa, so the precision this cast could
-/// otherwise lose cannot happen for a supported provider.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "provider score scales are small integers (<=120 by convention); exact precision isn't needed for a 0..1 strength ratio"
-)]
-fn i32_to_f32_lossy(n: i32) -> f32 {
-    n as f32
 }
 
 fn estimated_result_bytes(result: &SearchResult) -> usize {
@@ -832,6 +781,40 @@ impl SearchRegistry {
             changed |= before != provider.search_revision(&ctx);
         }
         changed
+    }
+
+    /// Whether any provider `args` reaches is still settling its retained
+    /// index ([`SearchProvider::index_settling`]): an answer read now may be
+    /// incomplete. Routed exactly like [`Self::refresh_indexes`].
+    pub fn indexes_settling(&self, args: &QueryArgs<'_>) -> bool {
+        if !query_input_is_bounded(args.needle) {
+            return false;
+        }
+        self.enabled_providers().any(|provider| {
+            if !scope_allows(provider.as_ref(), args.scope, args.active_provider_id) {
+                return false;
+            }
+            let wanted = if args.wanted_kinds.is_empty() {
+                provider.resource_kinds().to_vec()
+            } else {
+                provider
+                    .resource_kinds()
+                    .iter()
+                    .filter(|kind| args.wanted_kinds.contains(kind))
+                    .cloned()
+                    .collect()
+            };
+            !wanted.is_empty()
+                && provider.index_settling(&SearchContext {
+                    query_scope: Some(args.scope),
+                    include_programmatic: false,
+                    needle: args.needle,
+                    wanted: &wanted,
+                    chrome: args.chrome,
+                    doc: args.doc,
+                    doc_root: args.doc_root,
+                })
+        })
     }
 
     /// Page one named source without flattening every provider into a single
@@ -1128,13 +1111,13 @@ impl SearchRegistry {
                 );
                 let proximity = if scope == SearchScope::Workspace {
                     let active_app = if active_provider_id == Some(provider.id()) {
-                        ACTIVE_APP_PROXIMITY_BOOST
+                        system::ACTIVE_APP_PROXIMITY_BOOST
                     } else {
                         0.0
                     };
                     let workspace =
                         if provider.proximity(&r, chrome) == SearchProximity::CurrentWorkspace {
-                            ACTIVE_APP_PROXIMITY_BOOST
+                            system::ACTIVE_APP_PROXIMITY_BOOST
                         } else {
                             0.0
                         };
@@ -1142,20 +1125,15 @@ impl SearchRegistry {
                 } else {
                     0.0
                 };
-                let normalized_score = i32_to_f32_lossy(r.score) / i32_to_f32_lossy(top);
-                let application_intent = if matches!(
-                    r.kind,
-                    ResourceKind::Application | ResourceKind::HostApplication
-                ) && r.score >= top
-                {
-                    PERFECT_APPLICATION_INTENT_BOOST
-                } else {
-                    0.0
-                };
-                let strength = lexical_strength(needle, &r)
-                    + normalized_score
-                    + application_intent
-                    + proximity;
+                let strength = system::merged_strength(
+                    needle,
+                    &r.kind,
+                    &r.title,
+                    r.subtitle.as_deref(),
+                    r.score,
+                    top,
+                    proximity,
+                );
                 let key = (r.provider_id.clone(), r.id.clone());
                 #[expect(
                     clippy::indexing_slicing,
@@ -1171,35 +1149,7 @@ impl SearchRegistry {
                 }
             }
         }
-        // Order groups by how well their best member matched, then the
-        // fixed kind order: Enter activates the top row, so an app's name
-        // must not open an action that merely mentions the word.
-        let mut best: HashMap<(u8, String), f32> = HashMap::new();
-        for (r, strength) in &merged {
-            let slot = best.entry(r.kind.sort_key()).or_insert(f32::MIN);
-            *slot = slot.max(*strength);
-        }
-        merged.sort_by(|(a, a_strength), (b, b_strength)| {
-            // Every key looked up here was inserted by the loop above
-            // (it walks the same `merged`), but `.get()` + a matching
-            // fallback avoids an avoidable panic in a sort comparator
-            // rather than relying on that invariant holding forever.
-            let a_group = best.get(&a.kind.sort_key()).copied().unwrap_or(f32::MIN);
-            let b_group = best.get(&b.kind.sort_key()).copied().unwrap_or(f32::MIN);
-            b_group
-                .partial_cmp(&a_group)
-                .unwrap_or(Ordering::Equal)
-                // Equally strong groups fall back to the fixed kind order.
-                .then_with(|| a.kind.sort_key().cmp(&b.kind.sort_key()))
-                .then_with(|| {
-                    b_strength
-                        .partial_cmp(a_strength)
-                        .unwrap_or(Ordering::Equal)
-                })
-            // No further tiebreak: `sort_by` is stable, so equally strong
-            // results keep the provider's own order rather than being
-            // re-alphabetised by title.
-        });
+        system::order_by_kind(&mut merged, |r| &r.kind);
         merged.into_iter().map(|(r, _)| r).collect()
     }
 
@@ -1316,10 +1266,8 @@ mod tests {
 
     use super::*;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
-    use parking_lot::RwLock;
     use std::fmt::Write as _;
     use std::rc::Rc;
-    use std::sync::Arc as StdArc;
 
     struct FakeProvider {
         id: String,
@@ -1362,7 +1310,8 @@ mod tests {
     }
 
     fn mk_chrome() -> crate::shell::chrome_state::Chrome {
-        let handle: WorkspaceTreeHandle = StdArc::new(RwLock::new(WorkspaceTree::default()));
+        let handle: WorkspaceTreeHandle =
+            crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
         ChromeState::new_with_handle(handle)
     }
 
@@ -2698,10 +2647,12 @@ mod tests {
         let manifest_path = payload.join("manifest.toml");
         std::fs::write(
             &manifest_path,
-            format!(
-                "[package]\nid = \"{package_id}\"\nname = \"{display_name}\"\n\
-                 version = \"1.2.3\"\ncategory = \"Utility\"\n\
-                 [entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n"
+            crate::shell::test_support::canonical_manifest(
+                &format!(
+                    "id = \"{package_id}\"\nname = \"{display_name}\"\n\
+                     version = \"1.2.3\"\nkind = \"app\"\ncategory = \"Utility\""
+                ),
+                "[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n",
             ),
         )
         .expect("manifest");

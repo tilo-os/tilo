@@ -11,22 +11,19 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::color_compat::ColorCompat;
+use crate::paint::with_alpha;
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
+    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
 };
 use crate::widget::{TaffyTreeExt, Widget};
-
-fn alpha(color: Color, value: u8) -> Color {
-    Color::from_rgba8(color.r(), color.g(), color.b(), value)
-}
 
 /// One interval. Equal start/end values render as milestones.
 #[derive(Clone, Debug)]
@@ -164,15 +161,6 @@ impl RangeChart {
         self.axis_title = title.into();
         self
     }
-    #[must_use]
-    pub fn format_values(mut self, formatter: impl Fn(f64) -> String + 'static) -> Self {
-        self.formatter = Some(Box::new(formatter));
-        self
-    }
-    pub fn set_bars(&mut self, bars: Vec<RangeBar>) {
-        self.bars = bars;
-        self.hovered = None;
-    }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
     }
@@ -239,7 +227,7 @@ impl RangeChart {
     fn format(&self, value: f64) -> String {
         self.formatter
             .as_ref()
-            .map_or_else(|| format_value(value), |f| f(value))
+            .map_or_else(|| format_compact(value), |f| f(value))
     }
     fn hit(&self, point: Point) -> Option<&str> {
         self.hits
@@ -249,15 +237,50 @@ impl RangeChart {
     }
 }
 
-fn format_value(value: f64) -> String {
-    if value.abs() >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if value.abs() >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
-    } else if value.fract().abs() < 0.001 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.1}")
+impl InteractiveChart for RangeChart {
+    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
+        (
+            &mut self.pointer,
+            &mut self.keyboard_inspection,
+            &mut self.touch,
+        )
+    }
+    fn update_hover(&mut self) {
+        self.hovered = self.hit(self.pointer).map(str::to_owned);
+    }
+    fn clear_hover(&mut self) {
+        self.hovered = None;
+    }
+    fn activate_hovered(&mut self) -> bool {
+        let Some(id) = &self.hovered else {
+            return false;
+        };
+        self.activated = Some(id.clone());
+        true
+    }
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
+        let candidates = self
+            .bars
+            .iter()
+            .filter(|bar| bar.valid())
+            .map(|bar| bar.id.as_str())
+            .collect::<Vec<_>>();
+        let current = self
+            .hovered
+            .as_deref()
+            .and_then(|id| candidates.iter().position(|candidate| *candidate == id));
+        self.hovered = moved_index(current, candidates.len(), action)
+            .and_then(|index| candidates.get(index))
+            .map(|id| (*id).to_owned());
+        if let Some(rect) = self
+            .hits
+            .iter()
+            .find(|(candidate, _)| Some(candidate) == self.hovered.as_ref())
+            .map(|(_, rect)| *rect)
+        {
+            self.pointer = rect.center();
+        }
+        self.hovered.is_some()
     }
 }
 
@@ -268,24 +291,17 @@ impl Widget for RangeChart {
         _theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(self.height()),
             },
             ..Default::default()
-        });
-        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x + l.size.width),
-            origin.y + f64::from(l.location.y + l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
     #[allow(
         clippy::too_many_lines,
@@ -327,7 +343,7 @@ impl Widget for RangeChart {
                 scene.stroke(
                     &Stroke::new(1.0),
                     transform,
-                    alpha(theme.tokens.colors.text_dim, 36),
+                    with_alpha(theme.tokens.colors.text_dim, 36),
                     None,
                     &Line::new((x, plot.y0), (x, plot.y1)),
                 );
@@ -359,7 +375,7 @@ impl Widget for RangeChart {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    alpha(theme.tokens.colors.text_dim, 13),
+                    with_alpha(theme.tokens.colors.text_dim, 13),
                     None,
                     &Rect::new(
                         self.rect.x0,
@@ -398,7 +414,7 @@ impl Widget for RangeChart {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    alpha(color, 82),
+                    with_alpha(color, 82),
                     None,
                     &RoundedRect::from_rect(rect, self.style.corner_radius),
                 );
@@ -451,115 +467,20 @@ impl Widget for RangeChart {
             } else {
                 format!("{interval} · {}", bar.detail)
             };
-            let (label_width, _) =
-                tr.measure_style(&bar.label, None, &theme.text(TextRole::Caption));
-            let (detail_width, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
-            let tooltip_width = f64::from(label_width.max(detail_width)).max(150.0) + 28.0;
-            let x = (self.pointer.x + 16.0)
-                .min(self.rect.x1 - tooltip_width - 8.0)
-                .max(self.rect.x0 + 8.0);
-            let y = (self.pointer.y + 16.0)
-                .min(self.rect.y1 - 72.0)
-                .max(self.rect.y0 + 8.0);
-            let tip = Rect::new(x, y, x + tooltip_width, y + 64.0);
-            scene.fill(
-                Fill::NonZero,
+            crate::widget::chart_labels::draw_tooltip(
+                scene,
                 transform,
-                theme.tokens.colors.surfaces.overlay,
-                None,
-                &RoundedRect::from_rect(tip, f64::from(theme.tokens.radii.control)),
-            );
-            tr.draw_style(
-                scene,
-                &bar.label,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((x + 14.0, y + 11.0)),
-                None,
-                &theme
-                    .text(TextRole::Label)
-                    .with_weight(TextWeight::Semibold),
-            );
-            tr.draw_style(
-                scene,
-                &detail,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x + 14.0, y + 37.0)),
-                None,
-                &theme.text(TextRole::Caption),
+                tr,
+                theme,
+                self.pointer,
+                self.rect,
+                150.0,
+                (&bar.label, &detail),
             );
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.hovered = self.hit(point).map(str::to_owned);
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.hovered = self.hit(point).map(str::to_owned);
-                    if let Some(id) = &self.hovered {
-                        self.activated = Some(id.clone());
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            self.hovered = self.hit(self.pointer).map(str::to_owned);
-            self.keyboard_inspection = false;
-        }
-        if matches!(event, WindowEvent::CursorLeft { .. }) && !self.keyboard_inspection {
-            self.hovered = None;
-        }
-        if matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            }
-        ) && let Some(id) = self.hit(self.pointer).map(str::to_owned)
-        {
-            self.activated = Some(id);
-            *ctx.handled = true;
-        }
-        if let Some(action) = chart_nav_action(event) {
-            if action == ChartNavAction::Activate {
-                self.activated.clone_from(&self.hovered);
-            } else {
-                let candidates = self
-                    .bars
-                    .iter()
-                    .filter(|bar| bar.valid())
-                    .map(|bar| bar.id.as_str())
-                    .collect::<Vec<_>>();
-                let current = self
-                    .hovered
-                    .as_deref()
-                    .and_then(|id| candidates.iter().position(|candidate| *candidate == id));
-                self.hovered = moved_index(current, candidates.len(), action)
-                    .and_then(|index| candidates.get(index))
-                    .map(|id| (*id).to_owned());
-                self.keyboard_inspection = self.hovered.is_some();
-                if let Some(rect) = self
-                    .hits
-                    .iter()
-                    .find(|(candidate, _)| Some(candidate) == self.hovered.as_ref())
-                    .map(|(_, rect)| *rect)
-                {
-                    self.pointer = rect.center();
-                }
-            }
-            *ctx.handled = true;
-            *ctx.focus_target = Some(ctx.node_id);
-        }
+        handle_chart_event(self, event, ctx);
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let mut root = AccessNode::new(Role::Group).with_name(if self.title.is_empty() {
@@ -588,29 +509,22 @@ impl Widget for RangeChart {
             .collect();
         Some(root)
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         keys: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = keys.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            keys,
+            self.bars.iter().map(|b| &b.id),
+        ) else {
             return false;
         };
-        if let Some(bar) = self
-            .bars
-            .iter()
-            .find(|b| crate::a11y::hash_key(&b.id) == *key)
-        {
-            self.activated = Some(bar.id.clone());
-            true
-        } else {
-            false
-        }
+        self.activated = Some(id.clone());
+        true
     }
     fn name(&self) -> &'static str {
         "RangeChart"

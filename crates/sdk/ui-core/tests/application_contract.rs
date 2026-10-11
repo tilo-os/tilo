@@ -61,18 +61,15 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
 
     // Case `permission_revocation_between_prepare_and_factory_is_enforced`.
     {
-        use tilo_ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
         let host = ProbeHost::new();
         let mut definition = definition(probe_factory);
         definition.required.push(denied_scope());
         let authority = permissions();
-        *authority.borrow_mut() = PermissionContext::from_capabilities(
-            Actor::person(None, "probe-author"),
-            vec![CapOverride::grant(
-                Subject::person("probe-author"),
-                Scope::Workspace,
-                Verb::Admin,
-            )],
+        *authority.borrow_mut() = tilo_ui::permissions::PermissionContext::granted(
+            "probe-author",
+            &tilo_ui::permissions::TreePath::root(),
+            tilo_ui::permissions::policy::KindSet::ALL,
+            None,
         );
         let context = HostContext::prepare(
             &definition,
@@ -879,7 +876,6 @@ fn envelope(device: &str, room: &str, scroll: f64) -> SavedInstanceView {
     reason = "fault matrix keeps last-owner transfer, pending-history comparison and repair in one auditable scenario"
 )]
 fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
-    use tilo_ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
     for case in ["definition", "target", "foreign", "malformed", "revoked"] {
         let host = ProbeHost::new();
         let mut component =
@@ -921,7 +917,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             })
             .unwrap();
         let snapshot = |doc: &mut automerge::AutoCommit, history: &mut tilo_ui::state::UndoLog| {
-            let last = history.peek_last_undo().unwrap();
+            let last = history.peek_last_undo(doc).unwrap();
             (
                 doc.pending_ops(),
                 doc.base_heads(),
@@ -930,7 +926,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
                 last.before.clone(),
                 last.after.clone(),
                 last.widget_metadata.clone(),
-                last.author.clone(),
+                last.author,
             )
         };
         let before = host.records.with_history(&checkout.id, snapshot).unwrap();
@@ -940,13 +936,11 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         let authority = permissions();
         if case == "revoked" {
             definition.required.push(denied_scope());
-            *authority.borrow_mut() = PermissionContext::from_capabilities(
-                Actor::person(None, "probe-author"),
-                vec![CapOverride::grant(
-                    Subject::person("probe-author"),
-                    Scope::Workspace,
-                    Verb::Admin,
-                )],
+            *authority.borrow_mut() = tilo_ui::permissions::PermissionContext::granted(
+                "probe-author",
+                &tilo_ui::permissions::TreePath::root(),
+                tilo_ui::permissions::policy::KindSet::ALL,
+                None,
             );
         }
         let target = existing(&checkout);
@@ -1013,13 +1007,11 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         assert!(records.durability_error(&record.id).is_some());
         assert_eq!(calls(), 1);
         definition.app_id = APP;
-        *authority.borrow_mut() = PermissionContext::from_capabilities(
-            Actor::person(None, "probe-author"),
-            vec![CapOverride::grant(
-                Subject::person("probe-author"),
-                Scope::Workspace,
-                Verb::Admin,
-            )],
+        *authority.borrow_mut() = tilo_ui::permissions::PermissionContext::granted(
+            "probe-author",
+            &tilo_ui::permissions::TreePath::root(),
+            tilo_ui::permissions::policy::KindSet::ALL,
+            None,
         );
         let target = existing(&record);
         let context = HostContext::prepare(
@@ -1152,9 +1144,13 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
                     .err()
                     .unwrap()
             } else {
-                tilo_ui::headless::Driver::from_component(component, (320, 180), runner_inputs())
-                    .err()
-                    .unwrap()
+                tilo_ui::headless::FrameHarness::from_component(
+                    component,
+                    (320, 180),
+                    runner_inputs(),
+                )
+                .err()
+                .unwrap()
             };
             let LaunchError::ComponentSetup {
                 record, recovery, ..

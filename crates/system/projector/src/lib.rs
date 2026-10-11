@@ -3,11 +3,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -15,6 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
+
+pub mod control;
 
 const VIDEO_PACKET_MAGIC: [u8; 8] = *b"TLOPRJ01";
 const MAX_VIDEO_PACKET_BYTES: usize = 16 * 1024 * 1024;
@@ -209,9 +207,10 @@ pub struct ProjectionOptions {
     pub mode: ProjectionMode,
     pub audio: bool,
     pub stream_policy: DisplayStreamPolicy,
-    /// Optional receiver PIN/password. It is transported in a child-process
-    /// environment variable, never placed in command-line arguments.
-    #[serde(default, skip_serializing)]
+    /// Optional receiver PIN/password. It is never serialised with the
+    /// options: it crosses to the broker only as the separate, wiped
+    /// [`control::Credential`] of a connect request.
+    #[serde(skip)]
     pub credential: Option<String>,
 }
 

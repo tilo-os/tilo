@@ -126,7 +126,7 @@ fn document_broadcast_merges_snapshots_and_leaves_commits_incremental() {
             collab_types::document_artifact_id(&route.app_id, &route.cluster_id.to_string(), ""),
             collab_types::Ed25519PublicKey::from_bytes([0; 32]),
             collab_types::document_attestation_id(&route.app_id, &route.cluster_id.to_string(), ""),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             crate::time::SystemTime::UNIX_EPOCH,
             0,
         );

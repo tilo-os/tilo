@@ -13,12 +13,11 @@
 )]
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_actions::ActionError;
-use ui::tilo_resource::{self, Doc, JsonSchema, order};
+use ui::tilo_resource::Refusal;
+use ui::tilo_resource::{self, JsonSchema, order};
 use ui::vello::kurbo::{BezPath, Rect, Shape as _};
 
 use crate::actions::{add_marks, derived_id, placed, refuse, target_layer, units};
-use crate::doc;
 use crate::model::{
     Artwork, Layer, MAX_SIDE, Mark, Matte, Selection, Shape, Style, path_data, valid_id,
 };
@@ -97,12 +96,12 @@ pub struct Combine {
 
 /// The region a mark covers in artwork units: a filled shape's inside, an
 /// outline's or a brush stroke's ink.
-fn mark_region(mark: &Mark) -> Result<Region, ActionError> {
+fn mark_region(mark: &Mark) -> Result<Region, Refusal> {
     mark_outline(mark).map(|path| Region::of_path(&path))
 }
 
 /// The outline of the area a mark covers, in artwork units.
-pub(crate) fn mark_outline(mark: &Mark) -> Result<BezPath, ActionError> {
+pub(crate) fn mark_outline(mark: &Mark) -> Result<BezPath, Refusal> {
     use ui::vello::kurbo::{Cap, Join, Stroke, StrokeOpts};
     let filled = mark.style.fill.is_some() || mark.style.gradient.is_some() || !mark.inked();
     let path: BezPath = match &mark.shape {
@@ -128,7 +127,7 @@ pub(crate) fn mark_outline(mark: &Mark) -> Result<BezPath, ActionError> {
 }
 
 /// The marks `ids` name, bottom to top.
-fn named_marks<'a>(art: &'a Artwork, ids: &[String]) -> Result<Vec<&'a Mark>, ActionError> {
+fn named_marks<'a>(art: &'a Artwork, ids: &[String]) -> Result<Vec<&'a Mark>, Refusal> {
     let named: Vec<&str> = units(art, ids)?
         .into_iter()
         .flatten()
@@ -141,7 +140,7 @@ fn named_marks<'a>(art: &'a Artwork, ids: &[String]) -> Result<Vec<&'a Mark>, Ac
         .collect())
 }
 
-fn check_box(value: [f64; 4], what: &str) -> Result<Rect, ActionError> {
+fn check_box(value: [f64; 4], what: &str) -> Result<Rect, Refusal> {
     let [x, y, width, height] = value;
     if [x, y, width, height]
         .iter()
@@ -178,7 +177,7 @@ impl Select {
     }
 
     /// The area the shapes it names cover, if it names any.
-    fn shapes(&self, art: &Artwork) -> Result<Option<Region>, ActionError> {
+    fn shapes(&self, art: &Artwork) -> Result<Option<Region>, Refusal> {
         let mut parts: Vec<Region> = Vec::new();
         if let Some(rect) = self.rect {
             parts.push(Region::of_rect(check_box(rect, "rect")?));
@@ -212,14 +211,14 @@ impl Select {
             .reduce(|all, part| all.combine(&part, Op::Union)))
     }
 
-    pub(crate) fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
         if self.looks() {
             return Err(refuse(
-                "at, colour, subject and refine are found in the artwork as the window shows it: use the select action itself, not apply",
+                "at, colour, subject and refine are found in the artwork as the window shows it, where select is invoked; subject and refine through find-area",
             ));
         }
         if self.mode.as_deref() == Some("none") {
-            doc::write_selection(doc, None)?;
+            doc.selection = None;
             return Ok(());
         }
         let shapes = self.shapes(art)?;
@@ -268,7 +267,7 @@ impl Select {
             .combine(&Region::of_rect(art.bounds()), Op::Intersect)
             .bounded(0.25);
         if region.is_empty() {
-            doc::write_selection(doc, None)?;
+            doc.selection = None;
             return Ok(());
         }
         // A new selection starts sharp; a changed one keeps its feather.
@@ -293,20 +292,17 @@ impl Select {
         {
             return Err(refuse("a matte is a content address and a box"));
         }
-        doc::write_selection(
-            doc,
-            Some(&Selection {
-                d: path_data(&region.to_path()),
-                feather,
-                matte,
-            }),
-        )?;
+        doc.selection = Some(Selection {
+            d: path_data(&region.to_path()),
+            feather,
+            matte,
+        });
         Ok(())
     }
 }
 
 /// The selection's shape as a mark's geometry.
-fn selected_shape(art: &Artwork) -> Result<(Shape, f64), ActionError> {
+fn selected_shape(art: &Artwork) -> Result<(Shape, f64), Refusal> {
     let selection = art
         .selection
         .as_ref()
@@ -320,14 +316,14 @@ fn selected_shape(art: &Artwork) -> Result<(Shape, f64), ActionError> {
 }
 
 impl UseSelection {
-    pub(crate) fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
         if let Some(cleaned) = self
             .cleaned
             .as_deref()
             .filter(|cleaned| !cleaned.is_empty())
         {
             give_pictures(doc, art, cleaned)?;
-            let art = doc::read(doc);
+            let art = doc.settled();
             return Self {
                 cleaned: None,
                 ..self.clone()
@@ -368,8 +364,8 @@ impl UseSelection {
             "mask" | "clear" => {
                 let reveal = self.what == "mask";
                 let owner = owner_of(art, &layer_id)?;
-                let masking = ensure_mask(doc, art, owner, if reveal { 0.0 } else { 1.0 })?;
-                let art = doc::read(doc);
+                let masking = ensure_mask(doc, art, owner, if reveal { 0.0 } else { 1.0 });
+                let art = doc.settled();
                 let style = Style {
                     fill: Some(if reveal { "#ffffff" } else { "#000000" }.into()),
                     feather: feathered,
@@ -419,10 +415,10 @@ impl UseSelection {
 
 /// Give each named picture mark its cleaned picture.
 fn give_pictures(
-    doc: &mut Doc,
+    doc: &mut Artwork,
     art: &Artwork,
     pictures: &[[String; 2]],
-) -> Result<(), ActionError> {
+) -> Result<(), Refusal> {
     for [id, src] in pictures {
         if ui::tilo_actions::content_hash(src).is_none() {
             return Err(refuse(format!("{src:?} is not a content address")));
@@ -437,14 +433,14 @@ fn give_pictures(
             Shape::Image { src: picture, .. } => picture.clone_from(src),
             _ => return Err(refuse(format!("{id:?} is not a picture"))),
         }
-        doc::write_mark(doc, &cleaned)?;
+        doc.put_mark(cleaned.clone());
     }
     Ok(())
 }
 
 /// The ordinary layer `id` names, or the one it masks when it names a
 /// mask: a mask is part of its layer, as the layers panel shows it.
-fn owner_of<'a>(art: &'a Artwork, id: &str) -> Result<&'a Layer, ActionError> {
+fn owner_of<'a>(art: &'a Artwork, id: &str) -> Result<&'a Layer, Refusal> {
     let layer = art
         .layer(id)
         .ok_or_else(|| refuse(format!("there is no layer {id:?}")))?;
@@ -458,14 +454,9 @@ fn owner_of<'a>(art: &'a Artwork, id: &str) -> Result<&'a Layer, ActionError> {
 
 /// The mask of `owner`, made with `base` grey (1 shows all of the layer,
 /// 0 hides it) when it has none: its id.
-fn ensure_mask(
-    doc: &mut Doc,
-    art: &Artwork,
-    owner: &Layer,
-    base: f64,
-) -> Result<String, ActionError> {
+fn ensure_mask(doc: &mut Artwork, art: &Artwork, owner: &Layer, base: f64) -> String {
     if let Some(mask) = art.mask_of(&owner.id) {
-        return Ok(mask.id.clone());
+        return mask.id.clone();
     }
     let named = format!("{}-mask", owner.id);
     let id = if valid_id(&named) && art.layer(&named).is_none() {
@@ -479,52 +470,46 @@ fn ensure_mask(
         .position(|layer| layer.id == owner.id)
         .and_then(|at| art.layers.get(at.saturating_add(1)))
         .map(|layer| layer.order.as_str());
-    doc::write_layer(
-        doc,
-        &Layer {
-            id: id.clone(),
-            name: format!("{} mask", owner.name),
-            order: order::between(Some(&owner.order), above),
-            opacity: 1.0,
-            visible: true,
-            mask_of: owner.id.clone(),
-            base,
-            ..Layer::default()
-        },
-    )?;
-    Ok(id)
+    doc.put_layer(Layer {
+        id: id.clone(),
+        name: format!("{} mask", owner.name),
+        order: order::between(Some(&owner.order), above),
+        opacity: 1.0,
+        visible: true,
+        mask_of: owner.id.clone(),
+        base,
+        ..Layer::default()
+    });
+    id
 }
 
 /// Give `layer` a mask (`reveal` all, or `hide` all), `remove` it, or
 /// `unlink` it from (or `link` it to) the layer's marks as they move.
 pub(crate) fn edit_mask(
-    doc: &mut Doc,
+    doc: &mut Artwork,
     art: &Artwork,
     layer: &str,
     what: &str,
-) -> Result<(), ActionError> {
+) -> Result<(), Refusal> {
     let owner = owner_of(art, layer)?;
     match what {
         "reveal" | "hide" => {
             let base = if what == "reveal" { 1.0 } else { 0.0 };
             match art.mask_of(&owner.id) {
-                Some(mask) => doc::write_layer(
-                    doc,
-                    &Layer {
-                        base,
-                        ..mask.clone()
-                    },
-                )?,
+                Some(mask) => doc.put_layer(Layer {
+                    base,
+                    ..mask.clone()
+                }),
                 None => {
-                    ensure_mask(doc, art, owner, base)?;
+                    ensure_mask(doc, art, owner, base);
                 }
             }
             Ok(())
         }
         "remove" => {
             if let Some(mask) = art.mask_of(&owner.id) {
-                remove_layer_marks(doc, art, &mask.id)?;
-                doc::remove(doc, doc::LAYERS, &mask.id)?;
+                remove_layer_marks(doc, art, &mask.id);
+                doc.drop_layer(&mask.id);
             }
             Ok(())
         }
@@ -535,13 +520,10 @@ pub(crate) fn edit_mask(
                     owner.id
                 ))
             })?;
-            doc::write_layer(
-                doc,
-                &Layer {
-                    unlinked: what == "unlink",
-                    ..mask.clone()
-                },
-            )?;
+            doc.put_layer(Layer {
+                unlinked: what == "unlink",
+                ..mask.clone()
+            });
             Ok(())
         }
         other => Err(refuse(format!(
@@ -551,19 +533,14 @@ pub(crate) fn edit_mask(
 }
 
 /// Remove every mark of `layer`.
-pub(crate) fn remove_layer_marks(
-    doc: &mut Doc,
-    art: &Artwork,
-    layer: &str,
-) -> Result<(), ActionError> {
+pub(crate) fn remove_layer_marks(doc: &mut Artwork, art: &Artwork, layer: &str) {
     for mark in art.marks_of(layer) {
-        doc::remove(doc, doc::MARKS, &mark.id)?;
+        doc.remove_mark(&mark.id);
     }
-    Ok(())
 }
 
 impl Combine {
-    pub(crate) fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
         let op = Op::parse(&self.op).ok_or_else(|| {
             refuse(format!(
                 "op {:?} must be union, subtract, intersect or exclude",
@@ -580,7 +557,7 @@ impl Combine {
         let outlines = marks
             .iter()
             .map(|mark| mark_outline(mark))
-            .collect::<Result<Vec<BezPath>, ActionError>>()?;
+            .collect::<Result<Vec<BezPath>, Refusal>>()?;
         // Subtract takes everything above from the bottom shape.
         let region = outlines
             .iter()
@@ -616,9 +593,9 @@ impl Combine {
             ..(*bottom).clone()
         };
         for mark in rest {
-            doc::remove(doc, doc::MARKS, &mark.id)?;
+            doc.remove_mark(&mark.id);
         }
-        doc::write_mark(doc, &combined)?;
+        doc.put_mark(combined);
         Ok(())
     }
 }

@@ -149,26 +149,6 @@ pub fn set_ntp(enabled: bool) -> Result<(), String> {
     )
 }
 
-/// Current wall-clock time, formatted 24-hour (`14:05`) or 12-hour
-/// (`02:05 PM`) per `h24`.
-///
-/// # Errors
-///
-/// Returns an error message if `date` is not installed or the command fails.
-pub fn now_clock(h24: bool) -> Result<String, String> {
-    let fmt = if h24 { "+%H:%M" } else { "+%I:%M %p" };
-    Ok(run_capture("date", &[fmt])?.trim().to_string())
-}
-
-/// Current date, e.g. `Monday, 4 July 2026`.
-///
-/// # Errors
-///
-/// Returns an error message if `date` is not installed or the command fails.
-pub fn now_date() -> Result<String, String> {
-    Ok(run_capture("date", &["+%A, %-d %B %Y"])?.trim().to_string())
-}
-
 /// Parse the `yes`/`no` value from `timedatectl show -p NTP --value`.
 fn parse_timedatectl_ntp(stdout: &str) -> Result<bool, String> {
     match stdout.trim() {

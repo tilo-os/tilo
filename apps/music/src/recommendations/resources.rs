@@ -2,7 +2,7 @@ use ui::tilo_actions::Resource;
 use ui::tilo_resource::Effect;
 
 use super::{Input, suggestion, suggestions};
-use crate::actions::{MusicAction, MusicEffect, Place, immediate_spec};
+use crate::actions::{MusicEffect, Place};
 use crate::model::Library;
 
 pub const PREFERENCES: &str = "music.recommendation-preferences:library";
@@ -19,7 +19,7 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
             Resource::new(
                 id,
                 "music.recommendation-preferences",
-                ui::i18n!("music-recommendations-title"),
+                crate::i18n::t("music-recommendations-title"),
             )
             .with_action(open())
             .with_children(Input::ALL.into_iter().filter_map(|input| {
@@ -37,32 +37,21 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
                 format!(
                     "{}: {}",
                     input.label(),
-                    ui::i18n!(if enabled {
+                    crate::i18n::t(if enabled {
                         "music-recommendations-enabled"
                     } else {
                         "music-recommendations-disabled"
                     })
                 ),
             )
-            .with_action(immediate_spec(
-                "set-input",
-                &ui::i18n!(if enabled {
-                    "music-recommendations-disable"
-                } else {
-                    "music-recommendations-enable"
-                }),
-                &MusicAction::SetRecommendationInput {
-                    input,
-                    enabled: !enabled,
-                },
-            )),
+            .with_action(open()),
         );
     }
     if let Some(track) = id.strip_prefix("music.recommendation:") {
         return song_resource(lib, id, track);
     }
     if let Some(artist) = id.strip_prefix("music.recommendation-artist:") {
-        let preferred = lib.recommendations.preferred_artists.contains(artist);
+        let preferred = lib.recommendations.prefers(artist);
         if !preferred && lib.artist(artist).is_none() {
             return None;
         }
@@ -72,25 +61,14 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
                 "music.recommendation-artist",
                 lib.artist(artist).map_or(artist, |a| a.name.as_str()),
             )
-            .with_action(immediate_spec(
-                "set-preferred",
-                &ui::i18n!(if preferred {
-                    "music-recommendations-unprefer"
-                } else {
-                    "music-recommendations-prefer"
-                }),
-                &MusicAction::SetRecommendationArtist {
-                    artist: artist.into(),
-                    preferred: !preferred,
-                },
-            )),
+            .with_action(open()),
         );
     }
     None
 }
 
 fn song_resource(lib: &Library, id: &str, track: &str) -> Option<Resource> {
-    let dismissed = lib.recommendations.dismissed.contains(track);
+    let dismissed = lib.recommendations.is_dismissed(track);
     let suggestion = suggestion(lib, track);
     if suggestion.is_none() && !dismissed {
         return None;
@@ -110,7 +88,7 @@ fn song_resource(lib: &Library, id: &str, track: &str) -> Option<Resource> {
     } else {
         play.unavailable(
             "missing_track",
-            ui::i18n!("music-recommendations-missing-track"),
+            crate::i18n::t("music-recommendations-missing-track"),
         )
     };
     let row = Resource::new(id, "music.recommendation", label)
@@ -120,19 +98,7 @@ fn song_resource(lib: &Library, id: &str, track: &str) -> Option<Resource> {
             }
             .bound(),
         )
-        .with_action(play)
-        .with_action(immediate_spec(
-            if dismissed { "restore" } else { "dismiss" },
-            &ui::i18n!(if dismissed {
-                "music-recommendations-restore"
-            } else {
-                "music-recommendations-dismiss"
-            }),
-            &MusicAction::SetRecommendationDismissed {
-                track: track.into(),
-                dismissed: !dismissed,
-            },
-        ));
+        .with_action(play);
     Some(row)
 }
 

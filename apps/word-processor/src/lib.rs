@@ -24,11 +24,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
@@ -41,6 +37,7 @@ pub mod effects;
 mod find_bar;
 pub mod framework;
 pub mod i18n;
+pub mod model;
 mod outline_pane;
 mod paint_context;
 mod review_overlay;
@@ -58,10 +55,9 @@ pub mod word_processor;
 pub use styles::{StyleProps, StyleSheet};
 pub use widget::{PersonalDictionary, WordProcessorWidget, WriterLayout};
 
-/// The kind of a Writer document record: the rich-text resource the native
-/// app, the workspace host and the browser all open. Records stamped with the
-/// former `document` read as this kind (see [`ui::RecordKind::new`]).
-pub const RECORD_KIND: &str = <tilo_document::RichText as tilo_resource::Resource>::KIND;
+/// The kind of a Writer document record, which the native app, the
+/// workspace host and the browser all open.
+pub const RECORD_KIND: &str = <model::Document as tilo_resource::Resource>::KIND;
 
 /// Initialize a new record as an empty Writer document: the document
 /// resource's genesis, for hosts that reserve a record outside the app.
@@ -87,7 +83,7 @@ pub(crate) fn initialized_state() -> ui::State {
 /// The word processor as every host mounts it: the framework app over the
 /// document's rich-text record.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<framework::WordProcessorApp>()
+    ui::built_in_definition!(framework::WordProcessorApp)
 }
 
 pub use word_processor::WordProcessor;
@@ -315,14 +311,10 @@ pub fn save_document(
     format: WpFormat,
     content: &dyn tilo_content::ContentSource,
 ) -> std::io::Result<()> {
-    let containers = tilo_doc::model::open(doc, &automerge::ROOT)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-    let dr = tilo_doc::DocRef {
-        doc,
-        c: &containers,
-    };
+    let invalid = |e: String| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+    let doc = crate::model::export_copy(doc).map_err(invalid)?;
     let bytes = format
-        .export(dr, content)
+        .export(doc.as_ref(), content)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     tilo_files::file_at(path)
         .and_then(|(dir, name)| tilo_files::blocking::save_document(&dir, &name, &bytes))
@@ -339,12 +331,12 @@ mod tests {
         let mut doc = AutoCommit::new();
         initialize_empty_document(&mut doc).unwrap();
         let action = import_action(bytes, format, &tilo_content::ContentStore::memory()).unwrap();
-        tilo_actions::Action::apply(&action, &mut doc).unwrap();
+        model::apply(&mut doc, &action).unwrap();
         doc
     }
 
     fn blocks(doc: &AutoCommit) -> Vec<tilo_doc::snapshot::BlockView> {
-        let containers = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let containers = crate::model::open(doc).unwrap();
         tilo_doc::model::materialize(doc, &containers).blocks
     }
 

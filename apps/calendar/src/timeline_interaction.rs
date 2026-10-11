@@ -154,10 +154,6 @@ impl TimelineInteraction {
         }
     }
 
-    pub fn pin_hour(&mut self, hour: f64) {
-        self.viewport.pin_hour(hour);
-    }
-
     pub fn handle_event(
         &mut self,
         cx: &mut InputContext<'_>,

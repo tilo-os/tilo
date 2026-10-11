@@ -448,7 +448,8 @@ mod web {
 use web as system;
 
 // Every backend's rules are pure, so the native test run checks them all.
-#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+#[cfg(test)]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod tests {
     use std::ffi::OsString;
     use std::path::Path;

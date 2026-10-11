@@ -108,15 +108,6 @@ impl ChunkTier {
             _ => None,
         }
     }
-
-    /// The largest chunk this tier produces, or `None` when the body is one
-    /// chunk of any size up to [`SINGLE_MAX`].
-    pub const fn max_chunk(self) -> Option<u32> {
-        match self.cdc_params() {
-            Some((_, _, max)) => Some(max),
-            None => None,
-        }
-    }
 }
 
 #[cfg(test)]

@@ -37,7 +37,7 @@ use crate::compositor::backend::{
 };
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::State;
-use crate::shell::state::{GroupId, StripId, TileContent, WorkspaceTree};
+use crate::shell::state::{GroupId, StripId, TileContent, WorkspaceTree, WorkspaceTreeHandle};
 use tilo_desktop::notifications::{
     Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
 };
@@ -92,6 +92,21 @@ pub struct ClientInput {
     pending_renames: Vec<(u64, String)>,
     /// Where each mirrored surface ended up: `surface id -> (strip, group)`.
     placements: HashMap<u64, (StripId, GroupId)>,
+    /// Advanced whenever [`Self::surfaces`] gains or loses a surface, since
+    /// placements cover only live surfaces.
+    surfaces_epoch: u64,
+    /// The tree generation and surface epoch [`Self::placements`] was last
+    /// derived from; `None` before the first derivation.
+    placements_from: Option<(u64, u64)>,
+    /// The app id of every foreign tab in the tree, as of tree generation
+    /// [`Self::app_ids_generation`]. Capture protection is decided per app,
+    /// for every popup and every streamed frame, so it reads this instead
+    /// of walking the tree.
+    app_ids: HashMap<u64, String>,
+    app_ids_generation: Option<u64>,
+    /// Whole-tree walks made to derive placements and app ids.
+    #[cfg(test)]
+    tree_walks: usize,
     /// evdev codes whose *press* was forwarded to a client. A release
     /// forwards iff its press did — a client never sees a release for a key it never saw pressed (a shell chord).
     forwarded_keys: HashSet<u32>,
@@ -126,6 +141,7 @@ impl ClientInput {
         app_id: Option<String>,
     ) {
         self.surfaces.insert(surface_id, surface);
+        self.surfaces_epoch = self.surfaces_epoch.wrapping_add(1);
         self.pending_adoptions
             .push(PendingAdoption { surface_id, app_id });
     }
@@ -135,6 +151,7 @@ impl ClientInput {
     /// become tabs in their own right.
     pub fn register_transient(&mut self, surface_id: u64, surface: WlSurface) {
         self.surfaces.insert(surface_id, surface);
+        self.surfaces_epoch = self.surfaces_epoch.wrapping_add(1);
     }
 
     /// Drop any queued adoption/removal/rename bookkeeping. The canonical
@@ -164,9 +181,56 @@ impl ClientInput {
         true
     }
 
+    /// Re-derive placements and app ids from the shared tree, but only when
+    /// it was written or the set of live surfaces changed since the last
+    /// derivation: a wakeup that changed neither walks nothing. Returns
+    /// whether the placements changed.
+    pub fn refresh_from_tree(&mut self, handle: &WorkspaceTreeHandle) -> bool {
+        // Loaded before the lock is taken, so the tree read below is at least
+        // this new; a write racing in between only costs one more walk.
+        let generation = handle.generation();
+        let key = (generation, self.surfaces_epoch);
+        if self.placements_from == Some(key) && self.app_ids_generation == Some(generation) {
+            return false;
+        }
+        let tree = handle.read();
+        #[cfg(test)]
+        {
+            self.tree_walks = self.tree_walks.saturating_add(1);
+        }
+        let changed = self.refresh_placements_from_tree(&tree);
+        if self.app_ids_generation != Some(generation) {
+            refresh_app_ids(&mut self.app_ids, &tree);
+            self.app_ids_generation = Some(generation);
+        }
+        drop(tree);
+        self.placements_from = Some(key);
+        changed
+    }
+
+    /// Whether [`Self::app_id`] answers for tree generation `generation`.
+    /// A tree written since the last [`Self::refresh_from_tree`] may have
+    /// renamed or added a tab, so the cache must not be trusted.
+    pub fn app_ids_current(&self, generation: u64) -> bool {
+        self.app_ids_generation == Some(generation)
+    }
+
+    /// The app id of the foreign tab showing `surface`, as of the last
+    /// [`Self::refresh_from_tree`]; check [`Self::app_ids_current`] first.
+    pub fn app_id(&self, surface: u64) -> Option<&str> {
+        self.app_ids.get(&surface).map(String::as_str)
+    }
+
+    /// Whole-tree walks [`Self::refresh_from_tree`] has made.
+    #[cfg(test)]
+    pub(crate) const fn tree_walks(&self) -> usize {
+        self.tree_walks
+    }
+
     /// Record a destroyed foreign toplevel — drops the surface handle immediately and queues the chrome-side tab removal.
     pub fn unregister_toplevel(&mut self, surface_id: u64) {
         self.surfaces.remove(&surface_id);
+        self.surfaces_epoch = self.surfaces_epoch.wrapping_add(1);
         self.pending_adoptions
             .retain(|p| p.surface_id != surface_id);
         self.pending_removals.push(surface_id);
@@ -176,6 +240,7 @@ impl ClientInput {
     /// Remove a transient without queuing a workspace-tab removal.
     pub fn unregister_transient(&mut self, surface_id: u64) {
         self.surfaces.remove(&surface_id);
+        self.surfaces_epoch = self.surfaces_epoch.wrapping_add(1);
         self.clear_surface_input_state(surface_id);
     }
 
@@ -213,6 +278,8 @@ impl ClientInput {
         self.pending_renames.retain(|(id, _)| *id != surface_id);
         self.pending_removals.retain(|id| *id != surface_id);
         self.placements.remove(&surface_id);
+        // Derive again from the tree, exactly as the next wakeup used to.
+        self.surfaces_epoch = self.surfaces_epoch.wrapping_add(1);
     }
 
     /// The surface the seat's keyboard is currently focused on, if any.
@@ -284,7 +351,7 @@ impl ClientInput {
 
 // Pure helpers — no seat, no widgets. Unit-testable in isolation.
 
-fn monotonic_time_ns() -> Option<u128> {
+pub(crate) fn monotonic_time_ns() -> Option<u128> {
     let mut now = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
@@ -972,57 +1039,6 @@ pub fn focus_touch_target(state: &mut State, fb: &mut FrameBuilder, surface_id: 
 
 // Run-loop entry points.
 
-/// Mirror foreign toplevels adopted at the protocol layer into the shell
-/// chrome's workspace tree, and reap the tabs of destroyed ones; `true` when changed. Each becomes its own window group in the active strip.
-pub fn sync_foreign_tabs(state: &mut State, fb: &mut FrameBuilder) -> bool {
-    let adoptions = std::mem::take(&mut state.client_input.pending_adoptions);
-    let removals = std::mem::take(&mut state.client_input.pending_removals);
-    let renames = std::mem::take(&mut state.client_input.pending_renames);
-    if adoptions.is_empty() && removals.is_empty() && renames.is_empty() {
-        return false;
-    }
-    let mut changed = false;
-    let mut placements: Vec<(u64, StripId, GroupId)> = Vec::new();
-
-    fb.with_chrome(|chrome| {
-        {
-            let mut tree = chrome.tree_mut();
-            for adoption in &adoptions {
-                if let Some((strip, group)) =
-                    insert_foreign_group(&mut tree, adoption.surface_id, adoption.app_id.as_deref())
-                {
-                    placements.push((adoption.surface_id, strip, group));
-                    changed = true;
-                }
-            }
-            for surface_id in &removals {
-                if remove_foreign_tab(&mut tree, *surface_id) {
-                    changed = true;
-                }
-            }
-            for (surface_id, app_id) in &renames {
-                if rename_foreign_tab(&mut tree, *surface_id, app_id) {
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            chrome.bump();
-        }
-    });
-
-    for (surface_id, strip, group) in placements {
-        state
-            .client_input
-            .placements
-            .insert(surface_id, (strip, group));
-    }
-    for surface_id in &removals {
-        state.client_input.placements.remove(surface_id);
-    }
-    changed
-}
-
 /// Reconcile the seat's keyboard focus with the shell's focused tab. Called every tick: chrome capture drops client focus outright; otherwise focus follows the active tab.
 pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     let captured = chrome_captures_input(fb);
@@ -1070,6 +1086,33 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
         });
     state.set_activated_toplevel(candidate);
     state.set_client_keyboard_focus(gate_keyboard_focus(candidate, captured));
+}
+
+/// Rebuild `app_ids` from every foreign tab in `tree`, reusing its entries.
+/// The first tab showing a surface wins, as in
+/// [`crate::shell::tab_binding::app_id_for_surface`].
+fn refresh_app_ids(app_ids: &mut HashMap<u64, String>, tree: &WorkspaceTree) {
+    let tabs = tree
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .filter_map(|tab| match &tab.tile {
+            TileContent::Foreign { surface_id, app_id } => Some((*surface_id, app_id)),
+            _ => None,
+        });
+    let mut seen = HashSet::new();
+    for (surface, app_id) in tabs {
+        if !seen.insert(surface) {
+            continue;
+        }
+        if app_ids.get(&surface) != Some(app_id) {
+            app_ids.insert(surface, app_id.clone());
+        }
+    }
+    app_ids.retain(|surface, _| seen.contains(surface));
 }
 
 fn placements_for_live_surfaces(
@@ -2147,21 +2190,19 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
 mod tests {
     use super::*;
     use crate::shell::persist;
-    use winit::event::{DeviceId, KeyEvent};
-    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+    use winit::event::DeviceId;
+    use winit::keyboard::{Key, NamedKey};
 
     fn key_event(logical: Key, pressed: bool) -> WindowEvent {
-        // Mirrors the synthesis helpers already used by the test-control executor: winit's `KeyEvent` has a private platform field, so the struct is zero-initialised.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = if pressed {
-            ElementState::Pressed
-        } else {
-            ElementState::Released
-        };
-        ev.repeat = false;
+        let ev = ui::synthetic_input::key_event(
+            logical,
+            None,
+            if pressed {
+                ElementState::Pressed
+            } else {
+                ElementState::Released
+            },
+        );
         WindowEvent::KeyboardInput {
             device_id: unsafe { std::mem::zeroed::<DeviceId>() },
             event: ev,
@@ -2199,7 +2240,7 @@ mod tests {
                 tree,
             );
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(1210.0, 70.0),
             };
 
@@ -2597,7 +2638,7 @@ mod tests {
                 &mut state,
                 &mut fb,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(640.0, 610.0),
                 },
                 &mods,
@@ -2628,7 +2669,7 @@ mod tests {
                 &mut state,
                 &mut fb,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(523.0, 339.0),
                 },
                 &mods,
@@ -2644,7 +2685,7 @@ mod tests {
                 &mut state,
                 &mut fb,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(880.0, 300.0),
                 },
                 &mods,

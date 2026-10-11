@@ -60,8 +60,16 @@ pub(super) struct HostedPumpReport {
 impl super::App {
     /// A worker has no redraw loop. Advance one bounded model pass using the
     /// same phases as the window runner, without adding caller attribution.
-    pub(crate) fn pump_hosted_model(&mut self) {
+    pub fn pump_hosted_model(&mut self) {
         self.pump_hosted_model_as(host_perf_baseline());
+    }
+
+    /// [`Self::pump_hosted_model`], answering whether the app's record
+    /// changed: a different document under the same widgets, which their
+    /// damage does not describe.
+    #[cfg(feature = "native")]
+    pub(super) fn pump_hosted_model_record_changed(&mut self) -> bool {
+        self.pump_hosted_model_with_record(host_perf_baseline()).1
     }
 
     /// Advance the ordinary dirty-tracked native worker without a window.
@@ -77,6 +85,35 @@ impl super::App {
         self.native_input_snapshot()
     }
 
+    /// Independently sample the existing owner and read gates for diagnosis.
+    /// These observations never admit a mutation or acknowledge a capture.
+    /// A missing owner or refused guard is reported as an unavailable merge phase.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub fn controlled_document_merge_phase_for_test(&self) -> Vec<serde_json::Value> {
+        self.document_routes.owners.iter().map(|entry| {
+            let merge_ready = entry.owners.first().and_then(|owner| {
+                let (store, checkout) = owner.store_checkout();
+                crate::bound_dispatch::can_merge_remote_owned_document(store, checkout).ok()
+            });
+            serde_json::json!({
+                "owners": entry.owners.len(),
+                "merge_ready": merge_ready,
+                "pending_remote": !entry.pending.is_empty(),
+                "committed_read_ready": self.collaboration.manager.document_route_ready(Some(&entry.route)),
+                "committed_read_phase": self.collaboration.manager.controlled_document_read_phase_for_test(&entry.route),
+                "committed_queue": self.committed_documents.iter().filter(|(route, _)| route == &entry.route).count(),
+            })
+        }).collect()
+    }
+
+    /// Observe the production guard for acknowledged private continuity.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub fn controlled_private_continuity_route_for_test(
+        &mut self,
+    ) -> Option<crate::collaboration::RouteSpec> {
+        self.private_continuity_route()
+    }
+
     /// `always_refresh` is the previous behaviour: synchronize, invalidate and
     /// republish unconditionally. Otherwise the pump is dirty-tracked like the
     /// window runner, whose redraw syncs only on `needs_sync`: a pass with no
@@ -84,6 +121,11 @@ impl super::App {
     /// no due widget deadline and no model progress keeps the resource cache
     /// and skips the action-surface rebuild.
     pub(super) fn pump_hosted_model_as(&mut self, always_refresh: bool) -> HostedPumpReport {
+        self.pump_hosted_model_with_record(always_refresh).0
+    }
+
+    /// [`Self::pump_hosted_model_as`], and whether the record changed.
+    fn pump_hosted_model_with_record(&mut self, always_refresh: bool) -> (HostedPumpReport, bool) {
         let started = hosted_pump_timing().then(crate::time::now);
         let _entry = self.enter_wake_scope();
         let (inbound, directory) = self.pump_collab_presence_inner(true);
@@ -158,7 +200,7 @@ impl super::App {
                 report.published
             );
         }
-        report
+        (report, record)
     }
 
     fn take_hosted_wakes(&self) -> Option<(bool, bool)> {
@@ -218,6 +260,14 @@ impl super::App {
         })
     }
 
+    /// A native model pass acknowledges only wakes preceding this drain.
+    /// Later worker completions retain their pending bit for the idle pass.
+    #[cfg(feature = "native")]
+    pub(super) fn update_native_model(&mut self) -> bool {
+        self.needs_sync |= self.take_hosted_wakes().is_some_and(|(_, sync)| sync);
+        self.update_model()
+    }
+
     pub(super) fn update_model(&mut self) -> bool {
         if !self.root_widget.update(&self.state.doc, &self.state.root) {
             return false;
@@ -247,9 +297,25 @@ impl super::App {
             &self.state.root,
         );
         let settled = crate::widget::settle_mark(&self.state.doc) != before;
+        // The record's durability changed and the root synced with it: a
+        // frame presents it. Nothing about the tree changed, so it is not a
+        // rebuild (which would repaint the whole window for a save bubble).
+        // Taken before replaced widgets are looked for, which would read it
+        // as a structure change.
+        let mut save_status =
+            crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
+        // Settlement can have replaced widgets (a surface closing its own
+        // dialog): forget their nodes before dispatch, which may open a
+        // confirmation that captures where focus returns.
+        self.forget_replaced_widgets();
         let submitted = self.dispatch_control_invocations() != 0;
         if settled || submitted {
             self.root_widget.sync(&self.state.doc, &self.state.root);
+        }
+        save_status |=
+            crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
+        if save_status {
+            self.layout.layout_dirty = true;
         }
         self.invalidate_widget_resource_cache();
         self.needs_sync = false;
@@ -262,6 +328,29 @@ impl super::App {
     /// until the next layout rebuilds it. Drop the map now, so nothing in
     /// between (the cursor and tooltip a pointer move looks up, a key's
     /// focused target) reaches a widget that is gone. Whether it did.
+    /// Where focus is, as an identity that survives a rebuild. The layout's
+    /// map is read only while it still describes the live tree: replaced
+    /// widgets are forgotten first, and then the focused control is found
+    /// in the live tree instead.
+    pub(super) fn capture_focus_identity(
+        &mut self,
+    ) -> Option<crate::widget::layout::CompositionFocus> {
+        if self.forget_replaced_widgets() || self.layout.node_map.is_empty() {
+            return crate::widget::layout::CompositionFocus::capture_live(
+                self.root_widget.as_ref(),
+            );
+        }
+        // SAFETY: no widget was replaced since the map was admitted, so it
+        // describes this exclusively owned live tree.
+        unsafe {
+            crate::widget::layout::CompositionFocus::capture(
+                self.focused_node,
+                &self.layout.node_map,
+                &self.bindings,
+            )
+        }
+    }
+
     pub(super) fn forget_replaced_widgets(&mut self) -> bool {
         if !self.take_composition_dirty() {
             return false;
@@ -282,8 +371,23 @@ impl super::App {
         changed
     }
 
+    #[cfg(feature = "native")]
+    pub(super) fn service_native_idle_model(&mut self) -> IdleModelProgress {
+        let mut changed = self.service_idle_model().changed;
+        // Hidden windows may not receive frame callbacks. Only an unconsumed
+        // model wake advances their owner; presentation notifications stay on
+        // the redraw path. Prepare the checked owner exactly as a frame does.
+        if self.take_hosted_wakes().is_some_and(|(_, sync)| sync) {
+            changed |= self.swap_requested_component() | self.record_tick();
+            changed |= self.update_model();
+            changed |= self.sync_model(true);
+        }
+        IdleModelProgress { changed }
+    }
+
     pub(super) fn service_idle_model(&mut self) -> IdleModelProgress {
-        let changed = self.service_local_control_history();
+        let history_changed = self.refresh_local_undo_discovery();
+        let changed = self.service_local_control_history() || history_changed;
         // This is local writer progress, never a durable owner receipt. The
         // existing scoped publication barrier still gates terminal success.
         #[cfg(feature = "native")]

@@ -152,6 +152,7 @@ fn workspace_activity_view_descriptors_use_exact_ids_and_opaque_workspace_payloa
     let descriptors = workspace_view_descriptors(&tree, true);
     for (action, view) in [
         ("room.activity.open", ActivityView::CatchUp),
+        ("room.activity.tasks", ActivityView::Tasks),
         ("room.activity.explore", ActivityView::Explore),
         ("room.activity.replay", ActivityView::Replay),
     ] {
@@ -274,8 +275,12 @@ fn workspace_activity_lists_content_and_filters_by_the_people_it_names() {
         doc,
     )
     .unwrap();
-    let posted =
-        ActionContext::for_resource("Post message", "chat.channel:c", "chat.channel", "general");
+    let posted = ActionContext::for_resource("chat.channel:c", "chat.channel", "general")
+        .with_app("so.tilo.chat", "Chat")
+        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new("so.tilo.chat", "chat.channel", "post-message"),
+            [],
+        )));
     let commit = |record: &mut AutoCommit, context: &ActionContext, at: i64| {
         record.commit_with(
             CommitOptions::default()
@@ -288,14 +293,15 @@ fn workspace_activity_lists_content_and_filters_by_the_people_it_names() {
     record.put(ROOT, "message", "hello").unwrap();
     commit(&mut record, &posted, 1_800_000_000);
     record.put(ROOT, "read", 1).unwrap();
-    let marker = ActionContext::for_resource(
-        "Mark channel read",
-        "chat.channel:c",
-        "chat.channel",
-        "general",
-    )
-    .with_change(ChangeKind::Housekeeping);
+    let marker = ActionContext::for_resource("chat.channel:c", "chat.channel", "general")
+        .with_change(ChangeKind::Housekeeping);
     commit(&mut record, &marker, 1_800_000_001);
+    record.put(ROOT, "preview", "fetched").unwrap();
+    commit(
+        &mut record,
+        &posted.clone().with_change(ChangeKind::External),
+        1_800_000_001,
+    );
     record.set_actor(ActorId::random());
     record.put(ROOT, "message", "hi").unwrap();
     commit(&mut record, &posted, 1_800_000_002);
@@ -317,9 +323,13 @@ fn workspace_activity_lists_content_and_filters_by_the_people_it_names() {
     let labels = pane
         .entries()
         .iter()
-        .filter_map(|row| row.context.as_ref().map(|c| c.action_label.clone()))
+        .map(|row| row.summary.clone())
         .collect::<Vec<_>>();
-    assert_eq!(labels, ["Post message", "Post message"], "no read marker");
+    assert_eq!(
+        labels,
+        ["Post message in general", "Post message in general"],
+        "no read marker, nothing that came from outside"
+    );
     assert!(
         pane.entries()
             .iter()

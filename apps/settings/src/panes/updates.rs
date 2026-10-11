@@ -15,7 +15,7 @@ use std::time::Duration;
 use tracing::warn;
 use ui::framework::{EffectReply, Effected};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Column, Dropdown, ProgressBar, Row, Spacer, Text, Toggle, Widget};
+use ui::widget::{Button, Column, ProgressBar, Row, Spacer, Text, Widget};
 use ui::{LocalState, WakeHandle};
 
 use crate::codec_pack::{CodecAction, CodecPackStatus, MesaState, PackState};
@@ -23,9 +23,7 @@ use crate::effects::effect;
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::prefs::UpdatePrefs;
-use crate::widgets::{
-    El, caption, card, choice_row, error_caption, error_row, rows, setting_row, value_row,
-};
+use crate::widgets::{El, caption, card, error_caption, error_row, rows, value_row};
 
 const UPDATE_SCHEDULES: &[&str] = &["System schedule", "Daily", "Weekly"];
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -45,16 +43,6 @@ fn run_bounded(
 /// The rollback target when one was read.
 fn target_of(target: &Result<Option<String>, String>) -> Option<&str> {
     target.as_ref().ok().and_then(Option::as_deref)
-}
-
-fn helper_diagnostic(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
-        .take(512)
-        .collect::<String>()
-        .trim()
-        .to_string()
 }
 
 fn schedule_shown(id: &str) -> String {
@@ -226,7 +214,7 @@ fn parse_pretty_name(contents: &str) -> Option<String> {
 fn read_bootc_status() -> Result<String, String> {
     let out = run_bounded("bootc", &["status", "--format", "json"], STATUS_TIMEOUT)?;
     if !out.status.success() {
-        let diagnostic = helper_diagnostic(&out.stderr);
+        let diagnostic = out.stderr_diagnostic();
         return Err(if diagnostic.is_empty() {
             format!("bootc status exited with {}", out.status)
         } else {
@@ -411,7 +399,7 @@ fn start_update_policy(action: &str) -> Result<(), String> {
     if output.status.success() {
         Ok(())
     } else {
-        let error = helper_diagnostic(&output.stderr);
+        let error = output.stderr_diagnostic();
         Err(if error.is_empty() {
             format!("{unit} failed")
         } else {
@@ -476,7 +464,7 @@ impl UpdateControl for RealUpdateControl {
         if out.status.success() {
             return Ok(());
         }
-        let err = helper_diagnostic(&out.stderr);
+        let err = out.stderr_diagnostic();
         Err(if err.is_empty() {
             format!("systemctl {verb} {UPDATE_TIMER} failed")
         } else {
@@ -497,7 +485,7 @@ impl UpdateControl for RealUpdateControl {
         if out.status.success() {
             return Ok(());
         }
-        let err = helper_diagnostic(&out.stderr);
+        let err = out.stderr_diagnostic();
         Err(if err.is_empty() {
             format!("{ROLLBACK_UNIT} failed; see journalctl -u {ROLLBACK_UNIT}")
         } else {
@@ -550,7 +538,7 @@ impl UpdateControl for RealUpdateControl {
         if output.status.success() {
             Ok(())
         } else {
-            let error = helper_diagnostic(&output.stderr);
+            let error = output.stderr_diagnostic();
             Err(if error.is_empty() {
                 "update service failed; see its system journal".into()
             } else {
@@ -622,7 +610,7 @@ impl Rebooter for RealRebooter {
         if out.status.success() {
             Ok(())
         } else {
-            Err(helper_diagnostic(&out.stderr))
+            Err(out.stderr_diagnostic())
         }
     }
 }
@@ -667,9 +655,12 @@ type FirmwareRefreshEvent = Result<
 
 /// A real wall-clock "last checked" stamp, e.g. `Monday, 4 July 2026 14:05`.
 fn now_stamp() -> String {
-    let date = os_actions::now_date().unwrap_or_default();
-    let time = os_actions::now_clock(true).unwrap_or_default();
-    format!("{date} {time}").trim().to_string()
+    let now = ui::clock::local_now();
+    format!(
+        "{} {}",
+        now.format("%A, %-d %B %Y"),
+        ui::clock::time_of_day(&now)
+    )
 }
 
 #[allow(
@@ -895,7 +886,7 @@ impl UpdatesModel {
         )
     }
 
-    /// Replace the codec-pack status source and unit runner (tests).
+    /// Replace the codec-pack status source and unit runner (tests and captures).
     #[must_use]
     pub fn with_codec_pack(mut self, status: CodecStatusProvider, runner: CodecRunner) -> Self {
         self.codec_status = status();
@@ -997,14 +988,26 @@ impl UpdatesModel {
             (PackState::NotInstalled, _) => t("upd-codecs-not-installed"),
             (PackState::WaitingForNetwork, _) => t("upd-codecs-waiting"),
             (PackState::Installing, _) => match &self.codec_status.progress {
-                Some(progress) if !progress.label.is_empty() => t_args(
-                    "upd-codecs-step",
-                    &[
-                        ("label", progress.label.as_str().into()),
-                        ("step", progress.step.to_string().into()),
-                        ("steps", progress.steps.to_string().into()),
-                    ],
-                ),
+                Some(progress) if !progress.label.is_empty() => match progress.megabytes() {
+                    Some((done, total)) => t_args(
+                        "upd-codecs-step-bytes",
+                        &[
+                            ("label", progress.label.as_str().into()),
+                            ("done", done.to_string().into()),
+                            ("total", total.to_string().into()),
+                            ("step", progress.step.to_string().into()),
+                            ("steps", progress.steps.to_string().into()),
+                        ],
+                    ),
+                    None => t_args(
+                        "upd-codecs-step",
+                        &[
+                            ("label", progress.label.as_str().into()),
+                            ("step", progress.step.to_string().into()),
+                            ("steps", progress.steps.to_string().into()),
+                        ],
+                    ),
+                },
                 _ => t("upd-codecs-downloading"),
             },
             (PackState::Removing, _) => t("upd-codecs-removing"),
@@ -1119,7 +1122,14 @@ impl UpdatesModel {
         if !buttons.is_empty() {
             let mut row = Row::new();
             for (label, control_id, effect) in buttons {
-                row = row.push(Box::new(self.button(control_id, &label, effect)));
+                let primary = matches!(&effect, UpdatesEffect::InstallCodecs);
+                let button = self.button(control_id, &label, effect);
+                let button = if primary {
+                    button.role(ui::widget::ButtonRole::Primary)
+                } else {
+                    button
+                };
+                row = row.push(Box::new(button));
             }
             body.push(Box::new(row.push(Box::new(Spacer::new()))));
         }
@@ -1389,15 +1399,9 @@ impl UpdatesModel {
                 value_row(&t("upd-last-checked"), &self.prefs.last_checked),
                 value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
                 match self.timer_enabled {
-                    Some(_) => setting_row(
-                        &automatic,
-                        Box::new(
-                            self.cx.bind(
-                                Toggle::from_state(&LocalState::new(self.prefs.auto))
-                                    .with_id("updates.auto"),
-                                effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
-                            ),
-                        ),
+                    Some(_) => self.cx.row(automatic).id("updates.auto").toggle_effect(
+                        &LocalState::new(self.prefs.auto),
+                        effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
                     ),
                     // Not a switch stuck in one position: a switch that cannot
                     // reach the timer would report "off" for a machine that is
@@ -1405,38 +1409,23 @@ impl UpdatesModel {
                     None => value_row(&automatic, &unavailable),
                 },
                 match &schedule_placeholder {
-                    Some(schedule) => choice_row(
-                        &schedule_label,
-                        Box::new(
-                            self.cx.bind(
-                                Dropdown::from_state(
-                                    UPDATE_SCHEDULES
-                                        .iter()
-                                        .map(|id| schedule_shown(id))
-                                        .collect(),
-                                    &LocalState::new(schedule.clone()),
-                                )
-                                .with_placeholder(schedule),
-                                effect(UpdatesEffect::SET_UPDATE_SCHEDULE)
-                                    .map(|shown: String| schedule_from_label(&shown)),
-                            ),
-                        ),
+                    Some(schedule) => self.cx.row(schedule_label).choice_effect(
+                        UPDATE_SCHEDULES.iter().map(|id| schedule_shown(id)),
+                        &LocalState::new(schedule.clone()),
+                        effect(UpdatesEffect::SET_UPDATE_SCHEDULE)
+                            .map(|shown: String| schedule_from_label(&shown)),
                     ),
                     None => value_row(&schedule_label, &unavailable),
                 },
                 match self.allow_metered {
-                    Some(_) => setting_row(
-                        &t("upd-metered"),
-                        Box::new(
-                            self.cx.bind(
-                                Toggle::from_state(&LocalState::new(
-                                    self.allow_metered.unwrap_or(false),
-                                ))
-                                .with_id("updates.metered"),
-                                effect(UpdatesEffect::SET_METERED_UPDATES),
-                            ),
+                    Some(_) => self
+                        .cx
+                        .row(t("upd-metered"))
+                        .id("updates.metered")
+                        .toggle_effect(
+                            &LocalState::new(self.allow_metered.unwrap_or(false)),
+                            effect(UpdatesEffect::SET_METERED_UPDATES),
                         ),
-                    ),
                     None => value_row(&t("upd-metered-short"), &t("upd-metered-unavailable")),
                 },
                 Box::new(
@@ -2230,13 +2219,13 @@ pub enum UpdatesEffect {
     /// Install the available firmware upgrades.
     #[effect(job, destructive)]
     InstallFirmware,
-    /// Install the media codec pack.
+    /// Play more video and audio formats: download the media codecs to this device.
     #[effect(job)]
     InstallCodecs,
-    /// Remove the media codec pack.
+    /// Remove the downloaded media codecs.
     #[effect(job, destructive)]
     RemoveCodecs,
-    /// Check again for the codec pack's hardware video driver.
+    /// Check again for hardware H.264/HEVC support.
     #[effect(job)]
     RefreshCodecs,
     /// Update the system automatically, or only when asked.
@@ -2314,6 +2303,16 @@ impl UpdatesArea {
                 UpdatesModel::new(self.cx.clone())
             } else {
                 UpdatesModel::sample(self.cx.clone())
+            };
+            let model = if !self.cx.reaches_devices()
+                && let Some(status) = self.cx.scene().and_then(|scene| scene.codec_status.clone())
+            {
+                model.with_codec_pack(
+                    Arc::new(move || status.clone()),
+                    Arc::new(|_| Err("a capture cannot change installed formats".into())),
+                )
+            } else {
+                model
             };
             std::rc::Rc::new(std::cell::RefCell::new(model))
         })
@@ -2424,7 +2423,7 @@ mod tests {
                 runs.lock().unwrap().push(action);
                 *status.lock().unwrap() = match (action, outcome.is_ok()) {
                     (CodecAction::Install | CodecAction::Refresh, true) => {
-                        r#"{"state":"installed","mesa":"waiting","desired":true}"#
+                        r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting"},"desired":true}"#
                     }
                     (CodecAction::Install | CodecAction::Refresh, false) => {
                         r#"{"state":"failed","last_error":"offline","desired":true}"#
@@ -2451,63 +2450,48 @@ mod tests {
     }
 
     #[test]
-    fn codec_card_explains_what_and_where_from_and_offers_install() {
+    fn codec_card_is_one_short_line_and_one_button() {
         let runs = Arc::new(Mutex::new(Vec::new()));
         let pane = codec_pane(shared_status(""), runs, Ok(()));
-        let lines = pane.codecs_card_lines();
-        assert_eq!(lines.first().map(String::as_str), Some("Additional codecs"));
-        let explanation = &lines[1];
-        for needle in [
-            "RPM Fusion",
-            "Cisco",
-            "hardware video on AMD and Intel",
-            "screen sharing and calls",
-            "Tilo does not host or distribute",
-            "OpenH264 Video Codec provided by Cisco Systems, Inc.",
-            "remove this pack and install it again",
-            "/usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt",
-        ] {
-            assert!(explanation.contains(needle), "{needle}: {explanation}");
-        }
-        assert!(lines.contains(&"Status: Not installed".to_string()));
         assert_eq!(
-            lines.last().map(String::as_str),
-            Some("Install media codecs")
+            pane.codecs_card_lines(),
+            [
+                "Play more video and audio formats",
+                "Downloaded to this device from the formats' publishers. You can turn it off here at any time.",
+                "Status: Off",
+                "Install",
+            ]
         );
     }
 
     #[test]
     fn every_helper_state_has_its_status_and_controls() {
         let cases: [(&str, &str, &[&str]); 7] = [
-            (
-                r#"{"state":"not-installed"}"#,
-                "Not installed",
-                &["Install media codecs"],
-            ),
+            (r#"{"state":"not-installed"}"#, "Off", &["Install"]),
             (
                 r#"{"state":"waiting-for-network","desired":true}"#,
                 "Waiting for an internet connection",
-                &["Cancel installation"],
+                &["Cancel"],
             ),
             (
-                r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading codecs"}}"#,
-                "Downloading codecs (step 3 of 7)",
+                r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading"}}"#,
+                "Downloading (step 3 of 7)",
                 &[],
             ),
             (
-                r#"{"state":"installed","mesa":"enabled","desired":true}"#,
-                "Installed, including hardware H.264/HEVC",
-                &["Remove media codecs"],
+                r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#,
+                "On, including hardware H.264/HEVC",
+                &["Remove"],
             ),
             (
-                r#"{"state":"installed","mesa":"waiting","desired":true}"#,
-                "waiting for a matching Mesa build from RPM Fusion",
-                &["Check for the hardware driver again", "Remove media codecs"],
+                r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting"},"desired":true}"#,
+                "follows once a matching driver is published",
+                &["Check for hardware support again", "Remove"],
             ),
             (
                 r#"{"state":"failed","last_error":"no route to host","desired":true}"#,
-                "Installation failed: no route to host",
-                &["Try again", "Remove media codecs"],
+                "Could not install: no route to host",
+                &["Try again", "Remove"],
             ),
             (r#"{"state":"removing"}"#, "Removing", &[]),
         ];
@@ -2533,12 +2517,14 @@ mod tests {
     fn a_running_install_shows_the_helpers_progress() {
         let runs = Arc::new(Mutex::new(Vec::new()));
         let status = shared_status(
-            r#"{"state":"installing","desired":true,"progress":{"step":4,"steps":7,"label":"Verifying signatures"}}"#,
+            r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":5,"label":"Downloading","bytes":20000000,"total":40000000}}"#,
         );
         let pane = codec_pane(status, runs, Ok(()));
+        let lines = pane.codecs_card_lines();
+        assert!(lines.contains(&"Progress: 50%".to_string()), "{lines:?}");
         assert!(
-            pane.codecs_card_lines()
-                .contains(&"Progress: 43%".to_string())
+            lines.contains(&"Status: Downloading 20 of 40 MB (step 3 of 5)\u{2026}".to_string()),
+            "{lines:?}"
         );
     }
 
@@ -2550,7 +2536,7 @@ mod tests {
         pane.poll();
         // The device came online and the helper installed in the background.
         *status.lock().unwrap() =
-            r#"{"state":"installed","mesa":"enabled","desired":true}"#.to_string();
+            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#.to_string();
         pane.poll();
         assert_eq!(pane.codec_status().state, PackState::WaitingForNetwork);
         pane.codec_status_file_changed();
@@ -2559,7 +2545,7 @@ mod tests {
         assert!(
             pane.codecs_card_lines()
                 .iter()
-                .any(|line| line.contains("sign out and back in"))
+                .any(|line| line.contains("Sign out and back in"))
         );
     }
 
@@ -2574,17 +2560,14 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("waiting for a matching Mesa build from RPM Fusion"))
+                .any(|line| line.contains("follows once a matching driver is published"))
         );
         assert!(
             lines
                 .iter()
                 .any(|line| line.contains("No restart is needed"))
         );
-        assert_eq!(
-            lines.last().map(String::as_str),
-            Some("Remove media codecs")
-        );
+        assert_eq!(lines.last().map(String::as_str), Some("Remove"));
         assert_eq!(pane.notice(), None);
     }
 
@@ -2606,7 +2589,7 @@ mod tests {
         assert!(lines.contains(&"Status: Starting\u{2026}".to_string()));
         assert!(lines.contains(&"Progress: 0%".to_string()));
         assert!(
-            !lines.iter().any(|line| line == "Install media codecs"),
+            !lines.iter().any(|line| line == "Install"),
             "no second request while one runs"
         );
         release.send(()).unwrap();
@@ -2620,10 +2603,10 @@ mod tests {
         press_and_finish(&mut pane, UpdatesEffect::InstallCodecs);
         assert_eq!(
             pane.notice(),
-            Some("The codec pack could not be changed: offline")
+            Some("The formats could not be changed: offline")
         );
         let lines = pane.codecs_card_lines();
-        assert!(lines.contains(&"Status: Installation failed: offline".to_string()));
+        assert!(lines.contains(&"Status: Could not install: offline".to_string()));
         assert!(lines.contains(&"Try again".to_string()));
         press_and_finish(&mut pane, UpdatesEffect::InstallCodecs);
         assert_eq!(
@@ -2635,7 +2618,9 @@ mod tests {
     #[test]
     fn checking_again_for_the_mesa_build_runs_a_refresh() {
         let runs = Arc::new(Mutex::new(Vec::new()));
-        let status = shared_status(r#"{"state":"installed","mesa":"waiting","desired":true}"#);
+        let status = shared_status(
+            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting"},"desired":true}"#,
+        );
         let mut pane = codec_pane(status, Arc::clone(&runs), Ok(()));
         press_and_finish(&mut pane, UpdatesEffect::RefreshCodecs);
         assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Refresh]);
@@ -2644,14 +2629,16 @@ mod tests {
     #[test]
     fn remove_returns_to_not_installed() {
         let runs = Arc::new(Mutex::new(Vec::new()));
-        let status = shared_status(r#"{"state":"installed","mesa":"enabled","desired":true}"#);
+        let status = shared_status(
+            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#,
+        );
         let mut pane = codec_pane(status, Arc::clone(&runs), Ok(()));
         press_and_finish(&mut pane, UpdatesEffect::RemoveCodecs);
         assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Remove]);
         assert_eq!(pane.codec_status().state, PackState::NotInstalled);
         assert_eq!(
             pane.codecs_card_lines().last().map(String::as_str),
-            Some("Install media codecs")
+            Some("Install")
         );
     }
 

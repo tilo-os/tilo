@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, SyncSender};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -28,7 +29,6 @@ use winit::event::WindowEvent;
 
 use ui::Widget;
 use ui::icons::Icon;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -38,9 +38,7 @@ use ui::widget::{
     MenuItem, SearchField, SidebarDrawer, TextInput, VideoPlayer,
 };
 
-use crate::actions::{self, ChatAction};
 use crate::call::CallState;
-use crate::doc::ChatDoc;
 use crate::geometry::Chrome;
 use crate::identity::LocalIdentity;
 use crate::model::{self, Channel, Id, Message, User, Workspace};
@@ -124,10 +122,6 @@ pub(crate) enum MenuTarget {
     /// One of your own messages — the action menu offers Edit.
     Message(Id),
     /// The workspace background / the sidebar's "+" — create affordances.
-    #[allow(
-        dead_code,
-        reason = "legacy CRDT scope selection remains testable for wire compatibility; production navigation uses Inbox and CurrentContext"
-    )]
     Workspace(Id),
 }
 
@@ -145,7 +139,7 @@ pub(crate) enum MenuAction {
     NewCategory,
     ToggleCollapse,
     /// Archive / unarchive a channel — hides it from the sidebar (reversible
-    /// from Ctrl+K). Dispatches [`ChatAction::ArchiveChannel`](crate::actions::ChatAction).
+    /// from Ctrl+K): an edit of the channel's `archived` field.
     Archive,
     /// Load one of your own messages into the inline editor.
     EditMessage,
@@ -338,14 +332,6 @@ pub(crate) enum Hit {
     /// Toggle the participant list expand/collapse in the overlay.
     CallParticipantsToggle,
     CallMute,
-    /// Share-screen control. The native voice path refuses it (calls are
-    /// microphone audio only); the shipped call chrome does not expose it
-    /// until production has a real screen-capture producer.
-    #[allow(
-        dead_code,
-        reason = "kept for defensive refusal handling and the voice-profile refusal test"
-    )]
-    CallShareScreen,
     CallExpand,
     CallLeave,
     /// Toggle the left flap (rail + channel sidebar).
@@ -395,7 +381,6 @@ impl Hit {
             Self::EditSave => "chat.edit-save".into(),
             Self::EditCancel => "chat.edit-cancel".into(),
             Self::CallMute => "chat.call-mute".into(),
-            Self::CallShareScreen => "chat.call-share-screen".into(),
             Self::CallParticipantsToggle => "chat.call-participants".into(),
             Self::CallExpand => "chat.call-expand".into(),
             Self::CallLeave => "chat.call-leave".into(),
@@ -452,7 +437,7 @@ impl CallChromeMotion {
             self.transition.set_open(
                 open,
                 if theme.reduce_motion {
-                    ui::clock::Duration::ZERO
+                    ui::time::Duration::ZERO
                 } else {
                     theme.tokens.motion.durations.base()
                 },
@@ -530,6 +515,11 @@ pub struct ChatApp {
     /// and `users` remain workspace-scoped projections for rendering.
     pub(crate) search_messages: Vec<Message>,
     pub(crate) search_users: Vec<User>,
+    /// The reviewed feedback reports filed here: each one's id and text.
+    pub(crate) reports: Vec<(Id, String)>,
+    /// The items a search hit or an agent's `open` asked to show, by their
+    /// published ids, shown on the next sync.
+    pub(crate) opened: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
     /// Voice membership per channel in the active workspace (cached from the
     /// CRDT each reload so the sidebar can show presence without re-reading).
     pub(crate) voice_members: HashMap<Id, Vec<crate::model::VoiceMember>>,
@@ -604,7 +594,7 @@ pub struct ChatApp {
     pub(crate) history_anchor: Point,
     /// Your own message currently being edited. The shared multiline input
     /// owns its working text, caret, selection and IME composition until Save
-    /// writes through [`ChatDoc::edit_message`].
+    /// submits the record's `edit-message`.
     pub(crate) editing: Option<Id>,
     pub(crate) edit_input: crate::composer::MessageEditor,
 
@@ -704,13 +694,14 @@ pub struct ChatApp {
 
     // The OS permission gate: routes channel participation + file-embed
     // hydration through the toolkit's permission model. Refreshed from the
-    // `PermissionContext` the compositor passes into `draw`.
+    // `PermissionContext` the compositor scopes around `draw`.
     pub(crate) perms: ChatPermissions,
 
     // The resource's dispatcher: every doc-mutating affordance (Send, a
-    // reaction, the channel/message context menus) applies its action
-    // through it, permission-checked, attributed to this window's person,
-    // recorded in history and replicated. See [`crate::actions`].
+    // reaction, the channel/message context menus) applies its verb or
+    // field edit through it, permission-checked, attributed to this
+    // window's person, recorded in history and replicated. See
+    // [`crate::record`].
     pub(crate) dispatch: Option<ui::framework::Dispatcher<crate::resource::Chat>>,
     /// The voice channel a started call joins once it is in the document.
     pub(crate) pending_call: Option<Id>,
@@ -726,7 +717,7 @@ pub struct ChatApp {
     /// Every action an affordance applied, for tests that compare them with
     /// the published ones.
     #[cfg(test)]
-    pub(crate) dispatched: std::cell::RefCell<Vec<ChatAction>>,
+    pub(crate) dispatched: std::cell::RefCell<Vec<crate::record::ChatAction>>,
 
     // Persistence (None for ephemeral / `--shots` instances).
 
@@ -859,6 +850,8 @@ impl ChatApp {
             messages: Vec::new(),
             search_messages: Vec::new(),
             search_users: Vec::new(),
+            reports: Vec::new(),
+            opened: std::rc::Rc::default(),
             voice_members: HashMap::new(),
             draft_main: String::new(),
             draft_thread: String::new(),
@@ -1009,47 +1002,72 @@ impl ChatApp {
 
     // --- action dispatch ----------------------------------------------------
 
-    /// Apply one [`ChatAction`] through the resource's dispatcher — the
-    /// single document-mutation path of every on-screen affordance, the
+    /// Apply a verb or a field edit through the resource's dispatcher now:
+    /// the single document-mutation path of every on-screen affordance, the
     /// same door the palette and agents use. The projection is reconciled
     /// from the document on the next sync.
-    pub(crate) fn apply_action(&self, doc: &mut ui::widget::Edits<'_>, action: &ChatAction) {
-        #[cfg(test)]
-        self.dispatched.borrow_mut().push(action.clone());
+    pub(crate) fn apply_now(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        submit: impl ui::framework::Submit<crate::resource::Chat>,
+    ) {
+        let Some(invoke) = self.dispatched(submit) else {
+            return;
+        };
         if let Some(dispatch) = &self.dispatch {
             // A refusal changes nothing; the dispatcher reports it.
-            let _ = dispatch.apply_now_with(doc, action, actions::history_context(action));
+            let _ = dispatch.submit_now(doc, invoke);
         }
     }
 
-    /// Submit one [`ChatAction`] through the resource's dispatcher, applied
-    /// after this pass: from a pass that only reads the document (a frame's
-    /// sync, a worker's answer). A refusal is reported by the dispatcher.
-    pub(crate) fn submit_action(&self, action: &ChatAction) {
-        #[cfg(test)]
-        self.dispatched.borrow_mut().push(action.clone());
+    /// Submit a verb or a field edit through the resource's dispatcher,
+    /// applied after this pass: from a pass that only reads the document (a
+    /// frame's sync, a worker's answer). A refusal is reported by the
+    /// dispatcher.
+    pub(crate) fn submit(&self, submit: impl ui::framework::Submit<crate::resource::Chat>) {
+        let Some(invoke) = self.dispatched(submit) else {
+            return;
+        };
         if let Some(dispatch) = &self.dispatch {
-            dispatch.apply(action);
+            dispatch.submit(invoke);
         }
     }
 
+    /// `submit` as the invocation it is, noted for tests.
+    #[cfg_attr(
+        not(test),
+        allow(clippy::unused_self, reason = "a test also keeps what was submitted")
+    )]
+    fn dispatched(
+        &self,
+        submit: impl ui::framework::Submit<crate::resource::Chat>,
+    ) -> Option<ui::tilo_resource::Invoke<crate::resource::Chat>> {
+        let invoke = submit.into_invoke().ok()?;
+        #[cfg(test)]
+        if let Ok(action) = invoke.build(0) {
+            self.dispatched.borrow_mut().push(action.operation);
+        }
+        Some(invoke)
+    }
+
+    /// Make the draft `key` before its composer writes in it: a thread's
+    /// the first time someone answers in it.
     pub(crate) fn ensure_composer_draft(&self, doc: &mut ui::widget::Edits<'_>, key: &str) {
-        if key.is_empty() || ChatDoc::rich_draft_is_settled(doc, key) {
+        if key.is_empty() || crate::projection::has_draft(doc, key) {
             return;
         }
-        self.apply_action(
+        self.apply_now(
             doc,
-            &ChatAction::EnsureRichDraft {
-                key: key.to_string(),
-            },
+            crate::resource::Chat::START_DRAFT.with(crate::record::chat::StartDraft {
+                key: key.to_owned(),
+            }),
         );
     }
 
-    /// The last action an on-screen affordance applied, encoded as the
-    /// published action that builds it would encode it.
+    /// The last action an on-screen affordance applied.
     #[cfg(test)]
-    pub(crate) fn last_dispatched(&self) -> Option<tilo_actions::EncodedAction> {
-        self.dispatched.borrow().last().map(actions::encode)
+    pub(crate) fn last_dispatched(&self) -> Option<crate::record::ChatAction> {
+        self.dispatched.borrow().last().cloned()
     }
 
     /// Test-only: apply what this window submitted to `doc`, as the host
@@ -1059,6 +1077,24 @@ impl ChatApp {
         if let Some(dispatch) = &self.dispatch {
             ui::framework::testing::resolve(dispatch, doc).expect("submitted edits apply");
         }
+    }
+
+    /// Test-only: apply what this window asked the person to confirm (a
+    /// destructive verb), as the door does once they agree, and read the
+    /// record again.
+    #[cfg(test)]
+    pub(crate) fn confirm_asked(&mut self, doc: &mut AutoCommit) {
+        let Some(dispatch) = &self.dispatch else {
+            return;
+        };
+        let mut chat = ui::tilo_resource::Replica::<crate::resource::Chat>::from_doc(doc.clone())
+            .as_invoker(&self.me.id);
+        for action in dispatch.take_asked().expect("what was asked builds") {
+            chat.apply_action(&action)
+                .expect("a confirmed change applies");
+        }
+        *doc = chat.doc().clone();
+        self.reload(doc);
     }
 
     /// Edit through `dispatcher` from now on.
@@ -1109,16 +1145,24 @@ impl ChatApp {
     /// A toggle is a presentation decision; the resulting action is a pure,
     /// idempotent add or remove — the single source of truth both the reaction
     /// chip and the emoji picker resolve to.
-    pub(crate) fn reaction_toggle_action(&self, msg: &str, emoji: &str) -> ChatAction {
+    pub(crate) fn reaction_toggle_action(
+        &self,
+        msg: &str,
+        emoji: &str,
+    ) -> ui::tilo_resource::Invoke<crate::resource::Chat> {
+        use crate::record::chat;
+        use crate::resource::Chat;
         let reacting = self.message(msg).is_some_and(|m| {
             m.reactions
                 .iter()
                 .any(|r| r.emoji == emoji && r.reacted_by(&self.me.id))
         });
+        let message = ui::tilo_resource::Id::from_raw(msg);
+        let emoji = emoji.to_owned();
         if reacting {
-            actions::remove_reaction_action(&self.active_channel, msg, emoji)
+            Chat::UNREACT.with(chat::Unreact { message, emoji })
         } else {
-            actions::add_reaction_action(&self.active_channel, msg, emoji)
+            Chat::REACT.with(chat::React { message, emoji })
         }
     }
 
@@ -1365,82 +1409,13 @@ impl ChatApp {
         }
     }
 
-    /// Headless visual-review hook for the real shell → app call handoff.
-    ///
-    /// This runs after layout so the same `FloatingPlacement` methods used by
-    /// pointer input and the `Suspended` host reply see authoritative app and
-    /// desktop coordinate spaces. The `returning` and `returned` frames land
-    /// on identical geometry on opposite sides of the ownership boundary.
-    /// Stage what a scenario needs once the window is laid out: the floating
-    /// call's ownership edge, or the navigation drawer floating open over a
-    /// narrow window (a choice the drawer records per size class).
-    #[doc(hidden)]
-    pub fn stage_after_layout_for_shot(&mut self, scenario: &str) {
-        // A channel's menu opens on its row, so the channel list is out
-        // (floating over a narrow window).
-        if scenario == "sidebar-narrow" || scenario == "context" {
-            self.reconcile_flaps();
-            self.left_flap.snap(true);
-            self.reconcile_flaps();
-        }
-        if scenario == "thread-narrow" {
-            self.reconcile_flaps();
-            self.right_flap.snap(true);
-            self.reconcile_flaps();
-        }
-        self.stage_floating_call(scenario);
-    }
-
     /// The permission context a scenario is captured under, when it is not
     /// the local unrestricted user: `no-access` is a person the workspace
     /// has granted nothing, so its attachments cannot be opened.
     #[doc(hidden)]
     pub fn shot_permission(scenario: &str) -> Option<ui::permissions::PermissionContext> {
-        (scenario == "no-access").then(|| {
-            ui::permissions::PermissionContext::from_capabilities(
-                ui::permissions::Actor::person(None, crate::model::ME),
-                Vec::new(),
-            )
-        })
-    }
-
-    /// Whether `scenario` stages something on the rows a first frame placed
-    /// ([`Self::stage_after_draw_for_shot`]).
-    #[doc(hidden)]
-    pub fn stages_after_draw(&self, scenario: &str) -> bool {
-        matches!(scenario, "context" | "msgmenu")
-    }
-
-    /// Open a scenario's context menu where a right-click on its row would:
-    /// at the pointer, on the row the menu acts on, read from the frame that
-    /// was just drawn.
-    #[doc(hidden)]
-    pub fn stage_after_draw_for_shot(&mut self, scenario: &str) {
-        let (target, items) = match scenario {
-            "context" => (
-                MenuTarget::Channel("c_frontend".into()),
-                MenuAction::for_channel().to_vec(),
-            ),
-            "msgmenu" => (
-                MenuTarget::Message("m_me2".into()),
-                MenuAction::for_message().to_vec(),
-            ),
-            _ => return,
-        };
-        let row = self
-            .hits
-            .iter()
-            .find_map(|(rect, hit)| match (hit, &target) {
-                (Hit::Channel(id), MenuTarget::Channel(want)) if id == want => Some(*rect),
-                (Hit::MessageMenu { msg }, MenuTarget::Message(want)) if msg == want => Some(*rect),
-                _ => None,
-            });
-        let Some(row) = row else {
-            return;
-        };
-        // The pointer rests on the row's text, a third of the way in.
-        let pointer = Point::new(row.x0 + row.width() / 3.0, row.center().y);
-        self.menu = Some(self.context_menu(target, pointer, items));
+        (scenario == "no-access")
+            .then(|| ui::permissions::PermissionContext::stranger(crate::model::ME))
     }
 
     /// Show the call as the voice service reports a joined call: connected,
@@ -1540,17 +1515,6 @@ impl ChatApp {
             .pin_handoff_for_visual_review(handoff_phase);
     }
 
-    /// Whether this peer is currently sharing its screen — the shared-truth
-    /// flag used by the featured tile and the call-control tests. Chat has no
-    /// local screen-capture producer, so production never sets it.
-    #[allow(
-        dead_code,
-        reason = "queried by call-control tests while the production capture control is hidden"
-    )]
-    pub(crate) fn sharing_screen(&self) -> bool {
-        self.call.sharing
-    }
-
     // --- model lookups ----------------------------------------------------
     pub(crate) fn user(&self, id: &str) -> Option<&User> {
         self.users.iter().find(|u| u.id == id)
@@ -1558,7 +1522,7 @@ impl ChatApp {
 
     /// Take the room's view of the participants off the presence store.
     ///
-    /// Called once per frame from `draw_with_presence`. The presence store is
+    /// Called once per frame from `draw`. The presence store is
     /// seeded from `CollabEvent::Context` — the broker's roster snapshot — so a
     /// name here is the room's answer, arrived over the same transport as the
     /// messages. Nothing a peer says about itself reaches this map.
@@ -1632,7 +1596,11 @@ impl ChatApp {
         if let Some(n) = self.room_names.get(id)
             && !n.trim().is_empty()
         {
-            return n.clone();
+            return if self.is_me(id) {
+                n.clone()
+            } else {
+                crate::identity::shared_name_label(id, n)
+            };
         }
         if let Some(agent) = self.agent_authors.get(id) {
             return agent.clone();
@@ -1640,7 +1608,11 @@ impl ChatApp {
         if let Some(u) = self.users.iter().find(|u| u.id == id)
             && !u.name.trim().is_empty()
         {
-            return u.name.clone();
+            return if self.is_me(id) {
+                u.name.clone()
+            } else {
+                crate::identity::shared_name_label(id, &u.name)
+            };
         }
         // Your own name, which this had no way to reach until the room named
         // it: `me` is not necessarily a row in `users`, which is built from
@@ -1683,31 +1655,9 @@ impl ChatApp {
             .iter()
             .any(|u| u.id == id && u.name.trim() == named.trim());
         if (named != id || stored) && !named.trim().is_empty() {
-            return named;
+            return crate::identity::shared_name_label(id, &named);
         }
-        format!("Someone ({})", Self::unnamed_tag(id))
-    }
-
-    /// Enough of an unresolved id to tell two unnamed people apart.
-    ///
-    /// The tail rather than the head: these ids share a `peer@` prefix and
-    /// differ in their digits, so the first characters are the ones that
-    /// carry no information.
-    fn unnamed_tag(id: &str) -> String {
-        let body = id.rsplit(['@', ':']).next().unwrap_or(id);
-        let tail: String = body
-            .chars()
-            .rev()
-            .take(4)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        if tail.is_empty() {
-            id.to_string()
-        } else {
-            tail
-        }
+        crate::identity::unnamed_label(id)
     }
 
     /// The avatar monogram for `id`, derived from whatever the room calls them
@@ -1938,9 +1888,10 @@ impl ChatApp {
     /// Rebuild the snapshot from the CRDT. Called at the tail of `sync` and
     /// after every mutation so `draw` always reflects the latest document.
     pub(crate) fn reload(&mut self, doc: &AutoCommit) {
-        self.workspaces = ChatDoc::list_workspaces(doc);
-        self.channels = ChatDoc::list_channels(doc);
-        self.categories = ChatDoc::list_categories(doc);
+        let chat = crate::projection::read(doc);
+        self.workspaces = chat.workspace_rows();
+        self.channels = chat.channel_rows();
+        self.categories = chat.category_rows();
         for category in &mut self.categories {
             category.collapsed = self.collapsed.contains(&category.id);
         }
@@ -1974,7 +1925,7 @@ impl ChatApp {
             c.unread = if c.id == self.active_channel {
                 0
             } else {
-                ChatDoc::unread_count(doc, &c.id, &self.me.id)
+                chat.unread(&c.id, &self.me.id)
             };
         }
         // Read every channel's messages once per reload: the open channel,
@@ -1983,34 +1934,42 @@ impl ChatApp {
         let per_channel: Vec<(Id, Vec<Message>)> = self
             .channels
             .iter()
-            .map(|channel| (channel.id.clone(), ChatDoc::list_messages(doc, &channel.id)))
+            .map(|channel| (channel.id.clone(), chat.message_rows(&channel.id)))
             .collect();
         self.messages = per_channel
             .iter()
             .find(|(id, _)| *id == self.active_channel)
             .map_or_else(
-                || ChatDoc::list_messages(doc, &self.active_channel),
+                || chat.message_rows(&self.active_channel),
                 |(_, messages)| messages.clone(),
             );
         self.search_messages = per_channel
             .iter()
             .flat_map(|(_, messages)| messages.iter().cloned())
             .collect();
-        self.search_users = ChatDoc::list_users(doc);
+        self.search_users = chat.user_rows();
+        self.reports = chat
+            .feedback
+            .iter()
+            .filter_map(|(id, report)| {
+                let submission = report.submission.0.as_ref()?;
+                Some((id.to_string(), submission.feedback.text.clone()))
+            })
+            .collect();
         // Drop the body views of messages no longer loaded.
         let shown: HashSet<&str> = self.messages.iter().map(|m| m.id.as_str()).collect();
         self.body_views
             .borrow_mut()
             .retain(|(_, id), _| shown.contains(id.as_str()));
-        self.agent_authors = ChatDoc::agent_authors(doc);
+        self.agent_authors = chat.agent_authors();
         // Who is in a call is projected only from the authenticated local
         // voice service's response.
         self.refresh_native_streams();
-        self.users = self.workspace_people_from(doc, &per_channel);
+        self.users = self.workspace_people_from(&chat, &per_channel);
         // Point each composer at its surface's draft; the editors read it on
         // their next sync (`sync_composers`), keeping the caret while typing.
         self.composer_main.set_key(&self.active_channel);
-        self.draft_main = ChatDoc::draft_text(doc, &self.active_channel);
+        self.draft_main = crate::projection::draft_text(doc, &self.active_channel);
         let ch_name = self
             .channel(&self.active_channel)
             .map(|c| c.name.clone())
@@ -2024,7 +1983,7 @@ impl ChatApp {
         self.draft_thread = if thread_key.is_empty() {
             String::new()
         } else {
-            ChatDoc::draft_text(doc, &thread_key)
+            crate::projection::draft_text(doc, &thread_key)
         };
         self.composer_thread.set_placeholder("Reply in thread");
         self.composer_thread
@@ -2053,7 +2012,7 @@ impl ChatApp {
     /// so a brand-new workspace remains a valid one-person surface.
     fn workspace_people_from(
         &self,
-        doc: &AutoCommit,
+        chat: &crate::record::Chat,
         per_channel: &[(Id, Vec<Message>)],
     ) -> Vec<User> {
         let mut ids: HashSet<Id> = HashSet::from([self.me.id.clone()]);
@@ -2077,7 +2036,8 @@ impl ChatApp {
             }
         }
 
-        let mut people: Vec<_> = ChatDoc::list_users(doc)
+        let mut people: Vec<_> = chat
+            .user_rows()
             .into_iter()
             .filter(|user| ids.contains(&user.id))
             .collect();
@@ -2106,18 +2066,26 @@ impl ChatApp {
         let Some(me) = self.announce.take() else {
             return;
         };
-        let status = model::Presence::Online;
-        if ChatDoc::list_workspaces(doc).is_empty()
-            || ChatDoc::user_is_current(doc, &me.id, &me.name, &me.initials, me.color_idx, status)
+        let chat = crate::projection::read(doc);
+        let color = u32::try_from(me.color_idx).unwrap_or_default();
+        if chat.workspaces.is_empty()
+            || chat.people.iter().any(|person| {
+                person.id.0 == me.id
+                    && person.name == me.name
+                    && person.initials == me.initials
+                    && person.color == color
+                    && person.status == model::Presence::Online
+            })
         {
             return;
         }
-        self.submit_action(&actions::ChatAction::EnsureUser {
-            name: me.name,
-            initials: me.initials,
-            color_idx: me.color_idx,
-            status: status.as_str().to_string(),
-        });
+        self.submit(
+            crate::resource::Chat::INTRODUCE.with(crate::record::chat::Introduce {
+                name: me.name,
+                initials: me.initials,
+                color,
+            }),
+        );
     }
 
     /// Advance the local read watermark for the channel currently in view so
@@ -2128,16 +2096,25 @@ impl ChatApp {
         if self.active_channel.is_empty() || !self.timeline_at_end {
             return;
         }
-        let count = ChatDoc::top_level_count(doc, &self.active_channel) as i64;
-        if count <= ChatDoc::read_watermark(doc, &self.active_channel, &self.me.id) {
+        let chat = crate::projection::read(doc);
+        let count = chat.top_level(&ui::tilo_resource::Id::from_raw(
+            self.active_channel.clone(),
+        ));
+        if i64::try_from(count).unwrap_or(i64::MAX)
+            <= chat.read_mark(&self.active_channel, &self.me.id)
+        {
             return;
         }
         // Read state is a durable collaboration fact.  It is authored through
-        // the same action host as palette "Mark as read", not a side write
-        // that peers/history cannot account for.  The carried count makes the
-        // replay independent of messages arriving after the person viewed it.
-        let action = actions::mark_read_action(&self.active_channel, count);
-        self.submit_action(&action);
+        // the same door as the palette's "Mark as read", not a side write
+        // that peers/history cannot account for.  The carried count keeps a
+        // message that arrives meanwhile unread.
+        self.submit(
+            crate::resource::Chat::MARK_READ.with(crate::record::chat::MarkRead {
+                channel: ui::tilo_resource::Id::from_raw(self.active_channel.clone()),
+                seen: Some(u32::try_from(count).unwrap_or(u32::MAX)),
+            }),
+        );
         if let Some(channel) = self
             .channels
             .iter_mut()
@@ -2766,9 +2743,6 @@ impl ChatApp {
                         Role::ToggleButton,
                         self.call.muted,
                     ),
-                    Hit::CallShareScreen => {
-                        ("Share screen".into(), Role::ToggleButton, self.call.sharing)
-                    }
                     Hit::CallParticipantsToggle => (
                         "Show call participants".into(),
                         Role::ToggleButton,
@@ -3277,6 +3251,7 @@ impl Widget for ChatApp {
             self.reload(doc);
         }
         self.join_pending_call();
+        self.open_requested();
         // The channel in view is read: advance its watermark (no-op when
         // nothing new arrived) so its unread badge stays cleared. Only a
         // presented instance has a viewer; a headless host worker never
@@ -3348,10 +3323,7 @@ impl Widget for ChatApp {
                 ..Default::default()
             }
         };
-        // `new_leaf` on a freshly created tree never fails.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
-        let video_node = taffy.new_leaf(video_style).unwrap();
-        node_map.insert(video_node, &raw mut self.video as *mut dyn Widget);
+        let video_node = taffy.widget_leaf(video_style, node_map, &mut self.video);
         self.video_node = Some(video_node);
 
         // `new_with_children` only fails when a child belongs to a different
@@ -3378,19 +3350,11 @@ impl Widget for ChatApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
         if !self.presented {
             self.presented = true;
             self.read_on_present = true;
         }
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if !self.call.expanded {
             self.call
                 .placement
@@ -3426,6 +3390,18 @@ impl Widget for ChatApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Adopt the OS-provided permission context so channel participation and
+        // file-embed hydration are gated by the real grant policy (the
+        // compositor scopes each app's context around its draw every frame).
+        if let Some(permissions) = presence.permission_context() {
+            self.perms = ChatPermissions::from_context(permissions);
+        }
+        // Adopt the room's answer for who everybody is. Names and colours are
+        // the room's to give: they arrive on the collaboration context stream
+        // and land in the presence store, and this is the one door an app has
+        // onto that store. Taken first so the same frame that learns a name
+        // paints it.
+        self.adopt_room(presence);
         // Adopt this theme's chrome and advance the drawers for this frame.
         self.layout_text_scale = theme.text_scale;
         self.advance_flaps(theme);
@@ -3495,29 +3471,6 @@ impl Widget for ChatApp {
         }
 
         self.hits = hits;
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        // Adopt the OS-provided permission context so channel participation and
-        // file-embed hydration are gated by the real grant policy (the
-        // compositor hands each app its context here every frame).
-        self.perms = ChatPermissions::from_context(permissions.clone());
-        // Adopt the room's answer for who everybody is. Names and colours are
-        // the room's to give: they arrive on the collaboration context stream
-        // and land in the presence store, and this is the one door an app has
-        // onto that store. Taken before `draw` so the same frame that learns a
-        // name paints it.
-        self.adopt_room(presence);
-        // Root spans the whole window — always paint.
-        self.draw(scene, tf, tr, theme, presence);
     }
 
     fn draw_overlay(
@@ -3755,8 +3708,8 @@ impl Widget for ChatApp {
     /// Semantic targets are the same inventory used by pointer and Tab/Enter
     /// input. Keeping this adapter at the widget boundary prevents an
     /// assistive-technology activation from taking a separate, untracked
-    /// mutation path: `on_hit` builds the same `ChatAction` and delegates it
-    /// to `ActionHost` for history and collaboration.
+    /// mutation path: `on_hit` submits the same verb or field edit through
+    /// the dispatcher, for history and collaboration.
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -3826,8 +3779,13 @@ impl Widget for ChatApp {
                         if self.rename.is_none() {
                             return false;
                         }
-                        if !ui::Widget::perform_action(&mut self.rename_input, action, state, path)
-                        {
+                        if !ui::Widget::perform_action(
+                            &mut self.rename_input,
+                            action,
+                            &[],
+                            state,
+                            path,
+                        ) {
                             return false;
                         }
                     }
@@ -3852,11 +3810,17 @@ impl Widget for ChatApp {
         ) {
             return false;
         }
-        let messages_before = matches!(hit, Hit::Send)
-            .then(|| ChatDoc::list_messages(state, &self.active_channel).len());
+        let messages_before = matches!(hit, Hit::Send).then(|| {
+            crate::projection::read(state)
+                .message_rows(&self.active_channel)
+                .len()
+        });
         self.on_hit(hit, state);
         messages_before.is_none_or(|before| {
-            ChatDoc::list_messages(state, &self.active_channel).len() == before.saturating_add(1)
+            crate::projection::read(state)
+                .message_rows(&self.active_channel)
+                .len()
+                == before.saturating_add(1)
         })
     }
 
@@ -4005,12 +3969,13 @@ impl ui::collaboration::participants::Participants for ChatApp {
                     .get(participant.as_str())
                     .map(String::as_str)
                     != Some(label)
-                && let Some(dispatch) = &self.dispatch
             {
-                dispatch.apply(&ChatAction::NameAgent {
-                    participant: participant.as_str().to_owned(),
-                    name: label.to_owned(),
-                });
+                self.submit(crate::resource::Chat::NAME_AGENT.with(
+                    crate::record::chat::NameAgent {
+                        participant: participant.as_str().to_owned(),
+                        name: label.to_owned(),
+                    },
+                ));
             }
             // A host acting as this agent: it is also the local participant.
             if participant.as_str() == self.me.id && !label.is_empty() {
@@ -4126,6 +4091,7 @@ impl ChatApp {
     /// still requests a clean relayout).
     pub(crate) fn request_relayout(&mut self) {
         self.relayout = true;
+        self.canonical_dirty = true;
     }
 }
 
@@ -4134,7 +4100,7 @@ mod identity_on_screen {
     use super::*;
     use ui::widget::Widget;
 
-    /// A window's person joins the roster through `EnsureUser`.
+    /// A window's person joins the roster through `introduce`.
     #[test]
     fn a_live_peer_joins_through_the_user_action() {
         let mut app = ChatApp::new(
@@ -4148,21 +4114,34 @@ mod identity_on_screen {
             "person-1",
         ));
         let mut state = ui::State::new();
-        ChatDoc::seed_starter(&mut state.doc, "owner", "Owner", "OW");
+        crate::testing::starter(&mut state.doc, "owner", "Owner", "OW");
         Widget::sync(&mut app, &state.doc, &state.root);
         app.land(&mut state.doc);
         let recorded = app
             .last_dispatched()
-            .expect("the live peer is submitted as EnsureUser");
-        assert_eq!(recorded.type_id.as_str(), actions::CHAT_ACTION_TYPE);
-        assert!(crate::doc::ChatDoc::user_is_current(
-            &state.doc,
-            &app.me.id,
-            &app.me.name,
-            &app.me.initials,
-            app.me.color_idx,
-            crate::model::Presence::Online,
-        ));
+            .expect("the live peer is submitted as introduce");
+        assert_eq!(
+            serde_json::to_value(&recorded).unwrap(),
+            crate::testing::operation(&crate::resource::Chat::INTRODUCE.with(
+                crate::record::chat::Introduce {
+                    name: app.me.name.clone(),
+                    initials: app.me.initials.clone(),
+                    color: u32::try_from(app.me.color_idx).unwrap(),
+                }
+            ))
+        );
+        let joined = crate::testing::users(&state.doc)
+            .into_iter()
+            .find(|user| user.id == app.me.id)
+            .expect("the window's person is in the roster");
+        assert_eq!(
+            (joined.name, joined.initials, joined.status),
+            (
+                app.me.name.clone(),
+                app.me.initials.clone(),
+                crate::model::Presence::Online
+            )
+        );
     }
 
     #[test]
@@ -4197,6 +4176,48 @@ mod identity_on_screen {
             status: crate::model::Presence::Online,
             is_agent,
         }
+    }
+
+    #[test]
+    fn a_remote_saved_you_name_is_not_the_current_reader() {
+        use ui::widget::Widget as _;
+        let mut app = ChatApp::new_ephemeral();
+        let mut state = ui::State::new();
+        let stranger = "peer@9007495404254172154";
+        crate::testing::starter(&mut state.doc, stranger, "You", "Y");
+        crate::testing::say(
+            &mut state.doc,
+            stranger,
+            "c_general",
+            "Retained foreign message",
+        );
+        app.sync(&state.doc, &state.root);
+        assert_eq!(
+            app.user(stranger)
+                .expect("observe the actual foreign author in the production roster")
+                .name,
+            "You"
+        );
+        let shown = app.user_name(stranger);
+        assert_ne!(
+            shown, "You",
+            "another person's stored name must not read as the current reader"
+        );
+        assert_eq!(
+            app.display_name(stranger),
+            shown,
+            "mentions and message headers name the same foreign person"
+        );
+        assert!(
+            shown.contains("2154"),
+            "ambiguous names must distinguish the actual participant"
+        );
+        assert_eq!(app.user_name(&app.me.id), "You");
+        assert_eq!(
+            crate::testing::users(&state.doc)[0].name,
+            "You",
+            "presentation must not rewrite saved person data"
+        );
     }
 
     #[test]
@@ -4268,7 +4289,7 @@ mod live_draft_presence {
         app.active_channel = "c1a2b3c4-0000-4000-8000-00000000c0de".into();
         app.rect = Rect::new(0.0, 0.0, 1100.0, 720.0);
         let mut doc = AutoCommit::new();
-        ChatDoc::set_draft(&mut doc, &app.active_channel, text);
+        crate::testing::set_draft(&mut doc, &app.active_channel, text);
         app.composer_main.set_key(&app.active_channel);
         app.composer_main.sync(&doc);
         Widget::set_focus(&mut app, true);

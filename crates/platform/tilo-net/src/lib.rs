@@ -33,16 +33,6 @@
 //! [`http`](mod@http) remain for desktop-only code that has not moved to
 //! [`Client`].
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod caps;
 #[cfg(feature = "http")]
 mod client;
@@ -78,7 +68,8 @@ pub use url::Url;
 
 #[cfg(not(target_family = "wasm"))]
 pub use native::tls::{
-    client_config, client_config_with_roots, crypto_provider, install_crypto_provider, system_roots,
+    client_config, client_config_with_roots, crypto_provider, install_crypto_provider,
+    pinned_client_config, system_roots,
 };
 
 /// Every future of the public API is `Send` on every target, so apps can

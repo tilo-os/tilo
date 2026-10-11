@@ -10,6 +10,7 @@
 //! `realtime` feature is on (any app that streams video enables it); in other
 //! builds the feed methods report that nothing was decoded.
 
+use crate::num::f64_of_u64;
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
@@ -954,7 +955,7 @@ impl VideoPlayer {
         if self.duration_ms == 0 {
             0.0
         } else {
-            (ms_to_f64(self.position_ms) / ms_to_f64(self.duration_ms)).clamp(0.0, 1.0)
+            (f64_of_u64(self.position_ms) / f64_of_u64(self.duration_ms)).clamp(0.0, 1.0)
         }
     }
 
@@ -1030,8 +1031,8 @@ impl VideoPlayer {
 
     /// Keep the embedding observation channel bounded under normal playback.
     /// Position/buffering/duration events have already been reflected into the
-    /// widget's state by the caller, while the two terminal cases require an
-    /// app-level outcome.
+    /// widget's state by the caller, while the terminal cases (and the missing
+    /// decoder that explains an error) require an app-level outcome.
     fn record_terminal_media_events(
         &mut self,
         events: impl IntoIterator<Item = media::MediaEvent>,
@@ -1039,7 +1040,9 @@ impl VideoPlayer {
         self.media_events.extend(events.into_iter().filter(|event| {
             matches!(
                 event,
-                media::MediaEvent::Ended | media::MediaEvent::Error(_)
+                media::MediaEvent::Ended
+                    | media::MediaEvent::Error(_)
+                    | media::MediaEvent::MissingDecoder { .. }
             )
         }));
     }
@@ -2264,17 +2267,6 @@ impl VideoPlayer {
     }
 }
 
-/// Millisecond timestamps here are bounded by realistic media durations —
-/// far below 2^53 — so the `u64 -> f64` conversion cannot lose precision in
-/// practice.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "millisecond timestamps are bounded well under 2^53; exact in f64"
-)]
-fn ms_to_f64(ms: u64) -> f64 {
-    ms as f64
-}
-
 /// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
 /// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
 /// but composing two f64-based affine transforms cannot meaningfully
@@ -2385,7 +2377,7 @@ impl Widget for VideoPlayer {
         // `ImageViewer`. `auto` only fills when a flex parent stretches the
         // node; as the root of a tree (a gallery cell, a harness) it
         // resolved to 0×0 and the placeholder glyph landed on the origin.
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -2393,19 +2385,12 @@ impl Widget for VideoPlayer {
             flex_grow: 1.0,
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -2894,7 +2879,7 @@ impl VideoPlayer {
             clippy::cast_sign_loss,
             reason = "frac is clamped to 0.0..=1.0, so frac * duration_ms stays within 0..=duration_ms"
         )]
-        let target = (frac * ms_to_f64(self.duration_ms)) as u64;
+        let target = (frac * f64_of_u64(self.duration_ms)) as u64;
         self.seek_to_ms(target);
     }
 
@@ -3222,44 +3207,10 @@ mod tests {
     use crate::theme::Theme;
     use automerge::AutoCommit;
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn dispatch(vp: &mut VideoPlayer, ev: &WindowEvent) -> bool {
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut focus_target = None;
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let node = NodeId::new(0);
-        vp.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
+    use crate::synthetic_input::mouse_press;
+    use crate::testing::dispatch;
 
     #[test]
     fn transport_keys_and_surface_clicks_drive_the_engine() {
@@ -3560,11 +3511,14 @@ mod tests {
             let mut vp = VideoPlayer::new();
             vp.record_terminal_media_events([
                 media::MediaEvent::Ended,
+                media::MediaEvent::MissingDecoder {
+                    codec: "HEVC".into(),
+                },
                 media::MediaEvent::Error("decoder stopped".into()),
             ]);
             let events = vp.take_media_events();
             assert!(
-                matches!(events.as_slice(), [media::MediaEvent::Ended, media::MediaEvent::Error(message)] if message == "decoder stopped")
+                matches!(events.as_slice(), [media::MediaEvent::Ended, media::MediaEvent::MissingDecoder { codec }, media::MediaEvent::Error(message)] if codec == "HEVC" && message == "decoder stopped")
             );
             assert!(
                 vp.take_media_events().is_empty(),

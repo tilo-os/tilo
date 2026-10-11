@@ -9,8 +9,8 @@
 
 use shell::shell::personal_workspaces::PersonalWorkspaces;
 use shell::shell::state::{
-    AppKind, PeerOrigin, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId, WorkspaceTree,
+    AppKind, PeerOrigin, RoomAuthority, RoomId, Strip, StripId, Tab, TileContent, WindowGroup,
+    WindowWidth, Workspace, WorkspaceId, WorkspaceTree,
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -72,7 +72,7 @@ pub fn seed_research(tree: &mut WorkspaceTree, salt: u16, person: &str) -> RoomI
     let id = WorkspaceId(salted(salt, 1));
     let mut workspace = Workspace::new(id, "Research");
     let room = RoomId::new();
-    workspace.room = room;
+    workspace.set_room(room);
     workspace.set_owner(person.to_string());
     let mut strip = Strip::new(StripId(salted(salt, 2)), "Thesis");
     let draft = salted(salt, 4);
@@ -172,8 +172,18 @@ impl OwnDevice {
             .tree
             .export_room_changes_since(self.room, &[])
             .expect("the laptop is in its room");
+        let laptop = PeerOrigin::hub(0x1A);
+        // The transport authenticates the laptop as a device of the person.
+        let root = self.cert.user_public_key;
+        shown.authenticated_persons.insert(laptop.clone(), root);
+        if shown.room_authority(self.room) != RoomAuthority::Person(root) {
+            // The scene's person is an account name, not the laptop's
+            // certified root, so the signed list cannot pin the person: pin
+            // the laptop the way an invite pins the room's governor.
+            shown.pin_room_authority(self.room, laptop.clone());
+        }
         shown
-            .apply_room_changes(self.room, &changes, &PeerOrigin::hub(0x1A))
+            .apply_room_changes(self.room, &changes, &laptop)
             .expect("the room accepts its owner's device");
         tab_ids(shown)
             .into_iter()

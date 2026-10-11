@@ -15,7 +15,7 @@ use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
     ResourceSurface, SurfaceCx, ViewCx,
 };
-use ui::tilo_resource::{Doc, Invoke, ModelError, NoAction, Resource};
+use ui::tilo_resource::{self, Invoke, Model, resource};
 use ui::widget::Element;
 
 use crate::categories::Category;
@@ -25,24 +25,17 @@ use crate::panes::agent_models::AgentModelsEffect;
 use crate::settings_app::SettingsApp;
 
 /// The Settings resource: the door its effects and live rows are published
-/// on.
-pub struct Settings;
+/// on. It holds nothing (see the module docs).
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Settings {}
 
-impl Resource for Settings {
-    const KIND: &'static str = "settings.root";
-    const LABEL: &'static str = "Settings";
-    const ACTION_TYPE: &'static str = "settings.action";
+#[resource(kind = "settings.root", label = "Settings", search = Settings::panes)]
+impl Settings {}
 
-    type State = ();
-    type Action = NoAction;
-
-    fn read(_doc: &Doc) -> Result<(), ModelError> {
-        Ok(())
-    }
-
+impl Settings {
     /// Every pane, found by its name, summary and the words people use for
     /// it.
-    fn search(_state: &()) -> Vec<ui::tilo_resource::SearchEntry> {
+    fn panes(_: &Self) -> Vec<ui::tilo_resource::SearchEntry> {
         crate::search::pane_entries()
     }
 }
@@ -76,7 +69,9 @@ pub fn parse_settings_uri(uri: &str) -> Result<SettingsEffect, String> {
         }
         .into());
     }
-    let pane = rest.split('/').next().unwrap_or_default();
+    // Pane links only select a view; query and fragment metadata do not
+    // change that selection. Model links retain their stricter id validation.
+    let pane = rest.split(['/', '?', '#']).next().unwrap_or_default();
     // Camera and other apps link to the privacy controls by their common
     // name; the pane is Permissions.
     let pane = match pane {
@@ -110,7 +105,16 @@ impl ResourceApp for SettingsShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Settings>) -> Element {
-        cx.surface(SettingsApp::new())
+        // Private host profiles also own their account stores and mutation journal.
+        let app = match cx.storage().settings_document() {
+            ui::storage::SettingsDocument::Session => SettingsApp::new(),
+            ui::storage::SettingsDocument::File(path) => {
+                SettingsApp::with_config_root(path.parent().unwrap_or(path.as_path()))
+            }
+        };
+        // A pane search hit, or an agent's `open`, shows the pane it names.
+        cx.on_open(app.opener());
+        cx.surface(app)
     }
 
     /// `settings://models/<id>` opens Agent Models at that model's card and
@@ -136,16 +140,40 @@ impl ResourceApp for SettingsShell {
         crate::scenarios::viewport(scenario)
     }
 
+    /// Every section of the person's settings Settings edits: each is a
+    /// record of the person's own, published with its field edits, so the
+    /// palette, agents and assistive technology change it by path.
+    fn records(records: &mut ui::framework::Records<'_>) {
+        records
+            .settings::<crate::prefs::AppearancePrefs>()
+            .settings::<crate::prefs::AccessibilityPrefs>()
+            .settings::<crate::prefs::InputPrefs>()
+            .settings::<ui::text_assistance::TextAssistancePrefs>()
+            .settings::<crate::prefs::PowerPrefs>()
+            .settings::<crate::prefs::UpdatePrefs>()
+            .settings::<crate::prefs::NotificationPrefs>()
+            .settings::<crate::prefs::AudioPrefs>()
+            .settings::<crate::prefs::DisplayPrefs>()
+            .settings::<tilo_locale::Locale>()
+            .settings::<crate::continuity::ContinuityPrivacy>()
+            .settings::<crate::panes::keyboard_shortcuts::DesktopControls>()
+            .settings::<crate::panes::agent_models::AgentProviders>()
+            .settings::<crate::panes::personal_apps::DefaultApps>()
+            .settings::<crate::panes::display::shared_displays::SharedDisplayPrefs>()
+            .settings::<crate::panes::display::shared_displays::AutomaticDisplayPrefs>()
+            .settings::<crate::panes::mouse_keyboard::keyboard_editor::OskSourceSettings>();
+    }
+
     fn fixture(fixture: &mut Fixture<Settings>) {
         crate::scenarios::prepare(fixture);
     }
 }
 
 impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
-    fn present(&mut self, _state: &Rc<()>) {}
+    fn present(&mut self, _state: &Rc<Settings>) {}
 
     fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
-        self.displays().model().borrow_mut().take_host_intent()
+        self.displays().take_host_intent()
     }
 
     fn attach(&mut self, cx: SurfaceCx<Settings>) {
@@ -182,10 +210,94 @@ impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_pane_launch_is_applied_once_and_does_not_leak_to_another_window() {
+        use ui::framework::testing::TestApp;
+
+        let mut app = TestApp::<SettingsShell>::launched(&["settings://updates"])
+            .expect("the actual framework launch");
+        assert_eq!(
+            app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            Some(Category::Updates),
+            "the launch link opens its named pane"
+        );
+        app.effect(&SettingsEffect::from(NavigationEffect::OpenPane {
+            pane: "power".into(),
+        }))
+        .expect("the normal public navigation effect");
+        for _ in 0..3 {
+            app.harness().relayout();
+            assert_eq!(
+                app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+                Some(Category::Power),
+                "later host frames must not replay the consumed Updates launch"
+            );
+        }
+        let mut reopened = app
+            .reopen()
+            .expect("reopen the same profile without arguments");
+        assert_eq!(
+            reopened.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            Some(Category::DEFAULT),
+            "the previous launch argument is not pending on the reopened window"
+        );
+        let mut other = TestApp::<SettingsShell>::new().expect("another ordinary window");
+        assert_eq!(
+            other.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            Some(Category::DEFAULT),
+            "a launch belongs to its window, not a global pane mailbox"
+        );
+        let mut invalid = TestApp::<SettingsShell>::launched(&["--shots"])
+            .expect("an argument that is not a Settings link");
+        assert_eq!(
+            invalid.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            Some(Category::DEFAULT),
+            "the original non-link argument never selects a pane"
+        );
+    }
+
+    #[test]
+    fn pane_links_preserve_query_and_fragment_compatibility() {
+        for uri in [
+            "settings://power?x=1",
+            "settings:power?x=1",
+            "settings://power#battery",
+            "settings://power?x=1#battery",
+        ] {
+            assert_eq!(
+                parse_settings_uri(uri),
+                Ok(NavigationEffect::OpenPane {
+                    pane: "power".into(),
+                }
+                .into()),
+                "{uri}"
+            );
+        }
+        for uri in [
+            "settings://nope?pane=power",
+            "settings://Power#battery",
+            "settings://?pane=power",
+            "settings://user@power?x=1",
+            "settings://power:443#battery",
+            "settings:///power?x=1",
+            "settings://models/u2net-subject?x=1",
+            "settings://models/u2net-subject#card",
+        ] {
+            assert!(parse_settings_uri(uri).is_err(), "{uri}");
+        }
+    }
+
     /// Model links name a validated model id, pane links a known pane, and
     /// anything else is refused rather than guessed.
     #[test]
     fn settings_links_decode_to_what_they_show() {
+        assert_eq!(
+            parse_settings_uri("settings://updates"),
+            Ok(NavigationEffect::OpenPane {
+                pane: "updates".into()
+            }
+            .into())
+        );
         assert_eq!(
             parse_settings_uri("settings://models/u2net-subject"),
             Ok(AgentModelsEffect::ShowLocalModel {

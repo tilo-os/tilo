@@ -13,6 +13,8 @@
 //! Every change is a [`DisplayEffect`] the area's [`DisplayModel`] carries
 //! out.
 
+pub(crate) mod shared_displays;
+
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -24,7 +26,7 @@ use tracing::warn;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, ActionRef, Effect};
-use ui::widget::{Button, Dropdown, Slider, Toggle, Widget};
+use ui::widget::{Dropdown, Slider, Toggle, Widget};
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::effects::{SettingsEffect, effect};
@@ -35,7 +37,7 @@ use crate::prefs::DisplayPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, caption, card, choice_row, error_row, rows, setting_row, setting_row_described, value_row,
+    El, caption, card, error_row, rows, setting_row, setting_row_described, value_row,
 };
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplaySet, DisplayTransaction,
@@ -46,6 +48,9 @@ use settings_store::hardware::{
 impl ui::storage::SettingsSchema for DisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
 }
+
+#[ui::tilo_resource::resource(kind = "settings.display", label = "Displays")]
+impl DisplayPrefs {}
 
 /// What Displays changes: this device's outputs and their arrangement, its
 /// brightness, and the person's display comforts.
@@ -58,24 +63,6 @@ pub enum DisplayEffect {
     /// Follow the ambient light.
     #[effect(returns, idempotent)]
     SetAutomaticBrightness { on: bool },
-    /// Warm the screen's colours.
-    #[effect(returns, idempotent)]
-    SetNightLight { on: bool },
-    /// Warm the colours from sunset to sunrise.
-    #[effect(returns, idempotent)]
-    SetNightLightSchedule { on: bool },
-    /// How warm Night Light makes the screen.
-    #[effect(returns, idempotent)]
-    SetNightLightWarmth {
-        #[param("The warmth, as the list names it")]
-        warmth: String,
-    },
-    /// The scale apps prefer for their interface.
-    #[effect(returns, idempotent)]
-    SetDisplayScale {
-        #[param("100%, 125%, 150%, 175% or 200%")]
-        scale: String,
-    },
     /// An external monitor's brightness, from 0 to 1.
     #[effect(returns, row, idempotent)]
     SetMonitorBrightness { display: String, brightness: f64 },
@@ -104,6 +91,25 @@ pub enum DisplayEffect {
         x: i32,
         y: i32,
     },
+    /// Inspect the observed displays and their shared arrangement, including offline devices.
+    #[effect(view, returns, kind = "read", label = "Inspect shared displays")]
+    InspectSharedDisplays,
+    /// Include a display in the shared layout. This does not allow remote input.
+    #[effect(returns, row, idempotent)]
+    IncludeSharedDisplay {
+        device: String,
+        output: String,
+        revision: u64,
+        on: bool,
+    },
+    /// Set a display's one-based position in the person's display order.
+    #[effect(returns, row, idempotent)]
+    OrderSharedDisplay {
+        device: String,
+        output: String,
+        revision: u64,
+        order: u32,
+    },
     /// Show another display's picture, or extend the workspace. Staged
     /// until applied.
     #[effect(returns, row)]
@@ -128,12 +134,7 @@ pub enum DisplayEffect {
     #[effect(returns, row, idempotent)]
     SetColorProfile { display: String, profile: String },
     /// Read the compositor observations, staged configuration and preview transaction.
-    #[effect(
-        view,
-        returns,
-        permission = "read",
-        label = "Inspect display configuration"
-    )]
+    #[effect(view, returns, kind = "read", label = "Inspect display configuration")]
     InspectDisplayConfiguration,
     /// Show each display's number and name on it for a few seconds.
     #[effect(returns, label = "Identify displays")]
@@ -153,6 +154,10 @@ pub enum DisplayEffect {
         #[param("The tool's executable")]
         tool: String,
     },
+    /// Opt this device into automatic grants to its enrolled online input devices.
+    /// The separate Continuity master and Display/input switches must also be on.
+    #[effect(returns, idempotent)]
+    SetAutomaticDisplayInput { on: bool },
 }
 
 /// Answer `effect` on the area's model.
@@ -163,8 +168,59 @@ pub enum DisplayEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: DisplayEffect,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    if matches!(
+        effect,
+        DisplayEffect::InspectDisplayConfiguration
+            | DisplayEffect::IdentifyDisplays
+            | DisplayEffect::ApplyDisplayChanges
+            | DisplayEffect::KeepDisplayChanges
+            | DisplayEffect::RevertDisplayChanges
+    ) && app.displays().model().borrow().of_device
+    {
+        let command = app.displays().model().borrow().host_command(&effect)?;
+        let inspect = effect == DisplayEffect::InspectDisplayConfiguration;
+        // Only a delivered invocation can name broker-retained original custody.
+        // Physical UI effects have no remote invoker and use the certified local channel.
+        let original = if ui::invocation_scope::current_invoker().is_some() {
+            ui::collaboration::DisplayOrigin::Published(
+                cx.invocation()
+                    .ok_or("The original display invocation is unavailable.")?
+                    .0
+                    .into_bytes(),
+            )
+        } else {
+            ui::collaboration::DisplayOrigin::LocalHost
+        };
+        return Ok(cx.thread(
+            move |_| request_host_display(&command, original),
+            move |app, result, _| {
+                let model = app.displays().model();
+                let mut model = model.borrow_mut();
+                model.accept_host_reply(result?);
+                let value = if inspect {
+                    model.inspection()
+                } else {
+                    let transaction = model
+                        .host_state
+                        .as_ref()
+                        .and_then(|state| state.transaction.as_ref());
+                    serde_json::json!({
+                        "transaction": transaction.map(|value| value.id),
+                        "state": transaction.map(|value| value.state),
+                        "identify_requested_unix_ms": model.host_state.as_ref().and_then(|state| state.identify).map(|request| request.requested_unix_ms),
+                    })
+                };
+                Ok(Effected::value(value))
+            },
+        ));
+    }
+    if effect == DisplayEffect::InspectSharedDisplays {
+        return Ok(Effected::value(
+            app.displays().model().borrow().shared_display_inspection(),
+        ));
+    }
     if effect == DisplayEffect::InspectDisplayConfiguration {
         return Ok(Effected::value(
             app.displays().model().borrow().inspection(),
@@ -175,6 +231,17 @@ pub(crate) fn answer(
         .borrow_mut()
         .apply(&effect)
         .map(Effected::value)
+}
+
+fn request_host_display(
+    command: &settings_store::display_control::DisplayCommand,
+    original: ui::collaboration::DisplayOrigin,
+) -> Result<settings_store::display_control::DisplayReply, String> {
+    let bytes =
+        serde_json::to_vec(command).map_err(|_| "The display request could not be encoded.")?;
+    let reply = ui::collaboration::display_control(bytes, original)?;
+    serde_json::from_slice(&reply)
+        .map_err(|_| "The display service returned an invalid reply.".into())
 }
 
 const NIGHT_LIGHT_TEMPERATURES: &[(&str, u32)] = &[
@@ -513,15 +580,17 @@ fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
         .map_or_else(|| base.clone(), |card| format!("{base} on {card}"))
 }
 
-/// Enumerate real DRM connectors from `/sys/class/drm`. Best-effort: returns
-/// an empty vec when the directory is unavailable (a container under
-/// `--shots`), in which case the pane shows an honest "no displays" note.
-/// Virtual connectors (compositor writeback) are skipped — they are not
-/// displays a user can plug into.
+/// Read capabilities only from the active compositor's leased snapshot.
 fn read_outputs() -> Vec<DisplayOutput> {
-    let mut out: Vec<_> = DisplayHardwareSnapshot::load()
-        .into_iter()
-        .flat_map(|snapshot| snapshot.outputs)
+    DisplayHardwareSnapshot::load()
+        .map_or_else(Vec::new, |snapshot| outputs_from_snapshot(&snapshot))
+}
+
+fn outputs_from_snapshot(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayOutput> {
+    let mut out: Vec<_> = snapshot
+        .outputs
+        .iter()
+        .cloned()
         .map(|snapshot| {
             let label = snapshot_label(&snapshot.descriptor, snapshot.builtin);
             let connector_label = snapshot.descriptor.label().to_string();
@@ -654,6 +723,21 @@ impl DisplayArea {
         }
     }
 
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
+    }
+
+    /// What the host is asked to do for a display move. The host asks on
+    /// every turn of its event loop, the first one before Settings' first
+    /// frame, so asking never reads the displays: a move is only ever
+    /// pending in a model an effect has already read.
+    pub(crate) fn take_host_intent(&self) -> Option<ui::widget::AppHostIntent> {
+        self.model.get()?.borrow_mut().take_host_intent()
+    }
+
     /// One row per connected display and per trusted layout tool.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
@@ -670,6 +754,7 @@ impl DisplayArea {
                 .filter(|display| DisplayModel::device_movable(display))
                 .map(DisplayModel::device_output_row),
         );
+        rows.extend(model.shared_display_rows());
         if model.of_device {
             for tool in &settings_store::display_tools::TrustedDisplayTools::load().tools {
                 rows.push(
@@ -695,8 +780,12 @@ pub struct DisplayModel {
     brightness_control: Arc<dyn BrightnessControl>,
     outputs: Vec<DisplayOutput>,
     device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
+    person_devices: Vec<settings_store::person_displays::PersonDevice>,
+    shared_display_prefs: Followed<shared_displays::SharedDisplayPrefs>,
+    automatic_display_prefs: Followed<shared_displays::AutomaticDisplayPrefs>,
     pending_device_move: Option<settings_store::device_displays::DeviceDisplayMove>,
     awaiting_device_move: Option<(settings_store::device_displays::DeviceDisplayMove, Instant)>,
+    shared_move_revisions: Option<Vec<(String, u64)>>,
     device_move_reply: Option<Rc<std::cell::RefCell<ui::widget::DeviceDisplayMoveReply>>>,
     ambient_sensor_available: bool,
     brightness: f32,
@@ -708,6 +797,11 @@ pub struct DisplayModel {
     output_brightness: BTreeMap<String, f32>,
     pending_candidate: Option<DisplayConfig>,
     last_seen_transaction: Option<(u64, DisplayTransactionState)>,
+    host_state: Option<settings_store::display_control::DisplayReply>,
+    host_poll_deadline: Option<Instant>,
+    host_probe: Option<
+        std::sync::mpsc::Receiver<Result<settings_store::display_control::DisplayReply, String>>,
+    >,
     last_snapshot_check: Instant,
     snapshot_stamp: Option<SystemTime>,
     hardware_probe: Option<std::sync::mpsc::Receiver<HardwareProbe>>,
@@ -792,6 +886,12 @@ impl DisplayModel {
             .device_displays
             .iter()
             .find(|screen| screen.key() == request.screen.key());
+        let request = request.clone();
+        let confirmed = observed.is_some_and(|screen| {
+            screen.online
+                && screen.revision > request.screen.revision
+                && (screen.x, screen.y) == (request.x, request.y)
+        });
         let message = match observed {
             None => Some(t("display-device-move-unavailable")),
             Some(screen) if !screen.online => Some(t("display-device-move-unavailable")),
@@ -804,7 +904,12 @@ impl DisplayModel {
             }
             _ => None,
         };
-        if let Some(message) = message {
+        if let Some(mut message) = message {
+            if confirmed && let Err(error) = self.confirm_shared_device_move(&request.screen.device)
+            {
+                message = error;
+            }
+            self.shared_move_revisions = None;
             self.awaiting_device_move = None;
             self.notice = Some(message);
             self.changed = true;
@@ -843,6 +948,8 @@ impl DisplayModel {
         let output_config = DisplayConfig::load_for(&Self::display_set_of(&outputs));
         let output_brightness = read_output_brightness(&outputs);
         Self {
+            shared_display_prefs: cx.follow::<shared_displays::SharedDisplayPrefs>(),
+            automatic_display_prefs: cx.follow::<shared_displays::AutomaticDisplayPrefs>(),
             prefs: cx.follow::<DisplayPrefs>(),
             cx,
             of_device: true,
@@ -855,8 +962,12 @@ impl DisplayModel {
             pending_candidate: None,
             pending_device_move: None,
             awaiting_device_move: None,
+            shared_move_revisions: None,
             device_move_reply: None,
             last_seen_transaction: None,
+            host_state: None,
+            host_probe: None,
+            host_poll_deadline: None,
             last_snapshot_check: ui::time::now(),
             snapshot_stamp: settings_store::hardware::display_snapshot_path()
                 .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
@@ -868,6 +979,8 @@ impl DisplayModel {
             notice: None,
             arrangement_drag: LocalState::new(None),
             device_arrangement_drag: LocalState::new(None),
+            person_devices: settings_store::person_displays::PersonDisplays::load()
+                .map_or_else(Vec::new, |view| view.devices),
             device_displays: settings_store::device_displays::DeviceDisplaySnapshot::load()
                 .map_or_else(Vec::new, |snapshot| snapshot.displays),
             changed: false,
@@ -904,6 +1017,10 @@ impl DisplayModel {
             color_profile_labels: BTreeMap::new(),
             monitor: None,
         }]);
+        model.person_devices = model
+            .cx
+            .scene()
+            .map_or_else(Vec::new, |scene| scene.person_devices.clone());
         model.device_displays = device_displays;
         model
     }
@@ -912,6 +1029,8 @@ impl DisplayModel {
     /// it what they drive.
     fn detached(cx: PaneCx) -> Self {
         Self {
+            shared_display_prefs: cx.follow::<shared_displays::SharedDisplayPrefs>(),
+            automatic_display_prefs: cx.follow::<shared_displays::AutomaticDisplayPrefs>(),
             prefs: cx.follow::<DisplayPrefs>(),
             cx,
             of_device: false,
@@ -924,8 +1043,12 @@ impl DisplayModel {
             pending_candidate: None,
             pending_device_move: None,
             awaiting_device_move: None,
+            shared_move_revisions: None,
             device_move_reply: None,
             last_seen_transaction: None,
+            host_state: None,
+            host_probe: None,
+            host_poll_deadline: None,
             last_snapshot_check: ui::time::now(),
             snapshot_stamp: None,
             hardware_probe: None,
@@ -937,6 +1060,7 @@ impl DisplayModel {
             arrangement_drag: LocalState::new(None),
             device_arrangement_drag: LocalState::new(None),
             device_displays: Vec::new(),
+            person_devices: Vec::new(),
             changed: false,
         }
     }
@@ -945,10 +1069,6 @@ impl DisplayModel {
     fn with_outputs(mut self, outputs: Vec<DisplayOutput>) -> Self {
         self.outputs = outputs;
         self
-    }
-
-    pub fn outputs(&self) -> &[DisplayOutput] {
-        &self.outputs
     }
 
     /// The outputs the arrangement card lists as rows: only the connected
@@ -967,6 +1087,75 @@ impl DisplayModel {
     }
 
     /// Observed output timing stays separate from a requested candidate.
+    fn transaction(&self) -> Option<DisplayTransaction> {
+        if let Some(state) = &self.host_state {
+            state.transaction.clone()
+        } else {
+            self.of_device.then(DisplayTransaction::load).flatten()
+        }
+    }
+
+    fn host_command(
+        &self,
+        effect: &DisplayEffect,
+    ) -> Result<settings_store::display_control::DisplayCommand, String> {
+        use settings_store::display_control::DisplayCommand;
+        match effect {
+            DisplayEffect::InspectDisplayConfiguration => Ok(DisplayCommand::Inspect),
+            DisplayEffect::IdentifyDisplays => Ok(DisplayCommand::Identify),
+            DisplayEffect::ApplyDisplayChanges => Ok(DisplayCommand::Apply {
+                observed_set: self.display_set(),
+                candidate: self
+                    .pending_candidate
+                    .clone()
+                    .ok_or("There are no staged display changes to apply.")?,
+            }),
+            DisplayEffect::KeepDisplayChanges => Ok(DisplayCommand::Keep {
+                transaction: self
+                    .transaction()
+                    .ok_or("There is no display preview to keep.")?
+                    .id,
+            }),
+            DisplayEffect::RevertDisplayChanges => Ok(DisplayCommand::Revert {
+                transaction: self
+                    .transaction()
+                    .ok_or("There is no display preview to revert.")?
+                    .id,
+            }),
+            _ => Err("This action is not a display transaction request.".into()),
+        }
+    }
+
+    fn accept_host_reply(&mut self, reply: settings_store::display_control::DisplayReply) {
+        let pending = reply.transaction.as_ref().is_some_and(|transaction| {
+            matches!(
+                transaction.state,
+                DisplayTransactionState::Requested
+                    | DisplayTransactionState::AwaitingConfirmation
+                    | DisplayTransactionState::ConfirmRequested
+                    | DisplayTransactionState::RevertRequested
+            )
+        });
+        let same = self
+            .host_state
+            .as_ref()
+            .and_then(|state| state.transaction.as_ref())
+            .map(|transaction| transaction.id)
+            == reply.transaction.as_ref().map(|transaction| transaction.id);
+        if pending && (!same || self.host_poll_deadline.is_none()) {
+            self.host_poll_deadline = Some(ui::time::now() + Duration::from_secs(30));
+        } else if !pending {
+            self.host_poll_deadline = None;
+        }
+        if let Some(transaction) = &reply.transaction {
+            self.settle(transaction);
+        }
+        self.outputs = outputs_from_snapshot(&reply.observed);
+        self.output_config = reply.committed.clone();
+        self.host_state = Some(reply);
+        self.changed = true;
+    }
+
     fn inspection(&self) -> serde_json::Value {
         serde_json::json!({
             "observed_outputs": self.connected_outputs().into_iter().map(|output| {
@@ -981,10 +1170,11 @@ impl DisplayModel {
                 })
             }).collect::<Vec<_>>(),
             "device_displays": self.device_displays,
+            "shared_displays": self.shared_display_inspection(),
             "saved_configuration": self.output_config,
             "staged_configuration": self.staged(),
             "has_staged_changes": self.pending_candidate.is_some(),
-            "transaction": self.of_device.then(DisplayTransaction::load).flatten(),
+            "transaction": self.transaction(),
             "notice": self.notice,
         })
     }
@@ -1265,6 +1455,10 @@ impl DisplayModel {
         }
         self.changed = true;
         let reported = match effect {
+            DisplayEffect::SetAutomaticDisplayInput { on } => self.set_automatic_display_input(*on),
+            DisplayEffect::IncludeSharedDisplay { .. }
+            | DisplayEffect::OrderSharedDisplay { .. } => self.edit_shared_display(effect),
+            DisplayEffect::InspectSharedDisplays => Err(t("display-shared-read-only")),
             DisplayEffect::MoveDeviceDisplay {
                 display,
                 revision,
@@ -1284,6 +1478,7 @@ impl DisplayModel {
                     })
                     .ok_or_else(|| t("display-device-move-unavailable"))?
                     .clone();
+                self.shared_move_revisions = self.capture_shared_move_revisions(&screen.device);
                 self.pending_device_move =
                     Some(settings_store::device_displays::DeviceDisplayMove {
                         screen,
@@ -1317,28 +1512,6 @@ impl DisplayModel {
                 } else {
                     "Automatic brightness disabled.".into()
                 })
-            }
-            DisplayEffect::SetNightLight { on } => {
-                let on = *on;
-                self.save(|prefs| prefs.night_light = on)?;
-                Ok(String::new())
-            }
-            DisplayEffect::SetNightLightSchedule { on } => {
-                let on = *on;
-                self.save(|prefs| prefs.night_light_schedule = on)?;
-                Ok(String::new())
-            }
-            DisplayEffect::SetNightLightWarmth { warmth } => {
-                let kelvin = temperature_from_label(warmth)
-                    .ok_or_else(|| format!("`{warmth}` is not a Night Light warmth"))?;
-                self.save(|prefs| prefs.night_light_temperature = kelvin)?;
-                Ok(String::new())
-            }
-            DisplayEffect::SetDisplayScale { scale } => {
-                let factor =
-                    scale_factor_of(scale).ok_or_else(|| format!("`{scale}` is not a scale"))?;
-                self.save(|prefs| prefs.scale = factor)?;
-                Ok(format!("Display scale set to {scale}."))
             }
             DisplayEffect::SetMonitorBrightness {
                 display,
@@ -1657,10 +1830,62 @@ impl DisplayModel {
             return;
         }
         self.last_snapshot_check = ui::time::now();
+        if let Some(receiver) = &self.host_probe {
+            match receiver.try_recv() {
+                Ok(Ok(reply)) => {
+                    self.host_probe = None;
+                    self.accept_host_reply(reply);
+                }
+                Ok(Err(error)) => {
+                    self.host_probe = None;
+                    self.notice = Some(error);
+                    self.changed = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.host_probe = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if self.host_probe.is_none()
+            && self
+                .host_poll_deadline
+                .is_some_and(|deadline| ui::time::now() < deadline)
+            && self
+                .host_state
+                .as_ref()
+                .and_then(|state| state.transaction.as_ref())
+                .is_some_and(|transaction| {
+                    matches!(
+                        transaction.state,
+                        DisplayTransactionState::Requested
+                            | DisplayTransactionState::AwaitingConfirmation
+                            | DisplayTransactionState::ConfirmRequested
+                            | DisplayTransactionState::RevertRequested
+                    )
+                })
+        {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            self.host_probe = Some(receiver);
+            let wake = ui::WakeHandle::new();
+            std::thread::spawn(move || {
+                let _ = sender.send(request_host_display(
+                    &settings_store::display_control::DisplayCommand::Inspect,
+                    ui::collaboration::DisplayOrigin::LocalHost,
+                ));
+                wake.wake();
+            });
+        }
         let devices = settings_store::device_displays::DeviceDisplaySnapshot::load()
             .map_or_else(Vec::new, |snapshot| snapshot.displays);
         if devices != self.device_displays {
             self.device_displays = devices;
+            self.changed = true;
+        }
+        let person_devices = settings_store::person_displays::PersonDisplays::load()
+            .map_or_else(Vec::new, |view| view.devices);
+        if self.person_devices != person_devices {
+            self.person_devices = person_devices;
             self.changed = true;
         }
         let stamp = settings_store::hardware::display_snapshot_path()
@@ -1668,7 +1893,10 @@ impl DisplayModel {
         if stamp != self.snapshot_stamp {
             self.snapshot_stamp = stamp;
             self.outputs = read_outputs();
-            self.output_config = DisplayConfig::load_for(&self.display_set());
+            self.output_config = self.host_state.as_ref().map_or_else(
+                || DisplayConfig::load_for(&self.display_set()),
+                |state| state.committed.clone(),
+            );
             self.changed = true;
         }
         // Monitor probing finishes in the background; a monitor that turns
@@ -1678,7 +1906,7 @@ impl DisplayModel {
             self.output_brightness = controllable;
             self.changed = true;
         }
-        if let Some(transaction) = DisplayTransaction::load() {
+        if let Some(transaction) = self.transaction() {
             self.settle(&transaction);
         }
     }
@@ -1701,7 +1929,10 @@ impl DisplayModel {
                 .unwrap_or_else(|| "Display configuration was rejected.".into()),
             _ => return,
         };
-        self.output_config = DisplayConfig::load_for(&self.display_set());
+        self.output_config = self.host_state.as_ref().map_or_else(
+            || DisplayConfig::load_for(&self.display_set()),
+            |state| state.committed.clone(),
+        );
         self.pending_candidate = None;
         self.notice = Some(notice);
     }
@@ -1712,6 +1943,9 @@ impl DisplayModel {
         let brightness = self.build_brightness_card();
 
         let mut cards = vec![arrangement];
+        if let Some(shared) = self.build_shared_displays_card() {
+            cards.push(shared);
+        }
         if let Some(devices) = self.build_device_arrangement_card() {
             cards.push(devices);
         }
@@ -1733,11 +1967,13 @@ impl DisplayModel {
     /// Observation alone never makes a screen movable or grants input access.
     fn build_device_arrangement_card(&self) -> Option<El> {
         use super::display_arrangement::{
-            ArrangedDisplay, DisplayArrangement, placement::Placement,
+            ArrangedDisplay, DisplayArrangement, SharedDisplayState, placement::Placement,
         };
         if !self.device_displays.iter().any(|display| !display.local) {
             return None;
         }
+        let layout = self.shared_layout();
+        let mut unknown_number = layout.displays.len().saturating_add(layout.inactive.len());
         let first_local = self
             .device_displays
             .iter()
@@ -1747,9 +1983,20 @@ impl DisplayModel {
             .iter()
             .enumerate()
             .filter_map(|(index, display)| {
+                let resolved = display.output_id.as_deref().and_then(|output| {
+                    layout
+                        .listed()
+                        .find(|resolved| resolved.is(&display.device, output))
+                });
                 Some(ArrangedDisplay {
                     connector: display.key(),
                     movement_group: Some(display.device.clone()),
+                    shared: resolved.map(|resolved| SharedDisplayState {
+                        device: resolved.device.clone(),
+                        output: resolved.output.clone(),
+                        online: resolved.online,
+                        included: resolved.enabled,
+                    }),
                     label: t_args(
                         "display-device-screen",
                         &[
@@ -1766,7 +2013,13 @@ impl DisplayModel {
                             ),
                         ],
                     ),
-                    number: index + 1,
+                    number: resolved.map_or_else(
+                        || {
+                            unknown_number = unknown_number.saturating_add(1);
+                            unknown_number
+                        },
+                        |resolved| resolved.order.saturating_add(1),
+                    ),
                     placement: Placement::new(
                         display.x,
                         display.y,
@@ -1841,15 +2094,10 @@ impl DisplayModel {
                 self.arrangement_drag.clone(),
             )),
             caption(&crate::i18n::t("display-arrangement-hint")),
-            setting_row(
-                &crate::i18n::t("display-identify-row"),
-                Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        "settings.display.identify",
-                        &crate::i18n::t("display-identify"),
-                    ),
-                    DisplayEffect::IdentifyDisplays,
-                )),
+            self.cx.row(crate::i18n::t("display-identify-row")).button(
+                "settings.display.identify",
+                &crate::i18n::t("display-identify"),
+                DisplayEffect::IdentifyDisplays,
             ),
         ];
         // One honest line about the idle ports rather than a row each.
@@ -1909,6 +2157,7 @@ impl DisplayModel {
             next_free_x = next_free_x.max(x.saturating_add(width));
             placed.push(ArrangedDisplay {
                 movement_group: None,
+                shared: None,
                 connector: output.connector.clone(),
                 label: output_title(output),
                 number: numbers.get(index).copied().unwrap_or(index + 1),
@@ -1939,16 +2188,13 @@ impl DisplayModel {
     fn build_brightness_card(&self) -> El {
         let prefs = *self.prefs.get();
         let automatic_brightness = if self.ambient_sensor_available {
-            setting_row(
-                &t("display-auto-brightness"),
-                Box::new(
-                    self.cx.bind(
-                        Toggle::from_state(&LocalState::new(prefs.auto_brightness))
-                            .with_id("display.auto_brightness"),
-                        effect(DisplayEffect::SET_AUTOMATIC_BRIGHTNESS),
-                    ),
-                ),
-            )
+            self.cx
+                .row(t("display-auto-brightness"))
+                .id("display.auto_brightness")
+                .toggle_effect(
+                    &LocalState::new(prefs.auto_brightness),
+                    effect(DisplayEffect::SET_AUTOMATIC_BRIGHTNESS),
+                )
         } else {
             value_row(&t("display-auto-brightness"), &t("display-no-ambient"))
         };
@@ -1963,53 +2209,43 @@ impl DisplayModel {
                             &[("error", error.as_str().into())],
                         ),
                     ),
-                    None => setting_row(
-                        &t("display-brightness"),
-                        Box::new(
-                            self.cx.bind(
-                                Slider::from_state(&LocalState::new(f64::from(self.brightness)))
-                                    .with_id("display.brightness"),
-                                effect(DisplayEffect::SET_BRIGHTNESS),
-                            ),
+                    None => self
+                        .cx
+                        .row(t("display-brightness"))
+                        .id("display.brightness")
+                        .slider_effect(
+                            &LocalState::new(f64::from(self.brightness)),
+                            effect(DisplayEffect::SET_BRIGHTNESS),
                         ),
-                    ),
                 },
                 automatic_brightness,
-                setting_row(
-                    &t("display-night-light"),
-                    Box::new(
-                        self.cx.bind(
-                            Toggle::from_state(&LocalState::new(prefs.night_light))
-                                .with_id("display.night_light"),
-                            effect(DisplayEffect::SET_NIGHT_LIGHT),
-                        ),
+                self.cx
+                    .row(t("display-night-light"))
+                    .id("display.night_light")
+                    .toggle(
+                        &LocalState::new(prefs.night_light),
+                        crate::prefs::DisplayPrefs::paths().night_light,
                     ),
-                ),
-                setting_row_described(
-                    &t("display-night-light-schedule"),
-                    &t("display-night-light-schedule-desc"),
-                    Box::new(
-                        self.cx.bind(
-                            Toggle::from_state(&LocalState::new(prefs.night_light_schedule))
-                                .with_id("display.night_light_schedule"),
-                            effect(DisplayEffect::SET_NIGHT_LIGHT_SCHEDULE),
-                        ),
+                self.cx
+                    .row(t("display-night-light-schedule"))
+                    .described(t("display-night-light-schedule-desc"))
+                    .id("display.night_light_schedule")
+                    .toggle(
+                        &LocalState::new(prefs.night_light_schedule),
+                        crate::prefs::DisplayPrefs::paths().night_light_schedule,
                     ),
-                ),
-                choice_row(
-                    &t("display-night-light-warmth"),
-                    Box::new(
-                        self.cx.bind(
-                            Dropdown::from_state(
-                                temperature_options(),
-                                &LocalState::new(temperature_label(prefs.night_light_temperature)),
-                            )
-                            .with_id("display.night_light_temperature")
-                            .with_placeholder(&temperature_label(prefs.night_light_temperature)),
-                            effect(DisplayEffect::SET_NIGHT_LIGHT_WARMTH),
-                        ),
+                self.cx
+                    .row(t("display-night-light-warmth"))
+                    .id("display.night_light_temperature")
+                    .choice(
+                        temperature_options(),
+                        &LocalState::new(temperature_label(prefs.night_light_temperature)),
+                        crate::prefs::DisplayPrefs::paths().night_light_temperature,
+                        |label: String| {
+                            temperature_from_label(&label)
+                                .ok_or_else(|| format!("`{label}` is not a Night Light warmth"))
+                        },
                     ),
-                ),
                 caption(&t("display-night-light-caption")),
             ]),
         )
@@ -2109,7 +2345,7 @@ impl DisplayModel {
                     )
                 }),
             ),
-            choice_row(
+            setting_row(
                 &t("display-scale"),
                 Box::new(self.choice(
                     &output.connector,
@@ -2119,7 +2355,7 @@ impl DisplayModel {
                     effect(DisplayEffect::SET_OUTPUT_SCALE),
                 )),
             ),
-            choice_row(
+            setting_row(
                 &t("display-position"),
                 Box::new(self.choice(
                     &output.connector,
@@ -2129,7 +2365,7 @@ impl DisplayModel {
                     effect(DisplayEffect::PLACE_DISPLAY),
                 )),
             ),
-            choice_row(
+            setting_row(
                 &t("display-mirroring"),
                 Box::new(self.choice(
                     &output.connector,
@@ -2165,7 +2401,7 @@ impl DisplayModel {
                 .mode
                 .or(output.current_mode)
                 .map_or_else(|| "Preferred".into(), OutputMode::label);
-            out_rows.push(choice_row(
+            out_rows.push(setting_row(
                 "Resolution & refresh rate",
                 Box::new(self.choice(
                     &output.connector,
@@ -2178,7 +2414,7 @@ impl DisplayModel {
         }
         let rotation = transform_options();
         let rotation_current = transform_label(config.transform);
-        out_rows.push(choice_row(
+        out_rows.push(setting_row(
             &t("display-rotation"),
             Box::new(self.choice(
                 &output.connector,
@@ -2272,7 +2508,7 @@ impl DisplayModel {
                         .map(|label| format!("{label} ({id})"))
                 })
                 .unwrap_or_else(|| "System default".into());
-            out_rows.push(choice_row(
+            out_rows.push(setting_row(
                 &t("display-colour-profile"),
                 Box::new(self.choice(
                     &output.connector,
@@ -2289,7 +2525,7 @@ impl DisplayModel {
     /// The safety/apply-transaction card, driven by the on-disk
     /// [`DisplayTransaction`] state machine.
     fn build_safety_card(&self) -> El {
-        let transaction = self.of_device.then(DisplayTransaction::load).flatten();
+        let transaction = self.transaction();
         match transaction.as_ref().map(|transaction| transaction.state) {
             Some(DisplayTransactionState::AwaitingConfirmation) => {
                 let seconds = transaction
@@ -2307,19 +2543,15 @@ impl DisplayModel {
                             "display-keep-caption",
                             &[("seconds", seconds.into())],
                         )),
-                        setting_row(
-                            &t("display-keep-ok"),
-                            Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.keep", &keep),
-                                DisplayEffect::KeepDisplayChanges,
-                            )),
+                        self.cx.row(t("display-keep-ok")).button(
+                            "settings.display.keep",
+                            &keep,
+                            DisplayEffect::KeepDisplayChanges,
                         ),
-                        setting_row(
-                            &t("display-keep-wrong"),
-                            Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.revert", &revert),
-                                DisplayEffect::RevertDisplayChanges,
-                            )),
+                        self.cx.row(t("display-keep-wrong")).button(
+                            "settings.display.revert",
+                            &revert,
+                            DisplayEffect::RevertDisplayChanges,
                         ),
                     ]),
                 )
@@ -2343,12 +2575,10 @@ impl DisplayModel {
                 let mut content = vec![caption(&rejected)];
                 if self.pending_candidate.is_some() {
                     let try_again = t("display-try-again");
-                    content.push(setting_row(
-                        &t("display-retry"),
-                        Box::new(self.cx.bind_invocation(
-                            Button::new("settings.display.apply", &try_again),
-                            DisplayEffect::ApplyDisplayChanges,
-                        )),
+                    content.push(self.cx.row(t("display-retry")).button(
+                        "settings.display.apply",
+                        &try_again,
+                        DisplayEffect::ApplyDisplayChanges,
                     ));
                 }
                 card(&t("display-rejected-title"), rows(content))
@@ -2359,12 +2589,10 @@ impl DisplayModel {
                     &t("display-apply-title"),
                     rows(vec![
                         caption(&t("display-apply-caption")),
-                        setting_row(
-                            &t("display-apply-row"),
-                            Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.apply", &apply),
-                                DisplayEffect::ApplyDisplayChanges,
-                            )),
+                        self.cx.row(t("display-apply-row")).button(
+                            "settings.display.apply",
+                            &apply,
+                            DisplayEffect::ApplyDisplayChanges,
                         ),
                     ]),
                 )
@@ -2388,17 +2616,12 @@ impl DisplayModel {
         }
         let mut content = vec![caption(&crate::i18n::t("display-tools-caption"))];
         for tool in &trusted.tools {
-            content.push(setting_row(
-                tool.name(),
-                Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        "settings.display.tool.forget",
-                        &crate::i18n::t("display-tools-forget"),
-                    ),
-                    DisplayEffect::ForgetDisplayTool {
-                        tool: tool.executable.clone(),
-                    },
-                )),
+            content.push(self.cx.row(tool.name()).button(
+                "settings.display.tool.forget",
+                &crate::i18n::t("display-tools-forget"),
+                DisplayEffect::ForgetDisplayTool {
+                    tool: tool.executable.clone(),
+                },
             ));
         }
         Some(card(&crate::i18n::t("display-tools-title"), rows(content)))
@@ -2414,6 +2637,12 @@ impl PaneModel for DisplayModel {
         self.poll_device_move();
         self.poll_background();
         self.poll_device();
+        if self.automatic_display_prefs.refresh() {
+            self.changed = true;
+        }
+        if self.shared_display_prefs.refresh() {
+            self.changed = true;
+        }
         if self.prefs.refresh() {
             self.changed = true;
         }
@@ -2575,6 +2804,7 @@ mod tests {
             device: "drag-peer".into(),
             device_label: "Laptop".into(),
             connector: "eDP-1".into(),
+            output_id: None,
             label: "Panel".into(),
             online: true,
             local: false,
@@ -2638,6 +2868,7 @@ mod tests {
                 device: "confirmation-peer".into(),
                 device_label: "Peer".into(),
                 connector: "eDP-1".into(),
+                output_id: None,
                 label: "Panel".into(),
                 online: true,
                 local: false,
@@ -2697,6 +2928,7 @@ mod tests {
             device: "timeout-peer".into(),
             device_label: "Peer".into(),
             connector: "eDP-1".into(),
+            output_id: None,
             label: "Panel".into(),
             online: true,
             local: false,
@@ -2735,15 +2967,20 @@ mod tests {
     #[test]
     fn peer_drag_uses_the_mounted_app_semantic_door_and_fixed_revision() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
-        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .unwrap();
+        app.call(
+            "open",
+            serde_json::json!({
+                "anchor": crate::effects::pane_row_id(crate::categories::Category::Displays)
+            }),
+        )
+        .unwrap();
         app.surface::<SettingsApp, _>(|settings| {
             settings.displays().model().borrow_mut().device_displays =
                 vec![settings_store::device_displays::DeviceDisplay {
                     device: "semantic-peer".into(),
                     device_label: "Peer laptop".into(),
                     connector: "eDP-1".into(),
+                    output_id: None,
                     label: "Panel".into(),
                     online: true,
                     local: false,
@@ -2807,9 +3044,12 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new()
             .expect("settings opens headlessly");
         app.settle();
-        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .expect("Displays opens through its declared operation");
+        let open = crate::categories::Category::Displays;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .expect("Displays opens through its declared operation");
         app.settle();
         let surface = app.agent_surface();
         let rows = surface.as_array().expect("published actions");
@@ -2948,6 +3188,93 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn readonly_display_surface_keeps_inspection_and_has_no_stale_admin_controls() {
+        for role in [ui::Role::Viewer, ui::Role::Editor] {
+            let mut app =
+                ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(role).unwrap();
+            let open = crate::categories::Category::Displays;
+            app.effect_on(
+                &crate::effects::pane_row_id(open),
+                &crate::effects::open_pane(open),
+            )
+            .unwrap();
+            app.settle();
+            let audit = app.harness().native_app_audit();
+            assert!(
+                audit
+                    .issues
+                    .iter()
+                    .all(|issue| issue.code != "stale-action-binding"),
+                "role {role:?}: stale control in the actual application and host doors: {:?}",
+                audit.issues
+            );
+            assert!(
+                app.call("inspect-display-configuration", serde_json::json!({}))
+                    .unwrap()
+                    .is_some()
+            );
+            for action in [
+                "identify-displays",
+                "apply-display-changes",
+                "keep-display-changes",
+                "revert-display-changes",
+            ] {
+                assert!(
+                    app.call(action, serde_json::json!({})).is_err(),
+                    "{role:?} cannot invoke {action}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn readonly_host_reply_replaces_stale_observation_without_staging_or_disk_writes() {
+        let mut model = model(vec![classify_connector("eDP-1", "connected")]);
+        let mode = OutputMode {
+            width: 2944,
+            height: 1840,
+            refresh_mhz: 89999,
+        };
+        let observed = DisplayHardwareSnapshot {
+            outputs: vec![settings_store::hardware::DisplayOutputSnapshot {
+                descriptor: OutputDescriptor {
+                    connector: "eDP-1".into(),
+                    connector_label: "eDP-1".into(),
+                    modes: vec![mode],
+                    hdr: false,
+                    vrr: false,
+                    color_profiles: vec![],
+                    monitor: None,
+                },
+                current_mode: mode,
+                scale: 2.0,
+                builtin: true,
+                sink_hdr: false,
+                hdr_unavailable_reason: None,
+                sink_vrr: false,
+                vrr_unavailable_reason: None,
+                color_profile_labels: BTreeMap::new(),
+            }],
+            ..DisplayHardwareSnapshot::default()
+        };
+        model.accept_host_reply(settings_store::display_control::DisplayReply {
+            identify: None,
+            observed,
+            transaction: None,
+            committed: DisplayConfig::default(),
+        });
+        let inspection = model.inspection();
+        assert_eq!(
+            inspection["observed_outputs"][0]["current_mode"]["refresh_mhz"],
+            89999
+        );
+        assert_eq!(inspection["observed_outputs"][0]["scale"], 2.0);
+        assert_eq!(inspection["has_staged_changes"], false);
+        assert!(inspection["transaction"].is_null());
+        assert!(model.pending_candidate.is_none());
     }
 
     fn model(outputs: Vec<DisplayOutput>) -> DisplayModel {
@@ -3425,10 +3752,10 @@ mod tests {
 
         let _guard = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = model(vec![panel()]);
-        pane.apply(&DisplayEffect::SetDisplayScale {
-            scale: "150%".into(),
-        })
-        .unwrap();
+        pane.cx
+            .settings::<DisplayPrefs>()
+            .update(|prefs| prefs.scale = 1.5)
+            .unwrap();
         assert!((pane.cx.settings::<DisplayPrefs>().get().scale - 1.5).abs() < 1e-9);
 
         let mut committed = DisplayConfig::default();
@@ -3705,6 +4032,7 @@ mod tests {
             device: "certified-peer".into(),
             device_label: "Peer laptop".into(),
             connector: "eDP-1".into(),
+            output_id: None,
             label: "Panel".into(),
             online: false,
             local: false,

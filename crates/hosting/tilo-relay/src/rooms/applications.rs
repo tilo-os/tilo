@@ -1,8 +1,8 @@
 //! Canonical records created by the governing host's compiled application factory.
 //! This is a host-local operation; incoming member documents cannot mint ownership.
 
-use super::{CollaborationError, Rooms, now_ns, system_time};
-use tilo_agent_participant::{AppCatalogue, Replica, Seed};
+use super::{CollaborationError, Rooms, system_time};
+use tilo_agent_participant::{AppCatalogue, ConfinedReplica, Seed};
 use tilo_user_identity::DeviceCert;
 
 impl Rooms {
@@ -26,7 +26,7 @@ impl Rooms {
         app: &str,
         change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
     ) -> Result<R, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(governor, now, "application.author")?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
@@ -66,6 +66,14 @@ impl Rooms {
         let mut document = automerge::AutoCommit::load(&bytes)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         let result = change(&mut document)?;
+        // The governor writes the record directly: an edit of the whole
+        // record, named as such.
+        if automerge::transaction::Transactable::pending_ops(&document) != 0 {
+            document.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+            );
+        }
         let changes = document.save_after(&heads);
         if changes.len() > 64 * 1024 {
             return Err(CollaborationError::new(
@@ -104,7 +112,7 @@ impl Rooms {
         catalogue: &AppCatalogue,
         app: &str,
     ) -> Result<bool, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(governor, now, "application.prepare")?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
@@ -132,24 +140,32 @@ impl Rooms {
         if governed.peer().document(app, "").is_some() {
             return Ok(false);
         }
-        let mut source = Replica::open(
-            catalogue,
-            app,
-            room,
-            &hex::encode(governor.user_public_key),
-            false,
-            Seed::New,
-        )
-        .map_err(|error| CollaborationError::new(error.to_string()))?;
-        if source.record() != "@tilo:package-primary" {
-            return Err(CollaborationError::new(
-                "factory primary route differs from its declaration",
-            ));
-        }
-        let Some(collab_types::DocumentMutation::Snapshot(genesis)) = source.take_mutation() else {
-            return Err(CollaborationError::new(
-                "factory did not produce a genesis snapshot",
-            ));
+        // The factory is the app's own code: it runs in a confined app
+        // worker, held only while its genesis is taken and admitted here
+        // before it is signed.
+        let genesis = {
+            let source = ConfinedReplica::open(
+                catalogue,
+                app,
+                room,
+                &hex::encode(governor.user_public_key),
+                false,
+                Seed::New,
+            )
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+            if source.record() != "@tilo:package-primary" {
+                return Err(CollaborationError::new(
+                    "factory primary route differs from its declaration",
+                ));
+            }
+            let Ok(Some(collab_types::DocumentMutation::Snapshot(genesis))) =
+                source.take_mutation()
+            else {
+                return Err(CollaborationError::new(
+                    "factory did not produce a genesis snapshot",
+                ));
+            };
+            genesis
         };
         if genesis.is_empty() || genesis.len() > 64 * 1024 {
             return Err(CollaborationError::new(

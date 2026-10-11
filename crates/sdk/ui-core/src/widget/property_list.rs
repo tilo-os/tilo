@@ -415,13 +415,6 @@ impl<'a> PropertyListFace<'a> {
         self
     }
 
-    /// The row and which of its actions the pointer is over.
-    #[must_use]
-    pub fn hovered_action_at(mut self, target: Option<(usize, usize)>) -> Self {
-        self.hovered_action = target;
-        self
-    }
-
     fn layout(
         &self,
         text: &mut TextRenderer,
@@ -748,7 +741,7 @@ pub struct PropertyList {
     layout: ListLayout,
     cursor: Point,
     hovered_action: Option<(usize, usize)>,
-    pressed_action: Option<(usize, usize)>,
+    pressed_action: crate::pointer_replay::HeldPress<(usize, usize)>,
     rect: Rect,
     dirty: bool,
 }
@@ -778,7 +771,7 @@ impl PropertyList {
             layout: ListLayout::empty(),
             cursor: Point::ZERO,
             hovered_action: None,
-            pressed_action: None,
+            pressed_action: crate::pointer_replay::HeldPress::default(),
             rect: Rect::ZERO,
             dirty: true,
         }
@@ -830,6 +823,25 @@ impl PropertyList {
         self.groups.iter().flat_map(|(_, rows)| rows.iter())
     }
 
+    /// What names a row's action across a rebuild: the list, the row's
+    /// label and the action, not their indices, so a rebuilt list whose
+    /// rows shifted under the pointer completes no press.
+    fn press_key(&self, (row, action): (usize, usize)) -> String {
+        let Some(property) = self.properties().nth(row) else {
+            return String::new();
+        };
+        let action = match property.actions.get(action) {
+            Some(PropertyAction::Copy) => "copy",
+            Some(PropertyAction::Custom { label, .. }) => label.as_str(),
+            None => return String::new(),
+        };
+        format!(
+            "property-list:{}:{}:{action}",
+            self.id.as_deref().unwrap_or_default(),
+            property.label
+        )
+    }
+
     /// Whether the last layout stacked labels above values.
     pub fn is_stacked(&self) -> bool {
         self.layout.stacked
@@ -870,7 +882,7 @@ impl Widget for PropertyList {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.metrics = Some(ListMetrics::new(theme, self.density));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
                 height: taffy::Dimension::auto(),
@@ -881,9 +893,8 @@ impl Widget for PropertyList {
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -911,14 +922,7 @@ impl Widget for PropertyList {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        let rect = crate::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.dirty = true;
         }
@@ -977,22 +981,29 @@ impl Widget for PropertyList {
                 button: MouseButton::Left,
                 ..
             } => {
-                let over = target_at(&self.layout, self.cursor);
+                use crate::pointer_replay::{PressAt, Release};
+                let over = targets(&self.layout)
+                    .into_iter()
+                    .find(|(_, r)| r.contains(self.cursor));
+                let key = over.map(|(target, _)| self.press_key(target));
+                let at = over
+                    .zip(key.as_deref())
+                    .map(|((target, rect), key)| PressAt { target, key, rect });
                 match state {
-                    ElementState::Pressed if over.is_some() => {
-                        self.pressed_action = over;
-                        *ctx.handled = true;
-                    }
-                    ElementState::Released if self.pressed_action.is_some() => {
-                        let pressed = self.pressed_action.take();
-                        *ctx.handled = true;
-                        if over == pressed
-                            && let Some((row, action)) = pressed
-                        {
-                            self.run_action(row, action);
+                    ElementState::Pressed => {
+                        if let Some(at) = at {
+                            self.pressed_action.press(at);
+                            *ctx.handled = true;
                         }
                     }
-                    _ => {}
+                    ElementState::Released => match self.pressed_action.release(at) {
+                        Release::NotHeld => {}
+                        Release::Cancelled => *ctx.handled = true,
+                        Release::Click((row, action)) => {
+                            *ctx.handled = true;
+                            self.run_action(row, action);
+                        }
+                    },
                 }
             }
             _ => {}
@@ -1081,15 +1092,14 @@ impl Widget for PropertyList {
 
     /// An action addressed to one of a row's action buttons: `[row,
     /// action]`.
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
     ) -> bool {
         match key_path {
-            [] => self.perform_action(action, state, path),
             [row, index] if matches!(action, crate::a11y::Action::Activate) => {
                 match (usize::try_from(*row), usize::try_from(*index)) {
                     (Ok(row), Ok(index)) => self.run_action(row, index),
@@ -1138,7 +1148,7 @@ pub struct PropertyValue {
     rect: Rect,
     copy_rect: Option<Rect>,
     hovered: bool,
-    pressed: bool,
+    pressed: crate::pointer_replay::HeldPress,
     metrics: Option<ListMetrics>,
 }
 
@@ -1152,7 +1162,7 @@ impl PropertyValue {
             rect: Rect::ZERO,
             copy_rect: None,
             hovered: false,
-            pressed: false,
+            pressed: crate::pointer_replay::HeldPress::default(),
             metrics: None,
         }
     }
@@ -1202,7 +1212,7 @@ impl Widget for PropertyValue {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.metrics = Some(ListMetrics::new(theme, Density::Regular));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
                 height: taffy::Dimension::auto(),
@@ -1213,9 +1223,8 @@ impl Widget for PropertyValue {
             },
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -1249,14 +1258,7 @@ impl Widget for PropertyValue {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.copy_rect = self.metrics.as_ref().filter(|_| self.copyable).map(|m| {
             let cy = self.rect.center().y;
             Rect::new(
@@ -1336,20 +1338,31 @@ impl Widget for PropertyValue {
                 state,
                 button: MouseButton::Left,
                 ..
-            } => match state {
-                ElementState::Pressed if self.hovered => {
-                    self.pressed = true;
-                    *ctx.handled = true;
-                }
-                ElementState::Released if self.pressed => {
-                    self.pressed = false;
-                    *ctx.handled = true;
-                    if self.hovered {
-                        crate::text_selection::clipboard_copy(&self.value);
+            } => {
+                use crate::pointer_replay::{PressAt, Release};
+                // The field's name (or, unnamed, the value) names the copy
+                // action across a rebuild.
+                let key = format!(
+                    "property-value:{}",
+                    self.accessible_name.as_deref().unwrap_or(&self.value)
+                );
+                let at = self.hovered.then_some(PressAt::one(&key, target));
+                match state {
+                    ElementState::Pressed => {
+                        if let Some(at) = at {
+                            self.pressed.press(at);
+                            *ctx.handled = true;
+                        }
+                    }
+                    ElementState::Released => {
+                        let release = self.pressed.release(at);
+                        *ctx.handled |= release.ended();
+                        if release == Release::Click(()) {
+                            crate::text_selection::clipboard_copy(&self.value);
+                        }
                     }
                 }
-                _ => {}
-            },
+            }
             _ => {}
         }
     }
@@ -1390,7 +1403,7 @@ impl Widget for PropertyValue {
         Some(node)
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],

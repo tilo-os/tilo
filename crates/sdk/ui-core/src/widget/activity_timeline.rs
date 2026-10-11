@@ -15,11 +15,12 @@
 //! history, so toggling a chip narrows the list without re-chunking it under
 //! the reader.
 
+use crate::num::f64_of_usize;
 use crate::time::SystemTime;
 use crate::widget::ModelPath;
 use std::collections::{HashMap, HashSet};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
@@ -34,7 +35,6 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::history::{
     HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, format_relative_time,
-    op_class_glyph,
 };
 use crate::widget::history_group::{
     GroupNameRequest, GroupingConfig, HistoryGroup, NamedRange, group_entries,
@@ -42,7 +42,7 @@ use crate::widget::history_group::{
 use crate::widget::name_field::{NameField, NameFieldOutcome, fit as fit_text};
 
 use crate::tokens::TextRole;
-use collab_types::OpClass;
+use crate::widget::EntryKind;
 
 /// 40px: a 600px pane fits ~15 rows without scrolling.
 pub const ROW_HEIGHT: f64 = 40.0;
@@ -92,15 +92,6 @@ const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
 /// moves `surface` further.
 fn wash(surface: Color, alpha: u8) -> Color {
     crate::tokens::colors::Colors::hairline_on(surface, alpha)
-}
-
-/// A nesting depth, row count or dot count, widened for pixel-space layout
-/// math. Lossless in practice — none of these ever approach `u32::MAX` — but
-/// `usize -> f64` cannot express that to the compiler, so this goes through
-/// `u32` (exactly representable in `f64`) with a saturating fallback rather
-/// than an `as` cast.
-fn px(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 /// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
@@ -168,14 +159,14 @@ impl ChipKind {
 
     /// `All` is empty because "no op-class filter" is how [`HistoryFilter`]
     /// expresses "show everything".
-    pub fn op_classes(&self) -> Vec<OpClass> {
+    pub fn entry_kinds(&self) -> Vec<EntryKind> {
         match self {
             ChipKind::All => Vec::new(),
             // Tombstone/Restore live in "Deletes" instead.
-            ChipKind::Edits => vec![OpClass::Splice, OpClass::Move, OpClass::EditMeta],
-            ChipKind::Comments => vec![OpClass::Comment],
-            ChipKind::Governance => vec![OpClass::Govern],
-            ChipKind::Deletes => vec![OpClass::Tombstone, OpClass::Restore],
+            ChipKind::Edits => vec![EntryKind::Text, EntryKind::Move, EntryKind::Details],
+            ChipKind::Comments => vec![EntryKind::Comment],
+            ChipKind::Governance => vec![EntryKind::Access],
+            ChipKind::Deletes => vec![EntryKind::Delete, EntryKind::Restore],
         }
     }
 }
@@ -487,13 +478,6 @@ impl ActivityTimeline {
         &self.named
     }
 
-    pub fn set_grouping(&mut self, cfg: GroupingConfig) {
-        if self.grouping != cfg {
-            self.grouping = cfg;
-            self.regroup();
-        }
-    }
-
     /// For a streaming producer. Call [`Self::refresh`] after mutating it.
     pub fn entries_mut(&mut self) -> &mut Vec<HistoryEntry> {
         &mut self.entries
@@ -598,7 +582,7 @@ impl ActivityTimeline {
         self.active_chip != ChipKind::All
             || !self.author_query.trim().is_empty()
             || !self.filter.authors.is_empty()
-            || !self.filter.op_classes.is_empty()
+            || !self.filter.entry_kinds.is_empty()
             || self.filter.time_range.is_some()
     }
 
@@ -608,14 +592,14 @@ impl ActivityTimeline {
         if self.active_chip != ChipKind::All {
             parts.push(self.active_chip.label());
         }
-        let chip_classes = self.active_chip.op_classes();
+        let chip_classes = self.active_chip.entry_kinds();
         for op in self
             .filter
-            .op_classes
+            .entry_kinds
             .iter()
             .filter(|op| !chip_classes.contains(op))
         {
-            let label = crate::history_source::op_class_label(*op);
+            let label = (*op).label();
             if !parts.contains(&label) {
                 parts.push(label);
             }
@@ -652,12 +636,6 @@ impl ActivityTimeline {
             "No activity matches these filters".to_string(),
             Some(detail),
         )
-    }
-
-    /// `Rect::ZERO` when the filtered-to-nothing empty state is not on
-    /// screen.
-    pub fn clear_filters_chip_rect(&self) -> Rect {
-        self.clear_chip_rect
     }
 
     pub fn author_pill_rect(&self) -> Rect {
@@ -1252,7 +1230,7 @@ impl ActivityTimeline {
         let full = self.row_rect(i)?;
         let rg = self.row_groups.get(g)?;
         let row = Rect::new(
-            full.x0 + px(rg.depth) * INDENT,
+            full.x0 + f64_of_usize(rg.depth) * INDENT,
             full.y0 + 2.0,
             full.x1,
             full.y1 - 2.0,
@@ -1274,7 +1252,7 @@ impl ActivityTimeline {
         let full = self.row_rect(i)?;
         let rg = self.row_groups.get(g)?;
         let row = Rect::new(
-            full.x0 + px(rg.depth) * INDENT,
+            full.x0 + f64_of_usize(rg.depth) * INDENT,
             full.y0 + 2.0,
             full.x1,
             full.y1 - 2.0,
@@ -1302,11 +1280,11 @@ impl ActivityTimeline {
         self.now_override.unwrap_or_else(crate::time::wall)
     }
 
-    fn passes(&self, e: &HistoryEntry, chip_ops: &[OpClass], needle: &str) -> bool {
+    fn passes(&self, e: &HistoryEntry, chip_ops: &[EntryKind], needle: &str) -> bool {
         if !self.filter.matches(e) {
             return false;
         }
-        if !chip_ops.is_empty() && !chip_ops.contains(&e.op_class) {
+        if !chip_ops.is_empty() && !chip_ops.contains(&e.entry_kind) {
             return false;
         }
         if !needle.is_empty() && !e.author.name.to_lowercase().contains(needle) {
@@ -1458,7 +1436,7 @@ impl ActivityTimeline {
     }
 
     fn rebuild(&mut self) {
-        let chip_ops = self.active_chip.op_classes();
+        let chip_ops = self.active_chip.entry_kinds();
         let needle = self.author_query.trim().to_lowercase();
         // Walked in the same order the lines are, so a count and a position
         // mean the same thing in both.
@@ -1489,7 +1467,7 @@ impl ActivityTimeline {
     }
 
     fn rebuild_rows(&mut self) {
-        let chip_ops = self.active_chip.op_classes();
+        let chip_ops = self.active_chip.entry_kinds();
         let needle = self.author_query.trim().to_lowercase();
         let mut rows: Vec<VisualRow> = Vec::new();
         let mut row_groups: Vec<RowGroup> = Vec::new();
@@ -1555,7 +1533,7 @@ impl ActivityTimeline {
     fn emit_group(
         &self,
         g: &HistoryGroup,
-        chip_ops: &[OpClass],
+        chip_ops: &[EntryKind],
         needle: &str,
         rows: &mut Vec<VisualRow>,
         row_groups: &mut Vec<RowGroup>,
@@ -1770,7 +1748,7 @@ impl RowSlot {
     /// The band less its depth's indent: where the row's own content sits.
     fn indented(self) -> Rect {
         Rect::new(
-            self.rect.x0 + px(self.depth) * INDENT,
+            self.rect.x0 + f64_of_usize(self.depth) * INDENT,
             self.rect.y0,
             self.rect.x1,
             self.rect.y1,
@@ -1894,7 +1872,7 @@ impl ActivityTimeline {
     fn group_day_section(
         &self,
         g: &HistoryGroup,
-        chip_ops: &[OpClass],
+        chip_ops: &[EntryKind],
         needle: &str,
         now: SystemTime,
     ) -> Option<DaySection> {
@@ -1960,7 +1938,7 @@ impl ActivityTimeline {
             text_style: ctx.theme.text(TextRole::Caption),
             // The indent comes out of the author cluster, not the summary —
             // the summary is what the reader is here for.
-            author_slot_w: (self.author_slot_w() - px(slot.depth) * INDENT).max(72.0),
+            author_slot_w: (self.author_slot_w() - f64_of_usize(slot.depth) * INDENT).max(72.0),
             offers_revert,
             chip_reserve: if offers_revert {
                 self.revert_chip_w() + 6.0
@@ -1987,14 +1965,21 @@ impl ActivityTimeline {
         let (r, g, b) = entry.author.rgb();
         let dot_color = Color::from_rgba8(r, g, b, 255);
         let dot_x = row.x0 + 8.0 + AVATAR_DIAM / 2.0;
-        let dot = Circle::new(Point::new(dot_x, cy), AVATAR_DIAM / 2.0);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            dot_color,
-            None,
-            &dot,
-        );
+        // A person is a filled dot in their colour; software acting for
+        // someone (an agent, a Shortcut, an app) is a ring.
+        if entry.author.relation == crate::widget::history::AuthorRelation::Software {
+            let ring = Circle::new(Point::new(dot_x, cy), AVATAR_DIAM / 2.0 - 0.75);
+            scene.stroke(&Stroke::new(1.5), transform, dot_color, None, &ring);
+        } else {
+            let dot = Circle::new(Point::new(dot_x, cy), AVATAR_DIAM / 2.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                dot_color,
+                None,
+                &dot,
+            );
+        }
         dot_x
     }
 
@@ -2021,7 +2006,7 @@ impl ActivityTimeline {
         // to the bands above them rather than just starting further right.
         let surface = theme.tokens.colors.surfaces.raised;
         for level in 1..=depth {
-            let x = full_row.x0 + (px(level) - 0.5) * INDENT;
+            let x = full_row.x0 + (f64_of_usize(level) - 0.5) * INDENT;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -2121,10 +2106,16 @@ impl ActivityTimeline {
             (slot_end - x).max(24.0),
         );
         let name_top = text_top(text_renderer, text_style, cy);
+        // The reader's own changes read quieter than other people's.
+        let colour = if entry.author.relation == crate::widget::history::AuthorRelation::Reader {
+            theme.tokens.colors.text_dim
+        } else {
+            theme.tokens.colors.text_primary
+        };
         text_renderer.draw_style(
             scene,
             &name,
-            theme.tokens.colors.text_primary,
+            colour,
             translated(transform, (x, name_top)),
             None,
             text_style,
@@ -2155,7 +2146,7 @@ impl ActivityTimeline {
             ..
         } = layout;
         let glyph_x = row.x0 + author_slot_w;
-        let glyph = op_class_glyph(entry.op_class);
+        let glyph = entry.entry_kind.glyph();
         let line_top = text_top(text_renderer, text_style, cy);
         text_renderer.draw_style(
             scene,
@@ -2303,7 +2294,7 @@ impl ActivityTimeline {
             .map(|n| &n.field);
         let is_hovered = emphasis.hovered;
         let row = Rect::new(
-            full_row.x0 + px(rg.depth) * INDENT,
+            full_row.x0 + f64_of_usize(rg.depth) * INDENT,
             full_row.y0 + 2.0,
             full_row.x1,
             full_row.y1 - 2.0,
@@ -2383,7 +2374,7 @@ impl ActivityTimeline {
         let colors = &theme.tokens.colors;
         let surface = colors.surfaces.raised;
         for level in 1..=rg.depth {
-            let x = full_row.x0 + (px(level) - 0.5) * INDENT;
+            let x = full_row.x0 + (f64_of_usize(level) - 0.5) * INDENT;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -2568,7 +2559,11 @@ impl ActivityTimeline {
         let (rel_w, rel_h) = tr.measure_style(&rel, None, &meta_style);
         // Author dots sit between the subtitle and the timestamp; reserve them.
         let dots = rg.authors.len().min(3);
-        let dots_w = if dots > 0 { px(dots) * 10.0 + 6.0 } else { 0.0 };
+        let dots_w = if dots > 0 {
+            f64_of_usize(dots) * 10.0 + 6.0
+        } else {
+            0.0
+        };
         let sub_budget =
             (row.x1 - title_x - f64::from(rel_w) - dots_w - TRAILING_INSET - 16.0).max(0.0);
         let subtitle = if rg.expanded {
@@ -2919,26 +2914,12 @@ impl Widget for ActivityTimeline {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if prev != self.rect {
             self.dirty = true;
         }
@@ -3133,7 +3114,7 @@ impl Widget for ActivityTimeline {
                                 .with_name(name)
                                 .with_description(
                                     [
-                                        op_class_glyph(item.op_class).to_owned(),
+                                        item.entry_kind.glyph().to_owned(),
                                         row_time(item, self.now()),
                                     ]
                                     .into_iter()
@@ -3785,13 +3766,14 @@ impl ActivityTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::synthetic_input::{cursor_moved, mouse_press};
+    use crate::testing::dispatch;
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use automerge::AutoCommit;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::Modifiers;
 
     /// Relative luminance of the composited pixel at (`x`, `y`).
     #[allow(
@@ -3823,7 +3805,7 @@ mod tests {
         let entries: Vec<HistoryEntry> = (0..8u8)
             .map(|i| {
                 let who = if i < 5 { "Alice" } else { "Bob" };
-                entry(OpClass::Splice, who, 1_000 + u64::from(i) * 30, i)
+                entry(EntryKind::Text, who, 1_000 + u64::from(i) * 30, i)
             })
             .collect();
         let mut t = ActivityTimeline::with_entries(entries);
@@ -3952,15 +3934,15 @@ mod tests {
 
         fn provenance_breadcrumbs_and_collapsed_mixed_scope_survive_hidden_rows() {
             use tilo_actions::ActionContext;
-            let mut files = entry(OpClass::Splice, "Alice", 10, 1);
+            let mut files = entry(EntryKind::Text, "Alice", 10, 1);
             files.context = Some(
-                ActionContext::for_resource("Rename", "files:brief", "files.entry", "brief.md")
+                ActionContext::for_resource("files:brief", "files.entry", "brief.md")
                     .with_app("org.tilo.Files", "Files")
                     .with_group("workspace:a", "Alpha", "workspace"),
             );
-            let mut notes = entry(OpClass::Splice, "Alice", 11, 2);
+            let mut notes = entry(EntryKind::Text, "Alice", 11, 2);
             notes.context = Some(
-                ActionContext::for_resource("Edit", "notes:plan", "notes.document", "plan")
+                ActionContext::for_resource("notes:plan", "notes.document", "plan")
                     .with_app("org.tilo.Notes", "Notes")
                     .with_group("workspace:a", "Beta", "workspace"),
             );
@@ -3995,13 +3977,13 @@ mod tests {
         host_can_suppress_duplicate_author_pill_without_hiding_op_filters();
     }
 
-    fn entry(op: OpClass, author: &str, ts: u64, id: u8) -> HistoryEntry {
+    fn entry(op: EntryKind, author: &str, ts: u64, id: u8) -> HistoryEntry {
         let mut id_bytes = [0u8; 16];
         id_bytes[0] = id;
         HistoryEntry {
             id: HistoryEntryId(id_bytes),
             author: HistoryAuthor::new(author, 120.0, "deadbeef"),
-            op_class: op,
+            entry_kind: op,
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(ts))
@@ -4037,13 +4019,13 @@ mod tests {
     #[test]
     fn a_genesis_row_names_no_author_and_no_time() {
         use crate::a11y::Role;
-        let mut genesis = entry(OpClass::EditMeta, "Unknown participant", 0, 1);
+        let mut genesis = entry(EntryKind::Details, "Unknown participant", 0, 1);
         genesis.summary = "Created".into();
         genesis.context = Some(tilo_actions::ActionContext {
             facets: vec![crate::widget::history::genesis_facet()],
             ..tilo_actions::ActionContext::default()
         });
-        let entries = vec![genesis, entry(OpClass::Splice, "Alice", 10, 2)];
+        let entries = vec![genesis, entry(EntryKind::Text, "Alice", 10, 2)];
         let t = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
         let semantics = Widget::accessibility(&t).expect("timeline semantics");
         let rows: Vec<_> = semantics
@@ -4056,7 +4038,7 @@ mod tests {
             rows[0],
             (
                 Some("Created".to_owned()),
-                Some(op_class_glyph(OpClass::EditMeta).to_owned())
+                Some(EntryKind::Details.glyph().to_owned())
             ),
             "the version the document was created as, by no one at no time"
         );
@@ -4074,8 +4056,8 @@ mod tests {
         fn accessibility_reports_list_role_name_and_count() {
             use crate::a11y::Role;
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 10, 1),
-                entry(OpClass::Splice, "Bob", 20, 2),
+                entry(EntryKind::Text, "Alice", 10, 1),
+                entry(EntryKind::Text, "Bob", 20, 2),
             ];
             let t = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
             let node = Widget::accessibility(&t).expect("timeline is not presentational");
@@ -4088,7 +4070,7 @@ mod tests {
             use crate::a11y::{Action, Role};
             let activated = Rc::new(RefCell::new(Vec::new()));
             let received = activated.clone();
-            let entries = vec![entry(OpClass::Splice, "Alice", 10, 1)];
+            let entries = vec![entry(EntryKind::Text, "Alice", 10, 1)];
             let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries)
                 .on_activate_entry(move |id| received.borrow_mut().push(*id));
             let semantics = Widget::accessibility(&timeline).expect("timeline semantics");
@@ -4131,8 +4113,8 @@ mod tests {
 
         fn keyboard_navigation_moves_focus_and_selects_individual_rows() {
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 10, 1),
-                entry(OpClass::Splice, "Alice", 11, 2),
+                entry(EntryKind::Text, "Alice", 10, 1),
+                entry(EntryKind::Text, "Alice", 11, 2),
             ];
             let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
             timeline.set_all_expanded(true);
@@ -4147,9 +4129,9 @@ mod tests {
 
         fn hover_row_tracks_cursor_y() {
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 1, 1),
-                entry(OpClass::Splice, "Alice", 2, 2),
-                entry(OpClass::Splice, "Alice", 3, 3),
+                entry(EntryKind::Text, "Alice", 1, 1),
+                entry(EntryKind::Text, "Alice", 2, 2),
+                entry(EntryKind::Text, "Alice", 3, 3),
             ];
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
             let row1 = t.row_rect(1).unwrap();
@@ -4171,64 +4153,13 @@ mod tests {
         hover_row_tracks_cursor_y();
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
-
-    /// Build a `KeyEvent` over a zeroed buffer — winit 0.30's `KeyEventExtra`
-    /// is `pub(crate)`, so a struct literal is not available. Only the pub
-    /// fields the widget reads are overwritten.
+    /// Only the pub fields the widget reads are overwritten.
     fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        // SAFETY: every pub field of `KeyEvent` tolerates the all-zero bit
-        // pattern — `logical_key` is overwritten below and `text` is an
-        // `Option` whose niche-optimised `None` is all-zero.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn dispatch(t: &mut ActivityTimeline, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        t.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            logical_key,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     #[test]
@@ -4253,8 +4184,8 @@ mod tests {
             let mut t = timeline_at(
                 Rect::new(0.0, 0.0, 400.0, 300.0),
                 vec![
-                    entry(OpClass::Splice, "Alice", 1, 1),
-                    entry(OpClass::Splice, "Bob", 2, 2),
+                    entry(EntryKind::Text, "Alice", 1, 1),
+                    entry(EntryKind::Text, "Bob", 2, 2),
                 ],
             );
             t.set_active_chip(ChipKind::Comments);
@@ -4275,7 +4206,7 @@ mod tests {
             // so the host labels it.
             let mut t = timeline_at(
                 Rect::new(0.0, 0.0, 400.0, 300.0),
-                vec![entry(OpClass::Splice, "Alice", 1, 1)],
+                vec![entry(EntryKind::Text, "Alice", 1, 1)],
             );
             t.set_filter(HistoryFilter {
                 time_range: Some((
@@ -4304,20 +4235,20 @@ mod tests {
     }
 
     #[test]
-    fn filters_narrow_by_op_class_and_author_and_clear() {
-        fn filter_by_op_class_hides_other_rows() {
+    fn filters_narrow_by_entry_kind_and_author_and_clear() {
+        fn filter_by_entry_kind_hides_other_rows() {
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 1, 1),
-                entry(OpClass::Comment, "Bob", 2, 2),
-                entry(OpClass::Move, "Carol", 3, 3),
-                entry(OpClass::Comment, "Dave", 4, 4),
+                entry(EntryKind::Text, "Alice", 1, 1),
+                entry(EntryKind::Comment, "Bob", 2, 2),
+                entry(EntryKind::Move, "Carol", 3, 3),
+                entry(EntryKind::Comment, "Dave", 4, 4),
             ];
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
             assert_eq!(t.visible_len(), 4);
             t.set_active_chip(ChipKind::Comments);
             assert_eq!(t.visible_len(), 2);
             for i in 0..t.visible_len() {
-                assert_eq!(t.visible_entry(i).unwrap().op_class, OpClass::Comment);
+                assert_eq!(t.visible_entry(i).unwrap().entry_kind, EntryKind::Comment);
             }
         }
 
@@ -4327,8 +4258,8 @@ mod tests {
             t.set_active_chip(ChipKind::Governance);
             assert_eq!(t.active_chip(), ChipKind::Governance);
             let entries = vec![
-                entry(OpClass::Comment, "Alice", 1, 1),
-                entry(OpClass::Govern, "Bob", 2, 2),
+                entry(EntryKind::Comment, "Alice", 1, 1),
+                entry(EntryKind::Access, "Bob", 2, 2),
             ];
             t.set_entries(entries);
             assert_eq!(t.visible_len(), 1, "Governance chip narrows to govern row");
@@ -4340,9 +4271,9 @@ mod tests {
             // No real paint pass, so seed chip_rects directly: five 60x24 chips
             // packed horizontally, matching what draw_filter_strip would produce.
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 1, 1),
-                entry(OpClass::Comment, "Bob", 2, 2),
-                entry(OpClass::Govern, "Carol", 3, 3),
+                entry(EntryKind::Text, "Alice", 1, 1),
+                entry(EntryKind::Comment, "Bob", 2, 2),
+                entry(EntryKind::Access, "Carol", 3, 3),
             ];
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
 
@@ -4385,8 +4316,8 @@ mod tests {
 
         fn clear_filters_resets_the_widget_and_tells_the_host() {
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 1, 1),
-                entry(OpClass::Comment, "Bob", 2, 2),
+                entry(EntryKind::Text, "Alice", 1, 1),
+                entry(EntryKind::Comment, "Bob", 2, 2),
             ];
             let cleared = Rc::new(RefCell::new(0usize));
             let c = cleared.clone();
@@ -4411,9 +4342,9 @@ mod tests {
 
         fn filter_by_author_typeahead_narrows_list() {
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 1, 1),
-                entry(OpClass::Splice, "Alicia", 2, 2),
-                entry(OpClass::Splice, "Bob", 3, 3),
+                entry(EntryKind::Text, "Alice", 1, 1),
+                entry(EntryKind::Text, "Alicia", 2, 2),
+                entry(EntryKind::Text, "Bob", 3, 3),
             ];
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
             t.set_author_query("ali");
@@ -4424,8 +4355,8 @@ mod tests {
 
         fn typing_narrows_by_author_and_escape_or_backspace_widens_again() {
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 1, 1),
-                entry(OpClass::Splice, "Bob", 2, 2),
+                entry(EntryKind::Text, "Alice", 1, 1),
+                entry(EntryKind::Text, "Bob", 2, 2),
             ];
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 300.0), entries);
             dispatch(
@@ -4467,7 +4398,7 @@ mod tests {
             assert_eq!(t.author_query(), "b");
         }
 
-        filter_by_op_class_hides_other_rows();
+        filter_by_entry_kind_hides_other_rows();
         chip_strip_active_state_round_trips();
         chip_strip_click_toggles_active_chip();
         clear_filters_resets_the_widget_and_tells_the_host();
@@ -4478,7 +4409,7 @@ mod tests {
     #[test]
     fn revert_chip_fires_only_for_revertible_ops() {
         fn revert_callback_fires_on_chip_click() {
-            let entries = vec![entry(OpClass::Splice, "Alice", 1, 42)];
+            let entries = vec![entry(EntryKind::Text, "Alice", 1, 42)];
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 200.0), entries);
             let captured: Rc<RefCell<Option<HistoryEntryId>>> = Rc::new(RefCell::new(None));
             let captured_clone = captured.clone();
@@ -4498,11 +4429,11 @@ mod tests {
             assert_eq!(*captured.borrow(), Some(HistoryEntryId(id_bytes)));
         }
 
-        fn non_revertible_op_classes_hide_chip() {
+        fn non_revertible_entry_kinds_hide_chip() {
             let entries = vec![
-                entry(OpClass::Comment, "Alice", 1, 1),
-                entry(OpClass::Govern, "Bob", 2, 2),
-                entry(OpClass::Splice, "Carol", 3, 3),
+                entry(EntryKind::Comment, "Alice", 1, 1),
+                entry(EntryKind::Access, "Bob", 2, 2),
+                entry(EntryKind::Text, "Carol", 3, 3),
             ];
             let t = editable_timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
             assert!(t.revert_chip_rect(0).is_none(), "Comment must hide chip");
@@ -4514,7 +4445,7 @@ mod tests {
         }
 
         revert_callback_fires_on_chip_click();
-        non_revertible_op_classes_hide_chip();
+        non_revertible_entry_kinds_hide_chip();
     }
 
     #[test]
@@ -4523,7 +4454,7 @@ mod tests {
             // Automerge stamps in whole seconds, so a burst ties; newest-first
             // must fall back to causal order, not input order.
             let entries: Vec<HistoryEntry> = (0u8..5)
-                .map(|i| entry(OpClass::Splice, "Alice", 100, i))
+                .map(|i| entry(EntryKind::Text, "Alice", 100, i))
                 .collect();
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
             t.set_newest_first(true);
@@ -4545,9 +4476,9 @@ mod tests {
 
         fn newest_first_reverses_chronological_order() {
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 100, 1),
-                entry(OpClass::Splice, "Alice", 200, 2),
-                entry(OpClass::Splice, "Alice", 300, 3),
+                entry(EntryKind::Text, "Alice", 100, 1),
+                entry(EntryKind::Text, "Alice", 200, 2),
+                entry(EntryKind::Text, "Alice", 300, 3),
             ];
             let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
             t.set_newest_first(true);
@@ -4577,7 +4508,7 @@ mod tests {
             let entries: Vec<HistoryEntry> = (0u32..10_000)
                 .map(|i| {
                     entry(
-                        OpClass::Splice,
+                        EntryKind::Text,
                         "Alice",
                         u64::from(i),
                         u8::try_from(i % 251).unwrap_or(u8::MAX),
@@ -4620,7 +4551,7 @@ mod tests {
             // with `row_rect` one pixel either side of a seam between two rows
             // of *different* heights.
             let entries: Vec<HistoryEntry> = (0u8..40)
-                .map(|i| entry(OpClass::Splice, "Alice", u64::from(i), i))
+                .map(|i| entry(EntryKind::Text, "Alice", u64::from(i), i))
                 .collect();
             let mut t = timeline_at(Rect::new(0.0, 0.0, 500.0, 500.0), entries);
             // Forty changes by one author in forty seconds is one band, and it
@@ -4654,7 +4585,7 @@ mod tests {
         fn narrow_panes_shrink_the_trailing_slots_rather_than_overlapping_them() {
             // On a narrow pane the revert chip must still sit inside the row and
             // leave the summary somewhere to go.
-            let entries = vec![entry(OpClass::Splice, "Alice", 1, 1)];
+            let entries = vec![entry(EntryKind::Text, "Alice", 1, 1)];
             let wide = editable_timeline_at(Rect::new(0.0, 0.0, 700.0, 300.0), entries.clone());
             let narrow = editable_timeline_at(Rect::new(0.0, 0.0, 300.0, 300.0), entries);
 
@@ -4686,10 +4617,10 @@ mod tests {
 #[cfg(test)]
 mod group_tests {
     use super::*;
+    use crate::testing::{Dispatch, dispatch};
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use crate::widget::history_group::NamedRange;
-    use automerge::AutoCommit;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -4697,13 +4628,13 @@ mod group_tests {
 
     const NOW: u64 = 2_000_000;
 
-    fn entry(op: OpClass, author: &str, ts: u64, id: u8) -> HistoryEntry {
+    fn entry(op: EntryKind, author: &str, ts: u64, id: u8) -> HistoryEntry {
         let mut id_bytes = [0u8; 16];
         id_bytes[0] = id;
         HistoryEntry {
             id: HistoryEntryId(id_bytes),
             author: HistoryAuthor::new(author, 120.0, "deadbeef"),
-            op_class: op,
+            entry_kind: op,
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(ts))
@@ -4790,7 +4721,7 @@ mod group_tests {
             let entries: Vec<HistoryEntry> = (0..6)
                 .map(|i| {
                     entry(
-                        OpClass::Govern,
+                        EntryKind::Access,
                         "Alice",
                         1_000_000u64.saturating_add(u64::from(i)),
                         i,
@@ -4835,66 +4766,16 @@ mod group_tests {
         t.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        // SAFETY: every pub field of `KeyEvent` tolerates the all-zero bit
-        // pattern — `logical_key` is overwritten below and `text` is an `Option`
-        // whose niche-optimised `None` is all-zero. winit 0.30 keeps
-        // `KeyEventExtra` crate-private, so a struct literal is unavailable.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn dispatch(t: &mut ActivityTimeline, event: &WindowEvent) {
-        dispatch_mod(t, event, Modifiers::default());
-    }
-
-    fn dispatch_mod(t: &mut ActivityTimeline, event: &WindowEvent, m: Modifiers) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        t.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            logical_key,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     /// Shift held down, built the same way winit reports it.
@@ -4925,7 +4806,7 @@ mod group_tests {
         (0..n)
             .map(|i| {
                 entry(
-                    OpClass::Splice,
+                    EntryKind::Text,
                     "Alice",
                     1_000_000u64.saturating_add(u64::from(i)),
                     i,
@@ -4964,10 +4845,10 @@ mod group_tests {
             // The flat list is the degenerate case, not a second mode: four changes
             // by four people are four groups of one, and a group of one is a row.
             let entries = vec![
-                entry(OpClass::Splice, "Alice", 1_000_000, 0),
-                entry(OpClass::Splice, "Bob", 1_000_001, 1),
-                entry(OpClass::Splice, "Carol", 1_000_002, 2),
-                entry(OpClass::Splice, "Dave", 1_000_003, 3),
+                entry(EntryKind::Text, "Alice", 1_000_000, 0),
+                entry(EntryKind::Text, "Bob", 1_000_001, 1),
+                entry(EntryKind::Text, "Carol", 1_000_002, 2),
+                entry(EntryKind::Text, "Dave", 1_000_003, 3),
             ];
             let t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), entries);
             assert_eq!(t.row_count(), 4);
@@ -4995,7 +4876,7 @@ mod group_tests {
             // A new change lands while the reader is looking at it. The band must
             // absorb it and the count must move.
             let mut grown = entries;
-            grown.push(entry(OpClass::Splice, "Alice", 1_000_400, 99));
+            grown.push(entry(EntryKind::Text, "Alice", 1_000_400, 99));
             t.set_entries(grown);
             let sub = t.group_subtitle_at_row(0).unwrap();
             assert!(sub.contains("21 changes"), "got {sub:?}");
@@ -5015,7 +4896,7 @@ mod group_tests {
             let key = t.group_at_row(0).unwrap().0.to_string();
 
             let mut grown = typing_run(20);
-            grown.push(entry(OpClass::Splice, "Alice", 1_000_020, 99));
+            grown.push(entry(EntryKind::Text, "Alice", 1_000_020, 99));
             t.set_entries(grown);
             assert_eq!(t.group_at_row(0).unwrap().0, key, "same band, same key");
             assert!(
@@ -5532,7 +5413,9 @@ mod group_tests {
 
             let r4 = t.row_rect(4).unwrap();
             dispatch(&mut t, &cursor_moved(r4.x0 + 40.0, r4.center().y));
-            dispatch_mod(&mut t, &mouse_press(), shift());
+            Dispatch::new()
+                .modifiers(shift())
+                .send(&mut t, &mouse_press());
             assert_eq!(t.selection(), Some((16, 19)), "shift-click extends the run");
 
             // Paint so the bar's action rect is where the click handler will look.
@@ -5562,16 +5445,16 @@ mod group_tests {
             let mut timeline = timeline_at(
                 Rect::new(0.0, 0.0, 620.0, 600.0),
                 vec![
-                    entry(OpClass::Splice, "Ada", 1, 1),
-                    entry(OpClass::Splice, "Ada", 3, 3),
+                    entry(EntryKind::Text, "Ada", 1, 1),
+                    entry(EntryKind::Text, "Ada", 3, 3),
                 ],
             );
             let selected_id = timeline.entries()[1].id;
             timeline.set_selection(Some((1, 1)));
             timeline.set_entries(vec![
-                entry(OpClass::Splice, "Ada", 1, 1),
-                entry(OpClass::Splice, "Ada", 2, 2),
-                entry(OpClass::Splice, "Ada", 3, 3),
+                entry(EntryKind::Text, "Ada", 1, 1),
+                entry(EntryKind::Text, "Ada", 2, 2),
+                entry(EntryKind::Text, "Ada", 3, 3),
             ]);
             assert_eq!(timeline.selection(), Some((2, 2)));
             assert_eq!(timeline.entries()[2].id, selected_id);
@@ -5581,8 +5464,8 @@ mod group_tests {
             let mut timeline = timeline_at(
                 Rect::new(0.0, 0.0, 620.0, 600.0),
                 vec![
-                    entry(OpClass::Splice, "Ada", 1, 1),
-                    entry(OpClass::Splice, "Maren", 2, 2),
+                    entry(EntryKind::Text, "Ada", 1, 1),
+                    entry(EntryKind::Text, "Maren", 2, 2),
                 ],
             );
             timeline.set_selection(Some((0, 0)));
@@ -5592,8 +5475,8 @@ mod group_tests {
 
         fn a_filter_that_hides_part_of_a_band_says_how_much_it_is_showing() {
             let mut entries = typing_run(10);
-            entries[3].op_class = OpClass::Comment;
-            entries[4].op_class = OpClass::Comment;
+            entries[3].entry_kind = EntryKind::Comment;
+            entries[4].entry_kind = EntryKind::Comment;
             // Comments split the band automatically, so name the whole run to force
             // one band that a filter can then cut into.
             let ids = (entries[0].id, entries[9].id);
@@ -5635,7 +5518,7 @@ mod group_tests {
             let entries: Vec<HistoryEntry> = (0u32..2000)
                 .map(|i| {
                     entry(
-                        OpClass::Splice,
+                        EntryKind::Text,
                         &format!("Person {}", i / 2),
                         1_000_000u64.saturating_add(u64::from(i)),
                         u8::try_from(i % 251).unwrap_or(u8::MAX),
@@ -5727,12 +5610,12 @@ mod group_tests {
             let mut entries: Vec<HistoryEntry> = Vec::new();
             // Local session, recent.
             for i in 0..4 {
-                entries.push(entry(OpClass::Splice, "Alice", NOW - 60 + u64::from(i), i));
+                entries.push(entry(EntryKind::Text, "Alice", NOW - 60 + u64::from(i), i));
             }
             // Peer session, merged after but stamped days earlier.
             for i in 0..3 {
                 entries.push(entry(
-                    OpClass::Splice,
+                    EntryKind::Text,
                     "Ada",
                     NOW - 5 * day + u64::from(i),
                     10 + i,
@@ -5799,10 +5682,10 @@ mod group_tests {
             .unwrap_or(SystemTime::UNIX_EPOCH);
         let secs = |day: u64, hour: u64| day * 86_400 + hour * 3_600;
         let entries = vec![
-            entry(OpClass::Splice, "Ada", secs(8, 10), 1),
-            entry(OpClass::Splice, "Maren", secs(7, 16), 2),
-            entry(OpClass::Splice, "ada", secs(5, 9), 3),
-            entry(OpClass::Splice, "bob", secs(2, 11), 4),
+            entry(EntryKind::Text, "Ada", secs(8, 10), 1),
+            entry(EntryKind::Text, "Maren", secs(7, 16), 2),
+            entry(EntryKind::Text, "ada", secs(5, 9), 3),
+            entry(EntryKind::Text, "bob", secs(2, 11), 4),
         ];
         let mut t = ActivityTimeline::with_entries(entries);
         t.set_now_for_test(now);

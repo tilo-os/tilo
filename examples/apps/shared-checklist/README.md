@@ -5,8 +5,9 @@ An example of **collaboration and undo**.
 What collaboration means for an app's state, shown by tests that fork a
 second replica, edit both concurrently and sync them. Text fields merge
 character by character, booleans settle on one value everywhere, collection
-items keep stable ids so concurrent adds keep both, each action is an
-attributed version, and undo takes back only your own actions. The app
+items keep stable ids so concurrent adds keep both, each edit and verb is an
+attributed version, and undo takes back only your own. The next item's title
+is a form: local to the window until it is added as one invocation. The app
 contains no networking, locking or undo code.
 
 Read:

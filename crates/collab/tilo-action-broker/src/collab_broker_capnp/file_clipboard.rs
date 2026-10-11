@@ -1,8 +1,8 @@
 //! Local Files offers use actual launcher custody and the existing action policy.
-use super::{Arc, CapDecision, CapnpChannelHandle, Rc, ResourceRef, Verb};
+use super::{Arc, CapnpChannelHandle, Rc};
 use crate::services::FileClipboardContext;
 use runtime_collab::file_clipboard::{Command, MAX_WIRE_BYTES};
-use tilo_actions::{InvocationId, PermissionRequirement};
+use tilo_actions::{ActionKind, InvocationId};
 
 impl CapnpChannelHandle {
     fn clipboard_original(
@@ -73,7 +73,7 @@ impl CapnpChannelHandle {
         let peer = self.peer_id;
         let admitted = self.verified_identity.clone();
         let state = Arc::downgrade(&self.state);
-        let check = Arc::new(move |needed: PermissionRequirement| {
+        let check = Arc::new(move |needed: ActionKind| {
             local.revalidate()?;
             let state = state.upgrade().ok_or("clipboard broker retired")?;
             if !state.is_accepting() {
@@ -85,39 +85,45 @@ impl CapnpChannelHandle {
                 .checked_policy_time(original.as_ref().and_then(|p| p.policy_time.as_ref()))?
                 .1
                 / 1_000_000_000;
-            let tree = state
+            let membership = state
                 .membership
-                .as_ref()
-                .ok_or("clipboard workspace authority unavailable")?
-                .snapshot()?;
+                .clone()
+                .ok_or("clipboard workspace authority unavailable")?;
             drop(state);
-            let space = tree
-                .workspaces
-                .iter()
-                .find(|w| w.room.to_string() == route.cluster_id)
-                .ok_or("clipboard workspace ended")?;
             let action = original
                 .as_ref()
                 .and_then(|p| p.original.as_ref())
                 .map_or(local_action.as_str(), |data| data.clipboard_action());
-            let verb = match needed {
-                PermissionRequirement::Read => Verb::Read,
-                PermissionRequirement::Write => Verb::Write,
-                _ => return Err("unsupported clipboard permission".into()),
-            };
-            if space.decide_at(
-                &actor.policy_in(space, now),
-                &ResourceRef::Action {
-                    app: route.app_id.clone(),
-                    action: action.into(),
-                },
-                verb,
-                now,
-            ) != CapDecision::Allow
-            {
-                return Err("clipboard caller no longer has the required permission".into());
+            // Local Files controls operate on the framework root resource.
+            // Continued actions retain their originally addressed resource.
+            let resource = original
+                .as_ref()
+                .and_then(|p| p.original.as_ref())
+                .map_or("files.folder", |data| data.clipboard_resource());
+            let kind = original
+                .as_ref()
+                .and_then(|p| p.original.as_ref())
+                .map_or("files.folder", |data| data.clipboard_resource_kind());
+            if !matches!(needed, ActionKind::Read | ActionKind::Undoable) {
+                return Err("unsupported clipboard permission".into());
             }
-            Ok(())
+            membership
+                .decide_in_room(&route.cluster_id, |space| {
+                    let space = space.ok_or("clipboard workspace ended")?;
+                    let node = tilo_actions::action_node(
+                        &space.node(),
+                        &route.app_id,
+                        kind,
+                        resource,
+                        None,
+                        action,
+                    );
+                    if !actor.may_in(space, &node, needed, now) {
+                        return Err("clipboard caller no longer has the required permission");
+                    }
+                    Ok(())
+                })?
+                .map_err(str::to_owned)
         });
         Ok(FileClipboardContext {
             peer: self.peer_id,
@@ -153,6 +159,7 @@ impl CapnpChannelHandle {
             Command::Undo { .. } => "undo",
             Command::Redo { .. } => "redo",
             Command::Recover { .. } => "recover-clipboard-transfers",
+            Command::RestoreTrash { .. } => "restore",
             Command::Paste { .. }
             | Command::Snapshot
             | Command::Observe { .. }
@@ -181,7 +188,7 @@ fn clipboard_actor(
     route: &super::CrdtRoute,
     admitted: &super::AdmittedJoinIdentity,
     original: Option<&super::PendingInvocation>,
-    needed: PermissionRequirement,
+    needed: ActionKind,
     peer: u64,
 ) -> Result<super::BrokerActor, String> {
     let actor = if let Some(pending) = original {

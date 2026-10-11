@@ -247,6 +247,17 @@ impl EditableLabel {
         self.editing
     }
 
+    /// What the last draw painted outside the label's rect: while it is
+    /// being edited, what its field painted beyond it (a correction chip).
+    #[must_use]
+    pub fn overhang(&self) -> Option<Rect> {
+        if self.editing {
+            self.input.overhang()
+        } else {
+            None
+        }
+    }
+
     /// Selects the whole value so the first keystroke replaces it (native
     /// rename behaviour).
     pub fn begin_edit(&mut self) {
@@ -349,7 +360,7 @@ impl Widget for EditableLabel {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.adopt_theme(theme);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::auto(),
                 height: Dimension::length(self.band()),
@@ -361,9 +372,8 @@ impl Widget for EditableLabel {
                 height: Dimension::auto(),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -380,13 +390,7 @@ impl Widget for EditableLabel {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.input.apply_layout_external(self.rect);
     }
 
@@ -595,12 +599,14 @@ impl Widget for EditableLabel {
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        self.semantic_target.as_deref() == Some(target) && self.perform_action(action, state, path)
+        self.semantic_target.as_deref() == Some(target)
+            && self.perform_action(action, &[], state, path)
     }
 
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
@@ -619,25 +625,12 @@ impl Widget for EditableLabel {
                 _ => return false,
             }
         }
-        Widget::perform_action(&mut self.input, action, state, path)
+        Widget::perform_action(&mut self.input, action, &[], state, path)
     }
 }
 
 impl crate::widget::controls::ActionControls for EditableLabel {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action
-            .as_mut()
-            .and_then(crate::widget::ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         let Some(action) = &self.action else {
             return Vec::new();
@@ -649,91 +642,26 @@ impl crate::widget::controls::ActionControls for EditableLabel {
             .unwrap_or("editable_label");
         vec![action.metadata(control_id)]
     }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use automerge::AutoCommit;
     use winit::event::Modifiers;
 
     fn drive(el: &mut EditableLabel, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        el.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: crate::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        Dispatch::new().doc(doc).modifiers(m).send(el, ev).handled
     }
 
-    fn char_key(s: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(winit::keyboard::SmolStr::new(s));
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::char_key;
 
-    fn named_key(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::named_key;
 
-    fn mouse_move(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     fn no_mods() -> Modifiers {
         Modifiers::default()
@@ -761,8 +689,8 @@ mod tests {
             assert!(el.is_editing(), "still editing until a commit trigger");
 
             // Move the pointer well outside the field, then press — a click away.
-            drive(&mut el, &mut doc, &mouse_move(500.0, 500.0), no_mods());
-            let consumed = drive(&mut el, &mut doc, &left_press(), no_mods());
+            drive(&mut el, &mut doc, &cursor_moved(500.0, 500.0), no_mods());
+            let consumed = drive(&mut el, &mut doc, &mouse_press(), no_mods());
 
             assert!(!el.is_editing(), "click outside ends the edit");
             assert_eq!(el.value(), "New", "blur committed the typed value");

@@ -150,6 +150,43 @@ impl SettingsSource for Host {
     fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
         self.source.update_section(name, values)
     }
+    fn update_section_by(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+        origin: &crate::ChangeOrigin,
+    ) -> std::io::Result<()> {
+        self.source.update_section_by(name, values, origin)
+    }
+    fn update_section_with(
+        &self,
+        name: &str,
+        origin: &crate::ChangeOrigin,
+        change: &mut crate::SectionChange<'_>,
+    ) -> std::io::Result<()> {
+        self.source.update_section_with(name, origin, change)
+    }
+    fn update_section_report(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+    ) -> std::io::Result<crate::ConditionalUpdate> {
+        self.source.update_section_report(name, values)
+    }
+    fn compare_update_section(
+        &self,
+        name: &str,
+        expected: &Map<String, Value>,
+        values: Map<String, Value>,
+    ) -> std::io::Result<crate::ConditionalUpdate> {
+        self.source.compare_update_section(name, expected, values)
+    }
+    fn compare_display_update(
+        &self,
+        update: crate::DisplayUpdate,
+    ) -> std::io::Result<crate::ConditionalUpdate> {
+        self.source.compare_display_update(update)
+    }
     fn revision(&self) -> u64 {
         self.source.revision()
     }
@@ -572,3 +609,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "host_storage_tests.rs"]
+mod storage_tests;

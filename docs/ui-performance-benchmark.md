@@ -11,6 +11,32 @@ flags, defaults, value parsing, dependencies, and diagnostic caveats. Historic
 measurements belong in version control; they are not evidence for the current
 checkout.
 
+Current results come from the scheduled performance lane, not from this page.
+Each benchmark writes records with `tools/perf/record.py`, and the records are
+stored in the `tilo-perf-results` package. See
+[Performance results](../DEVELOPMENT.md#performance-results) for how a benchmark
+such as `ui-perf` or `redraw_bench` joins that lane.
+
+## Where this runs
+
+`scripts/perf/render_bench.py` runs both harnesses the same way in each lane.
+Every lane starts with the pixel-equivalence preflight below, and a lane whose
+preflight fails records nothing.
+
+| Lane | When | What it checks |
+|---|---|---|
+| **CI / render counters** (`ci-render-counters.yml`) | Changes to `crates/sdk/ui-core`, the vendored renderer stack (`vello*`, `wgpu*`, `cosmic-text`) or this harness. It is not a required check. | `render_bench.py counters`: the 4K redraw gate's allocator calls and bytes per redraw and its raster pixels per redraw (200 events), and the no-redraw gate's allocations per 1,000 events (100,000 events). It uses the budgets below and never compares a clock. |
+| **Perf / scheduled**, group `render` (`perf-scheduled.yml`) | Nightly, and by dispatch with `kpis=render` | `render_bench.py timing`: `render.ui.frame_us.4k` (redrawing frames of 1,000 dashboard events) and `render.shell.redraw_us.4k` (the 1,000 `redraw_bench` clicks), then the same counters. |
+
+Both lanes run on the shared `runner` class, which has no GPU. Lavapipe
+rasterises on the CPU, so the nightly records carry `renderer=lavapipe` and are
+compared only with each other. They follow regressions and never support a
+4K/144 Hz claim. `redraw_bench`'s own mean and p99 gate is a hardware
+threshold: the nightly lane records its outcome in each record's `meta.gate`
+and does not fail on it. The shell's runner-independent render counters (pixels
+repainted per keyed scene part, GPU copies and readback bytes per client frame)
+are `shell` package tests, which run on every change to `shell`.
+
 ## Acceptance commands
 
 Build once so every run measures the same binary:
@@ -27,7 +53,7 @@ TILO_UI_DASH_WIDTH=3840 \
 TILO_UI_DASH_HEIGHT=2160 \
 TILO_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW=650 \
 TILO_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW=70000 \
-TILO_UI_DASH_RASTER_PIXEL_BUDGET=600000 \
+TILO_UI_DASH_RASTER_PIXEL_BUDGET=150000 \
 TILO_UI_DASH_GPU_BUDGET_BYTES=65000000 \
 TILO_UI_DASH_GPU_GROWTH_BUDGET_BYTES=4194304 \
 TILO_UI_DASH_RSS_BUDGET_KIB=350000 \

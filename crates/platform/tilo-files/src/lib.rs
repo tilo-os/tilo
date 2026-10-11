@@ -62,11 +62,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -169,12 +165,18 @@ pub struct Lock {
     _held: Held,
 }
 
-#[allow(dead_code, reason = "each guard is held only for its release on drop")]
+/// Each guard is held only for its release on drop.
 enum Held {
-    Disk(native::lock::FileLock),
-    Memory(memory::Held),
+    Disk {
+        _lock: native::lock::FileLock,
+    },
+    Memory {
+        _lock: memory::Held,
+    },
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    Web(opfs::WebLock),
+    Web {
+        _lock: opfs::WebLock,
+    },
 }
 
 impl Lock {
@@ -461,7 +463,9 @@ impl Dir {
         let held = match &self.root {
             Root::Local(local) => local.lock(path, mode).await?,
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            Root::Opfs(scope) => Held::Web(scope.lock(path, mode).await?),
+            Root::Opfs(scope) => Held::Web {
+                _lock: scope.lock(path, mode).await?,
+            },
         };
         Ok(Lock { mode, _held: held })
     }

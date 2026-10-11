@@ -114,7 +114,8 @@ the shell action and checks pause/stop/destroy ordering and Landlock evidence.
 It tears down only its owned compositor and records exact production binary and
 PNG hashes. A failed journey writes no successful acceptance record.
 
-For started-service acceptance, compile `ServiceActivity.java` with
+For started-service acceptance, compile `ServiceActivity.java` and
+`QueuedServiceActivity.java` with
 `ServiceManifest.xml` and the same SDK recipe, then qualify the APK with activity
 `org/tilo/android/services/ServiceActivity`. Keep that signed APK unchanged between
 the previous and changed runtime. `tools/android/run_service_journey.py` takes the
@@ -126,6 +127,19 @@ the stale stop, exactly one main-looper service destruction, ordered activity
 pause/stop/destroy, preserved visit data across relaunch, and two isolated
 workspace histories. It requires presented frames and mandatory confinement,
 creates no grants, and keeps reports/screenshots in `target/` or outside source.
+
+To check cancellation before main-looper dispatch, qualify that APK with activity
+`org/tilo/android/services/QueuedServiceActivity` and pass `--queued-starts` to
+`run_service_journey.py`. Keep the signed APK unchanged between runtimes.
+On the previous framework, `--expect-incompatibility` requires an immediate stop
+returning false and both canceled commands reaching `onStartCommand`. The changed
+framework must return true, omit those commands, allow a later start before the
+queue drains, and allow another restart after stopping the running service.
+Repeated stops must return false. The runner checks exact callback order,
+main-looper creation/destruction, close/relaunch, private history in two rooms,
+presented frames and mandatory confinement. Use the existing foreground journey
+on the changed runtime to verify open-descriptor interruption and denied relaunch
+after withdrawal of its disposable read/write grants.
 
 Build `ForegroundActivity.java` and `ForegroundManifest.xml` by the same SDK
 process. Keep the signed APK unchanged between the baseline and changed runtime.

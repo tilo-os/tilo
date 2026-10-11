@@ -76,7 +76,7 @@ pub struct ConflictBanner {
     /// layout hook can measure the chip labels.
     label_style: TextStyle,
     /// Measured `(width, height)` of the chip labels, resolved in layout by
-    /// [`Widget::adjust_layout_with_measure`] so the chip a click lands in is
+    /// [`Widget::adjust_layout_style`] so the chip a click lands in is
     /// the chip that is painted; `(0, 0)` until then, when the chips keep
     /// their pinned widths.
     review_label: (f32, f32),
@@ -251,40 +251,33 @@ impl Widget for ConflictBanner {
         } else {
             self.height as f32
         };
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(h),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// The chip labels are measured here, during layout, so the chip rects
     /// hit-testing reads are the rects paint draws — never a stale guess
     /// from before the first frame. The banner's own style is unaffected.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
+        _taffy: &mut TaffyTree<()>,
+        _node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
         self.review_label = text.measure_style("Review", None, &self.label_style);
         self.dismiss_label = text.measure_style("Dismiss", None, &self.label_style);
-        self.adjust_layout_style(taffy, node)
+        false
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if prev != self.rect {
             self.dirty = true;
         }
@@ -336,7 +329,7 @@ impl Widget for ConflictBanner {
         );
 
         // Chip widths come from the labels measured in layout (see
-        // `adjust_layout_with_measure`), the same measurement the chip
+        // `adjust_layout_style`), the same measurement the chip
         // centres its label with.
         if let Some(rect) = self.review_chip_rect() {
             Self::draw_chip(
@@ -453,10 +446,9 @@ impl Widget for ConflictBanner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::dispatch;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::Modifiers;
 
     fn banner_at(rect: Rect, count: usize) -> ConflictBanner {
         let mut b = ConflictBanner::new("Kanban move");
@@ -528,42 +520,9 @@ mod tests {
         count_updates_via_setter();
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn dispatch(b: &mut ConflictBanner, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        b.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::synthetic_input::mouse_press;
 
     #[test]
     fn conflict_banner_chips_fire_only_their_callbacks() {

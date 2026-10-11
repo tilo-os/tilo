@@ -47,7 +47,7 @@
 //! * **Actions.** [`resolve_node_id`] inverts a synthetic id back to
 //!   `(owning widget, key path)` so an incoming `ActionRequest` reaches the
 //!   clip the user was on, via
-//!   [`Widget::perform_action_at`].
+//!   [`Widget::perform_action`].
 //!   Inversion re-walks the live tree rather than caching an index, so a stale
 //!   id from a previous frame resolves to `None` instead of to the wrong clip.
 
@@ -354,7 +354,7 @@ pub fn widget_ak_id<S: BuildHasher>(
 /// [`build_tree_update`] uses the same rule to aim the exported focus. This is
 /// the other half: the host uses it to aim *keyboard* activation at the element
 /// the user is on, so a canvas widget implements
-/// [`Widget::perform_action_at`] once
+/// [`Widget::perform_action`] once
 /// and gets both the assistive-technology and the Enter/arrow paths, instead of
 /// having to implement `perform_action` again for the keyboard.
 pub fn active_descendant_path(access: &AccessNode) -> Option<Vec<u64>> {
@@ -390,7 +390,7 @@ pub enum A11yTarget {
         owner: TaffyNodeId,
         /// Keys from `owner`'s direct synthetic child down to the target.
         /// Keys, for a widget that identifies a synthetic child by identity
-        /// — `perform_action_at` matches a clip by `hash_key(uuid)`, which is
+        /// — `perform_action` matches a clip by `hash_key(uuid)`, which is
         /// nothing like a position.
         key_path: Vec<u64>,
         /// Ordinals, for a widget that identifies one by position —
@@ -630,83 +630,6 @@ fn accessible_character_lengths(text: &str) -> Vec<u8> {
         }
     }
     lengths
-}
-
-/// `focused` is the taffy id of the focused widget; `focus` falls back to
-/// the synthetic root when nothing (or a stale id) matches — AccessKit
-/// requires `focus` to be a real node. `scale` multiplies rects into
-/// physical-pixel bounds; pass `1.0` for logical coords.
-///
-/// Always a full tree; AccessKit's adapters suppress events for unchanged
-/// nodes, so the cost is processing, not spurious AT chatter.
-/// Resolve a synthetic AccessKit id back to the widget that published the
-/// synthetic `AccessNode` and its child-index path. This repeats the same DFS
-/// counter used by `build_tree_update`, so immediate-mode controls can be
-/// focused and activated without pretending they are taffy widgets.
-fn visit_synthetic_widget<'a>(
-    widget: &'a dyn Widget,
-    target: u64,
-    counter: &mut u64,
-) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
-    let access = widget.accessibility();
-    *counter = counter.saturating_add(1);
-    if let Some(access) = access {
-        for child in widget.children() {
-            if let Some(found) = visit_synthetic_widget(child, target, counter) {
-                return Some(found);
-            }
-        }
-        for (index, child) in access.children.iter().enumerate() {
-            if let Some(found) = visit_synthetic_child(widget, child, vec![index], target, counter)
-            {
-                return Some(found);
-            }
-        }
-    } else {
-        for child in widget.children() {
-            if let Some(found) = visit_synthetic_widget(child, target, counter) {
-                return Some(found);
-            }
-        }
-    }
-    None
-}
-
-fn visit_synthetic_child<'a>(
-    owner: &'a dyn Widget,
-    child: &AccessNode,
-    path: Vec<usize>,
-    target: u64,
-    counter: &mut u64,
-) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
-    let id = SYNTHETIC_ID_BIT.saturating_add(*counter);
-    *counter = counter.saturating_add(1);
-    if id == target {
-        return Some((std::ptr::from_ref(owner), path));
-    }
-    for (index, nested) in child.children.iter().enumerate() {
-        let mut nested_path = path.clone();
-        nested_path.push(index);
-        if let Some(found) = visit_synthetic_child(owner, nested, nested_path, target, counter) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-pub fn resolve_synthetic_target<'a>(
-    root: &'a dyn Widget,
-    target: AkNodeId,
-) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
-    // A single test, because synthetic ids sit above every other space:
-    // widget ids are small, the structural fallback is at 1<<48 and text runs
-    // at 1<<62, so bit 63 alone identifies a synthetic node. The old form
-    // compared against 1<<48 — the *fallback* base — which meant a fallback
-    // widget id resolved as a synthetic node.
-    if !is_synthetic_id(target) {
-        return None;
-    }
-    visit_synthetic_widget(root, target.0, &mut 0)
 }
 
 pub fn build_tree_update<S: BuildHasher>(
@@ -1335,6 +1258,7 @@ mod tests {
     use super::*;
     use crate::a11y::{AccessNode, AccessState, Role};
     use crate::theme::Theme;
+    use crate::widget::TaffyTreeExt;
     use crate::widget::Widget;
     use std::collections::HashMap;
     use taffy::TaffyTree;
@@ -1382,11 +1306,7 @@ mod tests {
                 .iter_mut()
                 .map(|c| c.build_layout(taffy, theme, node_map))
                 .collect();
-            let node = taffy
-                .new_with_children(taffy::Style::default(), &child_nodes)
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_node(taffy::Style::default(), &child_nodes, node_map, self)
         }
         fn apply_layout(
             &mut self,
@@ -1721,11 +1641,7 @@ mod tests {
             node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             let kid = self.child.build_layout(taffy, theme, node_map);
-            let node = taffy
-                .new_with_children(taffy::Style::default(), &[kid])
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_node(taffy::Style::default(), &[kid], node_map, self)
         }
         fn apply_layout(
             &mut self,

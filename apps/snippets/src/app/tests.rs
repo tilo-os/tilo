@@ -1,15 +1,27 @@
 use super::*;
 use crate::resource::SnippetsShell;
+use automerge::AutoCommit;
 use ui::headless::Framed;
 use ui::prelude::TestApp;
-use ui::tilo_resource::Invoke;
+use ui::tilo_resource::{Id, Invoke, items::item_resource_id};
 use ui::widget::Widget;
+
+/// A library holding `snippets`, as the framework presents it.
+fn presented(snippets: impl IntoIterator<Item = Snippet>) -> Rc<Snippets> {
+    let mut library = Snippets::default();
+    for (n, snippet) in snippets.into_iter().enumerate() {
+        library
+            .snippets
+            .push(Id::from_raw(format!("s{n}")), snippet);
+    }
+    Rc::new(library)
+}
 
 /// The bare window showing the starter library as the framework presents
 /// it, with a specimen open.
 fn demo() -> SnippetsApp {
     let mut app = SnippetsApp::new();
-    app.show_library(&crate::seed::starter_library());
+    app.show_library(&presented(crate::seed::starter_library()));
     {
         let mut core = app.core.borrow_mut();
         core.open_specimen();
@@ -19,15 +31,11 @@ fn demo() -> SnippetsApp {
     app
 }
 
-fn library_of(app: &SnippetsApp) -> Vec<Snippet> {
-    app.core.borrow().library.snippets.clone()
-}
-
-/// The app on a fresh record holding `snippets`, created through the door.
-fn launched(snippets: Vec<Snippet>) -> TestApp<SnippetsShell> {
+/// The app on a fresh record holding `snippets`, inserted through the door.
+fn launched(snippets: &[Snippet]) -> TestApp<SnippetsShell> {
     let mut app = TestApp::<SnippetsShell>::new().unwrap();
-    for snippet in snippets {
-        app.invoke(Invoke::apply(&actions::create_snippet_action(snippet)).unwrap())
+    for (at, snippet) in snippets.iter().enumerate() {
+        app.invoke(Invoke::edit(&Snippets::paths().snippets.insert(at, snippet)).unwrap())
             .unwrap();
     }
     app.settle();
@@ -35,10 +43,10 @@ fn launched(snippets: Vec<Snippet>) -> TestApp<SnippetsShell> {
 }
 
 fn snippet(title: &str, body: &str) -> Snippet {
-    let mut s = Snippet::blank("Ops");
-    s.title = title.into();
-    s.body = body.into();
-    s
+    Snippet {
+        body: body.into(),
+        ..Snippet::titled(title, "Ops")
+    }
 }
 
 /// Activate the control labelled `label` as assistive technology does.
@@ -79,8 +87,26 @@ fn body_shown(app: &mut TestApp<SnippetsShell>) -> String {
         .unwrap_or_default()
 }
 
-fn by_title(app: &TestApp<SnippetsShell>, title: &str) -> Snippet {
-    app.state().into_iter().find(|s| s.title == title).unwrap()
+fn by_title(app: &TestApp<SnippetsShell>, title: &str) -> (Id, Snippet) {
+    app.state()
+        .snippets
+        .iter()
+        .find(|(_, s)| s.title == title)
+        .map_or_else(
+            || panic!("a snippet titled {title}"),
+            |(id, s)| (id.clone(), s.clone()),
+        )
+}
+
+fn titles(app: &TestApp<SnippetsShell>) -> Vec<String> {
+    let mut titles: Vec<String> = app
+        .state()
+        .snippets
+        .values()
+        .map(|s| s.title.clone())
+        .collect();
+    titles.sort();
+    titles
 }
 
 /// The window shows what it is presented: empty until the library arrives.
@@ -118,12 +144,13 @@ fn sidebar_places_narrow_the_list() {
         app.titles.0, "Favorites",
         "the list column is titled by its place"
     );
+    let core = app.core.borrow();
     assert!(
-        library_of(&app)
+        core.visible
             .iter()
-            .filter(|s| app.core.borrow().visible.contains(&s.id))
-            .all(|s| s.favorite)
+            .all(|id| core.library.get(id).unwrap().favorite)
     );
+    drop(core);
 
     // An empty library has no folder or tag sections.
     let empty = SnippetsApp::new();
@@ -131,37 +158,55 @@ fn sidebar_places_narrow_the_list() {
     assert_eq!(sections.len(), 1);
 }
 
-/// Favorite, Copy, New and Delete submit the library's actions: each is one
-/// undo step, and the window follows the stored library.
+/// Favorite, Copy, New and Delete submit the library's field edits and
+/// verbs: each is one undo step, and the window follows the stored library.
 #[test]
 fn controls_submit_library_actions_as_one_undo_step_each() {
-    let mut app = launched(vec![snippet("Plain", "echo hi"), snippet("Templated", "")]);
+    let mut app = launched(&[snippet("Plain", "echo hi"), snippet("Templated", "")]);
     activate(&mut app, "Plain");
     activate(&mut app, "Favorite");
-    assert!(by_title(&app, "Plain").favorite);
+    assert!(by_title(&app, "Plain").1.favorite);
     assert!(app.undo(), "the favorite is one undo step");
-    assert!(!by_title(&app, "Plain").favorite);
+    assert!(!by_title(&app, "Plain").1.favorite);
 
     activate(&mut app, "Copy");
-    assert_eq!(by_title(&app, "Plain").uses, 1, "copying records a use");
+    assert_eq!(
+        by_title(&app, "Plain").1.uses.get(),
+        1,
+        "copying records a use"
+    );
 
     activate(&mut app, "New snippet");
-    assert_eq!(app.state().len(), 3);
-    // The new snippet is the one open, so its menu deletes it.
+    assert_eq!(app.state().snippets.len(), 3);
+    let (made, _) = by_title(&app, "Untitled snippet");
+    assert_eq!(
+        app.surface_mut::<SnippetsApp>().open_id_for_test(),
+        Some(made.clone()),
+        "the new snippet opens"
+    );
+    // The new snippet is the one open, so its menu deletes it, once the
+    // person confirms what the host asks.
     activate(&mut app, "More actions");
     activate(&mut app, "Delete");
-    let mut titles: Vec<String> = app.state().into_iter().map(|s| s.title).collect();
-    titles.sort();
-    assert_eq!(titles, ["Plain", "Templated"]);
+    assert_eq!(app.state().snippets.len(), 3, "deleting waits for consent");
+    app.harness().type_text("CONFIRM");
+    app.harness().key("Enter");
+    app.settle();
+    assert!(
+        app.state().snippets.get(&made).is_none(),
+        "the confirmed delete applied: {:?}",
+        app.harness().control_failures()
+    );
+    assert_eq!(titles(&app), ["Plain", "Templated"]);
     assert!(app.undo(), "the delete is one undo step");
-    assert_eq!(app.state().len(), 3);
+    assert_eq!(app.state().snippets.len(), 3);
 }
 
 /// The language picker sets the chosen language; the overflow menu
 /// duplicates the open snippet and opens the copy.
 #[test]
 fn the_snippet_menus_set_the_language_and_duplicate() {
-    let mut app = launched(vec![snippet("Deploy", "kubectl apply")]);
+    let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
     activate(&mut app, "Deploy");
     // The language is a dropdown: assistive technology sets its value.
     {
@@ -174,26 +219,53 @@ fn the_snippet_menus_set_the_language_and_duplicate() {
             .unwrap();
     }
     app.settle();
-    assert_eq!(by_title(&app, "Deploy").language, Language::Rust);
+    assert_eq!(by_title(&app, "Deploy").1.language, Language::Rust);
 
     activate(&mut app, "More actions");
     activate(&mut app, "Duplicate");
-    let copy = by_title(&app, "Deploy (copy)");
+    let (copy_id, copy) = by_title(&app, "Deploy (copy)");
     assert_eq!(copy.body, "kubectl apply");
-    assert_eq!(app.state().len(), 2);
+    assert_eq!(app.state().snippets.len(), 2);
+    assert_eq!(
+        app.surface_mut::<SnippetsApp>().open_id_for_test(),
+        Some(copy_id),
+        "the copy opens"
+    );
+}
+
+/// The open snippet's folder and tag chips reveal their snippets through the
+/// action each place publishes.
+#[test]
+fn the_folder_and_tag_chips_reveal_their_places() {
+    let tagged = Snippet {
+        tags: ["k8s".to_owned()].into_iter().collect(),
+        ..snippet("Deploy", "kubectl apply")
+    };
+    let mut app = launched(&[tagged, snippet("Other", "")]);
+    activate(&mut app, "Deploy");
+    activate(&mut app, "Tag: k8s");
+    assert_eq!(
+        app.surface_mut::<SnippetsApp>().core.borrow().selection,
+        Selection::Tag("k8s".into())
+    );
+    activate(&mut app, "Folder: Ops");
+    assert_eq!(
+        app.surface_mut::<SnippetsApp>().core.borrow().selection,
+        Selection::Folder("Ops".into())
+    );
 }
 
 /// A synthetic row is operated by its measured list owner; a removed row's
 /// exported handle must never operate the replacement row.
 #[test]
 fn exported_list_rows_activate_and_refuse_removed_handles() {
-    let mut app = launched(vec![
+    let mut app = launched(&[
         snippet("First", "first body"),
         snippet("Second", "second body"),
     ]);
     activate(&mut app, "First");
     assert_eq!(body_shown(&mut app), "first body");
-    let second = by_title(&app, "Second");
+    let (second, _) = by_title(&app, "Second");
     let row = app
         .harness()
         .a11y_nodes()
@@ -233,10 +305,13 @@ fn exported_list_rows_activate_and_refuse_removed_handles() {
         .expect("the measured list owner handles its row");
     app.settle();
     assert_eq!(body_shown(&mut app), "second body");
-    assert_eq!(app.state().len(), 2, "opening a row preserves the library");
+    assert_eq!(
+        app.state().snippets.len(),
+        2,
+        "opening a row preserves the library"
+    );
 
-    app.invoke(Invoke::apply(&actions::delete_snippet_action(second.id)).unwrap())
-        .unwrap();
+    app.invoke_confirmed(Snippets::DELETE.with(second)).unwrap();
     app.settle();
     assert!(
         app.harness()
@@ -244,7 +319,7 @@ fn exported_list_rows_activate_and_refuse_removed_handles() {
             .is_err(),
         "a removed row's exported handle is refused"
     );
-    assert_eq!(app.state().len(), 1);
+    assert_eq!(app.state().snippets.len(), 1);
     assert_eq!(body_shown(&mut app), "first body");
 }
 
@@ -252,9 +327,8 @@ fn exported_list_rows_activate_and_refuse_removed_handles() {
 #[test]
 fn copying_a_templated_snippet_opens_the_variables_dialog() {
     let mut app = SnippetsApp::new();
-    let templated = snippet("Greet", "Hello ${name}");
-    app.show_library(std::slice::from_ref(&templated));
-    app.core.borrow_mut().copy(templated.id);
+    app.show_library(&presented([snippet("Greet", "Hello ${name}")]));
+    app.core.borrow_mut().copy(&Id::from_raw("s0"));
     assert!(app.expand_open_for_test());
 }
 
@@ -263,15 +337,15 @@ fn copying_a_templated_snippet_opens_the_variables_dialog() {
 fn the_list_moves_the_open_snippet_by_keys() {
     let app = demo();
     let mut core = app.core.borrow_mut();
-    let first = core.visible[0];
-    let second = core.visible[1];
-    let last = *core.visible.last().unwrap();
-    core.open = Some(first);
+    let first = core.visible[0].clone();
+    let second = core.visible[1].clone();
+    let last = core.visible.last().unwrap().clone();
+    core.open = Some(first.clone());
     assert!(core.list_key(&Key::Named(NamedKey::ArrowDown)));
     assert_eq!(core.open, Some(second));
     assert!(core.list_key(&Key::Named(NamedKey::ArrowUp)));
     assert!(core.list_key(&Key::Named(NamedKey::ArrowUp)));
-    assert_eq!(core.open, Some(first), "Up stops at the top");
+    assert_eq!(core.open, Some(first.clone()), "Up stops at the top");
     assert!(core.list_key(&Key::Named(NamedKey::End)));
     assert_eq!(core.open, Some(last));
     assert!(core.list_key(&Key::Named(NamedKey::Home)));
@@ -279,12 +353,13 @@ fn the_list_moves_the_open_snippet_by_keys() {
     assert!(!core.list_key(&Key::Character("a".into())));
 }
 
-/// Typing in the body splices the stored text through the body's child
-/// resource; the editor follows a collaborator's edit and an undo.
+/// Typing in the body splices the stored text with field edits at the
+/// body's path; the editor follows a collaborator's edit and an undo.
 #[test]
 fn body_edits_are_text_actions_and_the_editor_follows_the_document() {
-    let mut app = launched(vec![snippet("Only", "")]);
-    let id = app.state()[0].id;
+    let mut app = launched(&[snippet("Only", "")]);
+    let (id, _) = by_title(&app, "Only");
+    let body = |app: &TestApp<SnippetsShell>| by_title(app, "Only").1.body;
     {
         let harness = app.harness();
         let body = harness
@@ -299,16 +374,22 @@ fn body_edits_are_text_actions_and_the_editor_follows_the_document() {
         harness.type_text("Grün");
     }
     app.settle();
-    assert_eq!(app.state()[0].body, "Grün");
+    assert_eq!(body(&app), "Grün");
     assert!(app.undo(), "the typed word is one undo step");
-    assert_eq!(app.state()[0].body, "");
+    assert_eq!(body(&app), "");
     assert_eq!(body_shown(&mut app), "");
 
     app.merge_peer_edit(|doc| {
-        tilo_actions::Action::apply(&actions::set_body_action(id, "remote 🌍\n"), doc).unwrap();
+        Snippets::paths()
+            .snippets
+            .item(&id)
+            .body
+            .replace("remote 🌍\n")
+            .apply_local(doc)
+            .unwrap();
     });
     app.settle();
-    assert_eq!(app.state()[0].body, "remote 🌍\n");
+    assert_eq!(body(&app), "remote 🌍\n");
     assert_eq!(body_shown(&mut app), "remote 🌍\n");
 }
 
@@ -317,11 +398,10 @@ fn body_edits_are_text_actions_and_the_editor_follows_the_document() {
 #[test]
 fn variable_dialog_is_semantic_and_local() {
     let mut app = SnippetsApp::new();
-    let templated = snippet("Greet", "Hello ${name}");
-    app.show_library(std::slice::from_ref(&templated));
+    app.show_library(&presented([snippet("Greet", "Hello ${name}")]));
     let mut doc = AutoCommit::new();
     let heads = doc.get_heads();
-    app.core.borrow_mut().start_expand(templated.id);
+    app.core.borrow_mut().start_expand(&Id::from_raw("s0"));
     assert!(app.perform_semantic_action(
         "snippets.expand.field.name",
         &ui::a11y::Action::SetValue("Grün".into()),
@@ -372,7 +452,7 @@ fn focusing_new_snippet_does_not_activate_it() {
         &automerge::ROOT,
     ));
     assert!(
-        app.core.borrow().pending_open.is_none(),
+        !app.core.borrow().open_minted,
         "focusing a button authors nothing"
     );
     assert!(Widget::perform_semantic_action(
@@ -383,7 +463,7 @@ fn focusing_new_snippet_does_not_activate_it() {
         &automerge::ROOT,
     ));
     assert!(
-        app.core.borrow().pending_open.is_some(),
+        app.core.borrow().open_minted,
         "activating it creates a snippet"
     );
 }
@@ -464,12 +544,243 @@ fn the_content_column_lays_out_its_controls() {
     assert!(language.width() > language.height() && copy.width() > copy.height());
     Framed::harness_mut(&mut app).resize((960, 800)).unwrap();
     assert_eq!(sizes(&app).1.size(), copy.size(), "a resize keeps the size");
-    let other = app.core.borrow().visible[2];
-    app.requests.borrow_mut().push(Action::OpenSnippet(other));
+    let other = app.core.borrow().visible[2].clone();
+    app.requests
+        .borrow_mut()
+        .push(Action::OpenSnippet(other.clone()));
     Framed::harness_mut(&mut app).relayout();
     let (language, copy) = sizes(&app);
     assert_eq!(app.open_id_for_test(), Some(other));
     assert!(language.width() > language.height() && copy.width() > copy.height());
     let targets = Framed::harness(&app).targets();
     assert!(targets.contains_key("snippets.favorite") && targets.contains_key("snippets.more"));
+}
+
+// ---- the published tree, agents and history ------------------------------
+
+fn has_control(app: &mut TestApp<SnippetsShell>, label: &str) -> bool {
+    app.harness()
+        .a11y_nodes()
+        .iter()
+        .any(|(_, node)| node.label() == Some(label))
+}
+
+/// A new window starts on an empty library; captures stage the starter
+/// library through actions and their view state through `stage`.
+#[test]
+fn captures_stage_the_starter_library_and_a_new_window_is_empty() {
+    let live = TestApp::<SnippetsShell>::new().unwrap();
+    assert!(live.state().is_empty(), "a fresh install has no snippets");
+
+    let mut empty = TestApp::<SnippetsShell>::capture(Some("empty")).unwrap();
+    assert!(empty.state().is_empty());
+    assert!(has_control(&mut empty, "New snippet"));
+
+    let mut detail = TestApp::<SnippetsShell>::capture(Some("detail")).unwrap();
+    assert_eq!(detail.harness().inspection().viewport, [420, 760]);
+    assert!(detail.state().snippets.len() >= 10);
+    assert!(has_control(&mut detail, "Back"), "the detail is pushed in");
+    detail.harness().click_named("nav-shell-back").unwrap();
+    detail.settle();
+    assert!(
+        !has_control(&mut detail, "Back"),
+        "Back returns to the snippet list"
+    );
+
+    let mut narrow = TestApp::<SnippetsShell>::capture(Some("narrow")).unwrap();
+    assert_eq!(narrow.harness().inspection().viewport, [720, 720]);
+    assert!(
+        has_control(&mut narrow, "Hide sidebar"),
+        "the overlay sidebar is open"
+    );
+    narrow.harness().click_named("nav-shell-sidebar").unwrap();
+    narrow.settle();
+    assert!(
+        has_control(&mut narrow, "Show sidebar"),
+        "the sidebar closes through its control"
+    );
+}
+
+/// An agent reaches every snippet, folder and tag through the one
+/// published tree: each change is one call, a verb on the snippet it acts
+/// on or a field edit at a path, and opening a snippet shows it.
+#[test]
+fn an_agent_edits_and_opens_snippets_one_call_each() {
+    let mut app = TestApp::<SnippetsShell>::new().unwrap();
+    app.call(
+        "new-snippet",
+        serde_json::json!({"title": "Deploy", "folder": "Ops"}),
+    )
+    .unwrap();
+    let (deploy, created) = by_title(&app, "Deploy");
+    assert_eq!(created.folder.0, "Ops");
+    let surface = app.agent_surface().to_string();
+    assert!(surface.contains("Create a snippet"), "the tree is labelled");
+
+    app.call_on(
+        "snippets.library/derived/folder:Ops",
+        "new-snippet",
+        serde_json::json!({"title": "Rollback"}),
+    )
+    .unwrap();
+    assert_eq!(
+        by_title(&app, "Rollback").1.folder.0,
+        "Ops",
+        "a folder files a new snippet under itself"
+    );
+
+    let paths = Snippets::paths().snippets.item(&deploy);
+    for edit in [
+        paths.tags.insert(&"k8s".to_owned()),
+        paths.language.set(Language::Shell),
+        paths.body.replace("kubectl rollout restart deploy/${name}"),
+    ] {
+        app.call("field-edit", serde_json::json!({ "edit": edit }))
+            .unwrap();
+    }
+    let (_, deploy_now) = by_title(&app, "Deploy");
+    assert!(deploy_now.tags.contains(&"k8s".to_owned()));
+    assert_eq!(deploy_now.language, Language::Shell);
+    assert_eq!(deploy_now.body, "kubectl rollout restart deploy/${name}");
+    assert!(app.undo(), "the body edit is one undo step");
+    assert_eq!(by_title(&app, "Deploy").1.body, "");
+
+    let item = item_resource_id::<Snippets>("snippets", &deploy);
+    app.call_on(&item, "duplicate", serde_json::json!({}))
+        .unwrap();
+    assert_eq!(
+        app.state().snippets.len(),
+        3,
+        "a copy, titled as its original"
+    );
+
+    app.call("open", serde_json::json!({ "anchor": item }))
+        .unwrap();
+    assert!(
+        app.call(
+            "open",
+            serde_json::json!({ "anchor": item_resource_id::<Snippets>("snippets", &Id::from_raw("gone")) })
+        )
+        .is_err(),
+        "a snippet that does not exist is not opened"
+    );
+    app.settle();
+    assert_eq!(
+        app.surface_mut::<SnippetsApp>().open_id_for_test(),
+        Some(deploy),
+        "opening shows the snippet"
+    );
+    app.call_on(
+        "snippets.library/derived/tag:k8s",
+        "reveal",
+        serde_json::json!({}),
+    )
+    .unwrap();
+    app.settle();
+    assert_eq!(
+        app.surface_mut::<SnippetsApp>().core.borrow().selection,
+        Selection::Tag("k8s".into()),
+        "a tag reveals its snippets"
+    );
+    app.call_on(
+        "snippets.library/derived/tag:k8s",
+        "remove-tag",
+        serde_json::json!({}),
+    )
+    .unwrap();
+    assert!(by_title(&app, "Deploy").1.tags.is_empty());
+
+    app.call_on(&item, "delete", serde_json::json!({}))
+        .expect_err("deleting asks for confirmation");
+    app.call_confirmed_on(&item, "delete", serde_json::json!({}))
+        .unwrap();
+    assert_eq!(app.state().snippets.len(), 2);
+}
+
+/// What an agent does for a person is history the person reads in their
+/// language: the app's sentence for each field and verb, naming the
+/// snippet as it was called, and who did it for whom.
+#[test]
+fn history_entries_render_as_the_apps_sentences() {
+    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    use ui::tilo_resource::Atom;
+
+    let mut app = launched(&[snippet("Deploy", "")]);
+    let (deploy, _) = by_title(&app, "Deploy");
+    let agent = ActionInvoker::actor("agent:claude")
+        .with_kind(ActorKind::Agent)
+        .acting_for("ada");
+    let kind = <Snippets as ui::tilo_resource::Resource>::KIND;
+    let item = item_resource_id::<Snippets>("snippets", &deploy);
+    let paths = Snippets::paths().snippets.item(&deploy);
+    for edit in [
+        paths.favorite.set(true),
+        paths.favorite.set(false),
+        paths.folder.set(Atom("Release".into())),
+        paths.language.set(Language::JavaScript),
+        paths.body.splice(0, 0, "npm run deploy"),
+    ] {
+        app.call_by(
+            agent.clone(),
+            kind,
+            "field-edit",
+            serde_json::json!({ "edit": edit }),
+        )
+        .unwrap();
+    }
+    app.call_by(agent.clone(), &item, "record-use", serde_json::json!({}))
+        .unwrap();
+    app.call_by(
+        agent.clone(),
+        kind,
+        "new-snippet",
+        serde_json::json!({"title": "Rollback"}),
+    )
+    .unwrap();
+    app.call_by(
+        agent.clone(),
+        kind,
+        "field-edit",
+        serde_json::json!({ "edit": paths.title.replace("Ship") }),
+    )
+    .unwrap();
+    app.call_by(
+        agent,
+        &item,
+        "duplicate",
+        serde_json::json!({"title": "Ship again"}),
+    )
+    .unwrap();
+
+    let entries: Vec<_> = app
+        .history()
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .invoker
+                .as_ref()
+                .is_some_and(|invoker| invoker.actor == "agent:claude")
+        })
+        .collect();
+    let sentences = app.sentences(&entries);
+    assert_eq!(
+        sentences,
+        [
+            "Starred Deploy",
+            "Unstarred Deploy",
+            "Moved Deploy to the folder Release",
+            "Set the language of Deploy to JavaScript",
+            "Edited the body of Deploy",
+            "Copied Deploy",
+            "Created Rollback",
+            "Renamed Deploy",
+            "Duplicated Ship",
+        ]
+    );
+    let invoker = entries[0].invoker.as_ref().unwrap();
+    assert_eq!(
+        (invoker.kind, invoker.on_behalf_of.as_deref()),
+        (ActorKind::Agent, Some("ada")),
+        "the entry names the agent and the person it acted for"
+    );
 }

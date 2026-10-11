@@ -205,19 +205,7 @@ impl Widget for PathBar {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `node` was created by `build_layout` in this same tree, so a
-        // lookup miss would mean the frame cycle called these out of order.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
-        )]
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if let Some(crumbs) = self.crumbs_node {
             self.crumbs
                 .apply_layout(taffy, crumbs, Point::new(self.rect.x0, self.rect.y0));
@@ -335,17 +323,18 @@ impl Widget for PathBar {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if self.editing {
-            return self.field.perform_action(action, state, path);
+            return self.field.perform_action(action, &[], state, path);
         }
         if matches!(action, ui::a11y::Action::Activate) {
             self.begin_edit();
             return true;
         }
-        self.crumbs.perform_action(action, state, path)
+        self.crumbs.perform_action(action, &[], state, path)
     }
 }
 
@@ -494,6 +483,7 @@ mod tests {
                 let mut doc = AutoCommit::new();
                 assert!(bar.perform_action(
                     &Action::SetValue(input.into()),
+                    &[],
                     &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
@@ -520,23 +510,10 @@ mod tests {
                     ),
                     is_synthetic: false,
                 };
-                let mut taffy = TaffyTree::new();
-                let node = taffy.new_leaf(Style::default()).unwrap();
-                let mut handled = false;
-                let mut focus = None;
-                bar.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &automerge::ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
+                let handled = ui::testing::Dispatch::new()
+                    .doc(&mut doc)
+                    .send(&mut bar, &event)
+                    .handled;
                 assert!(handled);
                 assert!(!bar.is_editing());
                 assert_eq!(
@@ -587,6 +564,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             assert!(bar.perform_action(
                 &Action::Activate,
+                &[],
                 &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

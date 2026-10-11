@@ -14,37 +14,23 @@ use winit::keyboard::{Key, NamedKey};
 use tilo_rich_text::FieldOutcome;
 use ui::Widget;
 
-use crate::actions;
 use crate::app::{
     AttachmentImportPending, AttachmentImportResult, AttachmentPickerResult, ChatApp, Focus, Hit,
     MenuAction, MenuTarget, RowSwipe,
 };
-use crate::doc::{ChatDoc, NOW};
 use crate::model::{ChannelKind, Id};
+use crate::record::chat;
+use crate::resource::Chat;
 
-/// Mint a fresh, collision-resistant message id at authoring time. Carried in
-/// the [`ChatAction::SendMessage`](crate::actions::ChatAction) payload so the
-/// insert replays byte-identically on every peer.
-fn new_message_id() -> String {
-    format!("m_{}", uuid::Uuid::new_v4().simple())
+/// A new item's id, minted where it is made: a channel or category the
+/// window adds and renames at once.
+pub(crate) fn fresh_id(prefix: &str) -> String {
+    format!("{prefix}_{}", uuid::Uuid::new_v4().simple())
 }
 
-/// Mint a fresh channel id at authoring time (carried in the create action).
-pub(crate) fn new_channel_id() -> String {
-    format!("c_{}", uuid::Uuid::new_v4().simple())
-}
-
-/// Mint a category id before dispatch.  The id belongs in the collaborative
-/// payload; generating it inside a document helper makes replay depend on a
-/// different peer's RNG.
-fn new_category_id() -> String {
-    format!("cat_{}", uuid::Uuid::new_v4().simple())
-}
-
-fn now_secs() -> i64 {
-    ui::time::wall()
-        .duration_since(ui::clock::UNIX_EPOCH)
-        .map_or(NOW, |d| d.as_secs() as i64)
+/// The record's id for `id`.
+fn item(id: &str) -> ui::tilo_resource::Id {
+    ui::tilo_resource::Id::from_raw(id)
 }
 
 struct EventDispatch<'a, 'doc> {
@@ -359,11 +345,7 @@ impl ChatApp {
             self.hit_at(self.last_mouse).filter(|hit| {
                 matches!(
                     hit,
-                    Hit::CallParticipantsToggle
-                        | Hit::CallMute
-                        | Hit::CallShareScreen
-                        | Hit::CallExpand
-                        | Hit::CallLeave
+                    Hit::CallParticipantsToggle | Hit::CallMute | Hit::CallExpand | Hit::CallLeave
                 )
             })
         };
@@ -692,7 +674,7 @@ impl ChatApp {
         }
         // The draft is created the first time its surface is written in.
         let key = self.draft_key();
-        if ChatDoc::rich_draft(doc, &key).is_none() {
+        if !crate::projection::has_draft(doc, &key) {
             self.ensure_composer_draft(doc, &key);
             self.focused_composer_mut().sync(doc);
         }
@@ -960,9 +942,6 @@ impl ChatApp {
                     self.media_error = Some(error);
                 }
             }
-            Hit::CallShareScreen => {
-                self.media_error = Some("This call supports microphone audio only".into());
-            }
             Hit::CallExpand => {
                 self.call.expanded = !self.call.expanded;
                 self.request_relayout();
@@ -1020,33 +999,75 @@ impl ChatApp {
         category: &str,
         doc: &mut ui::widget::Edits<'_>,
     ) {
-        let id = new_channel_id();
-        self.apply_action(
-            doc,
-            &actions::create_channel_action(
-                workspace,
-                category,
-                &id,
-                "new-channel",
-                ChannelKind::Text,
-            ),
-        );
+        let id =
+            self.create_channel_now(doc, workspace, category, "new-channel", ChannelKind::Text);
         self.begin_rename(MenuTarget::Channel(id));
     }
 
     fn on_hit_add_category(&mut self, ws: &str, doc: &mut ui::widget::Edits<'_>) {
-        let id = new_category_id();
-        self.apply_action(
-            doc,
-            &actions::create_category_action(ws, &id, "New category"),
-        );
+        let id = self.create_category_now(doc, ws, "New category");
         self.begin_rename(MenuTarget::Category(id));
+    }
+
+    /// Add a channel named `name` to `category` of `workspace` now, as an
+    /// insert under an id minted here, so its inline rename can follow at
+    /// once; a text channel comes with its draft.
+    pub(crate) fn create_channel_now(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        workspace: &str,
+        category: &str,
+        name: &str,
+        kind: ChannelKind,
+    ) -> String {
+        let id = fresh_id("c");
+        let channel = crate::record::Channel {
+            workspace: item(workspace),
+            category: (!category.is_empty()).then(|| item(category)),
+            name: name.to_owned(),
+            kind,
+            ..crate::record::Channel::default()
+        };
+        let insert = Chat::paths()
+            .channels
+            .insert_as(&item(&id), self.channels.len(), &channel);
+        self.apply_now(doc, insert);
+        if kind == ChannelKind::Text {
+            self.apply_now(
+                doc,
+                Chat::START_DRAFT.with(chat::StartDraft { key: id.clone() }),
+            );
+        }
+        self.reload(doc);
+        id
+    }
+
+    /// Add a category named `name` to `workspace` now, under an id minted
+    /// here, so its inline rename can follow at once.
+    fn create_category_now(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        workspace: &str,
+        name: &str,
+    ) -> String {
+        let id = fresh_id("cat");
+        let category = crate::record::Category {
+            workspace: item(workspace),
+            name: name.to_owned(),
+        };
+        let insert =
+            Chat::paths()
+                .categories
+                .insert_as(&item(&id), self.categories.len(), &category);
+        self.apply_now(doc, insert);
+        self.reload(doc);
+        id
     }
 
     fn on_hit_reaction(&mut self, msg: &str, emoji: &str, doc: &mut ui::widget::Edits<'_>) {
         if self.can_participate() {
             let action = self.reaction_toggle_action(msg, emoji);
-            self.apply_action(doc, &action);
+            self.apply_now(doc, action);
             self.reload(doc);
         }
     }
@@ -1093,7 +1114,7 @@ impl ChatApp {
         if let Some(target) = self.emoji_target.take() {
             if self.can_participate() {
                 let action = self.reaction_toggle_action(&target, e);
-                self.apply_action(doc, &action);
+                self.apply_now(doc, action);
                 self.reload(doc);
             }
         } else {
@@ -1176,23 +1197,21 @@ impl ChatApp {
             MenuTarget::Message(id) => match action {
                 MenuAction::EditMessage => self.begin_edit(id),
                 MenuAction::PinMessage => {
-                    let channel = self.active_channel.clone();
                     let pinned = self.message(&id).is_some_and(|m| m.pinned);
-                    self.apply_action(doc, &actions::pin_message_action(&channel, &id, !pinned));
+                    let pin = Chat::paths().messages.item(&item(&id)).pinned.set(!pinned);
+                    self.apply_now(doc, pin);
                 }
                 MenuAction::DeleteMessage => {
-                    let channel = self.active_channel.clone();
-                    self.apply_action(doc, &actions::delete_message_action(&channel, &id));
+                    self.apply_now(
+                        doc,
+                        Chat::DELETE_MESSAGE.with(chat::DeleteMessage { message: item(&id) }),
+                    );
                 }
                 _ => {}
             },
             MenuTarget::Workspace(ws) => {
                 if action == MenuAction::NewCategory {
-                    let id = new_category_id();
-                    self.apply_action(
-                        doc,
-                        &actions::create_category_action(&ws, &id, "New category"),
-                    );
+                    let id = self.create_category_now(doc, &ws, "New category");
                     self.begin_rename(MenuTarget::Category(id));
                 }
             }
@@ -1209,23 +1228,34 @@ impl ChatApp {
         match action {
             MenuAction::Rename => self.begin_rename(MenuTarget::Channel(id.to_string())),
             MenuAction::Delete => {
-                self.apply_action(doc, &actions::delete_channel_action(id));
+                self.apply_now(
+                    doc,
+                    Chat::DELETE_CHANNEL.with(chat::DeleteChannel { channel: item(id) }),
+                );
                 if self.active_channel == id {
                     self.active_channel.clear(); // reload picks a new one
                 }
             }
             MenuAction::Archive => {
                 let archived = self.channel(id).is_some_and(|c| c.archived);
-                self.apply_action(doc, &actions::archive_channel_action(id, !archived));
+                let archive = Chat::paths()
+                    .channels
+                    .item(&item(id))
+                    .archived
+                    .set(!archived);
+                self.apply_now(doc, archive);
                 if !archived && self.active_channel == id {
                     self.active_channel.clear(); // an archived channel leaves the view
                 }
             }
-            MenuAction::MoveUp => {
-                self.apply_action(doc, &actions::reorder_channel_action(id, true));
-            }
-            MenuAction::MoveDown => {
-                self.apply_action(doc, &actions::reorder_channel_action(id, false));
+            MenuAction::MoveUp | MenuAction::MoveDown => {
+                self.apply_now(
+                    doc,
+                    Chat::MOVE_CHANNEL.with(chat::MoveChannel {
+                        channel: item(id),
+                        up: action == MenuAction::MoveUp,
+                    }),
+                );
             }
             _ => {}
         }
@@ -1241,34 +1271,18 @@ impl ChatApp {
         let ws = self.active_ws.clone();
         match action {
             MenuAction::Rename => self.begin_rename(MenuTarget::Category(id.to_string())),
-            MenuAction::Delete => self.apply_action(doc, &actions::delete_category_action(id)),
+            MenuAction::Delete => self.apply_now(
+                doc,
+                Chat::DELETE_CATEGORY.with(chat::DeleteCategory { category: item(id) }),
+            ),
             MenuAction::ToggleCollapse => self.toggle_category(id),
             MenuAction::NewChannelHere => {
-                let new_id = new_channel_id();
-                self.apply_action(
-                    doc,
-                    &actions::create_channel_action(
-                        &ws,
-                        id,
-                        &new_id,
-                        "new-channel",
-                        ChannelKind::Text,
-                    ),
-                );
+                let new_id =
+                    self.create_channel_now(doc, &ws, id, "new-channel", ChannelKind::Text);
                 self.begin_rename(MenuTarget::Channel(new_id));
             }
             MenuAction::NewVoiceChannelHere => {
-                let new_id = new_channel_id();
-                self.apply_action(
-                    doc,
-                    &actions::create_channel_action(
-                        &ws,
-                        id,
-                        &new_id,
-                        "New Voice",
-                        ChannelKind::Voice,
-                    ),
-                );
+                let new_id = self.create_channel_now(doc, &ws, id, "New Voice", ChannelKind::Voice);
                 self.begin_rename(MenuTarget::Channel(new_id));
             }
             _ => {}
@@ -1298,10 +1312,13 @@ impl ChatApp {
             if !text.is_empty() {
                 match target {
                     MenuTarget::Channel(id) => {
-                        self.apply_action(doc, &actions::rename_channel_action(&id, &text));
+                        let name = text.trim_start_matches('#').to_owned();
+                        let rename = Chat::paths().channels.item(&item(&id)).name.set(name);
+                        self.apply_now(doc, rename);
                     }
                     MenuTarget::Category(id) => {
-                        self.apply_action(doc, &actions::rename_category_action(&id, &text));
+                        let rename = Chat::paths().categories.item(&item(&id)).name.set(text);
+                        self.apply_now(doc, rename);
                     }
                     MenuTarget::Message(_) | MenuTarget::Workspace(_) => {}
                 }
@@ -1444,7 +1461,7 @@ impl ChatApp {
             return;
         }
         let key = self.draft_key();
-        if ChatDoc::rich_draft(doc, &key).is_none() {
+        if !crate::projection::has_draft(doc, &key) {
             self.ensure_composer_draft(doc, &key);
             self.focused_composer_mut().sync(doc);
         }
@@ -1495,9 +1512,9 @@ impl ChatApp {
             .map(|m| m.id.clone())
     }
 
-    /// Commit the inline message editor: write the new body through
-    /// [`ChatDoc::edit_message`] (which archives the prior text into the
-    /// message's history and flags it edited), then close the editor. An
+    /// Commit the inline message editor: submit the record's `edit-message`
+    /// (which keeps the prior text in the message's history and flags it
+    /// edited), then close the editor. An
     /// edit that empties the message is discarded rather than blanking it.
     fn commit_edit(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if !self.can_participate() {
@@ -1513,10 +1530,13 @@ impl ChatApp {
         if text.trim().is_empty() {
             return;
         }
-        let channel = self.active_channel.clone();
-        self.apply_action(
+        self.apply_now(
             doc,
-            &actions::edit_message_action(&channel, &id, &text, now_secs()).with_body(body),
+            Chat::EDIT_MESSAGE.with(chat::EditMessage {
+                message: item(&id),
+                text,
+                body: Some(body),
+            }),
         );
         self.reload(doc);
     }
@@ -1541,37 +1561,35 @@ impl ChatApp {
             },
             Focus::Main => (self.active_channel.clone(), None),
         };
-        let text = ChatDoc::draft_text(doc, &key);
+        let text = crate::projection::draft_text(doc, &key);
         if text.trim().is_empty() {
             return;
         }
-        let body = ChatDoc::draft_clips(doc, &key);
-        let blocks = ChatDoc::draft_blocks(doc, &key);
-        // The message ROW insert is the action: id + timestamp minted here at
-        // authoring time and carried in the payload, dispatched through the same
-        // executor path Ctrl+K uses (undo boundary + byte-identical replay). The
-        // draft clear is presentation (ephemeral per-channel composer state) and
-        // stays a direct write inside the same event.
-        let channel = self.active_channel.clone();
-        // Bind `@name` to participants once, here, at authoring time. The
-        // message carries the resolved references, so no reader — a peer, a
-        // notification, an agent watching the room — ever re-parses the body to
-        // work out who it was addressed to.
-        let mentions = crate::body::mentions(&blocks, &self.participants());
-        self.apply_action(
+        let body = crate::projection::draft_clips(doc, &key);
+        // Posting is the record's `post`, the verb the palette and agents
+        // use; the post binds `@name` to participants once, so no reader
+        // re-parses the body to work out who it was addressed to. Emptying
+        // the draft is an edit of it in the same step.
+        self.apply_now(
             doc,
-            &actions::send_message_action(
-                &channel,
-                &new_message_id(),
-                now_secs(),
-                &text,
-                parent,
-                None,
-                mentions,
-            )
-            .with_body(body),
+            Chat::POST.with(chat::Post {
+                channel: item(&self.active_channel),
+                text,
+                parent: parent.as_deref().map(item),
+                body: Some(body),
+                attachment: None,
+            }),
         );
-        self.apply_action(doc, &actions::ChatAction::ClearDraft { key });
+        if let Ok(clear) =
+            Chat::paths()
+                .drafts
+                .key(key)
+                .perform(&tilo_document::RichTextAction::ReplaceBody {
+                    markdown: String::new(),
+                })
+        {
+            self.apply_now(doc, clear);
+        }
         self.focused_composer_mut().sync(doc);
         if matches!(self.focus, Focus::Main) {
             self.jump_to_latest();
@@ -1798,15 +1816,13 @@ impl ChatApp {
         } else {
             crate::model::Attachment::File { name, blob, size }
         };
-        self.submit_action(&actions::send_message_action(
-            &pending.channel,
-            &new_message_id(),
-            now_secs(),
-            "",
-            None,
-            Some(attachment),
-            Vec::new(),
-        ));
+        self.submit(Chat::POST.with(chat::Post {
+            channel: item(&pending.channel),
+            text: String::new(),
+            parent: None,
+            body: None,
+            attachment: Some(crate::record::AttachmentUpdate::of(&attachment)),
+        }));
         self.scroll = 0.0;
         self.attachment_status = Some("Attachment shared".into());
     }
@@ -1827,7 +1843,8 @@ fn prepare_attachment_import(
     let Ok(metadata) = tilo_files::blocking::metadata(&dir, &name) else {
         return fail("file is unavailable");
     };
-    if metadata.kind != tilo_files::Kind::File || metadata.len > crate::doc::MAX_ATTACHMENT_BYTES {
+    if metadata.kind != tilo_files::Kind::File || metadata.len > crate::record::MAX_ATTACHMENT_BYTES
+    {
         return fail("file is not shareable or exceeds 32 MiB");
     }
     let Ok(bytes) = tilo_files::blocking::read(&dir, &name) else {
@@ -1838,7 +1855,7 @@ fn prepare_attachment_import(
     }
     if u64::try_from(bytes.len())
         .ok()
-        .is_none_or(|size| size > crate::doc::MAX_ATTACHMENT_BYTES)
+        .is_none_or(|size| size > crate::record::MAX_ATTACHMENT_BYTES)
     {
         return fail("file exceeds 32 MiB");
     }
@@ -1860,7 +1877,7 @@ fn prepare_attachment_import(
         token,
         name: name.clone(),
         blob,
-        size: u64::try_from(bytes.len()).unwrap_or(crate::doc::MAX_ATTACHMENT_BYTES),
+        size: u64::try_from(bytes.len()).unwrap_or(crate::record::MAX_ATTACHMENT_BYTES),
         width: meta.w,
         height: meta.h,
         video: crate::picker::is_video_name(&name),
@@ -1883,7 +1900,6 @@ fn run_worker(name: &str, job: impl FnOnce() + Send + 'static, status: &mut Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc::{ChatDoc, NewMessage};
     use crate::model;
     use tilo_automerge::ApplyIncoming;
 
@@ -1921,7 +1937,7 @@ mod tests {
 
     fn app_with_doc() -> (ChatApp, AutoCommit) {
         let mut doc = AutoCommit::new();
-        ChatDoc::seed_if_empty(&mut doc);
+        crate::demo::seed(&mut doc).unwrap();
         let mut app = ChatApp::new_ephemeral();
         app.reload(&doc);
         (app, doc)
@@ -1971,17 +1987,28 @@ mod tests {
             let state = <crate::resource::Chat as ui::tilo_resource::Resource>::read(&doc).unwrap();
             let crit = <crate::resource::Chat as ui::tilo_resource::Resource>::child(
                 &state,
-                "chat.channel:c_crit",
+                &crate::testing::item("channels", "c_crit"),
             )
             .expect("c_crit is a channel resource");
-            let spec = crit.actions.iter().find(|a| a.id == "delete").unwrap();
-            let from_spec = match &spec.input {
-                tilo_actions::ActionInput::Immediate(e) => e.clone(),
-                tilo_actions::ActionInput::Prompted { .. }
-                | tilo_actions::ActionInput::Deferred { .. } => {
-                    panic!("delete is an immediate action")
-                }
-            };
+            let offered = tilo_actions::door::survey(std::slice::from_ref(&crit))
+                .into_iter()
+                .find(|offered| offered.address.action == "delete-channel")
+                .expect("the channel offers delete-channel");
+            let from_spec = tilo_actions::door::encode_json(
+                std::slice::from_ref(&crit),
+                &offered.address,
+                &serde_json::Map::new(),
+            )
+            .expect("the channel offers delete-channel with itself bound");
+            let from_spec: serde_json::Value = serde_json::from_slice(&from_spec.payload).unwrap();
+            assert_eq!(
+                from_spec["op"],
+                crate::testing::operation(
+                    &crate::resource::Chat::DELETE_CHANNEL
+                        .with(ui::tilo_resource::Id::from_raw("c_crit"))
+                ),
+                "the palette's delete-channel is the record's verb on that channel"
+            );
 
             // Drive the real on-screen affordance (right-click menu → Delete).
             activate_context_menu_action(
@@ -1994,14 +2021,16 @@ mod tests {
                 .last_dispatched()
                 .expect("the affordance dispatched an action");
 
-            assert_eq!(dispatched.type_id, from_spec.type_id);
             assert_eq!(
-                dispatched.payload, from_spec.payload,
-                "the delete-channel affordance and its Ctrl+K spec build the identical action"
+                serde_json::to_value(&dispatched).unwrap(),
+                from_spec["op"],
+                "the delete-channel affordance and its palette action build the identical action"
             );
-            // And it really deleted the channel (the affordance is on the real path).
+            // And it really deleted the channel once the person confirmed (the
+            // affordance is on the real path).
+            app.confirm_asked(&mut doc);
             assert!(
-                ChatDoc::list_channels(&doc)
+                crate::testing::channels(&doc)
                     .into_iter()
                     .all(|c| c.id != "c_crit")
             );
@@ -2017,6 +2046,7 @@ mod tests {
                 MenuTarget::Channel("c_random".into()),
                 MenuAction::Delete,
             );
+            app.confirm_asked(&mut doc);
             assert!(
                 !app.channels.iter().any(|c| c.id == "c_random"),
                 "channel deleted via menu"
@@ -2055,7 +2085,7 @@ mod tests {
             for key in [NamedKey::ArrowDown, NamedKey::Enter] {
                 let mut handled = false;
                 app.dispatch_event(
-                    &key_named(key),
+                    &named_key(key),
                     1.0,
                     Modifiers::default(),
                     &mut ui::widget::Edits::lend(&mut doc),
@@ -2093,7 +2123,7 @@ mod tests {
             let cy = row.center().y;
             // Press on the row (arms the swipe), drag left past the commit
             // threshold, release (commits the primary action = Delete).
-            feed(&mut app, &mut doc, &cursor(row.center().x, cy));
+            feed(&mut app, &mut doc, &cursor_moved(row.center().x, cy));
             feed(
                 &mut app,
                 &mut doc,
@@ -2101,12 +2131,13 @@ mod tests {
             );
             assert!(app.swipe.is_some(), "pressing a channel row arms a swipe");
             let past_commit = row.center().x - (app.chrome.swipe_commit + 20.0);
-            feed(&mut app, &mut doc, &cursor(past_commit, cy));
+            feed(&mut app, &mut doc, &cursor_moved(past_commit, cy));
             feed(
                 &mut app,
                 &mut doc,
                 &mouse(ElementState::Released, MouseButton::Left),
             );
+            app.confirm_asked(&mut doc);
             assert!(
                 !app.channels.iter().any(|c| c.id == "c_random"),
                 "the committed swipe deleted the channel"
@@ -2126,29 +2157,24 @@ mod tests {
             app.active_channel = "c_general".into();
             app.focus = Focus::Main;
             app.thread_open = None;
-            ChatDoc::set_draft(&mut doc, "c_general", "hi from the composer");
+            crate::testing::set_draft(&mut doc, "c_general", "hi from the composer");
             app.reload(&doc);
             app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
             let action = app
                 .dispatched
                 .borrow()
                 .iter()
-                .find(|action| matches!(action, crate::actions::ChatAction::SendMessage { .. }))
-                .cloned()
-                .expect("send dispatched a message");
-            match action {
-                crate::actions::ChatAction::SendMessage { channel, text, .. } => {
-                    assert_eq!(channel, "c_general");
-                    assert_eq!(text, "hi from the composer");
-                }
-                other => panic!("expected SendMessage, got {other:?}"),
-            }
+                .map(|action| serde_json::to_value(action).unwrap())
+                .find(|action| action["action"] == "post")
+                .expect("send dispatched a post");
+            assert_eq!(action["args"]["channel"], "c_general");
+            assert_eq!(action["args"]["text"], "hi from the composer");
         }
 
         // Phase: typing_then_send_appends_a_message.
         {
             let (mut app, mut doc) = app_with_doc();
-            let before = ChatDoc::list_messages(&doc, "c_crit").len();
+            let before = crate::testing::messages(&doc, "c_crit").len();
             app.focus = Focus::Main;
             app.set_composer_focus();
             // Type through the real composer TextInput, then Enter to send
@@ -2163,8 +2189,8 @@ mod tests {
                 app.draft_main, "hello team",
                 "the draft is mirrored into the CRDT"
             );
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
-            let after = ChatDoc::list_messages(&doc, "c_crit");
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
+            let after = crate::testing::messages(&doc, "c_crit");
             assert_eq!(after.len(), before + 1);
             assert_eq!(after.last().unwrap().text, "hello team");
             assert_eq!(app.composer_main.value(), "", "composer cleared after send");
@@ -2177,7 +2203,7 @@ mod tests {
             app.focus = Focus::Main;
             app.set_composer_focus();
             type_str(&mut app, &mut doc, "abc");
-            feed(&mut app, &mut doc, &key_named(NamedKey::Backspace));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Backspace));
             assert_eq!(
                 app.composer_main.value(),
                 "ab",
@@ -2201,7 +2227,7 @@ mod tests {
                 "clipboard round-trips here (precondition for the paste path)"
             );
 
-            feed_mods(&mut app, &mut doc, &key_char("v"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("v"), mods(true, false));
 
             assert_eq!(
                 app.composer_main.value(),
@@ -2225,9 +2251,9 @@ mod tests {
             render_frame(&mut app, 1280.0, 720.0);
 
             // Select the whole value (Ctrl+A) then copy it (Ctrl+C).
-            feed_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("a"), mods(true, false));
             ui::clipboard_copy("stale"); // ensure the copy overwrites something
-            feed_mods(&mut app, &mut doc, &key_char("c"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("c"), mods(true, false));
             assert_eq!(
                 ui::clipboard_paste().as_deref(),
                 Some("copy me please"),
@@ -2266,7 +2292,8 @@ mod tests {
             app.focus = Focus::Thread;
             app.insert_text(&mut ui::widget::Edits::lend(&mut doc), "nice");
             app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
-            let replies = model::reply_count(&ChatDoc::list_messages(&doc, "c_crit"), "m_concept");
+            let replies =
+                model::reply_count(&crate::testing::messages(&doc, "c_crit"), "m_concept");
             assert_eq!(
                 replies, 4,
                 "thread gained one reply on top of the seeded three"
@@ -2294,8 +2321,8 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        let before = ChatDoc::top_level_count(&doc, "c_general");
-        ChatDoc::set_draft(&mut doc, "c_general", "accepted semantic send");
+        let before = crate::testing::top_level(&doc, "c_general");
+        crate::testing::set_draft(&mut doc, "c_general", "accepted semantic send");
         app.reload(&doc);
         render_frame(&mut app, 1280.0, 720.0);
         assert!(ui::Widget::perform_semantic_action(
@@ -2305,8 +2332,8 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        assert_eq!(ChatDoc::top_level_count(&doc, "c_general"), before + 1);
-        assert_eq!(ChatDoc::draft_text(&doc, "c_general"), "");
+        assert_eq!(crate::testing::top_level(&doc, "c_general"), before + 1);
+        assert_eq!(crate::testing::draft_text(&doc, "c_general"), "");
     }
 
     #[test]
@@ -2321,7 +2348,7 @@ mod tests {
             // demo defaults the app boots with, `ensure_selection` must re-home
             // the active workspace/channel and drop the stale demo thread.
             let mut doc = AutoCommit::new();
-            ChatDoc::seed_starter(&mut doc, model::ME, "You", "Y");
+            crate::testing::starter(&mut doc, model::ME, "You", "Y");
             let mut app = ChatApp::new_ephemeral(); // bare view state → demo ids
             app.reload(&doc);
             if app.ensure_selection() {
@@ -2395,10 +2422,10 @@ mod tests {
                 .position(|(_, hit, ..)| matches!(hit, Hit::Inbox))
                 .expect("Inbox is in the visible keyboard inventory");
             for _ in 0..=inbox_index {
-                feed(&mut app, &mut doc, &key_named(NamedKey::Tab));
+                feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
             }
             assert_eq!(app.keyboard_target, Some(inbox_index));
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
 
             assert!(app.inbox_open, "Enter follows the first visible Tab target");
         }
@@ -2425,7 +2452,7 @@ mod tests {
             );
             app.request_visible_images();
             app.images
-                .block_until_idle(ui::clock::Duration::from_secs(3));
+                .block_until_idle(ui::time::Duration::from_secs(3));
             assert!(
                 app.images.get(crate::images::DEMO_CALL_GRID).is_some(),
                 "the shared ImageStore decoded the attachment thumbnail"
@@ -2441,18 +2468,18 @@ mod tests {
             let png = dir.path().join("diagram.png");
             write_real_png(&png, 240, 160);
 
-            let before = ChatDoc::list_messages(&doc, "c_crit").len();
+            let before = crate::testing::messages(&doc, "c_crit").len();
             app.on_hit(
                 Hit::AttachPick(png.to_string_lossy().into_owned()),
                 &mut ui::widget::Edits::lend(&mut doc),
             );
             assert_eq!(
-                ChatDoc::list_messages(&doc, "c_crit").len(),
+                crate::testing::messages(&doc, "c_crit").len(),
                 before,
                 "selecting only accepts a bounded local import; sync authors the message"
             );
             settle_attachment_until(&mut app, &mut doc, "c_crit", before + 1);
-            let msgs = ChatDoc::list_messages(&doc, "c_crit");
+            let msgs = crate::testing::messages(&doc, "c_crit");
             assert_eq!(msgs.len(), before + 1, "one real attachment posted");
             let last = msgs.last().unwrap();
             assert_eq!(last.text, "", "no invented caption");
@@ -2531,7 +2558,7 @@ mod tests {
 
             // Keep the test on the same real event/sync surface as other picker
             // tests: a cancellation never authors a document operation.
-            assert!(!ChatDoc::list_messages(&doc, "c_crit").is_empty());
+            assert!(!crate::testing::messages(&doc, "c_crit").is_empty());
         }
 
         // Phase: attaching_a_video_posts_an_inline_video_card.
@@ -2540,13 +2567,13 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let mp4 = dir.path().join("clip.mp4");
             std::fs::write(&mp4, b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00moov").unwrap();
-            let before = ChatDoc::list_messages(&doc, "c_crit").len();
+            let before = crate::testing::messages(&doc, "c_crit").len();
             app.on_hit(
                 Hit::AttachPick(mp4.to_string_lossy().into_owned()),
                 &mut ui::widget::Edits::lend(&mut doc),
             );
             settle_attachment_until(&mut app, &mut doc, "c_crit", before + 1);
-            let msgs = ChatDoc::list_messages(&doc, "c_crit");
+            let msgs = crate::testing::messages(&doc, "c_crit");
             assert_eq!(msgs.len(), before + 1, "the video posted as one message");
             match &msgs.last().unwrap().attachment {
                 Some(model::Attachment::Video {
@@ -2567,14 +2594,14 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let note = dir.path().join("notes.md");
             std::fs::write(&note, b"this is an ordinary attachment").unwrap();
-            let before = ChatDoc::list_messages(&doc, "c_crit").len();
+            let before = crate::testing::messages(&doc, "c_crit").len();
 
             app.on_hit(
                 Hit::AttachPick(note.to_string_lossy().into_owned()),
                 &mut ui::widget::Edits::lend(&mut doc),
             );
             settle_attachment_until(&mut app, &mut doc, "c_crit", before + 1);
-            match &ChatDoc::list_messages(&doc, "c_crit")
+            match &crate::testing::messages(&doc, "c_crit")
                 .last()
                 .unwrap()
                 .attachment
@@ -2796,7 +2823,7 @@ mod tests {
             app.begin_rename(MenuTarget::Channel("c_random".into()));
             app.rename_input.select_all();
             type_str(&mut app, &mut doc, "watercooler");
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
             let c = app.channels.iter().find(|c| c.id == "c_random").unwrap();
             assert_eq!(c.name, "watercooler");
         }
@@ -2807,7 +2834,7 @@ mod tests {
             let original = app.channel("c_random").unwrap().name.clone();
             app.begin_rename(MenuTarget::Channel("c_random".into()));
 
-            feed_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("a"), mods(true, false));
             assert_eq!(
                 app.rename_input.selection_range_public(),
                 Some((0, original.len()))
@@ -2819,7 +2846,7 @@ mod tests {
             );
             assert_eq!(app.rename_input.value(), "東京");
             assert_eq!(
-                ChatDoc::list_channels(&doc)
+                crate::testing::channels(&doc)
                     .into_iter()
                     .find(|channel| channel.id == "c_random")
                     .unwrap()
@@ -2828,7 +2855,7 @@ mod tests {
                 "partial rename text is not collaborative state"
             );
 
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
             assert_eq!(app.channel("c_random").unwrap().name, "東京");
         }
 
@@ -3046,7 +3073,7 @@ mod tests {
         tilo_test_env::wait_until("the attachment worker", || {
             app.settle_attachment_import();
             app.land(doc);
-            ChatDoc::list_messages(doc, channel).len() == expected_count
+            crate::testing::messages(doc, channel).len() == expected_count
         });
     }
 
@@ -3093,7 +3120,7 @@ mod tests {
                 &mut doc,
                 "Revised: host tile carries the follow control.",
             );
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
 
             assert!(app.editing.is_none(), "saving closes the editor");
             let m = app.message("m_me1").unwrap();
@@ -3117,7 +3144,7 @@ mod tests {
             let original = app.message("m_me1").unwrap().text.clone();
             app.begin_edit("m_me1".into());
 
-            feed_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("a"), mods(true, false));
             let (anchor, caret) = app.edit_input.selection();
             assert_eq!((anchor.min(caret), anchor.max(caret)), (0, original.len()));
             feed(
@@ -3137,7 +3164,7 @@ mod tests {
             );
             assert_eq!(app.edit_input.value(), "東京");
             assert_eq!(
-                ChatDoc::list_messages(&doc, "c_crit")
+                crate::testing::messages(&doc, "c_crit")
                     .into_iter()
                     .find(|message| message.id == "m_me1")
                     .unwrap()
@@ -3146,7 +3173,7 @@ mod tests {
                 "partial edits stay local until Save"
             );
 
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
             assert_eq!(app.message("m_me1").unwrap().text, "東京");
         }
 
@@ -3163,7 +3190,7 @@ mod tests {
 
             let x = editor.x0 + 18.0;
             let y = editor.y0 + 14.0;
-            feed(&mut app, &mut doc, &cursor(x, y));
+            feed(&mut app, &mut doc, &cursor_moved(x, y));
             feed(
                 &mut app,
                 &mut doc,
@@ -3194,7 +3221,7 @@ mod tests {
                 app.composer_main.value().is_empty(),
                 "composer starts empty"
             );
-            feed(&mut app, &mut doc, &key_named(NamedKey::ArrowUp));
+            feed(&mut app, &mut doc, &named_key(NamedKey::ArrowUp));
             let id = app.editing.clone().expect("ArrowUp opened the editor");
             assert_eq!(id, "m_me2", "loaded the last own top-level message");
             assert_eq!(
@@ -3210,7 +3237,7 @@ mod tests {
             app.focus = Focus::Main;
             app.set_composer_focus();
             type_str(&mut app, &mut doc, "half a thought");
-            feed(&mut app, &mut doc, &key_named(NamedKey::ArrowUp));
+            feed(&mut app, &mut doc, &named_key(NamedKey::ArrowUp));
             assert!(
                 app.editing.is_none(),
                 "a non-empty composer suppresses ArrowUp-to-edit"
@@ -3223,7 +3250,7 @@ mod tests {
             let original = app.message("m_me1").unwrap().text.clone();
             app.begin_edit("m_me1".into());
             type_str(&mut app, &mut doc, "Z");
-            feed(&mut app, &mut doc, &key_named(NamedKey::Escape));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Escape));
             assert!(app.editing.is_none(), "Escape closes the editor");
             let m = app.message("m_me1").unwrap();
             assert_eq!(m.text, original, "cancel leaves the message untouched");
@@ -3310,7 +3337,7 @@ mod tests {
             feed(
                 &mut app,
                 &mut doc,
-                &cursor(pointer_origin.x, pointer_origin.y),
+                &cursor_moved(pointer_origin.x, pointer_origin.y),
             );
             feed(
                 &mut app,
@@ -3320,7 +3347,7 @@ mod tests {
             assert!(Widget::wants_pointer_capture(&app));
 
             let outside = Point::new(1300.0, pointer_origin.y + 40.0);
-            feed(&mut app, &mut doc, &cursor(outside.x, outside.y));
+            feed(&mut app, &mut doc, &cursor_moved(outside.x, outside.y));
             assert!(matches!(
                 app.call.placement.attachment(),
                 Attachment::Desktop { .. }
@@ -3405,7 +3432,7 @@ mod tests {
             feed(
                 &mut app,
                 &mut doc,
-                &cursor(returned_pointer.x, returned_pointer.y),
+                &cursor_moved(returned_pointer.x, returned_pointer.y),
             );
             assert!(app.call.placement.is_return_pending());
             let final_shell_rect = app.call_video_rect();
@@ -3438,7 +3465,7 @@ mod tests {
             feed(
                 &mut app,
                 &mut doc,
-                &cursor(continued_pointer.x, continued_pointer.y),
+                &cursor_moved(continued_pointer.x, continued_pointer.y),
             );
             assert_eq!(
                 app.call_video_rect(),
@@ -3469,11 +3496,11 @@ mod tests {
             feed(
                 &mut app,
                 &mut doc,
-                &cursor(leave.center().x, leave.center().y),
+                &cursor_moved(leave.center().x, leave.center().y),
             );
             assert!(matches!(app.call_hovered, Some(Hit::CallLeave)));
 
-            feed(&mut app, &mut doc, &cursor(2.0, 2.0));
+            feed(&mut app, &mut doc, &cursor_moved(2.0, 2.0));
             assert!(app.call_hovered.is_none());
         }
     }
@@ -3502,8 +3529,8 @@ mod tests {
     }
 
     fn stage_agent_work(app: &mut ChatApp, doc: &mut AutoCommit) {
-        for (author, action) in crate::resource::agent_work_scenario() {
-            crate::actions::apply_as(doc, author, &action).unwrap();
+        for (author, invoke) in crate::resource::agent_work_steps() {
+            crate::testing::apply_as(doc, author, invoke).unwrap();
         }
         app.land(doc);
         app.stage_scenario("agent-work");
@@ -3622,7 +3649,11 @@ mod tests {
         for id in ["increment", "decrement", "set-value"] {
             assert!(resize.actions.iter().any(|action| action.id == id));
         }
-        let address = ui::tilo_actions::ActionAddress::new(resize.id.as_str(), "set-value");
+        let address = ui::tilo_actions::door::survey(std::slice::from_ref(resize))
+            .into_iter()
+            .find(|offered| offered.address.action == "set-value")
+            .expect("the separator offers set-value")
+            .address;
         let arguments = serde_json::Map::from_iter([(
             ui::tilo_actions::PROMPTED_PARAM.to_owned(),
             serde_json::Value::String("30%".into()),
@@ -3762,7 +3793,7 @@ mod tests {
             let mut applied_step = app
                 .messages
                 .iter()
-                .find(|message| message.id == "m_agent_reply")
+                .find(|message| message.id == crate::testing::agent_reply())
                 .unwrap()
                 .work
                 .as_ref()
@@ -3770,20 +3801,18 @@ mod tests {
                 .trace[0]
                 .clone();
             applied_step.outcome = AgentStepOutcome::Applied;
-            crate::actions::apply_as(
+            crate::testing::apply_as(
                 &mut doc,
-                "agent-task:11111111-1111-4111-8111-111111111111",
-                &crate::actions::set_agent_work_action(
-                    "c_crit",
-                    "m_agent_reply",
-                    AgentWork::new(
+                crate::resource::DEMO_AGENT,
+                crate::testing::record_work(
+                    crate::resource::DEMO_SUMMONS,
+                    &AgentWork::new(
                         AgentWorkState::Done {
                             did: "Revenue curve added".into(),
                         },
-                        crate::doc::NOW,
+                        crate::demo::NOW,
                     )
                     .with_trace(vec![applied_step]),
-                    None,
                 ),
             )
             .unwrap();
@@ -3798,7 +3827,7 @@ mod tests {
             let reply = app
                 .messages
                 .iter()
-                .find(|message| message.id == "m_agent_reply")
+                .find(|message| message.id == crate::testing::agent_reply())
                 .unwrap();
             assert_eq!(reply.parent.as_deref(), Some("m_agent_request"));
             assert!(
@@ -3813,7 +3842,7 @@ mod tests {
     }
 
     fn click_point(app: &mut ChatApp, doc: &mut AutoCommit, point: Point) {
-        feed(app, doc, &cursor(point.x, point.y));
+        feed(app, doc, &cursor_moved(point.x, point.y));
         feed(app, doc, &mouse(ElementState::Pressed, MouseButton::Left));
         feed(app, doc, &mouse(ElementState::Released, MouseButton::Left));
     }
@@ -3825,14 +3854,14 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         stage_agent_work(&mut app, &mut doc);
         app.sync(&doc, &automerge::ROOT);
-        let work = AgentWork::new(AgentWorkState::Done { did: "Reviewed all operations".into() }, crate::doc::NOW)
+        let work = AgentWork::new(AgentWorkState::Done { did: "Reviewed all operations".into() }, crate::demo::NOW)
             .with_trace((0..60).map(|index| AgentStep::authored("calculator.workspace",
                 format!("Operation {index}: preserve graph bounds and add the requested revenue curve"),
                 AgentStepOutcome::Applied, index)).collect());
-        crate::actions::apply_as(
+        crate::testing::apply_as(
             &mut doc,
-            "agent-task:11111111-1111-4111-8111-111111111111",
-            &crate::actions::set_agent_work_action("c_crit", "m_agent_reply", work, None),
+            crate::resource::DEMO_AGENT,
+            crate::testing::record_work(crate::resource::DEMO_SUMMONS, &work),
         )
         .unwrap();
         app.sync(&doc, &automerge::ROOT);
@@ -3873,7 +3902,7 @@ mod tests {
             "the final recorded dispatch is accessible"
         );
         let point = app.thread_body.center();
-        feed(&mut app, &mut doc, &cursor(point.x, point.y));
+        feed(&mut app, &mut doc, &cursor_moved(point.x, point.y));
         feed(&mut app, &mut doc, &wheel(2.0));
         assert!(
             f64::from(app.thread_scroll.offset_y()) < region.metrics.max_scroll(),
@@ -3882,25 +3911,12 @@ mod tests {
         assert!((app.scroll - timeline_offset).abs() < 0.01);
     }
 
-    fn cursor(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use ui::synthetic_input::cursor_moved;
     fn mouse(state: ElementState, button: MouseButton) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state,
-            button,
-        }
+        ui::synthetic_input::mouse_input(state, button)
     }
     fn wheel(y: f64) -> WindowEvent {
-        WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0.0, y as f32),
-            phase: winit::event::TouchPhase::Moved,
-        }
+        ui::synthetic_input::mouse_wheel(0.0, y as f32)
     }
     fn feed(app: &mut ChatApp, doc: &mut AutoCommit, ev: &WindowEvent) {
         let mods = Modifiers::default();
@@ -3914,50 +3930,18 @@ mod tests {
         );
     }
 
-    /// A `KeyboardInput` press for a named key (Enter, Backspace, `ArrowUp` …).
-    fn key_named(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::named_key;
 
-    /// A `KeyboardInput` press for a printable character.
-    fn key_char(s: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(winit::keyboard::SmolStr::new(s));
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::char_key;
 
     /// Type each character of `s` into the app through the real keyboard path
     /// (space via the named key, like winit reports it).
     fn type_str(app: &mut ChatApp, doc: &mut AutoCommit, s: &str) {
         for ch in s.chars() {
             let ev = if ch == ' ' {
-                key_named(NamedKey::Space)
+                named_key(NamedKey::Space)
             } else {
-                key_char(&ch.to_string())
+                char_key(&ch.to_string())
             };
             feed(app, doc, &ev);
         }
@@ -4101,7 +4085,7 @@ mod tests {
                 &automerge::ROOT,
             ));
             assert_eq!(
-                ChatDoc::draft_text(&doc, &app.active_channel),
+                crate::testing::draft_text(&doc, &app.active_channel),
                 "🦀 Accessible draft",
                 "semantic editing updates the same unsent collaborative draft"
             );
@@ -4171,12 +4155,12 @@ mod tests {
             .expect("the demo room has someone to mention");
         let prefix: String = who.name.chars().take(2).collect();
         type_str(&mut app, &mut doc, &format!("ping @{prefix}"));
-        feed(&mut app, &mut doc, &key_named(NamedKey::Tab));
+        feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
         let label = format!("@{}", who.name);
         assert_eq!(app.composer_main.value(), format!("ping {label} "));
         type_str(&mut app, &mut doc, "now");
-        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
-        let sent = ChatDoc::list_messages(&doc, &app.active_channel)
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
+        let sent = crate::testing::messages(&doc, &app.active_channel)
             .into_iter()
             .last()
             .unwrap();
@@ -4202,10 +4186,10 @@ mod tests {
         app.focus = Focus::Main;
         app.set_composer_focus();
         type_str(&mut app, &mut doc, "plain ");
-        feed_mods(&mut app, &mut doc, &key_char("b"), mods(true, false));
+        feed_mods(&mut app, &mut doc, &char_key("b"), mods(true, false));
         type_str(&mut app, &mut doc, "bold");
-        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
-        let sent = ChatDoc::list_messages(&doc, &app.active_channel)
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
+        let sent = crate::testing::messages(&doc, &app.active_channel)
             .into_iter()
             .last()
             .unwrap();
@@ -4220,7 +4204,7 @@ mod tests {
         app.begin_edit(sent.id.clone());
         assert_eq!(app.edit_input.value(), "plain bold");
         type_str(&mut app, &mut doc, "!");
-        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
         let edited = app.message(&sent.id).unwrap();
         assert_eq!(edited.text, "plain bold!");
         assert!(
@@ -4236,7 +4220,7 @@ mod tests {
     #[test]
     fn composer_accessibility_keeps_a_backward_browser_selection_direction() {
         let (mut app, mut doc) = app_with_doc();
-        ChatDoc::set_draft(&mut doc, &app.active_channel, "Ae\u{301}👋B");
+        crate::testing::set_draft(&mut doc, &app.active_channel, "Ae\u{301}👋B");
         app.sync_composers(&doc);
         render_frame(&mut app, 1280.0, 720.0);
         assert!(app.composer_main.perform_action(
@@ -4354,17 +4338,15 @@ mod tests {
                 .find(|(_, hit, ..)| hit.semantic_id() == target)
                 .expect("the reaction remains visible after toggling");
             assert_ne!(after, checked, "semantic activation toggles my reaction");
-            let action: crate::actions::ChatAction = serde_json::from_slice(
-                &app.last_dispatched()
-                    .expect("the semantic control dispatches through ActionHost")
-                    .payload,
+            let action = serde_json::to_value(
+                app.last_dispatched()
+                    .expect("the semantic control dispatches through the door"),
             )
-            .expect("the dispatched envelope contains a ChatAction");
-            assert!(matches!(
-                action,
-                crate::actions::ChatAction::AddReaction { .. }
-                    | crate::actions::ChatAction::RemoveReaction { .. }
-            ));
+            .unwrap();
+            assert!(
+                action["action"] == "react" || action["action"] == "unreact",
+                "{action}"
+            );
         }
     }
 
@@ -4396,7 +4378,20 @@ mod tests {
             // A fresh workspace owns empty text/voice channels but shares the
             // document's identity directory. Its People/call chrome must stay
             // quiet until someone actually participates in one of its channels.
-            let fresh = ChatDoc::create_workspace(&mut doc, "Private draft");
+            crate::testing::apply_as(
+                &mut doc,
+                model::ME,
+                crate::resource::Chat::CREATE_WORKSPACE.with(chat::CreateWorkspace {
+                    name: "Private draft".into(),
+                }),
+            )
+            .unwrap();
+            let fresh = crate::projection::read(&doc)
+                .workspace_rows()
+                .into_iter()
+                .find(|workspace| workspace.name == "Private draft")
+                .expect("the workspace is made")
+                .id;
             app.active_ws = fresh;
             app.active_channel.clear();
             app.thread_open = None;
@@ -4422,7 +4417,7 @@ mod tests {
         // Phase: private_workspace_keeps_collaboration_controls_out_of_the_header.
         {
             let mut doc = AutoCommit::new();
-            ChatDoc::seed_starter(&mut doc, model::ME, "You", "QD");
+            crate::testing::starter(&mut doc, model::ME, "You", "QD");
             let mut app = ChatApp::new_ephemeral();
             app.active_ws = "ws_home".into();
             app.active_channel = "c_general".into();
@@ -4467,24 +4462,21 @@ mod tests {
         // host identity must not append "Mark channel read" changes.
         let (mut app, mut doc) = app_with_doc();
         let channel = app.active_channel.clone();
-        ChatDoc::push_message(
+        crate::testing::apply_at(
             &mut doc,
-            &channel,
-            NewMessage {
-                author: "u_aria".into(),
-                ts: NOW + 1,
-                text: "arrived while nobody was looking".into(),
-                ..Default::default()
-            },
-        );
-        let watermark = ChatDoc::read_watermark(&doc, &channel, &app.me.id);
+            "u_aria",
+            (crate::demo::NOW + 1) * 1000,
+            crate::testing::post(&channel, "arrived while nobody was looking", None),
+        )
+        .unwrap();
+        let watermark = crate::testing::read_mark(&doc, &channel, &app.me.id);
         let heads = doc.get_heads();
         for _ in 0..5 {
             assert!(!app.update(&doc, &automerge::ROOT));
             app.sync(&doc, &automerge::ROOT);
         }
         assert_eq!(
-            ChatDoc::read_watermark(&doc, &channel, &app.me.id),
+            crate::testing::read_mark(&doc, &channel, &app.me.id),
             watermark,
             "an unpresented worker must not advance the read watermark"
         );
@@ -4508,7 +4500,7 @@ mod tests {
         app.sync(&doc, &automerge::ROOT);
         app.land(&mut doc);
         assert!(
-            ChatDoc::read_watermark(&doc, &channel, &app.me.id) > watermark,
+            crate::testing::read_mark(&doc, &channel, &app.me.id) > watermark,
             "the presented channel is marked read"
         );
         assert!(
@@ -4577,16 +4569,13 @@ mod tests {
                 "an empty channel has nothing unread"
             );
             // A peer posts to a channel we're not viewing (arrives via the CRDT).
-            ChatDoc::push_message(
+            crate::testing::apply_at(
                 &mut doc,
-                "c_random",
-                NewMessage {
-                    author: "u_aria".into(),
-                    ts: NOW,
-                    text: "anyone around?".into(),
-                    ..Default::default()
-                },
-            );
+                "u_aria",
+                crate::demo::NOW * 1000,
+                crate::testing::post("c_random", "anyone around?", None),
+            )
+            .unwrap();
             app.reload(&doc);
             assert_eq!(
                 unread(&app, "c_random"),
@@ -4611,26 +4600,27 @@ mod tests {
             let (mut app, mut doc) = app_with_doc();
             app.mark_active_read(&doc);
             app.land(&mut doc);
-            let watermark = ChatDoc::read_watermark(&doc, &app.active_channel, &app.me.id);
+            let watermark = crate::testing::read_mark(&doc, &app.active_channel, &app.me.id);
 
             // A remote message arrives after the current read boundary. Being in
             // the room is not enough to acknowledge it once the reader has moved
             // back through history.
-            ChatDoc::push_message(
+            crate::testing::apply_at(
                 &mut doc,
-                &app.active_channel,
-                NewMessage {
-                    author: "u_aria".into(),
-                    ts: NOW + 1,
-                    text: "A newer update while you are reading history".into(),
-                    ..Default::default()
-                },
-            );
+                "u_aria",
+                (crate::demo::NOW + 1) * 1000,
+                crate::testing::post(
+                    &app.active_channel,
+                    "A newer update while you are reading history",
+                    None,
+                ),
+            )
+            .unwrap();
             app.timeline_at_end = false;
             app.mark_active_read(&doc);
             app.land(&mut doc);
             assert_eq!(
-                ChatDoc::read_watermark(&doc, &app.active_channel, &app.me.id),
+                crate::testing::read_mark(&doc, &app.active_channel, &app.me.id),
                 watermark,
                 "a reader away from the live edge does not send a false read receipt"
             );
@@ -4639,7 +4629,7 @@ mod tests {
             app.mark_active_read(&doc);
             app.land(&mut doc);
             assert!(
-                ChatDoc::read_watermark(&doc, &app.active_channel, &app.me.id) > watermark,
+                crate::testing::read_mark(&doc, &app.active_channel, &app.me.id) > watermark,
                 "the same message is acknowledged once the reader returns to it"
             );
         }
@@ -4653,18 +4643,15 @@ mod tests {
             app.on_hit(Hit::CloseThread, &mut ui::widget::Edits::lend(&mut doc));
             assert!(app.thread_open.is_none());
             for n in 0..24 {
-                ChatDoc::push_message(
-                    &mut doc,
-                    &app.active_channel,
-                    NewMessage {
-                        author: "u_aria".into(),
-                        ts: NOW + i64::from(n),
-                        text: format!(
+                crate::testing::apply_at(
+            &mut doc,
+            "u_aria",
+            (crate::demo::NOW + i64::from(n)) * 1000,
+            crate::testing::post(&app.active_channel, &format!(
                             "Longer history line {n}: enough text to wrap inside a narrow conversation column."
-                        ),
-                        ..Default::default()
-                    },
-                );
+                        ), None),
+        )
+        .unwrap();
             }
             app.reload(&doc);
             render_frame(&mut app, 390.0, 620.0);
@@ -4697,7 +4684,7 @@ mod tests {
             feed_mods(
                 &mut app,
                 &mut doc,
-                &key_named(NamedKey::End),
+                &named_key(NamedKey::End),
                 mods(true, false),
             );
             assert_eq!(app.scroll, 0.0);
@@ -4986,43 +4973,11 @@ mod tests {
         assert_eq!(doc.save(), before);
     }
 
-    // --- screen share (portal seam + presentation stage) ----------------
-
-    /// A host grant of a `PipeWire` stream.
-    fn granted(node_id: u32) -> ui::capture::ScreenCaptureOutcome {
-        ui::capture::ScreenCaptureOutcome::Granted(ui::capture::ScreenCaptureGrant {
-            stream: ui::capture::CaptureStream::PipeWire { node_id },
-            size: Some((1280, 720)),
-        })
-    }
-    #[test]
-    fn voice_profile_rejects_screen_share_even_with_a_portal_source() {
-        let (mut app, mut doc) = app_with_doc();
-        app.on_hit(
-            Hit::Channel("c_huddle".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        app.land(&mut doc);
-        app.reload(&doc);
-        let before = doc.save();
-        // The host is deliberately ready to grant a source, so only the voice
-        // profile can be responsible for refusing capture.
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
-        recorder.respond_to_screen_capture(granted(42));
-        app.on_hit(Hit::CallShareScreen, &mut ui::widget::Edits::lend(&mut doc));
-        assert!(!app.sharing_screen() && app.call.audio_only && !app.call.deafened);
-        assert!(app.media_error.is_some());
-        assert!(
-            recorder.screen_capture_requests().is_empty(),
-            "a voice-only call never asks the host for a screen source"
-        );
-        assert_eq!(doc.save(), before);
-    }
+    // --- call controls under reduced permissions ------------------------
 
     #[test]
-    fn unsupported_capture_controls_are_absent_and_leave_remains_available_after_downgrade() {
-        use ui::permissions::{Actor, PermissionContext, Role};
+    fn leave_remains_available_after_downgrade() {
+        use ui::permissions::{PermissionContext, Role};
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(
             Hit::Channel("c_huddle".into()),
@@ -5031,41 +4986,12 @@ mod tests {
         app.land(&mut doc);
         app.reload(&doc);
         app.on_hit(Hit::CallExpand, &mut ui::widget::Edits::lend(&mut doc));
-        app.perms = crate::permissions::ChatPermissions::from_context(
-            PermissionContext::from_capabilities(
-                Actor::person(Some(Role::Viewer), model::ME),
-                vec![],
-            ),
-        );
-        let (_, controls) = app.overlay_controls_layout();
-        assert!(
-            controls
-                .iter()
-                .all(|(_, _, _, _, hit, _)| !matches!(hit, Hit::CallShareScreen))
-        );
-        app.on_hit(Hit::CallShareScreen, &mut ui::widget::Edits::lend(&mut doc));
-        assert!(!app.sharing_screen());
+        app.perms = crate::permissions::ChatPermissions::from_context(PermissionContext::member(
+            model::ME,
+            Role::Viewer,
+        ));
         app.on_hit(Hit::CallLeave, &mut ui::widget::Edits::lend(&mut doc));
         assert!(!app.call.active);
-    }
-
-    #[test]
-    fn expanded_controls_do_not_advertise_screen_capture() {
-        let (mut app, mut doc) = app_with_doc();
-        app.on_hit(
-            Hit::Channel("c_huddle".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        app.land(&mut doc);
-        app.reload(&doc);
-        app.on_hit(Hit::CallExpand, &mut ui::widget::Edits::lend(&mut doc));
-        let (_, buttons) = app.overlay_controls_layout();
-        assert!(
-            buttons
-                .iter()
-                .all(|(_, _, _, _, h, _)| !matches!(h, Hit::CallShareScreen)),
-            "screen capture stays absent until a real production PipeWire producer exists"
-        );
     }
 
     // --- header Call button (was unreachable without a voice channel) ---
@@ -5146,14 +5072,13 @@ mod tests {
     fn two_participants_converge_on_messages_and_edits() {
         // Phase: messages_channels_and_reactions_converge_across_two_participants.
         {
-            use crate::model::Presence;
             // Alice seeds a starter workspace; Bob adopts her document (as a
             // late-joining peer does) and announces himself.
             let mut doc_a = AutoCommit::new();
-            ChatDoc::seed_starter(&mut doc_a, "u_alice", "Alice", "AL");
+            crate::testing::starter(&mut doc_a, "u_alice", "Alice", "AL");
             let snapshot = doc_a.save(); // resets alice's incremental cursor
             let mut doc_b = AutoCommit::load(&snapshot).unwrap();
-            ChatDoc::ensure_user(&mut doc_b, "u_bob", "Bob", "BO", 1, Presence::Online);
+            crate::testing::introduce(&mut doc_b, "u_bob", "Bob", "BO");
             exchange(&mut doc_a, &mut doc_b);
 
             let mut a = peer("u_alice", "Alice", "AL", 0);
@@ -5164,13 +5089,22 @@ mod tests {
             assert_eq!(b.me.id, "u_bob");
 
             // Structure converges: a channel Alice creates shows up for Bob.
-            let chan = ChatDoc::create_channel(
+            crate::testing::apply_as(
                 &mut doc_a,
-                "ws_home",
-                "cat_home_text",
-                "planning",
-                ChannelKind::Text,
-            );
+                "u_alice",
+                crate::resource::Chat::CREATE_CHANNEL.with(chat::CreateChannel {
+                    workspace: item("ws_home"),
+                    name: "planning".into(),
+                    category: Some(item("cat_home_text")),
+                    kind: None,
+                }),
+            )
+            .unwrap();
+            let chan = crate::testing::channels(&doc_a)
+                .into_iter()
+                .find(|channel| channel.name == "planning")
+                .expect("the channel is made")
+                .id;
             exchange(&mut doc_a, &mut doc_b);
             b.reload(&doc_b);
             assert!(
@@ -5259,16 +5193,15 @@ mod tests {
 
         // Phase: an_edit_and_its_history_converge_across_two_participants.
         {
-            use crate::model::Presence;
             // The author edits a message; the *new* body AND the archived prior
             // version both reach the other peer. Drives the real inline-editor path
-            // (begin_edit → insert_text → commit_edit → ChatDoc::edit_message), then
+            // (begin_edit → insert_text → commit_edit → edit-message), then
             // shuttles the incremental delta a peer would receive from the broker.
             let mut doc_a = AutoCommit::new();
-            ChatDoc::seed_starter(&mut doc_a, "u_alice", "Alice", "AL");
+            crate::testing::starter(&mut doc_a, "u_alice", "Alice", "AL");
             let snapshot = doc_a.save();
             let mut doc_b = AutoCommit::load(&snapshot).unwrap();
-            ChatDoc::ensure_user(&mut doc_b, "u_bob", "Bob", "BO", 1, Presence::Online);
+            crate::testing::introduce(&mut doc_b, "u_bob", "Bob", "BO");
             exchange(&mut doc_a, &mut doc_b);
 
             let mut a = peer("u_alice", "Alice", "AL", 0);
@@ -5340,14 +5273,11 @@ mod tests {
 
     #[test]
     fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
-        use ui::permissions::{Actor, PermissionContext, Role};
+        use ui::permissions::{PermissionContext, Role};
         let (mut app, mut doc) = app_with_doc();
         // Restrict this peer to a read-only member with no file capabilities —
         // exactly what an invite without write/file access produces.
-        let ctx = PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Viewer), model::ME),
-            vec![],
-        );
+        let ctx = PermissionContext::member(model::ME, Role::Viewer);
         app.perms = crate::permissions::ChatPermissions::from_context(ctx);
 
         assert!(
@@ -5369,7 +5299,7 @@ mod tests {
         );
 
         // Sending is a no-op under the gate.
-        let before = ChatDoc::list_messages(&doc, "c_crit").len();
+        let before = crate::testing::messages(&doc, "c_crit").len();
         app.insert_text(&mut ui::widget::Edits::lend(&mut doc), "should not post");
         app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
         app.begin_edit("m_me1".into());
@@ -5378,7 +5308,7 @@ mod tests {
             "a viewer cannot open an editor for an existing message"
         );
         assert_eq!(
-            ChatDoc::list_messages(&doc, "c_crit").len(),
+            crate::testing::messages(&doc, "c_crit").len(),
             before,
             "gated peer posts nothing"
         );
@@ -5417,7 +5347,7 @@ mod tests {
     #[test]
     fn two_peers_join_through_native_service_without_publishing_legacy_tickets() {
         let mut doc_a = AutoCommit::new();
-        ChatDoc::seed_starter(&mut doc_a, "u_alice", "Alice", "AL");
+        crate::testing::starter(&mut doc_a, "u_alice", "Alice", "AL");
         let mut doc_b = AutoCommit::load(&doc_a.save()).unwrap();
         let mut a = peer("u_alice", "Alice", "AL", 0);
         let mut b = peer("u_bob", "Bob", "BO", 1);

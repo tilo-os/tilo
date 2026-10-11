@@ -522,10 +522,35 @@ impl NotificationLayer {
                 // Hover lights the centre's controls.
                 self.dirty = true;
             }
-            return false;
         }
         let notifications = self.notifications.clone();
         let host = notifications.host();
+        if self.center.is_none() {
+            let mut handled = false;
+            self.dirty |= self
+                .stack
+                .handle_pointer_event(host, event, scale, &mut handled);
+            return handled;
+        }
+        self.stack.cancel_pointer_press();
+        if self.stack.wants_pointer_capture()
+            && !matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            )
+        {
+            let mut handled = false;
+            self.dirty |= self
+                .stack
+                .handle_pointer_event(host, event, scale, &mut handled);
+            if handled {
+                return true;
+            }
+        }
         let layout = self.layout();
         match event {
             WindowEvent::MouseInput {
@@ -548,9 +573,7 @@ impl NotificationLayer {
                     self.dirty = true;
                     return true;
                 }
-                let hit = self.stack.click_at(host, p);
-                self.dirty |= hit;
-                hit
+                false
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (Some(center), Some(layout), Some(p)) =
@@ -616,15 +639,7 @@ impl Widget for NotificationLayer {
         node
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        if let Ok(layout) = tree.layout(node) {
-            self.rect = Rect::from_origin_size(
-                Point::new(
-                    origin.x + f64::from(layout.location.x),
-                    origin.y + f64::from(layout.location.y),
-                ),
-                (f64::from(layout.size.width), f64::from(layout.size.height)),
-            );
-        }
+        self.rect = ui::widget::layout_rect(tree, node, origin);
     }
     fn draw(
         &mut self,
@@ -784,6 +799,60 @@ mod tests {
         let (mut layer, _) = layer_with(0);
         assert!(layer.accessibility().is_none());
         assert!(!press(&mut layer, Point::new(1200.0, 80.0)));
+    }
+
+    #[test]
+    fn portable_banner_clicks_complete_cancel_and_yield_to_history() {
+        for interrupted in [false, true] {
+            let (mut layer, notifications) = layer_with(1);
+            let theme = ui::Theme::dark().with_reduce_motion(true);
+            layer.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut ui::TextRenderer::new(),
+                &theme,
+                &ui::presence::PresenceCtx::default(),
+            );
+            let point = layer.stack.rect().center();
+            layer.route(
+                &WindowEvent::CursorMoved {
+                    device_id: ui::winit::event::DeviceId::dummy(),
+                    position: ui::winit::dpi::PhysicalPosition::new(point.x, point.y),
+                },
+                1.0,
+            );
+            assert!(press(&mut layer, point));
+            assert!(
+                notifications.take_outcomes().is_empty(),
+                "pressing is not choosing"
+            );
+            if interrupted {
+                layer.set_center_open(true);
+            }
+            assert!(layer.route(
+                &WindowEvent::MouseInput {
+                    device_id: ui::winit::event::DeviceId::dummy(),
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                },
+                1.0
+            ));
+            let outcomes = notifications.take_outcomes();
+            if interrupted {
+                assert!(
+                    outcomes.is_empty(),
+                    "foreground history cancels the armed banner"
+                );
+                assert_eq!(notifications.counts(), (1, 0));
+                assert!(layer.center_open());
+            } else {
+                assert!(
+                    matches!(&outcomes[..], [NotificationOutcome::Activated { action, .. }]
+                    if action.as_deref() == Some("default"))
+                );
+                assert_eq!(notifications.counts(), (0, 1));
+            }
+        }
     }
 
     #[test]

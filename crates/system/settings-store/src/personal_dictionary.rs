@@ -246,6 +246,7 @@ impl Drop for Service {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .owner = None;
+        self.0.changes.ring();
     }
 }
 
@@ -507,16 +508,17 @@ impl Service {
 
 impl Inner {
     fn path(&self, owner: [u8; 32]) -> PathBuf {
-        use std::fmt::Write as _;
-        let mut name = String::with_capacity(64);
-        for byte in owner {
-            let _ = write!(name, "{byte:02x}");
-        }
-        self.root.join(format!("{name}.json"))
+        self.root.join(format!("{}.json", hex::encode(owner)))
     }
 }
 
 impl Reader {
+    /// Compare opaque binding identity without reading dictionary contents.
+    /// A same-person logout/login still issues a different binding epoch.
+    pub fn same_binding(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner) && self.epoch == other.epoch
+    }
+
     fn owner(&self, binding: &Binding) -> io::Result<[u8; 32]> {
         if binding.epoch != self.epoch {
             return Err(denied());

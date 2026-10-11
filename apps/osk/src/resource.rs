@@ -13,7 +13,8 @@
 use serde::{Deserialize, Serialize};
 use ui::application::{ComponentBehaviour, WindowRole};
 use ui::framework::{ResourceApp, ViewCx};
-use ui::tilo_resource::{Doc, ModelError, NoAction, Resource};
+use ui::i18n::EmbeddedCatalog;
+use ui::tilo_resource::{self, Model, resource};
 use ui::widget::Element;
 
 use crate::actions::LETTER_LAYOUTS;
@@ -25,6 +26,9 @@ use crate::surface::OskSurface;
 pub struct OskPreferences {
     /// The letter layout text fields open in.
     pub layout: String,
+    /// Configured letter layouts, in their user-selected switching order.
+    /// An absent list preserves the historic bundled letter layouts.
+    pub layouts: Vec<String>,
     /// Whether the suggestion bar offers words.
     pub suggestions: bool,
     /// Whether the keyboard adapts to what this person types.
@@ -37,6 +41,7 @@ impl Default for OskPreferences {
     fn default() -> Self {
         Self {
             layout: LETTER_LAYOUTS[0].0.to_owned(),
+            layouts: Vec::new(),
             suggestions: true,
             personalization: true,
             emoji_recents: Vec::new(),
@@ -49,21 +54,13 @@ impl ui::storage::SettingsSchema for OskPreferences {
 }
 
 /// The on-screen keyboard resource: the door its effects and rows are
-/// published on.
-pub struct Osk;
+/// published on. It holds nothing; preferences are settings and what was
+/// learned is the person's own record.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Osk {}
 
-impl Resource for Osk {
-    const KIND: &'static str = "osk.keyboard";
-    const LABEL: &'static str = "On-screen keyboard";
-    const ACTION_TYPE: &'static str = "osk.keyboard.action";
-
-    type State = ();
-    type Action = NoAction;
-
-    fn read(_doc: &Doc) -> Result<(), ModelError> {
-        Ok(())
-    }
-}
+#[resource(kind = "osk.keyboard", label = "On-screen keyboard")]
+impl Osk {}
 
 /// The value of `--purpose`: the field kind the keyboard starts for.
 pub const PURPOSE_OPTION: &str = "--purpose";
@@ -95,6 +92,10 @@ impl ResourceApp for OskShell {
 
     fn view(cx: &mut ViewCx<Osk>) -> Element {
         cx.surface(OskSurface::new())
+    }
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&crate::i18n::CATALOG)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -212,21 +213,24 @@ mod tests {
             !published.contains("secret") && !published.contains("Composing"),
             "neither the word being typed nor what was learned reaches a palette, agent or script: {published}"
         );
-        // The person's record of what was learned offers taking a change
-        // back, never what it holds.
+        // The person's record of what was learned offers changing it and
+        // taking a change back, never a way to read what it holds.
         let surface = app.agent_surface();
-        let learned_actions: Vec<&str> = surface
+        let learned: Vec<&serde_json::Value> = surface
             .as_array()
             .into_iter()
             .flatten()
             .filter(|action| action["resource"] == "person:osk.learned")
-            .filter_map(|action| action["action"].as_str())
             .collect();
         assert!(
-            learned_actions
+            learned.iter().any(|action| action["action"] == "undo"),
+            "{learned:?}"
+        );
+        assert!(
+            learned
                 .iter()
-                .all(|action| matches!(*action, "undo" | "redo")),
-            "{learned_actions:?}"
+                .all(|action| action["operation"] != "View" && action["action"] != "history"),
+            "{learned:?}"
         );
     }
 
@@ -297,7 +301,7 @@ mod tests {
         assert_eq!(OskEffect::ClearPersonal.id(), "clear-personal");
     }
 
-    fn learned(app: &mut TestApp<OskShell>) -> crate::learned::LearnedTyping {
+    fn learned(app: &mut TestApp<OskShell>) -> crate::learned::Learned {
         let record = app
             .person::<crate::learned::Learned>()
             .expect("the person's record of what the keyboard learned");
@@ -312,12 +316,12 @@ mod tests {
         }
         app.settle();
         let taught = learned(&mut app);
-        assert_eq!(taught.transitions["en"][""]["hi"], 1);
-        assert_eq!(taught.transitions["en"]["hi"]["you"], 1);
+        assert_eq!(taught.count("en", "", "hi"), 1);
+        assert_eq!(taught.count("en", "hi", "you"), 1);
 
         let mut app = app.reopen().unwrap();
         app.harness().relayout();
-        assert_eq!(learned(&mut app).transitions["en"]["hi"]["you"], 1);
+        assert_eq!(learned(&mut app).count("en", "hi", "you"), 1);
 
         app.call("set-personalization", serde_json::json!({ "value": false }))
             .unwrap();
@@ -341,6 +345,37 @@ mod tests {
         app.settle();
         assert!(learned(&mut app).is_empty());
         assert!(prefs(&app).personalization);
+    }
+
+    #[test]
+    fn the_learned_records_history_reads_as_sentences() {
+        let mut app = keyboard();
+        for key in ["h", "i", "Space"] {
+            tap(&mut app, key);
+        }
+        app.settle();
+        app.effect_on_confirmed("osk.keyboard.suggestions", &OskEffect::ClearPersonal)
+            .unwrap();
+        app.settle();
+        let record = app
+            .person::<crate::learned::Learned>()
+            .expect("the person's record of what the keyboard learned");
+        let document = record.record().document().expect("the record's document");
+        let mut replica = ui::tilo_resource::Replica::<crate::learned::Learned>::load(&document)
+            .expect("the record reads as what the keyboard learned");
+        let english = include_str!("../locales/en-US.ftl");
+        let catalogue = tilo_history::Catalogue::new("en-US", &[english]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let sentences: Vec<String> = replica
+            .versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .map(|entry| reader.sentence(&entry))
+            .collect();
+        assert_eq!(
+            sentences,
+            ["Learned from typing", "Forgot what the keyboard learned"]
+        );
     }
 
     #[test]

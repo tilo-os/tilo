@@ -32,7 +32,7 @@ fn resources() -> Vec<Resource> {
             payload: b"configure".to_vec(),
         },
     );
-    configure.contract.permission = tilo_actions::PermissionRequirement::Admin;
+    configure.contract.kind = tilo_actions::ActionKind::Outside;
     let mut inspect = ActionSpec::typed_operation(
         "inspect",
         crate::shell::i18n::t("session-diagnostics-inspect"),
@@ -50,7 +50,7 @@ fn resources() -> Vec<Resource> {
     };
     configure.contract.result = result.clone();
     inspect.contract.result = result;
-    inspect.contract.permission = tilo_actions::PermissionRequirement::Read;
+    inspect.contract.kind = tilo_actions::ActionKind::Read;
     vec![
         Resource::new(
             PROVIDER,
@@ -62,10 +62,18 @@ fn resources() -> Vec<Resource> {
     ]
 }
 
+/// Add the diagnostics rows to a listing's last page, so a caller following
+/// `next_cursor` sees them once.
 pub(super) fn append_catalogue(response: &mut Response, query: &str) {
     let Response::Answer(answer) = response else {
         return;
     };
+    if answer
+        .get("next_cursor")
+        .is_some_and(|cursor| !cursor.is_null())
+    {
+        return;
+    }
     let rows = console_control::enumerate(PROVIDER, &resources(), query);
     let Some(actions) = answer
         .get_mut("actions")
@@ -73,21 +81,30 @@ pub(super) fn append_catalogue(response: &mut Response, query: &str) {
     else {
         return;
     };
-    if let Some(rows) = rows.get("actions").and_then(serde_json::Value::as_array) {
-        actions.extend(rows.iter().cloned());
-    }
+    let added = rows
+        .get("actions")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, |rows| {
+            actions.extend(rows.iter().cloned());
+            rows.len()
+        });
     let count = actions.len();
     answer["count"] = json!(count);
+    if let Some(total) = answer.get("total").and_then(serde_json::Value::as_u64) {
+        answer["total"] = json!(total.saturating_add(u64::try_from(added).unwrap_or(u64::MAX)));
+    }
 }
 
 /// Native control calls this only after admin peer authentication, without
 /// Agent scope, while unlocked. No environment or privilege is stored in CRDT.
 pub(super) fn dispatch(command: &Command) -> Option<Response> {
+    // Answered at once, so there is nothing for `wait_ms` to wait for.
     let Command::ActionsInvoke {
         provider,
         id,
         args,
         device: None,
+        wait_ms: _,
     } = command
     else {
         return None;
@@ -135,7 +152,7 @@ mod tests {
         assert!(session.diagnostics.lock().unwrap().is_none());
         let mut command = Command::ActionsInvoke {
             provider: PROVIDER.into(), id: "configure@session-diagnostics".into(),
-            args: json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false}).as_object().unwrap().clone(), device: None,
+            args: json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false}).as_object().unwrap().clone(), device: None, wait_ms: None,
         };
         assert!(
             matches!(dispatch(&command), Some(Response::Answer(value)) if value["diagnostics"]["presentation"] == true)
@@ -172,6 +189,7 @@ mod tests {
             id: "inspect@session-diagnostics".into(),
             args: serde_json::Map::new(),
             device: None,
+            wait_ms: None,
         };
         assert!(
             matches!(dispatch(&read), Some(Response::Answer(value)) if value["applies_to"] == "subsequent_launches" && value["diagnostics"] == options.value())

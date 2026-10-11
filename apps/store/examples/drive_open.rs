@@ -82,7 +82,7 @@ fn main() {
     // Store checks it against the current item and hands the worker one
     // package operation.
     let (pact, effect) = match action.as_str() {
-        "open" => (ActionKind::Open, StoreEffect::Open { app: id.clone() }),
+        "open" => (ActionKind::Open, StoreEffect::OpenApp { app: id.clone() }),
         "mark-installed" => (
             ActionKind::MarkInstalled,
             StoreEffect::Pin { app: id.clone() },

@@ -259,8 +259,16 @@ jobs:
         run: |
           set -euo pipefail
           . os/dev/configure-cosign-kms.sh
-          cosign public-key --key "$COSIGN_KEY_REF" | cmp --silent keys/extensions.pub - \
-            || { echo '::error::the KMS extension-manifest key does not match keys/extensions.pub'; exit 1; }
+          (
+            public_key=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/tilo-extension-public-key.XXXXXX")
+            trap 'rm -f -- "$public_key"' EXIT
+            if ! cosign public-key --key "$COSIGN_KEY_REF" > "$public_key"; then
+              echo '::error::could not retrieve the KMS extension-manifest public key; see the Cosign identity/KMS error above'
+              exit 1
+            fi
+            cmp --silent keys/extensions.pub "$public_key" \
+              || { echo '::error::the KMS extension-manifest key does not match keys/extensions.pub'; exit 1; }
+          )
           mapfile -t manifests < <(find extension-manifests -type f -name '*.json' -print 2>/dev/null | LC_ALL=C sort)
           [[ ${#manifests[@]} -gt 0 ]] || { echo '::error::no lane resolved a manifest'; exit 1; }
           failed=0

@@ -536,12 +536,12 @@ pub fn content(state: &mut State, request: &Request, path: &str) -> Reply {
     let Some(bytes) = state.nodes.get(&doc).map(|node| node.bytes.clone()) else {
         return Reply::status(404);
     };
-    let truncate = state
+    let cut = state
         .faults
         .iter()
-        .position(|fault| *fault == FakeFault::TruncatedBody)
+        .position(|fault| matches!(fault, FakeFault::TruncatedBody | FakeFault::ClosedEarly))
         .and_then(|position| state.faults.remove(position))
-        .is_some();
+        .map(|fault| fault == FakeFault::TruncatedBody);
     let requested = request.header("range").and_then(|h| range(h, bytes.len()));
     let (status, served, content_range) = if let Some((start, end)) = requested {
         state.stats.ranged_downloads = state.stats.ranged_downloads.saturating_add(1);
@@ -556,14 +556,10 @@ pub fn content(state: &mut State, request: &Request, path: &str) -> Reply {
     if let Some(content_range) = content_range {
         reply = reply.header("Content-Range", &content_range);
     }
-    if truncate {
-        let half = served.len() / 2;
-        return reply
-            .without_content_length()
-            .header("Content-Length", &served.len().to_string())
-            .body(served.get(..half).unwrap_or_default().to_vec());
+    match cut {
+        Some(declare_length) => reply.body(served).cut_short(declare_length),
+        None => reply.body(served),
     }
-    reply.body(served)
 }
 
 /// The file part of a `multipart/form-data` body.

@@ -110,10 +110,10 @@ fn minute() -> i64 {
 
 /// The page's wall clock as the bar shows it.
 fn clock_snapshot() -> ClockSnapshot {
-    let now = chrono::Local::now();
+    let now = ui::clock::local_now();
     ClockSnapshot {
         unix_seconds: now.timestamp(),
-        clock: now.format("%H:%M").to_string(),
+        clock: ui::clock::time_of_day(&now),
         weekday: now.format("%a").to_string(),
         date: now.format("%-d %B").to_string(),
     }
@@ -545,6 +545,13 @@ impl OverviewHost for PageOverview {
             &tilo_desktop::workspace_settings::NoAppDirectory,
         )
     }
+
+    fn node_label(&self, node: &tilo_action_policy::TreePath) -> String {
+        tilo_desktop::workspace_settings::node_phrase(
+            node,
+            &tilo_desktop::workspace_settings::NoAppDirectory,
+        )
+    }
 }
 
 fn workspace_is_empty(tree: &DesktopTree) -> bool {
@@ -636,30 +643,20 @@ impl Widget for BrowserShell {
         };
         style.size = Size::auto();
         let _ = taffy.set_style(overview, style);
-        let node = taffy.parent_node(
-            Style {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
-            &[backdrop, bar, area, overview],
-        );
-        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[backdrop, bar, area, overview], map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         let nodes = taffy.children(node).unwrap_or_default();
         if let [backdrop, bar, area, overview] = nodes[..] {
@@ -680,26 +677,9 @@ impl Widget for BrowserShell {
     ) {
         self.drawn_minute.set(minute());
         self.backdrop.draw(scene, transform, text, theme, presence);
-        self.area.draw(scene, transform, text, theme, presence);
+        ui::widget::draw_child(&mut self.area, scene, transform, text, theme, presence);
         self.overview.draw(scene, transform, text, theme, presence);
         // Last, so what the bar opens below its band stays above windows.
-        self.bar.draw(scene, transform, text, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.drawn_minute.set(minute());
-        self.backdrop.draw(scene, transform, text, theme, presence);
-        self.area
-            .draw_with_presence(scene, transform, text, theme, presence, permissions);
-        self.overview.draw(scene, transform, text, theme, presence);
         self.bar.draw(scene, transform, text, theme, presence);
     }
 

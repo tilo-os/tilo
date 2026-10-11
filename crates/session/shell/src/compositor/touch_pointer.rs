@@ -220,9 +220,7 @@ mod tests {
 
     fn touch(id: u64, phase: TouchPhase, x: f64, y: f64) -> Touch {
         Touch {
-            // SAFETY: winit's `DeviceId` is plain data; the compositor's
-            // synthetic input uses the same inert zero value.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             phase,
             location: winit::dpi::PhysicalPosition::new(x, y),
             force: None,

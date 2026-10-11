@@ -207,7 +207,7 @@ impl VideoEditorApp {
         }
         self.project_notice = Some(notice);
 
-        self.submit(&crate::actions::load_project_action(&project));
+        self.submit(vec![crate::resource::load_project(&project)]);
         // The host applies the open after this event; the document it leaves
         // is the one the file holds, so that is what reads as saved.
         // Recording today's heads instead would call the opened project

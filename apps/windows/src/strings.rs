@@ -2,7 +2,7 @@
 use std::cell::Cell;
 use ui::i18n::I18nManager;
 
-const EN_US: &str = include_str!("../locales/en-US.ftl");
+pub(crate) const EN_US: &str = include_str!("../locales/en-US.ftl");
 
 thread_local! { static LOADED: Cell<bool> = const { Cell::new(false) }; }
 

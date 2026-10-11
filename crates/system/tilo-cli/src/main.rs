@@ -26,11 +26,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -606,29 +602,47 @@ fn privileged(args: &[&str], yes: bool, unit: &str, what: &str) -> Result<ExitCo
         }
     }
 
-    // polkit authorises exactly this unit for a local active session in wheel; if it doesn't,
-    // systemctl says so far more usefully than a guess would.
-    let mut command = Command::new("systemctl");
-    command.args(["start", "--wait", unit]);
-    let status = wait_with_feedback(command, what).context("running systemctl start")?;
+    run_privileged_unit(
+        Command::new("systemctl"),
+        Command::new("journalctl"),
+        unit,
+        what,
+        &mut std::io::stderr().lock(),
+    )
+}
+
+/// Keep the unit job's exit status and original stderr: a failed deployment
+/// helper is different from a denied start request, and systemd reports both.
+fn run_privileged_unit(
+    mut start: Command,
+    mut journal: Command,
+    unit: &str,
+    what: &str,
+    diagnostics: &mut impl Write,
+) -> Result<ExitCode> {
+    start.args(["start", "--wait", unit]);
+    let status = wait_with_feedback(start, what).context("running systemctl start")?;
+    let lines = if status.success() { "40" } else { "80" };
     if !status.success() {
-        eprintln!(
-            "\ntilo: starting {unit} failed. Either this session is not the one at \
-             the machine's own seat, or polkit did not authorise it. From a \
-             terminal:\n  sudo {} {}",
-            helper(),
-            args.join(" ")
-        );
-        // The unit's own output is the useful part; point at it rather than reprinting a guess.
-        let _ = Command::new("journalctl")
-            .args(["-u", unit, "-n", "20", "--no-pager"])
-            .status();
-        return Ok(exit_code(status.code()));
+        writeln!(
+            diagnostics,
+            "\ntilo: {unit} failed ({status}). Unit output follows.\n\
+             Inspect the update log with:\n  journalctl -u {unit} -n 80 --no-pager"
+        )?;
     }
-    let _ = Command::new("journalctl")
-        .args(["-u", unit, "-n", "40", "--no-pager", "-o", "cat"])
-        .status();
-    Ok(ExitCode::SUCCESS)
+    journal.args(["-u", unit, "-n", lines, "--no-pager", "-o", "cat"]);
+    match journal.status() {
+        Ok(result) if result.success() => {}
+        Ok(result) => writeln!(
+            diagnostics,
+            "tilo: reading {unit}'s journal failed ({result})"
+        )?,
+        Err(error) => writeln!(
+            diagnostics,
+            "tilo: could not read {unit}'s journal: {error}"
+        )?,
+    }
+    Ok(exit_code(status.code()))
 }
 
 fn run_helper_with_feedback(args: &[&str], what: &str) -> Result<ExitCode> {
@@ -727,6 +741,83 @@ deployment to fall back to.
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn failed_deployment_preserves_the_job_reason_journal_and_exit_status() {
+        let directory = std::env::temp_dir().join(format!(
+            "tilo-deployment-diagnostics-{}-{}",
+            std::process::id(),
+            tilo_clock::try_unix_now_ns().unwrap()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let stderr_path = directory.join("job.stderr");
+        let journal_path = directory.join("journal.stdout");
+        let mut start = Command::new("/bin/sh");
+        start.args([
+            "-c",
+            "test \"$1\" = start && test \"$2\" = --wait && test \"$3\" = tilo-deployment-update.service || exit 99; printf '%s\\n' 'Job for tilo-deployment-update.service failed because the control process exited with error code.' >&2; exit 7",
+            "systemctl-fixture",
+        ]);
+        start.stderr(std::fs::File::create(&stderr_path).unwrap());
+        let mut journal = Command::new("/bin/sh");
+        journal.args([
+            "-c",
+            "test \"$1\" = -u && test \"$2\" = tilo-deployment-update.service && test \"$4\" = 80 || exit 99; printf '%s\\n' 'tilo-deployment: bootc upgrade failed: registry unavailable'",
+            "journalctl-fixture",
+        ]);
+        journal.stdout(std::fs::File::create(&journal_path).unwrap());
+        let mut diagnostics = Vec::new();
+        assert_eq!(
+            run_privileged_unit(
+                start,
+                journal,
+                "tilo-deployment-update.service",
+                "Stage image",
+                &mut diagnostics
+            )
+            .unwrap(),
+            exit_code(Some(7))
+        );
+        assert_eq!(
+            std::fs::read_to_string(&stderr_path).unwrap(),
+            "Job for tilo-deployment-update.service failed because the control process exited with error code.\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&journal_path).unwrap(),
+            "tilo-deployment: bootc upgrade failed: registry unavailable\n"
+        );
+        let diagnostics = String::from_utf8(diagnostics).unwrap();
+        assert!(
+            diagnostics.contains("journalctl -u tilo-deployment-update.service -n 80 --no-pager")
+        );
+        assert!(!diagnostics.contains("polkit"));
+        assert!(!diagnostics.contains("seat"));
+        assert!(!diagnostics.contains("sudo"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn unreadable_journal_is_reported_without_replacing_the_unit_failure() {
+        let mut start = Command::new("/bin/sh");
+        start.args(["-c", "exit 7"]);
+        let mut journal = Command::new("/bin/sh");
+        journal.args(["-c", "exit 1"]);
+        let mut diagnostics = Vec::new();
+        assert_eq!(
+            run_privileged_unit(
+                start,
+                journal,
+                "tilo-deployment-update.service",
+                "Stage image",
+                &mut diagnostics,
+            )
+            .unwrap(),
+            exit_code(Some(7))
+        );
+        let diagnostics = String::from_utf8(diagnostics).unwrap();
+        assert!(diagnostics.contains("reading tilo-deployment-update.service's journal failed"));
+        assert!(!diagnostics.contains("polkit"));
+    }
 
     #[test]
     fn the_command_tree_parses_namespaces_and_completes_both_argv0s() {

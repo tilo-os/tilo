@@ -29,6 +29,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use ui::tilo_resource;
 
 /// Root of the Tilo P2P FUSE filesystem. Every collaborator mounts the same
 /// logical tree here, so a workspace-relative media path resolves to the
@@ -47,7 +48,7 @@ pub const KEPT_PREFIX: &str = "tilo-kept";
 /// Whether a media reference's *content* is available locally yet. The CRDT
 /// always carries the reference (so the clip can be laid out, trimmed and
 /// drawn from metadata); the bytes are a separate, lazily-hydrated concern.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, tilo_resource::Model)]
 pub enum Hydration {
     /// Path + metadata are known (replicated via the CRDT) but the bytes
     /// have not been fetched from the FUSE yet. The timeline still renders

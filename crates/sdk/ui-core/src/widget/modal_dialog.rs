@@ -1042,11 +1042,6 @@ impl ModalSheet {
     pub fn focused_action(&self) -> Option<usize> {
         self.focus
     }
-
-    /// Put keyboard focus on an action (`None` clears it).
-    pub fn set_focused_action(&mut self, action: Option<usize>) {
-        self.focus = action;
-    }
 }
 
 /// One footer action of a [`ModalDialog`]. The dialog runs it from its own
@@ -1152,12 +1147,11 @@ impl Widget for FooterKey {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // Out of flow and empty: the dialog places the action itself.
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             position: taffy::Position::Absolute,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
@@ -1193,6 +1187,7 @@ impl Widget for FooterKey {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _: &mut crate::widget::Edits<'_>,
         _: &ModelPath,
     ) -> bool {
@@ -1211,7 +1206,7 @@ impl Widget for FooterKey {
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        target == self.action_target && self.perform_action(action, state, path)
+        target == self.action_target && self.perform_action(action, &[], state, path)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -1806,31 +1801,13 @@ impl<C: Widget> ModalDialog<C> {
         event: &WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) -> bool {
-        let before = std::mem::replace(ctx.handled, false);
-        if let Some(node) = self.host_content {
-            self.content
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-        } else if let Some(content) = &self.detached {
-            let mut detached_focus = None;
-            self.content.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: ctx.state.reborrow(),
-                    path: ctx.path,
-                    handled: ctx.handled,
-                    // A node of the dialog's own tree means nothing to a
-                    // host; a painted host keeps focus inside its content.
-                    focus_target: &mut detached_focus,
-                    node_id: content.node,
-                    taffy: &content.taffy,
-                },
-            );
-        }
-        let consumed = *ctx.handled;
-        *ctx.handled = before || consumed;
-        consumed
+        floating_surface::DetachedContent::forward(
+            &mut self.content,
+            self.host_content,
+            self.detached.as_ref(),
+            event,
+            ctx,
+        )
     }
 
     fn dismiss(&mut self) {
@@ -2042,7 +2019,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // The content is laid out in the host's tree, so its nodes are the
         // window's: a field's focus request and the focus order name the
         // same nodes. The dialog's node covers its parent out of flow;
-        // `adjust_layout_with_measure` narrows its content box to the body.
+        // `adjust_layout_style` narrows its content box to the body.
         let content_node = self.content.build_layout(taffy, theme, node_map);
         self.host_content = Some(content_node);
         let dialog = self.test_id.clone();
@@ -2086,7 +2063,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         node
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -2099,12 +2076,16 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // Compact presentation depends on both viewport axes. A synthetic
         // one-pixel height would classify every desktop sheet as a page and
         // measure its body at the wrong width, leaving it perpetually dirty.
-        let window = if self.presented {
-            self.window
-        } else {
-            tree_window(taffy, node)
-                .unwrap_or_else(|| Rect::new(0.0, 0.0, node_w, f64::from(l.size.height)))
-        };
+        // A presented dialog's last painted viewport can precede a resize.
+        // Measure against the current host tree before the next paint, so
+        // its body and wrapped text use the width they will actually occupy.
+        let window = tree_window(taffy, node).unwrap_or_else(|| {
+            if self.presented {
+                self.window
+            } else {
+                Rect::new(0.0, 0.0, node_w, f64::from(l.size.height))
+            }
+        });
         let body_w = body_width(window, self.max_width, &self.layout_theme);
         let pad = crate::num::f32_of_f64((node_w - body_w).max(0.0));
         let Ok(mut style) = taffy.style(node).cloned() else {
@@ -2121,21 +2102,13 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
         // Until the top layer has been painted over the window once, the
         // root of the tree the dialog stands in is the window: the sheet is
         // centred where the first paint will put it, so the content is
         // placed where it is drawn and hit from the first frame.
         if !self.presented {
-            self.window = tree_window(taffy, node).unwrap_or_else(|| {
-                Rect::from_origin_size(
-                    (
-                        origin.x + f64::from(l.location.x),
-                        origin.y + f64::from(l.location.y),
-                    ),
-                    (f64::from(l.size.width), f64::from(l.size.height)),
-                )
-            });
+            self.window = tree_window(taffy, node)
+                .unwrap_or_else(|| crate::widget::layout_rect(taffy, node, origin));
         }
         let Some(content_node) = taffy
             .children(node)
@@ -2610,7 +2583,7 @@ fn activate_focused(
             .accessibility()
             .is_some_and(|node| node.role == crate::a11y::Role::Button);
         return (button || !buttons_only)
-            && widget.perform_action(&crate::a11y::Action::Activate, state, path);
+            && widget.perform_action(&crate::a11y::Action::Activate, &[], state, path);
     }
     widget
         .children_mut()

@@ -16,11 +16,6 @@ pub struct RevisionId(ChangeHash);
 
 impl RevisionId {
     #[must_use]
-    pub const fn from_hash(hash: ChangeHash) -> Self {
-        Self(hash)
-    }
-
-    #[must_use]
     pub const fn as_hash(self) -> ChangeHash {
         self.0
     }
@@ -149,12 +144,6 @@ impl RevisionHistory {
         self.revisions
             .iter()
             .filter(|revision| revision.parents.is_empty())
-    }
-
-    pub fn branch_points(&self) -> impl Iterator<Item = &Revision> {
-        self.revisions
-            .iter()
-            .filter(|revision| revision.is_branch_point())
     }
 
     pub fn merges(&self) -> impl Iterator<Item = &Revision> {

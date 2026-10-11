@@ -1,6 +1,7 @@
 use super::*;
 use crate::widget::ModelPath;
-use crate::widget::{Text, TextInput};
+use crate::widget::TaffyTreeExt;
+use crate::widget::{Button, Text, TextInput};
 use automerge::AutoCommit;
 use vello::kurbo::Rect;
 
@@ -9,6 +10,7 @@ use vello::kurbo::Rect;
 /// resets unless the App restores it via `get_state`/`set_state`.
 struct RebuildHarness {
     show_status: bool,
+    show_offer: bool,
     request_reset: bool,
     children: Vec<Box<dyn Widget>>,
     rect: Rect,
@@ -18,6 +20,7 @@ impl RebuildHarness {
     fn new() -> Self {
         Self {
             show_status: false,
+            show_offer: false,
             request_reset: false,
             children: Vec::new(),
             rect: Rect::ZERO,
@@ -32,6 +35,12 @@ impl RebuildHarness {
         kids.push(Box::new(TextInput::local().with_initial_value("hello")));
         if self.show_status {
             kids.push(Box::new(Text::new("status")));
+        }
+        if self.show_offer {
+            kids.push(Box::new(Button::new("offer.skip", "Not now")));
+            kids.push(Box::new(
+                Button::new("offer.accept", "Turn on").with_default_focus(),
+            ));
         }
         self.children = kids;
     }
@@ -50,20 +59,10 @@ impl Widget for RebuildHarness {
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
-        let node = taffy
-            .new_with_children(taffy::Style::default(), &child_nodes)
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(taffy::Style::default(), &child_nodes, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let Ok(child_nodes) = taffy.children(node) {
             for (c, &cn) in self.children.iter_mut().zip(child_nodes.iter()) {
                 c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
@@ -97,6 +96,10 @@ impl Widget for RebuildHarness {
         match payload {
             "show_status" => self.show_status = true,
             "reset" => self.request_reset = true,
+            "offer" => {
+                self.show_offer = true;
+                self.request_reset = true;
+            }
             _ => {}
         }
     }
@@ -184,4 +187,32 @@ fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
             "focus_reset must not paste the old caret onto the new field"
         );
     }
+}
+
+#[test]
+fn a_focus_reset_lands_on_the_default_control() {
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
+    app.autofocus_first = true;
+    app.autofocus_on_structure_change = true;
+    app.init_layout();
+
+    let mut tmp = AutoCommit::new();
+    app.root_widget.on_external_event(
+        "offer",
+        &mut crate::widget::Edits::lend(&mut tmp),
+        &automerge::ROOT,
+    );
+    app.rebuild_structure();
+
+    assert_eq!(app.focusable_order.len(), 3);
+    let focused = app.focused_node.expect("a reset focuses a control");
+    assert_ne!(
+        Some(focused),
+        app.focusable_order.first().copied(),
+        "the default control wins over the first one"
+    );
+    assert!(
+        app.inspect_node(focused, |widget| widget.is_default_keyboard_focus())
+            .unwrap_or(false)
+    );
 }

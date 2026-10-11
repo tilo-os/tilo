@@ -1,0 +1,30 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "monitor.processes"
+label = "Processes"
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "monitor"
+path = "sort"
+stored = "value"
+title = "Sort column"
+type = "SortKey"
+
+[[resources.fields]]
+owner = "monitor"
+path = "ascending"
+stored = "value"
+title = "Ascending"
+type = "bool"
+
+[[resources.fields]]
+owner = "monitor"
+path = "flat"
+stored = "value"
+title = "Flat list"
+type = "bool"

@@ -25,7 +25,7 @@ use super::{
 use crate::install::PowerAction;
 use crate::layouts;
 use crate::operation::{
-    ACCOUNT, KEYBOARD, NETWORK, OPERATION_TYPE, OPTIONS, Operation, POWER, RECOVERY, REVIEW,
+    ACCOUNT, KEYBOARD, MEDIA, NETWORK, OPERATION_TYPE, OPTIONS, Operation, POWER, RECOVERY, REVIEW,
     SESSION, STORAGE, disk_resource, region_resource,
 };
 
@@ -181,6 +181,7 @@ impl InstallerApp {
             .with_child(self.storage_resource())
             .with_child(self.account_resource())
             .with_child(self.options_resource())
+            .with_child(self.media_resource())
             .with_child(self.review_resource());
         if let Some(recovery) = self.recovery_resource() {
             root = root.with_child(recovery);
@@ -611,16 +612,6 @@ impl InstallerApp {
                 on_step.clone(),
             ))
             .with_action(gate(
-                toggle(
-                    "set-media-codecs",
-                    "Install media codecs",
-                    CODECS_DESCRIPTION,
-                    |enabled| Operation::SetMediaCodecs { enabled },
-                )
-                .with_description(CODECS_DESCRIPTION),
-                on_step.clone(),
-            ))
-            .with_action(gate(
                 typed(
                     "set-hostname",
                     "Set hostname",
@@ -662,6 +653,31 @@ impl InstallerApp {
                     },
                 ),
                 on_step,
+            ))
+    }
+
+    fn media_resource(&self) -> Resource {
+        Resource::new(MEDIA, "installer.media", "More video and audio formats")
+            .with_presentation(ResourcePresentation {
+                detail: Some(
+                    if self.codecs {
+                        "chosen: installed once the new system is online"
+                    } else {
+                        "not chosen"
+                    }
+                    .to_owned(),
+                ),
+                ..ResourcePresentation::default()
+            })
+            .with_action(gate(
+                toggle(
+                    "set-media-codecs",
+                    "Install media codecs",
+                    CODECS_DESCRIPTION,
+                    |enabled| Operation::SetMediaCodecs { enabled },
+                )
+                .with_description(CODECS_DESCRIPTION),
+                self.off_step(Step::Media),
             ))
     }
 
@@ -1146,7 +1162,7 @@ impl InstallerApp {
                 done()
             }
             Operation::SetMediaCodecs { enabled } => {
-                self.require_step(Step::Options)?;
+                self.require_step(Step::Media)?;
                 self.codecs = enabled;
                 self.dirty_structure = true;
                 done()

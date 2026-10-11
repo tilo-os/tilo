@@ -1,8 +1,8 @@
 //! Letters typed into a note land in the order they were typed, whichever
 //! way they arrive: keys with frames in between, or input-method commits.
 
-use notes::actions::new_page_action;
-use notes::doc::NotesDoc;
+use notes::actions::create_page_action;
+use notes::read;
 use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Invoke;
@@ -12,7 +12,7 @@ fn with_focused_page() -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&new_page_action(page, None, "a".into(), "Order")).unwrap())
+    app.invoke(Invoke::apply(&create_page_action(page, None, "Order")).unwrap())
         .unwrap();
     let rect = app
         .harness()
@@ -26,7 +26,7 @@ fn with_focused_page() -> (TestApp<NotesShell>, PageId) {
 
 fn body(app: &TestApp<NotesShell>, page: PageId) -> String {
     app.read_document(|doc| {
-        NotesDoc::page_block_snapshots(doc, page)
+        read::page_block_snapshots(doc, page)
             .into_iter()
             .map(|(_, text)| text)
             .collect::<Vec<_>>()

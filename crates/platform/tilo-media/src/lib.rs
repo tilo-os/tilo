@@ -36,7 +36,12 @@
 //!   ([`FramePayload::Planar`]); only a consumer that says it can paint nothing
 //!   else gets the picture forced into system-memory RGBA.
 //! * [`HwReport`] — which decoder element the pipeline plugged and what caps
-//!   the sink negotiated.
+//!   the sink negotiated. [`hw::v4l2`] asks the kernel what its V4L2 codec
+//!   blocks actually take, and [`hw::fallback`] states, once, why a stream
+//!   ran in software.
+//! * [`video_surface`] — the handoff of a dmabuf picture to a display plane:
+//!   per frame, whether it can be scanned out directly (and with which KMS
+//!   source/destination rectangles) or has to be composited, and why.
 //! * [`encode`] — the same discipline for the other direction. Encoding has no
 //!   autoplugger, so a pipeline that names `openh264enc` encodes on the CPU
 //!   forever however capable the GPU is. [`encode::select_video`] walks a
@@ -63,6 +68,8 @@
 //!   between output devices, adjust per-stream volume/mute, switch the default
 //!   device, and diff enumerations for hotplug. Every media surface plays
 //!   *through* `PipeWire`; this is where the OS routes it.
+//! * [`audio_watch`] — event-driven notice that the audio device graph
+//!   changed, from a `PipeWire` registry listener that sleeps between changes.
 //! * [`sync_playout`] — the member side of a synchronized speaker group:
 //!   frames stamped on the leader's clock play at a shared presentation time
 //!   through a jitter buffer and a drift-steered resampler, mapped to the
@@ -78,11 +85,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -91,6 +94,7 @@
 pub mod audio;
 pub mod audio_output;
 pub mod audio_runtime;
+pub mod audio_watch;
 pub mod cache;
 pub mod calibration;
 pub mod calibration_fusion;
@@ -114,6 +118,7 @@ pub mod session;
 pub mod source;
 pub mod sync_playout;
 pub mod transport;
+pub mod video_surface;
 pub mod voice;
 /// The page backend: the browser's media element decodes and plays.
 #[cfg(web_page)]

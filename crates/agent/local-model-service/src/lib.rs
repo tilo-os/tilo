@@ -12,21 +12,11 @@
 //! installed, [`installed_in_process_model`] finds the verified object by
 //! capability, reading only the store under [`user_model_root`].
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "tests assert service boundaries"
-    )
-)]
-
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -43,6 +33,7 @@ use thiserror::Error;
 pub mod catalog;
 pub mod developer;
 pub mod ownership;
+pub mod run_observation;
 #[cfg(target_os = "linux")]
 pub mod speech;
 #[cfg(target_os = "linux")]
@@ -107,6 +98,14 @@ pub trait ProcessSupervisor {
     /// Returns [`ServiceError::Backend`] when the supervisor refuses the
     /// command or the service does not become ready.
     fn start(&mut self, command: &VllmCommand, handle: &ProcessHandle) -> Result<(), ServiceError>;
+    /// Capture content-free counters of this exact owned runtime.
+    /// Unsupported supervisors report unavailable, never invented zeros.
+    fn observe(
+        &self,
+        _handle: &ProcessHandle,
+    ) -> run_observation::Observed<run_observation::RuntimeSample> {
+        run_observation::Observed::unavailable("supervisor has no owned-runtime observer")
+    }
     /// Stop the process behind `handle`.
     ///
     /// # Errors
@@ -207,17 +206,24 @@ fn runtime_arguments(
         Some(RuntimeExecution::LlamaCpp {
             max_context_tokens,
             gpu_layers,
-        }) => vec![
-            "--model".into(),
-            path.into(),
-            "--alias".into(),
-            model.id.clone(),
-            "--ctx-size".into(),
-            (*max_context_tokens).min(model.context_window).to_string(),
-            "--n-gpu-layers".into(),
-            gpu_layers.to_string(),
-            "--jinja".into(),
-        ],
+            parallel_slots,
+        }) => {
+            let mut args = vec![
+                "--model".into(),
+                path.into(),
+                "--alias".into(),
+                model.id.clone(),
+                "--ctx-size".into(),
+                (*max_context_tokens).min(model.context_window).to_string(),
+                "--n-gpu-layers".into(),
+                gpu_layers.to_string(),
+                "--jinja".into(),
+            ];
+            if let Some(slots) = parallel_slots {
+                args.extend(["--parallel".into(), slots.get().to_string()]);
+            }
+            args
+        }
         execution => {
             let mut args = vec![
                 "serve".into(),
@@ -297,11 +303,7 @@ impl ManagedModel {
                 license_id: model.license_id.clone(),
                 size_bytes: model.artifact.size_bytes,
                 capabilities: model.in_process_capabilities(),
-                recorded_at_unix_ms: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |elapsed| {
-                        u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-                    }),
+                recorded_at_unix_ms: tilo_clock::unix_now_ms(),
             }),
         }
     }
@@ -323,11 +325,11 @@ pub struct InstalledInProcessModel {
 }
 
 /// The per-user model store every Tilo model service shares:
-/// `$XDG_DATA_HOME/tilo/models`.
-pub fn user_model_root() -> PathBuf {
-    xdg_paths::xdg::data_home()
-        .unwrap_or_else(|| PathBuf::from("/tmp/.local/share"))
-        .join("tilo/models")
+/// `$XDG_DATA_HOME/tilo/models`, or `None` without a data home. There is no
+/// shared fallback: a store anyone can write would let them plant the model
+/// this user runs.
+pub fn user_model_root() -> Option<PathBuf> {
+    tilo_paths::xdg::data_home().map(|data| data.join("tilo/models"))
 }
 
 /// Find the installed in-process model that provides `capability` in the
@@ -441,6 +443,89 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         &self.state
     }
 
+    /// Observe current exact runtime custody without starting or changing it.
+    #[must_use]
+    pub fn runtime_observations(
+        &self,
+    ) -> BTreeMap<String, run_observation::Observed<run_observation::RuntimeSample>> {
+        self.state
+            .models
+            .iter()
+            .filter_map(|(id, model)| model.process.as_ref().map(|handle| (id, handle)))
+            .enumerate()
+            .map(|(index, (id, handle))| {
+                let observation = if index < 2 {
+                    self.fenced_observation(id, handle)
+                } else {
+                    run_observation::Observed::unavailable(
+                        "snapshot live observation count exceeds bound",
+                    )
+                };
+                (id.clone(), observation)
+            })
+            .collect()
+    }
+
+    fn fenced_observation(
+        &self,
+        model_id: &str,
+        handle: &ProcessHandle,
+    ) -> run_observation::Observed<run_observation::RuntimeSample> {
+        let agrees = || {
+            load_state(&self.root.join(STATE_FILE)).is_ok_and(|state| {
+                state.models.get(model_id).is_some_and(|model| {
+                    model.process.as_ref() == Some(handle)
+                        && self
+                            .state
+                            .models
+                            .get(model_id)
+                            .is_some_and(|expected| expected.model_sha256 == model.model_sha256)
+                })
+            })
+        };
+        if !agrees() {
+            return run_observation::Observed::unavailable(
+                "runtime state frontier unavailable or changed",
+            );
+        }
+        let sample = self.supervisor.observe(handle);
+        if !agrees() {
+            return run_observation::Observed::unavailable(
+                "runtime state frontier changed during observation",
+            );
+        }
+        sample
+    }
+
+    fn checkpoint(
+        &self,
+        model_id: &str,
+        handle: &ProcessHandle,
+        phase: &str,
+        runtime_id: Option<String>,
+    ) -> Option<run_observation::RunCheckpoint> {
+        let model = self.state.models.get(model_id)?;
+        Some(run_observation::RunCheckpoint {
+            schema: 1,
+            phase: phase.into(),
+            model_id: model_id.into(),
+            model_sha256: model.model_sha256.clone(),
+            runtime_id,
+            process: handle.clone(),
+            sample: self.fenced_observation(model_id, handle),
+        })
+    }
+
+    fn retain_checkpoint(&self, checkpoint: Option<run_observation::RunCheckpoint>) {
+        if let Some(checkpoint) = checkpoint
+            && run_observation::retain(&self.root, &checkpoint).is_err()
+        {
+            eprintln!(
+                "owned runtime observation checkpoint could not be retained; cleanup is unaffected"
+            );
+        }
+    }
+
     /// Path of the content-addressed object named by `sha256`.
     ///
     /// # Errors
@@ -462,7 +547,8 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             ModelArtifactFormat::VllmGguf
             | ModelArtifactFormat::LlamaCppGguf
             | ModelArtifactFormat::OnnxFile
-            | ModelArtifactFormat::WhisperGgml => self.object_path(&model.artifact.sha256),
+            | ModelArtifactFormat::WhisperGgml
+            | ModelArtifactFormat::WhistleCact => self.object_path(&model.artifact.sha256),
         }
     }
 
@@ -539,7 +625,8 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             ModelArtifactFormat::VllmGguf
             | ModelArtifactFormat::LlamaCppGguf
             | ModelArtifactFormat::OnnxFile
-            | ModelArtifactFormat::WhisperGgml => Ok(object),
+            | ModelArtifactFormat::WhisperGgml
+            | ModelArtifactFormat::WhistleCact => Ok(object),
             ModelArtifactFormat::HfSnapshotTarZst => self.extract_snapshot(&object, model),
         }
     }
@@ -990,6 +1077,12 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         ) {
             return Err(self.failed_start(&model.id, &handle, &error));
         }
+        self.retain_checkpoint(self.checkpoint(
+            &model.id,
+            &handle,
+            "ready",
+            Some(runtime.release.id.clone()),
+        ));
         Ok(endpoint)
     }
 
@@ -1043,6 +1136,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         handle: &ProcessHandle,
         error: &ServiceError,
     ) -> ServiceError {
+        let checkpoint = self.checkpoint(model_id, handle, "failed_start", None);
         let cleanup = self.supervisor.stop(handle);
         let retained = cleanup.is_err().then(|| handle.clone());
         let message = format!("runtime start failed: {error}; cleanup: {cleanup:?}");
@@ -1053,6 +1147,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             },
             retained,
         );
+        self.retain_checkpoint(checkpoint);
         ServiceError::Backend(format!("{message}; state publication: {publication:?}"))
     }
 
@@ -1068,9 +1163,14 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .get(model_id)
             .cloned()
             .ok_or_else(|| ServiceError::ModelNotInstalled(model_id.into()))?;
+        let checkpoint = managed
+            .process
+            .as_ref()
+            .and_then(|handle| self.checkpoint(model_id, handle, "before_stop", None));
         if let Some(handle) = managed.process {
             if let Err(error) = self.supervisor.stop(&handle) {
                 let _ = self.record_failure(model_id, error.to_string());
+                self.retain_checkpoint(checkpoint);
                 return Err(error);
             }
         } else if matches!(
@@ -1081,7 +1181,10 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
                 "runtime state has no observable process custody".into(),
             ));
         }
-        self.update_status(model_id, LocalModelStatus::Installed, None)?;
+        let publication = self.update_status(model_id, LocalModelStatus::Installed, None);
+        // Disk retention is deliberately after exact cleanup and its state CAS.
+        self.retain_checkpoint(checkpoint);
+        publication?;
         Ok(LocalModelStatus::Installed)
     }
 
@@ -1238,22 +1341,37 @@ fn validate_sha256(value: &str) -> Result<(), ServiceError> {
     }
 }
 fn verify_file(path: &Path, artifact: &PinnedArtifact) -> Result<(), ServiceError> {
-    let metadata = fs::metadata(path)?;
-    if metadata.len() != artifact.size_bytes {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+    let mut file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() != artifact.size_bytes {
         return Err(ServiceError::DigestMismatch);
     }
-    let mut file = File::open(path)?;
+    // Hash the same descriptor whose size was checked. Reading one extra byte
+    // detects growth without letting a concurrently extended object turn a
+    // pinned receipt into an unbounded read. Large delivery stays constant-space.
+    let maximum = artifact
+        .size_bytes
+        .checked_add(1)
+        .ok_or(ServiceError::InvalidArtifact)?;
+    let mut reader = (&mut file).take(maximum);
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 32 * 1024];
+    let mut total = 0_u64;
     loop {
-        let read = file.read(&mut buffer)?;
+        let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
         }
-        // `Read` never reports more bytes than the buffer holds.
+        total = total
+            .checked_add(u64::try_from(read).map_err(|_| ServiceError::DigestMismatch)?)
+            .ok_or(ServiceError::DigestMismatch)?;
         hasher.update(buffer.get(..read).ok_or(ServiceError::DigestMismatch)?);
     }
-    if hex::encode(hasher.finalize()) == artifact.sha256 {
+    if total == artifact.size_bytes && hex::encode(hasher.finalize()) == artifact.sha256 {
         Ok(())
     } else {
         Err(ServiceError::DigestMismatch)
@@ -1603,6 +1721,7 @@ mod tests {
             execution: Some(RuntimeExecution::LlamaCpp {
                 max_context_tokens: 16384,
                 gpu_layers: 12,
+                parallel_slots: None,
             }),
         };
         let mut release = model(b"weights");
@@ -1632,6 +1751,21 @@ mod tests {
                 "8000"
             ]
         );
+        for slots in [1, 64, 65] {
+            runtime.execution = Some(RuntimeExecution::LlamaCpp {
+                max_context_tokens: 16384,
+                gpu_layers: 12,
+                parallel_slots: std::num::NonZeroU16::new(slots),
+            });
+            let generated = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000);
+            if slots == 65 {
+                assert!(generated.is_err());
+            } else {
+                let mut expected = args.clone();
+                expected.splice(9..9, ["--parallel".into(), slots.to_string()]);
+                assert_eq!(generated.unwrap(), expected);
+            }
+        }
         runtime.kind = RuntimeKind::Cpu;
         assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
         runtime.execution = Some(RuntimeExecution::Vllm {
@@ -1692,6 +1826,55 @@ mod tests {
         assert!(service.supervisor.command.is_none());
     }
 
+    #[test]
+    fn owned_runtime_unavailable_observation_and_retention_failure_do_not_prevent_stop() {
+        let bytes = b"counter observer failure fixture";
+        let runtime = signed_fixture_runtime(bytes);
+        let mut release = model(bytes);
+        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        let root = tempfile::tempdir().unwrap();
+        let mut service = service_for(root.path(), bytes);
+        service.install_with_runtime(&runtime, &release).unwrap();
+        service.start(&runtime, &release, 9000).unwrap();
+        assert!(matches!(
+            service.runtime_observations().get("tiny"),
+            Some(run_observation::Observed::Unavailable { .. })
+        ));
+        fs::write(root.path().join("run-observations"), b"not a directory").unwrap();
+        assert_eq!(service.stop("tiny").unwrap(), LocalModelStatus::Installed);
+        assert_eq!(service.supervisor.stopped, ["svc-1"]);
+        assert!(
+            load_state(&root.path().join(STATE_FILE)).unwrap().models["tiny"]
+                .process
+                .is_none()
+        );
+        assert!(matches!(
+            run_observation::retained(root.path()),
+            run_observation::Observed::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn owned_runtime_observation_refuses_retired_state_frontier() {
+        let bytes = b"retired counter observer fixture";
+        let runtime = signed_fixture_runtime(bytes);
+        let mut release = model(bytes);
+        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        let root = tempfile::tempdir().unwrap();
+        let mut service = service_for(root.path(), bytes);
+        service.install_with_runtime(&runtime, &release).unwrap();
+        service.start(&runtime, &release, 9000).unwrap();
+        let stale = service_for(root.path(), bytes);
+        service.stop("tiny").unwrap();
+        let observations = stale.runtime_observations();
+        assert_eq!(
+            observations.get("tiny"),
+            Some(&run_observation::Observed::unavailable(
+                "runtime state frontier unavailable or changed"
+            ))
+        );
+    }
+
     fn signed_fixture_runtime(bytes: &[u8]) -> SignedRuntime {
         let item = artifact(bytes);
         let manifest = system_extension::ExtensionManifest {
@@ -1735,6 +1918,7 @@ mod tests {
                 execution: Some(RuntimeExecution::LlamaCpp {
                     max_context_tokens: 1024,
                     gpu_layers: 0,
+                    parallel_slots: None,
                 }),
             },
         }
@@ -2349,6 +2533,30 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn model_delivery_refuses_cached_links_and_non_files() {
+        let bytes = b"pinned object";
+        let dir = tempfile::tempdir().unwrap();
+        let pin = artifact(bytes);
+        let mut service = service_for(dir.path(), bytes);
+        let path = service.object_path(&pin.sha256).unwrap();
+        let outside = dir.path().join("outside-object");
+        fs::write(&outside, bytes).unwrap();
+        std::os::unix::fs::symlink(&outside, &path).unwrap();
+        assert!(service.fetch_verified(&pin).is_err());
+        assert!(service.transport.starts.is_empty());
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(service.fetch_verified(&pin).is_err());
+        fs::remove_dir(&path).unwrap();
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(service.fetch_verified(&pin).unwrap(), path);
+        assert!(service.transport.starts.is_empty());
+        fs::write(&path, b"pinned object extra").unwrap();
+        assert!(service.fetch_verified(&pin).is_err());
+    }
+
     /// A verified snapshot is safely extracted to a content-addressed directory; the path policy
     /// refuses traversal and absolute names; expansion beyond the signed installed size and symlinks are
     /// refused before promotion.
@@ -2474,11 +2682,20 @@ mod tests {
 
     #[test]
     fn speech_install_uses_verified_objects_and_never_launches_a_runtime() {
+        for format in [
+            ModelArtifactFormat::WhisperGgml,
+            ModelArtifactFormat::WhistleCact,
+        ] {
+            assert_speech_install(format);
+        }
+    }
+
+    fn assert_speech_install(format: ModelArtifactFormat) {
         let bytes = b"synthetic speech graph receipt";
         let dir = tempfile::tempdir().unwrap();
         let mut release = onnx_model(bytes);
         release.id = "speech".into();
-        release.artifact_format = ModelArtifactFormat::WhisperGgml;
+        release.artifact_format = format;
         release.segmentation = false;
         let mut service = service_for(dir.path(), bytes);
         assert!(matches!(
@@ -2538,8 +2755,7 @@ mod tests {
             fs::write(&catalog_path, serde_json::to_vec(&signed).unwrap()).unwrap();
             fs::write(&keys_path, serde_json::to_vec(&serde_json::json!({"keys": {"isolated-test-only": hex::encode(key.verifying_key().to_bytes())}})).unwrap()).unwrap();
             let verified = VerifiedCatalog::load(&catalog_path, &keys_path).unwrap();
-            let (_, _, loaded) = crate::speech::speech_model_bytes(dir.path(), &verified).unwrap();
-            assert_eq!(&**loaded, bytes);
+            assert_speech_witness(dir.path(), &verified, format, bytes);
             fs::write(&installed.path, vec![0; bytes.len()]).unwrap();
             assert!(matches!(
                 crate::speech::speech_model_bytes(dir.path(), &verified),
@@ -2571,6 +2787,35 @@ mod tests {
             installed_in_process_model(dir.path(), InProcessCapability::SpeechRecognition).unwrap(),
             None
         );
+    }
+
+    fn assert_speech_witness(
+        root: &Path,
+        verified: &crate::catalog::VerifiedCatalog,
+        format: ModelArtifactFormat,
+        bytes: &[u8],
+    ) {
+        assert_eq!(
+            crate::speech::speech_model_file(root, verified)
+                .unwrap()
+                .format(),
+            format
+        );
+        let (_, _, loaded) = crate::speech::speech_model_bytes(root, verified).unwrap();
+        assert_eq!(&**loaded, bytes);
+        #[cfg(feature = "whisper")]
+        if format == ModelArtifactFormat::WhistleCact {
+            // These authenticated fixture weights deliberately have the wrong
+            // pinned size. Both feature configurations must reject them before
+            // configuring a session or entering any native model parser.
+            let mut input = std::io::empty();
+            let mut output = Vec::new();
+            assert_eq!(
+                crate::speech::worker::serve(root, verified, &mut input, &mut output),
+                Err(crate::speech::SpeechError::ModelUnavailable)
+            );
+            assert!(output.is_empty());
+        }
     }
 
     /// An in-process model installs through the verified download and the

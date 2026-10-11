@@ -87,6 +87,7 @@ impl TestGovernor {
             automerge::ObjType::Map,
         )
         .unwrap();
+        collab_types::CommitNamed::commit_edit(&mut chat, "chat", "channels");
         peer.install_seed(
             SeedState {
                 room_changes: seed_room(&room, &governor, std::slice::from_ref(&governor)).unwrap(),
@@ -329,31 +330,24 @@ impl TestGovernor {
         self.peer.governed_access(now)
     }
 
-    /// The canonical role of an admitted agent in this governor's room.
+    /// The ids of the grants naming the agent `agent` in this governor's
+    /// admitted room policy.
     ///
     /// # Errors
-    /// The governor has no admitted room policy or the clock is invalid.
-    pub fn agent_role(
-        &self,
-        agent: &str,
-        now: SystemTime,
-    ) -> Result<Option<collab_types::Role>, String> {
+    /// The governor has no admitted room policy.
+    pub fn agent_grants(&self, agent: &str) -> Result<Vec<String>, String> {
         let room = self
             .peer
             .admitted_room()
             .ok_or("governor room policy is absent")?;
-        let (_, owner, capabilities) = tilo_peer_state::room::extract_governed_fields(room);
-        let mut workspace = tilo_desktop_model::Workspace::new(
-            tilo_desktop_model::WorkspaceId(1),
-            "governor membership test",
-        );
-        workspace.owner = owner;
-        workspace.capabilities = capabilities;
-        let seconds = now
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|_| "governor clock is before the Unix epoch")?
-            .as_secs();
-        Ok(workspace.role_of_agent_at(agent, seconds))
+        let (_, policy) = tilo_peer_state::room::extract_governed_fields(room);
+        let agent = tilo_action_policy::Subject::agent(agent);
+        Ok(policy
+            .grants
+            .into_iter()
+            .filter(|grant| grant.subject == agent)
+            .map(|grant| grant.id.as_str().to_owned())
+            .collect())
     }
 
     /// Re-sign the room's full checkpoint at the next generation.
@@ -397,9 +391,13 @@ impl TestGovernor {
         origin: TransportOrigin,
         message: NeighbourMsg,
     ) -> Result<(), String> {
-        self.peer
-            .receive_from(origin, message, SystemTime::now())
-            .map(|_| ())
+        let id = tracing::enabled!(tracing::Level::DEBUG)
+            .then(|| postcard::to_stdvec(&message).ok())
+            .flatten()
+            .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
+        let outcome = self.peer.receive_from(origin, message, SystemTime::now())?;
+        tracing::debug!(?id, ?outcome, "native fixture governor admission");
+        Ok(())
     }
 
     /// Answer one join request from the authenticated endpoint `remote`.

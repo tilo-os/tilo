@@ -12,20 +12,13 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use tilo_actions::{
-    ActionAddress, ActionContract, ActionSpec, ConfirmationPolicy, Resource, RetryPolicy, RiskLevel,
-};
+use tilo_actions::Resource;
 use ui::icons::Icon;
 use ui::search::SearchResult;
-use ui::tilo_resource::{SearchBody, SearchPiece, SearchText, SearchWeight};
+use ui::tilo_resource::{Derived, SearchBody, SearchPiece, SearchText, SearchWeight};
 
-use crate::actions::{
-    CommentDraft, NoteDraft, change_color_action, delete_annotation_action,
-    delete_highlight_action, edit_note_action, encode, remove_library_book_action,
-};
-use crate::model::{AnnoKind, Annotation, AnnotationAnchor, Book, HiColor, LibraryEntry};
-use crate::resource::BooksEffect;
-use ui::tilo_resource::Effect as _;
+use crate::model::{AnnoKind, Annotation, Book, LibraryEntry};
+use crate::resource::{Ebook, book_place_resource, mark_place_resource};
 
 pub const BOOK_KIND: &str = "Books";
 pub const CHAPTER_KIND: &str = "Chapters";
@@ -106,7 +99,7 @@ impl SearchText for ChapterBody {
         let chapter_title = chapter_label(chapter, self.chapter);
         Some(
             ui::tilo_resource::SearchEntry::new(format!("Match in {chapter_title}"), "")
-                .invoking(BookSearch::location_address(
+                .anchored(BookSearch::location_anchor(
                     &self.book.id,
                     self.chapter,
                     segment,
@@ -131,15 +124,8 @@ fn book_key(book: &Arc<Book>) -> usize {
 #[derive(Clone)]
 enum SearchTarget {
     Book(usize),
-    Chapter {
-        book: usize,
-        chapter: usize,
-    },
-    Annotation {
-        index: usize,
-        hydrated: bool,
-        comment: bool,
-    },
+    Chapter { book: usize, chapter: usize },
+    Annotation { index: usize, hydrated: bool },
     RemoteBook(usize),
 }
 
@@ -270,17 +256,16 @@ impl BookSearch {
                        fields: &[(&str, SearchWeight)],
                        body: Option<SearchBody>|
          -> bool {
-            let Some(address) = result.action_address() else {
-                return false;
-            };
-            if resource_rows
-                .insert(address.resource.clone(), entries.len())
-                .is_some()
+            let anchor = result.action_id.clone();
+            if anchor.is_empty()
+                || resource_rows
+                    .insert(anchor.clone(), entries.len())
+                    .is_some()
             {
                 return false;
             }
             let mut entry = ui::tilo_resource::SearchEntry::new(result.title.clone(), "")
-                .invoking(address)
+                .anchored(anchor)
                 .grouped(result.kind.clone());
             for (text, weight) in fields {
                 entry = entry.field(*text, *weight);
@@ -302,7 +287,7 @@ impl BookSearch {
         for (book_index, book) in books.iter().enumerate() {
             let title = Self::book_title(book).to_string();
             let mut result =
-                SearchResult::for_action(BOOK_KIND, title.clone(), Self::book_address(&book.id))
+                SearchResult::new(BOOK_KIND, title.clone(), book_place_resource(&book.id))
                     .with_icon(Icon::FileText);
             if !book.author.trim().is_empty() {
                 result = result.with_subtitle(book.author.clone());
@@ -328,10 +313,10 @@ impl BookSearch {
                 );
             for (chapter_index, chapter) in book.chapters.iter().enumerate() {
                 let chapter_title = chapter_label(chapter, chapter_index);
-                let result = SearchResult::for_action(
+                let result = SearchResult::new(
                     CHAPTER_KIND,
                     chapter_title.clone(),
-                    Self::chapter_address(&book.id, chapter_index),
+                    Self::chapter_anchor(&book.id, chapter_index),
                 )
                 .with_subtitle(title.clone())
                 .with_icon(Icon::List);
@@ -362,9 +347,9 @@ impl BookSearch {
                 entry.title.clone()
             };
             // A collaborator's book is fetched before it opens.
-            let download = ActionAddress::new(format!("ebook.book:{}", entry.id), "download");
-            let mut result = SearchResult::for_action(BOOK_KIND, title.clone(), download)
-                .with_icon(Icon::FileText);
+            let mut result =
+                SearchResult::new(BOOK_KIND, title.clone(), book_place_resource(&entry.id))
+                    .with_icon(Icon::FileText);
             if !entry.author.trim().is_empty() {
                 result = result.with_subtitle(entry.author.clone());
             }
@@ -393,10 +378,10 @@ impl BookSearch {
                 .unwrap_or_else(|| ("Unknown book".into(), String::new()));
             let comment = annotation.kind == AnnoKind::Note
                 && groups.contains(&(annotation.doc_id.clone(), annotation.group));
-            let result = SearchResult::for_action(
+            let result = SearchResult::new(
                 ANNOTATION_KIND,
                 Self::preview(annotation),
-                Self::annotation_address(annotation, comment),
+                mark_place_resource(annotation, comment),
             )
             .with_subtitle(format!(
                 "{} in chapter {} of {title}",
@@ -418,7 +403,6 @@ impl BookSearch {
                 SearchTarget::Annotation {
                     index: annotation_index,
                     hydrated: hydrated.contains(annotation.doc_id.as_str()),
-                    comment,
                 },
                 &[
                     (&annotation.note, SearchWeight::Title),
@@ -492,29 +476,16 @@ impl BookSearch {
         }
     }
 
-    fn book_address(id: &str) -> ActionAddress {
-        ActionAddress::new(format!("ebook.book:{id}"), "open")
-    }
-
-    fn chapter_address(book_id: &str, chapter: usize) -> ActionAddress {
-        ActionAddress::new(format!("ebook.chapter:{book_id}:{chapter}"), "open")
-    }
-
-    fn annotation_address(annotation: &Annotation, comment: bool) -> ActionAddress {
-        let resource = match annotation.kind {
-            AnnoKind::Highlight => format!("ebook.highlight:{}", annotation.group),
-            AnnoKind::Bookmark => format!("ebook.bookmark:{}", annotation.id),
-            AnnoKind::Note if comment => format!("ebook.comment:{}", annotation.id),
-            AnnoKind::Note => format!("ebook.note:{}", annotation.id),
-        };
-        ActionAddress::new(resource, "open")
+    fn chapter_anchor(book_id: &str, chapter: usize) -> String {
+        format!("ebook.chapter:{book_id}:{chapter}")
     }
 
     fn preview(annotation: &Annotation) -> String {
-        let text = if annotation.note.trim().is_empty() {
+        let note = annotation.note.clone();
+        let text = if note.trim().is_empty() {
             annotation.excerpt.trim()
         } else {
-            annotation.note.trim()
+            note.trim()
         };
         let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
         if collapsed.is_empty() {
@@ -526,18 +497,15 @@ impl BookSearch {
         }
     }
 
-    fn location_address(book_id: &str, chapter: usize, block: usize) -> ActionAddress {
-        ActionAddress::new(
-            format!("ebook.location:{book_id}:{chapter}:{block}"),
-            "open",
-        )
+    fn location_anchor(book_id: &str, chapter: usize, block: usize) -> String {
+        format!("ebook.location:{book_id}:{chapter}:{block}")
     }
 
     /// Resolve a full-text location resource exactly. This performs a bounded
     /// metadata lookup plus one block bounds check; it does not construct a
     /// prose index or hydrate unrelated chapters.
-    fn location_resource_for(&self, address: &ActionAddress) -> Option<Resource> {
-        let suffix = address.resource.strip_prefix("ebook.location:")?;
+    fn location_resource_for(&self, id: &str) -> Option<Resource> {
+        let suffix = id.strip_prefix("ebook.location:")?;
         let (book, location) = self.books.iter().find_map(|book| {
             let prefix = format!("{}:", book.id);
             suffix
@@ -554,239 +522,106 @@ impl BookSearch {
         let chapter_data = book.chapters.get(chapter)?;
         chapter_data.blocks.get(block)?;
         let chapter_title = chapter_label(chapter_data, chapter);
-        let resource = Resource::new(
-            &address.resource,
-            "ebook.location",
-            format!("{chapter_title} in {}", Self::book_title(book)),
+        Some(
+            Resource::new(
+                id,
+                "ebook.location",
+                format!("{chapter_title} in {}", Self::book_title(book)),
+            )
+            .with_action(crate::actions::open_at(
+                &book.id,
+                chapter,
+                Some(block),
+                "Open match",
+            )),
         )
-        .with_action(crate::actions::open_at(
-            &book.id,
-            chapter,
-            Some(block),
-            "Open match",
-        ));
-        resource
-            .actions
-            .iter()
-            .any(|action| action.id == address.action)
-            .then_some(resource)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "all exact action variants are kept together so their canonical payloads can be audited"
-    )]
-    fn resource_for(&self, entry: &SearchEntry, address: &ActionAddress) -> Option<Resource> {
-        if let SearchTarget::RemoteBook(index) = entry.target {
-            let remote = self.registry.get(index)?;
-            // A remote metadata hit is never a dead reveal. The operation is
-            // typed and derives its only path from the content id, so opening
-            // a peer's result remains a capability-safe workspace hydrate.
-            let hydrate = BooksEffect::Download {
-                book: remote.id.clone(),
-            }
-            .bound();
-            let remove_from_library = ActionSpec::immediate(
-                "remove-from-library",
-                "Remove from library",
-                crate::actions::EBOOK_ACTION_TYPE,
-                &remove_library_book_action(&remote.id),
-            )
-            .ok()?
-            .with_contract(ActionContract {
-                risk: RiskLevel::Destructive,
-                confirmation: ConfirmationPolicy::Confirm,
-                retry: RetryPolicy::Idempotent,
-                reversible: true,
-                tags: vec!["library".into(), "tombstone".into()],
-                ..ActionContract::default()
-            });
-            return Some(
-                Resource::new(&address.resource, "ebook.book", &entry.result.title)
-                    .with_action(hydrate)
-                    .with_action(remove_from_library),
-            );
-        }
-        let (kind, book_id, chapter, block) = match entry.target {
-            SearchTarget::Book(index) => {
-                let book = self.books.get(index)?;
-                ("ebook.book", book.id.as_str(), 0, None)
-            }
+    /// The resource a hit names: a chapter opened, or the place the library
+    /// publishes for a book or an annotation, with what acts on it.
+    fn resource_for(&self, entry: &SearchEntry, id: &str) -> Option<Resource> {
+        let book = match entry.target {
             SearchTarget::Chapter { book, chapter } => {
                 let book = self.books.get(book)?;
                 book.chapters.get(chapter)?;
-                ("ebook.chapter", book.id.as_str(), chapter, None)
+                return Some(
+                    Resource::new(id, "ebook.chapter", &entry.result.title)
+                        .with_action(crate::actions::open_at(&book.id, chapter, None, "Open")),
+                );
             }
+            SearchTarget::Book(index) => self.books.get(index)?.id.clone(),
+            SearchTarget::RemoteBook(index) => self.registry.get(index)?.id.clone(),
             SearchTarget::Annotation {
-                index,
-                hydrated,
-                comment,
+                index, hydrated, ..
             } => {
-                let annotation = self.annotations.get(index)?;
                 if !hydrated {
                     return None;
                 }
-                let kind = match annotation.kind {
-                    AnnoKind::Highlight => "ebook.highlight",
-                    AnnoKind::Bookmark => "ebook.bookmark",
-                    AnnoKind::Note if comment => "ebook.comment",
-                    AnnoKind::Note => "ebook.note",
-                };
-                (
-                    kind,
-                    annotation.doc_id.as_str(),
-                    annotation.chapter,
-                    Some(annotation.block),
-                )
+                self.annotations.get(index)?.doc_id.clone()
             }
-            SearchTarget::RemoteBook(_) => return None,
         };
-        let action = crate::actions::open_at(book_id, chapter, block, "Open");
-        let mut resource =
-            Resource::new(&address.resource, kind, &entry.result.title).with_action(action);
-        if matches!(entry.target, SearchTarget::Book(_)) {
-            let share = BooksEffect::Share {
-                book: book_id.to_string(),
-            }
-            .bound();
-            let remove = ActionSpec::immediate(
-                "remove-from-library",
-                "Remove from library",
-                crate::actions::EBOOK_ACTION_TYPE,
-                &remove_library_book_action(book_id),
-            )
-            .ok()?
-            .with_contract(ActionContract {
-                risk: RiskLevel::Destructive,
-                confirmation: ConfirmationPolicy::Confirm,
-                retry: RetryPolicy::Idempotent,
-                reversible: true,
-                tags: vec!["library".into(), "tombstone".into()],
-                ..ActionContract::default()
-            });
-            resource = resource.with_action(share).with_action(remove);
-        }
-        if let SearchTarget::Annotation { index, comment, .. } = entry.target {
-            let annotation = self.annotations.get(index)?;
-            match annotation.kind {
-                AnnoKind::Highlight => {
-                    let group = annotation.group;
-                    resource = resource.with_action(ActionSpec::prompted(
-                        "change-color",
-                        "Change colour",
-                        "Colour",
-                        "yellow, green, blue, pink, purple",
-                        tilo_actions::ExecutionLocus::ClientLocal,
-                        move |name| {
-                            encode(&change_color_action(group, HiColor::from_str(name.trim())))
-                        },
-                    ));
-                    let delete = ActionSpec::immediate(
-                        "delete-highlight",
-                        "Delete highlight",
-                        crate::actions::EBOOK_ACTION_TYPE,
-                        &delete_highlight_action(annotation.group),
-                    )
-                    .ok()?;
-                    let book_id = annotation.doc_id.clone();
-                    let anchor = AnnotationAnchor {
-                        chapter: annotation.chapter,
-                        block: annotation.block,
-                        start: annotation.start,
-                        end: annotation.end,
-                        excerpt: annotation.excerpt.clone(),
-                    };
-                    let color = annotation.color;
-                    resource = resource
-                        .with_action(delete)
-                        .with_action(ActionSpec::prompted(
-                            "add-comment",
-                            "Add comment",
-                            "Comment",
-                            "your comment…",
-                            tilo_actions::ExecutionLocus::ClientLocal,
-                            move |text| {
-                                encode(
-                                    &CommentDraft {
-                                        group,
-                                        note: NoteDraft {
-                                            book_id: book_id.clone(),
-                                            id: uuid::Uuid::new_v4(),
-                                            anchor: anchor.clone(),
-                                            color,
-                                            text: text.to_string(),
-                                        },
-                                    }
-                                    .into_action(),
-                                )
-                            },
-                        ));
-                }
-                AnnoKind::Bookmark => {
-                    let delete = ActionSpec::immediate(
-                        "delete",
-                        "Delete bookmark",
-                        crate::actions::EBOOK_ACTION_TYPE,
-                        &delete_annotation_action(annotation.id),
-                    )
-                    .ok()?;
-                    resource = resource.with_action(delete);
-                }
-                AnnoKind::Note => {
-                    let id = annotation.id;
-                    let edit_id = if comment { "edit-comment" } else { "edit" };
-                    let edit_label = if comment { "Edit comment" } else { "Edit note" };
-                    let delete_id = if comment { "delete-comment" } else { "delete" };
-                    let delete_label = if comment {
-                        "Delete comment"
-                    } else {
-                        "Delete note"
-                    };
-                    resource = resource.with_action(ActionSpec::prompted(
-                        edit_id,
-                        edit_label,
-                        if comment { "Comment" } else { "Note" },
-                        if comment {
-                            "edit the comment…"
-                        } else {
-                            "edit the note…"
-                        },
-                        tilo_actions::ExecutionLocus::ClientLocal,
-                        move |text| encode(&edit_note_action(id, text)),
-                    ));
-                    let delete = ActionSpec::immediate(
-                        delete_id,
-                        delete_label,
-                        crate::actions::EBOOK_ACTION_TYPE,
-                        &delete_annotation_action(id),
-                    )
-                    .ok()?;
-                    resource = resource.with_action(delete);
-                }
-            }
-        }
+        let row = self
+            .registry
+            .iter()
+            .find(|row| row.id == book)
+            .cloned()
+            .or_else(|| {
+                self.books
+                    .iter()
+                    .find(|candidate| candidate.id == book)
+                    .map(|candidate| LibraryEntry {
+                        id: candidate.id.clone(),
+                        title: candidate.title.clone(),
+                        author: candidate.author.clone(),
+                        subject: candidate.subject.clone(),
+                        ..LibraryEntry::default()
+                    })
+            })?;
+        let marks: Vec<&Annotation> = self
+            .annotations
+            .iter()
+            .filter(|mark| mark.doc_id == book)
+            .collect();
+        let place = Ebook::book_place(&row, &marks);
+        let mut resource = Derived::find(std::slice::from_ref(&place), id)?;
+        resource.children.clear();
         Some(resource)
     }
 }
 
 impl BookSearch {
-    /// The exact resource a hit's address names: a book, a chapter, an
+    /// The exact resource a hit is anchored at: a book, a chapter, an
     /// annotation, a remote book or a reading location.
-    pub(crate) fn resolve(&self, address: &ActionAddress) -> Option<Resource> {
+    pub(crate) fn resolve(&self, id: &str) -> Option<Resource> {
         if !self.available {
             return None;
         }
-        if let Some(resource) = self.location_resource_for(address) {
+        if let Some(resource) = self.location_resource_for(id) {
             return Some(resource);
         }
-        let row = *self.resource_rows.get(&address.resource)?;
+        let row = *self.resource_rows.get(id)?;
         let entry = self.entries.get(row)?;
-        let resource = self.resource_for(entry, address)?;
-        resource
+        self.resource_for(entry, id)
+    }
+
+    /// What opening the hit anchored at `id` runs: the reader opens the
+    /// book, chapter, annotation or match there; a collaborator's book not
+    /// on this device is fetched first. `None` once the hit is gone.
+    pub(crate) fn opened(&self, id: &str) -> Option<crate::resource::BooksEffect> {
+        use ui::tilo_resource::Effect as _;
+        let resource = self.resolve(id)?;
+        let action = resource
             .actions
             .iter()
-            .any(|action| action.id == address.action)
-            .then_some(resource)
+            .find(|action| action.id == "open")
+            .or_else(|| {
+                resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "download")
+            })?;
+        let encoded = action.build_json(&serde_json::Map::new()).ok()?;
+        crate::resource::BooksEffect::from_payload(&encoded.payload).ok()
     }
 }
 
@@ -897,16 +732,19 @@ impl ui::search::SearchProvider for BookSearchProvider {
         self.source.action_directory_cursor_is_current(cursor)
     }
 
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
-        self.books.resolve(address)
+    fn resolve_action_resource(&self, address: &tilo_actions::ActionAddress) -> Option<Resource> {
+        self.books.resolve(&address.resource)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource::BooksEffect;
+    use tilo_actions::{ConfirmationPolicy, RiskLevel};
     use ui::search::SearchProvider;
     use ui::search::testing::{CorpusRow, LATE_HIT_NEEDLE, assert_late_hit_reachable};
+    use ui::tilo_resource::Effect as _;
 
     fn sample_books() -> Vec<Book> {
         crate::content::load_sample_library()
@@ -928,11 +766,12 @@ mod tests {
                 .into_iter()
                 .find(|hit| hit.kind == CHAPTER_KIND)
                 .expect("chapter");
-            let address = hit.action_address().expect("canonical");
+            let address = hit.action_id;
             let resource = provider
-                .resolve_action_resource(&address)
+                .books
+                .resolve(&address)
                 .expect("exact local resource");
-            assert_eq!(resource.id.as_str(), address.resource);
+            assert_eq!(resource.id.as_str(), address);
             assert!(resource.children.is_empty());
             assert_eq!(resource.actions.len(), 1);
         }
@@ -992,10 +831,11 @@ mod tests {
                 .into_iter()
                 .find(|hit| hit.kind == LOCATION_KIND)
                 .expect("precise full-text location");
-            let address = hit.action_address().expect("canonical location address");
-            assert_eq!(address.resource, "ebook.location:stable-book:0:1");
+            let address = hit.action_id;
+            assert_eq!(address, "ebook.location:stable-book:0:1");
             let resource = provider
-                .resolve_action_resource(&address)
+                .books
+                .resolve(&address)
                 .expect("exact lazy location resource");
             let open = resource
                 .actions
@@ -1060,12 +900,13 @@ mod tests {
                 subject: "Maps".into(),
                 shared: true,
                 added: 1,
-                content: None,
+                content: ui::tilo_resource::Bytes::Empty,
             };
             let provider = BookSearchProvider::new_with_registry(&[], &[], &[entry]);
             let hit = provider.search("mira").pop().expect("metadata");
             let resource = provider
-                .resolve_action_resource(&hit.action_address().expect("address"))
+                .books
+                .resolve(&hit.action_id)
                 .expect("actionable remote resource");
             let open = resource
                 .actions
@@ -1093,7 +934,6 @@ mod tests {
                 .expect("remote remove");
             assert_eq!(remove.contract.risk, RiskLevel::Destructive);
             assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
-            assert_eq!(remove.contract.retry, RetryPolicy::Idempotent);
             assert!(remove.contract.reversible);
         }
     }
@@ -1146,9 +986,9 @@ mod tests {
                 assert_late_hit_reachable(|corpus| late_hit_library(corpus, false), 3_000);
             assert_eq!(hit.kind, BOOK_KIND);
             assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-            let address = hit.action_address().expect("canonical address");
-            assert_eq!(address.resource, "ebook.book:book:002999");
-            assert!(provider.resolve_action_resource(&address).is_some());
+            let address = hit.action_id;
+            assert_eq!(address, crate::resource::book_place_resource("book:002999"));
+            assert!(provider.books.resolve(&address).is_some());
         }
 
         // --- phase: late_body_only_hit_is_found_within_the_search_bound ---
@@ -1156,9 +996,9 @@ mod tests {
             let (provider, hit) =
                 assert_late_hit_reachable(|corpus| late_hit_library(corpus, true), 3_000);
             assert_eq!(hit.kind, LOCATION_KIND);
-            let address = hit.action_address().expect("canonical address");
-            assert_eq!(address.resource, "ebook.location:book:002999:0:0");
-            assert!(provider.resolve_action_resource(&address).is_some());
+            let address = hit.action_id;
+            assert_eq!(address, "ebook.location:book:002999:0:0");
+            assert!(provider.books.resolve(&address).is_some());
         }
 
         // --- phase: late_metadata_posting_avoids_a_library_scan ---
@@ -1442,7 +1282,8 @@ mod tests {
             assert!(provider.search("duplicate").is_empty());
             assert!(
                 provider
-                    .resolve_action_resource(&BookSearch::book_address("duplicate"))
+                    .books
+                    .resolve(&crate::resource::book_place_resource("duplicate"))
                     .is_none(),
                 "an ambiguous projection publishes no row"
             );
@@ -1467,20 +1308,26 @@ mod tests {
             let provider = BookSearchProvider::new(&books, &[note.clone()]);
             let hit = provider.search("keep").pop().expect("annotation row");
             let resource = provider
-                .resolve_action_resource(&hit.action_address().expect("address"))
+                .books
+                .resolve(&hit.action_id)
                 .expect("exact annotation resource");
             let delete = resource
                 .actions
                 .iter()
-                .find(|action| action.id == "delete")
-                .expect("canonical delete action");
-            let tilo_actions::ActionInput::Immediate(encoded) = &delete.input else {
-                panic!("delete is immediate");
-            };
-            assert_eq!(
-                encoded.payload,
-                encode(&delete_annotation_action(note.id)).payload,
-                "the exact search resource and reader action have one canonical payload"
+                .find(|action| action.id == "delete-annotation")
+                .expect("the library's delete, bound to the note");
+            let encoded = delete
+                .build_json(&serde_json::Map::new())
+                .expect("a bound delete takes no arguments");
+            let action: <crate::resource::Ebook as ui::tilo_resource::Resource>::Action =
+                serde_json::from_slice(&encoded.payload).expect("the library's action");
+            let mut library = ui::tilo_resource::Replica::<crate::resource::Ebook>::from_doc(
+                crate::resource::doc_with(&[], std::slice::from_ref(&note)),
+            );
+            library.apply_action(&action).unwrap();
+            assert!(
+                library.state().unwrap().marks().is_empty(),
+                "the search hit's delete deletes the note it names"
             );
         }
 
@@ -1508,12 +1355,13 @@ mod tests {
             let provider = BookSearchProvider::new(&[book], &[highlight, comment, note]);
 
             let book_resource = provider
-                .resolve_action_resource(
+                .books
+                .resolve(
                     &provider
                         .search("contract book")
                         .into_iter()
                         .find(|result| result.kind == BOOK_KIND)
-                        .and_then(|result| result.action_address())
+                        .map(|result| result.action_id)
                         .expect("book address"),
                 )
                 .expect("book resource");
@@ -1526,7 +1374,7 @@ mod tests {
                 share.contract.execution,
                 tilo_actions::ExecutionMode::Background { .. }
             ));
-            assert_eq!(share.contract.retry, RetryPolicy::Idempotent);
+            assert_eq!(share.contract.retry, tilo_actions::RetryPolicy::Idempotent);
             assert_eq!(share.contract.result, tilo_actions::ResultSpec::Job);
             let remove = book_resource
                 .actions
@@ -1536,14 +1384,14 @@ mod tests {
             assert_eq!(remove.contract.risk, RiskLevel::Destructive);
             assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
             assert!(remove.contract.reversible);
-            assert_eq!(remove.contract.tags, ["library", "tombstone"]);
 
             let highlight_resource = provider
-                .resolve_action_resource(
+                .books
+                .resolve(
                     &provider
                         .search("amber")
                         .pop()
-                        .and_then(|result| result.action_address())
+                        .map(|result| result.action_id)
                         .expect("highlight address"),
                 )
                 .expect("highlight resource");
@@ -1559,18 +1407,16 @@ mod tests {
             );
 
             for (query, expected) in [
-                (
-                    "peer comment",
-                    ["delete-comment", "edit-comment", "open"].as_slice(),
-                ),
-                ("reader note", ["delete", "edit", "open"].as_slice()),
+                ("peer comment", ["delete-annotation", "open"].as_slice()),
+                ("reader note", ["delete-annotation", "open"].as_slice()),
             ] {
                 let resource = provider
-                    .resolve_action_resource(
+                    .books
+                    .resolve(
                         &provider
                             .search(query)
                             .pop()
-                            .and_then(|result| result.action_address())
+                            .map(|result| result.action_id)
                             .expect("annotation address"),
                     )
                     .expect("annotation resource");

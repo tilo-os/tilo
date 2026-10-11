@@ -33,12 +33,13 @@ use vello::peniko::{
     Blob, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat,
 };
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_resource::{Atom, Invoke};
 use ui::widget::toast::{ToastKind, ToastStack};
 use ui::widget::{
     AppModel, Collaborative, Column, Element, ModalDialog, ModelPath, NavMode, NavShell,
@@ -47,8 +48,8 @@ use ui::widget::{
 use ui::{LocalState, TextRole};
 
 use crate::model::{
-    AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Presence, Screen,
-    Workspace,
+    AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Presence, Remote,
+    Screen, Workspace,
 };
 use crate::session::{SessionStatus, TransportReadiness, connection_readiness};
 use crate::ssh::{SshConfig, SshSession};
@@ -533,9 +534,9 @@ pub struct RemoteApp {
     /// The time, in milliseconds since the Unix epoch, "last used" reads
     /// against in a screenshot.
     now_override: Option<i64>,
-    /// The actions this window submitted, for tests of a bare widget.
+    /// What this window submitted, for tests of a bare widget.
     #[cfg(test)]
-    submitted: RefCell<Vec<crate::actions::RemoteAction>>,
+    submitted: RefCell<Vec<Invoke<crate::model::Remote>>>,
     pending_resource_operation: Option<PendingResourceOperation>,
     /// Confirmation mirroring resource-action policy. Private view state,
     /// never replicated with the connection profile.
@@ -921,12 +922,19 @@ impl RemoteApp {
             return;
         };
         self.workspace.toggle_favorite(id);
-        self.submit(&crate::actions::set_favorite_action(id, target));
+        let item = crate::model::Remote::item(id);
+        let pinned = crate::model::Remote::paths()
+            .connections
+            .item(&item)
+            .favorite;
+        self.submit(Invoke::edit(&pinned.set(target)));
     }
 
     fn delete_connection(&mut self, id: ConnectionId) {
         self.workspace.remove(id);
-        self.submit(&crate::actions::delete_action(id));
+        // Asked already, in this window's own dialog.
+        let saved = crate::model::Remote::paths().connections;
+        self.submit(Invoke::edit(&saved.remove(&crate::model::Remote::item(id))));
         // The connection's credentials go with it.
         if let Some(secrets) = &self.secrets {
             for purpose in [SSH_PASSWORD, KEY_PASSPHRASE, VNC_PASSWORD] {
@@ -941,18 +949,21 @@ impl RemoteApp {
         }
     }
 
-    /// Submit one [`RemoteAction`](crate::actions::RemoteAction) through the
-    /// resource's door — the one way this window changes the saved
-    /// connections, shared with the palette, agents and scripts. The rows it
-    /// changes are presented back; the caller updates the workspace for
-    /// immediate feedback. Without a dispatcher (a bare widget in a test)
-    /// nothing is saved.
-    fn submit(&self, action: &crate::actions::RemoteAction) {
-        if let Some(dispatch) = &self.dispatch {
-            dispatch.apply(action);
-        }
+    /// Submit a field edit or verb of the saved connections through the
+    /// resource's door — the one way this window changes them, shared with
+    /// the palette, agents and scripts. The rows it changes are presented
+    /// back; the caller updates the workspace for immediate feedback.
+    /// Without a dispatcher (a bare widget in a test) nothing is saved.
+    fn submit(&self, invoke: Result<Invoke<crate::model::Remote>, serde_json::Error>) {
+        // A connection always encodes; nothing to submit otherwise.
+        let Ok(invoke) = invoke else {
+            return;
+        };
         #[cfg(test)]
-        self.submitted.borrow_mut().push(action.clone());
+        self.submitted.borrow_mut().push(invoke.clone());
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.submit(invoke);
+        }
     }
 
     /// The credential this device saved for a connection, for `purpose`.
@@ -969,13 +980,8 @@ impl RemoteApp {
     /// The time "last used" reads against, in milliseconds since the Unix
     /// epoch.
     fn now_ms(&self) -> i64 {
-        self.now_override.unwrap_or_else(|| {
-            ui::time::wall()
-                .duration_since(ui::time::UNIX_EPOCH)
-                .map_or(0, |since| {
-                    i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
-                })
-        })
+        self.now_override
+            .unwrap_or_else(|| i64::try_from(ui::time::unix_now_ms()).unwrap_or(i64::MAX))
     }
 
     /// Stable, non-secret identity used to revalidate a confirmation after a
@@ -984,9 +990,9 @@ impl RemoteApp {
         format!(
             "{}|{}|{}|{}|{}",
             connection.kind.tag(),
-            connection.host,
+            connection.host.0,
             connection.port,
-            connection.user,
+            connection.user.0,
             connection.auth.label()
         )
     }
@@ -1170,7 +1176,7 @@ impl RemoteApp {
                 }
                 match crate::ssh::trust_host_key(
                     &self.known_hosts,
-                    &connection.host,
+                    &connection.host.0,
                     connection.port,
                     &observed,
                 ) {
@@ -1188,7 +1194,7 @@ impl RemoteApp {
                 }
                 match crate::ssh::forget_host_key(
                     &self.known_hosts,
-                    &connection.host,
+                    &connection.host.0,
                     connection.port,
                 ) {
                     Ok(true) => {
@@ -1247,7 +1253,12 @@ impl RemoteApp {
             if let Some(connection) = self.workspace.get_mut(id) {
                 connection.last_used_ms = Some(now);
             }
-            self.submit(&crate::actions::mark_used_action(id, now));
+            self.submit(Ok(crate::model::Remote::MARK_USED.with(
+                crate::resource::remote::MarkUsed {
+                    connection: crate::model::Remote::item(id),
+                    at_ms: now,
+                },
+            )));
             live
         } else {
             LiveSession::Unavailable {
@@ -1304,13 +1315,13 @@ impl RemoteApp {
                     Ok(a) => a,
                     Err(e) => return LiveSession::Error(e.to_string()),
                 };
-                let user = if c.user.is_empty() {
+                let user = if c.user.0.is_empty() {
                     tilo_paths::session::user_name().unwrap_or_else(|| "root".into())
                 } else {
-                    c.user.clone()
+                    c.user.0.clone()
                 };
                 match SshSession::connect(SshConfig {
-                    host: c.host.clone(),
+                    host: c.host.0.clone(),
                     port: c.port,
                     user,
                     auth,
@@ -1323,7 +1334,7 @@ impl RemoteApp {
                 }
             }
             ConnectionKind::Vnc => match VncSession::connect(VncConfig {
-                host: c.host.clone(),
+                host: c.host.0.clone(),
                 port: c.port,
                 password: self.saved_secret(VNC_PASSWORD, c.id),
             }) {
@@ -1331,7 +1342,7 @@ impl RemoteApp {
                 Err(e) => LiveSession::Error(e.to_string()),
             },
             ConnectionKind::Tilo => {
-                let target = match c.host.parse::<EndpointId>() {
+                let target = match c.host.0.parse::<EndpointId>() {
                     Ok(target) => *target.as_bytes(),
                     Err(_) => {
                         return LiveSession::Error(
@@ -1419,12 +1430,14 @@ impl RemoteApp {
             conn.favorite = existing.favorite;
             conn.last_used_ms = existing.last_used_ms;
         }
-        // One focused action for the edited fields — not a whole-workspace
-        // re-mirror. The action leaves favourite and last used alone.
-        let action = crate::actions::upsert_action(&conn);
+        // Only the fields the form changed, as one step: a collaborator's
+        // pin or a use recorded meanwhile stays.
+        let invoke = save_invoke(self.workspace.connections(), &conn);
         let purpose = secret_purpose(conn.kind, conn.auth);
         self.workspace.upsert(conn);
-        self.submit(&action);
+        if let Some(invoke) = invoke {
+            self.submit(invoke);
+        }
         let secret = self.fields.secret.with(Clone::clone);
         self.fields.secret.set(String::new());
         if !secret.is_empty()
@@ -1883,6 +1896,35 @@ impl Default for RemoteApp {
 }
 
 /// Sort Save's problems by the field that repairs each.
+/// What saving `conn` from the form submits: the new connection, or the
+/// fields an edit of one of the `saved` connections changed, as one step;
+/// `None` when an edit changed nothing.
+pub(crate) fn save_invoke(
+    saved: &[Connection],
+    conn: &Connection,
+) -> Option<Result<Invoke<Remote>, serde_json::Error>> {
+    let connections = Remote::paths().connections;
+    let item = Remote::item(conn.id);
+    let Some(before) = saved.iter().find(|saved| saved.id == conn.id) else {
+        return Some(Invoke::edit(&connections.insert_as(
+            &item,
+            saved.len(),
+            conn,
+        )));
+    };
+    let edits = connections.item(&item).path().edits(before, conn);
+    if edits.is_empty() {
+        return None;
+    }
+    Some(
+        edits
+            .iter()
+            .map(Invoke::edit)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Invoke::group),
+    )
+}
+
 fn sort_problems(problems: Vec<String>) -> FormProblems {
     let mut sorted = FormProblems::default();
     for problem in problems {
@@ -1902,22 +1944,6 @@ fn sort_problems(problems: Vec<String>) -> FormProblems {
 /// The single child node of the app's node.
 fn child_node(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
     taffy.children(node).ok()?.first().copied()
-}
-
-/// A parent node that fills the window around one child.
-fn fill_node(taffy: &mut TaffyTree<()>, child: NodeId) -> NodeId {
-    taffy.parent_node(
-        Style {
-            display: taffy::Display::Flex,
-            flex_grow: 1.0,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )
 }
 
 // ===========================================================================
@@ -2021,21 +2047,13 @@ impl Widget for RemoteApp {
         self.rebuild_views();
         self.layout_dirty = false;
         let child = self.body_mut().build_layout(taffy, theme, node_map);
-        let node = fill_node(taffy, child);
+        let node = taffy.fill_node(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let origin = Point::new(self.rect.x0, self.rect.y0);
         if let Some(child) = child_node(taffy, node) {
             self.body_mut().apply_layout(taffy, child, origin);
@@ -2054,27 +2072,6 @@ impl Widget for RemoteApp {
         self.check_views();
         self.body_mut()
             .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.pump_session();
-        self.check_views();
-        self.body_mut().draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 
     fn draw_overlay(
@@ -2218,18 +2215,23 @@ impl ui::widget::controls::ActionControls for RemoteApp {
 impl RemoteApp {
     /// The open session, published as a live row beside the saved
     /// connections: disconnect, send text, and the SSH host-key decisions.
-    pub(crate) fn live_session_rows(&self) -> Vec<ui::framework::LiveRow> {
-        let Some(id) = self.session_for else {
-            return Vec::new();
-        };
-        let Some(connection) = self.workspace.get(id) else {
-            return Vec::new();
-        };
-        let host_key_issue = self.ssh_host_key_issue(id);
-        vec![crate::actions::session_row(
-            connection,
-            host_key_issue.as_ref(),
-        )]
+    pub(crate) fn live_connection_rows(&self) -> Vec<ui::framework::LiveRow> {
+        let mut rows: Vec<_> = self
+            .workspace
+            .connections()
+            .iter()
+            .map(crate::actions::connection_row)
+            .collect();
+        if let Some(id) = self.session_for
+            && let Some(connection) = self.workspace.get(id)
+        {
+            let host_key_issue = self.ssh_host_key_issue(id);
+            rows.push(crate::actions::session_row(
+                connection,
+                host_key_issue.as_ref(),
+            ));
+        }
+        rows
     }
 
     #[allow(
@@ -2246,7 +2248,7 @@ impl RemoteApp {
         use crate::actions::RemoteEffect;
         let done = || Ok(ui::framework::Effected::done());
         match effect {
-            RemoteEffect::Open => {
+            RemoteEffect::ShowConnections => {
                 self.apply(Action::Show(Destination::Connections));
                 done()
             }
@@ -2360,7 +2362,7 @@ impl RemoteApp {
         }
         crate::ssh::trust_host_key(
             &self.known_hosts,
-            &connection.host,
+            &connection.host.0,
             connection.port,
             observed,
         )
@@ -2381,7 +2383,7 @@ impl RemoteApp {
         ) {
             return Err("only the currently observed changed SSH host key can be forgotten".into());
         }
-        crate::ssh::forget_host_key(&self.known_hosts, &connection.host, connection.port)
+        crate::ssh::forget_host_key(&self.known_hosts, &connection.host.0, connection.port)
             .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
         self.disconnect_session();
         Ok(())
@@ -2727,7 +2729,7 @@ impl SessionPane {
         );
         if tilo_connected {
             if let PhysicalKey::Code(code) = event.physical_key
-                && let Some(keycode) = tilo_keycode(code)
+                && let Some(keycode) = ui::evdev::from_key_code(code)
             {
                 core.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
                     keycode,
@@ -2781,29 +2783,19 @@ impl Widget for SessionPane {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_grow: 1.0,
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -2896,63 +2888,6 @@ impl Widget for SessionPane {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-}
-
-fn tilo_keycode(code: KeyCode) -> Option<u32> {
-    Some(match code {
-        KeyCode::KeyA => 30,
-        KeyCode::KeyB => 48,
-        KeyCode::KeyC => 46,
-        KeyCode::KeyD => 32,
-        KeyCode::KeyE => 18,
-        KeyCode::KeyF => 33,
-        KeyCode::KeyG => 34,
-        KeyCode::KeyH => 35,
-        KeyCode::KeyI => 23,
-        KeyCode::KeyJ => 36,
-        KeyCode::KeyK => 37,
-        KeyCode::KeyL => 38,
-        KeyCode::KeyM => 50,
-        KeyCode::KeyN => 49,
-        KeyCode::KeyO => 24,
-        KeyCode::KeyP => 25,
-        KeyCode::KeyQ => 16,
-        KeyCode::KeyR => 19,
-        KeyCode::KeyS => 31,
-        KeyCode::KeyT => 20,
-        KeyCode::KeyU => 22,
-        KeyCode::KeyV => 47,
-        KeyCode::KeyW => 17,
-        KeyCode::KeyX => 45,
-        KeyCode::KeyY => 21,
-        KeyCode::KeyZ => 44,
-        KeyCode::Digit1 => 2,
-        KeyCode::Digit2 => 3,
-        KeyCode::Digit3 => 4,
-        KeyCode::Digit4 => 5,
-        KeyCode::Digit5 => 6,
-        KeyCode::Digit6 => 7,
-        KeyCode::Digit7 => 8,
-        KeyCode::Digit8 => 9,
-        KeyCode::Digit9 => 10,
-        KeyCode::Digit0 => 11,
-        KeyCode::Enter => 28,
-        KeyCode::Escape => 1,
-        KeyCode::Backspace => 14,
-        KeyCode::Tab => 15,
-        KeyCode::Space => 57,
-        KeyCode::ArrowUp => 103,
-        KeyCode::ArrowDown => 108,
-        KeyCode::ArrowLeft => 105,
-        KeyCode::ArrowRight => 106,
-        KeyCode::ShiftLeft => 42,
-        KeyCode::ShiftRight => 54,
-        KeyCode::ControlLeft => 29,
-        KeyCode::ControlRight => 97,
-        KeyCode::AltLeft => 56,
-        KeyCode::AltRight => 100,
-        _ => return None,
-    })
 }
 
 /// Translate a key press into the bytes an interactive PTY expects.
@@ -3084,15 +3019,15 @@ impl ConnectionSeed<'_> {
         Connection {
             id: sample_id(index),
             name: self.name.into(),
-            host: self.host.into(),
+            host: Atom(self.host.into()),
             port: self.port,
-            user: self.user.into(),
+            user: Atom(self.user.into()),
             kind: self.kind,
             auth: self.auth,
             last_used_ms: self
                 .used_minutes_ago
                 .map(|minutes| SAMPLE_NOW_MS - minutes * 60_000),
-            group: self.group.into(),
+            group: Atom(self.group.into()),
             favorite: self.favorite,
         }
     }

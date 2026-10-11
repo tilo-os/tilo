@@ -1,6 +1,5 @@
 use crate::presence::PresenceCtx;
 use crate::record::{RecordCheckout, RecordId, RecordStore};
-use crate::text_metrics::centered_text_top;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
@@ -31,6 +30,40 @@ const EDGE_STROKE_WIDTH: f64 = 1.0;
 /// Half a pixel heavier than `EDGE_STROKE_WIDTH`, in the focus colour, so
 /// the focused surface reads as lit rather than fenced.
 const FOCUS_EDGE_STROKE_WIDTH: f64 = 1.6;
+
+/// Rects along `rect`'s outline that hold every pixel of an edge drawn
+/// around it at corner `radius`: a square at each corner, where the edge
+/// curves up to `radius` inside the outline, and between them a thin band
+/// along each side, where it is a straight stroke at most its widest width
+/// from the outline (outside it, or inside it when drawn flush). One more
+/// pixel each way covers antialiasing. A focus change repaints these, so
+/// the sides stay as thin as the stroke rather than as deep as the corners.
+fn edge_bands(rect: Rect, radius: f64) -> Vec<Rect> {
+    let outside = FOCUS_EDGE_STROKE_WIDTH.max(EDGE_STROKE_WIDTH) + 1.0;
+    let corner = radius.max(0.0) + outside;
+    let outer = rect.inflate(outside, outside);
+    let (left, right) = (rect.x0 + corner, rect.x1 - corner);
+    let (top, bottom) = (rect.y0 + corner, rect.y1 - corner);
+    if left >= right || top >= bottom {
+        // Corners meeting: no straight side to keep thin.
+        return vec![
+            Rect::new(outer.x0, outer.y0, outer.x1, top.min(outer.y1)),
+            Rect::new(outer.x0, bottom.max(outer.y0), outer.x1, outer.y1),
+            Rect::new(outer.x0, outer.y0, left.min(outer.x1), outer.y1),
+            Rect::new(right.max(outer.x0), outer.y0, outer.x1, outer.y1),
+        ];
+    }
+    vec![
+        Rect::new(outer.x0, outer.y0, left, top),
+        Rect::new(right, outer.y0, outer.x1, top),
+        Rect::new(outer.x0, bottom, left, outer.y1),
+        Rect::new(right, bottom, outer.x1, outer.y1),
+        Rect::new(left, outer.y0, right, rect.y0 + outside),
+        Rect::new(left, rect.y1 - outside, right, outer.y1),
+        Rect::new(outer.x0, top, rect.x0 + outside, bottom),
+        Rect::new(rect.x1 - outside, top, outer.x1, bottom),
+    ]
+}
 
 /// `kurbo::Affine` composition is plain f64 matrix math with no panic
 /// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
@@ -440,28 +473,6 @@ impl TileHost {
             }
         }
     }
-    /// Install a legacy tile's declared presentation against its settled actual
-    /// store/checkout/lifetime. No outer State or invented component is used.
-    /// # Errors
-    /// Refuses missing, stale or foreign document custody and invalid scope metadata.
-    /// Exact live component token for this retained history owner.
-    pub fn document_history_target(&self) -> Option<String> {
-        self.history.as_ref()?;
-        let TileContent::App(app) = &self.content else {
-            return None;
-        };
-        let binding = app.callback_binding()?;
-        let _entry = binding.enter().ok()?;
-        Some(binding.lifetime_id.to_string())
-    }
-    pub fn request_document_history(&self, target: &str) -> bool {
-        if self.document_history_target().as_deref() != Some(target) {
-            return false;
-        }
-        self.history
-            .as_ref()
-            .is_some_and(|history| history.request_open())
-    }
     /// Inactive retained tiles have no nodes in the current Taffy tree.
     pub(crate) fn discard_layout_nodes(&mut self) {
         self.live_callback_node = None;
@@ -600,7 +611,11 @@ impl TileHost {
     /// Idempotent on the same record — rebinding would hand the tab a
     /// fresh empty document, and the tree re-binds every tile on rebuild.
     pub fn bind_record(&mut self, store: RecordStore, tab: RecordCheckout) {
-        if matches!(&self.content, TileContent::App(app) if !app.uses_host_record()) {
+        // A refused creation remains a document error until explicit replacement.
+        if self.record_creation_refused {
+            return;
+        }
+        if !self.uses_host_record() {
             self.clear_record_binding();
             return;
         }
@@ -612,7 +627,11 @@ impl TileHost {
     /// Admit a newly created scratch resource owned by this caller. Creation
     /// applies only to this exact checkout, never to later record intents.
     pub fn bind_or_create_record(&mut self, store: RecordStore, tab: RecordCheckout) {
-        if matches!(&self.content, TileContent::App(app) if !app.uses_host_record()) {
+        // A refused creation remains a document error until explicit replacement.
+        if self.record_creation_refused {
+            return;
+        }
+        if !self.uses_host_record() {
             self.clear_record_binding();
             return;
         }
@@ -621,7 +640,15 @@ impl TileHost {
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
     }
 
-    /// External surfaces own no host record: detach any earlier record
+    fn uses_host_record(&self) -> bool {
+        match &self.content {
+            TileContent::App(app) => app.uses_host_record(),
+            TileContent::Stub { .. } => true,
+            TileContent::Notice { .. } => false,
+        }
+    }
+
+    /// External surfaces and symbolic notices own no host record: detach any earlier record
     /// custody so the outer document is never lent to them.
     fn clear_record_binding(&mut self) {
         if self.binding.is_none() && self.pending_binding.is_none() && self.record_error.is_none() {
@@ -1208,6 +1235,9 @@ impl TileHost {
         self.record_transition_error = None;
         self.record_intent_transition_blocked = false;
         self.content = content;
+        if !self.uses_host_record() {
+            self.clear_record_binding();
+        }
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         let registration = match &self.content {
             TileContent::App(root) => {
@@ -2145,13 +2175,7 @@ impl Widget for TileHost {
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let _running = self.running();
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let TileContent::App(w) = &mut self.content {
             // Guards a structural mismatch: content is `App` but the taffy
             // node has no child yet (build_layout ran while content was
@@ -2225,9 +2249,11 @@ impl Widget for TileHost {
             let anim_transform = scaled_about(transform, centre, scale);
             self.draw_steady_state(scene, anim_transform, tr, theme, presence);
             scene.pop_layer();
+            crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
             return;
         }
         self.draw_steady_state(scene, transform, tr, theme, presence);
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let _running = self.running();
@@ -2312,12 +2338,14 @@ impl Widget for TileHost {
                         Some(&author),
                         None,
                         crate::undo::get_state(app.as_ref()),
+                        None,
                     ),
                     UndoStep::Redo => history.redo_as(
                         doc,
                         Some(&author),
                         None,
                         crate::undo::get_state(app.as_ref()),
+                        None,
                     ),
                 }
                 .map(|entry| {
@@ -2763,6 +2791,38 @@ impl TileHost {
             transform,
             &shape,
         );
+        // Everything up to the matching pop is clipped to the tile, so the
+        // tile bounds whatever its content changes: a damage part.
+        let content = crate::scene_parts::PartKey::new("ui.tile-content", ());
+        let bounds = vec![transform.transform_rect_bbox(self.rect)];
+        crate::scene_parts::part(scene, content, bounds, |scene| {
+            self.draw_clipped_content(scene, transform, tr, theme, presence, &shape);
+        });
+        scene.pop_layer();
+        // The edge, and the focus ring it becomes, is a band along the
+        // tile's outline: corner squares and thin side bands, not the
+        // tile they surround.
+        let edge = crate::scene_parts::PartKey::new("ui.tile-edge", ());
+        let bounds = edge_bands(self.rect, radius)
+            .into_iter()
+            .map(|band| transform.transform_rect_bbox(band))
+            .collect();
+        crate::scene_parts::part(scene, edge, bounds, |scene| {
+            self.draw_edge(scene, transform, theme, radius);
+        });
+    }
+
+    /// The tile's content inside its clip: the opening card, the app (or a
+    /// card in its place), and the card dissolving over an arrived app.
+    fn draw_clipped_content(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        shape: &RoundedRect,
+    ) {
         // An app asked for but not arrived gets the card in place of the
         // app, not behind it: its early buffer is the client's own size,
         // not the tab's, and painting it would show the window visibly
@@ -2842,7 +2902,7 @@ impl TileHost {
                         vello::peniko::BlendMode::default(),
                         1.0 - t,
                         transform,
-                        &shape,
+                        shape,
                     );
                     draw_opening_card(
                         scene,
@@ -2858,8 +2918,6 @@ impl TileHost {
                 }
             }
         }
-        scene.pop_layer();
-        self.draw_edge(scene, transform, theme, radius);
     }
 }
 
@@ -2928,43 +2986,12 @@ fn draw_card_text(
     title: &str,
     detail: &str,
 ) {
-    // Derived from the card's own luminance: it's a black surface under
-    // high-contrast and white elsewhere, so a fixed ramp slot is only
-    // legible on one of them.
-    let card = theme.tokens.colors.surfaces.content;
-    let on_card = theme.on_content().ink;
-    // The floor here is measured for an ideal glyph but an antialiased glyph
-    // anti-aliases: derived at 4.5:1 it measured 3.8:1 on screen against
-    // the light card, a tier under the floor it was picked to clear.
-    let on_card_dim = theme
-        .on_surface_at(card, crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
-        .ink_dim;
-    let text_style = theme.text(TextRole::Title);
-    let (tw, th) = tr.measure_style(title, None, &text_style);
-    let x = rect.center().x - f64::from(tw) / 2.0;
-    let y = centered_text_top(rect.y0, rect.height(), f64::from(th));
-    tr.draw_style(
-        scene,
-        title,
-        on_card,
-        translated(transform, x, y),
-        None,
-        &text_style,
-    );
-    if detail.is_empty() {
-        return;
-    }
-    let sm = theme.text(TextRole::Caption);
-    let (sw, _) = tr.measure_style(detail, None, &sm);
-    let sx = rect.center().x - f64::from(sw) / 2.0;
-    tr.draw_style(
-        scene,
-        detail,
-        on_card_dim,
-        translated(transform, sx, y + f64::from(th) + 8.0),
-        None,
-        &sm,
-    );
+    let mut content = super::EmptyStateContent::new(title);
+    content.message = (!detail.is_empty()).then_some(detail);
+    let mut paint = crate::paint::PaintCtx::new(scene, transform, tr, theme);
+    // These are explanatory status cards, not one-line diagnostic summaries.
+    // The shared stack wraps the full recovery text within the tile's gutter.
+    super::EmptyState::paint(&mut paint, rect, &content, Point::new(-1.0, -1.0));
 }
 
 #[cfg(test)]
@@ -2972,21 +2999,8 @@ mod tests {
     use super::*;
     use crate::time::Duration;
 
-    /// Test fixtures below deal only in small, non-negative pixel
-    /// coordinates (well under `u32::MAX`), so these narrowing casts
-    /// can't truncate or flip sign in practice — the lint can't see that
-    /// through the float math or fixture constants.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "test fixture coordinates are small non-negative constants"
-    )]
-    fn px(v: f64) -> u32 {
-        v as u32
-    }
-
-    /// See [`px`]: the millisecond durations used in these tests are
-    /// small positive compile-time constants.
+    /// The millisecond durations used in these tests are small positive
+    /// compile-time constants.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -3032,7 +3046,10 @@ mod tests {
             // A point inside the tile's bounding box but outside its rounded
             // silhouette: one pixel in from the box corner, well inside the
             // corner arc's cut.
-            let (cx, cy) = (px(rect.x0) + 2, px(rect.y0) + 2);
+            let (cx, cy) = (
+                crate::num::u32_of_f64(rect.x0) + 2,
+                crate::num::u32_of_f64(rect.y0) + 2,
+            );
             assert!(
                 radius > 8.0,
                 "test assumes a visibly rounded card; radii.tile is {radius}",
@@ -3056,7 +3073,7 @@ mod tests {
             // One pixel out from the boundary is the frame's edge: it must be
             // neither the app (flood escaped its clip) nor bare desktop (no
             // edge there at all).
-            let edge_x = px(rect.x0) - 1;
+            let edge_x = crate::num::u32_of_f64(rect.x0) - 1;
             let (er, eg, eb, _) = OffscreenRenderer::sample(&rgba, w, edge_x, 100);
             assert!(
                 (er, eg, eb) != (0xFF, 0x00, 0x00),
@@ -3071,7 +3088,7 @@ mod tests {
 
             // ...and the first pixel *inside* the boundary is the app's, whole.
             // The frame stops at the silhouette.
-            let inside_x = px(rect.x0);
+            let inside_x = crate::num::u32_of_f64(rect.x0);
             let (nr, ng, nb, _) = OffscreenRenderer::sample(&rgba, w, inside_x, 100);
             assert_eq!(
                 (nr, ng, nb),
@@ -3119,10 +3136,10 @@ mod tests {
                 // Both vertical edges at mid-height, and the horizontal edges at
                 // mid-width: the first pixel inside the silhouette on every side.
                 let probes = [
-                    ("left", px(rect.x0), 100u32),
-                    ("right", px(rect.x1) - 1, 100u32),
-                    ("top", 100u32, px(rect.y0)),
-                    ("bottom", 100u32, px(rect.y1) - 1),
+                    ("left", crate::num::u32_of_f64(rect.x0), 100u32),
+                    ("right", crate::num::u32_of_f64(rect.x1) - 1, 100u32),
+                    ("top", 100u32, crate::num::u32_of_f64(rect.y0)),
+                    ("bottom", 100u32, crate::num::u32_of_f64(rect.y1) - 1),
                 ];
                 for (side, px, py) in probes {
                     let (sr, sg, sb, _) = OffscreenRenderer::sample(&rgba, w, px, py);
@@ -3187,7 +3204,7 @@ mod tests {
 
                 // Mid-span of the top edge: the band the stroke occupies sits
                 // just outside the card boundary.
-                let (sample_x, sample_y) = (100u32, px(rect.y0) - 1);
+                let (sample_x, sample_y) = (100u32, crate::num::u32_of_f64(rect.y0) - 1);
                 let (lr, lg, lb, _) = OffscreenRenderer::sample(&lit, width, sample_x, sample_y);
                 assert_eq!(
                     (lr, lg, lb),
@@ -3205,7 +3222,10 @@ mod tests {
                 // have painted. The ambient shadow legitimately darkens this
                 // pixel, so the claim is only that focus colour isn't there,
                 // not that it's untouched.
-                let (corner_x, corner_y) = (px(rect.x0) - 2, px(rect.y0) - 2);
+                let (corner_x, corner_y) = (
+                    crate::num::u32_of_f64(rect.x0) - 2,
+                    crate::num::u32_of_f64(rect.y0) - 2,
+                );
                 for (label, buf) in [("focused", &lit), ("unfocused", &dark)] {
                     let (sr, sg, sb, _) = OffscreenRenderer::sample(buf, width, corner_x, corner_y);
                     assert_ne!(
@@ -3270,9 +3290,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -3365,9 +3383,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(
@@ -3443,20 +3459,10 @@ mod tests {
             let mut taffy = TaffyTree::new();
             let mut node_map = std::collections::HashMap::new();
             let node = host.build_layout(&mut taffy, &Theme::default(), &mut node_map);
-            let mut handled = true;
-            host.handle_event(
-                &WindowEvent::Focused(true),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-                    path: &ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut None,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            crate::testing::Dispatch::new()
+                .handled(true)
+                .layout(&taffy, node)
+                .send(&mut host, &WindowEvent::Focused(true));
             assert_eq!(calls.get(), 0);
         }
     }
@@ -4108,7 +4114,7 @@ mod tests {
                 "the app is never handed a record of another kind"
             );
             let driver =
-                crate::headless::Driver::new(crate::State::new(), Box::new(host), (400, 240));
+                crate::headless::FrameHarness::new(crate::State::new(), Box::new(host), (400, 240));
             let inspection = driver.inspection();
             assert!(inspection_has_semantic(
                 &inspection.root,
@@ -4185,9 +4191,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(
@@ -4238,9 +4242,7 @@ mod tests {
             self.0
                 .borrow_mut()
                 .push(super::super::panic_scope::current());
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(
@@ -4508,9 +4510,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -4564,9 +4564,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -4787,6 +4785,79 @@ mod tests {
     }
 
     #[test]
+    fn symbolic_notices_do_not_acquire_scratch_record_custody() {
+        let store = RecordStore::in_memory();
+        let checkout = tab_checkout(7120);
+        let mut host = TileHost::new(TileContent::Notice {
+            title: "Browser".into(),
+            detail: "Opening here…".into(),
+        });
+        host.rect = Rect::new(20.0, 20.0, 480.0, 300.0);
+        for create in [false, true, false] {
+            if create {
+                host.bind_or_create_record(store.clone(), checkout.clone());
+            } else {
+                host.bind_record(store.clone(), checkout.clone());
+            }
+            host.sync(&AutoCommit::new(), &ROOT);
+            assert!(host.binding.is_none());
+            assert!(host.pending_binding.is_none());
+            assert!(
+                host.record_error.is_none(),
+                "notice must retain its launch status"
+            );
+            assert!(host.history_owner().is_none());
+            assert!(
+                store.open_records().is_empty(),
+                "a notice owns no scratch document"
+            );
+            assert!(Widget::presented(&host));
+            let _ = paint(&mut host, &Theme::default());
+        }
+
+        // A genuine failed document creation remains refused on group rebind.
+        host.refuse_record_binding("creation refused".into());
+        host.bind_record(store.clone(), checkout.clone());
+        assert!(host.record_creation_refused());
+        assert_eq!(host.record_error.as_deref(), Some("creation refused"));
+
+        // Explicit replacement with an external notice clears that old refusal.
+        host.replace_content(TileContent::Notice {
+            title: "Browser".into(),
+            detail: "Could not open it here".into(),
+        });
+        host.bind_record(store, checkout);
+        assert!(!host.record_creation_refused());
+        assert!(host.record_error.is_none());
+        assert!(host.binding.is_none());
+    }
+
+    #[test]
+    fn replacing_a_document_with_a_notice_detaches_the_record() {
+        let store = RecordStore::in_memory();
+        let checkout = tab_checkout(7121);
+        store.create_record(&checkout).unwrap();
+        let mut host = TileHost::new(declared_probe(&DECLARED_HISTORY, false));
+        host.bind_record(store.clone(), checkout.clone());
+        let old_owner = host.history_owner().expect("document history");
+        host.replace_content(TileContent::Notice {
+            title: "Browser".into(),
+            detail: "Restoring this window…".into(),
+        });
+        assert!(
+            old_owner.validate().is_err(),
+            "outgoing document owner is retired"
+        );
+        assert!(host.binding.is_none());
+        assert!(host.history_owner().is_none());
+        assert!(host.record_error.is_none());
+        assert!(
+            store.open_records().contains(&checkout),
+            "saved document survives"
+        );
+    }
+
+    #[test]
     fn an_arrived_app_after_a_visible_card_still_asks_for_a_frame() {
         // Case `retiring_the_opening_card_keeps_one_paint_so_the_app_replaces_it`.
         let (mut host, _) = starting_host(true, false);
@@ -4955,7 +5026,7 @@ mod tests {
     }
 
     /// Native Shell dispatches directly into TileHost: unlike App and the
-    /// headless Driver, it does not pre-observe embedded History pointers.
+    /// headless `FrameHarness`, it does not pre-observe embedded History pointers.
     #[test]
     fn live_body_pointer_edges_follow_motion_out_of_history_toolbar() {
         use taffy::prelude::TaffyMaxContent;
@@ -4991,28 +5062,17 @@ mod tests {
             assert!(toolbar.width() > 0.0 && toolbar.height() > 0.0);
             let body = Point::new(toolbar.center().x, toolbar.y1 + 40.0);
             assert!(host.get_rect().contains(body) && !toolbar.contains(body));
-            let device = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let motion = |point: Point| WindowEvent::CursorMoved {
                 device_id: device,
                 position: (point.x * scale, point.y * scale).into(),
             };
-            let mut doc = AutoCommit::new();
+            let mut sender = crate::testing::Dispatch::new()
+                .scale_factor(scale)
+                .layout(&tree, node);
             let mut send = |event: &WindowEvent| {
                 calls.set(0);
-                let mut handled = false;
-                host.handle_event(
-                    event,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: scale,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut None,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                let handled = sender.send(&mut host, event).handled;
                 (handled, calls.get())
             };
             let wheel = WindowEvent::MouseWheel {
@@ -5059,6 +5119,64 @@ mod tests {
         }
     }
 
+    /// Every pixel an edge paints, focused or not, flush or not, at 100 %,
+    /// 150 % and 200 %, lies in the damage bands the edge part reports: a
+    /// focus change repaints them and nothing the edge drew outside them.
+    #[test]
+    fn edge_bands_hold_every_pixel_the_edge_paints() {
+        use crate::offscreen::OffscreenRenderer;
+        let theme = Theme::default();
+        let ground = vello::peniko::Color::from_rgb8(0, 255, 0);
+        let size = 320_u32;
+        let mut renderer = OffscreenRenderer::new(size, size);
+        let radius = f64::from(theme.tokens.radii.tile);
+        for scale in [1.0, 1.5, 2.0] {
+            for rect in [
+                Rect::new(20.5, 18.0, 190.0, 200.25),
+                Rect::new(30.0, 30.0, 30.0 + radius, 120.0),
+            ] {
+                for (focused, flush) in [(false, false), (true, false), (true, true)] {
+                    let mut host = TileHost::new(TileContent::Stub {
+                        kind: AppKind::Editor,
+                        label: String::new(),
+                    });
+                    host.rect = rect;
+                    host.set_flush_edges(flush);
+                    host.set_focused(focused);
+                    let transform = Affine::scale(scale);
+                    let mut scene = Scene::new();
+                    host.draw_edge(&mut scene, transform, &theme, radius);
+                    let bands: Vec<Rect> = edge_bands(rect, radius)
+                        .into_iter()
+                        .map(|band| transform.transform_rect_bbox(band))
+                        .collect();
+                    let rgba = renderer.render(&scene, ground);
+                    let mut painted = 0;
+                    for y in 0..size {
+                        for x in 0..size {
+                            if OffscreenRenderer::sample(&rgba, size, x, y) == (0, 255, 0, 255) {
+                                continue;
+                            }
+                            painted += 1;
+                            let pixel = Rect::new(
+                                f64::from(x),
+                                f64::from(y),
+                                f64::from(x) + 1.0,
+                                f64::from(y) + 1.0,
+                            );
+                            assert!(
+                                bands.iter().any(|band| band.overlaps(pixel)),
+                                "edge pixel ({x},{y}) outside its bands: scale={scale}, \
+                                 rect={rect:?}, focused={focused}, flush={flush}, bands={bands:?}"
+                            );
+                        }
+                    }
+                    assert!(painted > 0, "the edge paints: {rect:?} at {scale}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn flush_focus_edge_leaves_rounded_corner_cutouts_clear() {
         use crate::offscreen::OffscreenRenderer;
@@ -5079,8 +5197,10 @@ mod tests {
                 let mut scene = Scene::new();
                 host.draw_edge(&mut scene, Affine::scale(2.0), &theme, radius);
                 let rgba = renderer.render(&scene, ground);
-                for y in 0..px((top + radius) * 2.0) {
-                    for x in px((right - radius) * 2.0)..px(right * 2.0) {
+                for y in 0..crate::num::u32_of_f64((top + radius) * 2.0) {
+                    for x in crate::num::u32_of_f64((right - radius) * 2.0)
+                        ..crate::num::u32_of_f64(right * 2.0)
+                    {
                         let dx = (f64::from(x) + 0.5) / 2.0 - (right - radius);
                         let dy = (f64::from(y) + 0.5) / 2.0 - (top + radius);
                         if dx * dx + dy * dy > (radius + 1.0).powi(2) {

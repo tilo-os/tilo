@@ -159,15 +159,16 @@ impl SessionStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::tilo_resource::Atom;
     use uuid::Uuid;
 
     fn connection(kind: ConnectionKind) -> Connection {
         Connection {
             id: Uuid::new_v4(),
             name: "Saved machine".into(),
-            host: iroh_base::SecretKey::generate().public().to_string(),
+            host: Atom(iroh_base::SecretKey::generate().public().to_string()),
             port: kind.default_port(),
-            user: String::new(),
+            user: Atom::default(),
             kind,
             auth: if kind == ConnectionKind::Tilo {
                 crate::model::AuthMethod::DeviceIdentity
@@ -175,7 +176,7 @@ mod tests {
                 crate::model::AuthMethod::Password
             },
             last_used_ms: None,
-            group: String::new(),
+            group: Atom::default(),
             favorite: false,
         }
     }
@@ -217,7 +218,7 @@ mod tests {
         );
         {
             let mut tilo = connection(ConnectionKind::Tilo);
-            tilo.host = "friendly-name".into();
+            tilo.host = Atom("friendly-name".into());
             assert_eq!(
                 connection_readiness(&tilo),
                 TransportReadiness::InvalidProfile

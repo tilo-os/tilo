@@ -121,7 +121,12 @@ fn edit(
         .with_record_frame(outer, false, |doc, path| {
             let mut operation =
                 BoundOperation::enter(binding, doc, tilo_actions::OperationKind::Document).unwrap();
-            with_native_text(physical, || {
+            let input = if physical {
+                Input::Continuing
+            } else {
+                Input::Discrete
+            };
+            with_native_text(input, || {
                 execute_resource_operation(
                     &mut TextOwner::default(),
                     operation.doc,
@@ -129,6 +134,7 @@ fn edit(
                     &registry(),
                     wire,
                     ResourceOperation {
+                        target_route: None,
                         address: &tilo_actions::ActionAddress::new("burst", "text"),
                         resource: &resource,
                         spec: &spec,
@@ -204,9 +210,12 @@ fn native_text_keeps_first_compensation_latest_redo_and_different_field_boundari
     assert_eq!(value(&records, &checkout, "second"), "");
     assert_eq!(value(&records, &checkout, "first"), "abc");
     let entry = restore(&binding, &mut outer, crate::undo::UndoRequest::Undo);
-    let inverse: TextEdit = serde_json::from_slice(&entry.undo_via.unwrap().payload).unwrap();
-    let redo: TextEdit = serde_json::from_slice(&entry.redo_via.unwrap().payload).unwrap();
-    assert_eq!(inverse.value, "");
+    // The burst's newest change records how to take it back and bring it
+    // back; undo takes the whole burst back.
+    let step = entry.step.unwrap();
+    let inverse: TextEdit = serde_json::from_slice(&step.compensation.unwrap().payload).unwrap();
+    let redo: TextEdit = serde_json::from_slice(&step.action.unwrap().payload).unwrap();
+    assert_eq!(inverse.value, "ab");
     assert_eq!(redo.value, "abc");
     assert_eq!(value(&records, &checkout, "first"), "");
     restore(&binding, &mut outer, crate::undo::UndoRequest::Redo);
@@ -283,8 +292,8 @@ fn physical_text_provenance_is_captured_in_the_exact_owned_queue_entry() {
     let mut queued = queued.into_iter();
     let (physical, first) = queued.next().unwrap();
     let (programmatic, second) = queued.next().unwrap();
-    assert!(physical.physical_text);
-    assert!(!programmatic.physical_text);
+    assert_eq!(physical.input, Input::Continuing);
+    assert_eq!(programmatic.input, Input::Discrete);
     assert_eq!(
         first, second,
         "equal descriptor values retain distinct provenance"
@@ -320,10 +329,10 @@ fn physical_text_provenance_survives_initial_custody_transfer_and_legacy_drainin
     let (physical, first) = queued.next().unwrap();
     let (programmatic, second) = queued.next().unwrap();
     assert!(
-        physical.physical_text,
+        physical.input == Input::Continuing,
         "initial installation retains the producer's exact queued provenance"
     );
-    assert!(!programmatic.physical_text);
+    assert_eq!(programmatic.input, Input::Discrete);
     assert_eq!(first, second);
     assert!(queued.next().is_none());
     assert!(
@@ -342,8 +351,8 @@ fn physical_text_provenance_survives_initial_custody_transfer_and_legacy_drainin
     let (programmatic, unmarked) = capture_physical_drain(|| {
         crate::widget::controls::take_attributed_control_invocation(&mut parent)
     });
-    assert!(marked);
-    assert!(!unmarked);
+    assert_eq!(marked, Input::Continuing);
+    assert_eq!(unmarked, Input::Discrete);
     assert_eq!(physical, programmatic);
-    assert!(!DRAINED_PHYSICAL_TEXT.with(Cell::get));
+    assert_eq!(DRAINED_INPUT.with(Cell::get), Input::Discrete);
 }

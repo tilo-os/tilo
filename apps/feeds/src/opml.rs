@@ -5,8 +5,7 @@
 //! folder groups. The app supports one nesting level with a small,
 //! dependency-free scanner.
 
-use crate::model::{Feed, FeedKind, Folder, Store};
-use uuid::Uuid;
+use crate::model::{Feed, FeedKind, Library, Outline};
 
 /// A parsed subscription line from an OPML file.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,7 +127,7 @@ fn attr(tag: &str, key: &str) -> Option<String> {
 
 /// Serialise the store's subscriptions to OPML 2.0, grouping feeds under
 /// their folder outlines.
-pub fn export(store: &Store) -> String {
+pub fn export(store: &Library) -> String {
     use std::fmt::Write as _;
 
     let mut out = String::new();
@@ -140,13 +139,13 @@ pub fn export(store: &Store) -> String {
         let name = quick_xml::escape::escape(&folder.name);
         let _ = writeln!(out, "    <outline text=\"{name}\" title=\"{name}\">");
         for feed in store.feeds_in_folder(Some(folder.id)) {
-            out.push_str(&feed_outline(feed, 6));
+            out.push_str(&feed_outline(&feed, 6));
         }
         out.push_str("    </outline>\n");
     }
     // Uncategorised feeds at the top level.
     for feed in store.feeds_in_folder(None) {
-        out.push_str(&feed_outline(feed, 4));
+        out.push_str(&feed_outline(&feed, 4));
     }
 
     out.push_str("  </body>\n</opml>\n");
@@ -186,43 +185,29 @@ pub fn sample_opml() -> &'static str {
 </opml>"#
 }
 
-/// Merge parsed OPML feeds into a store, creating folders as needed.
-/// Returns the number of feeds added.
-pub fn import_into(store: &mut Store, parsed: &[OpmlFeed]) -> usize {
-    let mut added = 0;
-    for of in parsed {
-        // Skip if we already subscribe to this URL.
-        if store.feeds.iter().any(|f| f.url == of.xml_url) {
-            continue;
-        }
-        let folder_id = of.folder.as_ref().map(|name| {
-            if let Some(existing) = store.folders.iter().find(|f| &f.name == name) {
-                existing.id
-            } else {
-                let id = Uuid::new_v4();
-                let order = store.folders.len() as u32;
-                store.upsert_folder(Folder {
-                    id,
-                    name: name.clone(),
-                    order,
-                    collapsed: false,
-                });
-                id
-            }
-        });
-        let order = store.next_feed_order(folder_id);
-        store.upsert_feed(Feed {
-            id: Uuid::new_v4(),
-            title: of.title.clone(),
-            url: of.xml_url.clone(),
-            site_url: of.html_url.clone(),
-            folder: folder_id,
-            order,
-            kind: FeedKind::Rss,
-        });
-        added += 1;
-    }
-    added
+/// What the parsed OPML lines subscribe to, for
+/// [`Library::IMPORT_SUBSCRIPTIONS`].
+pub fn outlines(parsed: &[OpmlFeed]) -> Vec<Outline> {
+    parsed
+        .iter()
+        .map(|feed| Outline {
+            title: feed.title.clone(),
+            url: feed.xml_url.clone(),
+            site_url: feed.html_url.clone(),
+            folder: feed.folder.clone().filter(|name| !name.is_empty()),
+        })
+        .collect()
+}
+
+/// Merge parsed OPML feeds into `store`, creating folders as needed, with
+/// ids of its own. Returns the number of feeds added.
+#[cfg(test)]
+pub fn import_into(store: &mut Library, parsed: &[OpmlFeed]) -> usize {
+    let mut minted = store.folders.len() + store.feeds.len();
+    store.import(&outlines(parsed), || {
+        minted += 1;
+        ui::tilo_resource::Id::from_raw(format!("imported-{minted}"))
+    })
 }
 
 #[cfg(test)]
@@ -257,7 +242,7 @@ mod tests {
 
         // --- phase: import_creates_folders_and_dedups ---
         {
-            let mut store = Store::new();
+            let mut store = Library::new();
             let feeds = parse(SAMPLE);
             let n = import_into(&mut store, &feeds);
             assert_eq!(n, 3);
@@ -270,7 +255,7 @@ mod tests {
 
         // --- phase: export_round_trips_through_parse ---
         {
-            let mut store = Store::new();
+            let mut store = Library::new();
             import_into(&mut store, &parse(SAMPLE));
             let xml = export(&store);
             let reparsed = parse(&xml);

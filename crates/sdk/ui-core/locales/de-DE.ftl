@@ -249,34 +249,6 @@ close-discard = Änderungen verwerfen
 close-retry = Erneut versuchen
 close-keep-editing = Weiter bearbeiten
 close-broker-disconnected = Die Verbindung zum Speicherdienst wurde getrennt. Das Dokument ist weiterhin geöffnet.
-terminal-find-scrollback = Im Terminalverlauf suchen
-terminal-target-host = Dieses Gerät (ohne Sandbox)
-terminal-target-default = Standardumgebung
-terminal-target-legacy = Legacy-VM
-terminal-target-manage = Umgebungen verwalten…
-terminal-run-on = Ausführen auf:
-terminal-run-on-this-device = Diesem Gerät
-terminal-host-awaiting-allow = Warte darauf, dass du die eigene Shell dieses Geräts erlaubst
-terminal-host-denied = Die eigene Shell dieses Geräts wurde nicht erlaubt
-terminal-no-runtime-status = Hier kann keine Umgebung starten — Eingabetaste öffnet die eigene Shell dieses Geräts
-terminal-no-runtime-title = Die Umgebung dieses Terminals kann auf diesem Gerät nicht starten.
-terminal-no-runtime-host = Drücke die Eingabetaste, um stattdessen die eigene Shell dieses Geräts zu öffnen (ohne Sandbox; Tilo fragt dich vorher),
-terminal-no-runtime-picker = oder wähle oben in diesem Tab im Zielmenü einen anderen Ort.
-terminal-no-runtime-install = Eine Umgebung braucht ein env-runtime-Image: aktualisiere Tilo oder installiere eines aus dem App Store.
-terminal-env-title = Umgebungen
-terminal-env-tools = Werkzeuge
-terminal-env-no-tools = Noch keine Werkzeuge — pkg install in der Umgebung ausführen
-terminal-env-grants = Ordner
-terminal-env-no-grants = Noch keine Ordner freigegeben — „Ordner freigeben…“ verwenden oder perm trust-dir in der Umgebung ausführen
-terminal-env-grant = Ordner freigeben…
-terminal-env-grant-title = Ordner für diese Umgebung wählen
-terminal-env-grant-accept = Freigeben
-terminal-env-read-only = nur lesen
-terminal-env-rename = Umbenennen
-terminal-env-open = Hier öffnen
-terminal-env-create = Erstellen
-terminal-env-name-placeholder = Name einer neuen Umgebung
-terminal-env-unavailable = Umgebungen werden über Tilos Shell-Laufzeit verwaltet, die hier nicht läuft.
 
 notes-image-edit = Bild bearbeiten
 notes-image-done = Fertig
@@ -377,7 +349,12 @@ relative-ago-years = { $count ->
     }
 
 # Ein Software-Teilnehmer in Verlauf, Präsenz und Aktivität.
+history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
+participant-shortcut = { $name } · Kurzbefehl
+participant-app = { $name } · App
+# Ein Agent, ein Kurzbefehl oder eine App, die für eine Person handelt.
+participant-acting-for = { $name }, für { $person }
 interaction-agent = Agent
 interaction-collaborator = Mitwirkende Person
 interaction-action-status = { $action } ({ $phase }) - { $name }
@@ -480,6 +457,9 @@ dictation-copy-transcript = Transkript kopieren
 dictation-discard-transcript = Transkript verwerfen
 
 dropdown-no-matches = Keine passende Auswahl
+host-native-history-unobserved = Der Bearbeitungsverlauf des ursprünglichen Felds wurde noch nicht bestätigt.
+host-native-history-unconfirmed = Die Verlaufsänderung dieser Seite wurde nicht bestätigt. Prüfe die Seite, bevor du es erneut versuchst.
+host-native-page-history-scope = Rückgängig und Wiederholen gelten für den Bearbeitungsverlauf dieser Seite. Die letzte Änderung kann in einem anderen Feld liegen.
 
 # Shared native screen topology canvas
 display-arrangement-name = Bildschirmanordnung
@@ -492,3 +472,23 @@ display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
 device-display-session-unavailable = Die Tilo-Sitzung ist nicht verfügbar.
 device-display-request-pending = Eine Anfrage zur Bildschirmposition steht bereits aus.
 device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getrennt.
+
+app-activate-window = Dieses Fenster anzeigen
+app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.
+
+# Shown instead of an app's view while its record does not read as the app expects.
+framework-unreadable = Dies kann nicht geöffnet werden
+display-arrangement-offline = Offline
+display-arrangement-excluded = Nicht im Layout
+display-arrangement-offline-excluded = Offline · Nicht im Layout
+display-arrangement-item-status = { $position }; { $status }
+display-arrangement-caption-status = { $status } · { $name }
+
+# Suche: Einstiegsgruppen in der leeren Anwendungsliste
+search-apps-group-start-here = Zum Einstieg
+search-apps-group-everyday = Alltag
+search-apps-group-work = Arbeit
+search-apps-group-media = Medien
+search-apps-group-system-tools = Systemwerkzeuge
+search-apps-group-more-apps = Weitere Apps
+search-apps-group-developer-tools = Entwicklerwerkzeuge

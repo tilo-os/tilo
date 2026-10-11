@@ -377,7 +377,8 @@ fn prepared_presentation_replaces_effective_factors_across_runners_and_setters()
                 app.close_components();
             } else {
                 let mut driver =
-                    crate::headless::Driver::from_component(component, (800, 600), inputs).unwrap();
+                    crate::headless::FrameHarness::from_component(component, (800, 600), inputs)
+                        .unwrap();
                 let observation = observed.borrow();
                 let (theme, renderer_scale) = observation.draws.last().unwrap();
                 assert_eq!(*renderer_scale, 1.5);
@@ -433,7 +434,7 @@ fn assert_saved_body(
 
 fn edit_bound_record(app: &mut App, binding: &crate::bound_dispatch::CallbackBinding) {
     let target = crate::bound_dispatch::BoundActionTarget {
-        physical_text: false,
+        input: crate::bound_dispatch::Input::Discrete,
         binding: binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: binding.instance_id,
@@ -624,7 +625,7 @@ fn prepared_close_retains_the_original_store_and_rejects_stale_results() {
 
 enum Runner {
     App(Box<App>),
-    Driver(Box<crate::headless::Driver>),
+    FrameHarness(Box<crate::headless::FrameHarness>),
 }
 impl Runner {
     fn new(mode: u8, mut component: AppComponent) -> Self {
@@ -651,9 +652,13 @@ impl Runner {
                     },
                 )))
             }
-            _ => Self::Driver(Box::new(
-                crate::headless::Driver::from_component(component, (320, 180), runner_inputs())
-                    .unwrap(),
+            _ => Self::FrameHarness(Box::new(
+                crate::headless::FrameHarness::from_component(
+                    component,
+                    (320, 180),
+                    runner_inputs(),
+                )
+                .unwrap(),
             )),
         }
     }
@@ -675,7 +680,7 @@ impl Runner {
                     Err("action absent".into())
                 }
             }
-            Self::Driver(driver) => driver
+            Self::FrameHarness(driver) => driver
                 .invoke_bound_action(
                     &crate::bound_dispatch::BoundActionAddress {
                         instance_id: 11,
@@ -693,7 +698,7 @@ impl Runner {
                 app.close_components();
                 app.take_component_close_reports()
             }
-            Self::Driver(driver) => {
+            Self::FrameHarness(driver) => {
                 driver.close_components();
                 driver.take_component_close_reports()
             }
@@ -784,15 +789,12 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
             runner.invoke("edit").unwrap();
             assert_eq!(body(&host.records, &checkout), "edited");
             host.records
-                .read_history(&checkout.id, |_, history| {
-                    assert!(history.next_undo_in(&author(), 11).is_some());
+                .read_history(&checkout.id, |doc, history| {
+                    assert!(history.next_undo_in(doc, &author(), 11).is_some());
                 })
                 .unwrap();
-            *permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(None, "probe-author"),
-                vec![],
-            )
-            .at_unix_time(100);
+            *permissions.borrow_mut() =
+                crate::permissions::PermissionContext::stranger("probe-author").at_unix_time(100);
             assert!(runner.invoke("edit").is_err());
             assert_eq!(body(&host.records, &checkout), "edited");
             assert_eq!(
@@ -822,8 +824,12 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
             );
             host.records
                 .with_history(&checkout.id, |doc, history| {
-                    assert!(history.undo_in(doc, &author(), 11, None, None).is_some());
-                    assert!(history.next_undo_in(&author(), 11).is_none());
+                    assert!(
+                        history
+                            .undo_in(doc, &author(), 11, None, None, None)
+                            .is_some()
+                    );
+                    assert!(history.next_undo_in(doc, &author(), 11).is_none());
                 })
                 .unwrap();
             assert_eq!(body(&host.records, &checkout), "initialized");
@@ -919,9 +925,13 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
         palette_frame(&mut app);
         assert!(app.text_renderer.cache_stats().1 > before.1);
         host.records
-            .read_history(&checkout.id, |_, history| {
+            .read_history(&checkout.id, |doc, history| {
                 assert_eq!(
-                    history.next_undo_in(&author(), 11).unwrap().author.as_ref(),
+                    history
+                        .next_undo_in(doc, &author(), 11)
+                        .unwrap()
+                        .author
+                        .as_ref(),
                     Some(&author())
                 );
             })
@@ -1084,4 +1094,61 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
         assert!(answer.is_terminal());
         crate::component_lifecycle::close_components(&mut tile);
     }
+}
+
+#[cfg(feature = "native")]
+#[test]
+fn native_idle_model_wake_adopts_requested_component_before_draining() {
+    let host = ProbeHost::new();
+    let component = editable_component(&host, 91);
+    let first = component.callback_binding();
+    let retained_reopener = component.reopener();
+    let wanted = request_another_record(&component);
+    let mut app = App::from_component(component, runner_inputs()).unwrap();
+    edit_bound_record(&mut app, &first);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.wake_scope
+        .as_mut()
+        .unwrap()
+        .bind(move |event| {
+            tx.send(event).unwrap();
+        })
+        .unwrap();
+    app.wake_scope.as_ref().unwrap().handle().wake();
+    assert!(app.accept_wake(&rx.recv().unwrap()));
+    app.service_native_idle_model();
+    let shown = app.root_widget.callback_binding().unwrap();
+    assert_eq!(
+        shown.checkout.id, wanted,
+        "idle must adopt the checked replacement before syncing its owner"
+    );
+    assert!(
+        !first.lifetime.is_active(),
+        "old callback custody must retire"
+    );
+    assert_saved_body(&host, &first, "edited");
+    assert_eq!(body(&shown.records, &shown.checkout), "initialized");
+    let retained_id = crate::record::RecordId::minted();
+    let (retained, target) = retained_reopener
+        .prepare(runner_probe_definition(), retained_id.clone())
+        .expect("retirement preserves the authorized same-store preparation capability");
+    assert_eq!(retained.record().id, retained_id);
+    assert!(matches!(target, LaunchTarget::New));
+    drop(retained);
+    // A Reopener deliberately retains same-store capability; stale callback
+    // admission is its closed scoped wake, not permission to prepare a record.
+    app.update_native_model();
+    app.sync_model(false);
+    for _ in rx.try_iter() {}
+    first.lifetime.wake();
+    assert!(
+        matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+        "the outgoing callback must not wake the current owner"
+    );
+    assert!(!app.service_native_idle_model().changed);
+    assert_eq!(
+        app.root_widget.callback_binding().unwrap().checkout.id,
+        wanted
+    );
+    app.close_components();
 }

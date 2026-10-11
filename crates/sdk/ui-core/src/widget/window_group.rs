@@ -1,6 +1,7 @@
 use crate::animation::Spring;
 use crate::color_compat::ColorCompat;
 use crate::icons;
+use crate::num::f32_of_f64;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -72,18 +73,6 @@ fn instant_ago_ms(ms: u64) -> Instant {
         .unwrap_or_else(crate::time::now)
 }
 
-/// Narrows a screen-space coordinate, length or eased animation factor
-/// (`f64`, from taffy layout or CRDT storage) to the `f32` vello/taffy
-/// consume. Real output geometry never approaches `f32`'s range (or an
-/// eased factor its precision), so this never truncates in practice.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen coordinates/lengths and eased [0,1] factors are always far below f32's range"
-)]
-fn px_f32(v: f64) -> f32 {
-    v as f32
-}
-
 /// One critically-damped heavy spring per rect edge. A new target mid-flight
 /// keeps value and velocity, so Super+M twice is one motion, not a queue.
 struct RectSprings {
@@ -97,25 +86,25 @@ impl RectSprings {
     fn at(rect: Rect) -> Self {
         let params = SpringPresets::default().heavy;
         Self {
-            x: Spring::new(px_f32(rect.x0), params),
-            y: Spring::new(px_f32(rect.y0), params),
-            w: Spring::new(px_f32(rect.width()), params),
-            h: Spring::new(px_f32(rect.height()), params),
+            x: Spring::new(f32_of_f64(rect.x0), params),
+            y: Spring::new(f32_of_f64(rect.y0), params),
+            w: Spring::new(f32_of_f64(rect.width()), params),
+            h: Spring::new(f32_of_f64(rect.height()), params),
         }
     }
 
     fn set_target(&mut self, rect: Rect) {
-        self.x.set_target(px_f32(rect.x0));
-        self.y.set_target(px_f32(rect.y0));
-        self.w.set_target(px_f32(rect.width().max(0.0)));
-        self.h.set_target(px_f32(rect.height().max(0.0)));
+        self.x.set_target(f32_of_f64(rect.x0));
+        self.y.set_target(f32_of_f64(rect.y0));
+        self.w.set_target(f32_of_f64(rect.width().max(0.0)));
+        self.h.set_target(f32_of_f64(rect.height().max(0.0)));
     }
 
     fn snap(&mut self, rect: Rect) {
-        self.x.snap(px_f32(rect.x0));
-        self.y.snap(px_f32(rect.y0));
-        self.w.snap(px_f32(rect.width().max(0.0)));
-        self.h.snap(px_f32(rect.height().max(0.0)));
+        self.x.snap(f32_of_f64(rect.x0));
+        self.y.snap(f32_of_f64(rect.y0));
+        self.w.snap(f32_of_f64(rect.width().max(0.0)));
+        self.h.snap(f32_of_f64(rect.height().max(0.0)));
     }
 
     fn step(&mut self, dt: f32) {
@@ -211,7 +200,7 @@ pub struct WindowGroup {
     strip_usable_px: f64,
     rect: Rect,
     /// `(press-time cursor x, press-time resolved width in px)`.
-    resize_origin: Option<(f32, f64)>,
+    resize_origin: Option<(f32, f64, WindowWidth)>,
     pub hover_resize: bool,
     /// The pointer entered or left the resize band since the last frame,
     /// which shows or hides the grip.
@@ -281,6 +270,18 @@ pub struct WindowGroup {
 /// is kept as slim as its `scale.xs` label allows. Recorded rather than
 /// rounded — the row's geometry is what the maximize tests pin.
 const MAXIMIZED_CHIP_H: f64 = 22.0;
+
+fn maximized_chip_height(theme: &Theme) -> f64 {
+    let caption = theme.text(TextRole::Caption);
+    MAXIMIZED_CHIP_H
+        .max(f64::from(caption.size * caption.line_height) + f64::from(theme.tokens.spacing.s1))
+}
+
+fn maximized_chrome_height(theme: &Theme) -> f64 {
+    // Taffy rounds physical layout edges; reserve up to the next pixel so
+    // a fractional scaled chip never reaches into the client header.
+    (maximized_chip_height(theme) + 2.0 * crate::widget::tabs::TAB_PILL_INSET_Y).ceil()
+}
 /// Narrowest the `[app title]` chip is drawn, so a one-letter title still
 /// reads as a chip rather than a dot.
 const MAXIMIZED_TITLE_CHIP_MIN_W: f64 = 80.0;
@@ -502,7 +503,7 @@ impl WindowGroup {
     }
 
     fn arm_width_from_zero(&mut self) {
-        let target = px_f32(self.resolved_width_px());
+        let target = f32_of_f64(self.resolved_width_px());
         if self.reduce_motion {
             self.width_spring = None;
             return;
@@ -515,7 +516,7 @@ impl WindowGroup {
     }
 
     fn retarget_width(&mut self, from: f64, to: f64) {
-        let to = px_f32(to.max(0.0));
+        let to = f32_of_f64(to.max(0.0));
         if self.reduce_motion {
             self.width_spring = None;
             return;
@@ -524,7 +525,7 @@ impl WindowGroup {
             spring.set_target(to);
             return;
         }
-        let from = px_f32(from.max(0.0));
+        let from = f32_of_f64(from.max(0.0));
         if (from - to).abs() < 0.5 {
             return;
         }
@@ -595,7 +596,7 @@ impl WindowGroup {
         }
         let raw = (elapsed.as_secs_f64() / spawn_anim_secs()).clamp(0.0, 1.0);
         let eased = 1.0 - (1.0 - raw).powi(3);
-        px_f32(eased)
+        f32_of_f64(eased)
     }
 
     pub fn start_closing(&mut self) {
@@ -611,10 +612,6 @@ impl WindowGroup {
         self.closing_at.is_some()
     }
 
-    pub fn close_elapsed(&self) -> Option<Duration> {
-        self.closing_at.map(|t| t.elapsed())
-    }
-
     pub fn close_complete(&self) -> bool {
         self.closing_at
             .is_some_and(|t| t.elapsed() >= Duration::from_millis(GROUP_CLOSE_FADE_MS))
@@ -623,7 +620,10 @@ impl WindowGroup {
     pub fn should_show_maximized_chrome(&self, cursor_y: Option<f64>) -> bool {
         !self.external_navigation
             && self.maximized
-            && cursor_y.is_some_and(|y| y <= MAXIMIZED_CHROME_REVEAL_Y)
+            && cursor_y.is_some_and(|y| {
+                y <= MAXIMIZED_CHROME_REVEAL_Y
+                    .max(self.restore_rect.y1 + crate::widget::tabs::TAB_PILL_INSET_Y)
+            })
     }
 
     pub fn strip_usable_px(&self) -> f64 {
@@ -650,11 +650,12 @@ impl WindowGroup {
         } else {
             self.layout_width_px()
         };
+        let width = self.width;
         self.set_width_px(visible_width);
-        self.resize_origin = Some((pointer_x, visible_width));
+        self.resize_origin = Some((pointer_x, visible_width, width));
     }
     pub fn update_resize(&mut self, pointer_x: f32) {
-        if let Some((origin_x, origin_w)) = self.resize_origin {
+        if let Some((origin_x, origin_w, _)) = self.resize_origin {
             let delta = f64::from(pointer_x - origin_x);
             let usable = self.strip_usable_px;
             let clamped = (origin_w + delta).clamp(min_group_px(usable), max_group_px(usable));
@@ -664,6 +665,15 @@ impl WindowGroup {
     pub fn end_resize(&mut self) {
         self.resize_origin = None;
         self.pending_width_change = Some(self.width.permille());
+    }
+
+    /// An interrupted edge drag is a preview, not a committed view change.
+    fn cancel_resize(&mut self) {
+        if let Some((_, _, width)) = self.resize_origin.take() {
+            self.set_width(width);
+            self.hover_resize = false;
+            self.grip_dirty = true;
+        }
     }
 
     /// Does NOT touch `resize_origin` — the inter-group handle owns its
@@ -1253,6 +1263,15 @@ impl WindowGroup {
         true
     }
 
+    /// Retain the native client while its host awaits actual close admission.
+    /// The live host and tab metadata survive the provisional close animation.
+    pub fn cancel_tab_close(&mut self, tab_id: u64) -> bool {
+        let restored = self.bar.cancel_close(tab_id);
+        self.closing_hosts.remove(&tab_id);
+        self.pending_close_commit.retain(|id| *id != tab_id);
+        restored
+    }
+
     pub fn drag_in_flight(&self) -> bool {
         self.bar.drag_in_flight()
     }
@@ -1375,6 +1394,20 @@ impl WindowGroup {
         handle_rect: Rect,
     ) -> bool {
         match event {
+            WindowEvent::Focused(false) if self.resize_origin.is_some() => {
+                self.cancel_resize();
+                // Focus loss must still reach the tab and application so
+                // their own pending input is cancelled too.
+                false
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if self.resize_origin.is_some()
+                    && event.state == ElementState::Pressed
+                    && event.logical_key == Key::Named(winit::keyboard::NamedKey::Escape) =>
+            {
+                self.cancel_resize();
+                true
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = pt;
@@ -1386,7 +1419,7 @@ impl WindowGroup {
                 self.restore_hover = self.maximized && self.restore_rect.contains(pt);
                 self.close_hover = self.maximized && self.close_rect.contains(pt);
                 if self.resize_origin.is_some() {
-                    self.update_resize(px_f32(pt.x));
+                    self.update_resize(f32_of_f64(pt.x));
                     return true;
                 }
                 false
@@ -1447,7 +1480,7 @@ impl WindowGroup {
                 // Anchor on the actual press point, not the group's right
                 // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
                 // edge would jump the window on grab.
-                self.begin_resize(px_f32(self.last_cursor.x));
+                self.begin_resize(f32_of_f64(self.last_cursor.x));
                 true
             }
             WindowEvent::MouseInput {
@@ -1582,7 +1615,7 @@ impl WindowGroup {
             // No offset: the per-host curve already carries the y-drift.
             // Ratio of two `Duration`s taken via `as_secs_f64` rather than
             // an integer->float `as` cast on the millisecond counts.
-            let raw = px_f32(
+            let raw = f32_of_f64(
                 (started.elapsed().as_secs_f64()
                     / Duration::from_millis(GROUP_CLOSE_FADE_MS).as_secs_f64())
                 .clamp(0.0, 1.0),
@@ -1600,7 +1633,7 @@ impl WindowGroup {
                 let eased = 1.0 - (1.0 - raw).powi(3);
                 let scale = SPAWN_ANIM_INITIAL_SCALE + (1.0 - SPAWN_ANIM_INITIAL_SCALE) * eased;
                 let x_off = SPAWN_ANIM_X_OFFSET * (1.0 - eased);
-                (px_f32(eased), x_off, 0.0, scale)
+                (f32_of_f64(eased), x_off, 0.0, scale)
             }
         } else {
             (1.0, 0.0, 0.0, 1.0)
@@ -1632,7 +1665,7 @@ impl WindowGroup {
             let elapsed = started.elapsed().as_secs_f64();
             let raw = (elapsed / (f64::from(CLOSE_FADE_MS) / 1000.0)).clamp(0.0, 1.0);
             let eased = 1.0 - (1.0 - raw).powi(3);
-            let alpha = px_f32(1.0 - eased);
+            let alpha = f32_of_f64(1.0 - eased);
             let scale = 1.0 + (-0.05) * eased; // 1.0 → 0.95
             let y_offset = -20.0 * eased;
             if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == id) {
@@ -1744,7 +1777,7 @@ impl WindowGroup {
         let pad = crate::widget::tabs::TAB_PILL_INSET_Y;
         let layout = ChromePillLayout {
             pad,
-            pill_h: MAXIMIZED_CHIP_H,
+            pill_h: maximized_chip_height(theme),
             y0: self.rect.y0 + pad,
         };
         self.draw_maximized_title_chip(scene, transform, tr, theme, layout);
@@ -2314,7 +2347,7 @@ impl Widget for WindowGroup {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
             size: Size {
-                width: Dimension::length(px_f32(self.layout_width_px())),
+                width: Dimension::length(f32_of_f64(self.layout_width_px())),
                 height: Dimension::percent(1.0),
             },
             flex_grow: 0.0,
@@ -2328,8 +2361,14 @@ impl Widget for WindowGroup {
             style.size.width = Dimension::auto();
             style.flex_grow = 1.0e6;
             style.flex_basis = Dimension::length(0.0);
-            // Fullscreen: the tab strip neither paints (see `draw`) nor
-            // reserves height; the floating pill draws over the content.
+            // Maximized windows retain a compact system-control lane. A
+            // client header must stay below the revealed Restore/Close and
+            // app label, including when captions grow with the text scale.
+            // External navigation (including a fullscreen host) owns its
+            // own chrome and keeps the complete client area.
+            if !self.external_navigation {
+                style.padding.top = length(f32_of_f64(maximized_chrome_height(theme)));
+            }
             if let Some(bar_node) = bar_node {
                 let mut bar_style = taffy.style(bar_node).cloned().unwrap_or_default();
                 bar_style.display = taffy::Display::None;
@@ -2337,18 +2376,10 @@ impl Widget for WindowGroup {
             }
         }
         let nodes = bar_node.map_or_else(|| vec![tile_node], |bar| vec![bar, tile_node]);
-        let node = taffy.parent_node(style, &nodes);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &nodes, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.retarget_rect_spring();
         let children = taffy.children(node).unwrap_or_default();
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
@@ -2750,8 +2781,8 @@ impl crate::collaboration::participants::CollaborationTopology for WindowGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use crate::widget::{AppKind, TabDescriptor, TileContent};
-    use automerge::ObjId;
 
     #[test]
     fn external_navigation_omits_bar_from_layout_and_semantics_but_retains_tabs() {
@@ -2890,13 +2921,40 @@ mod tests {
         );
 
         group.hover_resize = false;
-        group.begin_resize(px_f32(rect.x1));
+        group.begin_resize(f32_of_f64(rect.x1));
         let dragging = render(&mut group);
         assert_ne!(
             at(&dragging, x, y),
             at(&idle, x, y),
             "the grip shows while resizing"
         );
+    }
+
+    #[test]
+    fn deferred_close_retains_host_pill_order_and_focus() {
+        let mut group = make_group();
+        assert!(group.request_close_tab(1));
+        assert!(group.has_closing_host(1));
+        assert!(group.cancel_tab_close(1));
+        group.sweep_expired_closing_hosts();
+        assert_eq!(
+            group
+                .bar
+                .tabs()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(group.active_tab_id(), 1);
+        assert!(group.has_host(1));
+        assert!(!group.has_closing_host(1));
+        assert!(!group.bar.is_closing(1));
+        assert!(
+            !group.cancel_tab_close(1),
+            "restoring twice must not duplicate the pill"
+        );
+        assert_eq!(group.tab_count(), 2);
     }
 
     fn make_group() -> WindowGroup {
@@ -3557,33 +3615,14 @@ mod tests {
         }
     }
 
-    // Common `handle_event` shape shared by every dispatch in the
-    // maximize-click tests below (fixed scale factor, default modifiers);
-    // returns whether the event was claimed.
-    fn dispatch(
+    /// Send `event` to `g` laid out at `node`; whether it was claimed.
+    fn dispatch_at(
         g: &mut WindowGroup,
-        event: &WindowEvent,
-        state: &mut AutoCommit,
-        root_id: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        group_node: NodeId,
         taffy: &TaffyTree<()>,
+        node: NodeId,
+        event: &WindowEvent,
     ) -> bool {
-        let mut handled = false;
-        g.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(state),
-                path: root_id,
-                handled: &mut handled,
-                focus_target,
-                node_id: group_node,
-                taffy,
-            },
-        );
-        handled
+        Dispatch::new().layout(taffy, node).send(g, event).handled
     }
 
     /// Build a `WindowGroup`, lay it out, and hover-open a tab pill's
@@ -3595,16 +3634,7 @@ mod tests {
         clippy::type_complexity,
         reason = "test fixture bundling everything one maximize-click test needs; a named struct would only move the same fields, not reduce them"
     )]
-    fn open_maximize_chip() -> (
-        WindowGroup,
-        TaffyTree<()>,
-        NodeId,
-        AutoCommit,
-        ObjId,
-        Option<NodeId>,
-        WindowEvent,
-        WindowEvent,
-    ) {
+    fn open_maximize_chip() -> (WindowGroup, TaffyTree<()>, NodeId, WindowEvent, WindowEvent) {
         use crate::theme::Theme;
         use std::collections::HashMap;
         use taffy::Style;
@@ -3628,20 +3658,14 @@ mod tests {
 
         // A pill only carries a maximize chip once hovered open.
         let pill = g.bar.tab_rects()[0];
-        let mut state = automerge::AutoCommit::new();
-        let root_id = automerge::ROOT;
-        let mut focus_target = None;
-        dispatch(
+        dispatch_at(
             &mut g,
+            &taffy,
+            group_node,
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
             },
-            &mut state,
-            &root_id,
-            &mut focus_target,
-            group_node,
-            &taffy,
         );
         assert!(
             g.bar
@@ -3658,54 +3682,28 @@ mod tests {
         let click_pt = max_rect.center();
 
         let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(click_pt.x, click_pt.y),
         };
         let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
 
-        (
-            g,
-            taffy,
-            group_node,
-            state,
-            root_id,
-            focus_target,
-            moved,
-            press,
-        )
+        (g, taffy, group_node, moved, press)
     }
 
     #[test]
     fn maximize_toggles_rebuild_layout_and_drain_once() {
         // Case `maximize_click_on_tab_pill_toggles_window_group_maximized`.
         {
-            let (mut g, taffy, group_node, mut state, root_id, mut focus_target, moved, press) =
-                open_maximize_chip();
+            let (mut g, taffy, group_node, moved, press) = open_maximize_chip();
 
             // Seed last_cursor on the icon — the bar's press arm uses the
             // cached cursor for its fresh hit-test.
-            dispatch(
-                &mut g,
-                &moved,
-                &mut state,
-                &root_id,
-                &mut focus_target,
-                group_node,
-                &taffy,
-            );
-            let handled = dispatch(
-                &mut g,
-                &press,
-                &mut state,
-                &root_id,
-                &mut focus_target,
-                group_node,
-                &taffy,
-            );
+            dispatch_at(&mut g, &taffy, group_node, &moved);
+            let handled = dispatch_at(&mut g, &taffy, group_node, &press);
 
             assert!(handled, "press on the maximize icon must be claimed");
             assert!(
@@ -3713,24 +3711,8 @@ mod tests {
                 "maximize click on a tab pill must drive WindowGroup::maximized true",
             );
 
-            dispatch(
-                &mut g,
-                &moved,
-                &mut state,
-                &root_id,
-                &mut focus_target,
-                group_node,
-                &taffy,
-            );
-            dispatch(
-                &mut g,
-                &press,
-                &mut state,
-                &root_id,
-                &mut focus_target,
-                group_node,
-                &taffy,
-            );
+            dispatch_at(&mut g, &taffy, group_node, &moved);
+            dispatch_at(&mut g, &taffy, group_node, &press);
             assert!(
                 !g.maximized,
                 "second maximize click must restore (toggle off)",
@@ -3747,10 +3729,6 @@ mod tests {
             // Simulate the bar publishing a maximize request, same path the
             // per-tab click hits.
             g.bar.pending_max = Some(1);
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
             let mut taffy = TaffyTree::<()>::new();
             let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
                 std::collections::HashMap::new();
@@ -3760,22 +3738,10 @@ mod tests {
                 .compute_layout(root, taffy::Size::MAX_CONTENT)
                 .unwrap();
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
             };
-            g.handle_event(
-                &moved,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: group_node,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut g, &taffy, group_node, &moved);
 
             assert!(g.maximized, "maximize drain must flip the flag");
             assert!(
@@ -3851,26 +3817,10 @@ mod tests {
                 .compute_layout(root, taffy::Size::MAX_CONTENT)
                 .unwrap();
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
             };
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            let mut handled = false;
-            let mut focus_target = None;
-            g.handle_event(
-                &moved,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: group_node,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut g, &taffy, group_node, &moved);
 
             assert!(g.maximized, "drain must flip maximized true");
             assert_eq!(
@@ -3887,20 +3837,7 @@ mod tests {
             // A second toggle reports the flipped value — the take-pattern
             // is one-shot but re-armable, so the shell sees every flip.
             g.bar.pending_max = Some(1);
-            let mut handled = false;
-            g.handle_event(
-                &moved,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: group_node,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut g, &taffy, group_node, &moved);
             assert!(!g.maximized, "second drain must flip back to false");
             assert_eq!(
                 g.take_pending_maximize_change(),
@@ -3909,7 +3846,7 @@ mod tests {
             );
         }
 
-        // Case `maximized_group_gives_all_its_height_to_the_app`.
+        // Case `maximized_group_keeps_client_header_below_system_controls`.
         {
             use std::collections::HashMap;
             use taffy::Style;
@@ -3948,13 +3885,40 @@ mod tests {
              group={group_h} tile={tile_h}",
             );
 
-            g.maximized = true;
-            let (group_h, tile_h) = measure(&mut g, &theme);
-            assert_eq!(
-                tile_h, group_h,
-                "maximized: the app must get the group's full height (no reserved \
-             tab-strip band)",
-            );
+            for theme in [
+                Theme::light(),
+                Theme::dark(),
+                Theme::high_contrast().with_text_scale(2.0),
+            ] {
+                g.maximized = true;
+                let (group_h, tile_h) = measure(&mut g, &theme);
+                assert!(
+                    (group_h - tile_h - maximized_chrome_height(&theme)).abs() < 0.0001,
+                    "the client gets exactly the remaining height below system chrome: group={group_h}, client={tile_h}, chrome={}",
+                    maximized_chrome_height(&theme)
+                );
+                g.last_cursor = Point::new(g.rect.x0, g.rect.y0);
+                g.draw_maximized_chrome(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &theme,
+                );
+                let client = g.active_host().unwrap().get_rect();
+                assert!(
+                    g.restore_rect.y1 <= client.y0,
+                    "Restore must not cover the client header"
+                );
+                assert!(
+                    g.close_rect.y1 <= client.y0,
+                    "Close must not cover the client header"
+                );
+                assert!(
+                    g.should_show_maximized_chrome(Some(g.restore_rect.center().y)),
+                    "the revealed scaled Restore control must stay reachable"
+                );
+                assert!(tile_h > 0.0);
+            }
         }
 
         // Case `maximized_restore_rebuilds_the_tiled_layout`.
@@ -3979,26 +3943,11 @@ mod tests {
             g.restore_rect = Rect::new(0.0, 0.0, 80.0, 40.0);
             g.last_cursor = Point::new(20.0, 20.0);
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            g.handle_event(
-                &press,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: group_node,
-                    taffy: &taffy,
-                },
-            );
+            let handled = dispatch_at(&mut g, &taffy, group_node, &press);
 
             assert!(handled);
             assert!(!g.maximized);
@@ -4008,6 +3957,121 @@ mod tests {
                 "restore must invalidate the cached maximized geometry",
             );
         }
+    }
+
+    struct EdgeResizeJourney {
+        row: crate::widget::GroupRow,
+        tree: TaffyTree<()>,
+        node: NodeId,
+        pointer: Point,
+    }
+
+    impl EdgeResizeJourney {
+        fn new() -> Self {
+            use taffy::prelude::TaffyMaxContent;
+
+            let mut row = crate::widget::GroupRow::new(vec![make_group()]);
+            let mut tree = TaffyTree::new();
+            let node = row.build_layout(
+                &mut tree,
+                &Theme::dark().with_reduce_motion(true),
+                &mut Default::default(),
+            );
+            let root = tree.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(900.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            );
+            tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+            row.apply_layout(&tree, node, Point::ZERO);
+            let rect = row.groups[0].get_rect();
+            assert!(rect.height() > 0.0);
+            Self {
+                row,
+                tree,
+                node,
+                pointer: Point::new(rect.x1 - 3.0, rect.center().y),
+            }
+        }
+
+        fn send(&mut self, event: &WindowEvent) -> bool {
+            Dispatch::new()
+                .layout(&self.tree, self.node)
+                .send(&mut self.row, event)
+                .handled
+        }
+
+        fn move_pointer(&mut self, dx: f64) {
+            self.send(&WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(self.pointer.x + dx, self.pointer.y),
+            });
+        }
+
+        fn mouse(&mut self, state: ElementState) {
+            self.send(&WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state,
+                button: MouseButton::Left,
+            });
+        }
+
+        fn begin(&mut self) {
+            self.move_pointer(0.0);
+            self.mouse(ElementState::Pressed);
+            assert!(self.row.wants_pointer_capture());
+            self.move_pointer(100.0);
+            assert_ne!(self.row.groups[0].width(), WindowWidth::Normal);
+            assert!(self.row.groups[0].take_pending_width_change().is_none());
+        }
+
+        fn assert_cancelled_and_restart(&mut self) {
+            assert!(
+                !self.row.wants_pointer_capture(),
+                "interruption must release capture"
+            );
+            assert_eq!(self.row.groups[0].width(), WindowWidth::Normal);
+            self.move_pointer(250.0);
+            self.mouse(ElementState::Released);
+            assert_eq!(self.row.groups[0].width(), WindowWidth::Normal);
+            assert!(self.row.groups[0].take_pending_width_change().is_none());
+            self.begin();
+            self.mouse(ElementState::Released);
+            assert!(!self.row.wants_pointer_capture());
+            assert!(self.row.groups[0].take_pending_width_change().is_some());
+            assert!(self.row.groups[0].take_pending_width_change().is_none());
+        }
+    }
+
+    #[test]
+    fn window_edge_resize_focus_loss_cancels_preview_and_allows_a_fresh_drag() {
+        let mut journey = EdgeResizeJourney::new();
+        journey.begin();
+        journey.send(&WindowEvent::Focused(false));
+        journey.assert_cancelled_and_restart();
+    }
+
+    #[test]
+    fn window_edge_resize_escape_cancels_preview_before_a_late_release() {
+        let mut journey = EdgeResizeJourney::new();
+        journey.begin();
+        let escape = WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: crate::synthetic_input::key_event(
+                Key::Named(winit::keyboard::NamedKey::Escape),
+                None,
+                ElementState::Pressed,
+            ),
+            is_synthetic: true,
+        };
+        assert!(journey.send(&escape));
+        journey.send(&escape);
+        journey.assert_cancelled_and_restart();
     }
 
     #[test]
@@ -4120,42 +4184,20 @@ mod tests {
             // exactly on the edge.
             let press_x = right_edge - 3.0;
 
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
-            let mut focus = None;
-
-            let mut dispatch = |g: &mut WindowGroup, ev: &WindowEvent, taffy: &TaffyTree<()>| {
-                let mut handled = false;
-                g.handle_event(
-                    ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: crate::widget::Edits::lend(&mut state),
-                        path: &root_id,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy,
-                    },
-                );
-            };
-
             let move_to = |x: f64| WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(x, press_y),
             };
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
 
-            dispatch(&mut g, &move_to(press_x), &taffy);
-            dispatch(&mut g, &press, &taffy);
+            dispatch_at(&mut g, &taffy, node, &move_to(press_x));
+            dispatch_at(&mut g, &taffy, node, &press);
             // Drag exactly +100 px from the press position.
-            dispatch(&mut g, &move_to(press_x + 100.0), &taffy);
+            dispatch_at(&mut g, &taffy, node, &move_to(press_x + 100.0));
 
             assert_eq!(
                 g.resolved_width_px(),
@@ -4213,7 +4255,7 @@ mod tests {
 
             // In-flight resize drag holds the cursor even off the band —
             // pointer capture keeps the gesture alive.
-            g.begin_resize(px_f32(rect.x1));
+            g.begin_resize(f32_of_f64(rect.x1));
             assert_eq!(
                 Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
                 Some(winit::window::CursorIcon::EwResize),
@@ -4331,27 +4373,11 @@ mod tests {
             // Publish a reorder the same way the bar does on a drag release, then
             // pump the group's drain block via a harmless event.
             g.bar_mut_for_tests().pending_reorder = Some((0, 1));
-            let mut handled = false;
-            let mut focus = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
             };
-            g.handle_event(
-                &moved,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut g, &taffy, node, &moved);
 
             assert_eq!(
                 g.take_pending_tab_reorder(),
@@ -4426,26 +4452,10 @@ mod tests {
 
                 // Drive the WindowGroup drain block via a no-op cursor move.
                 let moved = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
                 };
-                let mut state = automerge::AutoCommit::new();
-                let root_id = automerge::ROOT;
-                let mut handled = false;
-                let mut focus_target = None;
-                g.handle_event(
-                    &moved,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: crate::widget::Edits::lend(&mut state),
-                        path: &root_id,
-                        handled: &mut handled,
-                        focus_target: &mut focus_target,
-                        node_id: group_node,
-                        taffy: &taffy,
-                    },
-                );
+                dispatch_at(&mut g, &taffy, group_node, &moved);
 
                 assert_eq!(
                     g.bar.tabs().len(),
@@ -4488,25 +4498,15 @@ mod tests {
             use std::collections::HashMap;
             use taffy::Style;
             use taffy::prelude::TaffyMaxContent;
-            use winit::event::{KeyEvent, Modifiers};
-            use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey, SmolStr};
+            use winit::event::Modifiers;
+            use winit::keyboard::{Key, ModifiersState, SmolStr};
 
-            // winit 0.30 keeps `KeyEventExtra` `pub(crate)`, so a `KeyEvent`
-            // can't be built through a struct literal — zero-init instead.
             fn key_press(logical_key: Key) -> WindowEvent {
-                let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-                ev.logical_key = logical_key;
-                ev.physical_key =
-                    PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-                ev.location = KeyLocation::Standard;
-                ev.state = ElementState::Pressed;
-                ev.repeat = false;
-                ev.text = None;
-                WindowEvent::KeyboardInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    event: ev,
-                    is_synthetic: false,
-                }
+                crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+                    logical_key,
+                    None,
+                    ElementState::Pressed,
+                ))
             }
 
             let mut g = make_group();
@@ -4529,23 +4529,8 @@ mod tests {
                 .unwrap();
             g.apply_layout(&taffy, group_node, Point::ZERO);
 
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            let mut handled = false;
-            let mut focus_target = None;
-            g.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: group_node,
-                    taffy: &taffy,
-                },
-            );
+            let mut ctrl_shift = Dispatch::new().layout(&taffy, group_node).modifiers(mods);
+            let handled = ctrl_shift.send(&mut g, &event).handled;
             assert!(handled, "Ctrl+Shift+P press must be claimed");
             assert!(
                 g.bar.is_pinned(active),
@@ -4553,41 +4538,14 @@ mod tests {
             );
 
             // Second press toggles back off.
-            let mut handled = false;
-            g.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: group_node,
-                    taffy: &taffy,
-                },
-            );
+            let handled = ctrl_shift.send(&mut g, &event).handled;
             assert!(handled, "second Ctrl+Shift+P press is also claimed");
             assert!(
                 !g.bar.is_pinned(active),
                 "second Ctrl+Shift+P must unpin the active tab",
             );
 
-            let plain_mods = Modifiers::default();
-            let mut handled = false;
-            g.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &plain_mods,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: group_node,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut g, &taffy, group_node, &event);
             assert!(
                 !g.bar.is_pinned(active),
                 "plain `P` (no Ctrl+Shift) must not toggle pin state",
@@ -4911,7 +4869,7 @@ mod tests {
             assert!(
                 g.width_spring
                     .as_ref()
-                    .is_some_and(|s| s.target() < px_f32(mid)),
+                    .is_some_and(|s| s.target() < f32_of_f64(mid)),
                 "Narrow on a 1200 px strip is smaller than the mid-open width",
             );
         }
@@ -5302,27 +5260,11 @@ mod tests {
 
             // CursorMoved off-rect so no hover handlers fire and the event
             // reaches the close-drain block at the bottom of `handle_event`.
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
             };
-            g.handle_event(
-                &moved,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: group_node,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut g, &taffy, group_node, &moved);
 
             assert!(
                 g.has_closing_host(2),
@@ -5337,23 +5279,10 @@ mod tests {
 
             g.force_expire_closing(2);
             let moved2 = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
             };
-            let mut handled2 = false;
-            g.handle_event(
-                &moved2,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled2,
-                    focus_target: &mut focus_target,
-                    node_id: group_node,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut g, &taffy, group_node, &moved2);
             assert!(
                 !g.has_host(2),
                 "sweep drops the host after the fade expires",
@@ -5405,27 +5334,11 @@ mod tests {
 
             // First handle_event drains `pending_close` into `closing_hosts`;
             // the group is NOT yet closing while a host close is in flight.
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
             };
-            g.handle_event(
-                &moved,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: group_node,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut g, &taffy, group_node, &moved);
             assert!(
                 g.has_closing_host(1),
                 "precondition: host-level close latched",
@@ -5439,23 +5352,10 @@ mod tests {
             // away, discovers the group is empty, and latches the group close.
             g.force_expire_closing(1);
             let moved2 = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
             };
-            let mut handled2 = false;
-            g.handle_event(
-                &moved2,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled2,
-                    focus_target: &mut focus_target,
-                    node_id: group_node,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut g, &taffy, group_node, &moved2);
             assert!(
                 g.is_closing(),
                 "after the sole tab's fade sweeps out, the group must latch its own close fade",
@@ -5599,28 +5499,12 @@ mod tests {
             g.last_cursor = Point::new(5.0, 5.0);
 
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
 
-            let mut handled = false;
-            let mut focus_target = None;
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            g.handle_event(
-                &press,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: group_node,
-                    taffy: &taffy,
-                },
-            );
+            let handled = dispatch_at(&mut g, &taffy, group_node, &press);
 
             assert!(handled, "press must be consumed by the close arm");
             assert!(!g.maximized, "maximize must drop immediately");
@@ -5652,23 +5536,10 @@ mod tests {
 
             g.force_expire_closing(1);
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
             };
-            let mut handled2 = false;
-            g.handle_event(
-                &moved,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root_id,
-                    handled: &mut handled2,
-                    focus_target: &mut focus_target,
-                    node_id: group_node,
-                    taffy: &taffy,
-                },
-            );
+            dispatch_at(&mut g, &taffy, group_node, &moved);
 
             assert!(!g.has_host(1), "sweep drops the host once the fade expires");
             assert!(

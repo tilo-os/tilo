@@ -19,9 +19,18 @@ struct Fixture {
     tree: WorkspaceTreeHandle,
     clipboard: Arc<NativeFileClipboard>,
     _broker: BrokerHandle,
+    /// This test's own data home, where its Trash lives: never the host's,
+    /// nor one another test running alongside creates at the same time.
+    _data_home: tilo_test_env::ScopedEnv,
+    _data: tempfile::TempDir,
 }
 impl Fixture {
     fn new() -> Self {
+        let data = tempfile::tempdir().expect("private data home");
+        fs::set_permissions(data.path(), fs::Permissions::from_mode(0o700))
+            .expect("owner-only data home");
+        let mut data_home = tilo_test_env::ScopedEnv::new();
+        data_home.set("XDG_DATA_HOME", data.path());
         let directory = tempfile::tempdir().expect("private clipboard fixture");
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
             .expect("owner-only fixture socket directory");
@@ -29,7 +38,7 @@ impl Fixture {
         let signing_root = SigningKey::from_bytes(&[119; 32]);
         let device = SigningKey::from_bytes(&[120; 32]);
         let mut workspace = Workspace::new(WorkspaceId(119), "Clipboard bridge fixture");
-        workspace.owner = Some(
+        workspace.set_owner(
             tilo_action_broker::collab_broker_capnp::principal_id_for_root(
                 signing_root.verifying_key().to_bytes(),
             ),
@@ -100,6 +109,8 @@ impl Fixture {
             tree,
             clipboard,
             _broker: broker,
+            _data_home: data_home,
+            _data: data,
         }
     }
     #[expect(
@@ -121,12 +132,12 @@ async fn connect(socket: &Path, room: &str, identity: &[u8], record: &str) -> Co
         .await
         .expect("local socket");
     let handoff = serde_json::to_vec(&serde_json::json!({
-        "protocol": collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION,
+        "protocol": launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,
         "app_id": APP, "workspace_id": room,
     }))
     .expect("launcher handoff");
     stream
-        .write_all(&collab_types::local_transport::COLLAB_LAUNCH_MAGIC)
+        .write_all(&launcher::services::COLLAB_LAUNCH_MAGIC)
         .await
         .expect("marker");
     stream
@@ -448,7 +459,7 @@ fn clipboard_bridge_pastes_exact_tickets_and_observes_retry_without_duplicate_co
             fs::read_dir(&folder).expect("receiving contents").count(),
             1
         );
-        fixture.tree.write().workspaces[0].capabilities.clear();
+        fixture.tree.write().workspaces[0].sandbox.clear();
         let reply = b
             .compensate(Command::Undo { operation })
             .await
@@ -676,7 +687,6 @@ fn clipboard_bridge_cut_restores_exact_receipt_under_current_undo_authority() {
 
 #[test]
 fn clipboard_bridge_current_viewer_can_copy_but_cannot_cut_or_replace_offer() {
-    use crate::shell::state::{CapOverride, Subject, Verb};
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -690,12 +700,8 @@ fn clipboard_bridge_current_viewer_can_copy_but_cannot_cut_or_replace_offer() {
         {
             let mut tree = fixture.tree.write();
             let workspace = tree.workspaces.first_mut().expect("fixture workspace");
-            let principal = workspace.owner.take().expect("original owner");
-            workspace.grant_capability(CapOverride::membership(
-                Subject::person(principal),
-                fixture.room.clone(),
-                Verb::Read,
-            ));
+            let principal = workspace.policy.owner.take().expect("original owner");
+            workspace.admit(principal, tilo_action_policy::Role::Viewer);
             drop(tree);
         }
         let offer = connection.publish(ticket.clone(), false).await;

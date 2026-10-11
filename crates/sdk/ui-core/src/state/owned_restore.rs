@@ -104,7 +104,6 @@ pub(crate) fn restore_reviewed_history(
         RestoreWrite::Content,
     );
     let context = tilo_actions::ActionContext::for_resource(
-        "Restore version",
         review.resource().record_id.as_str(),
         "document",
         title,
@@ -186,7 +185,7 @@ fn check_restore_authority(
     app_id: &str,
     record: Option<&crate::record::RecordId>,
 ) -> Result<(), RestoreRefusal> {
-    use crate::permissions::{CapDecision, Principal, ResourceRef, Verb};
+    use crate::permissions::{Access, ActionKind, Principal};
     // The installed solo-workspace principal is the runner's existing
     // local-author mapping. Other contexts must name the actual author.
     let mapped = current.actor().principals.contains(&author.principal())
@@ -195,15 +194,18 @@ fn check_restore_authority(
             .principals
             .contains(&Principal::Person(crate::permissions::LOCAL_USER.into()));
     if !mapped
-        || current.decide(&ResourceRef::App(app_id.to_owned()), Verb::Write) != CapDecision::Allow
+        || !current.check(&crate::permissions::PermissionScope::app(
+            app_id.to_owned(),
+            ActionKind::Undoable,
+        ))
     {
         return Err(RestoreRefusal::App);
     }
     if let Some(path) = record.and_then(crate::record::RecordId::file_path)
-        && current.decide(
-            &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
-            Verb::Write,
-        ) != CapDecision::Allow
+        && !current.check(&crate::permissions::PermissionScope::path(
+            path.to_string_lossy().into_owned(),
+            Access::Write,
+        ))
     {
         return Err(RestoreRefusal::File);
     }
@@ -229,7 +231,11 @@ pub(crate) fn restore_reviewed_record(
     )
     .map_err(|_| OwnedRestoreError::Denied)?;
     let mut context = tilo_actions::ActionContext {
-        action_label: crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action"),
+        what: Some(tilo_actions::Did::history(
+            tilo_actions::HistoryOp::Restore,
+            0,
+            None,
+        )),
         ..tilo_actions::ActionContext::default()
     }
     .enriched_by(&binding.operation_context);
@@ -249,18 +255,8 @@ pub(crate) fn restore_reviewed_record(
 }
 #[derive(Debug)]
 pub(crate) struct OwnedActionReceipt {
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "retained in receipts for restore audit tests")
-    )]
-    pub(crate) before: Vec<ChangeHash>,
     pub(crate) after: Vec<ChangeHash>,
     pub(crate) changed: bool,
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "retained in receipts for restore audit tests")
-    )]
-    pub(crate) history_revision: u64,
 }
 #[derive(Debug)]
 pub(crate) enum OwnedRestoreError {
@@ -378,10 +374,8 @@ impl<'a> OwnedContentAction<'a> {
         };
         match (outcome, self.doc.pending_ops() > 0) {
             (RestoreOutcome::Unchanged, false) => Ok(OwnedActionReceipt {
-                before: self.before.clone(),
                 after: self.before.clone(),
                 changed: false,
-                history_revision: self.history.revision(),
             }),
             (RestoreOutcome::Changed, true) => {
                 let Some(attribution) = self.attribution.take() else {
@@ -415,11 +409,12 @@ impl UndoLog {
         before: Vec<ChangeHash>,
         attribution: OwnedActionAttribution,
     ) -> OwnedActionReceipt {
-        let committed =
-            tilo_resource::history::commit_stamped_with_message(doc, attribution.message).is_some();
+        let message = self.stamp(attribution.message, attribution.author.as_ref());
+        let committed = tilo_resource::history::commit_stamped_with_message(doc, message).is_some();
         let after = doc.get_heads();
         if committed {
-            self.record_committed_span_owned(
+            self.record_committed_span(
+                doc,
                 before.clone(),
                 after.clone(),
                 attribution.focused_node_idx,
@@ -433,10 +428,8 @@ impl UndoLog {
             self.last_heads.clone_from(&after);
         }
         OwnedActionReceipt {
-            before,
             after,
             changed: committed,
-            history_revision: self.revision(),
         }
     }
 }

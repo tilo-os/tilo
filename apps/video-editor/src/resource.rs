@@ -1,128 +1,642 @@
-//! The project as a framework resource, and the editor as its surface.
+//! The project's verbs, and the editor as the app's surface.
 //!
-//! The timeline has its own storage layout and merge semantics — keyed maps
-//! of clips, tracks and media, clips patched field by field against the
-//! values an edit started from — so it implements the resource contract by
-//! hand rather than deriving it: [`VideoProject::read`] is the existing
-//! document projection, and the existing [`VideoEditorAction`] vocabulary is
-//! the replayable action, under its existing registry type id. The editor
-//! keeps its own custom rendering and input; as a
-//! [`ResourceSurface`](ui::framework::ResourceSurface) it is presented the
-//! project and submits every edit through the framework's dispatcher, which
-//! is what gives it permission checks, per-author undo, attributed history
-//! and a History mode that draws past versions with the real timeline.
+//! Fields change through the field edits every path offers
+//! (`Project::paths().clips.item(&id).opacity.set(0.5)`); the editor's own
+//! gestures edit its local copy of the project and submit the edits between
+//! that copy and where it started ([`ui::tilo_resource::Path::edits`]). The
+//! methods below are the operations that are more than setting a field —
+//! splitting, trimming, rippling, linking, re-timing — and run the same
+//! editing math the editor does, so an agent and a person make the same cut.
 
-use tilo_actions::{ActionParam, ActionSpec, OperationKind, ParamType};
 use ui::framework::{ResourceApp, ViewCx};
-use ui::tilo_resource::{ActionDecl, ActionRef, Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::i18n::EmbeddedCatalog;
+use ui::tilo_resource::{self, Id, Invoke, Path, Refusal, resource};
 use ui::widget::Element;
+use uuid::Uuid;
 
-use crate::actions::{VIDEO_EDITOR_ACTION_TYPE, VideoEditorAction, VideoResourceCtx};
 use crate::app::{EMPTY_CAPTURE, NARROW_CAPTURE, ShotScenario};
-use crate::doc::VideoDoc;
-use crate::model::{Marker, Project};
+use crate::model::{
+    ClipId, EffectKind, MAX_GAIN_DB, MIN_GAIN_DB, MediaItem, MediaKind, Project, TextSource, Track,
+    TrackKind,
+};
+use crate::param::Param;
 
-/// The video project resource.
-pub struct VideoProject;
-
-impl VideoProject {
-    /// Bind or apply the `add-marker` declaration: seconds, then name.
-    pub const ADD_MARKER: ActionRef<VideoProject, (f64, String)> =
-        ActionRef::new("add-marker", &["at", "name"]);
+/// The clip, track, source or marker an id names.
+fn uuid(id: &Id) -> Result<Uuid, Refusal> {
+    id.as_str()
+        .parse()
+        .map_err(|_| Refusal::new(format!("`{id}` names nothing in this project")))
 }
 
-impl Resource for VideoProject {
-    const KIND: &'static str = "video_editor.project";
-    const LABEL: &'static str = "Project";
-    const ACTION_TYPE: &'static str = VIDEO_EDITOR_ACTION_TYPE;
-
-    type State = Project;
-    type Action = VideoEditorAction;
-
-    /// The editor's one vocabulary, registered where every other caller
-    /// (tests, tools) registers it.
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        crate::actions::register(registry);
-    }
-
-    fn read(doc: &Doc) -> Result<Project, ModelError> {
-        Ok(VideoDoc::load_project(doc))
-    }
-
-    /// Named catalogue actions an agent can invoke without the playhead.
-    /// Edits bound to the playhead (split, trim and mark at it, the mix trim)
-    /// are the editor's [`crate::actions::playhead_declarations`].
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
-            ActionDecl::new(
-                "add-marker",
-                "Add a timeline marker",
-                vec![
-                    ActionParam::required_owned("at", ParamType::Number, "Seconds from the start"),
-                    ActionParam::required_owned("name", ParamType::Text, "Marker name"),
-                ],
-                |args, _now| {
-                    let at = args.number("at").ok_or("missing time")?;
-                    if !at.is_finite() || at < 0.0 {
-                        return Err("a marker needs a time at or after the start".into());
-                    }
-                    let name = args.text("name").unwrap_or_default();
-                    Ok(VideoEditorAction::AddProjectMarker {
-                        marker: Marker::new(at, name, 0),
-                    })
-                },
-            )
-            .describe("Place a named marker on the project timeline."),
-        ]
-    }
-
-    /// Tracks, clips, media and markers, each with the actions its data
-    /// implies.
-    fn children(project: &Project) -> Vec<tilo_actions::Resource> {
-        let ctx = VideoResourceCtx {
-            project: project.clone(),
-            playhead: 0.0,
-            mix: crate::audio::MixSnapshot::default(),
-        };
-        crate::actions::project_tree(&ctx)
-            .into_iter()
-            .next()
-            .map(|root| root.children)
-            .unwrap_or_default()
-    }
-
-    /// Document actions whose payload is bound from the current project
-    /// (rename, frame size, add track/title, …).
-    fn bound_actions(project: &Project) -> Vec<ActionSpec> {
-        let ctx = VideoResourceCtx {
-            project: project.clone(),
-            playhead: 0.0,
-            mix: crate::audio::MixSnapshot::default(),
-        };
-        crate::actions::project_tree(&ctx)
-            .into_iter()
-            .next()
-            .map(|root| {
-                root.actions
-                    .into_iter()
-                    .filter(|spec| spec.kind == OperationKind::Document)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Every marker, track, clip, effect and bin source, each hit revealing
-    /// it.
-    fn search(project: &Project) -> Vec<SearchEntry> {
-        crate::search::project_entries(project)
+/// A time on the timeline an edit can happen at.
+fn instant(at: f64) -> Result<f64, Refusal> {
+    if at.is_finite() && at >= 0.0 {
+        Ok(at)
+    } else {
+        Err(Refusal::new("a time at or after the start"))
     }
 }
+
+#[resource(
+    kind = "video-editor.project",
+    label = "Project",
+    params = video_project,
+    search = crate::search::project_entries,
+)]
+impl Project {
+    /// Set the frame size.
+    #[action(id = "set-frame-size")]
+    pub fn resize_frame(
+        &mut self,
+        #[param("Frame width in pixels; clamped to 16..8192 and rounded even")] width: u32,
+        #[param("Frame height in pixels; clamped to 16..8192 and rounded even")] height: u32,
+    ) {
+        self.set_frame_size(width, height);
+    }
+
+    /// Set the frame rate.
+    #[action(id = "set-frame-rate")]
+    pub fn retime_frames(&mut self, #[param("Frames per second; clamped to 1..240")] fps: f64) {
+        self.set_fps(fps);
+    }
+
+    /// Set the render range.
+    #[action(id = "set-render-range")]
+    pub fn render_range(
+        &mut self,
+        #[param("Seconds where a render begins")] start: f64,
+        #[param("Seconds where it ends; later than the start")] end: f64,
+    ) -> Result<(), Refusal> {
+        if !(start.is_finite() && end.is_finite() && end > start) {
+            return Err(Refusal::new("a render range ends after it begins"));
+        }
+        // Out first: marking in drops an out mark at or before it.
+        self.set_mark_out(end);
+        self.set_mark_in(start);
+        Ok(())
+    }
+
+    /// Mark where a render begins.
+    #[action]
+    pub fn mark_in(&mut self, #[param("Seconds on the timeline")] at: f64) -> Result<(), Refusal> {
+        self.set_mark_in(instant(at)?);
+        Ok(())
+    }
+
+    /// Mark where a render ends.
+    #[action]
+    pub fn mark_out(&mut self, #[param("Seconds on the timeline")] at: f64) -> Result<(), Refusal> {
+        self.set_mark_out(instant(at)?);
+        Ok(())
+    }
+
+    /// Clear the in and out marks.
+    #[action(id = "clear-marks")]
+    pub fn clear_render_range(&mut self) {
+        self.clear_marks();
+    }
+
+    /// Add a title.
+    #[action]
+    pub fn add_title(
+        &mut self,
+        #[param("The words the title shows; empty reads as “Title”")] text: String,
+    ) {
+        let words = text.trim();
+        let content = if words.is_empty() { "Title" } else { words };
+        let palette = u8::try_from(self.media.len() % 7).unwrap_or(0);
+        self.media.push(MediaItem {
+            id: tilo_resource::fresh_uuid(),
+            name: content.lines().next().unwrap_or("Title").to_owned(),
+            kind: MediaKind::Text,
+            // Long enough to be trimmed down rather than stretched.
+            duration: 5.0,
+            palette,
+            // A title has no bytes: nothing to hydrate or fetch.
+            path: String::new(),
+            text: Some(TextSource::new(content)),
+            ..MediaItem::default()
+        });
+    }
+
+    /// Add a timeline marker.
+    #[action(id = "add-marker")]
+    pub fn place_marker(
+        &mut self,
+        #[param("Seconds from the start")] at: f64,
+        #[param("Marker name; empty reads as “Marker”")] name: String,
+    ) -> Result<(), Refusal> {
+        let at = instant(at)?;
+        let name = name.trim();
+        self.add_marker(at, if name.is_empty() { "Marker" } else { name }, 1);
+        Ok(())
+    }
+
+    /// Remove a timeline marker.
+    #[action(id = "remove-marker", item = markers, destructive)]
+    pub fn delete_marker(&mut self, marker: &Id) -> Result<(), Refusal> {
+        if self.remove_marker(uuid(marker)?) {
+            Ok(())
+        } else {
+            Err(Refusal::new("no such marker"))
+        }
+    }
+
+    /// Add an empty track.
+    #[action]
+    pub fn add_track(&mut self, #[param("Video or audio")] kind: TrackKind) {
+        let index = self
+            .tracks
+            .iter()
+            .filter(|t| t.kind == kind)
+            .map(|t| t.index)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let prefix = if kind == TrackKind::Video { "V" } else { "A" };
+        self.tracks.push(Track {
+            id: tilo_resource::fresh_uuid(),
+            name: format!("{prefix}{index}"),
+            kind,
+            index,
+            ..Track::default()
+        });
+    }
+
+    /// Put a track's gain and pan back to unity and centre.
+    #[action(item = tracks)]
+    pub fn reset_mix(&mut self, track: &Id) -> Result<(), Refusal> {
+        let id = uuid(track)?;
+        let track = self
+            .tracks
+            .iter_mut()
+            .find(|t| t.id == id)
+            .ok_or("no such track")?;
+        track.gain_db = 0.0;
+        track.pan = 0.0;
+        Ok(())
+    }
+
+    /// Bring every lane named down by the same amount, keeping the balance.
+    #[action]
+    pub fn trim_lanes(
+        &mut self,
+        #[param("The tracks to bring down")] tracks: Vec<Id>,
+        #[param("Decibels to bring each down by")] db: f64,
+        #[param(
+            "Decibels to leave below full scale besides; 0 lands the measured peak exactly at \
+             full scale"
+        )]
+        headroom: f64,
+    ) -> Result<(), Refusal> {
+        if !(db.is_finite() && headroom.is_finite()) {
+            return Err(Refusal::new("decibels are finite numbers"));
+        }
+        let lanes = tracks.iter().map(uuid).collect::<Result<Vec<_>, _>>()?;
+        // Negative headroom would leave the mix clipping, which is what this
+        // exists to end.
+        let trimmed = self.lanes_trimmed_by(&lanes, db + headroom.max(0.0));
+        if trimmed.is_empty() {
+            return Err(Refusal::new("nothing to trim"));
+        }
+        for next in trimmed {
+            if let Some(track) = self.tracks.iter_mut().find(|t| t.id == next.id) {
+                *track = next;
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete a track and its clips.
+    #[action(item = tracks, destructive)]
+    pub fn delete_track(&mut self, track: &Id) -> Result<(), Refusal> {
+        let id = uuid(track)?;
+        if self.tracks.take(track).is_none() {
+            return Err(Refusal::new("no such track"));
+        }
+        self.clips.retain(|clip| clip.track != id);
+        Ok(())
+    }
+
+    /// Place a source on a track.
+    #[action(item = media)]
+    pub fn place_clip(
+        &mut self,
+        media: &Id,
+        #[param("The track to place it on")] track: Id,
+        #[param("Seconds from the start")] start: f64,
+    ) -> Result<(), Refusal> {
+        let track = uuid(&track)?;
+        if self.track(track).is_none() {
+            return Err(Refusal::new("no such track"));
+        }
+        self.add_clip(track, uuid(media)?, instant(start)?)
+            .map(drop)
+            .ok_or_else(|| Refusal::new("no such source"))
+    }
+
+    /// Delete a source and every clip of it.
+    #[action(id = "delete-media", item = media, destructive)]
+    pub fn remove_media(&mut self, media: &Id) -> Result<(), Refusal> {
+        let id = uuid(media)?;
+        if self.media.take(media).is_none() {
+            return Err(Refusal::new("no such source"));
+        }
+        self.clips.retain(|clip| clip.media != id);
+        Ok(())
+    }
+
+    /// Use a source's frame size and rate for the project.
+    #[action(id = "use-as-project-format", item = media)]
+    pub fn adopt_media_format(&mut self, media: &Id) -> Result<(), Refusal> {
+        let source = self.media.find(media).cloned().ok_or("no such source")?;
+        if source.width == 0 || source.height == 0 {
+            return Err(Refusal::new("the source has no picture size"));
+        }
+        self.set_frame_size(source.width, source.height);
+        if source.fps > 0.0 {
+            self.set_fps(source.fps);
+        }
+        Ok(())
+    }
+
+    /// Delete a clip and the clips linked to it.
+    #[action(id = "delete", item = clips, destructive)]
+    pub fn remove_clip(&mut self, clip: &Id) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        self.delete_linked(id);
+        Ok(())
+    }
+
+    /// Delete a clip and close the gap it leaves.
+    #[action(id = "ripple-delete", item = clips, destructive)]
+    pub fn close_gap(&mut self, clip: &Id) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        self.ripple_delete_linked(id);
+        Ok(())
+    }
+
+    /// Cut a clip and its linked clips in two.
+    #[action(id = "split-clip", item = clips)]
+    pub fn cut(
+        &mut self,
+        clip: &Id,
+        #[param("Seconds on the timeline where it is cut")] at: f64,
+    ) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        if self.split_linked(id, instant(at)?).is_empty() {
+            return Err(Refusal::new("the clip does not cover that time"));
+        }
+        Ok(())
+    }
+
+    /// Move a clip's start, and its linked clips', to a time.
+    #[action(id = "trim-in-clip", item = clips)]
+    pub fn trim_head(
+        &mut self,
+        clip: &Id,
+        #[param("Seconds on the timeline the clip starts at")] at: f64,
+    ) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        let at = instant(at)?;
+        let start = self.covering(id, at)?.start;
+        self.trim_in_linked(id, at - start);
+        Ok(())
+    }
+
+    /// Move a clip's end, and its linked clips', to a time.
+    #[action(id = "trim-out-clip", item = clips)]
+    pub fn trim_tail(
+        &mut self,
+        clip: &Id,
+        #[param("Seconds on the timeline the clip ends at")] at: f64,
+    ) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        let at = instant(at)?;
+        let end = self.covering(id, at)?.end();
+        self.trim_out_linked(id, at - end);
+        Ok(())
+    }
+
+    /// Set a clip's playback speed.
+    #[action(id = "set-speed", item = clips)]
+    pub fn retime(
+        &mut self,
+        clip: &Id,
+        #[param("Playback rate: 1 is normal, 0.5 half speed, 2 double")] rate: f64,
+    ) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        if !rate.is_finite() || rate <= 0.0 {
+            return Err(Refusal::new("a playback rate is a positive number"));
+        }
+        let reverse = self.clip(id).is_some_and(|c| c.speed.reverse);
+        self.set_speed_linked(id, rate, reverse);
+        Ok(())
+    }
+
+    /// Play a clip backwards, or forwards again.
+    #[action(id = "toggle-reverse", item = clips)]
+    pub fn reverse(&mut self, clip: &Id) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        let (rate, reverse) = self
+            .clip(id)
+            .map_or((1.0, false), |c| (c.speed.rate(), c.speed.reverse));
+        self.set_speed_linked(id, rate, !reverse);
+        Ok(())
+    }
+
+    /// Play a clip at normal speed.
+    #[action(id = "reset-speed", item = clips)]
+    pub fn normal_speed(&mut self, clip: &Id) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        self.set_speed_linked(id, 1.0, false);
+        Ok(())
+    }
+
+    /// Set one of a clip's animatable values where it plays at a time.
+    #[action(item = clips)]
+    pub fn set_param(
+        &mut self,
+        clip: &Id,
+        #[param("What to set")] param: Param,
+        #[param("Seconds on the timeline; a keyframed value is keyed there")] at: f64,
+        #[param("The value")] value: f64,
+    ) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        let at = instant(at)?;
+        if !value.is_finite() {
+            return Err(Refusal::new("a value is a finite number"));
+        }
+        let clip = self.clip_mut(id).ok_or("no such clip")?;
+        clip.set_param_at(param, at, value);
+        Ok(())
+    }
+
+    /// Add an effect to a clip.
+    #[action(item = clips)]
+    pub fn add_effect(
+        &mut self,
+        clip: &Id,
+        #[param("The effect")] effect: EffectKind,
+    ) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        self.clip_mut(id).ok_or("no such clip")?.add_effect(effect);
+        Ok(())
+    }
+
+    /// Remove an effect from a clip.
+    #[action(item = clips, destructive)]
+    pub fn remove_effect(
+        &mut self,
+        clip: &Id,
+        #[param("The effect's id")] effect: Id,
+    ) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        let effect = uuid(&effect)?;
+        if self
+            .clip_mut(id)
+            .ok_or("no such clip")?
+            .remove_effect_id(effect)
+        {
+            Ok(())
+        } else {
+            Err(Refusal::new("no such effect on the clip"))
+        }
+    }
+
+    /// Move an effect up or down a clip's stack.
+    #[action(item = clips)]
+    pub fn move_effect(
+        &mut self,
+        clip: &Id,
+        #[param("The effect's id")] effect: Id,
+        #[param("Towards the top of the stack")] up: bool,
+    ) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        let effect = uuid(&effect)?;
+        if self
+            .clip_mut(id)
+            .ok_or("no such clip")?
+            .move_effect_id(effect, up)
+        {
+            Ok(())
+        } else {
+            Err(Refusal::new("the effect cannot move that way"))
+        }
+    }
+
+    /// Set how strongly one of a clip's effects applies.
+    #[action(item = clips)]
+    pub fn set_effect_amount(
+        &mut self,
+        clip: &Id,
+        #[param("The effect's id")] effect: Id,
+        #[param("Strength from 0 to 1")] amount: f64,
+    ) -> Result<(), Refusal> {
+        if !(0.0..=1.0).contains(&amount) {
+            return Err(Refusal::new("an effect's strength is between 0 and 1"));
+        }
+        let id = self.editable(clip)?;
+        let effect = uuid(&effect)?;
+        let target = self
+            .clip_mut(id)
+            .ok_or("no such clip")?
+            .effects
+            .iter_mut()
+            .find(|e| e.id == effect)
+            .ok_or("no such effect on the clip")?;
+        target.amount = amount;
+        Ok(())
+    }
+
+    /// Remove every effect from a clip.
+    #[action(item = clips, destructive)]
+    pub fn clear_effects(&mut self, clip: &Id) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        self.clip_mut(id).ok_or("no such clip")?.clear_effects();
+        Ok(())
+    }
+
+    /// Stop a clip's linked clips following its edits.
+    #[action(item = clips)]
+    pub fn unlink(&mut self, clip: &Id) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        let group = self.link_group(id);
+        if self.unlink_clips(&group).is_empty() {
+            return Err(Refusal::new("the clip is not linked"));
+        }
+        Ok(())
+    }
+
+    /// Split a clip's sound off onto an audio clip linked to it.
+    #[action(id = "link-audio", item = clips)]
+    pub fn split_audio(&mut self, clip: &Id) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        if !self.can_split_audio(id) {
+            return Err(Refusal::new("the clip has no sound to split off"));
+        }
+        let audio_track = if let Some(track) = self.placement_track(TrackKind::Audio, None) {
+            track
+        } else {
+            let track = Track {
+                id: tilo_resource::fresh_uuid(),
+                name: "A1".to_owned(),
+                kind: TrackKind::Audio,
+                index: 1,
+                ..Track::default()
+            };
+            let id = track.id;
+            self.tracks.push(track);
+            id
+        };
+        self.add_linked_audio(id, audio_track)
+            .map(drop)
+            .ok_or_else(|| Refusal::new("the clip has no sound to split off"))
+    }
+
+    /// Link a clip with another, so they move, trim and re-time together.
+    #[action(item = clips)]
+    pub fn link_with(
+        &mut self,
+        clip: &Id,
+        #[param("The clip to link it with")] other: Id,
+    ) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        let other = uuid(&other)?;
+        if self.clip(other).is_none() || other == id {
+            return Err(Refusal::new("name another clip of this project"));
+        }
+        let mut members = self.link_group(id);
+        for member in self.link_group(other) {
+            if !members.contains(&member) {
+                members.push(member);
+            }
+        }
+        self.link_clips(&members)
+            .map(drop)
+            .ok_or_else(|| Refusal::new("those clips cannot be linked"))
+    }
+}
+
+impl Project {
+    /// The clip `id` names, when it may be edited.
+    fn editable(&self, clip: &Id) -> Result<ClipId, Refusal> {
+        let id = uuid(clip)?;
+        if self.clip(id).is_none() {
+            return Err(Refusal::new("no such clip in this project"));
+        }
+        if !self.clip_editable(id) {
+            return Err(Refusal::new("the clip's track is locked"));
+        }
+        Ok(id)
+    }
+
+    /// The clip `id`, when it covers `at`.
+    fn covering(&self, id: ClipId, at: f64) -> Result<&crate::model::Clip, Refusal> {
+        self.clip(id)
+            .filter(|clip| clip.covers(at))
+            .ok_or_else(|| Refusal::new("the clip does not cover that time"))
+    }
+}
+
+/// A track's level stays between off and four times unity, its pan inside
+/// the stereo field.
+impl Track {
+    pub(crate) fn valid(&self) -> Result<(), Refusal> {
+        if !(MIN_GAIN_DB..=MAX_GAIN_DB).contains(&self.gain_db) {
+            return Err(Refusal::new(format!(
+                "a track's gain is between {MIN_GAIN_DB} and {MAX_GAIN_DB} dB"
+            )));
+        }
+        if !(-1.0..=1.0).contains(&self.pan) {
+            return Err(Refusal::new("a track's pan is between -1 and 1"));
+        }
+        Ok(())
+    }
+}
+
+/// The edits that replace the whole project with `project`: what opening a
+/// project file or staging a capture does.
+#[must_use]
+pub fn load_project(project: &Project) -> ui::tilo_resource::Edit<Project> {
+    Path::<Project, Project>::root().set(project.clone())
+}
+
+/// The effect that reveals what `item` names in `project` — a marker,
+/// track, clip or source, or an effect or marker on a clip
+/// (`<clip>/effects/<effect>`, `<clip>/markers/<marker>`, see
+/// [`crate::search`]) — refusing one that no longer exists.
+///
+/// # Errors
+/// Returns that the item is gone.
+pub fn reveal_effect(
+    project: &Project,
+    item: &Id,
+) -> Result<crate::actions::VideoEditorEffect, Refusal> {
+    use crate::actions::VideoEditorEffect;
+    let gone = || Refusal::new("that item is no longer in the project");
+    let mut parts = item.as_str().split('/');
+    let id = parts
+        .next()
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .ok_or_else(gone)?;
+    match (parts.next(), parts.next()) {
+        (None, _) => {}
+        (Some("effects"), Some(effect)) => {
+            let clip = project.clip(id).ok_or_else(gone)?;
+            let effect = Uuid::parse_str(effect).map_err(|_| gone())?;
+            clip.effects
+                .iter()
+                .find(|e| e.id == effect)
+                .ok_or_else(gone)?;
+            return Ok(VideoEditorEffect::RevealEffect {
+                clip: id.to_string(),
+                effect: effect.to_string(),
+            });
+        }
+        (Some("markers"), Some(marker)) => {
+            let clip = project.clip(id).ok_or_else(gone)?;
+            let marker = Uuid::parse_str(marker).map_err(|_| gone())?;
+            clip.markers
+                .iter()
+                .find(|m| m.id == marker)
+                .ok_or_else(gone)?;
+            return Ok(VideoEditorEffect::RevealMarker {
+                marker: marker.to_string(),
+                clip: Some(id.to_string()),
+            });
+        }
+        _ => return Err(gone()),
+    }
+    let id_text = id.to_string();
+    if project.clip(id).is_some() {
+        Ok(VideoEditorEffect::RevealClip { clip: id_text })
+    } else if project.track(id).is_some() {
+        Ok(VideoEditorEffect::RevealTrack { track: id_text })
+    } else if project.media.iter().any(|m| m.id == id) {
+        Ok(VideoEditorEffect::RevealMedia { media: id_text })
+    } else if project.markers.iter().any(|m| m.id == id) {
+        Ok(VideoEditorEffect::RevealMarker {
+            marker: id_text,
+            clip: None,
+        })
+    } else {
+        Err(gone())
+    }
+}
+
+/// The editor's Fluent catalogs, source locale first: the sentences its
+/// history renders.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
+
+static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", LOCALES, "video-editor-add-title").with_system_locale();
 
 /// The editor as a framework app: one surface, the whole window.
 pub struct VideoEditor;
 
 impl ResourceApp for VideoEditor {
-    type Resource = VideoProject;
+    type Resource = Project;
     const ID: &'static str = "so.tilo.video-editor";
     const TITLE: &'static str = "Video Editor";
     const ICON: Option<&'static str> = Some("video-editor");
@@ -131,8 +645,20 @@ impl ResourceApp for VideoEditor {
     /// the import chooser is (see the surface's `attach`).
     const ARGUMENTS: usize = 1;
 
-    fn view(cx: &mut ViewCx<VideoProject>) -> Element {
+    fn view(cx: &mut ViewCx<Project>) -> Element {
+        // A search hit or an agent's `open` reveals the item it names.
+        let dispatcher = cx.dispatcher();
+        let live = cx.live().clone();
+        cx.on_open_item(move |item| {
+            let effect = reveal_effect(&live.get(), item)?;
+            dispatcher.effect(&effect);
+            Ok(())
+        });
         cx.surface(crate::VideoEditorApp::new())
+    }
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -158,22 +684,22 @@ impl ResourceApp for VideoEditor {
 
     /// The demo project's sources resolve to the stand-ins bundled with the
     /// crate, so a capture reads local bytes without a workspace mount.
-    fn fixture(_fixture: &mut ui::framework::Fixture<VideoProject>) {
+    fn fixture(_fixture: &mut ui::framework::Fixture<Project>) {
         let bundled = crate::media::bundled_sample_media();
         crate::media::serve_sample_media(bundled.exists().then_some(bundled));
     }
 
     /// Every capture but the blank one opens a project through the same
-    /// typed action a script would use: the bundled demo project, or the
+    /// edit opening a project file makes: the bundled demo project, or the
     /// composed one; the editor stages the rest (see
     /// `VideoEditorApp::stage_capture`).
-    fn scenario(name: Option<&str>) -> Vec<Invoke<VideoProject>> {
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Project>> {
         let project = match name {
             Some(EMPTY_CAPTURE) => return Vec::new(),
             Some("composed") => crate::app::composed_project(),
-            _ => crate::doc::sample_project(),
+            _ => crate::seed::sample_project(),
         };
-        Invoke::apply(&crate::actions::load_project_action(&project)).map_or_else(
+        Invoke::edit(&load_project(&project)).map_or_else(
             |error| {
                 tracing::warn!(%error, "the scenario's project does not encode");
                 Vec::new()
@@ -192,114 +718,4 @@ impl ResourceApp for VideoEditor {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app::VideoEditorApp;
-    use ui::framework::ResourceSurface;
-    use ui::tilo_actions::OperationKind;
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario covers the published actions and the playhead-bound ones"
-    )]
-    fn the_project_publishes_its_actions_and_the_editor_binds_the_playhead_edits() {
-        let published = ui::tilo_resource::publish::<VideoProject>(
-            "video.project",
-            "Project",
-            &Project::new("Untitled"),
-        );
-        assert_eq!(published.kind, "video_editor.project");
-        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
-        for expected in [
-            "add-marker",
-            "rename-project",
-            "set-frame-size",
-            "apply",
-            "group",
-        ] {
-            assert!(
-                ids.contains(&expected),
-                "palette `{expected}` must ride publish: {ids:?}"
-            );
-        }
-        let add_marker = published
-            .actions
-            .iter()
-            .find(|action| action.id == "add-marker")
-            .expect("add-marker");
-        assert_eq!(add_marker.kind, OperationKind::Document);
-        assert!(
-            !published
-                .children
-                .iter()
-                .any(|child| child.kind == "video.playhead"),
-            "playhead live extras must not ride Resource children: {:?}",
-            published
-                .children
-                .iter()
-                .map(|child| child.kind.as_str())
-                .collect::<Vec<_>>()
-        );
-
-        let mut app = VideoEditorApp::new();
-        let sample = crate::doc::sample_project();
-        let clip = sample
-            .clips
-            .first()
-            .expect("sample project carries a clip for playhead edits")
-            .clone();
-        let at = clip.start + (clip.end() - clip.start) * 0.5;
-        app.seed_unpublished_project_for_test(sample);
-        app.set_playhead_for_test(at);
-        let bound =
-            ResourceSurface::<VideoProject, crate::actions::VideoEditorEffect>::bound_declarations(
-                &app,
-            );
-        let ids: Vec<&str> = bound.iter().map(|decl| decl.id).collect();
-        for expected in [
-            "mark-in",
-            "mark-out",
-            "add-marker-here",
-            "split-clip",
-            "trim-in-clip",
-            "trim-out-clip",
-        ] {
-            assert!(
-                ids.contains(&expected),
-                "`{expected}` is bound to the playhead: {ids:?}"
-            );
-        }
-        let split = bound
-            .iter()
-            .find(|decl| decl.id == "split-clip")
-            .expect("split-clip");
-        let args = tilo_actions::ActionArgs::bind_json(
-            &split.params,
-            &serde_json::Map::from_iter([(
-                "clip".to_owned(),
-                serde_json::json!(clip.id.to_string()),
-            )]),
-        )
-        .expect("the clip binds");
-        assert!(
-            matches!(
-                (split.build)(&args, 0),
-                Ok(VideoEditorAction::SplitClip { .. } | VideoEditorAction::UpsertClips { .. })
-            ),
-            "splitting the clip under the playhead cuts it"
-        );
-        let elsewhere = tilo_actions::ActionArgs::bind_json(
-            &split.params,
-            &serde_json::Map::from_iter([
-                ("clip".to_owned(), serde_json::json!(clip.id.to_string())),
-                ("at".to_owned(), serde_json::json!(clip.end() + 100.0)),
-            ]),
-        )
-        .expect("the clip and time bind");
-        assert!(
-            (split.build)(&elsewhere, 0).is_err(),
-            "a time the clip does not cover is refused"
-        );
-    }
-}
+mod tests;

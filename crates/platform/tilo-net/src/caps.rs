@@ -1,6 +1,9 @@
 //! What this crate provides on each target, as data an app can query.
 
-use std::fmt;
+pub use tilo_platform_caps::Availability;
+
+/// A feature this target, or this particular host, cannot provide.
+pub type Unsupported = tilo_platform_caps::Unsupported<Feature>;
 
 /// One capability of this crate, for [`availability`] and [`Unsupported`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -26,39 +29,10 @@ pub enum Feature {
     Metered,
 }
 
-/// Whether a [`Feature`] can be used on a target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Availability {
-    Available,
-    /// Usable after a user prompt (browser permission, macOS TCC).
-    Prompt,
-    /// Never on this target; the reason is user-facing.
-    Unsupported(&'static str),
-}
-
-/// A feature this target, or this particular host, cannot provide.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Unsupported {
-    pub feature: Feature,
-    /// User-facing.
-    pub reason: &'static str,
-}
-
-impl fmt::Display for Unsupported {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.reason)
-    }
-}
-
-impl std::error::Error for Unsupported {}
-
 pub(crate) const WEB_CROSS_ORIGIN: &str = "The browser only reads responses from sites that allow it; the host can relay others through its fetch proxy.";
 pub(crate) const WEB_SOCKETS: &str = "A browser page cannot open raw network connections.";
 pub(crate) const WEB_PEER_TO_PEER: &str = "A browser page cannot accept connections from peers.";
-#[cfg_attr(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    allow(dead_code, reason = "only a page lacks these")
-)]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) const NO_WEBTRANSPORT: &str = "This browser has no WebTransport.";
 pub(crate) const NOT_YET: &str = "Tilo cannot do this yet.";
 
@@ -84,22 +58,12 @@ pub const CAPABILITIES: &[(Feature, [Availability; 3])] = {
             [Available, Available, Unsupported(WEB_PEER_TO_PEER)],
         ),
         (Feature::Status, [Available, Available, Available]),
-        // Linux asks NetworkManager, which may not be running.
+        // Linux asks the session portal, which may be unavailable or refuse.
         (
             Feature::Metered,
             [Available, Unsupported(NOT_YET), Available],
         ),
     ]
-};
-
-/// This target's column of [`CAPABILITIES`]. Native targets other than
-/// macOS report the Linux column.
-const COLUMN: usize = if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
-    2
-} else if cfg!(target_os = "macos") {
-    1
-} else {
-    0
 };
 
 /// Whether `feature` can be used on this target (and, for WebTransport in a
@@ -112,7 +76,7 @@ pub fn availability(feature: Feature) -> Availability {
     CAPABILITIES
         .iter()
         .find(|(listed, _)| *listed == feature)
-        .and_then(|(_, targets)| targets.get(COLUMN).copied())
+        .and_then(|(_, targets)| targets.get(tilo_platform_caps::COLUMN).copied())
         .unwrap_or(Availability::Unsupported(
             "This build does not know the feature.",
         ))
@@ -120,19 +84,16 @@ pub fn availability(feature: Feature) -> Availability {
 
 /// The error for `feature` on this target, when its column says it is
 /// unsupported.
-#[cfg_attr(
-    any(
-        not(all(target_arch = "wasm32", target_os = "unknown")),
-        not(all(feature = "webtransport", feature = "sockets"))
-    ),
-    allow(dead_code, reason = "only a page lacks these")
-)]
+#[cfg(any(
+    all(target_family = "wasm", any(feature = "sockets", feature = "p2p")),
+    all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        feature = "webtransport"
+    )
+))]
 pub(crate) fn unsupported(feature: Feature) -> Unsupported {
-    let reason = match availability(feature) {
-        Availability::Unsupported(reason) => reason,
-        Availability::Available | Availability::Prompt => NOT_YET,
-    };
-    Unsupported { feature, reason }
+    Unsupported::of(CAPABILITIES, feature)
 }
 
 #[cfg(test)]

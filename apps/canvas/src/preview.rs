@@ -50,7 +50,7 @@ impl VersionPreview {
     fn read(doc: &AutoCommit, version: &str) -> Option<Artwork> {
         let heads = ui::history_source::steps::resolve(doc, version).ok()?;
         let past = doc.committed_fork_at(&heads).ok()?;
-        Some(crate::doc::read(&past))
+        Artwork::from_doc(&past).ok()
     }
 
     fn rect(&self) -> Rect {
@@ -169,26 +169,6 @@ impl ui::widget::Decorator for VersionPreview {
     ) {
         self.canvas
             .draw(scene, transform, text_renderer, theme, presence);
-        self.paint(scene, transform, text_renderer, theme);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.canvas.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
         self.paint(scene, transform, text_renderer, theme);
     }
 

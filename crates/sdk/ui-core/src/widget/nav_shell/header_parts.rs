@@ -1,6 +1,7 @@
 //! The retained parts of a column header the shell owns itself: the title
 //! (with its count) and the More menu the actions overflow into.
 
+use crate::num::f32_of_f64;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -55,16 +56,15 @@ impl Widget for HeaderTitle {
     ) -> NodeId {
         self.theme = theme.clone();
         self.measured = None;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_shrink: 1.0,
             min_size: Size {
                 width: Dimension::length(0.0),
                 height: Dimension::length(0.0),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -79,20 +79,13 @@ impl Widget for HeaderTitle {
         };
         let (w, h) = header_row::measure_title(text, &self.theme, title, self.count);
         taffy::Size {
-            width: known.width.unwrap_or(to_f32(w.ceil())),
-            height: known.height.unwrap_or(to_f32(h.ceil())),
+            width: known.width.unwrap_or(f32_of_f64(w.ceil())),
+            height: known.height.unwrap_or(f32_of_f64(h.ceil())),
         }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -227,20 +220,11 @@ impl Widget for MoreActions {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.button.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(Style::default(), &[child]);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(Style::default(), &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let Some(child) = taffy.children(node).ok().and_then(|c| c.first().copied()) {
             self.button
                 .apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
@@ -355,12 +339,4 @@ impl Widget for MoreActions {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "on-screen layout extents fit f32 exactly at every UI scale"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
 }

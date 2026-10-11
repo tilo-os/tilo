@@ -28,7 +28,7 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 use settings_store::hardware::{ActionChord, ActionChordTarget, KeyChord, ShortcutConfig};
 use tilo_actions::context::ActionContext;
-use tilo_actions::contract::{ActionContract, PermissionRequirement, ResultSpec, RiskLevel};
+use tilo_actions::contract::{ActionContract, ActionKind, ResultSpec, RiskLevel};
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ParamType};
@@ -55,9 +55,10 @@ pub const DELETE_ACTION: &str = "delete";
 /// Every shortcut saved in the workspace.
 pub const LIST_ACTION: &str = "list";
 
-/// How long a running step is left before it is observed again, when the
-/// broker has nothing to push.
-const SETTLE_INTERVAL: Duration = Duration::from_millis(25);
+/// How long a running step is left before it is observed again, when its
+/// host cannot say when it changes. The broker's own door can, so this is
+/// only a fallback.
+const SETTLE_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Finished runs kept for the history recorder; the oldest go first.
 const MAX_FINISHED_RUNS: usize = 64;
@@ -99,14 +100,14 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
             "New shortcut",
             "Save a shortcut after checking every step against the actions you are offered",
             vec![shortcut_param()],
-            PermissionRequirement::Write,
+            ActionKind::Undoable,
             saved,
         ),
         UPDATE_ACTION => (
             "Change shortcut",
             "Replace a saved shortcut after checking it again",
             vec![shortcut_param()],
-            PermissionRequirement::Write,
+            ActionKind::Undoable,
             saved,
         ),
         DELETE_ACTION => (
@@ -117,14 +118,14 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
                 ParamType::Text,
                 "Id of the shortcut to delete",
             )],
-            PermissionRequirement::Write,
+            ActionKind::Undoable,
             ResultSpec::None,
         ),
         LIST_ACTION => (
             "List shortcuts",
             "Every shortcut saved in this workspace, as JSON",
             Vec::new(),
-            PermissionRequirement::Read,
+            ActionKind::Read,
             ResultSpec::Json {
                 schema: serde_json::json!({"type": "array", "items": {"type": "object"}}),
             },
@@ -141,7 +142,7 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
         locus: ExecutionLocus::default(),
         kind: OperationKind::Effect,
         contract: ActionContract {
-            permission,
+            kind: permission,
             result,
             risk: if action == DELETE_ACTION {
                 RiskLevel::Destructive
@@ -170,7 +171,7 @@ pub fn run_descriptor(shortcut: &Shortcut) -> ActionDescriptor {
         locus: ExecutionLocus::default(),
         kind: OperationKind::Effect,
         contract: ActionContract {
-            permission: PermissionRequirement::None,
+            kind: ActionKind::Read,
             result: if shortcut.output.is_some() {
                 ResultSpec::Json {
                     schema: serde_json::json!({}),
@@ -201,12 +202,11 @@ pub fn run_description(shortcut: &Shortcut) -> String {
         description.push_str(". Runs by itself ");
         description.push_str(&triggers.join(" and "));
     }
-    if !shortcut.consents.is_empty() {
-        let consents: Vec<String> = shortcut
-            .consents
-            .iter()
-            .map(|consent| format!("`{}` on {}", consent.action, consent.resource))
-            .collect();
+    let consents: Vec<String> = tilo_automation::grant::advance_consents(&shortcut.grant)
+        .into_iter()
+        .map(|(resource, action)| format!("`{action}` on {resource}"))
+        .collect();
+    if !consents.is_empty() {
         description.push_str(". Confirmed in advance: ");
         description.push_str(&consents.join(", "));
     }
@@ -528,13 +528,16 @@ pub fn plan_library(
 /// The provenance a library invocation leaves in workspace activity.
 #[must_use]
 pub fn library_context(descriptor: &ActionDescriptor) -> ActionContext {
-    ActionContext::for_resource(
-        descriptor.action_label.clone(),
-        LIBRARY_RESOURCE,
-        LIBRARY_RESOURCE_KIND,
-        "Shortcuts",
-    )
-    .with_app(SHORTCUTS_APP_ID, "Shortcuts")
+    ActionContext::for_resource(LIBRARY_RESOURCE, LIBRARY_RESOURCE_KIND, "Shortcuts")
+        .with_app(SHORTCUTS_APP_ID, "Shortcuts")
+        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new(
+                SHORTCUTS_APP_ID,
+                LIBRARY_RESOURCE_KIND,
+                descriptor.address.action.clone(),
+            ),
+            [],
+        )))
 }
 
 /// How a run started through the door treats a person-shaped question.
@@ -566,12 +569,17 @@ pub struct RunStart {
 /// [`RunHooks`] for a run started through the door.
 pub struct DoorHooks {
     confirmation: Option<Confirmation>,
+    /// The runtime the run's poll fallback waits on.
+    runtime: tokio::runtime::Handle,
 }
 
 impl DoorHooks {
     #[must_use]
-    pub fn new(confirmation: Option<Confirmation>) -> Self {
-        Self { confirmation }
+    pub fn new(confirmation: Option<Confirmation>, runtime: tokio::runtime::Handle) -> Self {
+        Self {
+            confirmation,
+            runtime,
+        }
     }
 }
 
@@ -586,28 +594,19 @@ impl RunHooks for DoorHooks {
         Pending::ready(None)
     }
 
-    fn settle(&self, invocation: InvocationId) -> Pending<()> {
-        settle_later(invocation)
+    fn settle(&self, _invocation: InvocationId) -> Pending<()> {
+        settle_later(&self.runtime)
     }
 }
 
-/// Resolve after [`SETTLE_INTERVAL`], so a running step is observed again.
-fn settle_later(_invocation: InvocationId) -> Pending<()> {
+/// Resolve after [`SETTLE_INTERVAL`] on `runtime`'s timer, so a running step
+/// is observed again. Waiting takes a timer, never a thread.
+fn settle_later(runtime: &tokio::runtime::Handle) -> Pending<()> {
     let (completer, answer) = pending();
-    match tokio::runtime::Handle::try_current() {
-        Ok(runtime) => {
-            runtime.spawn(async move {
-                tokio::time::sleep(SETTLE_INTERVAL).await;
-                completer.complete(());
-            });
-        }
-        Err(_) => {
-            std::thread::spawn(move || {
-                std::thread::sleep(SETTLE_INTERVAL);
-                completer.complete(());
-            });
-        }
-    }
+    runtime.spawn(async move {
+        tilo_rt::sleep(SETTLE_INTERVAL).await;
+        completer.complete(());
+    });
     answer
 }
 
@@ -676,14 +675,21 @@ impl StepPrompts {
 pub struct SheetHooks {
     prompts: StepPrompts,
     shortcut: String,
+    /// The runtime the run's poll fallback waits on.
+    runtime: tokio::runtime::Handle,
 }
 
 impl SheetHooks {
     #[must_use]
-    pub fn new(prompts: StepPrompts, shortcut: impl Into<String>) -> Self {
+    pub fn new(
+        prompts: StepPrompts,
+        shortcut: impl Into<String>,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
         Self {
             prompts,
             shortcut: shortcut.into(),
+            runtime,
         }
     }
 
@@ -715,8 +721,8 @@ impl RunHooks for SheetHooks {
             })
     }
 
-    fn settle(&self, invocation: InvocationId) -> Pending<()> {
-        settle_later(invocation)
+    fn settle(&self, _invocation: InvocationId) -> Pending<()> {
+        settle_later(&self.runtime)
     }
 }
 
@@ -768,6 +774,13 @@ impl ShortcutRuns {
                 finished.pop_front();
             }
         }
+    }
+
+    /// Whether a finished run is waiting to be taken.
+    pub fn has_finished(&self) -> bool {
+        self.finished
+            .lock()
+            .is_ok_and(|finished| !finished.is_empty())
     }
 
     /// Every finished run not taken yet, oldest first.
@@ -853,25 +866,25 @@ pub fn readable_folder(
     capability: &str,
     saver: &str,
 ) -> Result<std::path::PathBuf, String> {
-    use crate::policy::WorkspacePolicy as _;
-
     let granted = workspace
-        .capabilities
+        .sandbox
         .iter()
         .find(|granted| granted.id == capability)
         .ok_or_else(|| format!("the workspace has no capability `{capability}`"))?;
     let collab_types::Scope::FsPath(path) = &granted.scope else {
         return Err(format!("capability `{capability}` does not share a folder"));
     };
-    let role = workspace
-        .role_of(&saver.to_string())
-        .ok_or("the saver is not a member of the workspace")?;
-    let actor = collab_types::Actor::person(Some(role), saver).in_room(workspace.room.to_string());
-    if !workspace.allows(
+    if workspace.role_of(saver).is_none() || workspace.is_blocked(saver) {
+        return Err("the saver is not a member of the workspace".into());
+    }
+    let actor = collab_types::Actor::person(saver).in_room(workspace.room.to_string());
+    if workspace.sandbox_decide_at(
         &actor,
         &collab_types::ResourceRef::FsPath(path.clone()),
-        collab_types::Verb::Read,
-    ) {
+        collab_types::caps::Access::Read,
+        tilo_clock::unix_now(),
+    ) != collab_types::CapDecision::Allow
+    {
         return Err(format!(
             "the saver may not read the folder capability `{capability}` shares"
         ));

@@ -277,9 +277,7 @@ impl ShellOverlayHost {
                 }
             }
         }
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     /// Named geometry for `tilo-control list-targets`.

@@ -13,6 +13,7 @@ name = "tilo_net"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 bytes.workspace = true
 http = "1.4"
 thiserror.workspace = true
@@ -43,6 +44,11 @@ web-transport-quinn = { version = "0.12.1", default-features = false, optional =
 # Peer-to-peer frame streams: iroh QUIC, length-prefixed frames.
 iroh = { workspace = true, optional = true }
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", optional = true, features = ["tokio"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { workspace = true, features = ["tokio", "p2p"] }
+# Portal signal streams are part of status, independent of WebSocket support.
+futures-util.workspace = true
 
 # The browser: fetch, WebSocket and WebTransport, pinned to the versions the
 # browser runtime links so a page carries one copy.

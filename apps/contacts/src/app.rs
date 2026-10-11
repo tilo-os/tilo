@@ -6,17 +6,17 @@
 //! carry the commands: search, more and new above the list; favorite, edit
 //! and delete above the person.
 //!
-//! State lives in the Automerge document via [`crate::doc::ContactsDoc`]; the in-memory
-//! [`ContactStore`] is the working mirror the window reads. Every change to
-//! the book is a [`crate::actions::ContactsAction`] dispatched through one
-//! action sink, the same route Ctrl+K and agents take.
+//! The book is the [`Contacts`] record, read as it was last presented; the
+//! window keeps only its view of it (selection, filter, forms, dialogs). Every change to the book is one of
+//! its verbs or field edits, submitted through the window's dispatcher: the
+//! same door Ctrl+K and agents take.
 
 use crate::resource::Contacts;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use ui::framework::{Dispatcher, Jobs};
-use ui::time::{Duration, Instant};
+use ui::tilo_resource::Invoke;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::ObjId;
@@ -31,16 +31,16 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::{
     Button, ButtonRole, ContextMenu, ControlSize, Dropdown, Element, MenuItem, NavItem, NavList,
     NavPane, NavSection, NavShell, TaffyTreeExt, Widget,
 };
 
 use crate::form::EditForm;
-use crate::model::{Contact, ContactId, ContactStore, Labeled, SortKey, group_names_equal};
+use crate::model::{Contact, ContactId, Labeled, SortKey, group_names_equal};
 use crate::vcard::VCardVersion;
-use crate::view::{Bridge, ContactList, EmptyPane, ListEntry, Request, Shared, queue};
+use crate::view::{Bridge, ContactList, ListEntry, Request, Shared, empty_pane, queue};
 
 mod dialogs;
 mod effects;
@@ -50,12 +50,6 @@ use dialogs::{DialogKey, ExportDraft};
 
 /// Private presentation token; it is never written to the shared document.
 const FAVORITES_FILTER: &str = "\u{0}contacts:favorites";
-
-/// How long an action toast ("Saved", "Contact deleted", …) stays on screen
-/// before it fades away on its own. The host loop is kept awake (via
-/// [`Widget::needs_animation_frame`]) only while a toast is up, so the frame
-/// where this elapses clears it and the loop returns to idle.
-const TOAST_LIFETIME: Duration = Duration::from_millis(2600);
 
 /// The sidebar destinations that are not groups.
 const ALL_DESTINATION: &str = "all";
@@ -82,8 +76,8 @@ struct ParsedImport {
 
 /// Private, review-only state for a potential duplicate. It is rebuilt from
 /// the current collaborative contacts whenever opened; no tentative choices
-/// leak into the shared document until the explicit Merge button emits the
-/// typed `ContactsAction::MergeContacts` envelope.
+/// leak into the shared document until the explicit Merge button invokes
+/// the book's merge.
 struct DuplicateReview {
     survivor: Contact,
     source: Contact,
@@ -158,15 +152,17 @@ enum HeaderKey {
     reason = "independent frame bookkeeping (list, structure, layout and paint staleness) and the seeding flags; none is a state machine"
 )]
 pub struct ContactsApp {
-    store: ContactStore,
+    /// The book as it was presented last.
+    pub(crate) store: Rc<Contacts>,
+    /// A contact this window just asked the book to add, selected before it
+    /// arrives.
+    awaiting: Option<ContactId>,
     selected: Option<ContactId>,
     mode: Mode,
     form: Option<EditForm>,
     form_epoch: u64,
     sort: SortKey,
     group_filter: Option<String>,
-    toast: Option<(String, Instant)>,
-    confirm_delete: Option<ContactId>,
     duplicate_review: Option<DuplicateReview>,
     duplicate_candidate: Option<crate::actions::DuplicateCandidate>,
     /// The export whose format is being chosen.
@@ -254,7 +250,7 @@ const MORE_BUTTON: &str = "contacts.more";
 
 /// The list's orders: the control's value, its label, and the key.
 const SORTS: &[(&str, &str, SortKey)] = &[
-    ("name", "Sort by name", SortKey::Name),
+    ("name", "Sort by last name", SortKey::Name),
     ("organization", "Sort by organization", SortKey::Org),
 ];
 
@@ -307,12 +303,15 @@ fn find_mut<'w>(root: &'w mut dyn Widget, id: &str) -> Option<&'w mut dyn Widget
 }
 
 impl ContactsApp {
+    /// Submit `invoke` through the door, after the event: a destructive
+    /// verb is confirmed by the host there, and a refusal reaches
+    /// [`Self::announce_refusal`].
     fn try_perform_action(
         &self,
         _doc: &mut ui::widget::Edits<'_>,
-        action: &crate::actions::ContactsAction,
+        invoke: Invoke<Contacts>,
     ) -> Result<(), ui::tilo_actions::ActionError> {
-        self.submit(action)
+        self.submit(invoke)
             .map_err(ui::tilo_actions::ActionError::Refused)
     }
     fn reconcile_refused_action(
@@ -336,11 +335,39 @@ impl ContactsApp {
             .collect()
     }
 
+    /// Select `id`, a contact this window just asked the book to add, before
+    /// it arrives.
+    pub(super) fn select_awaited(&mut self, id: ContactId) {
+        if self.store.contact(id).is_none() {
+            self.awaiting = Some(id);
+        }
+        self.selected = Some(id);
+    }
+
+    /// Show the contact a search hit or an agent's `open` names; a contact
+    /// that is gone is refused.
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&ui::tilo_resource::Id) -> Result<(), ui::tilo_resource::Refusal> + 'static
+    {
+        let shared = Rc::clone(&self.shared);
+        move |id| {
+            let contact = id
+                .as_str()
+                .parse::<ContactId>()
+                .ok()
+                .filter(|contact| shared.borrow().book.contact(*contact).is_some())
+                .ok_or_else(|| ui::tilo_resource::Refusal::new("no such contact"))?;
+            shared.borrow_mut().push(Request::Reveal(contact));
+            Ok(())
+        }
+    }
+
     pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Contacts>) {
         self.dispatcher = Some(dispatcher);
     }
 
-    pub(crate) fn present_book(&mut self, state: &crate::resource::ContactsState) {
+    pub(crate) fn present_book(&mut self, state: &Rc<Contacts>) {
         // A refused save re-presents the book too; keep its form for the
         // announcement that follows.
         if !self
@@ -350,7 +377,14 @@ impl ContactsApp {
         {
             self.unconfirmed_save = None;
         }
-        self.store.contacts.clone_from(&state.contacts);
+        self.store = Rc::clone(state);
+        self.shared.borrow_mut().book = Rc::clone(state);
+        if self
+            .awaiting
+            .is_some_and(|id| self.store.contact(id).is_some())
+        {
+            self.awaiting = None;
+        }
         self.duplicate_candidate = crate::actions::duplicate_candidates(&self.store.contacts, 1)
             .into_iter()
             .next();
@@ -360,13 +394,21 @@ impl ContactsApp {
                 self.selected = self.visible_ids().first().copied();
             }
         }
+        // A merge the person confirmed has landed: its review is done.
+        if let Some(review) = &self.duplicate_review
+            && self.store.contact(review.source.id).is_none()
+        {
+            self.selected = Some(review.survivor.id);
+            self.duplicate_review = None;
+        }
         if let Some(sel) = self.selected
-            && self.store.get(sel).is_none()
+            && self.store.contact(sel).is_none()
+            && self.awaiting != Some(sel)
         {
             self.selected = self.visible_ids().first().copied();
         }
         if let Some(form) = &mut self.form {
-            if let Some(canonical) = self.store.get(form.draft.id) {
+            if let Some(canonical) = self.store.contact(form.draft.id) {
                 if form.reconcile(canonical) {
                     self.form_epoch = self.form_epoch.wrapping_add(1);
                 }
@@ -406,7 +448,7 @@ impl ContactsApp {
         // record as it now stands, so the person's text is not lost.
         let base = self
             .store
-            .get(form.draft.id)
+            .contact(form.draft.id)
             .cloned()
             .unwrap_or_else(|| form.base.clone());
         self.form = Some(EditForm::with_base(base, form.draft, form.is_new));
@@ -416,14 +458,14 @@ impl ContactsApp {
         self.show_toast(format!("Couldn't save contact: {}", refusal.reason));
     }
 
-    fn submit(&self, action: &crate::actions::ContactsAction) -> Result<(), String> {
+    fn submit(&self, invoke: Invoke<Contacts>) -> Result<(), String> {
         let Some(dispatcher) = &self.dispatcher else {
             return Err("the address book is not open".into());
         };
         if dispatcher.read_only() {
             return Err("you can only view this address book".into());
         }
-        dispatcher.apply(action);
+        dispatcher.submit(invoke);
         Ok(())
     }
 
@@ -462,7 +504,7 @@ impl ContactsApp {
     }
 
     fn configured() -> Self {
-        let store = ContactStore::new();
+        let store = Rc::default();
         let shared: Shared = std::rc::Rc::new(std::cell::RefCell::new(Bridge::default()));
         let destination = LocalState::new(Some(ALL_DESTINATION.to_owned()));
         let sort_choice = LocalState::new(sort_value(SortKey::Name).to_owned());
@@ -470,23 +512,18 @@ impl ContactsApp {
             .with_id("contacts.shell")
             .sidebar(Box::new(Self::sidebar_list(&[], &destination)))
             .overview(Box::new(ContactList::new(std::rc::Rc::clone(&shared))))
-            .content(Box::new(EmptyPane::new(
-                std::rc::Rc::clone(&shared),
-                "No contact selected",
-                None,
-            )))
+            .content(empty_pane(&shared, "No contact selected", None))
             .overview_header("All contacts", overview_actions(&shared, Vec::new()));
         shell.show(NavPane::Overview);
         Self {
             store,
+            awaiting: None,
             selected: None,
             mode: Mode::View,
             form: None,
             form_epoch: 0,
             sort: SortKey::Name,
             group_filter: None,
-            toast: None,
-            confirm_delete: None,
             duplicate_review: None,
             duplicate_candidate: None,
             export: None,
@@ -563,7 +600,8 @@ impl ContactsApp {
                 self.show_pane = Some(NavPane::Content);
             }
             "edit" | "calendar" => {
-                if let Some(contact) = self.selected.and_then(|id| self.store.get(id)).cloned() {
+                if let Some(contact) = self.selected.and_then(|id| self.store.contact(id)).cloned()
+                {
                     self.begin_edit(contact, false);
                     if scenario == "calendar"
                         && let Some(form) = &mut self.form
@@ -577,7 +615,8 @@ impl ContactsApp {
             }
             "export" => self.open_export_dialog(),
             "unsaved" => {
-                if let Some(contact) = self.selected.and_then(|id| self.store.get(id)).cloned() {
+                if let Some(contact) = self.selected.and_then(|id| self.store.contact(id)).cloned()
+                {
                     self.begin_edit(contact, false);
                     if let Some(form) = &self.form {
                         let title = format!("{} and Poet", form.value(crate::form::Slot::Title));
@@ -602,9 +641,9 @@ impl ContactsApp {
                     button.open(true);
                 }
             }
-            "confirm" => self.confirm_delete = self.selected,
             "import-conflict" => {
-                if let Some(existing) = self.selected.and_then(|id| self.store.get(id)).cloned() {
+                if let Some(existing) = self.selected.and_then(|id| self.store.contact(id)).cloned()
+                {
                     let mut incoming = existing.clone();
                     incoming.notes = "Met at the Royal Society; prefers letters to calls.".into();
                     self.import_conflicts = vec![ImportConflict {
@@ -616,7 +655,7 @@ impl ContactsApp {
             }
             "duplicate-review" => self.stage_duplicate_review(),
             "empty" => {
-                self.store = ContactStore::new();
+                self.store = Rc::default();
                 self.selected = None;
                 self.mode = Mode::View;
                 self.form = None;
@@ -669,15 +708,7 @@ impl ContactsApp {
     }
 
     fn show_toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), ui::time::now()));
-        self.dirty = true;
-    }
-
-    /// `true` when a toast is showing and has outlived [`TOAST_LIFETIME`].
-    fn toast_expired(&self) -> bool {
-        self.toast
-            .as_ref()
-            .is_some_and(|(_, shown)| shown.elapsed() >= TOAST_LIFETIME)
+        self.shell.toast(msg, ToastKind::Info);
     }
 
     fn set_group_filter(&mut self, group: Option<String>) {
@@ -744,14 +775,22 @@ impl ContactsApp {
             form.collect();
             let c = form.draft.clone();
             let id = c.id;
-            let action = if form.is_new {
-                crate::actions::create_contact_action(&c)
+            let saved = if form.is_new {
+                self.try_perform_action(doc, Contacts::add(&c))
             } else {
-                crate::actions::patch_contact_action(&form.base, &c)
+                match Contacts::save(&form.base, &c) {
+                    Some(invoke) => self.try_perform_action(doc, invoke),
+                    None if self.store.contact(id).is_none() => Err(
+                        ui::tilo_actions::ActionError::Refused("no such contact".into()),
+                    ),
+                    None => Ok(()),
+                }
             };
-            match self.try_perform_action(doc, &action) {
+            match saved {
                 Ok(()) => {
-                    self.store.upsert(c);
+                    if form.is_new {
+                        self.awaiting = Some(id);
+                    }
                     self.selected = Some(id);
                     self.show_toast(if form.is_new {
                         "Contact created"
@@ -768,7 +807,7 @@ impl ContactsApp {
                     // unsaved text in an editor rebased on the latest record.
                     let base = self
                         .store
-                        .get(id)
+                        .contact(id)
                         .cloned()
                         .unwrap_or_else(|| form.base.clone());
                     self.form = Some(EditForm::with_base(base, form.draft, form.is_new));
@@ -786,15 +825,13 @@ impl ContactsApp {
     /// Every header, semantic, keyboard, and menu affordance calls this so a
     /// stale local contact cannot mutate the projection after a refusal.
     fn toggle_favorite(&mut self, doc: &mut ui::widget::Edits<'_>, id: ContactId) -> bool {
-        let Some(favorite) = self.store.get(id).map(|contact| !contact.favorite) else {
+        let Some(favorite) = self.store.contact(id).map(|contact| !contact.favorite) else {
             return false;
         };
-        let action = crate::actions::set_favorite_action(id.to_string(), favorite);
-        match self.try_perform_action(doc, &action) {
+        let edit = Invoke::edit(&Contacts::favorite(id, favorite))
+            .map_err(|error| ui::tilo_actions::ActionError::Refused(error.to_string()));
+        match edit.and_then(|edit| self.try_perform_action(doc, edit)) {
             Ok(()) => {
-                if let Some(contact) = self.store.get_mut(id) {
-                    contact.favorite = favorite;
-                }
                 if let Some(form) = &mut self.form
                     && form.draft.id == id
                 {
@@ -831,10 +868,8 @@ impl ContactsApp {
         if import_as_new {
             let mut contact = conflict.incoming;
             contact.id = uuid::Uuid::new_v4();
-            let action = crate::actions::create_contact_action(&contact);
-            self.try_perform_action(doc, &action)
+            self.try_perform_action(doc, Contacts::add(&contact))
                 .map_err(|error| error.to_string())?;
-            self.store.upsert(contact);
             self.show_toast("Imported as a new contact");
         } else {
             self.show_toast("Kept the existing contact");
@@ -862,7 +897,7 @@ impl ContactsApp {
         }
         form.collect();
         self.store
-            .get(form.draft.id)
+            .contact(form.draft.id)
             .is_none_or(|stored| *stored != form.draft)
     }
 
@@ -929,23 +964,12 @@ impl ContactsApp {
         }
     }
 
-    fn delete_selected(&mut self, doc: &mut ui::widget::Edits<'_>, id: ContactId) {
-        let action = crate::actions::delete_contact_action(id.to_string());
-        match self.try_perform_action(doc, &action) {
-            Ok(()) => {
-                self.store.delete(id);
-                if self.form.as_ref().is_some_and(|form| form.draft.id == id) {
-                    self.cancel_edit();
-                }
-                if self.selected == Some(id) {
-                    self.selected = self.visible_ids().first().copied();
-                }
-                self.show_toast("Contact deleted");
-            }
-            Err(error) => self.reconcile_refused_action(doc, "delete contact", &error),
+    /// Delete the contact `id`: the host asks the person to confirm, and the
+    /// contact leaves the list once the book no longer holds it.
+    fn delete_contact(&mut self, doc: &mut ui::widget::Edits<'_>, id: ContactId) {
+        if let Err(error) = self.try_perform_action(doc, Contacts::delete(id)) {
+            self.reconcile_refused_action(doc, "delete contact", &error);
         }
-        self.confirm_delete = None;
-        self.list_stale = true;
         self.dirty = true;
     }
 
@@ -976,7 +1000,7 @@ impl ContactsApp {
     ) {
         match action {
             ContextAction::Edit => {
-                if let Some(c) = self.store.get(target).cloned() {
+                if let Some(c) = self.store.contact(target).cloned() {
                     self.selected = Some(target);
                     self.begin_edit(c, false);
                 }
@@ -991,7 +1015,7 @@ impl ContactsApp {
             }
             ContextAction::Delete => {
                 self.selected = Some(target);
-                self.confirm_delete = Some(target);
+                self.delete_contact(doc, target);
             }
         }
         self.dirty = true;
@@ -1140,7 +1164,7 @@ impl ContactsApp {
         if self.store.is_empty() {
             return ContentKey::FirstRun;
         }
-        match self.selected.and_then(|id| self.store.get(id)) {
+        match self.selected.and_then(|id| self.store.contact(id)) {
             Some(contact) => ContentKey::Contact(Box::new(contact.clone())),
             None => ContentKey::Nothing,
         }
@@ -1150,7 +1174,7 @@ impl ContactsApp {
         if self.mode == Mode::Edit && self.form.is_some() {
             return HeaderKey::Edit;
         }
-        match self.selected.and_then(|id| self.store.get(id)) {
+        match self.selected.and_then(|id| self.store.contact(id)) {
             Some(contact) if !self.store.is_empty() => HeaderKey::View {
                 favorite: contact.favorite,
             },
@@ -1204,7 +1228,7 @@ impl ContactsApp {
         let rows: Vec<ListEntry> = self
             .visible_ids()
             .into_iter()
-            .filter_map(|id| self.store.get(id))
+            .filter_map(|id| self.store.contact(id))
             .map(|contact| ListEntry {
                 id: contact.id,
                 name: contact.display_name(),
@@ -1289,7 +1313,10 @@ impl ContactsApp {
         }
         self.publish_overview_controls();
         self.publish_more();
-        if self.selected.is_some_and(|id| self.store.get(id).is_none()) {
+        if self
+            .selected
+            .is_some_and(|id| self.store.contact(id).is_none() && self.awaiting != Some(id))
+        {
             self.selected = self.visible_ids().first().copied();
         }
         {
@@ -1306,16 +1333,12 @@ impl ContactsApp {
         let content = self.content_key();
         if self.content_shown.as_ref() != Some(&content) {
             let element: Element = match &content {
-                ContentKey::FirstRun => Box::new(EmptyPane::new(
-                    std::rc::Rc::clone(&self.shared),
+                ContentKey::FirstRun => empty_pane(
+                    &self.shared,
                     "No contacts yet",
                     Some(("New contact", Request::NewContact)),
-                )),
-                ContentKey::Nothing => Box::new(EmptyPane::new(
-                    std::rc::Rc::clone(&self.shared),
-                    "No contact selected",
-                    None,
-                )),
+                ),
+                ContentKey::Nothing => empty_pane(&self.shared, "No contact selected", None),
                 ContentKey::Contact(contact) => {
                     if self.detail_scroll.0 != Some(contact.id) {
                         self.detail_scroll = (Some(contact.id), std::rc::Rc::default());
@@ -1359,7 +1382,7 @@ impl ContactsApp {
         let mut built = ContextMenu::new();
         let open = match menu {
             PendingMenu::Contact(id) => {
-                let Some(contact) = self.store.get(id) else {
+                let Some(contact) = self.store.contact(id) else {
                     return;
                 };
                 let favorite = contact.favorite;
@@ -1449,14 +1472,19 @@ impl ContactsApp {
     fn apply_request(&mut self, doc: &mut ui::widget::Edits<'_>, request: Request) {
         match request {
             Request::Select(id) => self.request_select(id),
+            Request::Reveal(id) => {
+                if self.store.contact(id).is_some() {
+                    self.reveal_contact(id);
+                }
+            }
             Request::Edit(id) => {
-                if let Some(contact) = self.store.get(id).cloned() {
+                if let Some(contact) = self.store.contact(id).cloned() {
                     self.selected = Some(id);
                     self.begin_edit(contact, false);
                 }
             }
             Request::EditField(id, slot) => {
-                if let Some(contact) = self.store.get(id).cloned() {
+                if let Some(contact) = self.store.contact(id).cloned() {
                     self.selected = Some(id);
                     self.begin_edit(contact, false);
                     if let Some(form) = &mut self.form {
@@ -1496,11 +1524,16 @@ impl ContactsApp {
                 }
             }
             Request::EditSelected => {
-                if let Some(contact) = self.selected.and_then(|id| self.store.get(id)).cloned() {
+                if let Some(contact) = self.selected.and_then(|id| self.store.contact(id)).cloned()
+                {
                     self.begin_edit(contact, false);
                 }
             }
-            Request::DeleteSelected => self.confirm_delete = self.selected,
+            Request::DeleteSelected => {
+                if let Some(id) = self.selected {
+                    self.delete_contact(doc, id);
+                }
+            }
             Request::Save => self.save_edit(doc),
             Request::FocusField(slot) => self.focus_form_field(slot),
             Request::AdvanceField(slot) => self.advance_form_field(doc, slot),
@@ -1609,11 +1642,12 @@ impl ContactsApp {
             Key::Named(NamedKey::ArrowUp) => self.move_selection(-1),
             Key::Named(NamedKey::Enter) if self.selected.is_some() => self.reveal_content(),
             Key::Named(NamedKey::Delete | NamedKey::Backspace) if self.selected.is_some() => {
-                self.confirm_delete = self.selected;
+                self.shared.borrow_mut().push(Request::DeleteSelected);
             }
             Key::Character(c) if c.eq_ignore_ascii_case("n") => self.begin_new_contact(),
             Key::Character(c) if c.eq_ignore_ascii_case("e") => {
-                let Some(contact) = self.selected.and_then(|id| self.store.get(id)).cloned() else {
+                let Some(contact) = self.selected.and_then(|id| self.store.contact(id)).cloned()
+                else {
                     return false;
                 };
                 self.begin_edit(contact, false);
@@ -1710,30 +1744,20 @@ impl Widget for ContactsApp {
             }
             children.push(node);
         }
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_grow: 1.0,
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_grow: 1.0,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let child_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Some(shell) = child_node(taffy, node, 0) {
             self.shell.apply_layout(taffy, shell, child_origin);
@@ -1759,19 +1783,6 @@ impl Widget for ContactsApp {
         presence: &PresenceCtx,
     ) {
         self.shell.draw(scene, transform, tr, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.shell
-            .draw_with_presence(scene, transform, tr, theme, presence, permissions);
     }
 
     fn draw_overlay(
@@ -1816,20 +1827,6 @@ impl Widget for ContactsApp {
         }
         if let Some((_, dialog)) = &mut self.dialog {
             dialog.draw_overlay(scene, transform, tr, theme, presence);
-        }
-        if self.toast_expired() {
-            self.toast = None;
-        }
-        if let Some((msg, _)) = &self.toast {
-            paint_transient(
-                scene,
-                transform,
-                tr,
-                theme,
-                self.rect,
-                ToastAnchor::BottomCenter,
-                &ToastCard::new(msg, ToastKind::Info),
-            );
         }
     }
 
@@ -1985,19 +1982,8 @@ impl Widget for ContactsApp {
             .and_then(|(_, dialog)| dialog.modal_capture())
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        let (message, _) = self.toast.as_ref()?;
-        Some(
-            ui::a11y::AccessNode::new(ui::a11y::Role::StaticText)
-                .with_name(message.clone())
-                .with_hashed_key("contacts.status")
-                .with_live(ui::a11y::Politeness::Assertive),
-        )
-    }
-
     fn needs_redraw(&self) -> bool {
         self.dirty
-            || self.toast.is_some()
             || self.portal_in_flight()
             || self.shell.needs_redraw()
             || self.dialog.as_ref().is_some_and(|(_, d)| d.needs_redraw())
@@ -2012,8 +1998,7 @@ impl Widget for ContactsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.toast.is_some()
-            || self.portal_in_flight()
+        self.portal_in_flight()
             || self.pending_menu.is_some()
             || self.shell.needs_animation_frame()
             || self

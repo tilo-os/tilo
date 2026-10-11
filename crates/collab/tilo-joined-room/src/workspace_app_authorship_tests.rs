@@ -1,6 +1,5 @@
 use crate::application_record::tests::fixture;
 use crate::{RoomId, testing};
-use collab_types::caps::{Effect, Scope, Subject, Verb};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
@@ -58,21 +57,14 @@ fn app_authorship_is_governor_signed_durable_and_exact_retry_only() {
     let reopened = crate::open_file(&fixture.directory.path().join("owner.json")).unwrap();
     reopened
         .with_current(RoomId::parse(testing::ROOM).unwrap(), |view| {
-            let (_, caps, _) = view
+            let now = std::time::SystemTime::now();
+            let policy = view
                 .peer()
-                .permissions(fixture.certificate.device_public_key, fixture.now)?;
-            assert!(
-                caps.iter()
-                    .any(|cap| cap.subject == Subject::app("so.tilo.chat")
-                        && cap.scope == Scope::Workspace
-                        && cap.verb == Verb::Write
-                        && cap.effect == Effect::Grant)
-            );
-            assert!(
-                !caps
-                    .iter()
-                    .any(|cap| cap.subject == Subject::app("so.tilo.files"))
-            );
+                .permissions(fixture.certificate.device_public_key, now)?
+                .policy;
+            let cx = tilo_action_policy::Context::at_time(now);
+            assert!(policy.app_authors("so.tilo.chat", &cx));
+            assert!(!policy.app_authors("so.tilo.files", &cx));
             Ok(())
         })
         .unwrap();
@@ -110,25 +102,30 @@ fn app_authorship_refuses_forged_person_and_invalid_package() {
     }
 }
 
+/// The room's owner holds it structurally: a grant naming them, even one
+/// they signed themselves, never takes their authority over the room away.
 #[test]
-fn signed_current_admin_restriction_refuses_direct_owner_app_delegation() {
+fn the_owners_own_grants_never_restrict_their_app_delegation() {
     let fixture = fixture();
     let room = RoomId::parse(testing::ROOM).unwrap();
     let messages = fixture
         .owner
         .with_current(room, |view| {
             let before = view.peer().clone();
-            let (_, _, person) =
-                before.permissions(fixture.certificate.device_public_key, fixture.now)?;
+            let person = before
+                .permissions(fixture.certificate.device_public_key, fixture.now)?
+                .person;
             let mut candidate = before.clone();
-            candidate.put_governed_capabilities(
-                &[collab_types::caps::CapOverride::new(
-                    Subject::person(person),
-                    Scope::Workspace,
-                    Effect::Restrict,
-                    Verb::Read,
-                )
-                .with_id("app-open-read-only-person")],
+            candidate.put_governed_grants(
+                &[tilo_action_policy::Grant::new(
+                    "app-open-read-only-person",
+                    tilo_action_policy::Subject::Person(person.clone()),
+                    tilo_action_policy::TreePath::room(testing::ROOM),
+                    tilo_action_policy::KindSet::UNDOABLE
+                        .union(tilo_action_policy::KindSet::OUTSIDE),
+                    tilo_action_policy::Answer::Deny,
+                    tilo_action_policy::Subject::Person(person),
+                )],
                 &fixture.key,
                 fixture.now,
             )?;
@@ -162,7 +159,7 @@ fn signed_current_admin_restriction_refuses_direct_owner_app_delegation() {
                         fixture.certificate.device_public_key,
                         fixture.now
                     )
-                    .is_err()
+                    .is_ok()
             );
             Ok(())
         })
@@ -186,6 +183,6 @@ fn signed_current_admin_restriction_refuses_direct_owner_app_delegation() {
                 &fixture.key,
                 fixture.now,
             )
-            .is_err()
+            .is_ok()
     );
 }

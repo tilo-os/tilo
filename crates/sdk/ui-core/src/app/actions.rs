@@ -134,12 +134,11 @@ impl App {
             .filter(|cache| cache.key == key)
             .map_or_else(Vec::new, |cache| cache.declared.clone());
         let mut semantics = crate::a11y_tree::SemanticTree::new();
-        semantics.refresh_bound(
+        semantics.refresh_action_projection(
             self.root_widget.as_ref(),
             &self.layout.node_map,
             &self.bindings.semantic_node_names(&self.layout.node_map),
             self.focused_node,
-            &[],
         );
         complete.extend(semantics.action_resources());
         complete.extend(self.history_action_resources());
@@ -267,7 +266,7 @@ impl App {
             resources.extend(
                 snapshots
                     .into_iter()
-                    .flat_map(|snapshot| snapshot.resources),
+                    .flat_map(|snapshot| snapshot.into_resources()),
             );
         }
         if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
@@ -293,8 +292,13 @@ impl App {
         {
             tracing::warn!(%error, "legacy control availability refused");
         }
+        // A first page's control availability took 246 ms in Settings; the
+        // startup file names the stage (TIL-691). Startup-only: this runs on
+        // every rebuild.
+        tilo_startup_metrics::startup_mark("actions-legacy-done");
         let trace = self.trace_resource_stage(Stage::BoundDiscovery);
         let history_door = self.refresh_history_controls();
+        tilo_startup_metrics::startup_mark("actions-history-done");
         let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -303,6 +307,7 @@ impl App {
         )
         .unwrap_or_default();
         trace.finish(CacheResult::NotObserved);
+        tilo_startup_metrics::startup_mark("actions-bound-discovery-done");
         let trace = self.trace_resource_stage(Stage::BoundControlProjection);
         let _ = crate::bound_dispatch::refresh_bound_controls(
             self.root_widget.as_mut(),
@@ -310,6 +315,7 @@ impl App {
             &history_door,
         );
         trace.finish(CacheResult::NotApplicable);
+        tilo_startup_metrics::startup_mark("actions-bound-projection-done");
         // Only ActionEmitter controls consume this address projection. Semantic,
         // document and legacy controls still use their normal invocation doors.
         // Recheck presence: widget-local changes can add/remove emitters.
@@ -319,6 +325,7 @@ impl App {
             return;
         }
         let cache_key = self.ensure_local_control_cache();
+        tilo_startup_metrics::startup_mark("actions-local-cache-done");
         let trace = self.trace_resource_stage(Stage::ControlCache);
         if self.actions.last_control_availability.as_ref() == Some(&cache_key) {
             trace.finish(CacheResult::Hit);
@@ -371,7 +378,7 @@ impl App {
             resources.extend(
                 snapshots
                     .into_iter()
-                    .flat_map(|snapshot| snapshot.resources),
+                    .flat_map(|snapshot| snapshot.into_resources()),
             );
         }
         if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
@@ -382,6 +389,7 @@ impl App {
         ) {
             resources.extend(legacy);
         }
+        crate::history_source::sentence::learn_labels(&resources);
         resources
     }
 
@@ -423,6 +431,17 @@ impl App {
         &self,
         resources: &[tilo_actions::Resource],
     ) -> Vec<ControlBindingCoverage> {
+        self.control_binding_coverage_for(
+            resources,
+            crate::widget::controls::control_action_bindings(self.root_widget.as_ref()),
+        )
+    }
+
+    fn control_binding_coverage_for(
+        &self,
+        resources: &[tilo_actions::Resource],
+        bindings: Vec<crate::widget::ControlBindingMetadata>,
+    ) -> Vec<ControlBindingCoverage> {
         // Shared chrome invokes doors served by this host, rather than by
         // the app's resource provider. Audit those exact declarations too.
         let mut host_resources = vec![crate::search::search_resource()];
@@ -435,7 +454,7 @@ impl App {
             ));
         }
         let mut seen = std::collections::HashSet::new();
-        crate::widget::controls::control_action_bindings(self.root_widget.as_ref())
+        bindings
             .into_iter()
             .map(|binding| {
                 let status = match &binding.kind {
@@ -545,6 +564,7 @@ impl App {
                 .collect();
             Some(resource)
         }
+        self.refresh_local_undo_discovery();
         let key = self.ensure_resource_cache();
         let mut resources = self
             .actions
@@ -571,7 +591,7 @@ impl App {
             let violations = crate::bound_dispatch::bound_contract_violations(
                 self.root_widget.as_mut(),
                 &component.binding,
-                &component.resources,
+                component.resources(),
             );
             if !matches!(&violations, Ok(Some(found)) if found.is_empty()) {
                 // Never silent: a contract violation withdraws the whole
@@ -592,19 +612,16 @@ impl App {
                     .first(&("component", &violations))
                 {
                     tracing::error!(
-                        resources = component.resources.len(),
+                        resources = component.resources().len(),
                         %violations,
                         "refusing to publish a component surface that fails action contract validation"
                     );
                 }
                 continue;
             }
-            for resource in component.resources {
-                if let Ok(resource) = self
-                    .actions
-                    .bound_publication
-                    .project(&component.binding, resource)
-                {
+            let binding = component.binding.clone();
+            for resource in component.into_resources() {
+                if let Ok(resource) = self.actions.bound_publication.project(&binding, resource) {
                     resources.push(resource);
                 }
             }
@@ -616,6 +633,12 @@ impl App {
             true,
         ) {
             resources.extend(legacy);
+        }
+        if crate::undo::local_undo_status(self.root_widget.as_ref()).is_some() {
+            let address = tilo_actions::ActionAddress::new("tilo.host:edit", "undo");
+            if let Some(edit) = self.edit_resource_for(&address) {
+                resources.push(edit);
+            }
         }
         resources
     }
@@ -666,7 +689,10 @@ impl App {
         // Use this exact snapshot for coverage as well as publication. That
         // prevents recursive/repeated resource collection and makes the audit
         // correspond to the catalogue about to cross the wire.
-        let binding_coverage = self.control_action_coverage_for(&self.collect_resources());
+        let binding_coverage = self.control_binding_coverage_for(
+            &self.collect_resources(),
+            crate::widget::controls::action_control_bindings(self.root_widget.as_ref()),
+        );
         if binding_coverage
             .iter()
             .any(|entry| entry.status == ControlBindingStatus::StaleAddress)
@@ -771,7 +797,10 @@ impl App {
         if self.actions.last_published_actions.as_ref() == Some(&descriptors) {
             return;
         }
-        let actions = descriptors.iter().map(Self::exported_action).collect();
+        let actions = descriptors
+            .iter()
+            .map(crate::collaboration::ExportedAction::from)
+            .collect();
         // A surface the transport did not take is retried on the next frame.
         if self
             .collaboration
@@ -782,36 +811,6 @@ impl App {
             })
         {
             self.actions.last_published_actions = Some(descriptors);
-        }
-    }
-
-    fn exported_action(
-        descriptor: &tilo_actions::ActionDescriptor,
-    ) -> crate::collaboration::ExportedAction {
-        crate::collaboration::ExportedAction {
-            resource: descriptor.address.resource.clone(),
-            semantic_identity: descriptor.semantic_identity.clone(),
-            action: descriptor.address.action.clone(),
-            resource_kind: descriptor.resource_kind.clone(),
-            resource_label: descriptor.resource_label.clone(),
-            action_label: descriptor.action_label.clone(),
-            description: descriptor.description.clone(),
-            operation_kind: descriptor.kind.as_str().to_string(),
-            params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
-            contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
-            view: descriptor.view.clone(),
-            input: match &descriptor.input {
-                tilo_actions::InputSpec::None => crate::collaboration::ExportedInput::None,
-                tilo_actions::InputSpec::Text {
-                    prompt,
-                    placeholder,
-                    collects,
-                } => crate::collaboration::ExportedInput::Text {
-                    prompt: prompt.clone(),
-                    placeholder: placeholder.clone(),
-                    wants_content: *collects == tilo_actions::Collects::Content,
-                },
-            },
         }
     }
 
@@ -893,64 +892,17 @@ impl App {
         Ok(revision)
     }
 
+    /// The descriptor a directory row carries. Directory pages have never
+    /// carried a resource view: the broker proves a view's mount and range
+    /// bindings against the actions on the same page, which a bounded page
+    /// cannot promise, so views reach the shell through the published
+    /// surface instead.
     fn exported_directory_action(
         descriptor: &tilo_actions::ActionDescriptor,
     ) -> runtime_collab::ExportedAction {
         runtime_collab::ExportedAction {
-            resource: descriptor.address.resource.clone(),
-            semantic_identity: descriptor.semantic_identity.as_ref().map(|identity| {
-                runtime_collab::ExportedResourceSemanticIdentity {
-                    kind: identity.kind.clone(),
-                    key: identity.key.clone(),
-                }
-            }),
-            action: descriptor.address.action.clone(),
-            resource_kind: descriptor.resource_kind.clone(),
-            resource_label: descriptor.resource_label.clone(),
-            action_label: descriptor.action_label.clone(),
-            description: descriptor.description.clone(),
-            operation_kind: descriptor.kind.as_str().to_string(),
-            params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
-            contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
-            view: descriptor
-                .view
-                .as_ref()
-                .map(|view| runtime_collab::ExportedView {
-                    id: view.id.clone(),
-                    label: view.label.clone(),
-                    description: view.description.clone(),
-                    open_action: view.open_action.clone(),
-                    primary: view.primary,
-                    range: view
-                        .range
-                        .as_ref()
-                        .map(|range| runtime_collab::ExportedViewRange {
-                            action: range.action.clone(),
-                            start_param: range.start_param.clone(),
-                            end_param: range.end_param.clone(),
-                            unit_param: range.unit_param.clone(),
-                        }),
-                    mount: view
-                        .mount
-                        .as_ref()
-                        .map(|mount| runtime_collab::ExportedViewMount {
-                            action: mount.action.clone(),
-                            capability_param: mount.capability_param.clone(),
-                            view_param: mount.view_param.clone(),
-                        }),
-                }),
-            input: match &descriptor.input {
-                tilo_actions::InputSpec::None => runtime_collab::ExportedInput::None,
-                tilo_actions::InputSpec::Text {
-                    prompt,
-                    placeholder,
-                    collects,
-                } => runtime_collab::ExportedInput::Text {
-                    prompt: prompt.clone(),
-                    placeholder: placeholder.clone(),
-                    wants_content: *collects == tilo_actions::Collects::Content,
-                },
-            },
+            view: None,
+            ..runtime_collab::ExportedAction::from(descriptor)
         }
     }
 
@@ -991,18 +943,18 @@ impl App {
             resource: resource.id.as_str().to_owned(),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
-            resource_presentation_json: resource
+            presentation: resource
                 .presentation
-                .as_ref()
-                .filter(|presentation| presentation.is_valid())
-                .and_then(|presentation| serde_json::to_string(presentation).ok())
-                .unwrap_or_default(),
+                .clone()
+                .filter(tilo_actions::ResourcePresentation::is_valid),
             action: None,
             descriptor: None,
             has_children: may_descend
                 && (!resource.children.is_empty() || !resource.actions.is_empty()),
-            visibility_action: Some(visibility.address.action),
-            visibility_contract_json: serde_json::to_string(&visibility.contract).ok()?,
+            visibility: Some(tilo_actions::remote::RowVisibility {
+                action: visibility.address.action,
+                contract: visibility.contract,
+            }),
         })
     }
 
@@ -1021,12 +973,14 @@ impl App {
             resource: resource.id.as_str().to_owned(),
             resource_kind: exported.resource_kind.clone(),
             resource_label: exported.resource_label.clone(),
-            resource_presentation_json: String::new(),
+            presentation: None,
             action: Some(action_id.to_owned()),
-            descriptor: Some(exported.clone()),
+            visibility: Some(tilo_actions::remote::RowVisibility {
+                action: action_id.to_owned(),
+                contract: exported.contract.clone(),
+            }),
+            descriptor: Some(exported),
             has_children: false,
-            visibility_action: Some(action_id.to_owned()),
-            visibility_contract_json: exported.contract_json,
         })
     }
 
@@ -1148,7 +1102,7 @@ impl App {
         let add = |row: runtime_collab::ActionDirectoryRow,
                    rows: &mut Vec<runtime_collab::ActionDirectoryRow>,
                    bytes: &mut usize| {
-            *bytes = bytes.saturating_add(directory_row_wire_bytes(&row));
+            *bytes = bytes.saturating_add(runtime_collab::action_directory_row_wire_bytes(&row));
             rows.push(row);
         };
 
@@ -1649,9 +1603,19 @@ impl App {
         let Ok(current) = self.try_action_directory_revision() else {
             return runtime_collab::ActionDirectoryResolution::Unavailable;
         };
-        if revision != current {
+        // No revision asks for the directory as it is now: a caller that
+        // names an action it already knows (an agent's) chose it from no
+        // page, and reading the revision first would cost it a round trip.
+        // The answer names the revision it resolved against either way, so
+        // the broker binds the admission to it and a host refuses to run
+        // the action once the directory moved on.
+        if !revision.is_empty() && revision != current {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
         }
+        let found = |row| runtime_collab::ActionDirectoryResolution::Found {
+            row: Box::new(row),
+            revision: Some(current.clone()),
+        };
         if let Some(row) = self
             .actions
             .action_directory_snapshot
@@ -1662,15 +1626,13 @@ impl App {
                     .get(&tilo_actions::ActionAddress::new(resource_id, action_id))
             })
         {
-            return runtime_collab::ActionDirectoryResolution::Found(Box::new(row.clone()));
+            return found(row.clone());
         }
         let resource = self.resolve_publication_resource(resource_id, action_id);
         resource
             .as_ref()
             .and_then(|resource| Self::directory_action_row(resource, action_id))
-            .map_or(runtime_collab::ActionDirectoryResolution::NotFound, |row| {
-                runtime_collab::ActionDirectoryResolution::Found(Box::new(row))
-            })
+            .map_or(runtime_collab::ActionDirectoryResolution::NotFound, found)
     }
 
     fn published_action_directory_page(
@@ -1708,7 +1670,11 @@ impl App {
         for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
                 ActionDirectoryRequest::Query { query, reply } => {
-                    let _ = reply.send(self.published_action_directory_page(query));
+                    // A cancelled caller never receives this page. Do not consume
+                    // its one-use continuation before admitting a live response.
+                    if !reply.is_closed() {
+                        let _ = reply.send(self.published_action_directory_page(query));
+                    }
                 }
                 ActionDirectoryRequest::Resolve {
                     revision,
@@ -1777,26 +1743,19 @@ impl App {
                 });
             return;
         }
-        // The invoker is the delivered actor plus the participant the host
-        // set for it in the delivery context (never trusted from anywhere
-        // else). Resolution below rebuilds that participant's own tree, and
+        // The invoker is the delivered actor plus the participant and the
+        // person it acts for that the host set for it in the delivery context
+        // (never trusted from anywhere else). Resolution below rebuilds that participant's own tree, and
         // durable attribution carries the same invoker.
-        let participant =
-            crate::invocation_scope::PublishedInvocationRequest::delivered_participant(
-                actor,
-                ambient_context,
-            );
-        let invoker = tilo_actions::ActionInvoker {
-            actor: actor.to_owned(),
-            participant: participant.clone(),
-        };
+        let invoker = tilo_actions::ActionInvoker::delivered(actor, ambient_context);
+        let participant = invoker.participant.clone();
         let attributed =
             ambient_context.map(|context| context.clone().with_invoker(invoker.clone()));
         let ambient_context = attributed.as_ref();
         if let Some(participant) = &participant {
             self.join_participant(participant);
         }
-        let admitted = self.admitted_requirement(&address, argument);
+        let admitted = self.admitted_kind(&address, argument);
         self.actions.acting_for.insert(
             invocation,
             crate::invocation_scope::Continuation {
@@ -1907,13 +1866,13 @@ impl App {
     }
 
     /// What the invoker of `address` was admitted for: the action's own
-    /// requirement for its `argument`, which the admitting host checked
-    /// they hold. Nothing when it no longer resolves.
-    fn admitted_requirement(
+    /// kind, which the admitting host checked they may perform. Only reading
+    /// when it no longer resolves.
+    fn admitted_kind(
         &self,
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
-    ) -> tilo_actions::PermissionRequirement {
+    ) -> tilo_actions::ActionKind {
         let key = self.ensure_resource_cache();
         let mut resources = self
             .actions
@@ -1942,15 +1901,15 @@ impl App {
                 .iter()
                 .filter(|snapshot| snapshot.binding.same_component(&target.binding))
                 .find_map(|snapshot| {
-                    tilo_actions::door::resolve(&snapshot.resources, &target.address.address)
+                    tilo_actions::door::resolve(snapshot.resources(), &target.address.address)
                 })
-                .map_or(tilo_actions::PermissionRequirement::None, |spec| {
-                    spec.permission_for_argument(argument)
+                .map_or(tilo_actions::ActionKind::Read, |spec| {
+                    spec.need_for(None, argument).kind
                 });
         }
         tilo_actions::door::resolve(&resources, address)
-            .map_or(tilo_actions::PermissionRequirement::None, |spec| {
-                spec.permission_for_argument(argument)
+            .map_or(tilo_actions::ActionKind::Read, |spec| {
+                spec.need_for(None, argument).kind
             })
     }
 
@@ -2008,7 +1967,7 @@ impl App {
         let mut candidates = snapshots
             .iter()
             .filter(|snapshot| snapshot.binding.same_component(binding))
-            .flat_map(|snapshot| &snapshot.resources)
+            .flat_map(|snapshot| snapshot.resources().iter())
             .filter(|resource| {
                 resource.actions.iter().any(|spec| {
                     spec.id == action && spec.kind == tilo_actions::OperationKind::Document
@@ -2101,16 +2060,21 @@ impl App {
             });
         }
         let request_id = Self::allocate_broker_request_id(next_request_id)?;
-        let arguments = typed_arguments.cloned().unwrap_or_else(|| {
-            let mut arguments = serde_json::Map::new();
-            if let Some(value) = argument {
-                arguments.insert(
-                    tilo_actions::PROMPTED_PARAM.to_string(),
-                    serde_json::Value::String(value.to_string()),
-                );
-            }
-            arguments
-        });
+        // The argument travels as the caller gave it: typed arguments as
+        // such, a text argument as text, which the owning app binds to the
+        // action's input as its own door does (a single parameter, a prompt).
+        let argument = match (typed_arguments, argument) {
+            (Some(arguments), _) => tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
+            (None, Some(text)) => match text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX) {
+                Some(json) => {
+                    tilo_actions::remote::InvokeArgument::Json(serde_json::from_str(json).map_err(
+                        |error| tilo_actions::DoorError::InvalidArguments(error.to_string()),
+                    )?)
+                }
+                None => tilo_actions::remote::InvokeArgument::Text(text.to_owned()),
+            },
+            (None, None) => tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new()),
+        };
         send(
             request_id,
             tilo_actions::remote::InvokeRequest {
@@ -2120,10 +2084,11 @@ impl App {
                     provider: tilo_actions::remote::OWN_PROVIDER.into(),
                     address: address.clone(),
                 },
-                argument: tilo_actions::remote::InvokeArgument::Json(arguments),
+                argument,
                 context: None,
                 confirmation: Self::broker_confirmation(confirmation_evidence),
                 revision: None,
+                wait_ms: None,
             },
         );
         Ok(crate::widget::ResourceOperationStart::Accepted)
@@ -2225,8 +2190,10 @@ impl App {
         // edit intact; the executor still receives the same committed baseline.
         let before = self.state.doc.get_heads();
         let route = self.primary_document_route();
-        let started =
-            crate::invocation_scope::with_mounted_document(route, &mut self.state.doc, |doc| {
+        let started = crate::invocation_scope::with_mounted_document(
+            route.clone(),
+            &mut self.state.doc,
+            |doc| {
                 crate::bound_dispatch::execute_resource_operation(
                     self.root_widget.as_mut(),
                     doc,
@@ -2234,6 +2201,7 @@ impl App {
                     &self.actions.action_registry,
                     self.actions.action_transport.as_mut(),
                     crate::bound_dispatch::ResourceOperation {
+                        target_route: route.clone(),
                         address,
                         resource,
                         spec,
@@ -2247,7 +2215,8 @@ impl App {
                         scope,
                     },
                 )
-            })?;
+            },
+        )?;
         if before != self.state.doc.get_heads() {
             self.state.record_committed_action_authored(
                 before,
@@ -2347,7 +2316,6 @@ impl App {
             argument,
             confirmation_satisfied: confirmed,
             broker_admitted,
-            confirmation_evidence: evidence,
             invocation,
             ambient_context: ambient,
             scope,
@@ -2359,42 +2327,24 @@ impl App {
         if broker_admitted {
             self.require_bound_broker_route(&target.binding)?;
         }
-        let snapshots = crate::bound_dispatch::discover_bound_resources(
-            self.root_widget.as_ref(),
-            &self.state.doc,
-            Some(&target.address.address),
-        )
-        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?;
-        let snapshot = snapshots
-            .iter()
-            .find(|snapshot| snapshot.binding.same_component(&target.binding))
-            .ok_or_else(|| tilo_actions::DoorError::Unknown(target.address.address.clone()))?;
-        let (arguments, _, spec) = crate::bound_dispatch::resolve_resource_invocation(
-            &snapshot.resources,
-            &target.address.address,
-            argument,
-            None,
-            confirmed,
-        )?;
-        let kind = spec.kind;
-        if !broker_admitted
-            && Self::bound_invocation_needs_broker(
-                kind,
-                spec,
-                invocation,
-                broker_delivery.is_some(),
-                self.collaboration.manager.is_connected(),
-            )
-        {
-            return self.route_bound_invocation_to_broker(
-                target,
-                &snapshot.resources,
-                arguments.as_ref(),
-                argument,
-                evidence,
-                broker_delivery,
-            );
-        }
+        // The door resolves the action once and asks here, before anything
+        // runs, whether it goes through the broker instead. Resolving it a
+        // second time for that question built the whole published tree twice
+        // per keystroke into a bound field (TIL-751).
+        let has_delivery = broker_delivery.is_some();
+        let connected = self.collaboration.manager.is_connected();
+        let resolved = std::cell::Cell::new(None);
+        let route = |spec: &tilo_actions::ActionSpec| {
+            resolved.set(Some(spec.kind));
+            !broker_admitted
+                && Self::bound_invocation_needs_broker(
+                    spec.kind,
+                    spec,
+                    invocation,
+                    has_delivery,
+                    connected,
+                )
+        };
         let id = invocation.unwrap_or_default();
         let started = crate::bound_dispatch::invoke_resource_action(
             self.root_widget.as_mut(),
@@ -2411,9 +2361,21 @@ impl App {
                 source_invocation: broker_admitted.then_some(invocation).flatten(),
                 ambient,
                 scope,
+                route: Some(&route),
             },
-        )
-        .map_err(crate::bound_dispatch::BoundActionError::into_door);
+        );
+        if matches!(
+            started,
+            Err(crate::bound_dispatch::BoundActionError::Rerouted)
+        ) {
+            return self.route_resolved_invocation_to_broker(target, request, broker_delivery);
+        }
+        let started = started.map_err(crate::bound_dispatch::BoundActionError::into_door);
+        // Refused before the door resolved the action: nothing ran, as when
+        // an unknown or unconfirmed action is refused before delivery.
+        let Some(kind) = resolved.get() else {
+            return started;
+        };
         // A post-delivery fault retains canonical writes and must still refresh
         // the host projection. Generation is advanced by the checked frame.
         self.needs_sync = true;
@@ -2432,6 +2394,65 @@ impl App {
             }
         }
         Ok(started)
+    }
+
+    /// Invoke a registered action as this application's current local person.
+    /// This uses the same current record, policy and broker checks as the palette.
+    /// # Errors
+    /// Refuses unavailable, denied, stale or ambiguous actions and invalid arguments.
+    pub fn invoke_local_resource_action(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let _entry = self.enter_wake_scope();
+        let actor = self.collaboration.local_author.0.clone();
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::Value::Object(arguments.clone())
+        );
+        self.invoke_resource_action(
+            ResourceInvocation::new(address, &actor).argument(Some(&argument)),
+        )
+    }
+
+    /// Route through the broker an invocation the door resolved as one that
+    /// runs there ([`crate::bound_dispatch::BoundActionError::Rerouted`]):
+    /// the component's published resources are discovered and the broker
+    /// is asked under the component's alias, exactly as before the door
+    /// decided the route. Nothing ran locally.
+    fn route_resolved_invocation_to_broker(
+        &mut self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        request: &ResourceInvocation<'_>,
+        broker_delivery: Option<&mut dyn FnMut(CollabRequest)>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let snapshots = crate::bound_dispatch::discover_bound_resources(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            Some(&target.address.address),
+        )
+        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?;
+        let snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.binding.same_component(&target.binding))
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(target.address.address.clone()))?;
+        let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+            snapshot.resources(),
+            &target.address.address,
+            request.argument,
+            None,
+            request.confirmation_satisfied,
+        )?;
+        self.route_bound_invocation_to_broker(
+            target,
+            snapshot.resources(),
+            arguments.as_ref(),
+            request.argument,
+            request.confirmation_evidence,
+            broker_delivery,
+        )
     }
 
     fn invoke_resource_action(
@@ -2489,7 +2510,7 @@ impl App {
             ..
         } = *request;
         use crate::bound_dispatch::legacy_document::{
-            LegacyDocumentServices, LegacyInvocation, invoke_legacy_document_scoped,
+            LegacyDocumentServices, LegacyInvocation, invoke_legacy_document,
             resolve_legacy_invocation,
         };
         let resources = resolve_legacy_invocation(self.root_widget.as_ref(), target)?;
@@ -2508,7 +2529,7 @@ impl App {
                 Some(target),
             );
         }
-        let outcome = invoke_legacy_document_scoped(
+        let outcome = invoke_legacy_document(
             self.root_widget.as_mut(),
             target,
             LegacyDocumentServices {
@@ -2617,6 +2638,9 @@ impl App {
                 resources.push(resource);
             }
         }
+        if crate::undo::local_undo_status(self.root_widget.as_ref()).is_some() {
+            resources.extend(self.edit_resource_for(address));
+        }
         let (typed_arguments, resource, resolved) = Self::resolve_resource_invocation(
             &resources,
             address,
@@ -2628,17 +2652,15 @@ impl App {
         }
         crate::invocation_scope::check_continuation(
             resolved,
-            match typed_arguments.as_ref() {
-                Some(arguments) => resolved.permission_for_json(arguments),
-                None => resolved.permission_for_argument(argument),
-            },
+            resolved.need_for(typed_arguments.as_ref(), argument).kind,
         )?;
         // The local participant's tree offers an action under the least it
         // needs; this invocation needs what its value asks.
         if actor == self.collaboration.local_author.0
-            && !crate::bound_dispatch::permits_local_value(
+            && !crate::bound_dispatch::permits_local_action(
                 &self.permission_ctx,
                 &crate::collaboration::local_app_id(),
+                resource,
                 resolved,
                 typed_arguments.as_ref(),
                 argument,
@@ -2766,6 +2788,7 @@ impl App {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             };
             self.actions
                 .broker_requests
@@ -2890,7 +2913,7 @@ impl App {
                     &self.permission_ctx,
                     resolved,
                 )?;
-                let started = crate::bound_dispatch::legacy_document::invoke_legacy_effect_scoped(
+                let started = crate::bound_dispatch::legacy_document::invoke_legacy_effect(
                     self.root_widget.as_mut(),
                     target,
                     operation_invocation,
@@ -2919,28 +2942,33 @@ impl App {
             })()
         } else {
             let route = self.primary_document_route();
-            crate::invocation_scope::with_mounted_document(route, &mut self.state.doc, |doc| {
-                crate::bound_dispatch::execute_resource_operation(
-                    self.root_widget.as_mut(),
-                    doc,
-                    &self.state.root,
-                    &self.actions.action_registry,
-                    self.actions.action_transport.as_mut(),
-                    crate::bound_dispatch::ResourceOperation {
-                        address,
-                        resource,
-                        spec: resolved,
-                        encoded,
-                        actor,
-                        local_author: &self.collaboration.local_author.0,
-                        broker_admitted,
-                        invocation: operation_invocation,
-                        source_invocation: broker_admitted.then_some(operation_invocation),
-                        ambient: ambient_context,
-                        scope: None,
-                    },
-                )
-            })
+            crate::invocation_scope::with_mounted_document(
+                route.clone(),
+                &mut self.state.doc,
+                |doc| {
+                    crate::bound_dispatch::execute_resource_operation(
+                        self.root_widget.as_mut(),
+                        doc,
+                        &self.state.root,
+                        &self.actions.action_registry,
+                        self.actions.action_transport.as_mut(),
+                        crate::bound_dispatch::ResourceOperation {
+                            target_route: route.clone(),
+                            address,
+                            resource,
+                            spec: resolved,
+                            encoded,
+                            actor,
+                            local_author: &self.collaboration.local_author.0,
+                            broker_admitted,
+                            invocation: operation_invocation,
+                            source_invocation: broker_admitted.then_some(operation_invocation),
+                            ambient: ambient_context,
+                            scope: None,
+                        },
+                    )
+                },
+            )
         };
         let started = match operation_result {
             Ok(started) => started,
@@ -3042,6 +3070,7 @@ impl App {
                 self.root_widget.as_mut(),
                 target,
                 &result,
+                on_behalf_of,
             ) {
                 tracing::warn!(?error, "bound control feedback unavailable");
             }
@@ -3054,12 +3083,14 @@ impl App {
         let scopes = acting
             .as_ref()
             .map(crate::invocation_scope::Continuation::enter);
+        let answering = crate::bound_dispatch::Answering::enter(on_behalf_of.is_some());
         let result = self.invoke_bound_target(
             target,
             &ResourceInvocation::new(&target.address.address, &actor)
                 .argument(Some(&argument))
                 .ambient_context(acting.as_ref().and_then(|acting| acting.context.as_ref())),
         );
+        drop(answering);
         drop(scopes);
         // Nobody here asked for it: the person at the device is never
         // prompted to confirm another invoker's edit.
@@ -3070,6 +3101,7 @@ impl App {
                     self.root_widget.as_mut(),
                     target,
                     &result,
+                    on_behalf_of,
                 ) {
                     tracing::warn!(?error, "bound control feedback unavailable");
                 }
@@ -3082,6 +3114,7 @@ impl App {
             self.root_widget.as_mut(),
             target,
             &result,
+            on_behalf_of,
         ) {
             tracing::warn!(?error, "bound control feedback unavailable");
         }
@@ -3135,18 +3168,12 @@ impl App {
             crate::history_mode::embedded::drain_pending_commands(self.root_widget.as_mut());
         if !commands.is_empty() || !embedded.is_empty() {
             if self.history_focus.is_none() {
-                self.history_focus = unsafe {
-                    crate::widget::layout::CompositionFocus::capture(
-                        self.focused_node,
-                        &self.layout.node_map,
-                        &self.bindings,
-                    )
-                };
+                self.history_focus = self.capture_focus_identity();
             }
             self.layout.node_map.clear();
             self.bindings.clear();
             self.focused_node = None;
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             self.layout.layout_dirty = true;
         }
         for command in commands {
@@ -3391,6 +3418,16 @@ impl App {
         if self.framework_input.get() {
             return 0;
         }
+        // A committed refresh temporarily closes the original native history
+        // gate. Keep control/causal intents with their existing producers until
+        // the owner applies that capture and its worker rechecks the route.
+        // Nothing has crossed the action door yet; accepted deliveries retain
+        // the separate fail-closed guard in invoke_published_action.
+        if self.collaboration.manager.has_native_committed_primary()
+            && !self.published_action_history_ready()
+        {
+            return 0;
+        }
         crate::history_mode::embedded::discard_active_output(self.root_widget.as_mut());
         let mut registered = self.control_domain.drain_partitioned();
         let mut dispatched = self.dispatch_history_controls();
@@ -3586,6 +3623,7 @@ impl App {
             context,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         };
         self.actions
             .broker_requests
@@ -4121,7 +4159,7 @@ impl App {
         let pending_sync = self.needs_sync;
         let generation = self.actions.resource_generation.get();
         let open_index = self.actions.open_resource_search_cache.get_mut().take();
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.rebuild_structure();
         // Admitting a modal declares no resource of the tree the open-resource
         // index was just built from. Keep that index across the rebuild's own
@@ -4140,7 +4178,7 @@ impl App {
         // Admission is not a layout solve. Keep the native redraw's actual
         // structural-change decision true so fresh nodes are measured before
         // apply, even when the retained background and viewport are unchanged.
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
     }
 
     fn open_ordinary_confirmation(
@@ -4163,18 +4201,10 @@ impl App {
         if self.actions.action_palette.is_none() {
             // Native semantic focus is authoritative even before the next
             // retained render propagates the widget's focused flag.
-            // SAFETY: modal admission has not retired either map; both still
-            // describe this exclusively held, live background widget tree.
-            self.actions.ordinary_palette_return_focus = unsafe {
-                crate::widget::layout::CompositionFocus::capture(
-                    self.focused_node,
-                    &self.layout.node_map,
-                    &self.bindings,
-                )
-            }
-            .or_else(|| {
-                crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
-            });
+            self.actions.ordinary_palette_return_focus =
+                self.capture_focus_identity().or_else(|| {
+                    crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
+                });
         }
         self.open_action_palette();
         self.bindings.clear();
@@ -4262,28 +4292,17 @@ impl App {
 
     fn filter_resource_for_local_actor(
         &self,
-        mut resource: tilo_actions::Resource,
+        resource: tilo_actions::Resource,
     ) -> Option<tilo_actions::Resource> {
-        resource.actions.retain(|action| {
-            crate::bound_dispatch::permits_local_action(
-                &self.permission_ctx,
-                &crate::collaboration::local_app_id(),
-                action,
-            )
-        });
-        resource.children = resource
-            .children
-            .into_iter()
-            .filter_map(|child| self.filter_resource_for_local_actor(child))
-            .collect();
-        (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
+        self.permission_ctx
+            .permitted_resource(&crate::collaboration::local_app_id(), resource)
     }
 
     pub fn close_action_palette(&mut self) {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.actions.action_palette = None;
         if self.actions.ordinary_palette_return_focus.is_some() {
             self.rebuild_action_palette_admission();
@@ -4315,8 +4334,64 @@ impl App {
         };
     }
 
+    /// Run `f` on the root of the app component this window shows, inside
+    /// that component's own frame: for a test, or a host, reaching into the
+    /// mounted app between frames. `None` without a mounted component.
+    pub fn with_component_root<U>(&mut self, f: impl FnOnce(&mut dyn Widget) -> U) -> Option<U> {
+        let bound = self
+            .root_widget
+            .as_any_mut()?
+            .downcast_mut::<crate::widget::BoundAppWidget>()?;
+        let binding = bound.component.callback_binding();
+        let _entry = binding.enter().ok()?;
+        Some(f(bound.component.root.as_deref_mut()?))
+    }
+
     pub fn action_palette(&self) -> Option<&crate::action_palette::ActionPalette> {
         self.actions.action_palette.as_ref()
+    }
+
+    /// The action the host's confirmation is asking about, and the text
+    /// that confirms it, while it asks.
+    #[must_use]
+    pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
+        self.actions
+            .action_palette
+            .as_ref()
+            .and_then(crate::action_palette::ActionPalette::asking)
+            .map(|(address, expected)| (address.clone(), expected.to_owned()))
+    }
+
+    /// Confirm what the host asks through its own dialog, as the person
+    /// does: the confirming text, then Enter; what it confirmed is applied.
+    /// Answers the action confirmed; `None`, changing nothing, when nothing
+    /// is asked.
+    #[cfg(feature = "native")]
+    pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
+        use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+        let (address, expected) = self.asking()?;
+        self.actions.action_palette.as_mut()?.set_query(&expected);
+        let event = winit::event::KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                ),
+                state: winit::event::ElementState::Pressed,
+            },
+            Key::Named(NamedKey::Enter),
+            None,
+            KeyLocation::Standard,
+            false,
+            None,
+            Key::Named(NamedKey::Enter),
+        );
+        self.action_palette_handle_key(&winit::event::WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event,
+            is_synthetic: false,
+        });
+        self.dispatch_control_invocations();
+        Some(address)
     }
 
     #[cfg(feature = "native")]
@@ -4380,7 +4455,7 @@ impl App {
             if let Some(snapshot) = bound
                 .iter_mut()
                 .find(|snapshot| snapshot.binding.same_component(&target.binding))
-                && tilo_actions::door::resolve(&snapshot.resources, &target.address.address)
+                && tilo_actions::door::resolve(snapshot.resources(), &target.address.address)
                     .is_none()
                 && let Ok(Some(resource)) = crate::bound_dispatch::resolve_component_resource(
                     self.root_widget.as_mut(),
@@ -4390,7 +4465,7 @@ impl App {
                     &target.address.address.action,
                 )
             {
-                snapshot.resources.push(resource);
+                snapshot.extend([resource]);
             }
         }
         if let Some(palette) = self.actions.action_palette.as_mut() {
@@ -4454,7 +4529,7 @@ impl App {
         // The transition may have replaced the field or closed the overlay.
         // Re-admission below retires the old tree and preserves the real
         // redraw's structural-change condition for the next layout solve.
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         let root = self.state.root.clone();
         self.capture_ordinary_palette_request();
         let exact_capture = self
@@ -4711,51 +4786,6 @@ impl App {
 /// Room for a directory page's own fields (revision, cursor, flags and the
 /// row list) beyond its rows, on the wire.
 const DIRECTORY_PAGE_WIRE_BYTES: usize = 512;
-
-/// An upper bound on `row`'s Cap'n Proto size, which the broker checks the
-/// page against: every text field costs its bytes, a NUL, padding to a word
-/// and an 8-byte pointer; every struct a fixed allowance for its data words,
-/// pointer and list tag.
-pub(crate) fn directory_row_wire_bytes(row: &runtime_collab::ActionDirectoryRow) -> usize {
-    const STRUCT: usize = 64;
-    fn text(value: &str) -> usize {
-        value.len().saturating_add(8) / 8 * 8 + 8
-    }
-    let descriptor = row.descriptor.as_ref().map_or(0, |descriptor| {
-        let input = match &descriptor.input {
-            runtime_collab::ExportedInput::None => 0,
-            runtime_collab::ExportedInput::Text {
-                prompt,
-                placeholder,
-                ..
-            } => STRUCT + text(prompt) + text(placeholder),
-        };
-        STRUCT
-            + text(&descriptor.resource)
-            + descriptor.semantic_identity.as_ref().map_or(0, |identity| {
-                STRUCT + text(&identity.kind) + text(&identity.key)
-            })
-            + text(&descriptor.action)
-            + text(&descriptor.resource_kind)
-            + text(&descriptor.resource_label)
-            + text(&descriptor.action_label)
-            + text(descriptor.description.as_deref().unwrap_or(""))
-            + text(&descriptor.operation_kind)
-            + text(&descriptor.params_json)
-            + text(&descriptor.contract_json)
-            + input
-    });
-    STRUCT
-        + text(&row.parent_resource)
-        + text(&row.resource)
-        + text(&row.resource_kind)
-        + text(&row.resource_label)
-        + text(&row.resource_presentation_json)
-        + text(row.action.as_deref().unwrap_or(""))
-        + text(row.visibility_action.as_deref().unwrap_or(""))
-        + text(&row.visibility_contract_json)
-        + descriptor
-}
 
 /// Every `(resource, action)` in `resource`'s tree, to `max_depth` levels
 /// below it, whose action id or label, description, parameter names and

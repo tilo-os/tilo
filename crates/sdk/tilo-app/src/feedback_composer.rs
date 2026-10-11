@@ -1,7 +1,10 @@
 //! Shared private feedback presentation. Desktop hosts lend the system-owned
 //! controller into a private component; no draft is a workspace record.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use crate::feedback::{Composer, Consent, DeliveryState};
 use crate::i18n::EmbeddedCatalog;
@@ -18,14 +21,29 @@ static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
 pub struct FeedbackServices {
     controller: Rc<RefCell<Composer>>,
     presentation: Rc<RefCell<Option<LocalState<String>>>>,
+    mounted: Rc<Cell<bool>>,
 }
 
 impl FeedbackServices {
+    /// Private outbox writes need a wake independently of the ephemeral draft.
+    /// Transport retries remain explicit; only pending local persistence polls.
+    #[must_use]
+    pub fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        let controller = self.controller.try_borrow().ok()?;
+        match controller.state().ok()? {
+            Some(DeliveryState::Saving) => {
+                crate::time::now().checked_add(crate::time::Duration::from_millis(100))
+            }
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub fn new(controller: Rc<RefCell<Composer>>) -> Self {
         Self {
             controller,
             presentation: Rc::default(),
+            mounted: Rc::default(),
         }
     }
 
@@ -54,38 +72,44 @@ impl FeedbackServices {
     }
 }
 
-/// Ephemeral CRDT state, admitted only into a private component host.
+/// The host retains the outbox, while exactly one private presentation owns
+/// its raw review. Retirement drops this lease with the actual effect owner.
+struct PresentationLease(FeedbackServices);
+
+impl Drop for PresentationLease {
+    fn drop(&mut self) {
+        self.0.presentation.borrow_mut().take();
+        self.0.mounted.set(false);
+        if let Ok(mut controller) = self.0.controller.try_borrow_mut() {
+            controller.abandon_review();
+        }
+    }
+}
+
+/// Ephemeral CRDT state, admitted only into a private component host. Its
+/// fields are edited at their paths; the effects review and send it.
 #[derive(Clone, Debug, Default, PartialEq, Model)]
+#[model(check = FeedbackDraft::valid)]
 pub struct FeedbackDraft {
+    /// The issue, in the person's words.
     pub issue: String,
+    /// Whether contextual information is included.
     pub include_context: bool,
+    /// Whether a single masked app screenshot is included.
     pub include_screenshot: bool,
 }
 
-#[resource(kind = "tilo.feedback-draft", label = "Feedback")]
 impl FeedbackDraft {
-    /// Describe the issue.
-    #[action]
-    pub fn describe(&mut self, issue: String) -> Result<(), &'static str> {
-        if issue.len() > 8_000 {
-            return Err("feedback-issue-too-long");
+    fn valid(&self) -> Result<(), tilo_resource::Refusal> {
+        if self.issue.len() > 8_000 {
+            return Err(tilo_resource::Refusal::new("feedback-issue-too-long"));
         }
-        self.issue = issue;
         Ok(())
     }
-
-    /// Explicitly include or exclude contextual information.
-    #[action]
-    pub fn context(&mut self, include: bool) {
-        self.include_context = include;
-    }
-
-    /// Explicitly request or exclude a single masked app screenshot.
-    #[action]
-    pub fn screenshot(&mut self, include: bool) {
-        self.include_screenshot = include;
-    }
 }
+
+#[resource(kind = "tilo.feedback-draft", label = "Feedback")]
+impl FeedbackDraft {}
 
 #[derive(Clone, Debug, Effect)]
 #[effect(operation = "feedback.compose", device_only)]
@@ -112,6 +136,15 @@ pub enum FeedbackEffect {
 /// Mounted inside desktop chrome, never as an overlapping application window.
 pub struct FeedbackComposer;
 
+/// The shared composer definition, instantiated by the SDK once.
+/// Hosts use this entry point to avoid another copy of its generic resource,
+/// history and effect machinery in each host crate.
+#[must_use]
+#[inline(never)]
+pub fn definition() -> &'static crate::application::ApplicationDefinition {
+    crate::framework::definition::<FeedbackComposer>()
+}
+
 /// Prepare the chrome component over an isolated, ephemeral store. The host's
 /// durable outbox is lent separately; raw drafts cannot reach profile records,
 /// history or room synchronization through this preparation path.
@@ -124,7 +157,7 @@ pub fn prepare(
     author: &str,
     instance: u64,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
-    let definition = crate::framework::definition::<FeedbackComposer>();
+    let definition = definition();
     let store = Rc::new(crate::feedback::MemoryStore::new());
     let room = "feedback-private-draft";
     let records = crate::record::RecordOwners::with_store(store.clone())
@@ -135,12 +168,10 @@ pub fn prepare(
             .map_err(|error| crate::launch::LaunchError::Operation(error.to_string()))?,
     );
     let target = LaunchTarget::New;
-    let permissions = Rc::new(RefCell::new(
-        crate::permissions::PermissionContext::from_capabilities(
-            crate::permissions::Actor::person(Some(crate::permissions::Role::Owner), author),
-            vec![],
-        ),
-    ));
+    let permissions = Rc::new(RefCell::new(crate::permissions::PermissionContext::member(
+        author,
+        crate::permissions::Role::Owner,
+    )));
     let mut context = HostContext::prepare(
         definition,
         HostContextInputs {
@@ -156,6 +187,12 @@ pub fn prepare(
     )?;
     context.provide_private();
     if let Some(services) = services {
+        if services.mounted.replace(true) {
+            return Err(crate::launch::LaunchError::Operation(
+                "feedback-busy".into(),
+            ));
+        }
+        context.lend(PresentationLease(services.clone()));
         context.lend(services);
     }
     definition.instantiate(context, target, RestoreInput::None)
@@ -217,19 +254,14 @@ impl ResourceApp for FeedbackComposer {
         Box::new(
             crate::column![
                 Text::new("feedback-title"),
-                cx.input(|draft| draft.issue.clone(), FeedbackDraft::DESCRIBE)
+                cx.input(FeedbackDraft::paths().issue)
                     .with_id("feedback-issue")
                     .with_placeholder("feedback-describe")
                     .multiline(true),
-                cx.checkbox(
-                    "feedback-context",
-                    |draft| draft.include_context,
-                    FeedbackDraft::CONTEXT
-                ),
+                cx.checkbox("feedback-context", FeedbackDraft::paths().include_context),
                 cx.checkbox(
                     "feedback-screenshot",
-                    |draft| draft.include_screenshot,
-                    FeedbackDraft::SCREENSHOT
+                    FeedbackDraft::paths().include_screenshot
                 ),
                 Text::new("feedback-privacy"),
                 cx.effect_button("feedback-review", &FeedbackEffect::Review),
@@ -264,6 +296,7 @@ fn install_effects(
         .is_private()
         .then(|| cx.take_lent::<FeedbackServices>())
         .flatten();
+    let presentation = cx.take_lent::<PresentationLease>();
     if let Some(services) = &services {
         *services.presentation.borrow_mut() = Some(status.clone());
         restore_progress(services, status);
@@ -273,6 +306,7 @@ fn install_effects(
     let reviewed_pixels = pixels.clone();
     let progress = status.clone();
     cx.effects(move |effect: FeedbackEffect, effect_cx| {
+        let _presentation = &presentation;
         let Some(services) = &services else {
             progress.set("feedback-unconfigured".to_owned());
             return Err("feedback-unconfigured".to_owned());
@@ -358,7 +392,8 @@ fn delivery_label(state: &DeliveryState) -> &'static str {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(
     clippy::expect_used,
     reason = "assertions prove the production component journey"
@@ -403,6 +438,20 @@ mod tests {
         }
     }
 
+    /// The arguments of the field edit `edit`, as the door takes them.
+    fn edit(edit: &tilo_resource::Edit<FeedbackDraft>) -> serde_json::Value {
+        json!({ tilo_resource::EDIT_PARAM: edit })
+    }
+
+    /// Type the issue, as the composer's text field does.
+    fn describe(frame: &mut FrameHarness, issue: &str) -> Result<(), tilo_actions::DoorError> {
+        call(
+            frame,
+            tilo_resource::FIELD_EDIT,
+            &edit(&FeedbackDraft::paths().issue.replace(issue)),
+        )
+    }
+
     fn call(
         frame: &mut FrameHarness,
         action: &str,
@@ -423,6 +472,75 @@ mod tests {
                 arguments.as_object().expect("typed arguments"),
             )
             .map(|_| ())
+    }
+
+    #[test]
+    fn private_storage_wake_sends_only_after_host_acknowledges_approval() {
+        let transport = Rc::new(RefCell::new(Transport::default()));
+        let storage = Rc::new(MemoryStore::queued());
+        let controller = Composer::new(
+            Destination {
+                room: "private-fixture".into(),
+                provider: "record:chat:feedback".into(),
+                channel: "feedback".into(),
+            },
+            Outbox::open(storage.clone(), StorageKey::package("feedback-outbox"))
+                .expect("private outbox"),
+            Box::new(Host(transport.clone())),
+        )
+        .expect("admitted destination");
+        let services = FeedbackServices::new(Rc::new(RefCell::new(controller)));
+        let component =
+            prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
+        let mut frame = FrameHarness::from_component(
+            component,
+            (720, 720),
+            ComponentRunnerInputs::from_native_process(),
+        )
+        .expect("production component");
+        call(
+            &mut frame,
+            tilo_resource::FIELD_EDIT,
+            &edit(
+                &FeedbackDraft::paths()
+                    .issue
+                    .replace("Opening the book failed"),
+            ),
+        )
+        .expect("describe");
+        call(&mut frame, "review", &json!({})).expect("review");
+        call(&mut frame, "submit", &json!({})).expect("queue approval");
+        frame.relayout();
+        assert!(
+            frame
+                .inspection_json()
+                .expect("inspection")
+                .contains("Saving on this device")
+        );
+        assert!(services.next_wake_deadline().is_some());
+        services.pump().expect("storage still pending");
+        assert!(transport.borrow().submissions.is_empty());
+        let pending = storage.drain();
+        assert_eq!(pending.len(), 1);
+        storage
+            .acknowledge(pending[0].revision, Ok(()))
+            .expect("host commit");
+        services.pump().expect("durable approval sends");
+        frame.relayout();
+        assert_eq!(transport.borrow().submissions.len(), 1);
+        assert!(services.next_wake_deadline().is_none());
+        assert!(
+            frame
+                .inspection_json()
+                .expect("inspection")
+                .contains("Waiting for destination confirmation")
+        );
+        assert!(
+            !frame
+                .inspection_json()
+                .expect("inspection")
+                .contains("Feedback received")
+        );
     }
 
     #[test]
@@ -447,6 +565,10 @@ mod tests {
         let services = FeedbackServices::new(controller.clone());
         let component =
             prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
+        assert!(
+            prepare(Some(services.clone()), "device", "guest", 43).is_err(),
+            "one approved outbox must not have competing private editors"
+        );
         let mut frame = FrameHarness::from_component(
             component,
             (720, 720),
@@ -454,12 +576,8 @@ mod tests {
         )
         .expect("production component");
         assert!(transport.borrow().submissions.is_empty());
-        call(
-            &mut frame,
-            "describe",
-            &json!({"issue": "Opening the book failed; token=secret12345"}),
-        )
-        .expect("describe through public action");
+        describe(&mut frame, "Opening the book failed; token=secret12345")
+            .expect("describe through public action");
         frame.relayout();
         assert!(
             frame.capture_protected(),
@@ -513,6 +631,14 @@ mod tests {
             })
         );
         assert_literal_second_review(&mut frame, &transport);
+        frame.close_components();
+        assert!(
+            controller.borrow().preview().is_none(),
+            "closing discards the unapproved review"
+        );
+        let reopened = prepare(Some(services), "device", "guest", 42)
+            .expect("closed editor releases its private lease");
+        drop(reopened);
     }
 
     fn find(node: &crate::headless::InspectionNode) -> Option<&crate::headless::InspectionNode> {
@@ -531,8 +657,13 @@ mod tests {
     }
     fn assert_literal_second_review(frame: &mut FrameHarness, transport: &Rc<RefCell<Transport>>) {
         transport.borrow_mut().receipt = None;
-        call(frame, "describe", &json!({"issue": "feedback-title"})).expect("second issue");
-        call(frame, "context", &json!({"include": true})).expect("explicit context opt-in");
+        describe(frame, "feedback-title").expect("second issue");
+        call(
+            frame,
+            tilo_resource::FIELD_EDIT,
+            &edit(&FeedbackDraft::paths().include_context.set(true)),
+        )
+        .expect("explicit context opt-in");
         call(frame, "review", &json!({})).expect("new review after durable receipt");
         frame.relayout();
         let inspection = frame.inspection();

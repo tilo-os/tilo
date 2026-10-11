@@ -1,71 +1,40 @@
-//! The capability model — `(subject × scope × verb)`.
+//! The sandbox: what an app's code may touch outside the documents it
+//! publishes — filesystem paths, collaborative file records, devices and
+//! network hosts — as `(subject × scope × access)` capabilities.
 //!
-//! [`crate::role::role_permits`] answers the coarse "may this role emit this
-//! op class?" and stays the authoritative wire decision; this lets a
-//! permission be expressed at finer granularity on top of it. [`role_caps`]
-//! must stay coherent with `role_permits` — checked by
-//! `caps_agree_with_role_table` in `tests/caps.rs`.
+//! Granted to an app at install and through portals, and never what a person
+//! grants an agent: who may invoke which action is decided by
+//! `tilo-action-policy` over the published tree.
 //!
-//! [`decide`] is fail-closed and deny-biased: no base authority + no
-//! matching grant denies; a `Denied` role can never be rescued by a grant;
-//! a matching `Restrict` removes authority even if a `Grant` would allow it.
+//! [`decide_capability`] is fail-closed and deny-biased: no matching grant
+//! denies, and a matching `Restrict` removes access even if a `Grant` would
+//! allow it.
 
 use serde::{Deserialize, Serialize};
-pub mod action_authority;
+pub mod net;
 
-use crate::channel::ArtifactId;
+pub use net::{Allowed, EgressPolicy, HostPattern, NetHostError, NetHostPattern, host_covers};
+
 use crate::crypto::Ed25519PublicKey;
-use crate::role::{ArtifactKind, OpClass, Role};
 
-/// A coarse capability verb.
-///
-/// The four coarse caps from the coherence doc (`read/write/invite/admin`)
-/// plus `Comment` (between `Read` and `Write` — the `Commenter` role may
-/// comment but not edit). Not a single linear order — `Invite` is
-/// governance-ish, orthogonal to the `Read < Comment < Write` ladder — so
-/// containment is expressed by [`Verb::implies`] rather than `Ord`.
+/// How far a sandbox capability reaches into its resource.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub enum Verb {
-    /// See the resource. The floor: every other verb implies it.
+pub enum Access {
+    /// Read, observe, capture.
     Read,
-    /// Append a comment or reaction. Implies `Read`.
-    Comment,
-    /// Mutate content (splice/move/rename/tombstone/restore). Implies `Comment` + `Read`.
+    /// Change, send, drive. Implies `Read`.
     Write,
-    /// Admit a member / mint an invite token. Implies `Read` but is otherwise
-    /// independent of the content ladder.
-    Invite,
-    /// Govern: issue/revoke attestations, compaction, redaction, settings.
-    /// The ceiling — implies every other verb.
-    Admin,
 }
 
-impl Verb {
-    /// Does holding `self` confer authority for `other`?
-    ///
-    /// Containment, not ordering: `Admin` confers everything, `Write` confers
-    /// `Comment`/`Read`, `Invite` confers only `Read` besides itself. Lets a
-    /// `Grant`/`Restrict` phrased in a coarse verb answer a finer required verb.
-    pub fn implies(self, other: Verb) -> bool {
-        use Verb::{Admin, Comment, Invite, Read, Write};
-        match self {
-            Admin => true,
-            Write => matches!(other, Write | Comment | Read),
-            Invite => matches!(other, Invite | Read),
-            Comment => matches!(other, Comment | Read),
-            Read => matches!(other, Read),
-        }
+impl Access {
+    /// Does holding `self` reach `other`?
+    pub fn implies(self, other: Access) -> bool {
+        self >= other
     }
 }
 
-/// A named principal — the string-keyed half of the subject space, for
-/// enforcement points with no signature to check (app-id, agent name,
-/// bearer token, room).
-///
-/// The kind tag is load-bearing: a share list renders [`Principal::Person`]
-/// rows, a workspace roster renders room membership, and they must never
-/// become the same list — see [`Principal::is_person`].
+/// A named principal — the string-keyed half of the subject space.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Principal {
@@ -73,16 +42,13 @@ pub enum Principal {
     /// lowercase hex, so a `Person` principal and a matching [`Subject::User`]
     /// are interchangeable.
     Person(String),
-    /// An application, by its stable app id. Subject of the *only* case that
-    /// prompts the user: an app reaching outside what it owns.
+    /// An application, by its stable app id.
     App(String),
-    /// An automated agent — same shape as an app, tagged distinctly so it can
-    /// be listed and revoked as one.
+    /// An automated agent.
     Agent(String),
     /// A bearer token: whoever presents this token id holds the capability.
     Token(String),
-    /// A room (workspace). A capability *subject* of a room is held by
-    /// everyone in it; a capability *resource* of a room is membership itself.
+    /// A room (workspace): held by everyone in it.
     Room(String),
 }
 
@@ -94,10 +60,6 @@ impl Principal {
     }
 
     /// Is this principal a human?
-    ///
-    /// Keys the share-list/roster split: a capability whose subject is a
-    /// person belongs on the resource's share list; only room membership
-    /// belongs in the roster.
     pub fn is_person(&self) -> bool {
         matches!(self, Principal::Person(_))
     }
@@ -113,13 +75,10 @@ impl Principal {
     }
 }
 
-/// Who a permission is about: a whole role (the cap-bundle every holder
-/// inherits), one specific signing identity, or a named [`Principal`].
+/// Who a capability is about: one signing identity or a named [`Principal`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Subject {
-    /// Everyone holding this role in the channel.
-    Role(Role),
     /// One specific identity, by public key.
     User(Ed25519PublicKey),
     /// A named principal. The general case.
@@ -127,20 +86,9 @@ pub enum Subject {
 }
 
 impl Subject {
-    /// Does this subject cover an actor with role `role` and key `author`?
-    /// Signature-only form for the wire validator; [`Subject::matches_actor`]
-    /// is the general form.
-    pub fn matches(&self, role: Role, author: Ed25519PublicKey) -> bool {
-        self.matches_actor(&Actor::signed(role, author))
-    }
-
     /// Does this subject cover `actor`?
-    ///
-    /// A `Role` subject matches only an actor that *holds* a role — an app or
-    /// bearer token carries none, so a role-wide grant never covers it.
     pub fn matches_actor(&self, actor: &Actor) -> bool {
         match self {
-            Subject::Role(r) => actor.role == Some(*r),
             Subject::User(pk) => {
                 actor.key == Some(*pk)
                     || actor.principals.contains(&Principal::person_from_key(*pk))
@@ -175,17 +123,20 @@ impl Subject {
     pub fn room(room_id: impl Into<String>) -> Self {
         Subject::Principal(Principal::Room(room_id.into()))
     }
+
+    /// Is this subject a person?
+    pub fn is_person(&self) -> bool {
+        match self {
+            Subject::User(_) => true,
+            Subject::Principal(p) => p.is_person(),
+        }
+    }
 }
 
-/// The thing asking to act.
-///
-/// Presents *at most one* role (people in a room have one; apps, agents,
-/// tokens have none) plus every [`Principal`] it can prove it is. `role:
-/// None` is fail-closed: no role means no base authority.
+/// The thing asking to reach a sandboxed resource: every [`Principal`] it can
+/// prove it is, and its signing key if it has one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Actor {
-    /// The role this actor holds in the room, if it holds one.
-    pub role: Option<Role>,
     /// The actor's signing key, if it has one.
     pub key: Option<Ed25519PublicKey>,
     /// Every principal this actor presents.
@@ -193,40 +144,33 @@ pub struct Actor {
 }
 
 impl Actor {
-    /// A person in a room, identified by signing key.
-    pub fn signed(role: Role, key: Ed25519PublicKey) -> Self {
+    /// A person identified by signing key.
+    pub fn signed(key: Ed25519PublicKey) -> Self {
         Self {
-            role: Some(role),
             key: Some(key),
             principals: vec![Principal::person_from_key(key)],
         }
     }
 
-    /// A person in a room, identified by a stable string id (the shape
-    /// the compositor's collaborator table uses).
-    pub fn person(role: Option<Role>, user_id: impl Into<String>) -> Self {
+    /// A person identified by a stable string id.
+    pub fn person(user_id: impl Into<String>) -> Self {
         Self {
-            role,
             key: None,
             principals: vec![Principal::Person(user_id.into())],
         }
     }
 
-    /// An application. Holds no role — acts only through explicit
-    /// capabilities, which is what makes the portal prompt the only
-    /// user-facing permission dialog.
+    /// An application.
     pub fn app(app_id: impl Into<String>) -> Self {
         Self {
-            role: None,
             key: None,
             principals: vec![Principal::App(app_id.into())],
         }
     }
 
-    /// An automated agent. Same authority shape as an app.
+    /// An automated agent.
     pub fn agent(agent_id: impl Into<String>) -> Self {
         Self {
-            role: None,
             key: None,
             principals: vec![Principal::Agent(agent_id.into())],
         }
@@ -247,130 +191,141 @@ impl Actor {
     pub fn in_room(self, room: impl Into<String>) -> Self {
         self.with_principal(Principal::Room(room.into()))
     }
+
+    /// The person this actor is, if it presents one.
+    pub fn person_id(&self) -> Option<&str> {
+        self.principals.iter().find_map(|p| match p {
+            Principal::Person(id) => Some(id.as_str()),
+            _ => None,
+        })
+    }
 }
 
-/// What a permission ranges over.
-///
-/// Ordered coarsest (`Workspace`) to finest (`ResourceInstance`/`FsPath`).
-/// `FsPath` is meaningful only to the filesystem enforcement point and
-/// never matches a CRDT op's `ResourceScope` — the two enforcement points
-/// share a vocabulary but only the scopes that apply to them bite.
+/// What a sandbox capability ranges over.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Scope {
-    /// The whole workspace / channel. Matches every op.
-    Workspace,
-    /// A single application, by its stable app id. Matches ops whose
-    /// artifact is owned by that app.
-    App(String),
-    /// Every artifact of a kind.
-    ResourceType(ArtifactKind),
-    /// One specific artifact.
-    ResourceInstance(ArtifactId),
-    /// A filesystem path prefix. Filesystem-only; inert against ops.
-    ///
-    /// Matching is recursive and component-aligned: `/w/docs` covers
-    /// `/w/docs/a/b.txt` but not `/w/docsX`.
+    /// A filesystem path and everything below it.
     FsPath(String),
-    /// A hardware/system device class the portal brokers: `"camera"`,
-    /// `"microphone"`, `"screencast"`. Filesystem- and op-inert.
+    /// A device class (`camera`, `microphone`, `printer`, ...), or `*` for
+    /// every device.
     Device(String),
-    /// An outbound network host. `"*"` matches every host; a leading dot
-    /// matches the domain and subdomains; anything else is an exact hostname.
+    /// A network host pattern; see [`net`].
     NetHost(String),
-    /// One action an app exports, `(app, action)` — the finest scope: exactly
-    /// one verb-bearing operation on one app's surface.
-    Action { app: String, action: String },
-    /// A room as a *resource*. A capability scoped to a room, subject a
-    /// person, **is** that person's room membership — the same machinery as
-    /// any other share, so there is no second sharing system.
-    Room(String),
-    /// One stable collaborative-file record. Unlike [`Scope::FsPath`], this
-    /// authority follows renames and moves and can safely key replication.
+    /// A stable collaborative-file record id, or `*` for every record.
     FsRecord(String),
 }
 
-impl Scope {
-    /// Does this scope apply to an op with the given resource context?
-    pub fn matches_op(&self, ctx: &ResourceScope) -> bool {
-        self.matches_resource(&ResourceRef::Artifact {
-            app: ctx.app.clone(),
-            kind: ctx.kind,
-            instance: ctx.instance,
-        })
-    }
+/// The scope pattern a [`Scope::Device`] or [`Scope::FsRecord`] uses for
+/// every one.
+pub const EVERY: &str = "*";
 
+impl Scope {
     /// Does this scope cover `resource`?
-    ///
-    /// Scopes nest: `Workspace` covers everything, `App(a)` covers every
-    /// artifact/action of `a`, `FsPath(p)` covers every path under `p`. A
-    /// scope from a different enforcement point than the resource simply
-    /// doesn't match — inert, never permissive.
-    #[allow(
-        clippy::unnested_or_patterns,
-        reason = "the `App`/`Artifact`/`Action` alternatives already share the `Scope::App(a)` \
-                  first component; they cannot nest further since each binds `b` out of a \
-                  different resource shape (a bare tuple field vs. an `Option`-wrapped struct \
-                  field vs. a plain struct field)"
-    )]
-    #[allow(
-        clippy::match_same_arms,
-        reason = "several arms reduce to a bare `x == y` (app id, device id, resource kind, \
-                  resource instance), which looks like duplication to a body-shape check but \
-                  each compares a different domain under a different Scope/ResourceRef pairing; \
-                  merging them would erase which pairing licenses the match"
-    )]
     pub fn matches_resource(&self, resource: &ResourceRef) -> bool {
         match (self, resource) {
-            (Scope::Workspace, _) => true,
-
-            (
-                Scope::App(a),
-                ResourceRef::App(b)
-                | ResourceRef::Artifact { app: Some(b), .. }
-                | ResourceRef::Action { app: b, .. },
-            ) => a == b,
-
-            (Scope::ResourceType(k), ResourceRef::Artifact { kind, .. }) => k == kind,
-
-            (Scope::ResourceInstance(i), ResourceRef::Artifact { instance, .. }) => i == instance,
-
             (Scope::FsPath(prefix), ResourceRef::FsPath(path)) => path_covers(prefix, path),
-
-            (Scope::Device(d), ResourceRef::Device(e)) => d == e,
-
+            (Scope::Device(d), ResourceRef::Device(e))
+            | (Scope::FsRecord(d), ResourceRef::FsRecord(e)) => d == EVERY || d == e,
             (Scope::NetHost(h), ResourceRef::NetHost(target)) => host_covers(h, target),
-
-            (Scope::Action { app, action }, ResourceRef::Action { app: b, action: c }) => {
-                app == b && action == c
+            (Scope::FsPath(_) | Scope::Device(_) | Scope::NetHost(_) | Scope::FsRecord(_), _) => {
+                false
             }
-
-            // Room membership is converted into an actor role by `Workspace`
-            // before an action is checked. Direct scope matching remains narrow:
-            // a room grant cannot masquerade as a filesystem/app/action grant.
-            (Scope::Room(r), ResourceRef::Room(s)) => r == s,
-            (Scope::FsRecord(r), ResourceRef::FsRecord(s)) => r == s,
-
-            // Every scope variant is paired with its own condition above; a
-            // resource shape that doesn't match the scope's own kind is never
-            // covered by it.
-            (
-                Scope::App(_)
-                | Scope::ResourceType(_)
-                | Scope::ResourceInstance(_)
-                | Scope::FsPath(_)
-                | Scope::Device(_)
-                | Scope::NetHost(_)
-                | Scope::Action { .. }
-                | Scope::Room(_)
-                | Scope::FsRecord(_),
-                _,
-            ) => false,
         }
     }
 }
 
-/// Does the path-prefix `prefix` cover `path`, respecting component
+/// What a governor exports to its filesystem and the relays that carry its
+/// rooms: the sandbox capabilities people hold over shared files, and who
+/// may reach each room a relay carries (keyed by the relay's room id) — the
+/// room's members, as its policy names them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FsAuthority {
+    #[serde(default)]
+    pub capabilities: Vec<CapOverride>,
+    #[serde(default)]
+    pub room_members: std::collections::BTreeMap<String, Vec<RoomMember>>,
+}
+
+/// A person a relay admits to one room: until `until` (Unix seconds,
+/// exclusive) when their membership lapses, or for as long as they stay a
+/// member.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoomMember {
+    pub user: crate::crypto::Ed25519PublicKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<u64>,
+}
+
+impl RoomMember {
+    /// Whether the membership holds at `now` (Unix seconds).
+    #[must_use]
+    pub fn is_live_at(&self, now: u64) -> bool {
+        self.until.is_none_or(|until| now < until)
+    }
+}
+
+impl From<Vec<CapOverride>> for FsAuthority {
+    fn from(capabilities: Vec<CapOverride>) -> Self {
+        Self {
+            capabilities,
+            room_members: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+/// What a launch hands the apps of a room: which of them author the room
+/// (the room's grants let them change it; see
+/// `tilo_action_policy::roles::app_authorship`), and the room's sandbox
+/// capabilities. An app that is not an author opens as a viewer.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchGrants {
+    #[serde(default)]
+    pub authors: Vec<String>,
+    #[serde(default)]
+    pub sandbox: Vec<CapOverride>,
+}
+
+impl LaunchGrants {
+    /// What reaches the app `app` itself: whether it authors, and only the
+    /// capabilities naming it. Restrictions travel too: the launcher's
+    /// decision needs them to narrow a grant.
+    #[must_use]
+    pub fn for_app(&self, app: &str) -> Self {
+        let want = Subject::app(app);
+        Self {
+            authors: self
+                .authors
+                .iter()
+                .filter(|author| author.as_str() == app)
+                .cloned()
+                .collect(),
+            sandbox: self
+                .sandbox
+                .iter()
+                .filter(|capability| capability.subject == want)
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// Whether `app` authors the room.
+    #[must_use]
+    pub fn authors(&self, app: &str) -> bool {
+        self.authors.iter().any(|author| author == app)
+    }
+
+    /// Nothing to hand over.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.authors.is_empty() && self.sandbox.is_empty()
+    }
+}
+
+/// Does the path-prefix `prefix` cover `path`, respecting component/// Does the path-prefix `prefix` cover `path`, respecting component
 /// boundaries?
 ///
 /// `/w/docs` covers `/w/docs/a.txt` but not `/w/docsX` — a prefix that
@@ -391,63 +346,13 @@ pub fn path_covers(prefix: &str, path: &str) -> bool {
     path.starts_with(&with_sep)
 }
 
-/// Does the host pattern `pattern` cover `host`?
-///
-/// `"*"` covers every host; a leading `.` covers the domain and
-/// subdomains. Anything else is an exact, case-insensitive match.
-/// Deliberately not a glob — `*.evil.com` style patterns invite mistakes
-/// on this security boundary.
-pub fn host_covers(pattern: &str, host: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    let pattern = pattern.to_ascii_lowercase();
-    let host = host.to_ascii_lowercase();
-    if let Some(domain) = pattern.strip_prefix('.') {
-        return host == domain || host.ends_with(&pattern);
-    }
-    pattern == host
-}
-
-/// A resource a subject might act on. Resources nest — see
-/// [`Scope::matches_resource`]. Showing one needs no capability; only
-/// acting on one is checked.
+/// A sandboxed resource an app might reach.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResourceRef {
-    /// The room/workspace itself.
-    Workspace,
-    /// An app's own surface, as a whole.
-    App(String),
-    /// One CRDT artifact.
-    Artifact {
-        app: Option<String>,
-        kind: ArtifactKind,
-        instance: ArtifactId,
-    },
-    /// A filesystem path (absolute, already normalised by the caller).
     FsPath(String),
-    /// A brokered device: `"camera"`, `"microphone"`, `"screencast"`.
     Device(String),
-    /// An outbound network host.
     NetHost(String),
-    /// One exported action on one app.
-    Action { app: String, action: String },
-    /// A room, as the target of a membership capability.
-    Room(String),
-    /// A stable collaborative-file record id.
     FsRecord(String),
-}
-
-/// The resource context an op carries, used to match [`Scope`]s. Built by
-/// the validator from the op's artifact + the channel's artifact maps.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResourceScope {
-    /// The app that owns the artifact, if the channel records one.
-    pub app: Option<String>,
-    /// The artifact's kind.
-    pub kind: ArtifactKind,
-    /// The artifact's id.
-    pub instance: ArtifactId,
 }
 
 /// When a capability dies — the `expiry` of `(subject, resource, verbs,
@@ -523,346 +428,121 @@ impl Expiry {
     }
 }
 
-/// Whether an override grants or restricts.
+/// Whether a capability grants or restricts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Effect {
-    /// Extend a subject's authority within the scope (a per-resource
-    /// share / individual override upward).
+    /// Extend a subject's access within the scope.
     Grant,
-    /// Cap a subject's authority within the scope below the role
-    /// baseline (a narrowing).
+    /// Cap a subject's access within the scope.
     Restrict,
 }
 
-/// **The capability.** `(subject × scope × verb)`, an expiry, and
-/// grant-or-restrict.
-///
-/// The whole primitive — room membership, a file share, a portal grant
-/// are all just a `CapOverride` with a different scope/subject; there is
-/// no second sharing system. `Restrict { verb }` caps authority at "no
-/// more than `verb`": any required verb it doesn't imply is removed.
+/// One sandbox capability.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapOverride {
-    /// Who the override applies to.
     pub subject: Subject,
-    /// What it ranges over.
     pub scope: Scope,
-    /// Grant (extend) or Restrict (narrow).
     pub effect: Effect,
-    /// The verb the effect is phrased in.
-    pub verb: Verb,
-    /// Stable id, so a specific capability can be revoked by name even after
-    /// replicating to peers that never saw it granted. Empty means unnamed —
-    /// revocable only by matching content.
+    pub access: Access,
+    /// Stable id: revocation and the replicated map key on it.
     pub id: String,
-    /// When this capability dies. An expired capability is invisible to
-    /// [`decide_actor`] — not "denied", simply not there.
     pub expiry: Expiry,
-    /// Who granted this, for the share-list UI and audit. Advisory: grant
-    /// authority is enforced where the grant is *made*, not here.
+    /// Who granted it, for audit and the share list.
     pub granted_by: Option<Principal>,
 }
 
 impl CapOverride {
-    /// The general constructor. Prefer the named helpers below — they read
-    /// better at the call site.
-    pub fn new(subject: Subject, scope: Scope, effect: Effect, verb: Verb) -> Self {
+    pub fn new(subject: Subject, scope: Scope, effect: Effect, access: Access) -> Self {
         Self {
             subject,
             scope,
             effect,
-            verb,
+            access,
             id: String::new(),
             expiry: Expiry::Never,
             granted_by: None,
         }
     }
 
-    /// Convenience: a per-resource share granting `verb` to `user` on
-    /// one artifact instance.
-    pub fn share(user: Ed25519PublicKey, instance: ArtifactId, verb: Verb) -> Self {
-        Self::new(
-            Subject::User(user),
-            Scope::ResourceInstance(instance),
-            Effect::Grant,
-            verb,
-        )
+    pub fn grant(subject: Subject, scope: Scope, access: Access) -> Self {
+        Self::new(subject, scope, Effect::Grant, access)
     }
 
-    /// Convenience: cap a role at `verb` within an app.
-    pub fn restrict_role_in_app(role: Role, app: impl Into<String>, verb: Verb) -> Self {
-        Self::new(
-            Subject::Role(role),
-            Scope::App(app.into()),
-            Effect::Restrict,
-            verb,
-        )
-    }
-
-    /// Convenience: grant `verb` to `subject` on `scope`.
-    pub fn grant(subject: Subject, scope: Scope, verb: Verb) -> Self {
-        Self::new(subject, scope, Effect::Grant, verb)
-    }
-
-    /// Convenience: room membership — the capability that *is* being in a
-    /// room. Spelled as an ordinary grant, because that's exactly what it is.
-    pub fn membership(subject: Subject, room: impl Into<String>, verb: Verb) -> Self {
-        Self::grant(subject, Scope::Room(room.into()), verb)
-    }
-
-    /// Attach a stable id.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = id.into();
         self
     }
 
-    /// Attach a wall-clock expiry (seconds since the Unix epoch).
     #[must_use]
     pub fn with_expiry(mut self, unix_seconds: u64) -> Self {
         self.expiry = Expiry::AtUnix(unix_seconds);
         self
     }
 
-    /// Attach any [`Expiry`].
     #[must_use]
     pub fn expiring(mut self, expiry: Expiry) -> Self {
         self.expiry = expiry;
         self
     }
 
-    /// Record who granted this.
     #[must_use]
     pub fn granted_by(mut self, who: Principal) -> Self {
         self.granted_by = Some(who);
         self
     }
 
-    /// Is this capability live at `now`? `None` means "do not evaluate
-    /// expiry" — the wire validator has no trustworthy shared clock and must
-    /// not make replay depend on local time.
     pub fn is_live_at(&self, now: Option<u64>) -> bool {
         self.expiry.is_live_at(now)
     }
 
-    /// Should this capability be written to disk?
     pub fn persists_across_restart(&self) -> bool {
         self.expiry.persists_across_restart()
     }
-
-    /// Does this capability name a person as its subject? Keys the hard UI
-    /// constraint: a person-subject, single-resource capability belongs on
-    /// that resource's share list, never the room roster.
-    pub fn subject_is_person(&self) -> bool {
-        match &self.subject {
-            Subject::User(_) => true,
-            Subject::Principal(p) => p.is_person(),
-            Subject::Role(_) => false,
-        }
-    }
-
-    /// Is this capability room membership — i.e. roster, not a resource's
-    /// share list?
-    ///
-    /// Only capabilities scoped to [`Scope::Room`] (or the whole workspace)
-    /// qualify. A person holding only `FsPath`/`ResourceInstance` capabilities
-    /// is **not** a member and must never render as one.
-    pub fn is_room_membership(&self) -> bool {
-        matches!(self.scope, Scope::Room(_) | Scope::Workspace)
-    }
 }
 
-/// The named cap-bundle for a role.
-///
-/// Coherent with [`crate::role::role_permits`]: the returned verb is the
-/// role's workspace-wide ceiling (proven in
-/// `tests/caps.rs::caps_agree_with_role_table`). `None` for
-/// [`Role::Denied`] — an explicit block holds no caps.
-pub fn role_caps(role: Role) -> Option<Verb> {
-    match role {
-        Role::Owner => Some(Verb::Admin),
-        Role::Editor => Some(Verb::Write),
-        Role::Commenter => Some(Verb::Comment),
-        Role::Viewer => Some(Verb::Read),
-        Role::Denied => None,
-    }
-}
-
-/// The verb an op class requires: mutation classes
-/// (`Splice`/`Move`/`EditMeta`/`Tombstone`/`Restore`) need `Write`;
-/// `Comment` needs `Comment`; governance classes
-/// (`Govern`/`Compaction`/`Redact`) need `Admin`.
-pub fn verb_for_opclass(op: OpClass) -> Verb {
-    match op {
-        OpClass::Comment => Verb::Comment,
-        OpClass::Splice
-        | OpClass::Move
-        | OpClass::EditMeta
-        | OpClass::Tombstone
-        | OpClass::Restore => Verb::Write,
-        OpClass::Govern | OpClass::Compaction | OpClass::Redact => Verb::Admin,
-    }
-}
-
-/// The outcome of a capability decision.
+/// The outcome of a sandbox check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapDecision {
-    /// Permitted.
     Allow,
-    /// Denied because the actor's role doesn't confer the verb and no grant
-    /// extends it. Maps to `RoleForbidsOpClass` so the coarse role table's
-    /// behaviour is preserved byte-for-byte.
-    DeniedByRole,
-    /// Denied because a `Restrict` override capped authority below the
-    /// required verb, even though role or grant would otherwise allow it.
+    /// No live capability covers the resource.
+    NotGranted,
+    /// A restriction caps access below what was asked.
     DeniedByRestriction,
 }
 
-/// Decide whether an actor may perform `required` on a resource.
-///
-/// `base_role_allows` is the coarse role-table answer
-/// ([`crate::role::role_permits`]), passed in so this crate keeps one
-/// source of truth for the base table.
-///
-/// Fail-closed, deny-biased: a `Denied` role is always
-/// [`CapDecision::DeniedByRole`]. Otherwise `effective = (base_role_allows
-/// OR granted) AND NOT restricted` — a matching restriction removes
-/// authority regardless of grants.
-pub fn decide(
-    base_role_allows: bool,
-    required: Verb,
-    role: Role,
-    author: Ed25519PublicKey,
-    ctx: &ResourceScope,
-    overrides: &[CapOverride],
-) -> CapDecision {
-    decide_actor(
-        base_role_allows,
-        required,
-        &Actor::signed(role, author),
-        &ResourceRef::Artifact {
-            app: ctx.app.clone(),
-            kind: ctx.kind,
-            instance: ctx.instance,
-        },
-        overrides,
-        // The wire validator has no clock it shares with the op's author.
-        // Evaluating expiry here would make two peers disagree about the same
-        // signed op, so expiry is a *local* enforcement concern only.
-        None,
-    )
-}
-
-/// Decide whether `actor` may perform `required` on `resource` — the
-/// general form every non-wire enforcement point calls.
-///
-/// Same fail-closed, deny-biased semantics as [`decide`], generalised to
-/// [`Actor`]/[`ResourceRef`]. An actor with `role: None` — every app,
-/// agent and token — has no base authority, so it can act *only* through
-/// an explicit capability: the property that makes the portal prompt the
-/// only user-facing permission dialog in the system.
-pub fn decide_actor(
-    base_role_allows: bool,
-    required: Verb,
-    actor: &Actor,
-    resource: &ResourceRef,
-    caps: &[CapOverride],
-    now: Option<u64>,
-) -> CapDecision {
-    // An explicit block overrides any inherited or shared grant.
-    if actor.role == Some(Role::Denied) {
-        return CapDecision::DeniedByRole;
-    }
-
-    let mut granted = false;
-    let mut restricted = false;
-    for ov in caps {
-        if !ov.is_live_at(now)
-            || !ov.subject.matches_actor(actor)
-            || !ov.scope.matches_resource(resource)
-        {
-            continue;
-        }
-        // App/agent workspace grants authorize room authorship, not external
-        // storage, devices or network. In particular they must never upgrade
-        // an explicit read-only file grant. Keep workspace restrictions broad
-        // so read-only participation still clamps all writes; unrestricted
-        // local-user grants retain their existing semantics.
-        if ov.effect == Effect::Grant
-            && ov.scope == Scope::Workspace
-            && matches!(
-                ov.subject,
-                Subject::Principal(Principal::App(_) | Principal::Agent(_))
-            )
-            && !role_base_applies(resource)
-        {
-            continue;
-        }
-        match ov.effect {
-            Effect::Grant if ov.verb.implies(required) => granted = true,
-            Effect::Restrict if !ov.verb.implies(required) => restricted = true,
-            _ => {}
-        }
-    }
-
-    restricted |= crate::foreign_device::exceeds_ceiling(actor, required);
-    let allowed = (base_role_allows || granted) && !restricted;
-    if allowed {
-        CapDecision::Allow
-    } else if !base_role_allows && !granted {
-        CapDecision::DeniedByRole
-    } else {
-        CapDecision::DeniedByRestriction
-    }
-}
-
-/// Does a role's cap-bundle confer *any* base authority over this kind of
-/// resource?
-///
-/// Roles carry base authority over the room and its contents (workspace,
-/// apps, artifacts, actions), but **none** over the filesystem, devices,
-/// or network — those live outside the room, so reaching them always
-/// requires an explicit capability, even for an Owner. The workspace's
-/// own file tree is reached the same way, via an explicit `FsPath`
-/// capability scoped to the root and granted at room creation.
-///
-/// This is the single most load-bearing line in the model: without it,
-/// `role_caps(Editor) == Write` would silently authorise writing every
-/// path on the machine.
-pub fn role_base_applies(resource: &ResourceRef) -> bool {
-    match resource {
-        ResourceRef::Workspace
-        | ResourceRef::App(_)
-        | ResourceRef::Artifact { .. }
-        | ResourceRef::Action { .. }
-        | ResourceRef::Room(_) => true,
-        ResourceRef::FsPath(_)
-        | ResourceRef::FsRecord(_)
-        | ResourceRef::Device(_)
-        | ResourceRef::NetHost(_) => false,
-    }
-}
-
-/// [`decide_actor`] with base authority derived from the actor's own role
-/// rather than passed in. [`role_caps`] is the base, but only over
-/// resources [`role_base_applies`] admits; an actor with no role never
-/// has one. Entry point for every local check with no separate op-class
-/// table to consult.
+/// May `actor` reach `resource` with `access`? A live matching grant whose
+/// access implies the request allows, unless a live matching restriction caps
+/// it below the request. `now` in Unix seconds; `None` skips expiry.
 pub fn decide_capability(
     actor: &Actor,
     resource: &ResourceRef,
-    required: Verb,
+    access: Access,
     caps: &[CapOverride],
     now: Option<u64>,
 ) -> CapDecision {
-    let base = role_base_applies(resource)
-        && actor
-            .role
-            .and_then(role_caps)
-            .is_some_and(|ceiling| ceiling.implies(required));
-    decide_actor(base, required, actor, resource, caps, now)
+    let mut granted = false;
+    let mut restricted = false;
+    for cap in caps {
+        if !cap.is_live_at(now)
+            || !cap.subject.matches_actor(actor)
+            || !cap.scope.matches_resource(resource)
+        {
+            continue;
+        }
+        match cap.effect {
+            Effect::Grant if cap.access.implies(access) => granted = true,
+            Effect::Restrict if !cap.access.implies(access) => restricted = true,
+            _ => {}
+        }
+    }
+    match (granted, restricted) {
+        (true, false) => CapDecision::Allow,
+        (_, true) if granted => CapDecision::DeniedByRestriction,
+        _ => CapDecision::NotGranted,
+    }
 }
 
 #[cfg(test)]
@@ -870,74 +550,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workspace_authorship_cannot_upgrade_external_file_device_or_network_grants() {
-        for (actor, subject) in [
-            (Actor::app("so.tilo.books"), Subject::app("so.tilo.books")),
-            (Actor::agent("reader"), Subject::agent("reader")),
+    fn a_grant_reaches_its_scope_and_a_restriction_caps_it() {
+        let actor = Actor::app("so.tilo.books");
+        let mut caps = vec![CapOverride::grant(
+            Subject::app("so.tilo.books"),
+            Scope::FsPath("/approved".into()),
+            Access::Write,
+        )];
+        let book = ResourceRef::FsPath("/approved/book.txt".into());
+        assert_eq!(
+            decide_capability(&actor, &book, Access::Write, &caps, None),
+            CapDecision::Allow
+        );
+        let sibling = ResourceRef::FsPath("/approvedX".into());
+        assert_eq!(
+            decide_capability(&actor, &sibling, Access::Read, &caps, None),
+            CapDecision::NotGranted
+        );
+        for other in [
+            ResourceRef::Device("camera".into()),
+            ResourceRef::NetHost("example.com".into()),
+            ResourceRef::FsRecord("file-1".into()),
         ] {
-            let caps = vec![
-                CapOverride::grant(subject.clone(), Scope::Workspace, Verb::Write),
-                CapOverride::grant(
-                    subject,
-                    Scope::FsPath("/approved/book.txt".into()),
-                    Verb::Read,
-                ),
-            ];
             assert_eq!(
-                decide_capability(&actor, &ResourceRef::Workspace, Verb::Write, &caps, None),
-                CapDecision::Allow
+                decide_capability(&actor, &other, Access::Read, &caps, None),
+                CapDecision::NotGranted
             );
-            assert_eq!(
-                decide_capability(
-                    &actor,
-                    &ResourceRef::FsPath("/approved/book.txt".into()),
-                    Verb::Read,
-                    &caps,
-                    None,
-                ),
-                CapDecision::Allow
-            );
-            for resource in [
-                ResourceRef::FsPath("/approved/book.txt".into()),
-                ResourceRef::FsPath("/approved/sibling.txt".into()),
-                ResourceRef::Device("camera".into()),
-                ResourceRef::NetHost("example.com".into()),
-                ResourceRef::FsRecord("file-1".into()),
-            ] {
-                assert_ne!(
-                    decide_capability(&actor, &resource, Verb::Write, &caps, None),
-                    CapDecision::Allow,
-                    "workspace authorship must not authorize external resource {resource:?}"
-                );
-            }
         }
+        caps.push(CapOverride::new(
+            Subject::app("so.tilo.books"),
+            Scope::FsPath("/".into()),
+            Effect::Restrict,
+            Access::Read,
+        ));
+        assert_eq!(
+            decide_capability(&actor, &book, Access::Write, &caps, None),
+            CapDecision::DeniedByRestriction
+        );
+        assert_eq!(
+            decide_capability(&actor, &book, Access::Read, &caps, None),
+            CapDecision::Allow
+        );
+        let stranger = Actor::app("dev.example.other");
+        assert_eq!(
+            decide_capability(&stranger, &book, Access::Read, &caps, None),
+            CapDecision::NotGranted
+        );
     }
 
-    /// Verbs imply the ones below them, and each role's cap ceiling matches its verb ceiling.
     #[test]
-    fn capability_verbs_form_a_ladder_that_bounds_each_role() {
-        // Phase: implies_ladder.
-        {
-            assert!(Verb::Admin.implies(Verb::Invite));
-            assert!(Verb::Admin.implies(Verb::Write));
-            assert!(Verb::Write.implies(Verb::Comment));
-            assert!(Verb::Write.implies(Verb::Read));
-            assert!(!Verb::Write.implies(Verb::Admin));
-            assert!(!Verb::Comment.implies(Verb::Write));
-            assert!(Verb::Comment.implies(Verb::Read));
-            assert!(Verb::Invite.implies(Verb::Read));
-            assert!(!Verb::Invite.implies(Verb::Write));
-            assert!(Verb::Read.implies(Verb::Read));
-            assert!(!Verb::Read.implies(Verb::Comment));
-        }
-
-        // Phase: role_caps_match_verb_ceiling.
-        {
-            assert_eq!(role_caps(Role::Owner), Some(Verb::Admin));
-            assert_eq!(role_caps(Role::Editor), Some(Verb::Write));
-            assert_eq!(role_caps(Role::Commenter), Some(Verb::Comment));
-            assert_eq!(role_caps(Role::Viewer), Some(Verb::Read));
-            assert_eq!(role_caps(Role::Denied), None);
-        }
+    fn write_implies_read_and_not_the_other_way() {
+        assert!(Access::Write.implies(Access::Read));
+        assert!(Access::Write.implies(Access::Write));
+        assert!(Access::Read.implies(Access::Read));
+        assert!(!Access::Read.implies(Access::Write));
     }
 }

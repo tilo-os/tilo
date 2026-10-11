@@ -467,9 +467,7 @@ firmware_setup() {
   fi
   # shellcheck disable=SC2086
   TILO_FW_CODE="$(_env_first_file $cands)"
-  [ "$TILO_VM_S3" != 1 ] || [ -n "$TILO_FW_CODE" ] \
-    || die "TILO_VM_S3=1 needs the 4 MB OVMF build without SMM (OVMF_CODE_4M.qcow2 from edk2-ovmf)"
-  if [ "$TILO_VM_S3" = 1 ]; then
+  if [ "$TILO_VM_S3" = 1 ] && [ -n "$TILO_FW_CODE" ]; then
     TILO_FW_FMT=qcow2; TILO_FW_MEASURES=1; TILO_FW_SMM=0
     TILO_FW_VARS="$(dirname "$TILO_FW_CODE")/OVMF_VARS_4M.qcow2"
   elif [ -n "$TILO_FW_CODE" ]; then
@@ -483,12 +481,19 @@ firmware_setup() {
   else
     # Debian and Ubuntu ship the 4 MB build as raw .fd (OVMF_CODE_4M*.fd with
     # OVMF_VARS_4M*.fd) and no 2 MB one; Fedora's 2 MB build is OVMF_CODE*.fd.
+    # Their .secboot builds carry SMM, which S3 resume cannot coexist with.
     cands=""
-    for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.secboot.fd $d/OVMF_CODE_4M.fd"; done
-    for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.secboot.fd"; done
-    for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.fd"; done
+    if [ "$TILO_VM_S3" = 1 ]; then
+      for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.fd $d/OVMF_CODE.fd"; done
+    else
+      for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.secboot.fd $d/OVMF_CODE_4M.fd"; done
+      for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.secboot.fd"; done
+      for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.fd"; done
+    fi
     # shellcheck disable=SC2086
     TILO_FW_CODE="$(_env_first_file $cands)"
+    [ "$TILO_VM_S3" != 1 ] || [ -n "$TILO_FW_CODE" ] \
+      || die "TILO_VM_S3=1 needs an OVMF build without SMM: OVMF_CODE_4M.qcow2 (Fedora edk2-ovmf) or OVMF_CODE_4M.fd (Debian ovmf)"
     [ -n "$TILO_FW_CODE" ] || die "no OVMF firmware in ${TILO_DISTROBOX:-the host} (looked in $TILO_OVMF_DIRS).
   Remedy: distrobox enter ${TILO_DISTROBOX:-…} -- sudo dnf install edk2-ovmf (Fedora), or apt install ovmf (Debian/Ubuntu)"
     case "$TILO_FW_CODE" in *_4M*) four_mb=1 ;; *) four_mb=0 ;; esac

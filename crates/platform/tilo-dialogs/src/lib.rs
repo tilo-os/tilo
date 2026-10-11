@@ -2,10 +2,7 @@
     test,
     allow(
         clippy::disallowed_methods,
-        clippy::unwrap_used,
-        clippy::expect_used,
         clippy::string_slice,
-        clippy::panic,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
@@ -277,10 +274,7 @@ pub(crate) fn current_opener() -> Arc<dyn UriOpener> {
 }
 
 /// A chooser round-trip that did not return URIs.
-#[cfg_attr(
-    not(any(target_os = "linux", target_os = "macos", windows)),
-    allow(dead_code, reason = "only the native choosers answer URIs")
-)]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) enum PortalFailure {
     /// The user dismissed the picker. Surfaces from ashpd as a "cancelled"
     /// response error, not a bug.
@@ -288,10 +282,7 @@ pub(crate) enum PortalFailure {
     Failed(String),
 }
 
-#[cfg_attr(
-    not(any(target_os = "linux", target_os = "macos", windows)),
-    allow(dead_code, reason = "only the native choosers answer URIs")
-)]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl PortalFailure {
     fn into_single(self) -> PortalOutcome {
         match self {
@@ -338,7 +329,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, any(unix, windows)))]
+#[cfg(test)]
+#[cfg(any(unix, windows))]
 mod bounded_contents_tests {
     use super::*;
     use crate::portal::ContentsOutcome;

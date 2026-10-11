@@ -161,7 +161,7 @@ pub struct PreAdmission {
     /// The owner's user root, which signs it.
     pub owner_user_public_key: [u8; 32],
     /// The owner's signature over [`PreAdmission::digest`].
-    #[serde(with = "crate::sig64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 
@@ -404,7 +404,7 @@ pub enum JoinStep {
         /// The challenge exactly as the host sent it.
         challenge: Vec<u8>,
         /// Ed25519 signature by the joining device.
-        #[serde(with = "crate::sig64")]
+        #[serde(with = "serde_bytes")]
         signature: [u8; 64],
         /// How the person names themself to the owner, at most
         /// [`MAX_JOIN_NAME_CHARS`].
@@ -423,7 +423,7 @@ pub enum JoinStep {
         /// The challenge exactly as the host sent it.
         challenge: Vec<u8>,
         /// Ed25519 signature by the joining device.
-        #[serde(with = "crate::sig64")]
+        #[serde(with = "serde_bytes")]
         signature: [u8; 64],
         /// How the person names themself, at most [`MAX_JOIN_NAME_CHARS`].
         name: String,

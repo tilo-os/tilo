@@ -1,29 +1,29 @@
-//! App Store as a [`tilo_resource::Resource`]: report drafts, their notes and
-//! moderation cases are the document; the catalogue, what is on this device,
-//! the Flatpak remotes and running package jobs are live rows the surface
-//! publishes; and everything the Store does to them — install, open, refresh,
-//! submit a report, move around the app — is one of its effects.
+//! App Store as a resource: report drafts, their notes and moderation
+//! cases are the document ([`Reports`]); the catalogue, what is on this
+//! device, the Flatpak remotes and running package jobs are live rows the
+//! surface publishes; and everything the Store does to them — install,
+//! open, refresh, submit a report, move around the app — is one of its
+//! effects.
 
 use std::rc::Rc;
 
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
+    EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
     ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{ActionParam, ParamType, Resource as PublishedResource};
-use ui::tilo_resource::{
-    self, ActionDecl, Doc, Effect, Invoke, ModelError, PlainText, Resource, SearchEntry, TextEdit,
-    child_resource_id, publish_child,
-};
+use ui::tilo_actions::Resource as PublishedResource;
+use ui::tilo_resource::{self, Effect, Invoke, Resource};
 use ui::widget::Element;
 
 use crate::app::StoreApp;
-use crate::doc_actions::{
-    STORE_DOCUMENT_ACTION_TYPE, StoreDocumentAction, register, state_from_doc,
-};
 use crate::model::ActionKind;
+use crate::reports::{Reports, report_row_id};
 
-/// One app's report: a draft until the registry knows of it, then its case.
+/// The id of Trust & moderation, the row that holds the reports.
+pub const MODERATION_ID: &str = "store:moderation";
+
+/// One app's report as the window shows it: a draft until the registry
+/// knows of it, then its case.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReportProjection {
     /// The registry's case id once there is one, else `report:<app id>`.
@@ -38,136 +38,20 @@ impl ReportProjection {
     pub fn is_case(&self) -> bool {
         self.id.starts_with("case-")
     }
-}
 
-/// What the Store document holds: collaborative reports. Installed apps,
-/// remotes and download progress are this device's, not the document's.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct StoreState {
-    pub reports: Vec<ReportProjection>,
-}
-
-/// The app-store catalogue resource.
-pub struct Store;
-
-impl Resource for Store {
-    const KIND: &'static str = "store.catalog";
-    const LABEL: &'static str = "App Store";
-    const ACTION_TYPE: &'static str = STORE_DOCUMENT_ACTION_TYPE;
-
-    type State = StoreState;
-    type Action = StoreDocumentAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
-    }
-
-    fn read(doc: &Doc) -> Result<StoreState, ModelError> {
-        Ok(state_from_doc(doc))
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
-            ActionDecl::new(
-                "draft-report",
-                "Create report draft",
-                vec![ActionParam::required(
-                    "app_id",
-                    ParamType::Text,
-                    "App identity (for example so.tilo.notes)",
-                )],
-                |args, _| {
-                    let app_id = args
-                        .text("app_id")
-                        .ok_or_else(|| "missing app id".to_owned())?
-                        .trim()
-                        .to_owned();
-                    if app_id.is_empty() {
-                        return Err("missing app id".into());
-                    }
-                    Ok(StoreDocumentAction::CreateReportDraft { app_id })
-                },
-            )
-            .describe("Start a collaborative report about an app, with a note to describe it."),
-        ]
-    }
-
-    /// Typing one word into a report note is one step.
-    fn coalesces(previous: &StoreDocumentAction, next: &StoreDocumentAction) -> bool {
-        match (previous, next) {
-            (
-                StoreDocumentAction::EditReportNote {
-                    app_id: before,
-                    edit: previous,
-                },
-                StoreDocumentAction::EditReportNote { app_id, edit },
-            ) => before == app_id && PlainText::coalesces(previous, edit),
-            _ => false,
-        }
-    }
-
-    /// Trust & moderation, holding each report with its note as a plain
-    /// text of its own, so the palette, agents and scripts write a note like
-    /// someone typing it.
-    fn children(state: &StoreState) -> Vec<PublishedResource> {
-        let mut moderation =
-            PublishedResource::new(MODERATION_ID, "store.moderation", "Trust and moderation");
-        for report in &state.reports {
-            let mut resource = PublishedResource::new(
-                report.id.clone(),
-                "store.report",
-                format!("{}: {}", report.app_id, report.status),
-            );
-            let app_id = report.app_id.clone();
-            resource.children.push(publish_child::<PlainText, Self>(
-                &report_note_id(&report.app_id),
-                &format!("Concern about {}", report.app_id),
-                Some(&report.note),
-                move |edit| StoreDocumentAction::EditReportNote {
-                    app_id: app_id.clone(),
-                    edit,
-                },
-            ));
-            moderation.children.push(resource);
-        }
-        vec![moderation]
-    }
-
-    fn search(state: &StoreState) -> Vec<SearchEntry> {
-        state
+    /// Every report `reports` holds, by app.
+    pub fn of(reports: &Reports) -> Vec<Self> {
+        reports
             .reports
             .iter()
-            .map(|report| {
-                SearchEntry::new(
-                    format!("Report for {}", report.app_id),
-                    report.status.clone(),
-                )
-                .anchored(format!("store.report:{}", report.app_id))
+            .map(|(app_id, report)| Self {
+                id: report_row_id(app_id, report),
+                app_id: app_id.clone(),
+                status: report.status.clone(),
+                note: report.note.clone(),
             })
             .collect()
     }
-}
-
-/// The id of Trust & moderation, which holds the reports.
-pub const MODERATION_ID: &str = "store:moderation";
-
-/// The id the note of `app_id`'s report is published under.
-pub fn report_note_id(app_id: &str) -> String {
-    child_resource_id::<Store>(&format!("report-note:{app_id}"))
-}
-
-/// Edits of the note of `app_id`'s report through the resource's dispatcher.
-pub fn report_note_dispatcher(
-    dispatcher: &Dispatcher<Store>,
-    app_id: &str,
-) -> Dispatcher<PlainText> {
-    let app_id = app_id.to_owned();
-    dispatcher.child::<PlainText>(&report_note_id(&app_id), move |edit| {
-        StoreDocumentAction::EditReportNote {
-            app_id: app_id.clone(),
-            edit,
-        }
-    })
 }
 
 /// Everything the Store does that changes no document: moving around the
@@ -181,7 +65,7 @@ pub enum StoreEffect {
     ///
     /// Read this window's current filtered page, repository scopes and worker state.
     /// An app identity requests its details without changing the selected app.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     InspectCatalogue {
         #[param("Optional app identity whose catalogue details to inspect")]
         app: Option<String>,
@@ -197,48 +81,68 @@ pub enum StoreEffect {
     #[effect(job)]
     UpdateAll,
     /// Search apps.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SetSearch {
         #[param("App name, publisher, category, or description")]
         query: String,
     },
     /// Browse apps from a configured Flatpak repository.
-    #[effect(job, permission = "read")]
+    #[effect(job, kind = "read")]
     BrowseRemote {
         #[param("Configured repository resource identity, including its account or device scope")]
         remote: String,
     },
     /// Filter apps by source.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SetSource {
         #[param("All, Tilo, Flatpak, On device, or Updates")]
         source: String,
     },
     /// Filter apps by category.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SetCategory {
         #[param("App category, or All")]
         category: String,
     },
     /// Clear catalogue filters.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ClearFilters,
     /// Show app details.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ShowDetails {
         #[param("App identity (for example so.tilo.notes)")]
         app: String,
     },
     /// Show or hide technical package details.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SetTechnicalDetails {
         #[param("Whether to show package identity, digest and publisher key")]
         expanded: bool,
     },
+    /// Review a local Tilo package.
+    ///
+    /// Opening a package installs nothing. Its identity must match a verified repository offer or an existing trusted local attestation.
+    #[effect(job)]
+    ImportPackage {
+        #[param("Sandbox-readable .tapp path; omit to choose a file")]
+        path: Option<String>,
+        #[param("Handed content hash, instead of a path")]
+        content: Option<String>,
+        #[param("Optional handed file length; bytes are independently bounded and verified")]
+        reported_size: Option<u64>,
+    },
+    /// Install reviewed package.
+    #[effect(job)]
+    InstallImportedPackage {
+        #[param("Previously reviewed app identity")]
+        app: String,
+        #[param("Exact reviewed signed package root, without tapp: prefix")]
+        root: String,
+    },
     /// Open a Flatpak reference.
     ///
     /// Its app is shown ready to install; installing stays a separate step.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     OpenReference {
         #[param("Path of a .flatpakref file")]
         path: Option<String>,
@@ -246,25 +150,25 @@ pub enum StoreEffect {
         contents: Option<String>,
     },
     /// Back to apps.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ShowCatalogue,
     /// Previous catalogue page.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     PreviousPage,
     /// Next catalogue page.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     NextPage,
     /// Show Flatpak remotes.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ShowRemotes,
     /// Show trust and moderation.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ShowTrust,
     /// Open.
     ///
     /// A Tilo app is fetched when it is not on this device yet.
     #[effect(job)]
-    Open {
+    OpenApp {
         #[param("App identity")]
         app: String,
     },
@@ -326,7 +230,7 @@ pub enum StoreEffect {
     #[effect(job)]
     RefreshRemotes,
     /// Add Flatpak remote.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     AddRemote {
         #[param("Unique remote name")]
         name: String,
@@ -334,19 +238,19 @@ pub enum StoreEffect {
         url: String,
     },
     /// Enable source.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     EnableRemote {
         #[param("Account repository identity")]
         remote: String,
     },
     /// Disable source.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     DisableRemote {
         #[param("Account repository identity")]
         remote: String,
     },
     /// Remove remote.
-    #[effect(job, destructive, permission = "admin")]
+    #[effect(job, destructive)]
     RemoveRemote {
         #[param("Remote name")]
         name: String,
@@ -388,7 +292,7 @@ impl StoreEffect {
     /// The effect that carries out `action` on `app`.
     pub fn package(action: ActionKind, app: String) -> Self {
         match action {
-            ActionKind::Open => Self::Open { app },
+            ActionKind::Open => Self::OpenApp { app },
             ActionKind::Update => Self::Update { app },
             ActionKind::Remove => Self::Remove { app },
             ActionKind::MarkInstalled => Self::Pin { app },
@@ -405,7 +309,7 @@ impl StoreEffect {
     /// one.
     pub fn as_package(&self) -> Option<(&str, ActionKind)> {
         let (app, action) = match self {
-            Self::Open { app } => (app, ActionKind::Open),
+            Self::OpenApp { app } => (app, ActionKind::Open),
             Self::Update { app } => (app, ActionKind::Update),
             Self::Remove { app } => (app, ActionKind::Remove),
             Self::Pin { app } => (app, ActionKind::MarkInstalled),
@@ -431,7 +335,7 @@ pub fn parse_store_uri(uri: &str) -> Result<String, String> {
     let Some(id) = uri.strip_prefix("tilo-store:app/") else {
         return Err("unsupported App Store link".into());
     };
-    if !crate::doc_actions::valid_app_id(id) {
+    if !crate::reports::valid_app_id(id) {
         return Err("invalid App Store app identity".into());
     }
     Ok(id.to_string())
@@ -478,25 +382,27 @@ const SCENARIOS: &[&str] = &[
 /// The app the moderation screenshots report.
 const SHOT_REPORTED_APP: &str = "so.tilo.notes";
 
-pub(crate) static STORE_CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
-    "en-US",
-    &[
-        ("en-US", include_str!("../locales/en-US.ftl")),
-        ("de-DE", include_str!("../locales/de-DE.ftl")),
-    ],
-    "store-remotes-title",
-)
-.with_system_locale();
+/// The Store's Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[
+    ("en-US", include_str!("../locales/en-US.ftl")),
+    ("de-DE", include_str!("../locales/de-DE.ftl")),
+];
+
+pub(crate) static STORE_CATALOG: ui::i18n::EmbeddedCatalog =
+    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES, "store-remotes-title").with_system_locale();
 
 /// Framework app.
 pub struct StoreShell;
 
 impl ResourceApp for StoreShell {
-    type Resource = Store;
+    type Resource = Reports;
     const ID: &'static str = "so.tilo.store";
     const TITLE: &'static str = "App Store";
     const ICON: Option<&'static str> = Some("store");
-    const OPENS: &'static [&'static str] = &["application/vnd.flatpak.ref"];
+    const OPENS: &'static [&'static str] = &[
+        "application/vnd.flatpak.ref",
+        "application/vnd.tilo.package",
+    ];
     /// A `.flatpakref` to show, or a `tilo-store:app/<id>` link.
     const ARGUMENTS: usize = 1;
 
@@ -504,15 +410,47 @@ impl ResourceApp for StoreShell {
         Some(&STORE_CATALOG)
     }
 
-    fn view(cx: &mut ViewCx<Store>) -> Element {
+    fn view(cx: &mut ViewCx<Reports>) -> Element {
+        // A search hit, or an agent's `open`, shows the app it names.
+        let dispatcher = cx.dispatcher();
+        cx.on_open(
+            move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
+                dispatcher.effect(&crate::search::opened(anchor)?);
+                Ok(())
+            },
+        );
         cx.surface(StoreApp::new())
     }
 
     /// A `.flatpakref` (handed over, or its path) shows its app ready to
     /// install, and `tilo-store:app/<id>` shows that app's details. Neither
     /// installs anything: that stays the person's choice on the page.
-    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Store>> {
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Reports>> {
         let effect = if let Some(file) = input.file() {
+            if std::path::Path::new(file.name())
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("tapp"))
+                || file.media_type() == "application/vnd.tilo.package"
+            {
+                let Some(content) = input.content() else {
+                    return Vec::new();
+                };
+                // Oversized handoffs must reach the normal action refusal even
+                // when the bounded content store cannot retain their bytes.
+                let hash = if file.bytes().len() > crate::package_import::MAX_IMPORT_BYTES {
+                    ui::framework::content::hash_bytes(file.bytes())
+                } else {
+                    let Ok(hash) = content.put(file.bytes()) else {
+                        return Vec::new();
+                    };
+                    hash
+                };
+                return vec![Invoke::effect(&StoreEffect::ImportPackage {
+                    path: None,
+                    content: Some(hash),
+                    reported_size: Some(file.bytes().len() as u64),
+                })];
+            }
             let Ok(contents) = std::str::from_utf8(file.bytes()) else {
                 tracing::warn!(file = file.name(), "the opened reference is not text");
                 return Vec::new();
@@ -522,13 +460,24 @@ impl ResourceApp for StoreShell {
                 contents: Some(contents.to_owned()),
             }
         } else if let Some(argument) = input.argument() {
-            if argument.starts_with("tilo-store:") {
+            if argument == "tilo-store:catalogue" {
+                StoreEffect::ShowCatalogue
+            } else if argument.starts_with("tilo-store:") {
                 match parse_store_uri(argument) {
                     Ok(app) => StoreEffect::ShowDetails { app },
                     Err(error) => {
                         tracing::warn!(%error, "ignoring the App Store link");
                         return Vec::new();
                     }
+                }
+            } else if std::path::Path::new(argument)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("tapp"))
+            {
+                StoreEffect::ImportPackage {
+                    path: Some(argument.to_owned()),
+                    content: None,
+                    reported_size: None,
                 }
             } else {
                 StoreEffect::OpenReference {
@@ -554,7 +503,7 @@ impl ResourceApp for StoreShell {
 
     /// A capture shows a made-up catalogue (none at all when it shows an
     /// empty or unreachable one) instead of this device's.
-    fn fixture(fixture: &mut Fixture<Store>) {
+    fn fixture(fixture: &mut Fixture<Reports>) {
         let items = if matches!(fixture.scenario(), Some("empty" | "offline")) {
             Vec::new()
         } else {
@@ -565,14 +514,12 @@ impl ResourceApp for StoreShell {
 
     /// The moderation screenshots show a report about Notes: a draft, or a
     /// case with its note.
-    fn scenario(name: Option<&str>) -> Vec<Invoke<Store>> {
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Reports>> {
         let Some(name) = name.filter(|name| name.starts_with("moderation")) else {
             return Vec::new();
         };
         let app_id = SHOT_REPORTED_APP.to_owned();
-        let mut actions = vec![StoreDocumentAction::CreateReportDraft {
-            app_id: app_id.clone(),
-        }];
+        let mut actions = vec![Reports::DRAFT_REPORT.with(app_id.as_str())];
         let status = match name {
             "moderation-case" => Some("Needs information"),
             "moderation-loading" | "moderation-offline" => Some("Open"),
@@ -580,31 +527,28 @@ impl ResourceApp for StoreShell {
             _ => None,
         };
         if let Some(status) = status {
-            actions.push(StoreDocumentAction::EditReportNote {
-                app_id: app_id.clone(),
-                edit: TextEdit::ReplaceText {
-                    text: "The app contacted a third-party host while its offline mode was enabled. The exported trace contains the exact destination and time.".into(),
+            actions.extend(Invoke::edit(&Reports::note(&app_id).replace(
+                "The app contacted a third-party host while its offline mode was enabled. The exported trace contains the exact destination and time.",
+            )).ok());
+            actions.push(Reports::RECORD_MODERATION_CASE.with(
+                crate::reports::reports::RecordModerationCase {
+                    app_id,
+                    case_id: "case-8d10fce04f126f0c2f293c16".into(),
+                    status: status.into(),
                 },
-            });
-            actions.push(StoreDocumentAction::RecordModerationCase {
-                app_id,
-                case_id: "case-8d10fce04f126f0c2f293c16".into(),
-                status: status.into(),
-            });
+            ));
         }
         actions
-            .iter()
-            .filter_map(|action| Invoke::apply(action).ok())
-            .collect()
     }
 }
 
-impl ResourceSurface<Store, StoreEffect> for StoreApp {
-    fn present(&mut self, state: &Rc<StoreState>) {
-        self.present_reports(&state.reports);
+impl ResourceSurface<Reports, StoreEffect> for StoreApp {
+    fn present(&mut self, state: &Rc<Reports>) {
+        self.present_reports(&ReportProjection::of(state));
     }
 
-    fn attach(&mut self, cx: SurfaceCx<Store>) {
+    fn attach(&mut self, cx: SurfaceCx<Reports>) {
+        self.package_content = cx.content();
         match cx.mode() {
             RunMode::Live => self.start_worker(cx.waker()),
             RunMode::Capture => {
@@ -621,7 +565,7 @@ impl ResourceSurface<Store, StoreEffect> for StoreApp {
         self.stage_scene(scenario);
     }
 
-    fn effect(&mut self, effect: StoreEffect, cx: &mut EffectCx<Store, Self>) -> EffectAnswer {
+    fn effect(&mut self, effect: StoreEffect, cx: &mut EffectCx<Reports, Self>) -> EffectAnswer {
         self.answer(effect, cx)
     }
 
@@ -648,7 +592,7 @@ impl ResourceSurface<Store, StoreEffect> for StoreApp {
 /// and children, beside the Store's effects.
 pub fn door() -> PublishedResource {
     let mut door =
-        tilo_resource::publish::<Store>(Store::KIND, Store::LABEL, &StoreState::default());
+        tilo_resource::publish::<Reports>(Reports::KIND, Reports::LABEL, &Reports::default());
     door.actions.extend(StoreEffect::specs());
     door
 }
@@ -711,16 +655,15 @@ mod tests {
         }
     }
 
-    /// One published tree: the declarations and effects on the resource,
-    /// reports with their notes as children, and only effects on the live
-    /// rows.
+    /// One published tree: the verbs, field edits and effects on the
+    /// resource, and only effects on the live rows, a report's among them.
     #[test]
     fn the_store_publishes_one_tree() {
         let mut app = TestApp::<StoreShell>::capture(Some("moderation-case")).unwrap();
         let resources = app.harness().resources();
         let doors: Vec<_> = resources
             .iter()
-            .filter(|resource| resource.kind == Store::KIND)
+            .filter(|resource| resource.kind == Reports::KIND)
             .collect();
         assert_eq!(doors.len(), 1, "one Store resource");
         assert!(
@@ -729,13 +672,20 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "draft-report")
         );
+        assert!(
+            doors[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "field-edit"),
+            "a report's note is typed through field edits"
+        );
         let report = find(&resources, "case-8d10fce04f126f0c2f293c16").expect("the case");
         assert!(
             report
-                .children
+                .actions
                 .iter()
-                .any(|child| child.id.as_str() == report_note_id(SHOT_REPORTED_APP)),
-            "the note is a child of its report"
+                .all(|action| action.kind != OperationKind::Document),
+            "a report's row carries its registry effects"
         );
         let apps = find(&resources, "app:so.tilo.notes").expect("the catalogue is published");
         assert!(
@@ -805,9 +755,9 @@ mod tests {
         }
     }
 
-    /// A report is drafted through the declared action and its note typed
-    /// through its child like someone typing: both are undo steps, and
-    /// opening the Store writes nothing.
+    /// A report is drafted through its verb and its note typed at its path
+    /// like someone typing: both are undo steps, and opening the Store
+    /// writes nothing.
     #[test]
     fn report_notes_are_typed_into_the_document() {
         let _offline = offline();
@@ -821,23 +771,20 @@ mod tests {
             serde_json::json!({ "app_id": "so.tilo.notes" }),
         )
         .unwrap();
-        app.invoke_child::<PlainText>(
-            &report_note_id("so.tilo.notes"),
-            Invoke::<PlainText>::apply(&TextEdit::ReplaceText {
-                text: "Unsigned binary".into(),
-            })
-            .unwrap(),
+        app.call(
+            "field-edit",
+            serde_json::json!({ "edit": Reports::note("so.tilo.notes").replace("Unsigned binary") }),
         )
         .unwrap();
         let reports = app.state().reports;
         assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].note, "Unsigned binary");
+        assert_eq!(reports["so.tilo.notes"].note, "Unsigned binary");
         app.settle();
         let versions = app.versions().len();
         app.settle();
         assert_eq!(app.versions().len(), versions, "a report needs no repair");
         assert!(app.undo());
-        assert_eq!(app.state().reports[0].note, "");
+        assert_eq!(app.state().reports["so.tilo.notes"].note, "");
     }
 
     fn assert_installed_flatpak_launch(app_id: &str, id: &str) {
@@ -974,7 +921,7 @@ mod tests {
         let _offline = offline();
         let mut app = TestApp::<StoreShell>::new().unwrap();
         settle_catalogue_worker(&mut app);
-        let contract = find(&app.harness().resources(), Store::KIND)
+        let contract = find(&app.harness().resources(), Reports::KIND)
             .unwrap()
             .actions
             .into_iter()
@@ -1674,7 +1621,7 @@ mod tests {
             assert_eq!(item.action_kind(true), crate::ActionKind::FlatpakOpen);
         })
         .unwrap();
-        let contract = find(&app.harness().resources(), Store::KIND)
+        let contract = find(&app.harness().resources(), Reports::KIND)
             .unwrap()
             .actions
             .into_iter()
@@ -1770,6 +1717,66 @@ mod tests {
         ui::i18n::I18nManager::set_pseudo_locale(pseudo);
     }
 
+    #[test]
+    fn package_import_file_handoff_refuses_unlisted_archive_without_installing() {
+        let _offline = offline();
+        let (bytes, _) = crate::package_import::tests::signed_fixture();
+        let (file, _) =
+            ui::application::OpenFile::new("signed.tapp", "application/vnd.tilo.package", bytes)
+                .unwrap();
+        let mut app = TestApp::<StoreShell>::handed(file).unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(10), |harness| {
+                    harness
+                        .resources()
+                        .iter()
+                        .any(|resource| resource.id.as_str() == Reports::KIND)
+                })
+        );
+        settle_catalogue_worker(&mut app);
+        app.with_surface::<StoreApp, _>(|surface| {
+            let snapshot = surface.inspect_catalogue(None).unwrap();
+            assert!(snapshot["imported_package"].is_null());
+            assert_eq!(snapshot["error"], ui::i18n!("store-package-offer-required"));
+        })
+        .unwrap();
+        let root = find(&app.harness().resources(), Reports::KIND).unwrap();
+        for id in ["import-package", "install-imported-package"] {
+            let spec = root.actions.iter().find(|action| action.id == id).unwrap();
+            assert!(spec.contract.validate_declaration().is_empty());
+            assert_eq!(spec.contract.result, ui::tilo_actions::ResultSpec::Job);
+        }
+    }
+
+    #[test]
+    fn package_import_oversize_handoff_reports_refusal() {
+        let _offline = offline();
+        let (file, _) = ui::application::OpenFile::new(
+            "large.tapp",
+            "application/vnd.tilo.package",
+            vec![0; crate::package_import::MAX_IMPORT_BYTES + 1],
+        )
+        .unwrap();
+        let mut app = TestApp::<StoreShell>::handed(file).unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(10), |harness| {
+                    harness
+                        .resources()
+                        .iter()
+                        .any(|resource| resource.id.as_str() == Reports::KIND)
+                })
+        );
+        settle_catalogue_worker(&mut app);
+        app.with_surface::<StoreApp, _>(|surface| {
+            let snapshot = surface.inspect_catalogue(None).unwrap();
+            assert!(snapshot["imported_package"].is_null());
+            assert_eq!(snapshot["error"], ui::i18n!("store-package-size-refused"));
+        })
+        .unwrap();
+    }
+
     /// Opening a `.flatpakref` shows its app ready to install — and
     /// installs nothing.
     #[test]
@@ -1800,6 +1807,38 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(frame(&mut app).contains("GIMP"));
+    }
+
+    #[test]
+    fn onboarding_catalogue_link_opens_store_without_an_install() {
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::launched(&["tilo-store:catalogue"]).unwrap();
+        let resources = app.harness().resources();
+        assert!(
+            resources
+                .iter()
+                .any(|resource| resource.kind == Reports::KIND)
+        );
+        let observed = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(observed.get("selected_app"), Some(&serde_json::Value::Null));
+        assert_eq!(
+            observed
+                .get("pending_jobs")
+                .and_then(serde_json::Value::as_u64),
+            Some(0)
+        );
+        assert!(
+            !frame(&mut app).contains("tilo-store:catalogue"),
+            "catalogue URI must not become a package reference"
+        );
+        assert!(
+            app.effect_progress().is_empty(),
+            "opening the catalogue admits no package job"
+        );
     }
 
     /// A `tilo-store:app/<id>` link asks for that app's details.
@@ -1837,7 +1876,10 @@ mod tests {
         assert_eq!(frame(&mut again), shown, "a capture is deterministic");
 
         let mut case = TestApp::<StoreShell>::capture(Some("moderation-case")).unwrap();
-        assert_eq!(case.state().reports[0].status, "Needs information");
+        assert_eq!(
+            case.state().reports[SHOT_REPORTED_APP].status,
+            "Needs information"
+        );
         let shown = frame(&mut case);
         assert!(shown.contains("Moderation case"));
         assert!(shown.contains("third-party host"), "the note is shown");
