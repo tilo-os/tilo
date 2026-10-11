@@ -208,7 +208,9 @@ impl NativeProcessEnvironment {
             let named = |error: String| {
                 LaunchError::Operation(format!("surface {}: {error}", file.display()))
             };
-            let bytes = std::fs::read(file).map_err(|error| named(error.to_string()))?;
+            let bytes = tilo_files::file_at(file)
+                .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
+                .map_err(|error| named(error.to_string()))?;
             let hash = self.surface_hash.as_deref().ok_or_else(|| {
                 named(format!(
                     "named without {}",

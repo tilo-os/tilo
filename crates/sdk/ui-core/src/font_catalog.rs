@@ -68,7 +68,8 @@ pub(crate) fn catalog_in_memory(locale: &str) -> Option<FontSystem> {
             continue;
         };
         if read.insert(path.clone()) {
-            let bytes = std::fs::read(path).ok()?;
+            let (dir, name) = tilo_files::file_at(path).ok()?;
+            let bytes = tilo_files::blocking::read(&dir, &name).ok()?;
             held.load_font_source(fontdb::Source::Binary(Arc::new(bytes)));
         }
     }
