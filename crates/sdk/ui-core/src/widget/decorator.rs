@@ -34,8 +34,8 @@
 //! and visits every node exactly once. The only methods that describe the
 //! decorator rather than the inner widget are the identity ones:
 //! `concrete_type_name` names the decorator's type and
-//! [`as_any`](Widget::as_any) and [`as_any_mut`](Widget::as_any_mut) are
-//! `None` unless overridden.
+//! [`as_any`](Widget::as_any) and [`as_any_mut`](Widget::as_any_mut)
+//! downcast to the decorator itself unless overridden.
 //!
 //! A boxed [`Element`](super::Element) is wrapped with `type Inner = dyn
 //! Widget;` and accessors returning `&(dyn Widget + 'static)`.
@@ -127,7 +127,7 @@ fn stand_in(
 
 /// A widget that extends another by overriding a few [`Widget`] methods and
 /// forwarding the rest. See the [module docs](self).
-pub trait Decorator {
+pub trait Decorator: Sized + 'static {
     /// The widget this one extends.
     type Inner: Widget + ?Sized;
 
@@ -321,11 +321,11 @@ pub trait Decorator {
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
-        None
+        Some(self)
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        None
+        Some(self)
     }
 
     fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
@@ -777,7 +777,7 @@ pub trait Decorator {
 
 /// Every decorator is a widget: each method is the decorator's own, which
 /// forwards to the inner widget unless the decorator overrides it.
-impl<T: Decorator + 'static> Widget for T {
+impl<T: Decorator> Widget for T {
     #[doc(hidden)]
     fn concrete_type_name(&self) -> &'static str {
         Decorator::concrete_type_name(self)

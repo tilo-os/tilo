@@ -1205,9 +1205,6 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
 
     // A screenshot harness reaches the root to stage a scenario's view state
     // (`framework::stage`).
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
 
     // The resource is the same for every participant (an agent task sees and
     // invokes the same actions); only the content's tree is per participant.
