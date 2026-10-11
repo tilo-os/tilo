@@ -125,6 +125,26 @@ struct Drafts {
 struct DraftEntry {
     text: String,
     revision: u64,
+    // Peer-local shared-editor caret/selection snapshot, never CRDT state.
+    editor_state: Option<String>,
+}
+
+fn quick_editor_state(widget: &dyn Widget) -> Option<String> {
+    if widget.test_id() == Some("agent-quick-editor") {
+        return ui::undo::get_state(widget);
+    }
+    widget.children().into_iter().find_map(quick_editor_state)
+}
+
+fn restore_quick_editor_state(widget: &mut dyn Widget, state: &str) -> bool {
+    if widget.test_id() == Some("agent-quick-editor") {
+        ui::undo::set_state(widget, state);
+        return true;
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .any(|child| restore_quick_editor_state(child, state))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -536,6 +556,7 @@ pub(crate) struct AgentQuickComposer {
     agent_label: String,
     frozen_anchor: Rect,
     drafts: Drafts,
+    pending_editor_state: Option<(u64, String)>,
     receipts: HashMap<DraftKey, ComposerReceipt>,
     draft: LocalState<String>,
     title: LocalState<String>,
@@ -602,6 +623,7 @@ impl Default for AgentQuickComposer {
             agent_label: String::new(),
             frozen_anchor: Rect::ZERO,
             drafts: Drafts::default(),
+            pending_editor_state: None,
             receipts: HashMap::new(),
             draft,
             title,
@@ -1427,11 +1449,18 @@ impl AgentQuickComposer {
 
     fn save_draft(&mut self) {
         if !self.room.is_empty() && !self.agent.is_empty() {
+            let editor_state = self
+                .pending_editor_state
+                .as_ref()
+                .filter(|(revision, _)| *revision == self.draft.revision())
+                .map(|(_, state)| state.clone())
+                .or_else(|| quick_editor_state(&self.popover));
             self.drafts.values.insert(
                 self.draft_key(),
                 DraftEntry {
                     text: self.draft.get(),
                     revision: self.draft.revision(),
+                    editor_state,
                 },
             );
         }
@@ -1446,6 +1475,16 @@ impl AgentQuickComposer {
                 .map_or_else(String::new, |entry| entry.text.clone()),
         );
         let loaded_revision = self.draft.revision();
+        let editor_state = saved.as_ref().and_then(|entry| entry.editor_state.clone());
+        // TextInput's LocalState sync installs the draft first. Restore the
+        // shared selection snapshot only afterwards, and only for this text
+        // revision: a late receipt or new edit must not restore stale offsets.
+        self.pending_editor_state = Some((
+            loaded_revision,
+            editor_state
+                .clone()
+                .unwrap_or_else(|| self.draft.get().len().to_string()),
+        ));
         if let Some(saved) = saved {
             if let Some(pending) = self.pending_message.as_mut()
                 && pending.draft_revision == saved.revision
@@ -1463,6 +1502,7 @@ impl AgentQuickComposer {
             DraftEntry {
                 text: self.draft.get(),
                 revision: loaded_revision,
+                editor_state,
             },
         );
     }
@@ -1475,6 +1515,7 @@ impl AgentQuickComposer {
                 DraftEntry {
                     text: String::new(),
                     revision: self.draft.revision(),
+                    editor_state: None,
                 },
             );
         }
@@ -1494,6 +1535,14 @@ impl AgentQuickComposer {
     pub(crate) fn panel_rect(&self) -> Rect {
         self.popover.rect()
     }
+
+    fn restore_pending_editor_state(&mut self) {
+        if let Some((revision, state)) = self.pending_editor_state.take()
+            && revision == self.draft.revision()
+        {
+            restore_quick_editor_state(&mut self.popover, &state);
+        }
+    }
 }
 
 fn clear_retained_draft(
@@ -1511,6 +1560,7 @@ fn clear_retained_draft(
     if entry.revision == revision {
         entry.text.clear();
         entry.revision = entry.revision.saturating_add(1);
+        entry.editor_state = None;
     }
 }
 
@@ -1520,6 +1570,7 @@ impl Widget for AgentQuickComposer {
     }
     fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         self.popover.sync(state, path);
+        self.restore_pending_editor_state();
     }
 
     fn build_layout(
@@ -1588,6 +1639,7 @@ impl Widget for AgentQuickComposer {
             // this frame rather than painting it into the previous label's
             // one-line rect with no later wake guaranteed.
             self.popover.sync(state, path);
+            self.restore_pending_editor_state();
         }
         changed | self.popover.update(state, path)
     }
@@ -2529,6 +2581,182 @@ mod tests {
         assert_eq!(composer.draft(), "message");
     }
 
+    fn private_editor_session() -> (
+        super::super::certified_action_session::DesktopActionSession,
+        String,
+    ) {
+        use super::super::certified_action_session::ActionSessionSource;
+        use super::super::state::{Workspace, WorkspaceId, WorkspaceTree};
+
+        let mut workspace = Workspace::new(WorkspaceId(191), "Private editor");
+        workspace.set_owner("person-a");
+        let room = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let source = ActionSessionSource::fixture(
+            super::super::broker_services::test_broker_with_membership(tree.shared()),
+        );
+        (source.open(&room, Some("person-a")).unwrap(), room)
+    }
+
+    fn select_private_suffix(frame: &mut ui::headless::FrameHarness, count: usize) -> String {
+        frame
+            .perform_named("agent-quick-editor", &ui::a11y::Action::Focus)
+            .unwrap();
+        frame.key("End");
+        frame.set_modifiers(&["shift".to_owned()]);
+        for _ in 0..count {
+            frame.key("ArrowLeft");
+        }
+        frame.set_modifiers(&[]);
+        editor_state(frame.widget_mut::<AgentQuickComposer>().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn private_quick_editor_restores_selection_after_intent_switch_and_continues_typing() {
+        let (composer, _) = choice_composer();
+        let mut frame =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(composer), (900, 700));
+        let steer = select_private_suffix(&mut frame, 5);
+        frame
+            .with_widget_mut::<AgentQuickComposer, _>(|composer| {
+                composer.intent.set(ComposerIntent::Queue);
+            })
+            .unwrap();
+        frame
+            .perform_named("agent-quick-editor", &ui::a11y::Action::Focus)
+            .unwrap();
+        frame.type_text("Queued note");
+        let queue = select_private_suffix(&mut frame, 4);
+        assert_ne!(queue, steer);
+        frame
+            .with_widget_mut::<AgentQuickComposer, _>(|composer| {
+                composer.intent.set(ComposerIntent::Steer);
+            })
+            .unwrap();
+        assert_eq!(
+            editor_state(frame.widget_mut::<AgentQuickComposer>().unwrap()),
+            Some(steer)
+        );
+        frame
+            .perform_named("agent-quick-editor", &ui::a11y::Action::Focus)
+            .unwrap();
+        frame.type_text("text");
+        assert_eq!(
+            frame.widget_mut::<AgentQuickComposer>().unwrap().draft(),
+            "Keep the compatibility text"
+        );
+        frame
+            .with_widget_mut::<AgentQuickComposer, _>(|composer| {
+                composer.intent.set(ComposerIntent::Queue);
+            })
+            .unwrap();
+        assert_eq!(
+            editor_state(frame.widget_mut::<AgentQuickComposer>().unwrap()),
+            Some(queue)
+        );
+        frame
+            .perform_named("agent-quick-editor", &ui::a11y::Action::Focus)
+            .unwrap();
+        frame.type_text("work");
+        assert_eq!(
+            frame.widget_mut::<AgentQuickComposer>().unwrap().draft(),
+            "Queued work"
+        );
+    }
+
+    #[test]
+    fn private_quick_editor_restores_each_agents_selection_through_production_open() {
+        let (session, room) = private_editor_session();
+        let anchor = Rect::new(80.0, 80.0, 100.0, 100.0);
+        let viewport = Rect::new(0.0, 0.0, 900.0, 700.0);
+        let mut composer = AgentQuickComposer::default();
+        composer.open(
+            session.action_client(),
+            room.clone(),
+            "scribe".into(),
+            "Scribe".into(),
+            anchor,
+            viewport,
+        );
+        let mut frame =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(composer), (900, 700));
+        frame
+            .perform_named("agent-quick-editor", &ui::a11y::Action::Focus)
+            .unwrap();
+        frame.type_text("Scribe draft");
+        let scribe = select_private_suffix(&mut frame, 5);
+        frame
+            .with_widget_mut::<AgentQuickComposer, _>(|composer| {
+                composer.open(
+                    session.action_client(),
+                    room.clone(),
+                    "reed".into(),
+                    "Reed".into(),
+                    anchor,
+                    viewport,
+                );
+            })
+            .unwrap();
+        assert_eq!(
+            frame.widget_mut::<AgentQuickComposer>().unwrap().draft(),
+            ""
+        );
+        frame
+            .perform_named("agent-quick-editor", &ui::a11y::Action::Focus)
+            .unwrap();
+        frame.type_text("Reed direction");
+        let reed = select_private_suffix(&mut frame, 9);
+        frame
+            .with_widget_mut::<AgentQuickComposer, _>(|composer| {
+                composer.open(
+                    session.action_client(),
+                    room.clone(),
+                    "scribe".into(),
+                    "Scribe".into(),
+                    anchor,
+                    viewport,
+                );
+            })
+            .unwrap();
+        assert_eq!(
+            frame.widget_mut::<AgentQuickComposer>().unwrap().draft(),
+            "Scribe draft"
+        );
+        assert_eq!(
+            editor_state(frame.widget_mut::<AgentQuickComposer>().unwrap()),
+            Some(scribe)
+        );
+        frame
+            .with_widget_mut::<AgentQuickComposer, _>(|composer| {
+                composer.open(
+                    session.action_client(),
+                    room.clone(),
+                    "reed".into(),
+                    "Reed".into(),
+                    anchor,
+                    viewport,
+                );
+            })
+            .unwrap();
+        assert_eq!(
+            frame.widget_mut::<AgentQuickComposer>().unwrap().draft(),
+            "Reed direction"
+        );
+        assert_eq!(
+            editor_state(frame.widget_mut::<AgentQuickComposer>().unwrap()),
+            Some(reed)
+        );
+        frame
+            .perform_named("agent-quick-editor", &ui::a11y::Action::Focus)
+            .unwrap();
+        frame.type_text("message");
+        assert_eq!(
+            frame.widget_mut::<AgentQuickComposer>().unwrap().draft(),
+            "Reed message"
+        );
+    }
+
     #[test]
     fn same_room_agent_keeps_drafts_and_pending_submission_private_per_identity_custody() {
         use crate::shell::certified_action_session::ActionSessionSource;
@@ -2889,6 +3117,7 @@ mod tests {
             DraftEntry {
                 text: "Keep the legal note too".into(),
                 revision: submitted_revision.saturating_add(100),
+                editor_state: None,
             },
         );
 
