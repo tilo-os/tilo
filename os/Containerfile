@@ -2052,7 +2052,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-relay.service \
     os/usr/lib/systemd/system/tilo-fs-replica.service \
     os/usr/lib/systemd/system/tilo-relay-firstboot.service \
-    os/usr/lib/systemd/system/tilo-network-start.timer \
+    os/usr/lib/systemd/system/tilo-network-start.service \
     os/usr/lib/systemd/system/tilo-network-start.target \
     /usr/lib/systemd/system/
 COPY os/usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf \
@@ -2588,7 +2588,7 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-rollback-confirm.timer && \
     systemctl enable tilo-boot-entries.timer tilo-boot-health.service && \
     systemctl enable bootc-fetch-apply-updates.timer && \
-    systemctl enable tilo-network-start.timer && \
+    systemctl enable tilo-network-start.service && \
     systemctl enable tilo-extension-activate.service tilo-extension-refresh.timer && \
     systemctl enable NetworkManager-dispatcher.service
 

@@ -36,6 +36,7 @@ pub const APPLICATION_ACTIVATE_ACTION: &str = "activate-window";
 pub const APPLICATION_ACTIVATE_TYPE: &str = "tilo.app.activate-window";
 
 mod catalogue;
+pub mod feedback;
 mod pending;
 mod wait;
 
@@ -850,6 +851,16 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RemoteActionMessage {
+    /// Inspect existing feedback admission or read an existing canonical ack.
+    /// This never invokes a document mutation or grants room access.
+    FeedbackRequest {
+        correlation: u64,
+        query: feedback::FeedbackQuery,
+    },
+    FeedbackResponse {
+        correlation: u64,
+        result: Result<feedback::FeedbackAnswer, ActionHostError>,
+    },
     /// Ask for one page of the actions offered to the caller.
     CatalogueRequest {
         correlation: u64,
@@ -1005,6 +1016,7 @@ impl RemoteActionMessage {
                 | Self::Observe { .. }
                 | Self::Cancel { .. }
                 | Self::RecordRequest { .. }
+                | Self::FeedbackRequest { .. }
         )
     }
 }
@@ -1106,6 +1118,14 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         },
     )?;
     let answer = match message {
+        RemoteActionMessage::FeedbackRequest { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::FeedbackResponse {
+                correlation,
+                result: Err(ActionHostError::Unavailable {
+                    reason: "canonical feedback service unavailable".into(),
+                }),
+            })
+        }
         RemoteActionMessage::CatalogueRequest { correlation, query } => host
             .query(caller, query)
             .map(move |result| RemoteActionMessage::CatalogueResponse {
@@ -1160,7 +1180,8 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RecordResponse { .. } => return None,
+        | RemoteActionMessage::RecordResponse { .. }
+        | RemoteActionMessage::FeedbackResponse { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
     let (completer, answered) = pending();
@@ -1177,6 +1198,12 @@ pub fn refuse(
     error: ActionHostError,
 ) -> Option<RemoteActionMessage> {
     Some(match message {
+        RemoteActionMessage::FeedbackRequest { correlation, .. } => {
+            RemoteActionMessage::FeedbackResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
         RemoteActionMessage::CatalogueRequest { correlation, .. } => {
             RemoteActionMessage::CatalogueResponse {
                 correlation: *correlation,
@@ -1205,7 +1232,8 @@ pub fn refuse(
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RecordResponse { .. } => return None,
+        | RemoteActionMessage::RecordResponse { .. }
+        | RemoteActionMessage::FeedbackResponse { .. } => return None,
     })
 }
 

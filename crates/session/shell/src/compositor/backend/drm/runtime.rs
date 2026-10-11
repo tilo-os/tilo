@@ -64,6 +64,7 @@ use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
     TabletPhase, TouchEvent as TiloTouchEvent,
 };
+use crate::shell::render::icc_lut::IccLut;
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
 /// deterministic and unit-testable without a seat or keyboard device.
@@ -333,6 +334,9 @@ pub struct DrmDispatchState {
     pub signal_status: BTreeMap<String, OutputSignalStatus>,
     /// Receiving end of the presenter's signalling reports.
     pub signal_reports: Option<Receiver<SignalReport>>,
+    /// What each output's primary plane offers fullscreen clients, as the
+    /// presenter last learned it ([`super::client_scanout::ClientPlanes`]).
+    pub client_planes: super::client_scanout::ClientPlanes,
 }
 
 /// What the DRM backend keeps for drawing tablets.
@@ -1205,6 +1209,7 @@ impl DrmDispatchState {
             fullscreen_output: None,
             signal_status: BTreeMap::new(),
             signal_reports: None,
+            client_planes: super::client_scanout::ClientPlanes::default(),
         }
     }
 
@@ -1628,6 +1633,8 @@ impl DrmDispatchState {
             // A replugged or rebuilt output gets a fresh chance at what an
             // earlier generation of it failed to drive.
             self.signal_status.remove(&build.config_key);
+            // Its plane is probed again by the first fullscreen client on it.
+            self.client_planes.publish(id, None);
             self.live.push(LiveEntry {
                 key,
                 id,
@@ -1660,6 +1667,8 @@ impl DrmDispatchState {
                 color_profile: None,
                 color_transform: None,
                 color_buffer: Vec::new(),
+                color_lut: None,
+                direct_calibration: None,
                 direct_targets: None,
                 direct_ineligible: None,
                 present_by_readback: false,
@@ -3691,13 +3700,20 @@ pub struct ScanoutEntry {
     pub position: (i32, i32),
     pub transform: settings_store::hardware::OutputTransform,
     pub color_profile: Option<String>,
+    /// The profile's qcms transform, which the readback presenter runs on the CPU.
     pub color_transform: Option<qcms::Transform>,
     pub color_buffer: Vec<u8>,
+    /// The same transform sampled for the direct path's final GPU pass.
+    pub color_lut: Option<IccLut>,
+    /// The [`IccLut::id`] the direct path last rendered this output through, `None` for no
+    /// profile. When it is not `color_lut`'s, the profile changed and the next frame renders
+    /// in full instead of keeping the image calibrated for the old one.
+    pub direct_calibration: Option<u64>,
     /// Lazily created same-device GBM/Vulkan targets. `None` means the safe
     /// readback presenter remains authoritative.
     pub direct_targets: Option<DirectScanoutTargets>,
-    /// Why this output's current shape cannot use direct scanout (a rotation,
-    /// an ICC profile, ...). Re-evaluated every frame.
+    /// Why this output cannot use direct scanout (no cursor plane, no page-flip
+    /// events, another GPU, ...). Re-evaluated every frame.
     pub direct_ineligible: Option<&'static str>,
     /// The current frame presents this output through the combined readback:
     /// it is powered and its direct frame was not, or could not be, submitted.
@@ -3796,19 +3812,54 @@ impl ScanoutEntry {
             return;
         }
         self.color_profile = profile;
-        self.color_transform = self.color_profile.as_deref().and_then(|path| {
-            let input = qcms::Profile::new_sRGB();
-            let output = qcms::Profile::new_from_path(path)?;
-            qcms::Transform::new(
-                &input,
-                &output,
-                qcms::DataType::RGBA8,
-                qcms::Intent::Perceptual,
-            )
-        });
-        if self.color_profile.is_some() && self.color_transform.is_none() {
+        let calibration = self.color_profile.as_deref().and_then(color_calibration);
+        if self.color_profile.is_some() && calibration.is_none() {
             tracing::warn!(profile = ?self.color_profile, "DRM display: rejected invalid ICC profile");
         }
+        (self.color_transform, self.color_lut) = calibration.unzip();
+    }
+}
+
+/// The ICC profile at `path` as both presenters apply it: the qcms transform from sRGB to
+/// the panel (perceptual) that the readback runs on the CPU, and the same transform sampled
+/// for the direct path's final GPU pass. `None` when qcms cannot read the profile.
+fn color_calibration(path: &str) -> Option<(qcms::Transform, IccLut)> {
+    let input = qcms::Profile::new_sRGB();
+    let output = qcms::Profile::new_from_path(path)?;
+    let transform = qcms::Transform::new(
+        &input,
+        &output,
+        qcms::DataType::RGBA8,
+        qcms::Intent::Perceptual,
+    )?;
+    let lut = IccLut::from_transform(&transform);
+    Some((transform, lut))
+}
+
+#[cfg(test)]
+mod color_calibration_tests {
+    use super::color_calibration;
+    use crate::shell::render::icc_lut::tests::lut16;
+
+    #[test]
+    fn a_profile_file_calibrates_the_readback_and_the_direct_path_alike() {
+        let dir = tempfile::tempdir().unwrap();
+        let panel = lut16();
+        let path = dir.path().join("panel.icc");
+        std::fs::write(&path, panel.lut16_profile()).unwrap();
+        let (transform, _) = color_calibration(path.to_str().unwrap())
+            .expect("a readable profile yields the qcms transform and its LUT");
+        // The readback's transform is the one the profile defines.
+        let colours = [[12_u8, 200, 90, 255], [255, 255, 255, 255], [0, 0, 0, 255]];
+        let mut readback = colours.concat();
+        let mut reference = colours.concat();
+        transform.apply(&mut readback);
+        panel.transform().apply(&mut reference);
+        assert_eq!(readback, reference);
+
+        std::fs::write(&path, b"not an ICC profile").unwrap();
+        assert!(color_calibration(path.to_str().unwrap()).is_none());
+        assert!(color_calibration(dir.path().join("missing.icc").to_str().unwrap()).is_none());
     }
 }
 

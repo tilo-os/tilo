@@ -258,9 +258,30 @@ pub fn draw_hover_tooltip_on(
     label: &str,
     viewport: Rect,
 ) {
-    let size = chip_size_in_viewport(label, text_renderer, theme, viewport);
-    let rect = chip_rect_on(anchor.1, anchor.0, size, viewport);
+    let rect = hover_chip_rect_on(text_renderer, theme, anchor, label, viewport);
     draw_chip(scene, transform, text_renderer, theme, rect, label);
+}
+
+/// Where [`draw_hover_tooltip_on`] places the chip for `label`.
+pub fn hover_chip_rect_on(
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    anchor: (Rect, TooltipSide),
+    label: &str,
+    viewport: Rect,
+) -> Rect {
+    let size = chip_size_in_viewport(label, text_renderer, theme, viewport);
+    chip_rect_on(anchor.1, anchor.0, size, viewport)
+}
+
+/// Every pixel [`draw_chip`] can paint for a chip at `rect`: the chip, its
+/// edge and snapping, and the floating shadow under it.
+pub fn chip_paint_bounds(rect: Rect, theme: &Theme) -> Rect {
+    // The chip snaps to whole pixels and strokes its edge on the outline:
+    // two pixels cover both, antialiasing included.
+    let chip = rect.inflate(2.0, 2.0);
+    crate::surface::shadow_bounds(rect, &theme.tokens.elevation.floating)
+        .map_or(chip, |shadow| shadow.union(chip))
 }
 
 use crate::presence::PresenceCtx;

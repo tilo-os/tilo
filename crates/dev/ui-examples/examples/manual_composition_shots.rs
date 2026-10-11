@@ -2,6 +2,7 @@
 //! `cargo run -p ui-examples --example manual-composition-shots -- /tmp/manual-composition`
 use std::path::PathBuf;
 use taffy::Size;
+use tilo_ui::State;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::tokens::TextRole;
 use tilo_ui::widget::ButtonRole;
@@ -9,7 +10,6 @@ use tilo_ui::widget::{
     Actions, Button, Checkbox, Container, Element, Field, Form, FormPage, FormSection, Manual,
     ManualContext, MeasureConstraint as M, Scrollable, Text, TextInput, WidgetLayoutError,
 };
-use tilo_ui::{State, Theme};
 use vello::kurbo::Rect;
 const NAME: &str = "Full name";
 const EMAIL: &str = "Email address for account recovery";
@@ -261,21 +261,13 @@ fn manual_in_automatic() -> Element {
         .with_description(DESCRIPTION),
     )
 }
-/// `TILO_SHOTS_THEME=<preset>` (`light`, `high-contrast`, any `Theme::named`)
-/// renders every capture on that preset; PNGs are composited on the theme's
-/// own `bg_app`.
-fn shot_theme() -> Theme {
-    std::env::var("TILO_SHOTS_THEME")
-        .ok()
-        .and_then(|name| Theme::named(&name))
-        .unwrap_or_else(Theme::dark)
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = std::env::args_os()
         .nth(1)
         .map_or_else(|| PathBuf::from("/tmp/manual-composition"), PathBuf::from);
     std::fs::create_dir_all(&output)?;
+    let theme = tilo_ui::launch::shot_theme_from_env()?;
     for (name, viewport, scale) in [
         ("wide", (1080, 800), 1.0),
         ("narrow", (340, 800), 1.0),
@@ -292,7 +284,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 State::new(),
                 root,
                 viewport,
-                shot_theme().with_text_scale(scale),
+                theme.clone().with_text_scale(scale),
             );
             harness.render_png(&output.join(format!("{mode}-{name}.png")));
             std::fs::write(
@@ -315,7 +307,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => manual_account(1.0),
         };
         let mut resized =
-            FrameHarness::new_with_theme(State::new(), root, (1080, 800), shot_theme());
+            FrameHarness::new_with_theme(State::new(), root, (1080, 800), theme.clone());
         resized.resize((340, 800))?;
         resized.render_png(&output.join(format!("{mode}-resized-narrow.png")));
         std::fs::write(

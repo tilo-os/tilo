@@ -1319,12 +1319,12 @@ fn decorate_external_link_actions(resource: &mut Resource, text: &str, marks: &[
 
 /// Resource snapshots are intentionally bounded: agents and the action palette
 /// receive useful nearby context, then resolve a stable page id lazily through
-/// [`ResourceProvider::resource`] when they need a deeper or later sibling.
+/// `PublishesResources::resource` when they need a deeper or later sibling.
 const RESOURCE_PAGE_SNAPSHOT_LIMIT: usize = 128;
 const RESOURCE_PAGE_SNAPSHOT_DEPTH: usize = 6;
 /// Keep resource materialization finite even when a shared workspace has a
 /// machine-generated tag vocabulary. Every omitted tag remains addressable by
-/// stable id through `ResourceProvider::resource`.
+/// stable id through `PublishesResources::resource`.
 const RESOURCE_TAG_SNAPSHOT_LIMIT: usize = 128;
 /// A tag can be attached to an unbounded number of notes. Its contextual
 /// children are only a preview; exact pages resolve independently by id.

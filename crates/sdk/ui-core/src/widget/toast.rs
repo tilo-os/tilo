@@ -211,14 +211,14 @@ impl ToastStack {
     /// Push a new toast. If the stack is at capacity the oldest entry
     /// is dropped to make room (FIFO drop policy).
     pub fn push(&mut self, text: impl Into<String>, kind: ToastKind) {
+        // Charge elapsed time only to entries that existed during that time.
+        // A new notice gets its full lifetime even if the previous frame stalled.
+        self.advance(crate::time::now());
         let toast = Toast {
             text: text.into(),
             kind,
             ttl_remaining: self.default_ttl,
         };
-        if self.toasts.is_empty() {
-            self.advanced_at = Some(crate::time::now());
-        }
         self.toasts.push(toast);
         // Drop oldest entries until we are back within the cap.
         while self.toasts.len() > self.max {

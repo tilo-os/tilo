@@ -381,23 +381,7 @@ impl OverviewPanel {
         if panel.width() <= 0.0 || panel.height() <= 0.0 {
             return;
         }
-        let radius = ChromeRole::Panel.radius(theme, panel.height());
-        ui::chrome::shell::panel_shadow(scene, transform, panel, radius, theme, 1.0);
-        let shape = RoundedRect::from_rect(panel, radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::shell::panel_ground(theme),
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &shape,
-        );
+        let shape = ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
         // Everything inside stays inside the panel's outline.
         scene.push_layer(
             Fill::NonZero,

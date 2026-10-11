@@ -68,7 +68,8 @@ pub use url::Url;
 
 #[cfg(not(target_family = "wasm"))]
 pub use native::tls::{
-    client_config, client_config_with_roots, crypto_provider, install_crypto_provider, system_roots,
+    client_config, client_config_with_roots, crypto_provider, install_crypto_provider,
+    pinned_client_config, system_roots,
 };
 
 /// Every future of the public API is `Send` on every target, so apps can

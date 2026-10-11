@@ -22,6 +22,30 @@ class FocusedTests(unittest.TestCase):
     def reads(self, listing='module::case: test\n'):
         return ['a' * 40 + '\n', json.dumps(self.metadata), listing]
 
+    def test_package_sets_keep_exact_source_membership_and_failure_guards(self):
+        values = dict(self.values, PACKAGE='', OPERATION='check-tests', TEST_TARGET='', TEST_NAME='')
+        for packages in ([], ['shell'] * 2, ['p' + str(n) for n in range(65)],
+                         ['shell; command'], [123], 'shell', {'shell': True}):
+            with self.subTest(packages=packages), self.assertRaises(ValueError):
+                focused.request(dict(values, PACKAGES=json.dumps(packages)))
+        with self.assertRaises(ValueError):
+            focused.request(dict(self.values, PACKAGES='["shell"]'))
+        self.metadata['workspace_members'].append('ui-id')
+        self.metadata['packages'].append({'id': 'ui-id', 'name': 'ui', 'targets': []})
+        values = focused.request(dict(values, PACKAGES='["shell","ui"]'))
+        with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
+                patch.object(focused.subprocess, 'run', return_value=subprocess.CompletedProcess([], 101)) as run:
+            self.assertEqual(focused.execute(Path('/focused-test-fixture'), values), 101)
+        self.assertEqual(run.call_args.args[0],
+                         ['cargo', 'check', '--locked', '-p', 'shell', '-p', 'ui', '--tests'])
+        self.assertNotIn('shell', run.call_args.kwargs)
+        self.metadata['workspace_members'].remove('ui-id')
+        with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
+                patch.object(focused.subprocess, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'workspace member: ui'):
+                focused.execute(Path('/focused-test-fixture'), values)
+            run.assert_not_called()
+
     def test_focused_requests_are_validated_exactly_before_compiling(self):
         with self.subTest(phase='rejects shell arguments and inexact requests'):
             self.doCleanups()

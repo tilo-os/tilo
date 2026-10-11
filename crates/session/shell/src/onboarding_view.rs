@@ -39,7 +39,7 @@ use ui::widget::{
     ProgressBar, Row, Scrollable, Section, Spacer, Spinner, Text, TextInput, Widget,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -2980,23 +2980,7 @@ impl OnboardingView {
             // nothing — the edge does the separating (§9.3) — so the former
             // by-name high-contrast guard is not needed. Ground is
             // `panel_ground`, edge the derived Panel border.
-            let radius = ui::chrome::ChromeRole::Panel.radius(theme, panel.height());
-            ui::chrome::shell::panel_shadow(scene, transform, panel, radius, theme, 1.0);
-            let shape = RoundedRect::from_rect(panel, radius);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                ui::chrome::shell::panel_ground(theme),
-                None,
-                &shape,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                ui::chrome::shell::panel_border(theme),
-                None,
-                &shape,
-            );
+            ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
         }
 
         let mut local = Scene::new();
@@ -3971,7 +3955,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
-    use ui::widget::identity_flow::{IdentityRecord, SerializableIdentity};
+    use tilo_identity_ceremony::{IdentityRecord, SerializableIdentity};
     use winit::event::Modifiers;
 
     fn view() -> (OnboardingView, Arc<AtomicUsize>) {
@@ -6322,11 +6306,11 @@ mod tests {
                 )
                 .expect("host acknowledgement layout");
             view.apply_layout(&taffy, node, Point::ZERO);
-            let row = node_map
-                .values()
-                .find_map(|&pointer| unsafe {
+            let (row_node, row) = node_map
+                .iter()
+                .find_map(|(&node, &pointer)| unsafe {
                     ((*pointer).test_id() == Some("onboarding.understood.row"))
-                        .then(|| (*pointer).get_rect())
+                        .then(|| (node, (*pointer).get_rect()))
                 })
                 .expect("labelled acknowledgement row");
             let label_point = Point::new(row.x1 - 8.0, row.center().y);
@@ -6351,7 +6335,19 @@ mod tests {
                         taffy: &taffy,
                     },
                 );
-                assert!(handled, "the labelled checkbox row must handle {event:?}");
+                if matches!(event, WindowEvent::CursorMoved { .. }) {
+                    assert!(
+                        !handled,
+                        "hover movement must remain available to sibling controls"
+                    );
+                } else {
+                    assert!(handled, "the labelled checkbox row must handle {event:?}");
+                    assert_eq!(
+                        focus,
+                        Some(row_node),
+                        "the label press must focus the acknowledgement checkbox"
+                    );
+                }
             }
             view.settle(
                 &mut ui::widget::Edits::lend(&mut document),
@@ -6432,7 +6428,12 @@ mod tests {
                         taffy: &taffy,
                     },
                 );
-                if !matches!(event, WindowEvent::CursorMoved { .. }) {
+                if matches!(event, WindowEvent::CursorMoved { .. }) {
+                    assert!(
+                        !handled,
+                        "hover movement must remain available to sibling controls"
+                    );
+                } else {
                     assert!(
                         handled,
                         "the backup continuation button must handle {event:?}"

@@ -577,6 +577,8 @@ fn a_rotated_output_composites_hdr_layers_where_the_scene_puts_them() {
                 OutputSignal {
                     sdr_white_nits: SDR_WHITE,
                     hdr_layers: &layers,
+                    color_lut: None,
+                    layers: None,
                 },
             )
             .expect("the frame renders");

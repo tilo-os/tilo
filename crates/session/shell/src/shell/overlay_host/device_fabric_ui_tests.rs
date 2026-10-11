@@ -962,6 +962,7 @@ fn display_move_requires_settings_owner_and_an_unlocked_session() {
             device: "peer".into(),
             device_label: "Peer".into(),
             connector: "eDP-1".into(),
+            output_id: None,
             label: "Panel".into(),
             online: true,
             local: false,

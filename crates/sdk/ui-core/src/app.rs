@@ -95,7 +95,7 @@ mod surface;
 #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
 pub(crate) use native_runner::prepare_native_renderer;
 #[cfg(feature = "native")]
-pub use surface::AppSurface;
+pub use surface::{AppSurface, SurfaceDamage};
 #[cfg(feature = "native")]
 mod embedded;
 #[cfg(feature = "native")]
@@ -498,9 +498,9 @@ pub use crate::action_locus::ActionUiRoute;
 )]
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "the theme-store watch and frame profiler are read only by the native event-loop runner, which shared app code feeds"
     )
 )]
 pub struct App {
@@ -2166,6 +2166,23 @@ impl App {
             .map(|(rect, label, _)| (rect, label))
     }
 
+    /// Where in the app the pointer would raise a tooltip: the centre of the
+    /// topmost, then leftmost, laid-out control that shows one there, in the
+    /// app's logical coordinates. For a test that hovers it.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub fn tooltip_region_for_test(&self) -> Option<Point> {
+        self.layout
+            .node_map
+            .keys()
+            .filter_map(|&node| {
+                let centre = self
+                    .inspect_node(node, |widget| widget.get_rect().center())
+                    .ok()?;
+                self.tooltip_target_at(centre).map(|_| centre)
+            })
+            .min_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)))
+    }
+
     /// [`Self::tooltip_target_at`] with the side of its control the
     /// tooltip prefers.
     #[cfg(feature = "native")]
@@ -2467,6 +2484,7 @@ impl App {
         // without dispatching through its potentially invalid pointer, so a
         // replacement control at the same id still receives set_focus(true).
         self.focused_node = None;
+        self.layout.rebuilds = self.layout.rebuilds.wrapping_add(1);
         self.layout.taffy = TaffyTree::new();
         self.component_close_reports.extend(
             crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
@@ -3612,22 +3630,21 @@ pub(crate) mod ordinary_confirmation_tests {
         (managed(Box::new(widget)), ledger, resources)
     }
     crate::testing::test_app_widget!(Fixture, "Confirmation fixture");
-    #[allow(
-        dead_code,
-        reason = "fixture guards retain actual owner stores for each test"
-    )]
     enum OwnerGuard {
-        Component(
-            crate::bound_dispatch::CallbackBinding,
-            crate::application_test_support::ProbeHost,
-        ),
-        Legacy(crate::history_mode::HistoryOwner, tempfile::TempDir),
+        Component {
+            binding: crate::bound_dispatch::CallbackBinding,
+            _host: crate::application_test_support::ProbeHost,
+        },
+        Legacy {
+            owner: crate::history_mode::HistoryOwner,
+            _directory: tempfile::TempDir,
+        },
     }
     impl OwnerGuard {
         fn close(&self) {
             match self {
-                Self::Component(binding, _) => binding.closing.set(true),
-                Self::Legacy(owner, _) => {
+                Self::Component { binding, .. } => binding.closing.set(true),
+                Self::Legacy { owner, .. } => {
                     let crate::history_mode::owner::OwnerKind::Legacy { lifetime, .. } = &owner.0
                     else {
                         unreachable!()
@@ -3642,10 +3659,10 @@ pub(crate) mod ordinary_confirmation_tests {
                 scopes: HISTORY.scopes,
             };
             let (definition, owner) = match self {
-                Self::Component(binding, _) => {
+                Self::Component { binding, .. } => {
                     (&COMPONENT_HISTORY, HistoryOwner::component(binding.clone()))
                 }
-                Self::Legacy(owner, _) => (&HISTORY, owner.clone()),
+                Self::Legacy { owner, .. } => (&HISTORY, owner.clone()),
             };
             ManagedRoot::new(
                 widget,
@@ -3660,7 +3677,7 @@ pub(crate) mod ordinary_confirmation_tests {
             )
         }
         fn revoke(&self) {
-            if let Self::Component(binding, _) = self {
+            if let Self::Component { binding, .. } = self {
                 *binding.permissions.borrow_mut() =
                     crate::permissions::PermissionContext::from_capabilities(
                         crate::permissions::Actor::person(None, "fixture"),
@@ -3688,7 +3705,10 @@ pub(crate) mod ordinary_confirmation_tests {
             let binding = instance.callback_binding();
             (
                 Box::new(crate::widget::BoundAppWidget::new(instance)),
-                OwnerGuard::Component(binding, host),
+                OwnerGuard::Component {
+                    binding,
+                    _host: host,
+                },
             )
         } else {
             let directory = tempfile::tempdir().unwrap();
@@ -3707,7 +3727,13 @@ pub(crate) mod ordinary_confirmation_tests {
                 crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(widget)));
             tile.bind_record(store, checkout);
             let owner = tile.history_owner().unwrap();
-            (Box::new(tile), OwnerGuard::Legacy(owner, directory))
+            (
+                Box::new(tile),
+                OwnerGuard::Legacy {
+                    owner,
+                    _directory: directory,
+                },
+            )
         }
     }
     pub(crate) fn layout(app: &mut App) {

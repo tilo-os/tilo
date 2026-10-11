@@ -41,10 +41,7 @@ struct Inner {
     claimed: AtomicBool,
     completed: AtomicBool,
     retired: AtomicBool,
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport meters attempts")
-    )]
+    #[cfg(feature = "broker-transport")]
     queued_bytes: usize,
 }
 /// Opaque request custody. Clone shares the original backing.
@@ -188,7 +185,10 @@ impl AttemptOwner {
         confirmation: &str,
         deadline: Instant,
     ) -> Result<(Self, ManagedAttempt), OutboxFailure> {
+        #[cfg(feature = "broker-transport")]
         let queued_bytes = Self::queued_bytes(row, confirmation)?;
+        #[cfg(not(feature = "broker-transport"))]
+        Self::queued_bytes(row, confirmation)?;
         if instance == [0; 16] || room.is_nil() {
             return Err(OutboxFailure::Invalid);
         }
@@ -226,6 +226,7 @@ impl AttemptOwner {
             claimed: AtomicBool::new(false),
             completed: AtomicBool::new(false),
             retired: AtomicBool::new(false),
+            #[cfg(feature = "broker-transport")]
             queued_bytes,
         };
         let attempt = ManagedAttempt {
@@ -253,10 +254,7 @@ impl ManagedAttempt {
     fn shared(&self) -> &Arc<Inner> {
         self.inner.as_ref().expect("live managed attempt")
     }
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport meters attempts")
-    )]
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn meter_bytes(&self) -> usize {
         self.shared().queued_bytes
     }
@@ -418,10 +416,7 @@ impl ManagedAttemptResult {
     fn shared(&self) -> &Arc<ResultInner> {
         self.inner.as_ref().expect("live managed attempt result")
     }
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(dead_code, reason = "only the broker transport meters attempts")
-    )]
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn meter_bytes(&self) -> usize {
         self.shared().attempt.meter_bytes()
     }

@@ -1803,6 +1803,13 @@ impl Renderer {
         self.resolver.image_cache_stats()
     }
 
+    /// Images went for good (a window closed): an image atlas far bigger
+    /// than what is still drawn comes down within the next few renders,
+    /// not after sixty, so a desktop that goes idle gives the memory back.
+    pub fn shrink_image_atlas_soon(&mut self) {
+        self.resolver.shrink_image_atlas_soon();
+    }
+
     /// Grow the bump buffers at most once, straight to the
     /// [`Self::set_bump_budget_limit`] total, instead of doubling as a scene
     /// fills up. Each growth reallocates every buffer, which a browser's GPU

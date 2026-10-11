@@ -15,16 +15,11 @@
 //! picks the implementation at build time, and [`crate::stream`]'s worker
 //! picks live-or-offline at *runtime*, falling back to offline if live init
 //! or the network fails.
-//!
-//! `PoToken` minting (why the offline-audio path works with no `BotGuard`) is
-//! documented in [`potoken`].
 
 pub mod android_vr;
 #[cfg(feature = "live")]
 pub mod live;
 pub mod offline;
-pub mod potoken;
-pub mod proxy;
 #[cfg(feature = "live")]
 mod sources;
 #[cfg(feature = "live")]

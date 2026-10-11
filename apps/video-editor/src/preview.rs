@@ -773,12 +773,11 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "decode")]
-    #[allow(dead_code, reason = "only the media-stack check is used here")]
-    mod generated_clip {
+    #[cfg(all(feature = "decode", feature = "gst"))]
+    mod media_stack {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/support/generated_clip.rs"
+            "/tests/support/media_stack.rs"
         ));
     }
 
@@ -1155,7 +1154,7 @@ mod tests {
         'case: {
             use gstreamer as gst;
             use gstreamer::prelude::*;
-            if !generated_clip::media_stack() {
+            if !media_stack::media_stack() {
                 break 'case;
             }
 

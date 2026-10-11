@@ -19,7 +19,7 @@ const MODES: [AdmissionMode; 3] = [
     AdmissionMode::SameOwner,
     AdmissionMode::Governed,
 ];
-const OPS: [RoomOperation; 8] = [
+const OPS: [RoomOperation; 9] = [
     RoomOperation::Subscribe,
     RoomOperation::State,
     RoomOperation::Replay,
@@ -28,9 +28,10 @@ const OPS: [RoomOperation; 8] = [
     RoomOperation::Compute,
     RoomOperation::Environment,
     RoomOperation::RemoteAction,
+    RoomOperation::StewardedChannelKeys,
 ];
 
-/// One decision as a letter, so a row reads as the eight planes in order.
+/// One decision as a letter, so a row reads as the nine planes in order.
 fn letter(decision: Decision) -> char {
     match decision {
         Decision::Admit => 'A',
@@ -43,6 +44,7 @@ fn letter(decision: Decision) -> char {
         Decision::Deny(DenyReason::AgentWithdrawn) => 'w',
         Decision::Deny(DenyReason::AgentExpired) => 'e',
         Decision::Deny(DenyReason::AgentOutOfScope) => 'o',
+        Decision::Deny(DenyReason::NotTheSteward) => 's',
     }
 }
 
@@ -176,19 +178,20 @@ fn decide_matrix() {
         Box::new(move |runtime, _| runtime.membership.devices.push(device))
     };
     let none = || -> Setup { Box::new(|_, _| {}) };
-    //                 Subscribe, State, Replay, Live, ContentDiscovery, Compute, Environment, RemoteAction
+    // Subscribe, State, Replay, Live, ContentDiscovery, Compute, Environment, RemoteAction,
+    // StewardedChannelKeys
     let cases = vec![
         Case {
             name: "owner's member device",
             peer: peer(owner, [10; 32], false, None),
             setup: listed([10; 32]),
-            expected: ["AAAAAAAA", "AAAAAAAA", "AAAAAAAA"],
+            expected: ["AAAAAAAAs", "AAAAAAAAs", "AAAAAAAAs"],
         },
         Case {
             name: "owner's unlisted device",
             peer: peer(owner, [11; 32], false, None),
             setup: none(),
-            expected: ["NNNNNNNN", "ENNAAEAN", "NNNNNNNN"],
+            expected: ["NNNNNNNNs", "ENNAAEANs", "NNNNNNNNs"],
         },
         Case {
             name: "owner's device a pending replacement removed",
@@ -197,7 +200,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([12; 32]);
                 runtime.membership_ceiling = Some(HashSet::new());
             }),
-            expected: ["NNNNNNNN", "NNNNNNNN", "NNNNNNNN"],
+            expected: ["NNNNNNNNs", "NNNNNNNNs", "NNNNNNNNs"],
         },
         Case {
             name: "cross-user device under an admitted root",
@@ -205,7 +208,7 @@ fn decide_matrix() {
             setup: Box::new(move |runtime, _| {
                 runtime.admitted_users.insert(bob);
             }),
-            expected: ["AAAAANAA", "AAAAANAA", "AAAAANAA"],
+            expected: ["AAAAANAAs", "AAAAANAAs", "AAAAANAAs"],
         },
         Case {
             // Failure scenario 1: trusted relay-wide because another room's
@@ -215,13 +218,13 @@ fn decide_matrix() {
             setup: Box::new(move |runtime, _| {
                 runtime.governed_user_roots.insert(bob);
             }),
-            expected: ["NNNNNNNN", "NNNNNNNN", "NNNNNNNN"],
+            expected: ["NNNNNNNNs", "NNNNNNNNs", "NNNNNNNNs"],
         },
         Case {
             name: "cross-user exact member device",
             peer: peer(bob, [22; 32], false, None),
             setup: listed([22; 32]),
-            expected: ["AAAAAAAA", "AAAAAAAA", "AAAAAAAA"],
+            expected: ["AAAAAAAAs", "AAAAAAAAs", "AAAAAAAAs"],
         },
         Case {
             name: "same-user peer relay this room federates with",
@@ -229,13 +232,13 @@ fn decide_matrix() {
             setup: Box::new(|runtime, _| {
                 runtime.known_peer_relays.insert([30; 32]);
             }),
-            expected: ["AAANNNNN", "AAAAAEAN", "AAANNNNN"],
+            expected: ["AAANNNNNs", "AAAAAEANs", "AAANNNNNs"],
         },
         Case {
             name: "same-user peer relay this room does not know",
             peer: peer(owner, [31; 32], true, None),
             setup: none(),
-            expected: ["NNNNNNNN", "ENNAAEAN", "NNNNNNNN"],
+            expected: ["NNNNNNNNs", "ENNAAEANs", "NNNNNNNNs"],
         },
         Case {
             name: "cross-user host certificate, even listed and known",
@@ -244,7 +247,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([32; 32]);
                 runtime.known_peer_relays.insert([32; 32]);
             }),
-            expected: ["FFFFFFFF", "FFFFFFFF", "FFFFFFFF"],
+            expected: ["FFFFFFFFF", "FFFFFFFFF", "FFFFFFFFF"],
         },
         Case {
             name: "agent delegated this room",
@@ -253,7 +256,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([40; 32]);
                 relay.delegate([40; 32], Some((NOW + 1, ROOM)));
             }),
-            expected: ["AAAAAAAA", "AAAAAAAA", "AAAAAAAA"],
+            expected: ["AAAAAAAAs", "AAAAAAAAs", "AAAAAAAAs"],
         },
         Case {
             name: "agent whose delegation expired",
@@ -262,7 +265,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([41; 32]);
                 relay.delegate([41; 32], Some((NOW, ROOM)));
             }),
-            expected: ["eeeeeeee", "eeeeeeee", "eeeeeeee"],
+            expected: ["eeeeeeeee", "eeeeeeeee", "eeeeeeeee"],
         },
         Case {
             name: "withdrawn agent",
@@ -271,7 +274,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([42; 32]);
                 relay.delegate([42; 32], None);
             }),
-            expected: ["wwwwwwww", "wwwwwwww", "wwwwwwww"],
+            expected: ["wwwwwwwww", "wwwwwwwww", "wwwwwwwww"],
         },
         Case {
             name: "agent delegated another room",
@@ -280,13 +283,32 @@ fn decide_matrix() {
                 runtime.membership.devices.push([43; 32]);
                 relay.delegate([43; 32], Some((NOW + 1, OTHER_ROOM)));
             }),
-            expected: ["oooooooo", "oooooooo", "oooooooo"],
+            expected: ["ooooooooo", "ooooooooo", "ooooooooo"],
+        },
+        Case {
+            name: "the device governing this room on this relay",
+            peer: peer(owner, [70; 32], true, None),
+            setup: Box::new(|runtime, _| {
+                runtime.room_authority =
+                    Some(crate::rooms::RoomAuthority::governed_by(ROOM, [70; 32]));
+            }),
+            expected: ["NNNNNNNNs", "ENNAAEANs", "NNNNNNNNA"],
+        },
+        Case {
+            name: "another listed device of the owner, while this relay governs",
+            peer: peer(owner, [71; 32], false, None),
+            setup: Box::new(|runtime, _| {
+                runtime.membership.devices.push([71; 32]);
+                runtime.room_authority =
+                    Some(crate::rooms::RoomAuthority::governed_by(ROOM, [70; 32]));
+            }),
+            expected: ["AAAAAAAAs", "AAAAAAAAs", "AAAAAAAAs"],
         },
         Case {
             name: "member device whose certificate expired",
             peer: peer(owner, [50; 32], false, Some(NOW)),
             setup: listed([50; 32]),
-            expected: ["xxxxxxxx", "xxxxxxxx", "xxxxxxxx"],
+            expected: ["xxxxxxxxx", "xxxxxxxxx", "xxxxxxxxx"],
         },
         Case {
             name: "revoked member device",
@@ -295,13 +317,13 @@ fn decide_matrix() {
                 runtime.membership.devices.push([51; 32]);
                 relay.revoke([51; 32]);
             }),
-            expected: ["rrrrrrrr", "rrrrrrrr", "rrrrrrrr"],
+            expected: ["rrrrrrrrr", "rrrrrrrrr", "rrrrrrrrr"],
         },
         Case {
             name: "member device of a user the policy no longer trusts",
             peer: peer(carol, [52; 32], false, None),
             setup: listed([52; 32]),
-            expected: ["tttttttt", "tttttttt", "tttttttt"],
+            expected: ["ttttttttt", "ttttttttt", "ttttttttt"],
         },
     ];
     let tmp = tempfile::tempdir().unwrap();
@@ -314,6 +336,7 @@ fn decide_matrix() {
             runtime.admitted_users.clear();
             runtime.governed_user_roots.clear();
             runtime.known_peer_relays.clear();
+            runtime.room_authority = None;
             runtime.admission = *mode;
             (case.setup)(&mut runtime, &relay);
             let actual: String = OPS
@@ -367,6 +390,51 @@ fn replay_reads_listed_devices_within_the_ceiling() {
     assert_eq!(
         decide(&runtime, &[[60; 32]]),
         Decision::Deny(DenyReason::NotAMember)
+    );
+}
+
+#[test]
+fn only_the_current_governor_takes_the_steward_keys() {
+    let relay = Relay::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut runtime = room(tmp.path());
+    let governor = peer(relay.owner, [80; 32], true, None);
+    let decide = |runtime: &WorkspaceRuntime, peer: &AuthenticatedPeer| {
+        decide_in(
+            Room::current(runtime),
+            &relay.trust(),
+            peer,
+            RoomOperation::StewardedChannelKeys,
+            NOW,
+        )
+    };
+    // A room no authority of this relay governs hands its keys to no one.
+    runtime.admission = AdmissionMode::Governed;
+    assert_eq!(
+        decide(&runtime, &governor),
+        Decision::Deny(DenyReason::NotTheSteward)
+    );
+    runtime.room_authority = Some(crate::rooms::RoomAuthority::governed_by(ROOM, [80; 32]));
+    assert_eq!(decide(&runtime, &governor), Decision::Admit);
+    // Not the same device: another host of the owner, even a listed member
+    // or a federated relay of this room.
+    let other = peer(relay.owner, [81; 32], true, None);
+    runtime.membership.devices.push([81; 32]);
+    runtime.known_peer_relays.insert([81; 32]);
+    assert_eq!(
+        decide(&runtime, &other),
+        Decision::Deny(DenyReason::NotTheSteward)
+    );
+    // The governor's certificate must still be current.
+    let expired = peer(relay.owner, [80; 32], true, Some(NOW));
+    assert_eq!(
+        decide(&runtime, &expired),
+        Decision::Deny(DenyReason::CertExpired)
+    );
+    relay.revoke([80; 32]);
+    assert_eq!(
+        decide(&runtime, &governor),
+        Decision::Deny(DenyReason::Revoked)
     );
 }
 

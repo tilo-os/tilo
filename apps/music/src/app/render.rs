@@ -446,10 +446,7 @@ pub(super) struct TrackColumns {
     pub title_x1: f64,
     pub album: Option<(f64, f64)>,
     /// The leading edge of the action cluster.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "read by the column layout's tests")
-    )]
+    #[cfg(test)]
     pub actions_x: f64,
 }
 
@@ -504,6 +501,7 @@ pub(super) fn track_columns(left: f64, right: f64, w: ColumnWidths, album: bool)
         title_x,
         title_x1,
         album,
+        #[cfg(test)]
         actions_x,
     }
 }

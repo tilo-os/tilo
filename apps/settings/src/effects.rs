@@ -150,6 +150,19 @@ pub(crate) struct LiveArea {
     pub(crate) is_open: fn(&SettingsApp) -> bool,
     /// Its rows, reading the area first if it has not.
     pub(crate) rows: fn(&SettingsApp) -> Vec<ui::framework::LiveRow>,
+    /// How the window's warm-up reads the area off the UI thread, for an
+    /// area whose read blocks on the device; `None` reads it in a sync.
+    pub(crate) background: Option<BackgroundRead>,
+}
+
+/// An area's device read on the background executor
+/// ([`crate::device_read::DeviceRead`]): started by the warm-up, and taken
+/// in by the area's model on the UI thread once it has ended.
+pub(crate) struct BackgroundRead {
+    /// Start the read; `false` when the area reads in a sync instead.
+    pub(crate) start: fn(&SettingsApp) -> bool,
+    /// Whether the started read has ended.
+    pub(crate) finished: fn(&SettingsApp) -> bool,
 }
 
 /// Every area with live rows, in the order their rows are published.
@@ -159,12 +172,20 @@ pub(crate) const LIVE_AREAS: &[LiveArea] = &[
         pane: Category::Notifications,
         is_open: |app| app.notifications().is_open(),
         rows: |app| app.notifications().rows(),
+        background: Some(BackgroundRead {
+            start: |app| app.notifications().start_read(),
+            finished: |app| app.notifications().read_finished(),
+        }),
     },
     LiveArea {
         name: "settings.rows.default_apps",
         pane: Category::DefaultApps,
         is_open: |app| app.default_apps().is_open(),
         rows: |app| app.default_apps().rows(),
+        background: Some(BackgroundRead {
+            start: |app| app.default_apps().start_read(),
+            finished: |app| app.default_apps().read_finished(),
+        }),
     },
     // Input reads a small snapshot file the compositor keeps, on a timer of
     // its own; it has nothing slow to put off.
@@ -173,66 +194,91 @@ pub(crate) const LIVE_AREAS: &[LiveArea] = &[
         pane: Category::MouseKeyboard,
         is_open: |_| true,
         rows: |app| app.input().rows(),
+        background: None,
     },
+    // Printers read on a thread of their own.
     LiveArea {
         name: "settings.rows.printers",
         pane: Category::Printers,
         is_open: |app| app.printers().is_open(),
         rows: |app| app.printers().rows(),
+        background: None,
     },
     LiveArea {
         name: "settings.rows.users",
         pane: Category::Users,
         is_open: |app| app.users().is_open(),
         rows: |app| app.users().rows(),
+        background: Some(BackgroundRead {
+            start: |app| app.users().start_read(),
+            finished: |app| app.users().read_finished(),
+        }),
     },
     LiveArea {
         name: "settings.rows.bluetooth",
         pane: Category::Bluetooth,
         is_open: |app| app.bluetooth().is_open(),
         rows: |app| app.bluetooth().rows(),
+        background: Some(BackgroundRead {
+            start: |app| app.bluetooth().start_read(),
+            finished: |app| app.bluetooth().read_finished(),
+        }),
     },
+    // Speakers ask the broker on a thread of their own.
     LiveArea {
         name: "settings.rows.speakers",
         pane: Category::Speakers,
         is_open: |app| app.speakers().is_open(),
         rows: |app| app.speakers().rows(),
+        background: None,
     },
     LiveArea {
         name: "settings.rows.agent_models",
         pane: Category::AgentModels,
         is_open: |app| app.agent_models().is_open(),
         rows: |app| app.agent_models().rows(),
+        background: None,
     },
     LiveArea {
         name: "settings.rows.device_mesh",
         pane: Category::DeviceMesh,
         is_open: |app| app.device_mesh().is_open(),
         rows: |app| app.device_mesh().rows(),
+        background: None,
     },
     LiveArea {
         name: "settings.rows.audio",
         pane: Category::Sound,
         is_open: |app| app.audio().is_open(),
         rows: |app| app.audio().rows(),
+        background: Some(BackgroundRead {
+            start: |app| app.audio().start_read(),
+            finished: |app| app.audio().read_finished(),
+        }),
     },
     LiveArea {
         name: "settings.rows.accounts",
         pane: Category::ExternalAccounts,
         is_open: |app| app.accounts().is_open(),
         rows: |app| app.accounts().rows(),
+        background: None,
     },
+    // Displays probe brightness on threads of their own; the rest is a few
+    // small files.
     LiveArea {
         name: "settings.rows.displays",
         pane: Category::Displays,
         is_open: |app| app.displays().is_open(),
         rows: |app| app.displays().rows(),
+        background: None,
     },
+    // Networks are read on a thread of their own.
     LiveArea {
         name: "settings.rows.network",
         pane: Category::Network,
         is_open: |app| app.network().is_open(),
         rows: |app| app.network().rows(),
+        background: None,
     },
     // Disk unlock's rows show only what its pane has already read.
     LiveArea {
@@ -240,17 +286,20 @@ pub(crate) const LIVE_AREAS: &[LiveArea] = &[
         pane: Category::Permissions,
         is_open: |_| true,
         rows: |app| app.disk_unlock().rows(),
+        background: None,
     },
 ];
 
 /// When the areas of a window read. A window that reaches the device opens
 /// on its first pane without reading every other area first: until its
 /// first frame is drawn it publishes the areas that have read (the pane
-/// shown has), then reads one more area per sync until every one has
-/// ([`SettingsApp::read_next_area`]), so a few frames after the first its
-/// published rows are what reading them all up front published. A
-/// screenshot or a test reads stand-ins, which cost nothing: it publishes
-/// every area at once.
+/// shown has), then reads one more area at a time until every one has
+/// ([`AreaReads::step`]), so a little after the first frame its published
+/// rows are what reading them all up front published. An area whose read
+/// blocks on the device ([`LiveArea::background`]) reads on the background
+/// executor and is taken in by the sync its end wakes; the others read in a
+/// sync, one per sync. A screenshot or a test reads stand-ins, which cost
+/// nothing: it publishes every area at once.
 #[derive(Default)]
 pub(crate) struct AreaReads {
     /// Publish only the areas that have read.
@@ -261,6 +310,21 @@ pub(crate) struct AreaReads {
     woken: std::cell::Cell<bool>,
     /// The index in [`LIVE_AREAS`] reading continues from.
     next: std::cell::Cell<usize>,
+    /// The area whose read runs on the background executor; it wakes the
+    /// window when it ends, so no sync asks for another meanwhile.
+    in_flight: std::cell::Cell<Option<usize>>,
+}
+
+/// What one step of the warm-up did ([`AreaReads::step`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Step {
+    /// An area read, or its background read was taken in: the next sync
+    /// goes on.
+    Read,
+    /// An area reads on the background executor; its end wakes the window.
+    Waiting,
+    /// Every area has read; every area is published from now on.
+    Done,
 }
 
 #[cfg(test)]
@@ -305,11 +369,11 @@ impl AreaReads {
         self.deferred.get() && self.presented.get()
     }
 
-    /// The next area to read in `app`: the first after the last one read
-    /// that has not. Each area is passed once, so reading ends after one
-    /// pass even if an area's rows never read it; then every area is
-    /// published.
-    pub(crate) fn take_next(&self, app: &SettingsApp) -> Option<&'static LiveArea> {
+    /// The next area to read in `app`, with its index: the first after the
+    /// last one read that has not. Each area is passed once, so reading
+    /// ends after one pass even if an area's rows never read it; then every
+    /// area is published.
+    fn take_next(&self, app: &SettingsApp) -> Option<(usize, &'static LiveArea)> {
         let start = self.next.get();
         let found = LIVE_AREAS
             .iter()
@@ -322,13 +386,53 @@ impl AreaReads {
             return None;
         };
         self.next.set(index + 1);
-        Some(area)
+        Some((index, area))
+    }
+
+    /// Read on in `app`: take in the background read that has ended, or
+    /// start the next area's read — on the background executor when its
+    /// read blocks, else here. At most one background read runs at a time.
+    pub(crate) fn step(&self, app: &SettingsApp) -> Step {
+        if let Some(index) = self.in_flight.get() {
+            let Some(area) = LIVE_AREAS.get(index) else {
+                self.in_flight.set(None);
+                return Step::Read;
+            };
+            let ended = (area.is_open)(app)
+                || area
+                    .background
+                    .as_ref()
+                    .is_none_or(|read| (read.finished)(app));
+            if !ended {
+                return Step::Waiting;
+            }
+            self.in_flight.set(None);
+            // The area builds its model from what was read, here.
+            let _ = (area.rows)(app);
+            return Step::Read;
+        }
+        let Some((index, area)) = self.take_next(app) else {
+            return Step::Done;
+        };
+        if let Some(read) = &area.background
+            && (read.start)(app)
+        {
+            self.in_flight.set(Some(index));
+            return Step::Waiting;
+        }
+        let _ = (area.rows)(app);
+        Step::Read
     }
 
     /// Ask for a sync to read the next area, unless one is already asked
-    /// for or reading has not begun.
+    /// for, a background read will wake the window when it ends, or reading
+    /// has not begun.
     pub(crate) fn wake(&self) {
-        if self.deferred.get() && self.presented.get() && !self.woken.replace(true) {
+        if self.deferred.get()
+            && self.presented.get()
+            && self.in_flight.get().is_none()
+            && !self.woken.replace(true)
+        {
             ui::WakeHandle::new().wake();
         }
     }

@@ -6,6 +6,7 @@
 //! integrity records belong to the `package-store` crate, which the
 //! launcher, the shell and the app host share.
 //!
+//! - [`gc`]        — reclaiming payloads and runtimes nothing needs.
 //! - [`shim`]      — the PATH shims a `[cli]` package publishes.
 //! - [`isa`]       — host ISA detection, for target selection.
 //! - [`runtime_blobs`] — runtime payload bytes already on this device.
@@ -21,6 +22,7 @@
     )
 )]
 
+pub mod gc;
 pub mod isa;
 pub mod runtime_blobs;
 pub mod shim;
