@@ -30,9 +30,6 @@ const REVEAL_FOR: std::time::Duration = std::time::Duration::from_secs(10);
 /// How long a copied secret stays on the clipboard.
 const CLIPBOARD_FOR: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// How long a toast stays on screen.
-const TOAST_FOR: std::time::Duration = std::time::Duration::from_secs(4);
-
 /// Which items the list shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum VaultFilter {
@@ -397,7 +394,8 @@ pub(crate) struct Core {
     /// Explicit, short-lived disclosure. The value zeroizes when it expires,
     /// when focus leaves the window, or when another item is revealed.
     pub(crate) revealed: Option<(SecretId, Zeroizing<String>, ui::time::Instant)>,
-    pub(crate) toast: Option<(String, ui::time::Instant)>,
+    /// A notice for the window to hand its shell, which shows and expires it.
+    pub(crate) toast: Option<String>,
     pub(crate) health: crate::VaultHealth,
     pub(crate) findings: Vec<Finding>,
     pub(crate) app_grants: Vec<CredentialGrant>,
@@ -522,10 +520,7 @@ impl Core {
     }
 
     pub(crate) fn toast(&mut self, message: impl Into<String>) {
-        let until = ui::time::now()
-            .checked_add(TOAST_FOR)
-            .unwrap_or_else(ui::time::now);
-        self.toast = Some((message.into(), until));
+        self.toast = Some(message.into());
     }
 
     pub(crate) fn refresh(&mut self) {
@@ -784,13 +779,6 @@ impl Core {
             .is_some_and(|(_, _, until)| *until <= ui::time::now())
         {
             self.hide_revealed();
-        }
-        if self
-            .toast
-            .as_ref()
-            .is_some_and(|(_, until)| *until <= ui::time::now())
-        {
-            self.toast = None;
         }
     }
 
@@ -1622,8 +1610,8 @@ impl Core {
         }
     }
 
-    /// When the window next needs to wake: a pending transfer to poll, a
-    /// disclosure or a toast to hide.
+    /// When the window next needs to wake: a pending transfer to poll or a
+    /// disclosure to hide.
     pub(crate) fn next_wake(&self) -> Option<ui::time::Instant> {
         let transfer = if self.transfers_pending() {
             // Keep the deadline fixed until sync consumes the tick. Returning
@@ -1646,7 +1634,6 @@ impl Core {
                 .and_then(crate::PasswordsModel::proposal_wake_after)
                 .and_then(|after| ui::time::now().checked_add(after)),
             self.revealed.as_ref().map(|(_, _, until)| *until),
-            self.toast.as_ref().map(|(_, until)| *until),
         ]
         .into_iter()
         .flatten()
@@ -1795,7 +1782,7 @@ impl Core {
                         .draft_error
                         .as_ref()
                         .map(|(_, message)| message.clone())
-                        .or_else(|| self.toast.as_ref().map(|(message, _)| message.clone()))
+                        .or_else(|| self.toast.clone())
                         .unwrap_or_else(|| "The item was not saved".to_owned()));
                 }
             }
