@@ -137,9 +137,9 @@ remote absolute path cannot be consumed unchanged. A stale or incomplete
 export is not selection evidence. Do not substitute a hand-written partial
 graph. Missing JSON fails rather than invoking Cargo.
 
-`rcargo metadata` executes Cargo locally because metadata is a noncompiling
-subcommand; it does not produce a remote export. Until a verified export is
-available, leave the affected plan to the normal CI selector. The regression
+A Cargo drop-in may execute `metadata` locally because it is a noncompiling
+subcommand. Verify where it runs instead of assuming a remote export. Until a
+verified export is available, leave the affected plan to the normal CI selector. The regression
 `tools/tests/test_ci_plan_without_cargo.py` exercises the real metadata-file
 CLI with a Cargo blocker and retains target, optional and build dependency
 selection plus the security gate.
