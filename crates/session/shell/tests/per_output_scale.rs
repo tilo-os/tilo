@@ -223,6 +223,10 @@ fn an_offset_monitor_draws_its_part_at_its_own_scale_and_position() {
 
 /// The alpha of every pixel in `area` of `scene`, rasterized at `size` scene
 /// pixels through the CPU replay of the scene's own encoding.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "pixel offsets into a few-megapixel test target cannot overflow usize"
+)]
 fn alphas(scene: &vello::Scene, size: (u32, u32), area: Region) -> Vec<u8> {
     let (width, height) = size;
     let stride = width as usize * 4;
