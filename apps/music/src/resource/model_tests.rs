@@ -207,19 +207,10 @@ fn an_agents_changes_render_as_musics_sentences() {
     )
     .unwrap();
 
-    let catalogue = tilo_history::Catalogue::new("en-US", &[LOCALES[0].1]);
-    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
-    let versions: Vec<_> = app
-        .versions()
-        .into_iter()
-        .filter_map(|version| version.context)
-        .collect();
+    let versions = app.history();
     assert_eq!(
-        versions
-            .last()
-            .map(|entry| reader.sentence(entry))
-            .as_deref(),
-        Some("Deleted the playlist Deep focus")
+        app.sentences(versions.last()),
+        ["Deleted the playlist Deep focus"]
     );
     let entries: Vec<_> = versions
         .into_iter()
@@ -230,7 +221,7 @@ fn an_agents_changes_render_as_musics_sentences() {
                 .is_some_and(|invoker| invoker.actor == "agent:claude")
         })
         .collect();
-    let sentences: Vec<String> = entries.iter().map(|entry| reader.sentence(entry)).collect();
+    let sentences = app.sentences(&entries);
     assert_eq!(
         sentences,
         [
