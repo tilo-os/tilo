@@ -97,6 +97,8 @@ enum Desc {
     Json(&'static JsonDesc),
     /// A list of values.
     Vec(&'static VecDesc),
+    /// A map of string keys.
+    Map(&'static MapDesc),
 }
 
 impl ModelTable {
@@ -2653,4 +2655,390 @@ pub static VEC_OPS: ModelOps = ModelOps {
     op_describe: no_describe,
     op_lands: no_lands,
     op_schemas: no_schemas,
+};
+
+// --- Maps of string keys ---------------------------------------------------
+
+/// A map's entries, whatever their value type.
+pub trait MapEntries {
+    fn count(&self) -> usize;
+    /// Each entry in key order.
+    fn each(&self, visit: &mut dyn FnMut(&str, &dyn Any));
+    fn value(&self, key: &str) -> Option<&dyn Any>;
+    fn value_mut(&mut self, key: &str) -> Option<&mut dyn Any>;
+    fn remove_key(&mut self, key: &str);
+    /// Insert (or replace) `key`, its value put by `fill` into an `Option`
+    /// of the value type.
+    ///
+    /// # Errors
+    /// What `fill` refused.
+    fn insert_filled(
+        &mut self,
+        key: String,
+        fill: &mut dyn FnMut(&mut dyn Any) -> Result<(), ModelError>,
+    ) -> Result<(), ModelError>;
+}
+
+impl<T: 'static> MapEntries for std::collections::BTreeMap<String, T> {
+    fn count(&self) -> usize {
+        self.len()
+    }
+
+    fn each(&self, visit: &mut dyn FnMut(&str, &dyn Any)) {
+        for (key, value) in self {
+            visit(key, value);
+        }
+    }
+
+    fn value(&self, key: &str) -> Option<&dyn Any> {
+        self.get(key).map(|value| value as &dyn Any)
+    }
+
+    fn value_mut(&mut self, key: &str) -> Option<&mut dyn Any> {
+        self.get_mut(key).map(|value| value as &mut dyn Any)
+    }
+
+    fn remove_key(&mut self, key: &str) {
+        self.remove(key);
+    }
+
+    fn insert_filled(
+        &mut self,
+        key: String,
+        fill: &mut dyn FnMut(&mut dyn Any) -> Result<(), ModelError>,
+    ) -> Result<(), ModelError> {
+        let mut slot: Option<T> = None;
+        fill(&mut slot)?;
+        self.insert(key, filled(slot)?);
+        Ok(())
+    }
+}
+
+/// What `BTreeMap<String, T>`'s table reaches into one with.
+#[allow(
+    clippy::type_complexity,
+    reason = "each field reaches into the map one way"
+)]
+pub struct MapDesc {
+    item: &'static ModelTable,
+    item_nullable: bool,
+    entries: for<'a> fn(&'a dyn Any) -> Option<&'a dyn MapEntries>,
+    entries_mut: for<'a> fn(&'a mut dyn Any) -> Option<&'a mut dyn MapEntries>,
+    /// Put an empty map into `out` (an `Option` of it), and hand it back.
+    fresh: for<'a> fn(&'a mut dyn Any) -> Option<&'a mut dyn MapEntries>,
+    staged: (fn() -> Box<dyn Any>, Unstage),
+    replace: fn(&mut dyn Any, &mut dyn Any) -> Result<(), ModelError>,
+    item_staged: (fn() -> Box<dyn Any>, Unstage),
+}
+
+/// The [`MapDesc`] of `BTreeMap<String, T>`.
+pub struct MapOf<T>(PhantomData<T>);
+
+impl<T: Model> MapOf<T> {
+    pub const DESC: MapDesc = MapDesc {
+        item: T::TABLE,
+        item_nullable: T::NULLABLE,
+        entries: |value| {
+            Some(value.downcast_ref::<std::collections::BTreeMap<String, T>>()? as &dyn MapEntries)
+        },
+        entries_mut: |value| {
+            Some(
+                value.downcast_mut::<std::collections::BTreeMap<String, T>>()?
+                    as &mut dyn MapEntries,
+            )
+        },
+        fresh: |out| {
+            let out = out.downcast_mut::<Option<std::collections::BTreeMap<String, T>>>()?;
+            Some(out.insert(std::collections::BTreeMap::new()) as &mut dyn MapEntries)
+        },
+        staged: (
+            empty_of::<std::collections::BTreeMap<String, T>>,
+            unwrap_of::<std::collections::BTreeMap<String, T>>,
+        ),
+        replace: replace_of::<std::collections::BTreeMap<String, T>>,
+        item_staged: (empty_of::<T>, unwrap_of::<T>),
+    };
+
+    pub const TABLE: ModelTable = ModelTable {
+        ops: &MAP_OPS,
+        desc: Desc::Map(&Self::DESC),
+        checks: T::CHECKS,
+        has_ops: T::OPS,
+    };
+}
+
+impl ModelTable {
+    const fn map(&self) -> Option<&'static MapDesc> {
+        match self.desc {
+            Desc::Map(map) => Some(map),
+            _ => None,
+        }
+    }
+}
+
+fn maps(table: &ModelTable) -> Result<&'static MapDesc, ModelError> {
+    table.map().ok_or_else(mismatch)
+}
+
+/// The value at the key `path` starts at, and the rest of the path, when
+/// the map's values have a vocabulary of their own.
+fn keyed<'p>(
+    table: &ModelTable,
+    path: &'p [Segment],
+) -> Option<(&'static MapDesc, &'p str, &'p [Segment])> {
+    match path.split_first() {
+        Some((Segment::Key(key), rest)) if table.has_ops => Some((table.map()?, key, rest)),
+        _ => None,
+    }
+}
+
+/// The functions of every map of string keys: a map, one key per entry.
+pub static MAP_OPS: ModelOps = ModelOps {
+    to_json: |table, value| {
+        let mut out = serde_json::Map::new();
+        if let Some(map) = table.map()
+            && let Some(entries) = (map.entries)(value)
+        {
+            entries.each(&mut |key, value| {
+                out.insert(key.to_owned(), (map.item.ops.to_json)(map.item, value));
+            });
+        }
+        serde_json::Value::Object(out)
+    },
+    from_json: |table, value, out| {
+        let map = maps(table)?;
+        match value {
+            serde_json::Value::Object(entries) => {
+                let fresh = (map.fresh)(out).ok_or_else(mismatch)?;
+                for (key, value) in entries {
+                    fresh.insert_filled(key.clone(), &mut |into| {
+                        (map.item.ops.from_json)(map.item, value, into).located(key)
+                    })?;
+                }
+                Ok(())
+            }
+            serde_json::Value::Null => {
+                (map.fresh)(out).ok_or_else(mismatch)?;
+                Ok(())
+            }
+            _ => Err(ModelError::shape("a map")),
+        }
+    },
+    load: |table, doc, value, id, out| {
+        let map = maps(table)?;
+        if !matches!(value, Value::Object(ObjType::Map)) {
+            return Err(ModelError::shape("a map"));
+        }
+        let fresh = (map.fresh)(out).ok_or_else(mismatch)?;
+        // One walk of the map rather than a lookup per key.
+        for (key, slot) in crate::model::map_slots(doc, id) {
+            fresh.insert_filled(key.clone(), &mut |into| {
+                load_slot(map.item, doc, slot.as_ref().map(|(v, i)| (v, i)), into).located(&key)
+            })?;
+        }
+        Ok(())
+    },
+    missing: |table, out| {
+        (maps(table)?.fresh)(out).ok_or_else(mismatch)?;
+        Ok(())
+    },
+    reload: |table, target, doc, slot| {
+        let map = maps(table)?;
+        let mut staged = (map.staged.0)();
+        match slot {
+            Some((value, id)) => (MAP_OPS.load)(table, doc, value, id, staged.as_mut())?,
+            None => (MAP_OPS.missing)(table, staged.as_mut())?,
+        }
+        (map.replace)(target, staged.as_mut())
+    },
+    store: |table, value, doc, slot| {
+        let map = maps(table)?;
+        let entries = (map.entries)(value).ok_or_else(mismatch)?;
+        let obj = slot.object(doc, ObjType::Map)?;
+        let stale: Vec<String> = automerge::ReadDoc::keys(doc, &obj)
+            .filter(|key| entries.value(key).is_none())
+            .collect();
+        for key in stale {
+            automerge::transaction::Transactable::delete(doc, &obj, key.as_str())?;
+        }
+        let mut written = Ok(());
+        entries.each(&mut |key, value| {
+            if written.is_ok() {
+                written =
+                    (map.item.ops.store)(map.item, value, doc, Slot::Key(&obj, key)).located(key);
+            }
+        });
+        written
+    },
+    stores_as: |table, value, before| {
+        let Some(map) = table.map() else {
+            return false;
+        };
+        let (Some(now), Some(was)) = ((map.entries)(value), (map.entries)(before)) else {
+            return false;
+        };
+        if now.count() != was.count() {
+            return false;
+        }
+        let mut same = true;
+        now.each(&mut |key, value| {
+            same = same
+                && was
+                    .value(key)
+                    .is_some_and(|before| (map.item.ops.stores_as)(map.item, value, before));
+        });
+        same
+    },
+    store_changed: |table, value, _, doc, slot, _| (MAP_OPS.store)(table, value, doc, slot),
+    refresh: |table, target, doc, value, id, delta| {
+        let map = maps(table)?;
+        let touched = delta.under(id);
+        if touched.is_all() {
+            return (MAP_OPS.reload)(table, target, doc, Some((value, id)));
+        }
+        let entries = (map.entries_mut)(target).ok_or_else(mismatch)?;
+        for key in touched.keys() {
+            match crate::model::get_slot(doc, id, key)? {
+                None => entries.remove_key(key),
+                Some((value, slot)) => match entries.value_mut(key) {
+                    Some(existing) => refresh_slot(map.item, existing, doc, id, key, delta)?,
+                    None => entries.insert_filled(key.to_owned(), &mut |into| {
+                        (map.item.ops.load)(map.item, doc, &value, &slot, into).located(key)
+                    })?,
+                },
+            }
+        }
+        Ok(())
+    },
+    read_whole: |_, _, _| Ok(()),
+    edit: |table, doc, slot, path, op, cx| {
+        let map = maps(table)?;
+        let item = map.item;
+        match (path.split_first(), op) {
+            (None, EditOp::RemoveKey { key }) => {
+                let obj = slot.object(doc, ObjType::Map)?;
+                Slot::Key(&obj, key).remove(doc)
+            }
+            (Some((Segment::Key(key), rest)), op) => {
+                let obj = slot.object(doc, ObjType::Map)?;
+                if rest.is_empty() && matches!(op, EditOp::Set { .. }) {
+                    let staged = ((map.item_staged.0)(), map.item_staged.1);
+                    return edit_whole(
+                        item,
+                        staged,
+                        map.item_nullable,
+                        doc,
+                        Slot::Key(&obj, key),
+                        rest,
+                        op,
+                    )
+                    .located(key);
+                }
+                // An edit inside an entry that is not there yet starts it
+                // from its value's empty value (a rule for an app that had
+                // none).
+                if automerge::ReadDoc::get(doc, &obj, key.as_str())?.is_none() {
+                    let mut empty = (map.item_staged.0)();
+                    (item.ops.missing)(item, empty.as_mut())
+                        .map_err(|_| ModelError::invalid(format!("no entry `{key}`")))?;
+                    let empty = (map.item_staged.1)(empty.as_ref()).ok_or_else(mismatch)?;
+                    (item.ops.store)(item, empty, doc, Slot::Key(&obj, key)).located(key)?;
+                }
+                (item.ops.edit)(item, doc, Slot::Key(&obj, key), rest, op, cx).located(key)
+            }
+            _ => {
+                let staged = ((map.staged.0)(), map.staged.1);
+                edit_whole(table, staged, false, doc, slot, path, op)
+            }
+        }
+    },
+    diff: |table, before, after, path, out| {
+        let Some(map) = table.map() else {
+            return;
+        };
+        let (Some(was), Some(now)) = ((map.entries)(before), (map.entries)(after)) else {
+            return;
+        };
+        was.each(&mut |key, before| {
+            let mut at = path.to_vec();
+            at.push(Segment::Key(key.to_owned()));
+            match now.value(key) {
+                Some(next) => (map.item.ops.diff)(map.item, before, next, &at, out),
+                None => out.push(Edit::new(
+                    path.to_vec(),
+                    EditOp::RemoveKey {
+                        key: key.to_owned(),
+                    },
+                )),
+            }
+        });
+        now.each(&mut |key, next| {
+            if was.value(key).is_none() {
+                let mut at = path.to_vec();
+                at.push(Segment::Key(key.to_owned()));
+                out.push(Edit::new(
+                    at,
+                    EditOp::Set {
+                        value: (map.item.ops.to_json)(map.item, next),
+                    },
+                ));
+            }
+        });
+    },
+    collect_text: |table, value, out| {
+        if let Some(map) = table.map()
+            && let Some(entries) = (map.entries)(value)
+        {
+            entries.each(&mut |_, value| (map.item.ops.collect_text)(map.item, value, out));
+        }
+    },
+    check: |table, value| {
+        let Some(map) = table.map() else {
+            return Ok(());
+        };
+        if !map.item.checks {
+            return Ok(());
+        }
+        let Some(entries) = (map.entries)(value) else {
+            return Ok(());
+        };
+        let mut checked = Ok(());
+        entries.each(&mut |_, value| {
+            if checked.is_ok() {
+                checked = (map.item.ops.check)(map.item, value);
+            }
+        });
+        checked
+    },
+    get_at: |table, value, path| match path.split_first() {
+        None => Some(value),
+        Some((Segment::Key(key), rest)) => {
+            let map = table.map()?;
+            (map.item.ops.get_at)(map.item, (map.entries)(value)?.value(key)?, rest)
+        }
+        Some(_) => None,
+    },
+    op_coalesces: |table, path, previous, next| {
+        let (map, _, rest) = keyed(table, path)?;
+        (map.item.ops.op_coalesces)(map.item, rest, previous, next)
+    },
+    op_continuable: |table, path, op| {
+        let (map, _, rest) = keyed(table, path)?;
+        (map.item.ops.op_continuable)(map.item, rest, op)
+    },
+    op_describe: |table, path, op| {
+        let (map, _, rest) = keyed(table, path)?;
+        (map.item.ops.op_describe)(map.item, rest, op)
+    },
+    op_lands: |table, value, path, op| {
+        let (map, key, rest) = keyed(table, path)?;
+        (map.item.ops.op_lands)(map.item, (map.entries)(value)?.value(key)?, rest, op)
+    },
+    op_schemas: |table, prefix, out| {
+        if table.has_ops
+            && let Some(map) = table.map()
+        {
+            (map.item.ops.op_schemas)(map.item, &format!("{prefix}*."), out);
+        }
+    },
 };
