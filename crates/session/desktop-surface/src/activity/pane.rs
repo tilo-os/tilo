@@ -6816,10 +6816,10 @@ impl RoomActivityPane {
                 Role::Button,
                 false,
                 None,
-                t(if *command == MorningCommand::NextSource {
-                    "activity-morning-next"
-                } else {
+                t(if *command == MorningCommand::DraftRefresh {
                     "activity-morning-draft-description"
+                } else {
+                    command.label_key()
                 }),
             ),
             ActivityFocus::Morning(key, _) => control(
