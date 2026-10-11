@@ -62,6 +62,7 @@ pub mod doc;
 pub mod engine;
 pub mod header;
 pub mod html_mail;
+pub mod html_text;
 pub mod i18n;
 pub mod list;
 pub mod model;

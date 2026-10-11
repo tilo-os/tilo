@@ -634,14 +634,14 @@ impl MailApp {
     }
 
     /// A blank "Add account" sheet with an email typed and its servers
-    /// filled in, focus on a server field so its focus ring shows.
+    /// filled in, focus on the password field so its focus ring shows.
     fn stage_setup_add(&mut self) {
         self.open_setup_edit(None);
         self.set_setup_input(0, "Alex Morgan");
         self.set_setup_input(1, "grace@fastmail.com");
         // The built-in provider table only: a capture opens no socket.
         self.maybe_autofill_live_typing();
-        self.setup.as_mut().map(|sheet| sheet.focus_field(4));
+        self.setup.as_mut().map(|sheet| sheet.focus_field(3));
     }
 
     /// The bundled HTML newsletter open in the reader (it is starred, so the
@@ -1740,10 +1740,7 @@ impl MailApp {
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => {
                 self.setup_discovery = None;
-                self.set_setup_error(Some(
-                    "Provider discovery ended without a result; enter server details manually"
-                        .into(),
-                ));
+                self.set_setup_error(Some("Couldn’t find the mail servers".into()));
                 self.dirty = true;
                 return;
             }
@@ -1865,9 +1862,7 @@ impl MailApp {
             return;
         }
         if self.setup_editing != pending.editing || self.read_setup_config() != pending.config {
-            self.set_setup_error(Some(
-                "Account settings changed; verify them again before saving".into(),
-            ));
+            self.set_setup_error(Some("Settings changed".into()));
             self.dirty = true;
             return;
         }
@@ -4033,8 +4028,7 @@ impl MailApp {
                 if !self.shared.borrow_mut().preview_message(id) {
                     return Err("message is no longer loaded".into());
                 }
-                self.shared.borrow_mut().status =
-                    Some("Previewing without changing this message’s read state".into());
+                self.shared.borrow_mut().status = Some("Preview".into());
                 self.process_intents();
                 Ok(done)
             }
@@ -4147,8 +4141,7 @@ impl MailApp {
                     self.shared.borrow_mut().save_draft(doc, &draft);
                     self.compose.open_with_draft(&draft);
                     self.editing_draft = None;
-                    self.shared.borrow_mut().status =
-                        Some("Invitation prepared — review it before sending".into());
+                    self.shared.borrow_mut().status = Some("Invitation drafted".into());
                 }
             }
             self.dirty = true;
@@ -4809,8 +4802,7 @@ impl MailApp {
                 if let Some(id) = selected
                     && self.shared.borrow_mut().preview_message(id)
                 {
-                    self.shared.borrow_mut().status =
-                        Some("Previewing without changing this message’s read state".into());
+                    self.shared.borrow_mut().status = Some("Preview".into());
                     self.process_intents();
                     *handled = true;
                 }
@@ -7075,13 +7067,27 @@ mod tests {
         for (scale, viewport) in [(1.0_f32, (1100, 780)), (2.0, (1100, 560))] {
             let mut harness = setup_harness(None, viewport, text_scaled(scale));
             assert_eq!(
-                tab_names(&mut harness, 11),
+                tab_names(&mut harness, 6),
                 [
                     "Email",
                     "Name",
                     "Username",
                     "Sign in with",
                     "Password",
+                    "Advanced",
+                ],
+                "Tab walks the fields in reading order at {scale}×, the servers hidden"
+            );
+            harness
+                .root_mut::<MailApp>()
+                .setup_fields()
+                .expect("the sheet is open")
+                .set_advanced(true);
+            harness.relayout();
+            let names = tab_names(&mut harness, 7);
+            assert_eq!(
+                &names[1..],
+                [
                     "IMAP server",
                     "IMAP port",
                     "IMAP TLS",
@@ -7089,7 +7095,7 @@ mod tests {
                     "SMTP port",
                     "SMTP TLS",
                 ],
-                "Tab walks the fields in reading order at {scale}×"
+                "the servers follow the Advanced switch at {scale}×: {names:?}"
             );
         }
 
@@ -7115,7 +7121,13 @@ mod tests {
         {
             let mut harness = setup_harness(None, (1100, 780), Theme::dark());
             assert_eq!(harness.root::<MailApp>().setup_value(5), "993");
-            let names = tab_names(&mut harness, 8);
+            harness
+                .root_mut::<MailApp>()
+                .setup_fields()
+                .expect("the sheet is open")
+                .set_advanced(true);
+            harness.relayout();
+            let names = tab_names(&mut harness, 9);
             assert_eq!(names.last().map(String::as_str), Some("IMAP TLS"));
             harness
                 .perform_named("mail.setup:imap-tls", &ui::a11y::Action::Activate)
@@ -7387,7 +7399,7 @@ mod tests {
                 app.setup_error()
                     .as_deref()
                     .unwrap()
-                    .contains("settings changed")
+                    .contains("Settings changed")
             );
             assert_eq!(app.shared.borrow().accounts.accounts[0].config, original);
             assert!(app.setup_validation.is_none());
