@@ -14,44 +14,9 @@
 
 use std::collections::HashMap;
 
+use settings_store::screen_reader::ScreenReaderSettings;
 use ui::a11y::{AccessNode, Politeness};
 use ui::screen_reader::{ScreenReader, describe, describe_state};
-
-/// Rate and voice follow the same `accessibility` settings the apps read, so
-/// the desktop speaks with one voice.
-fn configured_reader() -> ScreenReader {
-    let section = settings_store::load_section("accessibility");
-    let mut reader = ScreenReader::new();
-    let rate_pct = section
-        .get("screen_reader_rate")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(100)
-        .clamp(50, 200);
-    reader.set_rate(f32::from(u8::try_from(rate_pct).unwrap_or(100)) / 100.0);
-    let voice = section
-        .get("screen_reader_voice")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|voice| match voice {
-            "english_us" => Some("en-us"),
-            "english_gb" => Some("en-gb"),
-            "german" => Some("de"),
-            "french" => Some("fr"),
-            "spanish" => Some("es"),
-            _ => None,
-        });
-    if let Some(voice) = voice {
-        reader.set_voice(voice);
-    }
-    reader
-}
-
-/// Whether the person turned the screen reader on.
-pub fn screen_reader_setting() -> bool {
-    settings_store::load_section("accessibility")
-        .get("screen_reader")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-}
 
 /// The focused node of one snapshot, identified by its child-index path.
 struct Focus {
@@ -97,7 +62,13 @@ impl ShellNarrator {
     /// without replaying what is already on screen.
     pub fn set_enabled(&mut self, enabled: bool) {
         match (enabled, self.reader.is_some()) {
-            (true, false) => self.reader = Some(configured_reader()),
+            (true, false) => {
+                // Rate and voice follow the same `accessibility` settings the
+                // apps read, so the desktop speaks with one voice.
+                let mut reader = ScreenReader::new();
+                reader.configure(&ScreenReaderSettings::load());
+                self.reader = Some(reader);
+            }
             (false, true) => {
                 if let Some(reader) = self.reader.as_mut() {
                     reader.stop();

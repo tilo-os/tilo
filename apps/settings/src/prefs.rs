@@ -54,6 +54,7 @@
 //! clobbers another pane's — or the region store's — section.
 
 use serde::{Deserialize, Serialize};
+use settings_store::screen_reader::ScreenReaderVoice;
 
 /// Remembered default audio devices, persistent transforms and which system
 /// events make a sound.
@@ -944,18 +945,6 @@ impl OnScreenKeyboard {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ScreenReaderVoice {
-    #[default]
-    System,
-    EnglishUs,
-    EnglishGb,
-    German,
-    French,
-    Spanish,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum SwitchKeyPair {
     #[default]
     F6F7,
@@ -982,54 +971,6 @@ impl SwitchKeyPair {
     }
 }
 
-impl ScreenReaderVoice {
-    pub const OPTIONS: &'static [&'static str] = &[
-        "System voice",
-        "English (US)",
-        "English (UK)",
-        "German",
-        "French",
-        "Spanish",
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::System => "System voice",
-            Self::EnglishUs => "English (US)",
-            Self::EnglishGb => "English (UK)",
-            Self::German => "German",
-            Self::French => "French",
-            Self::Spanish => "Spanish",
-        }
-    }
-
-    pub fn backend_id(self) -> &'static str {
-        match self {
-            Self::System => "",
-            Self::EnglishUs => "en-us",
-            Self::EnglishGb => "en-gb",
-            Self::German => "de",
-            Self::French => "fr",
-            Self::Spanish => "es",
-        }
-    }
-
-    pub fn from_label(label: &str) -> Option<Self> {
-        const VARIANTS: [ScreenReaderVoice; 6] = [
-            ScreenReaderVoice::System,
-            ScreenReaderVoice::EnglishUs,
-            ScreenReaderVoice::EnglishGb,
-            ScreenReaderVoice::German,
-            ScreenReaderVoice::French,
-            ScreenReaderVoice::Spanish,
-        ];
-        Self::OPTIONS
-            .iter()
-            .position(|item| *item == label)
-            .and_then(|i| VARIANTS.get(i).copied())
-    }
-}
-
 fn default_cursor_size() -> u32 {
     24
 }
@@ -1043,7 +984,7 @@ fn default_magnifier_zoom() -> u8 {
 }
 
 fn default_screen_reader_rate() -> u16 {
-    100
+    settings_store::screen_reader::DEFAULT_RATE
 }
 
 impl Default for AccessibilityPrefs {

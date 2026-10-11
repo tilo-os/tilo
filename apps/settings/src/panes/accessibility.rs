@@ -17,6 +17,7 @@ use std::collections::HashMap;
 
 use settings_store::dictation::DictationLanguage;
 use settings_store::magnifier;
+use settings_store::screen_reader::ScreenReaderVoice;
 use taffy::{NodeId, TaffyTree};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus};
@@ -31,8 +32,7 @@ use crate::panes::appearance::{
     AppearanceEffect, text_size_label, text_size_name, text_size_options,
 };
 use crate::prefs::{
-    AccessibilityPrefs, AppearancePrefs, ColorFilter, OnScreenKeyboard, ScreenReaderVoice,
-    SwitchKeyPair,
+    AccessibilityPrefs, AppearancePrefs, ColorFilter, OnScreenKeyboard, SwitchKeyPair,
 };
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
