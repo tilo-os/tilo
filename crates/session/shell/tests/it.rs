@@ -71,6 +71,8 @@ mod cursor_protocol;
 mod dbus_runtime_context;
 #[path = "desktop_env_interactions.rs"]
 mod desktop_env_interactions;
+#[path = "desktop_smoke.rs"]
+mod desktop_smoke;
 #[path = "display_layout_switcher.rs"]
 mod display_layout_switcher;
 #[path = "dmabuf_commit_barrier.rs"]
