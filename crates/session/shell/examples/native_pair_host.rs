@@ -260,6 +260,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !private_fs::is_owner_only(&std::fs::metadata(&root)?) {
         return Err("fixture root must already be private".into());
     }
+    if std::env::var_os("TILO_RELAY_PHASE_DIAGNOSTICS").is_some() {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .try_init()
+            .map_err(|error| error.to_string())?;
+    }
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
