@@ -141,68 +141,6 @@ pub trait ItemSource {
     fn nested_items(&self, field: &'static str, out: &mut Vec<ItemCollection>);
 }
 
-/// [`ItemSource::item_collection`] from items and their ids, in order.
-pub(crate) fn collection_of<'a, T: crate::Model + 'a>(
-    field: &'static str,
-    items: impl IntoIterator<Item = (Id, &'a T)>,
-) -> ItemCollection {
-    let mut labelled = false;
-    let mut listed = Vec::new();
-    for (n, (id, item)) in items.into_iter().enumerate() {
-        if n == 0 {
-            labelled = item.label().is_some();
-        }
-        if n >= ITEM_PAGE {
-            break;
-        }
-        let label = crate::__private::item_label(&id, item);
-        listed.push((id, label));
-    }
-    ItemCollection {
-        within: Vec::new(),
-        field,
-        labelled,
-        items: listed,
-    }
-}
-
-/// [`ItemSource::item_texts`] from items and their ids.
-pub(crate) fn texts_of<'a, T: crate::Model + 'a>(
-    field: &'static str,
-    items: impl IntoIterator<Item = (Id, &'a T)>,
-    found: &mut Vec<ItemText>,
-) {
-    for (id, item) in items {
-        if let Some(label) = item.label() {
-            let mut text = Vec::new();
-            item.collect_text(&mut text);
-            found.push(ItemText {
-                field,
-                id,
-                label,
-                text: text.join("\n"),
-            });
-        }
-    }
-}
-
-/// [`ItemSource::nested_items`] from items and their ids.
-pub(crate) fn nested_of<'a, T: crate::Model + 'a>(
-    field: &'static str,
-    items: impl IntoIterator<Item = (Id, &'a T)>,
-    out: &mut Vec<ItemCollection>,
-) {
-    for (n, (id, item)) in items.into_iter().enumerate() {
-        if n >= ITEM_PAGE {
-            break;
-        }
-        for mut inner in item.nested_collections() {
-            inner.within.insert(0, (field, id.clone()));
-            out.push(inner);
-        }
-    }
-}
-
 /// The id of the child resource an item of a nested collection is
 /// published as: `<kind>/slides/<slide>/elements/<element>`.
 pub fn nested_resource_id<R: Resource>(within: &[(&str, Id)], field: &str, item: &Id) -> String {

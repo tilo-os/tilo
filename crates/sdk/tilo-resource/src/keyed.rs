@@ -439,34 +439,31 @@ pub(crate) fn removed_and_changed<T: Model + Identified, R>(
 
 impl<T: Model + Identified, S> crate::items::ItemSource for Items<T, S> {
     fn item_collection(&self, field: &'static str) -> crate::items::ItemCollection {
-        crate::items::collection_of(field, self.entries(crate::items::ITEM_PAGE))
+        crate::collection::listed_items(T::TABLE, self, field)
     }
     fn item_presence(&self) -> usize {
         usize::from(!self.items.is_empty())
     }
     fn label_of_item(&self, id: &Id) -> Option<String> {
         let item = self.find(id)?;
-        Some(crate::__private::item_label(id, item))
+        Some(crate::collection::label_of(T::TABLE, id, item))
     }
     fn item_texts(&self, field: &'static str, found: &mut Vec<crate::items::ItemText>) {
-        crate::items::texts_of(field, self.entries(usize::MAX), found);
+        crate::collection::item_texts(T::TABLE, self, field, found);
     }
     fn nested_items(&self, field: &'static str, out: &mut Vec<crate::items::ItemCollection>) {
-        crate::items::nested_of(field, self.entries(crate::items::ITEM_PAGE), out);
+        crate::collection::nested_items(T::TABLE, self, field, out);
     }
 }
 
-impl<T: Identified, S> Items<T, S> {
-    /// Each item with the id it carries, in order.
-    fn entries(&self, limit: usize) -> Vec<(Id, &T)> {
-        let mut out = Vec::with_capacity(self.items.len().min(limit));
-        for item in &self.items {
-            if out.len() == limit {
-                break;
-            }
-            out.push((item.id(), item));
-        }
-        out
+impl<T: Model + Identified, S> crate::collection::ItemList for Items<T, S> {
+    fn count(&self) -> usize {
+        self.items.len()
+    }
+
+    fn item(&self, at: usize) -> Option<(Id, &dyn std::any::Any)> {
+        let item = self.items.get(at)?;
+        Some((item.id(), item as &dyn std::any::Any))
     }
 }
 

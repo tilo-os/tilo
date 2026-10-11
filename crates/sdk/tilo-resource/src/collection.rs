@@ -956,9 +956,27 @@ impl<T: Model> crate::items::ItemSource for Collection<T> {
     }
 }
 
+/// Items with their ids, whatever their type and wherever their ids are
+/// kept: what listing them for publication and search reads.
+pub(crate) trait ItemList {
+    fn count(&self) -> usize;
+    fn item(&self, at: usize) -> Option<(Id, &dyn Any)>;
+}
+
+impl<T: 'static> ItemList for Collection<T> {
+    fn count(&self) -> usize {
+        self.items.len()
+    }
+
+    fn item(&self, at: usize) -> Option<(Id, &dyn Any)> {
+        let entry = self.items.get(at)?;
+        Some((entry.id.clone(), &entry.item as &dyn Any))
+    }
+}
+
 /// The label an item is offered under: its `#[model(label)]`, else its
 /// first text, else its id.
-fn label_of(item: &ModelTable, id: &Id, value: &dyn Any) -> String {
+pub(crate) fn label_of(item: &ModelTable, id: &Id, value: &dyn Any) -> String {
     if let Some(label) = (item.ops.label)(item, value)
         && !label.is_empty()
     {
@@ -971,21 +989,22 @@ fn label_of(item: &ModelTable, id: &Id, value: &dyn Any) -> String {
 
 /// [`ItemSource::item_collection`](crate::items::ItemSource::item_collection)
 /// of `entries`, items of the type `item`.
-fn listed_items(
+pub(crate) fn listed_items(
     item: &ModelTable,
-    entries: &dyn Entries,
+    entries: &dyn ItemList,
     field: &'static str,
 ) -> crate::items::ItemCollection {
     let mut labelled = false;
     let mut listed = Vec::new();
     for at in 0..entries.count().min(crate::items::ITEM_PAGE) {
-        let (Some(id), Some(value)) = (entries.id_at(at), entries.item_at(at)) else {
+        let Some((id, value)) = entries.item(at) else {
             continue;
         };
         if at == 0 {
             labelled = (item.ops.label)(item, value).is_some();
         }
-        listed.push((id.clone(), label_of(item, id, value)));
+        let label = label_of(item, &id, value);
+        listed.push((id, label));
     }
     crate::items::ItemCollection {
         within: Vec::new(),
@@ -997,14 +1016,14 @@ fn listed_items(
 
 /// [`ItemSource::item_texts`](crate::items::ItemSource::item_texts) of
 /// `entries`.
-fn item_texts(
+pub(crate) fn item_texts(
     item: &ModelTable,
-    entries: &dyn Entries,
+    entries: &dyn ItemList,
     field: &'static str,
     found: &mut Vec<crate::items::ItemText>,
 ) {
     for at in 0..entries.count() {
-        let (Some(id), Some(value)) = (entries.id_at(at), entries.item_at(at)) else {
+        let Some((id, value)) = entries.item(at) else {
             continue;
         };
         if let Some(label) = (item.ops.label)(item, value) {
@@ -1012,7 +1031,7 @@ fn item_texts(
             (item.ops.collect_text)(item, value, &mut text);
             found.push(crate::items::ItemText {
                 field,
-                id: id.clone(),
+                id,
                 label,
                 text: text.join("\n"),
             });
@@ -1022,14 +1041,14 @@ fn item_texts(
 
 /// [`ItemSource::nested_items`](crate::items::ItemSource::nested_items) of
 /// `entries`.
-fn nested_items(
+pub(crate) fn nested_items(
     item: &ModelTable,
-    entries: &dyn Entries,
+    entries: &dyn ItemList,
     field: &'static str,
     out: &mut Vec<crate::items::ItemCollection>,
 ) {
     for at in 0..entries.count().min(crate::items::ITEM_PAGE) {
-        let (Some(id), Some(value)) = (entries.id_at(at), entries.item_at(at)) else {
+        let Some((id, value)) = entries.item(at) else {
             continue;
         };
         for mut inner in (item.ops.nested_collections)(item, value) {
