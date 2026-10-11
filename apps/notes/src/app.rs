@@ -27,7 +27,6 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
 use ui::collaboration::PresencePayload;
-use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -2828,19 +2827,6 @@ impl Widget for NotesApp {
         self.sidebar.mark_drawn();
         self.main.mark_drawn();
         self.shortcuts.mark_drawn();
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        // The root rect is the whole window — always paint, never cull.
-        self.draw(scene, transform, text_renderer, theme, presence);
     }
 }
 

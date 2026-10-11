@@ -1227,28 +1227,6 @@ impl ui::widget::Decorator for SnippetsApp {
         self.paint_toast(scene, transform, text, theme);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.core.borrow_mut().body_editor.set_rect(Rect::ZERO);
-        Widget::draw_with_presence(
-            &mut self.shell,
-            scene,
-            transform,
-            text,
-            theme,
-            presence,
-            permissions,
-        );
-        self.paint_toast(scene, transform, text, theme);
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,

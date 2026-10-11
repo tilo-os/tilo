@@ -2952,28 +2952,21 @@ struct Frame<'a> {
     text: &'a mut TextRenderer,
     theme: &'a Theme,
     presence: &'a PresenceCtx,
-    permissions: Option<&'a crate::permissions::PermissionContext>,
 }
 
 impl Frame<'_> {
     /// Draw one of the shell's children with the theme of the ground it
     /// stands on.
     fn draw(&mut self, widget: Option<&mut (dyn Widget + 'static)>, theme: &Theme) {
-        let Some(widget) = widget else {
-            return;
-        };
-        match self.permissions {
-            Some(p) => {
-                widget.draw_with_presence(
-                    self.scene,
-                    self.transform,
-                    self.text,
-                    theme,
-                    self.presence,
-                    p,
-                );
-            }
-            None => widget.draw(self.scene, self.transform, self.text, theme, self.presence),
+        if let Some(widget) = widget {
+            crate::widget::draw_child(
+                widget,
+                self.scene,
+                self.transform,
+                self.text,
+                theme,
+                self.presence,
+            );
         }
     }
 }
@@ -3398,30 +3391,7 @@ impl Widget for NavShell {
             text: text_renderer,
             theme,
             presence,
-            permissions: None,
         });
-        self.tick(theme);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if !presence.should_cull(self.rect) {
-            self.paint(&mut Frame {
-                scene,
-                transform,
-                text: text_renderer,
-                theme,
-                presence,
-                permissions: Some(permissions),
-            });
-        }
         self.tick(theme);
     }
 

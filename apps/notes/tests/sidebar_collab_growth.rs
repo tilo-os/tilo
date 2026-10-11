@@ -3,7 +3,7 @@
 //! must not index `row_rects` out of bounds (panicked at sidebar.rs:310
 //! in the live two-instance demo). Drives the real
 //! `sync → build_layout → compute → apply_layout → draw` cycle headless
-//! (no GPU — `draw_with_presence` just fills a vello Scene).
+//! (no GPU — `draw` just fills a vello Scene).
 
 #![allow(
     clippy::unwrap_used,
@@ -19,7 +19,6 @@ use notes::NotesApp;
 use notes::doc::NotesDoc;
 use notes::model::PageMeta;
 use ui::headless::Framed;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -38,16 +37,8 @@ fn relayout(app: &mut Framed<NotesApp>) -> Result<(), String> {
 
 fn draw(app: &mut NotesApp, theme: &Theme, tr: &mut TextRenderer) {
     let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
     let mut scene = Scene::new();
-    app.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        tr,
-        theme,
-        &presence,
-        &permission,
-    );
+    app.draw(&mut scene, Affine::IDENTITY, tr, theme, &presence);
 }
 
 #[test]

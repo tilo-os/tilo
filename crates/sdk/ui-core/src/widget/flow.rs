@@ -141,7 +141,6 @@ impl Flow {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
     ) -> bool {
         if presence.should_cull(self.paint_rect) {
             return false;
@@ -180,14 +179,7 @@ impl Flow {
             crate::backdrop::nest_scene(&local);
             let secrets = crate::secret_paint::SecretPaint::begin();
             for child in &mut self.children {
-                child.draw_with_presence(
-                    &mut local,
-                    Affine::IDENTITY,
-                    text_renderer,
-                    theme,
-                    presence,
-                    permissions,
-                );
+                child.draw(&mut local, Affine::IDENTITY, text_renderer, theme, presence);
             }
             self.cache_shows_secret = secrets.finish();
             self.cache_carries_material =
@@ -353,8 +345,11 @@ macro_rules! flow_widget_methods {
             theme: &$crate::theme::Theme,
             presence: &$crate::presence::PresenceCtx,
         ) {
-            for child in &mut self.flow.children {
-                child.draw(scene, transform, text_renderer, theme, presence);
+            if self
+                .flow
+                .draw_cached(scene, transform, text_renderer, theme, presence)
+            {
+                $crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
             }
         }
 
@@ -422,6 +417,10 @@ macro_rules! flow_widget_methods {
             self.flow.rect
         }
 
+        fn paint_bounds(&self) -> vello::kurbo::Rect {
+            self.flow.paint_rect
+        }
+
         fn test_id(&self) -> Option<&str> {
             self.flow.id.as_deref()
         }
@@ -439,34 +438,6 @@ macro_rules! flow_widget_methods {
                 .iter_mut()
                 .map(|c| c.take_structure_dirty())
                 .fold(false, |acc, d| acc || d)
-        }
-
-        fn draw_with_presence(
-            &mut self,
-            scene: &mut vello::Scene,
-            transform: vello::kurbo::Affine,
-            text_renderer: &mut $crate::text_render::TextRenderer,
-            theme: &$crate::theme::Theme,
-            presence: &$crate::presence::PresenceCtx,
-            permissions: &$crate::permissions::PermissionContext,
-        ) {
-            if self.flow.draw_cached(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            ) {
-                $crate::widget::draw_gate_and_peer_focus(
-                    self,
-                    scene,
-                    transform,
-                    theme,
-                    presence,
-                    permissions,
-                );
-            }
         }
 
         fn release_scene_cache(&mut self) {

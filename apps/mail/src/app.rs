@@ -42,7 +42,6 @@ use accounts::person::PersonAccounts;
 use tilo_content::ContentStore;
 use ui::framework::PersonRecord;
 use ui::icons::Icon;
-use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::search::{ScopeDecl, SearchOpener, SearchRequest};
@@ -3544,31 +3543,11 @@ impl Widget for MailApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.draw_with_presence(
-            scene,
-            t,
-            tr,
-            theme,
-            presence,
-            &PermissionContext::permissive(),
-        );
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
         // No ground of our own: the window paints it, the shell its regions.
         if self.is_first_run() {
             self.first_run.draw(scene, t, tr, theme, presence);
         } else {
-            self.nav
-                .draw_with_presence(scene, t, tr, theme, presence, permissions);
+            self.nav.draw(scene, t, tr, theme, presence);
         }
         if let Some(id) = self.pending_menu.take() {
             self.open_menu_on_row(id, tr, theme);
