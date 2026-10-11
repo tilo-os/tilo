@@ -995,8 +995,7 @@ impl Workspace {
             *existing = preset;
         } else {
             self.presets.push(preset);
-            self.presets
-                .sort_by_key(|candidate| candidate.name.to_lowercase());
+            crate::grants::sort_presets(&mut self.presets);
         }
         Ok(())
     }

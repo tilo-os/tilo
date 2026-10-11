@@ -5,7 +5,7 @@
 //! grant and its receipt the same way, then mirrors the change into its room
 //! document and persists it however it keeps state.
 
-use tilo_action_policy::{Change, Grant, Refusal};
+use tilo_action_policy::{Change, Grant, Preset, Refusal};
 use tilo_actions::{ActionContext, ActionKey, Described, Did, Scalar};
 
 use crate::ids::WorkspaceId;
@@ -104,6 +104,12 @@ pub fn app_action_grant_context(
             ("lifetime".to_owned(), Scalar::text(lifetime)),
         ],
     )))
+}
+
+/// Order a room's presets by name, ignoring case: the one order every reader
+/// and writer of a room's presets keeps.
+pub(crate) fn sort_presets(presets: &mut [Preset]) {
+    presets.sort_by_key(|preset| preset.name.to_lowercase());
 }
 
 #[cfg(test)]
