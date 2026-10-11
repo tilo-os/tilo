@@ -987,6 +987,7 @@ impl RetainedGpuTarget {
     /// rendered whole, in one piece, of the size the layers are drawn at.
     pub fn layers_eligible(&self, cache: &crate::shell::frame::FrameCache) -> bool {
         !cache.strips.is_empty()
+            && cache.strips.len() == cache.layers.strips.len()
             && Self::band_rows(self.size).is_none()
             && cache.width >= self.size.0
             && self.hdr_pass.is_none()
@@ -1177,15 +1178,15 @@ impl RetainedGpuTarget {
                 policy,
             )?;
         }
-        let size = (f64::from(self.size.0), f64::from(self.size.1));
+        if let (Some(_), Some(wheel)) = (work.wheel, cache.layers.wheel.as_ref()) {
+            if let Some(layers) = self.strip_layers.as_mut() {
+                layers.size_wheel(&self.device, (wheel.width, wheel.height));
+            }
+            self.render_layer(Layer::Wheel, &wheel.scene, None, transparent, policy)?;
+        }
         let panned = || {
             let mut scene = Scene::new();
-            super::strip_layers::append_panned(
-                &mut scene,
-                &cache.layers.workspace,
-                &cache.strips,
-                size,
-            );
+            super::strip_layers::append_panned(&mut scene, &cache.layers, &cache.strips);
             scene
         };
         match &work.workspace {
@@ -1223,7 +1224,16 @@ impl RetainedGpuTarget {
                 label: Some("tilo-strip-layer-composite"),
             });
         if let (Some(layers), Some(rect)) = (self.strip_layers.as_ref(), work.composite) {
-            layers.encode_composite(&self.device, &self.queue, &mut encoder, &self.view, rect);
+            layers.encode_composite(
+                super::strip_layers::CompositeTarget {
+                    device: &self.device,
+                    queue: &self.queue,
+                    encoder: &mut encoder,
+                    output: &self.view,
+                },
+                cache.layers.wheel.as_ref(),
+                rect,
+            );
         }
         post_render(&self.device, &mut encoder, &self.view);
         let submission = self.queue.submit([encoder.finish()]);
@@ -1259,11 +1269,14 @@ impl RetainedGpuTarget {
         rendered.map(|_| ())
     }
 
+    /// Exchange the target's texture with `layer`'s, size included: the
+    /// wheel's texture is the wheel's size, not the output's.
     fn swap_layer(&mut self, layer: super::strip_layers::Layer) {
         if let Some(layers) = self.strip_layers.as_mut() {
             let slot = layers.texture_mut(layer);
             std::mem::swap(&mut self.texture, &mut slot.texture);
             std::mem::swap(&mut self.view, &mut slot.view);
+            std::mem::swap(&mut self.size, &mut slot.size);
         }
     }
 

@@ -23,6 +23,7 @@ def messages(version, package="tilo-session-apps.x86_64"):
     return [
         f"{package}: E: invalid-soname {root}/lib/libruntime_dylib.so libruntime_dylib.so",
         f"{package}: E: call-to-mktemp {root}/lib/lib64/libc.so.6",
+        f"{package}: E: invalid-soname {root}/lib/libtilo_typst_engine.so libtilo_typst_engine.so",
     ]
 
 
@@ -59,6 +60,10 @@ class RuntimeFilterContract(unittest.TestCase):
                       cohort[1].replace("call-to-mktemp", "executable-stack"),
                       cohort[0].replace("/lib/libruntime_dylib.so", "/lib/libother.so"),
                       cohort[0].replace("libruntime_dylib.so", "libruntime_dylibXso"),
+                      # An engine's path and soname must name the same library.
+                      cohort[2].replace(" libtilo_typst_engine.so", " libruntime_dylib.so"),
+                      cohort[2].replace("libtilo_typst_engine.so", "libtilo_typst_engineXso"),
+                      cohort[2].replace("/lib/libtilo_typst_engine.so", "/lib/libtilo__engine.so"),
                       cohort[1].replace("/lib/lib64/libc.so.6", "/lib/libc.so.6"),
                       cohort[1].replace("/lib/lib64/libc.so.6", "/lib/lib64/libother.so.6"),
                       cohort[1].replace("/usr/lib/tilo-runtime/", "/usr/lib/other-runtime/"),
@@ -91,10 +96,12 @@ class RuntimeFilterContract(unittest.TestCase):
                 engine.add_info("E", package, "invalid-soname",
                                 root + "/lib/libruntime_dylib.so", "libruntime_dylib.so")
                 engine.add_info("E", package, "call-to-mktemp", root + "/lib/lib64/libc.so.6")
+                engine.add_info("E", package, "invalid-soname",
+                                root + "/lib/libtilo_typst_engine.so", "libtilo_typst_engine.so")
                 engine.add_info("W", package, "non-executable-script",
                                 "/usr/lib/tilo-apps/pkgs/" + "ab" * 32 + "/usr/bin/fixture")
                 engine.validate_filters(package)
-                self.assertEqual(engine.filtered_out, 3)
+                self.assertEqual(engine.filtered_out, 4)
                 self.assertEqual(engine.printed_messages["E"], 0)
                 self.assertEqual(engine.used_filters, set(PATTERNS))
                 # Validate a genuinely unused filter through rpmlint itself;

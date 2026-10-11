@@ -4836,6 +4836,11 @@ async fn enqueue_state_inner(
                                     .map_or(0, |stats| stats.peak_metadata_entries),
                             );
                         }
+                        if !build.holds_scratch() {
+                            // A plain delta made no scratch, so the owner has
+                            // nothing to dispose of after this job.
+                            state.retention_scratch = None;
+                        }
                         persist_metrics.add_bytes_queued(written);
                         current.persisted_bytes = written;
                         retained_build = None;

@@ -435,6 +435,28 @@ pub struct TaskData {
     pub parent: String,
 }
 
+/// A new open task titled `title`, filed under `project` and due on `due`
+/// when given: what the root's `new-task` and the Tasks screen's entry field
+/// both create. The id is minted here, at authoring time.
+///
+/// # Errors
+/// Refuses a title with no non-whitespace text.
+pub fn new_task(title: &str, project: Option<Id>, due: Option<NaiveDate>) -> Result<Task, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("task title must contain non-whitespace text".into());
+    }
+    Ok(Task {
+        id: Uuid::new_v4(),
+        title: title.to_owned(),
+        done: false,
+        due,
+        priority: Priority::None,
+        project,
+        parent: None,
+    })
+}
+
 /// Serializable scalar representation of a persisted Calendar task project.
 /// Projects are real collaborative entities, not just labels attached to
 /// tasks, so agents and search address them with their own stable resource.

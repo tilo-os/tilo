@@ -84,8 +84,10 @@ where
         let connection =
             tokio::net::UnixStream::from_std(connection).map_err(|error| error.to_string())?;
         let service: app_host::Client = capnp_rpc::new_client(server);
-        let rpc = runtime_portal::serve_connected_io(connection, service.client);
-        let mut rpc = Box::pin(rpc);
+        let mut rpc = Box::pin(runtime_portal::serve_connected_io(
+            connection,
+            service.client,
+        ));
         tokio::select! {
             biased;
             result = &mut rpc => driver_result(result),

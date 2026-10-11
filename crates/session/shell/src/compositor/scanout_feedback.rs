@@ -170,11 +170,6 @@ impl ScanoutFeedback {
             .map(|(_, feedback)| feedback.clone())
     }
 
-    /// Whether `surface` has a scanout feedback now.
-    pub fn is_offered(&self, surface: &WlSurface) -> bool {
-        self.for_new_surface(surface).is_some()
-    }
-
     /// Give `offer`'s surface the scanout feedback for its plane, and every
     /// other surface the default: the surface that had a scanout feedback
     /// gets the default back. Resends only what changed.

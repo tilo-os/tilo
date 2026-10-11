@@ -22,14 +22,13 @@ default = ["rpc"]
 # `CapnpClient` and the service-opening helpers. Without it the crate is the
 # discovery half only — `service_fd`, `is_tilo_native`, `NotAvailable` and the
 # native attachment metadata — for callers such as `cli` that never speak RPC.
-rpc = ["dep:capnp", "dep:capnp-rpc", "dep:futures-util", "dep:tokio", "dep:tokio-util"]
+rpc = ["dep:capnp", "dep:capnp-rpc", "dep:tokio", "dep:tokio-util"]
 
 [dependencies]
 # Pinned: capnp 0.26 ships with capnp-rpc 0.26 and capnpc 0.26. The
 # whole 0.26 line shares a generator + RPC ABI.
 capnp = { workspace = true, optional = true }
 capnp-rpc = { workspace = true, optional = true }
-futures-util = { workspace = true, optional = true, features = ["io"] }
 # tokio 1.x. We use the runtime + net + io + macros features only;
 # heavy features like `signal` or `full` belong in the binary.
 tokio = { workspace = true, optional = true, features = ["rt", "io-util", "macros", "sync"] }

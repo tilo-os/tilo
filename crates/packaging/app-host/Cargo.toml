@@ -69,6 +69,7 @@ capnp-rpc.workspace = true
 # Async runtime + transport.
 tokio = { workspace = true, features = ["macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
 wire-frame = { path = "../../system/wire-frame", features = ["tokio"], optional = true }
+
 # Daemon plumbing.
 clap = { workspace = true, optional = true }
 serde_json.workspace = true

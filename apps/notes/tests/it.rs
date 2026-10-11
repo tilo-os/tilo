@@ -62,6 +62,8 @@ mod tab_nesting;
 mod tree_operations;
 #[path = "two_peer_sync.rs"]
 mod two_peer_sync;
+#[path = "typing_damage.rs"]
+mod typing_damage;
 #[path = "typing_order.rs"]
 mod typing_order;
 #[path = "welcome_page_renders_all_block_kinds.rs"]

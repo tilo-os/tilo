@@ -231,6 +231,35 @@ class Closure(Scratch):
         self.assertIn("error: notes loads libgstreamer-1.0.so.0 at exec (libgstreamer-1.0.so.0 <- "
                       "libbridge.so <- notes); none of libgst, libglib-2.0 may be (TIL-713)", lines)
 
+    def test_an_engine_is_reported_and_loaded_only_by_its_app(self):
+        runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),
+                             "libtilo_typst_engine.so": elf(needed=["libruntime_dylib.so", "libc.so.6"],
+                                                            rela=[(0x1000, R_X86_64_RELATIVE)]),
+                             "calculator": elf(needed=["libruntime_dylib.so", "libc.so.6"])})
+        system = self.tree({"libc.so.6": elf()})
+        engine = runtime / "libtilo_typst_engine.so"
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64",
+                                           [runtime / "calculator"], [system], [engine])
+        self.assertEqual(status, 0, lines)
+        self.assertTrue(any(line.startswith("engine libtilo_typst_engine.so x86_64: ") and "1 dynamic relocations"
+                            in line for line in lines), lines)
+        # An app that plays no media and typesets nothing must not map Typst.
+        (runtime / "calculator").write_bytes(elf(needed=["libruntime_dylib.so", "libtilo_typst_engine.so"]))
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64",
+                                           [runtime / "calculator"], [system], [engine])
+        self.assertEqual(status, 1)
+        self.assertIn("error: calculator loads the engine libtilo_typst_engine.so at exec "
+                      "(libtilo_typst_engine.so <- calculator); an engine library is loaded only by the app "
+                      "that uses it", lines)
+
+    def test_an_engine_that_does_not_link_the_runtime_fails(self):
+        runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),
+                             "libtilo_typst_engine.so": elf(needed=["libc.so.6"])})
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64",
+                                           engines=[runtime / "libtilo_typst_engine.so"])
+        self.assertEqual(status, 1)
+        self.assertTrue(any("does not link libruntime_dylib.so" in line for line in lines), lines)
+
     def test_a_library_that_cannot_be_found_fails(self):
         runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6", "libmissing.so"])})
         system = self.tree({"libc.so.6": elf()})

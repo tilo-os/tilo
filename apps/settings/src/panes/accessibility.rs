@@ -431,7 +431,6 @@ pub struct AccessibilityPane {
     shown: Shown,
     /// The speech engine the screen reader would speak through.
     speech: Option<&'static str>,
-    structure_dirty: bool,
     composed: ui::widget::Composed,
 }
 
@@ -478,7 +477,6 @@ impl AccessibilityPane {
             access,
             shown,
             speech: software.speech,
-            structure_dirty: false,
             composed: ui::widget::Composed::default(),
         }
     }
@@ -881,12 +879,6 @@ impl Widget for AccessibilityPane {
 
     fn name(&self) -> &'static str {
         "AccessibilityPane"
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self.composed.take_structure_dirty();
-        own || child
     }
 }
 

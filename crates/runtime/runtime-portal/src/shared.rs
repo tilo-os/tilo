@@ -19,7 +19,7 @@ use rustix::io::{FdFlags, fcntl_setfd};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
-use crate::{CapnpClient, NotAvailable};
+use crate::{CapnpClient, NotAvailable, serve_connected_io};
 
 type Hub = mpsc::UnboundedSender<StdUnixStream>;
 
@@ -96,7 +96,7 @@ async fn serve(upstream: StdUnixStream, mut clients: mpsc::UnboundedReceiver<Std
         else {
             continue;
         };
-        let rpc = crate::serve_connected_io(client, service.clone());
+        let rpc = serve_connected_io(client, service.clone());
         tokio::task::spawn_local(async move {
             let _ = rpc.await;
         });
