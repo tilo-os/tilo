@@ -11434,26 +11434,7 @@ pub fn run() {
 
         // Per-output HiDPI: tell each client the scale of its current display.
         // Every tick, since a window dragged to another monitor's density is otherwise unobserved.
-        {
-            let mut placements: Vec<(u64, (f64, f64))> = state
-                .client_input
-                .placements()
-                .filter_map(|(surface_id, group)| {
-                    let rect = frame_builder.host().active_tile_rect(group)?;
-                    Some((surface_id, (rect.x0, rect.y0)))
-                })
-                .collect();
-            placements.extend(state.floating_toplevels.iter().map(|surface| {
-                let center = surface.content_rect.center();
-                (surface.surface_id, (center.x, center.y))
-            }));
-            placements.extend(state.output_presentation_placements());
-            placements.extend(transient_surfaces.iter().map(|(surface_id, rect)| {
-                let center = rect.center();
-                (*surface_id, (center.x, center.y))
-            }));
-            state.update_surface_scales(&placements);
-        }
+        push_surface_scales(&mut state, &frame_builder, &transient_surfaces);
         // An output change has already installed the backend's new geometry,
         // but the frame builder still exposes the previous frame's tile rects
         // until `relayout` below. Diffing that mismatched pair would send a
@@ -12288,13 +12269,14 @@ pub fn run() {
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
             // `relayout` publishes a new tile rect (for a tab switch, move,
-            // fullscreen or hotplug) immediately before painting it. Reconcile
-            // here as well as above so the client gets the output transition in
-            // the same frame rather than one idle tick later.
-            reconcile_surface_output_memberships(
+            // fullscreen or hotplug) immediately before painting it. Publish it
+            // here as well as above so the client gets the output transition and
+            // its new scale in the same frame, ahead of the configure below.
+            publish_layout_to_clients(
                 &mut surface_output_memberships,
-                &state,
+                &mut state,
                 &frame_builder,
+                &transient_surfaces,
                 backend.outputs(),
                 &output_globals,
             );
@@ -12855,10 +12837,12 @@ pub fn run() {
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
-            reconcile_surface_output_memberships(
+            // The post-dispatch `flush_configures` below sends this layout's sizes.
+            publish_layout_to_clients(
                 &mut surface_output_memberships,
-                &state,
+                &mut state,
                 &frame_builder,
+                &transient_surfaces,
                 backend.outputs(),
                 &output_globals,
             );
@@ -18445,6 +18429,66 @@ fn send_surface_output_changes(
     changes: Vec<SurfaceOutputChange>,
 ) {
     output_globals.send_surface_changes(&state.surface_handles, changes);
+}
+
+/// Per-output scale: push each placed client surface the preferred
+/// `wp_fractional_scale` of the display it is on — a tiled toplevel by its
+/// group's active tile, floating and transient surfaces by their centre.
+///
+/// Reads the frame builder's current tile rects, so run it again after every
+/// `relayout` that precedes a configure (see [`publish_layout_to_clients`]).
+/// Only changed scales reach the wire.
+pub fn push_surface_scales(
+    state: &mut State,
+    frame_builder: &FrameBuilder,
+    transient_surfaces: &[(u64, Rect)],
+) {
+    let mut placements: Vec<(u64, (f64, f64))> = state
+        .client_input
+        .placements()
+        .filter_map(|(surface_id, group)| {
+            let rect = frame_builder.host().active_tile_rect(group)?;
+            Some((surface_id, (rect.x0, rect.y0)))
+        })
+        .collect();
+    placements.extend(state.floating_toplevels.iter().map(|surface| {
+        let center = surface.content_rect.center();
+        (surface.surface_id, (center.x, center.y))
+    }));
+    placements.extend(state.output_presentation_placements());
+    placements.extend(transient_surfaces.iter().map(|(surface_id, rect)| {
+        let center = rect.center();
+        (*surface_id, (center.x, center.y))
+    }));
+    state.update_surface_scales(&placements);
+}
+
+/// Tell clients what a fresh `relayout` changed about where they are —
+/// the outputs each surface entered or left, and the scale of the one it
+/// now sits on — before `foreign::flush_configures` sends the sizes that
+/// layout produced.
+///
+/// The order is the contract: a client that sizes its buffer from a
+/// configure (xwayland-satellite sizes the X window as the configured size
+/// times the scale it holds at that moment) must already have the new
+/// output's scale, or it renders at the previous output's scale until its
+/// next configure.
+pub fn publish_layout_to_clients(
+    memberships: &mut SurfaceOutputMemberships,
+    state: &mut State,
+    frame_builder: &FrameBuilder,
+    transient_surfaces: &[(u64, Rect)],
+    outputs: &[Output],
+    output_globals: &output_globals::OutputGlobals,
+) {
+    reconcile_surface_output_memberships(
+        memberships,
+        state,
+        frame_builder,
+        outputs,
+        output_globals,
+    );
+    push_surface_scales(state, frame_builder, transient_surfaces);
 }
 
 fn reconcile_surface_output_memberships(
