@@ -151,8 +151,14 @@ pub(crate) trait RootControls {
 pub(crate) struct RootWidget(Box<dyn RootModel>);
 
 impl RootWidget {
-    pub(crate) fn new(root: impl RootModel) -> Self {
-        Self(Box::new(root))
+    pub(crate) fn new(root: Box<dyn RootModel>) -> Self {
+        Self(root)
+    }
+
+    /// The root widget a host mounts. Made here, not where the resource's
+    /// type is known, so its widget table is compiled once for every app.
+    pub(crate) fn boxed(root: Box<dyn RootModel>) -> Box<dyn AppWidget> {
+        Box::new(Self(root))
     }
 }
 

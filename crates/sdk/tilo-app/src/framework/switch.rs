@@ -33,15 +33,15 @@ pub(crate) struct Switch {
 }
 
 impl Switch {
-    pub(crate) fn new<K: Clone + PartialEq + 'static>(
+    pub(crate) fn keyed<K: Clone + PartialEq + 'static>(
         key: LocalState<K>,
         build: BuildPart<K>,
-    ) -> Self {
+    ) -> Element {
         let mut shown = key.with(Clone::clone);
         let alive = Rc::new(());
         let part = build(&shown, &alive);
-        Self {
-            rebuild: Box::new(move |alive| {
+        Self::element(
+            Box::new(move |alive| {
                 let current = key.with(Clone::clone);
                 if current == shown {
                     return None;
@@ -52,8 +52,18 @@ impl Switch {
             }),
             alive,
             part,
+        )
+    }
+
+    /// The switch as an element, its widget table compiled once whatever
+    /// the key.
+    fn element(rebuild: Rebuild, alive: Rc<()>, part: Element) -> Element {
+        Box::new(Self {
+            rebuild,
+            alive,
+            part,
             structure_dirty: false,
-        }
+        })
     }
 
     fn reconcile(&mut self) {
