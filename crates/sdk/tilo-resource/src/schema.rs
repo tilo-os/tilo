@@ -19,6 +19,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use serde_json::{Map, Value, json};
 use tilo_actions::{ActionParam, ParamType};
 
+mod table;
+pub use table::{Body, Bounds, Content, Field, Tagging, TypeSchema, Variant, build};
+
 /// A type whose serde JSON form has a JSON Schema.
 ///
 /// Derive it with `#[derive(JsonSchema)]` next to `Serialize` and
