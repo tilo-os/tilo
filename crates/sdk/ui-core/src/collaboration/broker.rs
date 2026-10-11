@@ -10046,11 +10046,50 @@ mod tests {
         }
     }
 
+    /// Names the one test a re-executed test binary runs in its own process.
+    const OWN_PROCESS_TEST: &str = "TILO_UI_OWN_PROCESS_TEST";
+
+    /// Whether the calling test `name` (in this module) runs its body here:
+    /// only in a process that runs nothing else.
+    ///
+    /// An app's settings and live-activity channels are process-wide — one
+    /// app, one collaboration manager per process — and flush through the
+    /// transport that connected last (`SETTINGS_COMMAND_BRIDGE`). Any other
+    /// test's manager connecting in the same process takes over that route,
+    /// and the change it carries never reaches this test's broker. So the
+    /// test re-executes this binary for itself alone, as nextest's process
+    /// per test would, and here only checks that the child ran it and passed.
+    fn in_own_process(name: &str) -> bool {
+        let module = module_path!()
+            .split_once("::")
+            .map_or(module_path!(), |(_, path)| path);
+        let test = format!("{module}::{name}");
+        if std::env::var(OWN_PROCESS_TEST).is_ok_and(|own| own == test) {
+            return true;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(OWN_PROCESS_TEST, &test)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("test result: ok. 1 passed;"),
+            "{test} in its own process: {}\n{stdout}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        false
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_apps_settings_reach_the_shells_records_and_follow_them() {
         use settings_store::{SessionPaths, SessionSettings, SettingsSource};
         const APP: &str = "so.tilo.monitor";
+        if !in_own_process("an_apps_settings_reach_the_shells_records_and_follow_them") {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let records = Arc::new(
             SessionSettings::open(SessionPaths::beside(dir.path().join("settings.json"))).unwrap(),
@@ -10129,6 +10168,9 @@ mod tests {
     #[test]
     fn an_apps_live_activity_reaches_the_shell_and_its_controls_come_back() {
         const APP: &str = "so.tilo.clocks";
+        if !in_own_process("an_apps_live_activity_reaches_the_shell_and_its_controls_come_back") {
+            return;
+        }
         let board = Arc::new(runtime_collab::LiveActivities::default());
         let captures = Captures {
             live_activities: Some((APP.to_owned(), Arc::clone(&board))),
