@@ -1190,6 +1190,13 @@ impl MainPanel {
         )
     }
 
+    /// Test hook: how far the body can scroll, as the last layout measured
+    /// it.
+    #[doc(hidden)]
+    pub fn max_scroll_for_test(&self) -> f64 {
+        self.scroll_metrics().max_scroll()
+    }
+
     /// Test hook: the panel's current vertical scroll offset in px.
     /// Lets integration tests assert wheel scrolling + the
     /// `apply_layout` overflow clamp through the real event path.
