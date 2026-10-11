@@ -86,6 +86,9 @@ fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
         } else if path.is_ident("default") {
             options.default = true;
             ignore(meta)?;
+        } else if path.is_ident("remote") && string_value(meta)? == "Self" {
+            // The type's own derived code under another name: what serde
+            // reads is still the type as written.
         } else if [
             "untagged",
             "from",

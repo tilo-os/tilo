@@ -16,7 +16,7 @@ pub const OSK: &str = "osk";
     derive(tilo_resource::Model, tilo_resource::JsonSchema)
 )]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct SourceOptions {
     pub model: Option<String>,
     pub compose_key: Option<String>,
@@ -25,18 +25,23 @@ pub struct SourceOptions {
     pub customised: bool,
 }
 
+crate::read_through_json_value!(SourceOptions);
+
 /// An ordered source assignment. Device keys are discovery identities, never indices.
 #[cfg_attr(
     feature = "model",
     derive(tilo_resource::Model, tilo_resource::JsonSchema)
 )]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct KeyboardProfile {
     pub sources: Vec<String>,
     pub active: String,
     #[serde(default)]
     pub options: BTreeMap<String, SourceOptions>,
 }
+
+crate::read_through_json_value!(KeyboardProfile);
 
 impl KeyboardProfile {
     #[must_use]
