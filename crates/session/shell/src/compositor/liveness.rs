@@ -232,24 +232,7 @@ fn answer(stream: UnixStream, beat: &Beat, ping: &calloop::ping::Ping) {
                 let budget = budget_ms
                     .map_or(DEFAULT_BUDGET, Duration::from_millis)
                     .min(MAX_BUDGET);
-                let cpu_before = main_thread_cpu_ms();
-                match beat.heartbeat(ping, budget) {
-                    Some(latency) => Answer::Alive {
-                        ticks: beat.ticks(),
-                        latency_ms: latency.as_secs_f64() * 1000.0,
-                    },
-                    None => {
-                        let threads = dump_threads();
-                        let answer = Answer::Stalled {
-                            budget_ms: u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
-                            ticks: beat.ticks(),
-                            main_thread_cpu_ms: main_thread_cpu_ms().saturating_sub(cpu_before),
-                            threads,
-                        };
-                        eprintln!("tilo compositor: main loop stalled\n{}", render(&answer));
-                        answer
-                    }
-                }
+                heartbeat_answer(beat, ping, budget)
             }
             Ok(Request::Threads) => Answer::Threads(dump_threads()),
             Err(error) => Answer::Err(format!("bad liveness request: {error}")),
@@ -262,6 +245,27 @@ fn answer(stream: UnixStream, beat: &Beat, ping: &calloop::ping::Ping) {
             return;
         }
     }
+}
+
+/// Ask the loop to acknowledge within `budget`, and answer how it went.
+fn heartbeat_answer(beat: &Beat, ping: &calloop::ping::Ping, budget: Duration) -> Answer {
+    let cpu_before = main_thread_cpu_ms();
+    if let Some(latency) = beat.heartbeat(ping, budget) {
+        return Answer::Alive {
+            ticks: beat.ticks(),
+            latency_ms: latency.as_secs_f64() * 1000.0,
+        };
+    }
+    // Before the dump: it takes time of its own.
+    let main_thread_cpu_ms = main_thread_cpu_ms().saturating_sub(cpu_before);
+    let answer = Answer::Stalled {
+        budget_ms: u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
+        ticks: beat.ticks(),
+        main_thread_cpu_ms,
+        threads: dump_threads(),
+    };
+    eprintln!("tilo compositor: main loop stalled\n{}", render(&answer));
+    answer
 }
 
 /// A stall or thread listing as the text a person reads.
@@ -335,8 +339,8 @@ fn install_capture_handler() {
             let mut action: libc::sigaction = std::mem::zeroed();
             action.sa_sigaction = capture_backtrace as extern "C" fn(libc::c_int) as usize;
             action.sa_flags = libc::SA_RESTART;
-            libc::sigemptyset(&mut action.sa_mask);
-            libc::sigaction(capture_signal(), &action, std::ptr::null_mut())
+            libc::sigemptyset(&raw mut action.sa_mask);
+            libc::sigaction(capture_signal(), &raw const action, std::ptr::null_mut())
         };
         if status != 0 {
             eprintln!(
@@ -463,7 +467,7 @@ fn frames_of(backtrace: &Backtrace) -> String {
                 .split_once(':')
                 .is_some_and(|(number, _)| number.trim().parse::<u32>().is_ok())
         })
-        .map_or(skip.min(lines.len()), |(index, _)| index);
+        .map_or_else(|| skip.min(lines.len()), |(index, _)| index);
     lines.get(start..).unwrap_or_default().join("\n")
 }
 
