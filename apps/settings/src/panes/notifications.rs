@@ -22,11 +22,9 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 
 use settings_store::notification_policy::AppNotificationRule;
-use taffy::{NodeId, TaffyTree};
 use tilo_clock::unix_now_i64;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, LiveRow};
-use ui::theme::Theme;
 use ui::tilo_resource::{self, ActionRef, Effect};
 use ui::widget::{AppModel, Dropdown, ModelPath, Toggle, Widget};
 
@@ -1079,20 +1077,7 @@ impl Widget for NotificationsPane {
         self.composed.sync(state, root);
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let composition = self.build_composition();
-        let child = self
-            .composed
-            .build_layout(composition, taffy, theme, node_map);
-        crate::panes::pane_node(taffy, child, node_map, self)
-    }
-
-    ui::forward_to_composed!(composed);
+    crate::panes::composed_pane!();
 
     fn name(&self) -> &'static str {
         "NotificationsPane"
@@ -1103,7 +1088,9 @@ impl Widget for NotificationsPane {
 mod tests {
     use super::*;
     use crate::resource::SettingsShell;
+    use taffy::{NodeId, TaffyTree};
     use ui::prelude::TestApp;
+    use ui::theme::Theme;
 
     fn set(app: &mut TestApp<SettingsShell>, effect: NotificationEffect) {
         app.effect(&SettingsEffect::from(effect))

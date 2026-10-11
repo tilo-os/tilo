@@ -10,12 +10,8 @@
 //! Each control is a `Dropdown` bound to a [`RegionEffect`] that writes the
 //! section; the pane shows what the section holds, whoever changed it.
 
-use std::collections::HashMap;
-
-use taffy::{NodeId, TaffyTree};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx};
-use ui::theme::Theme;
 use ui::tilo_resource;
 use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
 
@@ -380,20 +376,7 @@ impl Widget for RegionPane {
         self.composed.sync(state, root);
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let composition = self.build_composition();
-        let child = self
-            .composed
-            .build_layout(composition, taffy, theme, node_map);
-        crate::panes::pane_node(taffy, child, node_map, self)
-    }
-
-    ui::forward_to_composed!(composed);
+    crate::panes::composed_pane!();
 
     fn name(&self) -> &'static str {
         "RegionPane"

@@ -21,12 +21,8 @@
 //! Every control is bound to an [`AppearanceEffect`]; the effect writes the
 //! section and the pane shows what the section holds, whoever changed it.
 
-use std::collections::HashMap;
-
-use taffy::{NodeId, TaffyTree};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
-use ui::theme::Theme;
 use ui::tilo_resource;
 use ui::widget::{AppModel, Button, Dropdown, ModelPath, Row, Spacer, Toggle, Widget};
 use vello::kurbo::Rect;
@@ -828,20 +824,7 @@ impl Widget for AppearancePane {
         }
         self.composed.sync(state, root);
     }
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let composition = self.build_composition();
-        let child = self
-            .composed
-            .build_layout(composition, taffy, theme, node_map);
-        crate::panes::pane_node(taffy, child, node_map, self)
-    }
-
-    ui::forward_to_composed!(composed);
+    crate::panes::composed_pane!();
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         // This pane paints only its composition. Keep a child's local visual
@@ -879,7 +862,10 @@ mod tests {
     use super::*;
     use crate::effects::SettingsEffect;
     use crate::resource::SettingsShell;
+    use std::collections::HashMap;
+    use taffy::{NodeId, TaffyTree};
     use ui::prelude::TestApp;
+    use ui::theme::Theme;
 
     fn set(app: &mut TestApp<SettingsShell>, effect: AppearanceEffect) {
         app.effect(&SettingsEffect::from(effect))
