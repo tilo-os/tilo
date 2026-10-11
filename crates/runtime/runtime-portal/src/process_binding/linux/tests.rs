@@ -1,6 +1,7 @@
 use super::*;
 use std::io::Write as _;
 use std::os::unix::process::CommandExt as _;
+use std::time::Duration;
 
 const CHILD: &str = "TILO_EXECUTING_PEER_TEST_FD";
 const TEST: &str = "process_binding::linux::tests::executing_peer_child";

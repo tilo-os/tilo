@@ -137,7 +137,7 @@ impl Dispatch<ZwpPointerGesturePinchV1, GesturePinchData, WinitState> for Pointe
                     },
                     window_id,
                 );
-            },
+            }
             zwp_pointer_gesture_pinch_v1::Event::Update { scale, .. } => {
                 // An update without a preceding begin has no active gesture.
                 let (window_id, delta) = match data.inner.lock().unwrap().update(scale) {
@@ -153,7 +153,7 @@ impl Dispatch<ZwpPointerGesturePinchV1, GesturePinchData, WinitState> for Pointe
                     },
                     window_id,
                 );
-            },
+            }
             zwp_pointer_gesture_pinch_v1::Event::End { cancelled, .. } => {
                 let window_id = data.inner.lock().unwrap().end();
 
@@ -164,12 +164,16 @@ impl Dispatch<ZwpPointerGesturePinchV1, GesturePinchData, WinitState> for Pointe
                         TouchPhase::Ended
                     };
                     state.events_sink.push_window_event(
-                        WindowEvent::PinchGesture { device_id, delta: 0.0, phase },
+                        WindowEvent::PinchGesture {
+                            device_id,
+                            delta: 0.0,
+                            phase,
+                        },
                         window_id,
                     );
                 }
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 }
@@ -215,7 +219,10 @@ mod tests {
 
         // The incremental deltas telescope back to (cumulative - 1.0):
         // 0.0 + 0.25 - 0.15 == 0.10 == 1.10 - 1.0.
-        assert!(((d1 + d2) - 0.10).abs() < 1e-9, "deltas must sum to cumulative - 1.0");
+        assert!(
+            ((d1 + d2) - 0.10).abs() < 1e-9,
+            "deltas must sum to cumulative - 1.0"
+        );
 
         // end returns the window and clears state; a second end is inert.
         assert_eq!(pinch.end(), Some(window));

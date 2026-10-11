@@ -135,10 +135,7 @@ fn library_demo_writes_two_pngs_via_tilo_client() {
 fn mcp_live_proof_drives_a_compositor_over_mcp() {
     let out = run_script_with(
         "mcp-live-proof.py",
-        &[(
-            "TILO_CONTROL_BINARY",
-            control_binary(),
-        )],
+        &[("TILO_CONTROL_BINARY", control_binary())],
     );
     assert!(
         out.status.success(),

@@ -111,7 +111,7 @@ impl ExtensionController {
         self.panel = None;
     }
 
-    /// A reply from the engine to one of this controller's DevTools calls.
+    /// A reply from the engine to one of this controller's `DevTools` calls.
     pub fn on_result(&mut self, request_id: u32, ok: bool, body: &str) -> bool {
         let update = self.host.on_result(request_id, ok, body, ui::time::now());
         if let Some(notice) = update.notice {
@@ -154,11 +154,6 @@ impl ExtensionController {
             changed = true;
             match outcome {
                 Outcome::Staged(Ok(package)) => self.panel = Some(Panel::Offer(Box::new(package))),
-                Outcome::Staged(Err(error)) => {
-                    self.panel = Some(Panel::Message(format!(
-                        "Could not add the extension: {error}"
-                    )));
-                }
                 Outcome::Installed(Ok(info)) => {
                     if let Err(error) = extensions::set_approved(&info, true) {
                         self.panel = Some(Panel::Message(error.to_string()));
@@ -166,7 +161,7 @@ impl ExtensionController {
                         self.panel = Some(Panel::Message(format!("{} was added", info.name)));
                     }
                 }
-                Outcome::Installed(Err(error)) => {
+                Outcome::Staged(Err(error)) | Outcome::Installed(Err(error)) => {
                     self.panel = Some(Panel::Message(format!(
                         "Could not add the extension: {error}"
                     )));
@@ -419,7 +414,7 @@ impl ExtensionController {
             let pin = std::cell::RefCell::new(pin);
             items.push(
                 MenuItem::action(
-                    &format!("Pin {} to the toolbar", entry.button.label),
+                    format!("Pin {} to the toolbar", entry.button.label),
                     move || (pin.borrow_mut())(),
                 )
                 .with_checked(entry.pinned),

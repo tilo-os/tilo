@@ -10,7 +10,10 @@ pub struct Notifier<T: Clone>(Arc<Inner<T>>);
 
 impl<T: Clone> Notifier<T> {
     pub fn new() -> Self {
-        Self(Arc::new(Inner { queue: ConcurrentQueue::unbounded(), value: OnceLock::new() }))
+        Self(Arc::new(Inner {
+            queue: ConcurrentQueue::unbounded(),
+            value: OnceLock::new(),
+        }))
     }
 
     pub fn notify(self, value: T) {
@@ -46,11 +49,11 @@ impl<T: Clone> Future for Notified<T> {
                         self.0 = Some(this);
                         return Poll::Pending;
                     }
-                },
+                }
                 Err(PushError::Closed(_)) => (),
                 Err(PushError::Full(_)) => {
                     unreachable!("found full queue despite using unbounded queue")
-                },
+                }
             }
         }
 

@@ -197,17 +197,20 @@ pub trait WindowExtIOS {
 impl WindowExtIOS for Window {
     #[inline]
     fn set_scale_factor(&self, scale_factor: f64) {
-        self.window.maybe_queue_on_main(move |w| w.set_scale_factor(scale_factor))
+        self.window
+            .maybe_queue_on_main(move |w| w.set_scale_factor(scale_factor))
     }
 
     #[inline]
     fn set_valid_orientations(&self, valid_orientations: ValidOrientations) {
-        self.window.maybe_queue_on_main(move |w| w.set_valid_orientations(valid_orientations))
+        self.window
+            .maybe_queue_on_main(move |w| w.set_valid_orientations(valid_orientations))
     }
 
     #[inline]
     fn set_prefers_home_indicator_hidden(&self, hidden: bool) {
-        self.window.maybe_queue_on_main(move |w| w.set_prefers_home_indicator_hidden(hidden))
+        self.window
+            .maybe_queue_on_main(move |w| w.set_prefers_home_indicator_hidden(hidden))
     }
 
     #[inline]
@@ -219,17 +222,20 @@ impl WindowExtIOS for Window {
 
     #[inline]
     fn set_prefers_status_bar_hidden(&self, hidden: bool) {
-        self.window.maybe_queue_on_main(move |w| w.set_prefers_status_bar_hidden(hidden))
+        self.window
+            .maybe_queue_on_main(move |w| w.set_prefers_status_bar_hidden(hidden))
     }
 
     #[inline]
     fn set_preferred_status_bar_style(&self, status_bar_style: StatusBarStyle) {
-        self.window.maybe_queue_on_main(move |w| w.set_preferred_status_bar_style(status_bar_style))
+        self.window
+            .maybe_queue_on_main(move |w| w.set_preferred_status_bar_style(status_bar_style))
     }
 
     #[inline]
     fn recognize_pinch_gesture(&self, should_recognize: bool) {
-        self.window.maybe_queue_on_main(move |w| w.recognize_pinch_gesture(should_recognize));
+        self.window
+            .maybe_queue_on_main(move |w| w.recognize_pinch_gesture(should_recognize));
     }
 
     #[inline]
@@ -250,12 +256,14 @@ impl WindowExtIOS for Window {
 
     #[inline]
     fn recognize_doubletap_gesture(&self, should_recognize: bool) {
-        self.window.maybe_queue_on_main(move |w| w.recognize_doubletap_gesture(should_recognize));
+        self.window
+            .maybe_queue_on_main(move |w| w.recognize_doubletap_gesture(should_recognize));
     }
 
     #[inline]
     fn recognize_rotation_gesture(&self, should_recognize: bool) {
-        self.window.maybe_queue_on_main(move |w| w.recognize_rotation_gesture(should_recognize));
+        self.window
+            .maybe_queue_on_main(move |w| w.recognize_rotation_gesture(should_recognize));
     }
 }
 
@@ -335,7 +343,8 @@ impl WindowAttributesExtIOS for WindowAttributes {
 
     #[inline]
     fn with_preferred_screen_edges_deferring_system_gestures(mut self, edges: ScreenEdge) -> Self {
-        self.platform_specific.preferred_screen_edges_deferring_system_gestures = edges;
+        self.platform_specific
+            .preferred_screen_edges_deferring_system_gestures = edges;
         self
     }
 
@@ -375,7 +384,9 @@ impl MonitorHandleExtIOS for MonitorHandle {
 
     #[inline]
     fn preferred_video_mode(&self) -> VideoModeHandle {
-        VideoModeHandle { video_mode: self.inner.preferred_video_mode() }
+        VideoModeHandle {
+            video_mode: self.inner.preferred_video_mode(),
+        }
     }
 }
 

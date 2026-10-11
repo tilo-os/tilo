@@ -1,5 +1,5 @@
 //! The toolbar's view of installed extensions: which action buttons show, in
-//! what order, with which icon, badge and popup; and the DevTools exchanges
+//! what order, with which icon, badge and popup; and the `DevTools` exchanges
 //! that read an extension's live action state from its service worker.
 //!
 //! Chromium keeps an action's badge and title in the browser process, and the
@@ -410,7 +410,7 @@ mod tests {
         assert_eq!(action_state(r#"{"exceptionDetails":{}}"#), None);
         assert_eq!(action_state(r#"{"result":{"value":"{"}}"#), None);
 
-        assert_eq!(loaded_id(&json!({"id": id}).to_string()), Some(id.clone()));
+        assert_eq!(loaded_id(&json!({"id": id}).to_string()), Some(id));
         assert_eq!(loaded_id(r#"{"id":"../x"}"#), None);
         assert_eq!(evaluate_request().0, "Runtime.evaluate");
         assert_eq!(

@@ -418,8 +418,16 @@ fn human_duration(duration: Duration) -> String {
 fn install_runtime(runtime: &str, registry: Option<&str>) -> ExitCode {
     let mut progress = progress_reporter();
     let installed = match registry {
-        Some(registry) => app_cli::install::install_runtime_reporting(runtime, registry, &mut progress)
-            .map(|offer| format!("installed runtime {runtime} {} {}", offer.package_id, offer.version)),
+        Some(registry) => {
+            app_cli::install::install_runtime_reporting(runtime, registry, &mut progress).map(
+                |offer| {
+                    format!(
+                        "installed runtime {runtime} {} {}",
+                        offer.package_id, offer.version
+                    )
+                },
+            )
+        }
         None => app_cli::install::install_runtime_from_enabled(runtime, &mut progress)
             .map(|()| format!("runtime {runtime} is installed")),
     };
@@ -986,9 +994,12 @@ mod tests {
             "tilo-runtime/2026.10.4-chromium",
         ])
         .unwrap();
-        assert!(
-            matches!(cli.cmd, Cmd::Runtime { cmd: RuntimeCmd::Install { repo: None, .. } })
-        );
+        assert!(matches!(
+            cli.cmd,
+            Cmd::Runtime {
+                cmd: RuntimeCmd::Install { repo: None, .. }
+            }
+        ));
     }
 
     #[test]

@@ -654,7 +654,8 @@ mod tests {
                     let read = stream.read(&mut request).unwrap_or(0);
                     let text = String::from_utf8_lossy(&request[..read]).to_string();
                     let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
-                    peak.fetch_max(open.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                    let now_open = open.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                    peak.fetch_max(now_open, Ordering::SeqCst);
                     std::thread::sleep(delay);
                     open.fetch_sub(1, Ordering::SeqCst);
                     let reply = match objects.get(&path) {

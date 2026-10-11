@@ -796,7 +796,10 @@ mod tests {
         cache.finish_resolve();
         cache.begin_resolve();
         let next = image(2, 12, 12);
-        assert!(cache.get_or_insert(&next).is_none(), "no room beside the old frame");
+        assert!(
+            cache.get_or_insert(&next).is_none(),
+            "no room beside the old frame"
+        );
         assert!(!cache.evict_stale_entries(), "one pass is not stale");
         assert!(!cache.bump_size(), "already at the maximum");
         assert_eq!(cache.evict_superseded(), 1);
