@@ -647,7 +647,7 @@ pub(crate) fn fill_slots(doc: &Doc, obj: &ObjId, keys: &[&str], slots: &mut [Map
 /// Every key of the map `obj` with what it holds, in key order, in one walk
 /// of the map. Not generic, for the reason [`fill_slots`] is not.
 #[inline(never)]
-fn map_slots(doc: &Doc, obj: &ObjId) -> Vec<(String, MapSlot)> {
+pub(crate) fn map_slots(doc: &Doc, obj: &ObjId) -> Vec<(String, MapSlot)> {
     doc.map_range(obj, ..)
         .map(|item| {
             let slot = Some((item.value.clone().into_value(), item.id()));
@@ -1674,64 +1674,42 @@ impl<T: Model> Model for BTreeMap<String, T> {
     }
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
+    // Run by one set of functions for every map, over `T`'s table.
+    const TABLE: &'static crate::table::ModelTable = &crate::table::MapOf::<T>::TABLE;
     leaf_paths!();
+    #[inline]
     fn op_coalesces(
         path: &[Segment],
         previous: &serde_json::Value,
         next: &serde_json::Value,
     ) -> Option<bool> {
-        match path.split_first() {
-            Some((Segment::Key(_), rest)) if T::OPS => T::op_coalesces(rest, previous, next),
-            _ => None,
-        }
+        Run(Self::TABLE).op_coalesces(path, previous, next)
     }
+    #[inline]
     fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
-        match path.split_first() {
-            Some((Segment::Key(_), rest)) if T::OPS => T::op_continuable(rest, op),
-            _ => None,
-        }
+        Run(Self::TABLE).op_continuable(path, op)
     }
+    #[inline]
     fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
-        match path.split_first() {
-            Some((Segment::Key(_), rest)) if T::OPS => T::op_describe(rest, op),
-            _ => None,
-        }
+        Run(Self::TABLE).op_describe(path, op)
     }
+    #[inline]
     fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
-        match path.split_first() {
-            Some((Segment::Key(key), rest)) if T::OPS => self.get(key)?.op_lands(rest, op),
-            _ => None,
-        }
+        Run(Self::TABLE).op_lands(self, path, op)
     }
+    #[inline]
     fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
-        if T::OPS {
-            T::op_schemas(&format!("{prefix}*."), out);
-        }
+        Run(Self::TABLE).op_schemas(prefix, out);
     }
-    #[inline(never)]
+    #[inline]
     fn to_json(&self) -> serde_json::Value {
-        serde_json::Value::Object(
-            self.iter()
-                .map(|(key, value)| (key.clone(), value.to_json()))
-                .collect(),
-        )
+        Run(Self::TABLE).to_json(self)
     }
-    #[inline(never)]
+    #[inline]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
-        match value {
-            serde_json::Value::Object(entries) => entries
-                .iter()
-                .map(|(key, value)| {
-                    T::from_json(value)
-                        .map(|value| (key.clone(), value))
-                        .located(key)
-                })
-                .collect(),
-            serde_json::Value::Null => Ok(Self::new()),
-            _ => Err(json_shape("a map")),
-        }
+        Run(Self::TABLE).from_json(value)
     }
-    #[inline(never)]
+    #[inline]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -1739,110 +1717,36 @@ impl<T: Model> Model for BTreeMap<String, T> {
         op: &EditOp,
         cx: &mut ActionCx,
     ) -> Result<(), ModelError> {
-        match (path.split_first(), op) {
-            (None, EditOp::RemoveKey { key }) => {
-                let map = slot.object(doc, ObjType::Map)?;
-                Slot::Key(&map, key).remove(doc)
-            }
-            (Some((Segment::Key(key), rest)), op) => {
-                let map = slot.object(doc, ObjType::Map)?;
-                if rest.is_empty() && matches!(op, EditOp::Set { .. }) {
-                    return edit_whole::<T>(doc, Slot::Key(&map, key), rest, op).located(key);
-                }
-                // An edit inside an entry that is not there yet starts it
-                // from its value's empty value (a rule for an app that had
-                // none).
-                if doc.get(&map, key.as_str())?.is_none() {
-                    let empty = T::missing()
-                        .map_err(|_| ModelError::invalid(format!("no entry `{key}`")))?;
-                    empty.store(doc, Slot::Key(&map, key)).located(key)?;
-                }
-                T::edit(doc, Slot::Key(&map, key), rest, op, cx).located(key)
-            }
-            _ => edit_whole::<Self>(doc, slot, path, op),
-        }
+        Run(Self::TABLE).edit(doc, slot, path, op, cx)
     }
+    #[inline]
     fn check(&self) -> Result<(), Refusal> {
-        if T::CHECKS {
-            self.values().try_for_each(Model::check)?;
-        }
-        Ok(())
+        Run(Self::TABLE).check(self)
     }
-    fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any>
-    where
-        Self: 'static,
-    {
-        match path.split_first() {
-            None => Some(self),
-            Some((Segment::Key(key), rest)) => self.get(key)?.get_at(rest),
-            Some(_) => None,
-        }
+    #[inline]
+    fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any> {
+        Run(Self::TABLE).get_at(self, path)
     }
-    #[inline(never)]
+    #[inline]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
-        for (key, before) in self {
-            let mut at = path.to_vec();
-            at.push(Segment::Key(key.clone()));
-            match after.get(key) {
-                Some(next) => before.diff(next, &at, out),
-                None => out.push(crate::Edit::new(
-                    path.to_vec(),
-                    EditOp::RemoveKey { key: key.clone() },
-                )),
-            }
-        }
-        for (key, next) in after {
-            if !self.contains_key(key) {
-                let mut at = path.to_vec();
-                at.push(Segment::Key(key.clone()));
-                out.push(crate::Edit::new(
-                    at,
-                    EditOp::Set {
-                        value: next.to_json(),
-                    },
-                ));
-            }
-        }
+        Run(Self::TABLE).diff(self, after, path, out);
     }
-    #[inline(never)]
+    #[inline]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
-        if !matches!(value, Value::Object(ObjType::Map)) {
-            return Err(ModelError::shape("a map"));
-        }
-        // One walk of the map rather than a lookup per key (TIL-758), made
-        // outside this generic impl (TIL-765).
-        map_slots(doc, id)
-            .into_iter()
-            .map(|(key, slot)| load_slot(doc, slot, &key).map(|value| (key, value)))
-            .collect()
+        Run(Self::TABLE).load(doc, value, id)
     }
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::new())
     }
-    #[inline(never)]
+    #[inline]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        let map = slot.object(doc, ObjType::Map)?;
-        let stale: Vec<String> = doc
-            .keys(&map)
-            .filter(|key| !self.contains_key(key))
-            .collect();
-        for key in stale {
-            doc.delete(&map, key.as_str())?;
-        }
-        for (key, value) in self {
-            write_key(doc, &map, key, value)?;
-        }
-        Ok(())
+        Run(Self::TABLE).store(self, doc, slot)
     }
-    #[inline(never)]
+    #[inline]
     fn stores_as(&self, before: &Self) -> bool {
-        self.len() == before.len()
-            && self
-                .iter()
-                .zip(before)
-                .all(|((key, value), (was, before))| key == was && value.stores_as(before))
+        Run(Self::TABLE).stores_as(self, before)
     }
-    #[inline(never)]
+    #[inline]
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -1850,30 +1754,11 @@ impl<T: Model> Model for BTreeMap<String, T> {
         id: &ObjId,
         delta: &Delta,
     ) -> Result<(), ModelError> {
-        let touched = delta.under(id);
-        if touched.is_all() {
-            *self = Self::load(doc, value, id)?;
-            return Ok(());
-        }
-        for key in touched.keys() {
-            match get_slot(doc, id, key)? {
-                None => {
-                    self.remove(key);
-                }
-                Some(_) => match self.get_mut(key) {
-                    Some(existing) => refresh_key(existing, doc, id, key, delta)?,
-                    None => {
-                        self.insert(key.to_owned(), read_key(doc, id, key)?);
-                    }
-                },
-            }
-        }
-        Ok(())
+        Run(Self::TABLE).refresh(self, doc, value, id, delta)
     }
+    #[inline]
     fn collect_text(&self, out: &mut Vec<String>) {
-        for value in self.values() {
-            value.collect_text(out);
-        }
+        Run(Self::TABLE).collect_text(self, out);
     }
 }
 
