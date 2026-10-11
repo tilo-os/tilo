@@ -458,6 +458,9 @@ struct ProducedSections {
 struct OpaqueParts {
     workspace: Option<ui::scene_parts::SectionParts>,
     workspace_overlays: Option<ui::scene_parts::SectionParts>,
+    /// The Quick Settings panel, the strip ribbon and the strip rail: that
+    /// section is bounded as a whole too, so its parts only narrow it.
+    quick_settings: Option<ui::scene_parts::SectionParts>,
     above_quick_settings: Option<ui::scene_parts::SectionParts>,
 }
 
@@ -469,6 +472,7 @@ impl OpaqueParts {
         Self {
             workspace: recorded.of(&sections.workspace),
             workspace_overlays: recorded.of(&sections.workspace_overlays),
+            quick_settings: recorded.of(&sections.quick_settings),
             above_quick_settings: recorded.of(&sections.above_quick_settings),
         }
     }
@@ -2556,19 +2560,17 @@ impl FrameBuilder {
 
     /// Whole-pixel pans where the presenter reuses strip pixels as they are.
     ///
-    /// A presenter compositing layers gets pans that are whole device pixels
-    /// *and* whole layout pixels: the drawn pan is the gesture's rounded to
-    /// the smallest number of layout pixels that is a whole number of device
-    /// pixels ([`pan_step`]): one at 100 % and 200 % (one and two device
-    /// pixels), two at 150 % (three device pixels), four at 125 %. A pan then
-    /// moves the strip by whole device pixels, which a copy reproduces
-    /// exactly. Whole layout pixels keep the panned strips exactly what the
-    /// desktop drawn without layers shows: chrome that lands on whole layout
-    /// pixels (the docked wheel's cached drawing, app icons) would otherwise
-    /// sit a fraction of a pixel apart in the two, and twitch when a pan
-    /// ends. Layout and input see the same drawn pan, so what is under the
-    /// pointer is what is drawn there. A CPU presenter keeps whole layout
-    /// pixels.
+    /// A presenter compositing layers gets pans on whole device pixels: the
+    /// drawn pan is the gesture's rounded to one device pixel ([`pan_step`]):
+    /// a layout pixel at 100 %, half of one at 200 %, two thirds at 150 %,
+    /// four fifths at 125 %. A pan then moves the strip by whole device
+    /// pixels, which a copy reproduces exactly, and as finely as the panel
+    /// can show. What rides the strip moves with it by exactly the pan (the
+    /// docked wheel replays its cached drawing under the exact change of its
+    /// place), so the panned strips are what the desktop drawn without layers
+    /// shows, and nothing twitches when a pan ends. Layout and input see the
+    /// same drawn pan, so what is under the pointer is what is drawn there.
+    /// A CPU presenter keeps whole layout pixels.
     fn align_strip_pans(&mut self) {
         let StripPanPresenter {
             pixel_aligned,
@@ -2851,7 +2853,11 @@ impl FrameBuilder {
             let new = self.topbar_damage_rect(&current.topbar, current.topbar_bounds)?;
             regions.extend([old, new]);
         }
-        if quick_settings_changed {
+        if quick_settings_changed
+            && let Some(changed) = self.quick_settings_part_damage(previous, current, parts)
+        {
+            regions.extend(changed);
+        } else if quick_settings_changed {
             let old = self.damage_rect_for_quick_settings(
                 &previous.quick_settings,
                 previous.quick_settings_bounds,
@@ -2886,6 +2892,31 @@ impl FrameBuilder {
             return None;
         }
         self.native_damage_rect(bounds)
+    }
+
+    /// Damage in the Quick Settings section proven by its parts (the panel,
+    /// the strip ribbon, the strip rail): each changed part's old and new
+    /// bounds. `None` when the parts cannot prove it; the section's whole
+    /// extent then bounds it ([`Self::damage_rect_for_quick_settings`]).
+    fn quick_settings_part_damage(
+        &self,
+        previous: &ProducedSections,
+        current: &crate::shell::overlay_host::ShellSceneSections,
+        parts: &OpaqueParts,
+    ) -> Option<Vec<FineDamageRect>> {
+        let rects = ui::scene_parts::damage(
+            &previous.quick_settings,
+            previous.parts.quick_settings.as_ref()?,
+            &current.quick_settings,
+            parts.quick_settings.as_ref()?,
+        )
+        .ok()?;
+        // A part no display shows needs no repair.
+        let regions: Vec<FineDamageRect> = rects
+            .into_iter()
+            .filter_map(|rect| self.native_damage_rect(Some(rect)))
+            .collect();
+        (!regions.is_empty()).then_some(regions)
     }
 
     /// An empty section with no reported visual extent is a proven absent QS layer. A nonempty
@@ -8390,19 +8421,11 @@ fn magnified(scene: Scene, to_scene: Affine) -> Scene {
     magnified
 }
 
-/// The smallest whole number of layout pixels that is a whole number of
-/// device pixels at `scale` device pixels per layout pixel: 1 at 100 %,
-/// 200 % and 300 %, 2 at 150 %, 3 at 133 %, 4 at 125 % and 175 %. `None`
-/// past eight layout pixels (110 %): strips there keep exact pans and are
-/// not drawn as layers.
+/// One device pixel in layout pixels on a display at `scale` device pixels
+/// per layout pixel: two thirds at 150 %, four fifths at 125 %, a half at
+/// 200 %. `None` for a scale that is not finite and positive.
 fn pan_step(scale: f64) -> Option<f64> {
-    if !scale.is_finite() || scale <= 0.0 {
-        return None;
-    }
-    (1_u8..=8).map(f64::from).find(|&step| {
-        let device = step * scale;
-        (device - device.round()).abs() < 1e-6
-    })
+    (scale.is_finite() && scale > 0.0).then_some(1.0 / scale)
 }
 
 /// `value` is within a thousandth of a whole number.
