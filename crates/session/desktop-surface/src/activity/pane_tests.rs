@@ -4535,4 +4535,198 @@ mod morning_source_tests {
             }
         }
     }
+    #[derive(Default)]
+    struct PayloadHost {
+        commands: RefCell<Vec<(String, super::MorningSource, super::MorningCommand)>>,
+        noisy: bool,
+    }
+    impl crate::activity::ActivityHost for PayloadHost {
+        fn morning_sources_available(&self) -> bool {
+            true
+        }
+        fn morning_payload(
+            &self,
+            _room: &str,
+            _source: &super::MorningSource,
+        ) -> Option<crate::activity::morning::MorningPayload> {
+            Some(crate::activity::morning::MorningPayload {
+                label: "Chosen location".into(),
+                presentation: tilo_actions::ResourcePresentation {
+                    preview: Some(if self.noisy {
+                        "Long chosen provider observation. ".repeat(60)
+                    } else {
+                        "12°C, light rain · observation 2026-10-11T08:00".into()
+                    }),
+                    detail: Some(
+                        "Synthetic chosen weather provider · fetched 2026-10-11T08:05:00Z".into(),
+                    ),
+                    badge: Some("Last cached observation".into()),
+                },
+                refreshable: true,
+            })
+        }
+        fn submit_morning_command(
+            &self,
+            room: &str,
+            source: &super::MorningSource,
+            command: super::MorningCommand,
+        ) -> Result<(), String> {
+            self.commands
+                .borrow_mut()
+                .push((room.into(), source.clone(), command));
+            Ok(())
+        }
+    }
+    #[test]
+    fn morning_payload_pager_keeps_large_sources_and_removed_evidence_reachable() {
+        let (mut tree, mut pane) = fixture();
+        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        let host = Rc::new(PayloadHost {
+            noisy: true,
+            ..Default::default()
+        });
+        pane.set_host(host.clone());
+        let first = pane.chosen_morning_sources()[0].key();
+        for index in 1..crate::activity::morning::MAX_SOURCES {
+            let room = pane.task_room.clone();
+            pane.morning_sources
+                .get_mut(&pane.morning_workspace)
+                .unwrap()
+                .toggle(
+                    &room,
+                    super::MorningSource {
+                        app: "so.tilo.weather".into(),
+                        resource: format!("deleted:{index}"),
+                    },
+                );
+        }
+        pane.set_view(ActivityView::CatchUp);
+        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 900.0));
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        let heads = tree.doc.get_heads();
+        let seen = pane.seen_frontiers.clone();
+        for index in 0..crate::activity::morning::MAX_SOURCES {
+            let mut scene = Scene::new();
+            pane.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            let key = pane.chosen_morning_sources()[index].key();
+            let focus =
+                ActivityFocus::MorningCommand(key.clone(), super::MorningCommand::NextSource);
+            assert!(
+                pane.focus_order().contains(&focus),
+                "source {index} remains reachable"
+            );
+            assert!(
+                pane.focus_order()
+                    .contains(&ActivityFocus::Morning(key, true)),
+                "even unavailable sources can be removed"
+            );
+            pane.keyboard_focus = Some(focus);
+            pane.activate_focus(&mut tree, None);
+        }
+        assert_eq!(pane.morning_source_offset, 0);
+        assert_eq!(
+            pane.keyboard_focus,
+            Some(ActivityFocus::MorningCommand(
+                first,
+                super::MorningCommand::NextSource
+            ))
+        );
+        assert!(
+            host.commands.borrow().is_empty(),
+            "paging invokes no provider"
+        );
+        assert_eq!(tree.doc.get_heads(), heads);
+        assert_eq!(pane.seen_frontiers, seen);
+    }
+    #[test]
+    fn morning_payload_native_matrix_keeps_semantic_controls_and_review_boundary() {
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/morning-payload-renders");
+        std::fs::create_dir_all(&output).unwrap();
+        for (name, theme) in [
+            ("light", Theme::light()),
+            ("dark", Theme::dark()),
+            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
+        ] {
+            for (size, width, height) in [("normal", 1600, 1000), ("compact", 640, 900)] {
+                let (mut tree, mut pane) = fixture();
+                pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+                let host = Rc::new(PayloadHost::default());
+                pane.set_host(host.clone());
+                let key = pane.chosen_morning_sources()[0].key();
+                let heads = tree.doc.get_heads();
+                let seen = pane.seen_frontiers.clone();
+                pane.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_300));
+                pane.set_view(ActivityView::CatchUp);
+                pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                text.set_text_scale(theme.text_scale);
+                pane.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                for command in [
+                    super::MorningCommand::Refresh,
+                    super::MorningCommand::DraftRefresh,
+                ] {
+                    let focus = ActivityFocus::MorningCommand(key.clone(), command);
+                    assert!(
+                        pane.focus_order().contains(&focus),
+                        "command visible at {name}/{size}"
+                    );
+                    pane.keyboard_focus = Some(focus);
+                    pane.activate_focus(&mut tree, None);
+                }
+                assert_eq!(host.commands.borrow().len(), 2);
+                assert!(
+                    host.commands
+                        .borrow()
+                        .iter()
+                        .all(|(room, _, _)| *room == pane.task_room)
+                );
+                let accessible = pane
+                    .access_control(&ActivityFocus::Morning(key.clone(), false))
+                    .unwrap();
+                assert!(accessible.description.contains("12°C"));
+                assert!(
+                    accessible
+                        .description
+                        .contains("Synthetic chosen weather provider")
+                );
+                assert!(accessible.description.contains("2026-10-11T08:05:00Z"));
+                assert!(accessible.description.contains("Last cached observation"));
+                let foreign = uuid::Uuid::new_v4().to_string();
+                pane.apply_selection_history_action(
+                    &format!("{}{foreign}.{key}", super::MorningCommand::Refresh.prefix()),
+                    &mut tree,
+                    None,
+                );
+                assert_eq!(
+                    host.commands.borrow().len(),
+                    2,
+                    "queued foreign command is inert"
+                );
+                assert_eq!(tree.doc.get_heads(), heads);
+                assert_eq!(pane.seen_frontiers, seen);
+                let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
+                renderer.render_png(
+                    &scene,
+                    theme.tokens.colors.surfaces.content,
+                    output.join(format!("{name}-{size}.png")),
+                );
+            }
+        }
+    }
 }
