@@ -145,6 +145,28 @@ fn write_a_long_note(frame: &mut FrameBuilder, label: &str, paragraphs: usize) -
         "{label}: the paragraphs reached the note's body: {:?}",
         text.chars().take(200).collect::<String>()
     );
+    // The paragraphs are laid out before the note can scroll.
+    for _ in 0..100 {
+        if with_notes_on_screen(&*frame, |_, notes| {
+            notes.main_panel_mut().max_scroll_for_test()
+        }) > 0.0
+        {
+            break;
+        }
+        frame.wake_mounted_components();
+        settle(frame, 1);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        with_notes_on_screen(&*frame, |_, notes| notes
+            .main_panel_mut()
+            .max_scroll_for_test())
+            > 0.0,
+        "{label}: the note overflows its window: {}",
+        with_notes_on_screen(&*frame, |_, notes| notes
+            .main_panel_mut()
+            .scroll_state_for_test())
+    );
     let rest = with_notes_on_screen(&*frame, |rect, _| {
         Point::new(rect.center().x, rect.y0 + rect.height() * 0.6)
     });
