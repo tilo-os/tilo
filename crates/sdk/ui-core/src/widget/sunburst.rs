@@ -383,7 +383,7 @@ impl SunburstChart {
         let target = colors.surfaces.base;
         let amount = (f64::from(u32::try_from(depth.saturating_sub(1)).unwrap_or(u32::MAX)) * 0.12)
             .min(0.48);
-        crate::tokens::colors::mix8_f64(base, target, amount)
+        crate::tokens::colors::mix8(base, target, crate::num::f32_of_f64(amount))
     }
 }
 
