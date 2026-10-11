@@ -135,6 +135,31 @@ struct ActionTable {
 }
 
 impl ActionTable {
+    fn new(app: &'static str, kind: &'static str, published: Rc<tilo_actions::Resource>) -> Self {
+        Self {
+            app,
+            kind,
+            resource: Rc::new(RefCell::new(Rc::unwrap_or_clone(published))),
+            record: None,
+        }
+    }
+
+    /// Route the actions to the record `record`, where it may be changed.
+    fn route(&mut self, record: &str, editable: bool) {
+        self.record = editable.then(|| Rc::from(record));
+    }
+
+    /// Follow the canonical publication of this same hosted resource.
+    fn update(&self, published: tilo_actions::Resource) {
+        let mut current = self.resource.borrow_mut();
+        // A handle belongs to one root; a replacement gets its own handle.
+        if current.id == published.id && current.kind == published.kind {
+            *current = published;
+        } else {
+            tracing::error!("action publication changed resource identity");
+        }
+    }
+
     /// The key of action `id`.
     fn key(&self, id: &str) -> ActionKey {
         ActionKey::new(self.app, self.kind, id)
@@ -313,12 +338,7 @@ impl<R: Resource> Clone for Actions<R> {
 impl<R: Resource> Actions<R> {
     pub(crate) fn new(app: &'static str, published: Rc<tilo_actions::Resource>) -> Self {
         Self {
-            table: ActionTable {
-                app,
-                kind: R::KIND,
-                resource: Rc::new(RefCell::new(Rc::unwrap_or_clone(published))),
-                record: None,
-            },
+            table: ActionTable::new(app, R::KIND, published),
             marker: PhantomData,
         }
     }
@@ -326,7 +346,7 @@ impl<R: Resource> Actions<R> {
     /// These actions as another record's, published at `record`: a live row
     /// may offer them ([`Self::operation`]) where it may change it.
     pub(crate) fn routed_to(mut self, record: &str, editable: bool) -> Self {
-        self.table.record = editable.then(|| Rc::from(record));
+        self.table.route(record, editable);
         self
     }
 
@@ -351,13 +371,7 @@ impl<R: Resource> Actions<R> {
 
     /// Follow the canonical publication of this same hosted resource.
     pub(crate) fn update(&self, published: tilo_actions::Resource) {
-        let mut current = self.table.resource.borrow_mut();
-        // A handle belongs to one root; a replacement gets its own handle.
-        if current.id == published.id && current.kind == published.kind {
-            *current = published;
-        } else {
-            tracing::error!("action publication changed resource identity");
-        }
+        self.table.update(published);
     }
 
     /// The binding of `action` for a control with input `I`, or `None` while

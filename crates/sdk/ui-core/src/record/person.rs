@@ -152,16 +152,16 @@ impl PersonRecords {
     pub fn open_record(
         &self,
         kind: RecordKind,
-        initialize: impl Fn(&mut AutoCommit) -> Result<(), String>,
+        initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<PersonRecord, RecordOpenError> {
         let checkout = RecordCheckout::new(record_id(&kind), kind);
-        match open_in(&self.store, &checkout, &initialize) {
+        match open_in(&self.store, &checkout, initialize) {
             Err(RecordOpenError::Store(app_state::StoreError::WriterBusy { .. }))
                 if !self.replica =>
             {
                 let (package, _) = self.store.package_and_home();
                 let replica = Self::replica(&package, self.author.clone())?;
-                open_in(&replica.store, &checkout, &initialize)?;
+                open_in(&replica.store, &checkout, initialize)?;
                 Ok(PersonRecord::new(
                     replica.store,
                     checkout,
