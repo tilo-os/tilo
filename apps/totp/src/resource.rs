@@ -184,10 +184,6 @@ impl ResourceApp for TotpShell {
         SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     /// Demo seeds in a store of the capture's own: a screenshot never reads
     /// or writes this device's secrets.
     fn fixture(fixture: &mut Fixture<Totp>) {

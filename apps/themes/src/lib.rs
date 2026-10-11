@@ -60,10 +60,6 @@ impl ResourceApp for App {
     const ID: &'static str = APP_ID;
     const TITLE: &'static str = APP_TITLE;
     const ICON: Option<&'static str> = Some("themes");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     fn view(cx: &mut ViewCx<Studio>) -> Element {
         locales::install();
         view::root(cx)
