@@ -1764,13 +1764,21 @@ impl NotesApp {
         let Ok(snapshot) = crate::notebook::asset_snapshot(state) else {
             return;
         };
-        let waiting = !crate::notebook::assets_complete(state, &snapshot).unwrap_or(true);
         let arrived = self
             .canonical_assets
             .read()
             .is_ok_and(|assets| snapshot.keys().any(|key| !assets.contains_key(key)));
+        let mut waiting = true;
         if let Ok(mut assets) = self.canonical_assets.write() {
-            *assets = snapshot;
+            // Bytes this window put in itself (a paste) stay while the
+            // notebook still names them, even where the store would not
+            // serve them back.
+            assets.retain(|key, _| {
+                key.strip_prefix("asset:")
+                    .is_some_and(|digest| manifest.iter().any(|(name, _)| name == digest))
+            });
+            assets.extend(snapshot);
+            waiting = !crate::notebook::assets_complete(state, &assets).unwrap_or(true);
         }
         self.canonical_asset_manifest = manifest;
         self.canonical_assets_waiting = waiting.then(ui::time::now);
@@ -1787,6 +1795,12 @@ impl NotesApp {
         }
     }
 
+    /// When the images still on their way are looked for again.
+    fn canonical_assets_retry_deadline(&self) -> Option<ui::time::Instant> {
+        self.canonical_assets_waiting
+            .map(|since| since + CANONICAL_ASSETS_RETRY)
+    }
+
     fn drain_title_rename(&mut self, edits: &mut ui::widget::Edits<'_>) {
         let Some(new_title) = self.main.take_title_rename() else {
             return;
@@ -1795,12 +1809,6 @@ impl NotesApp {
             return;
         };
         let trimmed = new_title.trim();
-    /// When the images still on their way are looked for again.
-    fn canonical_assets_retry_deadline(&self) -> Option<ui::time::Instant> {
-        self.canonical_assets_waiting
-            .map(|since| since + CANONICAL_ASSETS_RETRY)
-    }
-
         let changed = self
             .workspace
             .get(id)
@@ -2074,14 +2082,6 @@ impl NotesApp {
         self.sidebar.context_menu_open_for_test()
     }
 
-    /// Test hook: whether the editor's `/` block menu is visible.
-    #[doc(hidden)]
-    pub fn editor_slash_menu_visible_for_test(&self) -> bool {
-        self.main.editor().slash_menu_visible()
-    }
-
-    /// Test hook: drop the editor's keyboard focus so global single-key
-    /// shortcuts (like `?`) fire instead of typing into a note. Mirrors
     /// Test hook: whether the picture `source` (`asset:<digest>`) has
     /// decoded in the notebook's image store, once its loads settle.
     #[doc(hidden)]
@@ -2092,6 +2092,14 @@ impl NotesApp {
         })
     }
 
+    /// Test hook: whether the editor's `/` block menu is visible.
+    #[doc(hidden)]
+    pub fn editor_slash_menu_visible_for_test(&self) -> bool {
+        self.main.editor().slash_menu_visible()
+    }
+
+    /// Test hook: drop the editor's keyboard focus so global single-key
+    /// shortcuts (like `?`) fire instead of typing into a note. Mirrors
     /// the state when the page tree — not the editor — is focused.
     #[doc(hidden)]
     pub fn blur_editor_for_test(&mut self) {
@@ -2353,10 +2361,12 @@ impl Widget for NotesApp {
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= ui::time::now());
         self.self_dirty |= feedback_expired;
+        // A dragged block's pointer at the page's edge scrolls the page.
+        let dragged = self.main.autoscroll_block_drag();
         // The retained shell owns queued header views, responsive bindings
         // and navigation. It participates in the same lifecycle as the
         // separately projected notebook content in its column slots.
-        self.shell.update(state, path) || feedback_expired
+        self.shell.update(state, path) || feedback_expired || dragged
     }
 
     fn native_input_snapshot(
@@ -2620,11 +2630,15 @@ impl Widget for NotesApp {
         // / fading, so it hides itself without needing a stray pointer event.
         // Idle otherwise (no idle redraw spin).
         (!self.theme.reduce_motion && self.save_surface.needs_frame(ui::time::now()))
+            || self.main.block_drag_scrolling()
             || self.shell.needs_animation_frame()
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         let mut earliest = self.save_surface.next_wake_deadline();
+        if let Some(deadline) = self.canonical_assets_retry_deadline() {
+            earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
+        }
         for child in self.children() {
             if let Some(deadline) = child.next_wake_deadline() {
                 earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
@@ -2636,9 +2650,6 @@ impl Widget for NotesApp {
     fn has_pending_visual_work(&self) -> bool {
         self.children()
             .iter()
-        if let Some(deadline) = self.canonical_assets_retry_deadline() {
-            earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
-        }
             .any(|child| child.has_pending_visual_work())
     }
 
