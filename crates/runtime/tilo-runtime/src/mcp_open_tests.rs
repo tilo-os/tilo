@@ -28,6 +28,8 @@ struct Writer {
     /// For each of the app's next top-level listings, whether it is empty,
     /// as while the app publishes again during its start.
     blank_listings: Arc<Mutex<std::collections::VecDeque<bool>>>,
+    /// One failed directory query, selected by its parent resource.
+    query_failure: Arc<Mutex<Option<DirectoryFailure>>>,
     /// The text `read-text` answers; set, `read-text` declares itself the
     /// document's read.
     document: Option<String>,
@@ -36,6 +38,11 @@ struct Writer {
     listing_page: Option<usize>,
     /// Every question and invocation the host was sent, in order.
     log: Arc<Mutex<Vec<Asked>>>,
+}
+
+struct DirectoryFailure {
+    parent: Option<String>,
+    error: ActionHostError,
 }
 
 /// One request a [`Writer`] was sent.
@@ -52,6 +59,7 @@ impl Writer {
             running: Arc::default(),
             invoked: Arc::default(),
             blank_listings: Arc::default(),
+            query_failure: Arc::default(),
             document: None,
             listing_page: None,
             log: Arc::default(),
@@ -90,23 +98,7 @@ impl Writer {
 
     fn rows(&self, provider: &str) -> Vec<CatalogueRow> {
         if provider == WORKSPACE {
-            let mut open = row(
-                "",
-                "app.so.tilo.word-processor",
-                "applications.app",
-                "open",
-                Vec::new(),
-            );
-            open.app_id = "so.tilo.desktop".into();
-            let mut assign = row(
-                "",
-                PERMISSIONS,
-                "workspace.permissions",
-                "profile.assign",
-                Vec::new(),
-            );
-            assign.app_id = "so.tilo.desktop".into();
-            return vec![open, assign];
+            return workspace_rows();
         }
         let path = || ActionParam::optional("path", ParamType::Text, "Direct filesystem path");
         let mut rows =
@@ -169,6 +161,10 @@ impl Writer {
                     Vec::new(),
                 ),
             ];
+        // Scripted text edits are offered by the fixture holding that text.
+        if self.document.is_some() {
+            rows.extend(text_edit_rows());
+        }
         if let Some(opener) = self.opener {
             rows.push(row(
                 DOC,
@@ -188,6 +184,63 @@ impl Writer {
         }
         rows
     }
+}
+
+/// The fixture workspace offers opening its app and assigning permissions.
+fn workspace_rows() -> Vec<CatalogueRow> {
+    let mut open = row(
+        "",
+        "app.so.tilo.word-processor",
+        "applications.app",
+        "open",
+        Vec::new(),
+    );
+    open.app_id = "so.tilo.desktop".into();
+    let mut assign = row(
+        "",
+        PERMISSIONS,
+        "workspace.permissions",
+        "profile.assign",
+        Vec::new(),
+    );
+    assign.app_id = "so.tilo.desktop".into();
+    vec![open, assign]
+}
+
+/// Actions of the scripted fixture when it holds editable text.
+fn text_edit_rows() -> [CatalogueRow; 3] {
+    [
+        row(
+            DOC,
+            DOC,
+            "word_processor.document",
+            "paste",
+            vec![ActionParam::required(
+                "markdown",
+                ParamType::Text,
+                "Content",
+            )],
+        ),
+        row(
+            DOC,
+            DOC,
+            "word_processor.document",
+            "select-all",
+            Vec::new(),
+        ),
+        row(
+            DOC,
+            DOC,
+            "word_processor.document",
+            "apply-spelling-suggestion",
+            vec![
+                ActionParam::required("block", ParamType::Text, "Paragraph"),
+                ActionParam::required("start", ParamType::Integer, "Start offset"),
+                ActionParam::required("end", ParamType::Integer, "End offset"),
+                ActionParam::required("replacement", ParamType::Text, "Replacement"),
+            ],
+        ),
+    ]
 }
 
 /// An action taking another resource: a handle there stands for it.
@@ -287,6 +340,16 @@ impl ActionHost for Writer {
         if provider != WORKSPACE && !running {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
+        let mut failure = self.query_failure.lock().unwrap();
+        if provider != WORKSPACE
+            && query.target.is_none()
+            && failure
+                .as_ref()
+                .is_some_and(|failure| failure.parent == query.parent_resource)
+        {
+            return Pending::ready(Err(failure.take().unwrap().error));
+        }
+        drop(failure);
         let listing =
             query.target.is_none() && query.needle.is_empty() && query.parent_resource.is_none();
         if provider != WORKSPACE
@@ -359,10 +422,11 @@ impl ActionHost for Writer {
         self.log.lock().unwrap().push(Asked::Invoke {
             revision: request.revision.clone(),
         });
-        let known = self
-            .rows(&request.target.provider)
-            .iter()
-            .any(|row| row.resource.id == request.target.address.resource);
+        let known = self.rows(&request.target.provider).iter().any(|row| {
+            row.action
+                .as_ref()
+                .is_some_and(|action| action.address == request.target.address)
+        });
         // As the broker refuses an instance that is no longer live.
         let gone = request.target.provider != WORKSPACE && !*self.running.lock().unwrap();
         if !known || gone {
@@ -1540,6 +1604,80 @@ fn an_edit_and_history_named_by_kind_reach_the_same_discovered_record() {
         assert_eq!(
             record, DOC,
             "edits and history share the actual discovered record"
+        );
+    }
+}
+
+#[test]
+fn directory_failures_are_not_reported_as_missing_resources() {
+    for tool in ["tilo_invoke", "tilo_resolve"] {
+        for failure in [
+            ActionHostError::Unavailable {
+                reason: "the original directory is disconnected".into(),
+            },
+            ActionHostError::NotPermitted,
+        ] {
+            let expected = failure.to_string();
+            let host = Writer::new(Some("history"));
+            *host.running.lock().unwrap() = true;
+            *host.query_failure.lock().unwrap() = Some(DirectoryFailure {
+                parent: None,
+                error: failure,
+            });
+            let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+            let error = run(call(
+                &server,
+                tool,
+                json!({
+                    "app_id": APP, "resource": "word_processor.document", "action": "history",
+                    "revision": "v5"
+                }),
+            ))
+            .unwrap_err();
+            assert!(error.contains(&expected), "{tool}: {error}");
+            assert!(!error.contains("no resource"), "{tool}: {error}");
+            assert!(host.invoked().is_empty(), "a failed query starts no action");
+            if tool == "tilo_resolve" {
+                assert!(
+                    host.asked().iter().any(|asked| matches!(
+                        asked,
+                        Asked::Query(query) if query.target.is_some()
+                    )),
+                    "resolve must reach its target before the alias query fails"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn directory_failures_are_not_reported_as_missing_actions() {
+    for tool in ["tilo_invoke", "tilo_resolve"] {
+        let host = Writer::new(None);
+        *host.running.lock().unwrap() = true;
+        *host.query_failure.lock().unwrap() = Some(DirectoryFailure {
+            parent: Some(DOC.into()),
+            error: ActionHostError::Unavailable {
+                reason: "the original action directory is disconnected".into(),
+            },
+        });
+        let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+        let error = run(call(
+            &server,
+            tool,
+            json!({
+                "app_id": APP, "resource": DOC, "action": "history", "revision": "v5"
+            }),
+        ))
+        .unwrap_err();
+        assert!(
+            error.contains("the original action directory is disconnected"),
+            "{tool}: {error}"
+        );
+        assert!(!error.contains("no resource"), "{tool}: {error}");
+        assert!(
+            host.invoked().is_empty(),
+            "a missing action cannot dispatch"
         );
     }
 }
