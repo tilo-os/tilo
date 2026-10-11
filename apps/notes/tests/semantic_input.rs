@@ -2,7 +2,7 @@ use crate::component_support::*;
 use notes::doc::NotesDoc;
 use ui::{
     a11y::{AccessNode, Action},
-    headless::{Driver, InspectionNode},
+    headless::{FrameHarness, InspectionNode},
 };
 
 fn routes(node: &InspectionNode, name: &str, found: &mut Vec<(String, Option<String>)>) {
@@ -26,12 +26,12 @@ fn routes(node: &InspectionNode, name: &str, found: &mut Vec<(String, Option<Str
         routes(child, name, found);
     }
 }
-fn named(driver: &Driver, name: &str) -> Vec<(String, Option<String>)> {
+fn named(driver: &FrameHarness, name: &str) -> Vec<(String, Option<String>)> {
     let mut found = Vec::new();
     routes(&driver.inspection().root, name, &mut found);
     found
 }
-fn perform(driver: &mut Driver, route: &(String, Option<String>), action: &Action) {
+fn perform(driver: &mut FrameHarness, route: &(String, Option<String>), action: &Action) {
     driver
         .perform_semantic_named(&route.0, route.1.as_deref(), action)
         .unwrap();
@@ -107,7 +107,7 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
     let f = NotebookFixture::rich();
     let component = component(&f, 11, ui::application::LaunchTarget::New);
     let checkout = component.record().clone();
-    let mut a = Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+    let mut a = FrameHarness::from_component(component, (1000, 700), runner_inputs()).unwrap();
     let mut neighbor = driver(&f, 12, &notebook(&f));
     let buttons = named(&a, "New note");
     assert_eq!(buttons.len(), 2);
@@ -138,7 +138,7 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
 
     let component = component_support_new(&f, 13);
     let checkout = component.record().clone();
-    let mut a = Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+    let mut a = FrameHarness::from_component(component, (1000, 700), runner_inputs()).unwrap();
     let first = named(&a, "New note")
         .into_iter()
         .find(|r| r.1.as_deref() == Some("notes.first_note"))
@@ -343,7 +343,7 @@ fn revoked_authority_rejects_empty_notes_semantic_and_pointer_creation() {
     let f = NotebookFixture::rich();
     let component = component(&f, 14, ui::application::LaunchTarget::New);
     let checkout = component.record().clone();
-    let mut a = Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+    let mut a = FrameHarness::from_component(component, (1000, 700), runner_inputs()).unwrap();
     *f.authority.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
         ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), &f.author.0),
         vec![],

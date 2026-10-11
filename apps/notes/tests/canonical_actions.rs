@@ -193,7 +193,8 @@ fn bound_edits_are_one_owned_history_entry_each() {
         let component = component(&f, 11, ui::application::LaunchTarget::New);
         let checkout = component.record().clone();
         let mut driver =
-            ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+            ui::headless::FrameHarness::from_component(component, (1000, 700), runner_inputs())
+                .unwrap();
         invoke(&mut driver, 11, "notes.notebook", "new-page", Some("First"));
         let page = f
             .records
@@ -319,7 +320,8 @@ fn bound_edits_are_one_owned_history_entry_each() {
         let component = component(&f, 11, ui::application::LaunchTarget::New);
         let checkout = component.record().clone();
         let mut a =
-            ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+            ui::headless::FrameHarness::from_component(component, (1000, 700), runner_inputs())
+                .unwrap();
         invoke(&mut a, 11, "notes.notebook", "new-page", Some("Rich"));
         let page = f
             .records
@@ -714,7 +716,8 @@ fn bound_undo_is_per_instance_and_retypes_once() {
         let component = component(&f, 11, ui::application::LaunchTarget::New);
         let checkout = component.record().clone();
         let mut a =
-            ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+            ui::headless::FrameHarness::from_component(component, (1000, 700), runner_inputs())
+                .unwrap();
         invoke(
             &mut a,
             11,
@@ -752,7 +755,8 @@ fn bound_undo_is_per_instance_and_retypes_once() {
         let component = component(&f, 11, ui::application::LaunchTarget::New);
         let checkout = component.record().clone();
         let mut a =
-            ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+            ui::headless::FrameHarness::from_component(component, (1000, 700), runner_inputs())
+                .unwrap();
         invoke(&mut a, 11, "notes.notebook", "new-page", Some("Peer page"));
         let page = f
             .records
@@ -845,7 +849,7 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
             12,
             actions::page_resource_id(f.child),
             "rename",
-            Some("Driver title"),
+            Some("FrameHarness title"),
         );
         assert_eq!(revision(&f, &checkout), 2);
         let stale = id;
@@ -1059,7 +1063,8 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
             "factory mount"
         );
         let mut b =
-            ui::headless::Driver::from_component(prepared, (1000, 700), runner_inputs()).unwrap();
+            ui::headless::FrameHarness::from_component(prepared, (1000, 700), runner_inputs())
+                .unwrap();
 
         for _ in 0..3 {
             b.relayout();
@@ -1126,7 +1131,8 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
         let component = component(&f, 12, ui::application::LaunchTarget::New);
         let checkout = component.record().clone();
         let mut b =
-            ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+            ui::headless::FrameHarness::from_component(component, (1000, 700), runner_inputs())
+                .unwrap();
         invoke(&mut b, 12, "notes.notebook", "new-page", Some("Last page"));
         let page = f
             .records
@@ -1167,7 +1173,7 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
             .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap();
         let deleted_revision = revision(&f, &checkout);
-        // Driver construction syncs the existing A widget; it does not replace NotesApp.
+        // FrameHarness construction syncs the existing A widget; it does not replace NotesApp.
         let mut a = a.into_driver(f.author.clone());
         for _ in 0..3 {
             a.relayout();
@@ -1202,7 +1208,7 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
     }
 }
 
-fn context_menu_select(driver: &mut ui::headless::Driver, page: notes::PageId, label: &str) {
+fn context_menu_select(driver: &mut ui::headless::FrameHarness, page: notes::PageId, label: &str) {
     fn menu_items(node: &ui::a11y::AccessNode, out: &mut Vec<(String, bool)>) {
         if node.state.hidden {
             return;
@@ -1266,7 +1272,7 @@ fn inspected_widget<'a>(
         .find_map(|child| inspected_widget(child, id))
 }
 
-fn placeholder_key(driver: &ui::headless::Driver) -> String {
+fn placeholder_key(driver: &ui::headless::FrameHarness) -> String {
     let snapshot = driver.inspection();
     let editor = inspected_widget(&snapshot.root, "block_editor").unwrap();
     let block_nodes = editor
@@ -1296,7 +1302,7 @@ fn assert_empty_retypes_once(
     f: &NotebookFixture,
     checkout: &ui::record::RecordCheckout,
     page: notes::PageId,
-    driver: &mut ui::headless::Driver,
+    driver: &mut ui::headless::FrameHarness,
 ) {
     driver.relayout();
     let placeholder = placeholder_key(driver);
@@ -1414,7 +1420,7 @@ fn bound_open_tag_uses_current_membership_without_prior_sync() {
 fn assert_open_tag_view(
     f: &NotebookFixture,
     checkout: &ui::record::RecordCheckout,
-    a: &mut ui::headless::Driver,
+    a: &mut ui::headless::FrameHarness,
     tag: uuid::Uuid,
     title: &str,
 ) {

@@ -306,7 +306,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         let renderer = tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap();
         CAPTURES.with_borrow_mut(Vec::clear);
         TASKS.with_borrow_mut(Vec::clear);
-        let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
+        let mut driver = tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
             state,
             Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
             (400, 300),
@@ -1145,7 +1145,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
             "en-US",
         );
         let replace = std::rc::Rc::new(Cell::new(false));
-        let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
+        let mut driver = tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
             tilo_ui::State::new(),
             Box::new(ReplacingHost(
                 TileHost::from_component(component),
@@ -1415,7 +1415,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
         );
         assert!(
             CAPTURES.with_borrow(|c| c.iter().any(|(_, label, _)| *label == "draw-permissions")),
-            "ordinary Driver paint did not reach the permission-aware root"
+            "ordinary FrameHarness paint did not reach the permission-aware root"
         );
         *permissions.borrow_mut() = tilo_ui::permissions::PermissionContext::permissive();
         EXPECTED_WRITE.set(true);
@@ -1743,7 +1743,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
                     .err()
                     .unwrap()
             } else {
-                tilo_ui::headless::Driver::from_component(
+                tilo_ui::headless::FrameHarness::from_component(
                     parent,
                     (320, 180),
                     crate::support::application::runner_inputs(),
@@ -2022,12 +2022,15 @@ impl Widget for SameNameUnregisteredWrapper {
     }
 }
 
-fn controlled_driver(root: Box<dyn Widget>, viewport: (u32, u32)) -> tilo_ui::headless::Driver {
+fn controlled_driver(
+    root: Box<dyn Widget>,
+    viewport: (u32, u32),
+) -> tilo_ui::headless::FrameHarness {
     let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
         tilo_ui::font_catalog::checkout_root(),
         "en-US",
     );
-    tilo_ui::headless::Driver::new_with_controlled_inputs(
+    tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
         tilo_ui::State::new(),
         root,
         viewport,

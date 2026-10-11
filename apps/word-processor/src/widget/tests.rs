@@ -3488,7 +3488,7 @@ fn native_text_shortcuts_delete_and_stop_at_visual_lines() {
                 .insert_str(&mut edits(&mut state.doc), "Hello café");
             let containers = wp.inner.containers.clone().unwrap();
             wp.lifecycle.focused = true;
-            let mut driver = ui::headless::Driver::new(state, Box::new(wp), (1000, 700));
+            let mut driver = ui::headless::FrameHarness::new(state, Box::new(wp), (1000, 700));
             driver.set_modifiers(&[modifier.into(), "shift".into()]);
             driver.key("ArrowLeft");
             driver.set_modifiers(&[]);

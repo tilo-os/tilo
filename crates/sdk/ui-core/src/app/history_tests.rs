@@ -5713,7 +5713,7 @@ fn driver_partial_capture_failed_through_return_discards_initially_empty_owner_q
     let mut state = State::new();
     state.doc.put(ROOT, "body", "live").unwrap();
     state.commit_action(None, None);
-    let mut driver = crate::headless::Driver::from_managed_root(
+    let mut driver = crate::headless::FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(root, registration),
         (900, 650),
@@ -6125,7 +6125,7 @@ fn control_custody_core_seals_and_discards_through_unreachable_private_routes() 
         assert_eq!(starts.get(), 1);
         assert_eq!(payloads.borrow()[0]["alias"], "entry");
     }
-    // Headless Driver: the same routes with an empty and a multi-entry queue.
+    // Headless FrameHarness: the same routes with an empty and a multi-entry queue.
     for entries in [0, 3] {
         let DeniedBridge {
             root,
@@ -6138,7 +6138,7 @@ fn control_custody_core_seals_and_discards_through_unreachable_private_routes() 
             payloads,
             host: _host,
         } = denied_bridge_with_exit_emission();
-        let mut driver = crate::headless::Driver::from_managed_root_with_controlled_inputs(
+        let mut driver = crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
             State::new(),
             ManagedRoot::new(root, registration),
             (900, 650),
@@ -6172,7 +6172,7 @@ fn control_custody_core_seals_and_discards_through_unreachable_private_routes() 
             )
             .unwrap();
         assert!(denied.get());
-        assert_eq!(exit_calls.get(), 1, "Driver exit layout callback");
+        assert_eq!(exit_calls.get(), 1, "FrameHarness exit layout callback");
         let saved = driver.pending_history_controls();
         assert_eq!(saved.len(), entries as usize);
         denied.set(false);
@@ -7307,7 +7307,7 @@ fn control_custody_core_driver_embedded_return_covers_final_draw_callback() {
             .control_domain
             .producer(crate::ControlProducerDiscipline::ReplaceOne),
     );
-    let mut driver = crate::headless::Driver::new_with_controlled_inputs(
+    let mut driver = crate::headless::FrameHarness::new_with_controlled_inputs(
         State::new(),
         Box::new(tile),
         (900, 650),

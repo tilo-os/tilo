@@ -1955,8 +1955,11 @@ mod tests {
             .with_action("Add a place")
             .with_action_id("weather.empty.add")
             .on_view(move || seen.set(seen.get() + 1));
-        let mut driver =
-            crate::headless::Driver::new(crate::state::State::new(), Box::new(root), (480, 360));
+        let mut driver = crate::headless::FrameHarness::new(
+            crate::state::State::new(),
+            Box::new(root),
+            (480, 360),
+        );
         let audit = driver.native_app_audit();
         assert!(audit.is_certified(), "{audit:#?}");
         driver

@@ -95,14 +95,14 @@ fn tab(minter: &mut IdMinter, title: &str) -> Tab {
     }
 }
 
-fn mount() -> (ui::headless::Driver, DesktopHandle, Rc<Cell<usize>>) {
+fn mount() -> (ui::headless::FrameHarness, DesktopHandle, Rc<Cell<usize>>) {
     let mut minter = IdMinter::new(7);
     let tabs = vec![tab(&mut minter, "Notes"), tab(&mut minter, "Scratch")];
     let tree = seed_tree(&mut minter, "Desk", tabs);
     let built = Rc::new(Cell::new(0));
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::clone(&built))));
     handle.set_viewport_width(1200.0);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
         Box::new(surface),
         (1200, 800),
@@ -115,7 +115,11 @@ fn mount() -> (ui::headless::Driver, DesktopHandle, Rc<Cell<usize>>) {
     (driver, handle, built)
 }
 
-fn dispatch(driver: &mut ui::headless::Driver, handle: &DesktopHandle, wire: serde_json::Value) {
+fn dispatch(
+    driver: &mut ui::headless::FrameHarness,
+    handle: &DesktopHandle,
+    wire: serde_json::Value,
+) {
     let command: Command = serde_json::from_value(wire).unwrap();
     handle.dispatch(&command, "g").unwrap();
     driver.relayout();
@@ -260,7 +264,7 @@ fn a_replaced_tree_keeps_surviving_tabs_and_builds_only_new_ones() {
 #[test]
 fn an_idle_desktop_asks_its_host_for_no_frame() {
     let (mut driver, handle, _) = mount();
-    let idle = |driver: &ui::headless::Driver| {
+    let idle = |driver: &ui::headless::FrameHarness| {
         let schedule = driver.frame_schedule();
         !schedule.queued_work
             && !schedule.needs_animation_frame
@@ -364,7 +368,7 @@ fn only_the_focused_window_is_built_before_the_first_frame() {
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::clone(&built))));
     assert_eq!(built.get(), 1, "the focused window only");
     handle.set_viewport_width(1200.0);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
         Box::new(surface),
         (1200, 800),
@@ -418,7 +422,7 @@ fn a_restored_strip_opens_on_its_focused_window() {
     tree.set_active_group(strip_id, last);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
     handle.set_viewport_width(1200.0);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
         Box::new(surface),
         (1200, 800),
@@ -608,14 +612,14 @@ impl ui::presence::capability::PublishesPresence for CaretProbe {
 
 type Routes = Rc<std::cell::RefCell<Option<ui::widget::RouteHandle>>>;
 
-fn mount_apps(titles: &[&str]) -> (ui::headless::Driver, DesktopHandle, Routes) {
+fn mount_apps(titles: &[&str]) -> (ui::headless::FrameHarness, DesktopHandle, Routes) {
     let mut minter = IdMinter::new(7);
     let tabs = titles.iter().map(|title| tab(&mut minter, title)).collect();
     let tree = seed_tree(&mut minter, "Desk", tabs);
     let routes = Routes::default();
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Apps(Rc::clone(&routes))));
     handle.set_viewport_width(1200.0);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
         Box::new(surface),
         (1200, 800),
@@ -630,7 +634,7 @@ fn mount_apps(titles: &[&str]) -> (ui::headless::Driver, DesktopHandle, Routes) 
 }
 
 fn try_dispatch(
-    driver: &mut ui::headless::Driver,
+    driver: &mut ui::headless::FrameHarness,
     handle: &DesktopHandle,
     wire: serde_json::Value,
 ) -> Result<(), String> {
@@ -703,7 +707,7 @@ fn trackpad_swipe() -> Vec<f64> {
 
 /// Send one page wheel event as winit's web backend reports it: negated,
 /// in physical pixels.
-fn page_wheel(driver: &mut ui::headless::Driver, delta_x: f64, delta_y: f64) {
+fn page_wheel(driver: &mut ui::headless::FrameHarness, delta_x: f64, delta_y: f64) {
     driver.send(&ui::winit::event::WindowEvent::MouseWheel {
         device_id: ui::winit::event::DeviceId::dummy(),
         delta: ui::winit::event::MouseScrollDelta::PixelDelta(
@@ -735,7 +739,7 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
         "one swipe stays inside the strip: {total} of {max}"
     );
 
-    let first_window_x = |driver: &ui::headless::Driver| {
+    let first_window_x = |driver: &ui::headless::FrameHarness| {
         find(&driver.inspection().root, "WindowGroup").unwrap().rect[0]
     };
     let drawn = first_window_x(&driver);
@@ -1022,7 +1026,7 @@ fn a_run_of_sideways_wheel_clicks_focuses_and_reveals_the_next_window() {
     let tree = seed_tree(&mut minter, "Desk", tabs);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
     handle.set_viewport_width(1200.0);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
         Box::new(surface),
         (1200, 800),
@@ -1361,7 +1365,7 @@ fn a_window_is_built_under_its_tab_for_a_panic_hook() {
     let built = Rc::new(std::cell::RefCell::new(Vec::new()));
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Scoped(Rc::clone(&built))));
     handle.set_viewport_width(1200.0);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
         Box::new(surface),
         (1200, 800),
