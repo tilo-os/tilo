@@ -1,9 +1,7 @@
 //! Native presentation actions and their caches, selected by the SDK runner boundary.
 
 use super::RENDER_TYPE;
-use crate::framework::ViewCx;
 use std::cell::Cell;
-use tilo_resource::Resource;
 use ui_core::automerge::transaction::Transactable;
 use ui_core::presence::PresenceCtx;
 use ui_core::vello::{
@@ -23,9 +21,9 @@ pub(crate) struct Presentation {
 }
 
 impl Presentation {
-    pub(crate) fn new<R: Resource>(cx: &ViewCx<R>) -> Self {
+    pub(crate) fn new(store: Option<tilo_content::ContentStore>) -> Self {
         Self {
-            store: cx.content(),
+            store,
             drawn_theme: None,
             render_text: None,
             past: None,
