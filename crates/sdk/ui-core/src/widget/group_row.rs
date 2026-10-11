@@ -6320,7 +6320,7 @@ mod tests {
 
             let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
             // Already-elapsed timestamp: ready-to-prune on the very next tick.
-            row.groups[0].set_closing_at_for_tests(earlier(crate::time::now(), 200));
+            row.groups[0].set_closing_at_for_tests(earlier(crate::time::now(), 400));
             assert_eq!(row.groups.len(), 2, "precondition: two groups before prune");
 
             let event = WindowEvent::CursorMoved {
