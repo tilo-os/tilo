@@ -1701,15 +1701,7 @@ impl Widget for Toolbar {
         tree.set_style(node, style).is_ok() || changed
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = tree.layout(node).copied().unwrap_or_default();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(tree, node, origin);
         self.place();
         let elements = self.element_nodes(tree, node);
         for (index, child) in elements {

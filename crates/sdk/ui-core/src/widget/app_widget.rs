@@ -1055,11 +1055,7 @@ mod component_adapter {
                 && let Ok(children) = taffy.children(node)
                 && let Some(child) = children.first()
             {
-                let location = taffy.layout(node).copied().unwrap_or_default().location;
-                let origin = vello::kurbo::Point::new(
-                    origin.x + f64::from(location.x),
-                    origin.y + f64::from(location.y),
-                );
+                let origin = crate::widget::layout_rect(taffy, node, origin).origin();
                 root.apply_layout(taffy, *child, origin);
             }
         }

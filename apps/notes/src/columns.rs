@@ -88,15 +88,7 @@ impl Widget for ColumnSlot {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x0 = origin.x + f64::from(layout.location.x);
-        let y0 = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x0,
-            y0,
-            x0 + f64::from(layout.size.width),
-            y0 + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.place.rect.set(self.rect);
     }
 
