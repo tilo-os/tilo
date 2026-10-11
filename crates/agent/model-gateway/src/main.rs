@@ -9,7 +9,6 @@ mod subject;
 use std::fs;
 #[cfg(test)]
 use std::io::Read;
-use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixListener;
 #[cfg(test)]
 use std::os::unix::net::UnixStream;
@@ -127,8 +126,10 @@ fn control(request: Request) -> Result<(), String> {
 }
 
 fn serve(socket: &Path) -> Result<(), String> {
-    // Activation is taken over before the runtime starts any thread.
-    let listener = if let Some(listener) = systemd_listener(socket)? {
+    // SAFETY: activation is taken over before the runtime starts any thread.
+    let activated = unsafe { tilo_files::native::private::activated_socket(socket) }
+        .map_err(|error| error.to_string())?;
+    let listener = if let Some(listener) = activated {
         listener
     } else {
         bind_listener(socket)?
@@ -209,49 +210,6 @@ fn bind_listener(socket: &Path) -> Result<UnixListener, String> {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     tilo_files::native::private::bind_socket(socket).map_err(|error| error.to_string())
-}
-
-#[allow(
-    clippy::disallowed_methods,
-    reason = "systemd socket activation: LISTEN_* must not leak to spawned children; cleared once, right after the descriptor is taken at the start of `serve`, before any thread is spawned"
-)]
-fn systemd_listener(expected: &Path) -> Result<Option<UnixListener>, String> {
-    const SYSTEMD_LISTEN_FD: i32 = 3;
-
-    let pid_matches = std::env::var("LISTEN_PID")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        == Some(std::process::id());
-    if !pid_matches {
-        return Ok(None);
-    }
-    if std::env::var("LISTEN_FDS").as_deref() != Ok("1") {
-        return Err("systemd must pass exactly one model-gateway listener".into());
-    }
-    // SAFETY: fcntl only validates whether fd 3 is open; it consumes no pointer.
-    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } == -1 {
-        return Err("systemd model-gateway listener fd is closed".into());
-    }
-    // SAFETY: systemd's LISTEN_PID/FDS contract transfers ownership of fd 3
-    // to this process exactly once.
-    let listener = unsafe { UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
-    let actual = listener.local_addr().map_err(|error| error.to_string())?;
-    if actual.as_pathname() != Some(expected) {
-        return Err("systemd model-gateway listener has an unexpected path".into());
-    }
-    // systemd supplies activation descriptors without CLOEXEC.
-    // This daemon can launch request-handling subprocesses; none may inherit
-    // the session's authenticated listener or activation metadata.
-    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
-        return Err("cannot mark systemd model-gateway listener close-on-exec".into());
-    }
-    // SAFETY: activation is consumed once, before worker threads exist.
-    unsafe {
-        std::env::remove_var("LISTEN_PID");
-        std::env::remove_var("LISTEN_FDS");
-        std::env::remove_var("LISTEN_FDNAMES");
-    }
-    Ok(Some(listener))
 }
 
 /// One authenticated connection: the launcher handoff, then framed requests

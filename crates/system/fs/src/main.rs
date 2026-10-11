@@ -41,7 +41,6 @@ use fs::{
 };
 use fuser::{Config, MountOption, SessionACL};
 use std::io::Read;
-use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -2747,54 +2746,14 @@ async fn recipient_service(
     Ok(())
 }
 
-#[allow(
-    clippy::disallowed_methods,
-    reason = "systemd socket activation: LISTEN_* must not leak to supervised mount \
-              children; cleared right after fd 3 is taken, at the start of the \
-              recipient service before it spawns any task or child, while the \
-              runtime's worker threads are still idle and nothing else reads the \
-              environment"
-)]
 fn recipient_service_listener(socket: &Path) -> Result<tokio::net::UnixListener> {
-    const SYSTEMD_LISTEN_FD: libc::c_int = 3;
-    let pid_matches = std::env::var("LISTEN_PID")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        == Some(std::process::id());
-    if !pid_matches {
+    // SAFETY: taken at the start of the recipient service, before it spawns
+    // any task or child, while the runtime's worker threads are still idle
+    // and nothing else reads the environment.
+    let Some(listener) = (unsafe { tilo_files::native::private::activated_socket(socket)? }) else {
         return bind_recipient_service_socket(socket);
-    }
-    anyhow::ensure!(
-        std::env::var("LISTEN_FDS").as_deref() == Ok("1"),
-        "systemd must pass exactly one recipient-service listener"
-    );
-    // SAFETY: fcntl only validates the scalar descriptor.
-    anyhow::ensure!(
-        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } != -1,
-        "systemd recipient-service listener fd is closed"
-    );
-    // SAFETY: validated activation metadata transfers ownership of fd 3 once.
-    let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
-    // systemd may hand over an unnamed connected socket; a missing pathname
-    // is not a different listener. Refuse only an explicit other path.
-    if let Some(actual) = listener.local_addr()?.as_pathname() {
-        anyhow::ensure!(
-            actual == socket,
-            "systemd recipient-service listener has an unexpected path"
-        );
-    }
+    };
     listener.set_nonblocking(true)?;
-    // Do not leak the service control endpoint into supervised FUSE children.
-    anyhow::ensure!(
-        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } != -1,
-        "cannot mark recipient-service listener close-on-exec"
-    );
-    // SAFETY: recipient_service runs before spawning its worker tasks.
-    unsafe {
-        std::env::remove_var("LISTEN_PID");
-        std::env::remove_var("LISTEN_FDS");
-        std::env::remove_var("LISTEN_FDNAMES");
-    }
     tokio::net::UnixListener::from_std(listener).map_err(Into::into)
 }
 
