@@ -365,6 +365,38 @@ fn retained_code_lines_and_prose_beside_code_and_tables_damage_their_row_and_mat
     }
 }
 
+#[test]
+fn a_key_in_a_markdown_tables_source_damages_its_line_and_cell_not_the_table() {
+    let source = "| Item | Amount |\n| --- | --- |\n| Apples | 4 |";
+    let blocks = vec![
+        Block::paragraph("Before the table."),
+        Block::table(source, false),
+        Block::paragraph("After the table."),
+    ];
+    let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+    // Into the amount, so the column keeps its width.
+    fixture.editor.focus_block(
+        1,
+        CursorPlacement::Byte(source.len().saturating_sub(" |".len())),
+    );
+    fixture.frame();
+    fixture.frame();
+    let before = fixture.scene.clone();
+    let table = fixture.editor.block_paint_rect(1).unwrap();
+    fixture.key(Key::Character("2".into()), Modifiers::default());
+    assert_eq!(
+        fixture.editor.blocks[1].text(),
+        "| Item | Amount |\n| --- | --- |\n| Apples | 42 |"
+    );
+    let area: f64 = fixture.damage.iter().map(Rect::area).sum();
+    assert!(
+        area < table.area() / 2.0,
+        "a key in the source damages its line and the cell, not the table {table:?}: {:?}",
+        fixture.damage
+    );
+    assert_damage_pixels(&before, &fixture, true);
+}
+
 fn assert_damage_pixels(before: &Scene, fixture: &RetainedEditor, sparse: bool) {
     let background = fixture.theme.tokens.colors.surfaces.content;
     let mut retained = crate::offscreen::OffscreenRenderer::new(1200, 1100);
@@ -384,10 +416,29 @@ fn assert_damage_pixels(before: &Scene, fixture: &RetainedEditor, sparse: bool) 
         );
     }
     let expected = full.render(&fixture.scene, background);
-    assert_eq!(
-        retained.readback_current(),
-        expected,
-        "retained pixels must match full rendering"
+    let actual = retained.readback_current();
+    assert_eq!(actual.len(), expected.len());
+    // Where they differ, as pixel bounds, rather than two framebuffers.
+    let differing: Vec<(usize, usize)> = actual
+        .chunks_exact(4)
+        .zip(expected.chunks_exact(4))
+        .enumerate()
+        .filter(|(_, (actual, expected))| actual != expected)
+        .map(|(index, _)| (index % 1200, index / 1200))
+        .collect();
+    let spread = differing.iter().fold(None, |spread, &(x, y)| {
+        Some(spread.map_or(
+            (x, y, x, y),
+            |(x0, y0, x1, y1): (usize, usize, usize, usize)| {
+                (x0.min(x), y0.min(y), x1.max(x), y1.max(y))
+            },
+        ))
+    });
+    assert!(
+        differing.is_empty(),
+        "retained pixels must match full rendering: {} differ within {spread:?} (x0, y0, x1, y1); damage {:?}",
+        differing.len(),
+        fixture.damage
     );
 }
 
@@ -413,16 +464,30 @@ fn retained_paragraph_delete_and_structure_damage_match_gpu_pixels_at_both_text_
         );
         assert_damage_pixels(&before, &fixture, true);
         let before = fixture.scene.clone();
-        let old_bounds = fixture.editor.get_rect();
+        let old_rows: Vec<Rect> = fixture
+            .editor
+            .blocks
+            .iter()
+            .map(|block| block.line.get_rect())
+            .collect();
+        let rebuilds = fixture.rebuilds;
         fixture.key(Key::Named(NamedKey::Enter), Modifiers::default());
         assert_eq!(fixture.editor.blocks.len(), 9);
-        assert!(
-            fixture
-                .damage
-                .iter()
-                .any(|rect| rect.contains_rect(old_bounds)),
-            "structure changes preserve all previous paint bounds"
+        // A block that came is a relayout, not a new tree: no widget came.
+        assert_eq!(
+            fixture.rebuilds, rebuilds,
+            "a new paragraph restacks the blocks without rebuilding the layout tree"
         );
+        // Every block below moved: each repaints where it was and is.
+        for row in old_rows {
+            assert!(
+                fixture.damage.iter().any(|rect| rect.contains_rect(row)),
+                "a moved block repaints where it was: {row:?} in {:?}",
+                fixture.damage
+            );
+        }
+        // A paragraph that came first moves the whole document, which may
+        // be half the target: it need not render sparsely.
         assert_damage_pixels(&before, &fixture, false);
     }
 }
@@ -438,16 +503,19 @@ fn retained_wrapping_delete_clears_previous_taller_paint_bounds() {
         for _ in 0..80 {
             let before = fixture.scene.clone();
             let old_bounds = fixture.editor.get_rect();
+            let old_row = fixture.editor.blocks[0].line.get_rect();
             fixture.key(Key::Named(NamedKey::Backspace), Modifiers::default());
             if fixture.editor.get_rect().height() < old_bounds.height() {
+                // The paragraph repaints where it painted, the taller row.
                 assert!(
                     fixture
                         .damage
                         .iter()
-                        .any(|rect| rect.contains_rect(old_bounds)),
-                    "shrinking layout must clear the previous taller extent"
+                        .any(|rect| rect.contains_rect(old_row)),
+                    "shrinking layout must clear the previous taller row: {old_row:?} in {:?}",
+                    fixture.damage
                 );
-                assert_damage_pixels(&before, &fixture, false);
+                assert_damage_pixels(&before, &fixture, true);
                 proved_shrink = true;
                 break;
             }
@@ -704,6 +772,58 @@ fn keystroke_work_does_not_grow_with_the_document() {
 /// outside the text column and inside the editor's rect: a host that puts
 /// the rect on its page gutter keeps the handles a gutter clear of the
 /// sidebar, and the text starts exactly one handle gutter in.
+#[test]
+fn a_collaborators_paragraph_restacks_without_a_rebuild_and_repaints_the_blocks_below() {
+    let blocks = (0..6)
+        .map(|index| Block::paragraph(&format!("Paragraph {index}: an ordinary document line.")))
+        .collect();
+    let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+    fixture.frame();
+    let before = fixture.scene.clone();
+    let above = fixture.editor.blocks[2].line.get_rect();
+    // The owning model shows a paragraph a collaborator wrote after the
+    // third, as it shows any remote edit.
+    let mut shown: Vec<BlockContent> = fixture.editor.blocks.iter().map(Block::content).collect();
+    shown.insert(
+        3,
+        BlockContent::paragraph("remote", "A collaborator's paragraph."),
+    );
+    assert!(fixture.editor.present_blocks(&shown));
+    assert!(
+        !fixture.editor.take_structure_dirty(),
+        "a paragraph brings no widget: the host keeps its tree"
+    );
+    assert!(
+        fixture.editor.is_layout_dirty(),
+        "the host lays the blocks out again"
+    );
+    fixture.frame();
+    let rows: Vec<Rect> = fixture
+        .editor
+        .blocks
+        .iter()
+        .map(|block| block.line.get_rect())
+        .collect();
+    assert_eq!(
+        fixture.editor.blocks[3].text(),
+        "A collaborator's paragraph."
+    );
+    assert!(
+        rows[3].height() > 0.0 && rows[3].y0 >= rows[2].y1 && rows[3].y1 <= rows[4].y0,
+        "the paragraph stands between its neighbours: {rows:?}"
+    );
+    // The caret's paragraph and those above it keep their pixels.
+    assert!(
+        fixture
+            .damage
+            .iter()
+            .all(|rect| rect.intersect(above).is_zero_area()),
+        "only the new paragraph and those below repaint: {:?}",
+        fixture.damage
+    );
+    assert_damage_pixels(&before, &fixture, true);
+}
+
 #[test]
 fn handles_hang_in_their_own_gutter_outside_the_text_column() {
     for scale in [1.0, 2.0] {
