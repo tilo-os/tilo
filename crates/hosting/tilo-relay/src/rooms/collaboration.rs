@@ -647,9 +647,25 @@ impl Rooms {
         operation: &'static str,
     ) -> Result<(), CollaborationError> {
         let host = &self.inner.host.cert;
+        // An agent is a device of the relay's user too, but it governs
+        // nothing: it joins rooms only through its delegation.
+        #[cfg(feature = "agents")]
+        let agent = self
+            .inner
+            .host
+            .agents
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&device.device_public_key);
+        #[cfg(not(feature = "agents"))]
+        let agent = false;
         let result = if device.user_public_key != host.user_public_key {
             Err(CollaborationError::new(
                 "room administration requires a device of the relay's user",
+            ))
+        } else if agent {
+            Err(CollaborationError::new(
+                "room administration requires a person's device, not an agent's",
             ))
         } else if self.revocations().is_revoked(&device.device_public_key) {
             Err(CollaborationError::new("device revoked"))

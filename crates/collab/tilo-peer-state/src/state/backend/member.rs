@@ -6,7 +6,7 @@ use super::{
 use crate::room::key_hex::KeyHex;
 use crate::state::bounded::{BoundedPeerError, BoundedPeerInvalid, PeerLimits};
 use std::collections::BTreeMap;
-use tilo_action_policy::{Authority, Grant, RoomPolicy, Subject};
+use tilo_action_policy::{Authority, Bound, Grant, Party, RoomPolicy, Subject};
 mod policy;
 
 #[derive(Debug)]
@@ -20,6 +20,7 @@ pub(in crate::state) enum Error {
     RevocationRoot,
     Revocation(tilo_user_identity::RevocationError),
     RoomRevoked,
+    AgentInactive(crate::state::agent_members::AgentInactive),
     NoMembership,
     Read,
     Capacity,
@@ -35,6 +36,7 @@ impl std::fmt::Display for Error {
             Self::CertificateMismatch => f.write_str("governed certificate mismatch"),
             Self::RevocationRoot => f.write_str("revocation root mismatch"),
             Self::RoomRevoked => f.write_str("device revoked by room"),
+            Self::AgentInactive(reason) => reason.fmt(f),
             Self::NoMembership => f.write_str("person has no room membership"),
             Self::Read => f.write_str("governed membership read failed"),
             Self::Decode(e) => write!(f, "governed membership decode refusal: {e:?}"),
@@ -75,6 +77,8 @@ struct Current<P> {
     person: KeyHex,
     policy: P,
     foreign: bool,
+    /// The delegation bounding a delegated agent's device.
+    agent: Option<Bound>,
 }
 fn current<'peer, S: Storage, P: Policy>(
     peer: &'peer PeerCore<S>,
@@ -105,16 +109,34 @@ fn current<'peer, S: Storage, P: Policy>(
     if revoked {
         return Err(Error::RoomRevoked);
     }
+    identity
+        .agent_acting(&peer.room, crate::state::now_ns(now))
+        .map_err(Error::AgentInactive)?;
     let person = key_text(&cert.user_public_key);
     let role = policy
         .role(&peer.room, person.as_str())
         .ok_or(Error::NoMembership)?;
     let foreign = foreign(cert, &peer.authority);
+    // A delegated agent acts with its person's authority bounded by its
+    // delegation, which never governs the room.
+    let agent = identity.agent.as_ref().map(|agent| {
+        crate::state::agent_members::agent_bound(
+            &peer.room,
+            &agent.delegation.agent_id,
+            person.as_str(),
+        )
+    });
+    let role = if agent.is_some() {
+        crate::state::agent_members::agent_role(role)
+    } else {
+        role
+    };
     Ok(Current {
         role,
         person,
         policy,
         foreign,
+        agent,
     })
 }
 /// Whether `cert`'s device is held to the foreign-device bound in the room
@@ -148,7 +170,7 @@ pub(in crate::state) fn legacy(
     peer: &PeerCore<LegacyNative>,
     source: &[u8; 32],
     now: SystemTime,
-) -> Result<Role, Error> {
+) -> Result<(Role, Option<Bound>), Error> {
     current(peer, source, now, |room| {
         let data = room.policy();
         let key = key_text(source);
@@ -161,7 +183,7 @@ pub(in crate::state) fn legacy(
             .map_err(|error| Error::LegacyJson(error.clone()))?;
         Ok(LegacyPolicy { data, identity })
     })
-    .map(|current| current.role)
+    .map(|current| (current.role, current.agent))
 }
 /// Current member data; no owner/transport credential.
 pub struct PeerMember<'peer> {
@@ -169,6 +191,7 @@ pub struct PeerMember<'peer> {
     person: KeyHex,
     policy: policy::NativePolicy,
     foreign: bool,
+    agent: Option<Bound>,
     room: &'peer str,
 }
 impl PeerMember<'_> {
@@ -202,11 +225,22 @@ impl PeerMember<'_> {
     /// The member's authority over `policy` (from [`Self::room_policy`]),
     /// held to `foreign_bound` on a foreign device.
     pub fn authority<'a>(
-        &self,
+        &'a self,
         policy: &'a RoomPolicy,
         foreign_bound: &'a [Grant],
     ) -> Authority<'a> {
-        policy.person_on_device(self.person.as_str(), self.foreign, foreign_bound)
+        let authority = policy.person_on_device(self.person.as_str(), self.foreign, foreign_bound);
+        match &self.agent {
+            Some(bound) => authority.bounded_by(
+                Party::new(vec![bound.subject.clone()], &policy.grants).with_grants(&bound.grants),
+            ),
+            None => authority,
+        }
+    }
+    /// The delegation bounding the member when its device is a delegated
+    /// agent.
+    pub fn agent(&self) -> Option<&Bound> {
+        self.agent.as_ref()
     }
 }
 pub(in crate::state) fn bounded(
@@ -231,6 +265,7 @@ pub(in crate::state) fn bounded(
         person: current.person,
         policy: current.policy,
         foreign: current.foreign,
+        agent: current.agent,
         room: &peer.room,
     })
 }

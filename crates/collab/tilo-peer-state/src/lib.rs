@@ -21,7 +21,7 @@ mod state;
 mod verified_certificate;
 pub use state::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, DocumentRow, GovernedAccess,
-    GovernedMember, LocalRecoveryReservation, MemberAuthority, NativePublicationCut,
+    GovernedAgent, GovernedMember, LocalRecoveryReservation, MemberAuthority, NativePublicationCut,
     PeerDeliveryPolicy, PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError,
     PeerLimits, PeerMediaCall, PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations,
     PeerRoomAccess, ReceiveOutcome, Reseal, SealCheckpoint, SeedDocument, SeedState, StatePeer,

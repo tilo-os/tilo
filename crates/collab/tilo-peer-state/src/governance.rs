@@ -208,17 +208,21 @@ pub fn admit_invited_member(
             )
             .map_err(|error| error.to_string())?;
     }
-    let (revocations, mut admission, mut admissions, workspace_delegations) = prior.map_or_else(
-        || (Vec::new(), None, Vec::new(), Vec::new()),
-        |identity| {
-            (
-                identity.revocations,
-                identity.admission,
-                identity.admissions,
-                identity.workspace_delegations,
-            )
-        },
-    );
+    // An agent identity stays bound to its delegation whatever else it
+    // redeems: the delegation's window and withdrawal still apply.
+    let (revocations, mut admission, mut admissions, workspace_delegations, agent) = prior
+        .map_or_else(
+            || (Vec::new(), None, Vec::new(), Vec::new(), None),
+            |identity| {
+                (
+                    identity.revocations,
+                    identity.admission,
+                    identity.admissions,
+                    identity.workspace_delegations,
+                    identity.agent,
+                )
+            },
+        );
     if admission.is_none() {
         admission = Some(receipt);
     } else {
@@ -231,6 +235,7 @@ pub fn admit_invited_member(
         admission,
         admissions,
         workspace_delegations,
+        agent,
     };
     candidate
         .put(

@@ -143,6 +143,31 @@ app's `definition()` builds there), and agents' device keys are kept in
 `agents.json`. Moving the catalogue to installed packages and the agent keys
 to the secret store are tracked follow-ups.
 
+### Agents as governed members of a host's rooms
+
+An agent is a device of its person: its own key, a certificate the
+person's root signed with no capabilities, and a root-signed delegation
+naming the rooms and apps it may act in and until when. When its grant is
+approved or restored, each room the host governs and the delegation names
+puts it on the room's governed roster, and only through
+`room_access::decide(.., RoomOperation::AgentMembership)`
+(`crates/hosting/tilo-relay/src/room_access.rs`): a live delegated agent of
+the host's own user, in a room whose admission governance owns here. Being
+on the roster is what admits it to the room and lets the steward admit it
+to the channels of the records it opens. The
+roster row carries the delegation (`tilo-peer-state`, `state/agent_members.rs`),
+and every member applies one rule to it: the agent acts only while the
+delegation verifies against the certificate's root, names the device and
+the room, is unexpired and has not been withdrawn, with its person's grants
+bounded by its delegation, the Editor preset ([permissions.md](permissions.md)
+§4): never above an Editor, and never on the room's governance. Its changes are signed by its own key, so history
+attributes them to the agent, not to the host. A grant that is withdrawn,
+narrowed or ends is withdrawn on every room's roster
+(`rooms/agent_members.rs`), which takes the agent off every channel of the
+room; members refuse its later writes on their own. Room administration
+refuses agent devices. Other users' agents are not admitted, and agents
+never call the host's room actions.
+
 ### Load hints beside local records
 
 Loading a large record spends most of its time rebuilding every change to
