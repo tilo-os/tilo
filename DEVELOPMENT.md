@@ -34,8 +34,12 @@ driving, storage, platforms and troubleshooting; its source is
 Image-level changes (`os/`, units, packages) move the VM onto a new image
 instead: `tilo-vm vm upgrade --from sha:<commit>` for any commit CI has built,
 `--from local` for one that is not pushed yet (`tilo-vm guide images`). The
-`Build / OS dev` workflow builds every main push and every pull request that
-touches `os/`, fully cached, and publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
+`Build / OS dev` workflow builds on explicit dispatch (select the smallest
+needed architecture list), or for an image-changing pull request labelled
+`os-image` (`os-arm64` also requests both architectures), fully cached. Ordinary
+pushes and unlabelled PRs keep the native slots available for required package
+checks; scheduled and tagged releases retain their existing verification.
+Architecture-specific main dispatches build the newest main commit only. It publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
 the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`);
 main also moves `tilo-vm:main-ci` to its newest dev images.
 `Release / OS` builds signed, reproduced releases only: tags, the nightly run
