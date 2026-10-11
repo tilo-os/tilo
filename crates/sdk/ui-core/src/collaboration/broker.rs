@@ -6818,6 +6818,14 @@ mod tests {
         committed_private_binding: Option<u64>,
         committed_ack_failure: Option<String>,
         committed_ack_reply: Option<runtime_collab::committed_document::Reply>,
+        /// Refuse every committed Open, as a broker does for a revoked peer.
+        committed_open_failure: Option<String>,
+        /// Hold each next `join_channel` reply until its gate opens, as a
+        /// starved broker does.
+        join_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
+        /// Refuse every ungated `join_channel`, as a broker does for a
+        /// revoked peer.
+        join_refusal: Option<String>,
         committed_reads: Vec<runtime_collab::committed_document::Request>,
         media_commands: Vec<runtime_collab::native_media::Request>,
         media_active_fixture: bool,
@@ -7384,6 +7392,11 @@ mod tests {
                     .map_err(|error| capnp::Error::failed(error.into()))?;
                 let mut captures = self.captures.lock().unwrap();
                 captures.committed_reads.push(request.clone());
+                if matches!(request, Request::Open { .. })
+                    && let Some(error) = captures.committed_open_failure.clone()
+                {
+                    return Err(capnp::Error::failed(error));
+                }
                 let current_revision = captures.committed_revision.unwrap_or([7; 32]);
                 let reply = match captures.committed_history_fixture.as_ref() {
                     None => Reply::Legacy,
@@ -7704,6 +7717,12 @@ mod tests {
             let mut captures = self.captures.lock().unwrap();
             captures.joined.push((channel_id, identity));
             captures.joined_record_kinds.push(record_kind);
+            let gate = captures.join_gates.pop_front();
+            if gate.is_none()
+                && let Some(error) = captures.join_refusal.clone()
+            {
+                return Promise::err(capnp::Error::failed(error));
+            }
             drop(captures);
 
             let chan = FakeChannel {
@@ -7714,8 +7733,16 @@ mod tests {
                 scrollback_response: Rc::new(RefCell::new(self.scrollback_response.clone())),
             };
             let client: channel_handle::Client = capnp_rpc::new_client(chan);
-            results.get().set_handle(client);
-            Promise::ok(())
+            let Some(gate) = gate else {
+                results.get().set_handle(client);
+                return Promise::ok(());
+            };
+            Promise::from_future(async move {
+                gate.await
+                    .map_err(|_| capnp::Error::failed("fixture join gate dropped".into()))?;
+                results.get().set_handle(client);
+                Ok(())
+            })
         }
     }
 
