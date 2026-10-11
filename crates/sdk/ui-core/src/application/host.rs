@@ -802,9 +802,29 @@ impl ApplicationHost {
                 },
                 &target,
             )?;
-            let restore = initial_view.map_or(RestoreInput::None, |application| {
-                RestoreInput::Local(context.envelope(View::default(), Some(application)))
-            });
+            // Every window shares the room's record, but each keeps its own
+            // presentation: this instance reopens where it was left (the
+            // note it showed), when what it saved is of the room's record.
+            // A view of a record it kept per window before is not restored.
+            let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+            let saved = if matches!(target, LaunchTarget::Record { .. }) {
+                self.views
+                    .load(instance_id)
+                    .map_err(LaunchError::Restore)?
+                    .filter(|saved| {
+                        saved.app_id == package_id
+                            && saved.record_id == context.record().id.as_str()
+                            && definition.record_kind.names(&saved.record_kind)
+                    })
+            } else {
+                None
+            };
+            let restore = saved
+                .or_else(|| {
+                    initial_view
+                        .map(|application| context.envelope(View::default(), Some(application)))
+                })
+                .map_or(RestoreInput::None, RestoreInput::Local);
             return Ok(PreparedComponentInputs {
                 context: self.with_person_records(definition, context),
                 target,
