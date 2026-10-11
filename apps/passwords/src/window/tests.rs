@@ -125,34 +125,52 @@ fn the_window_is_the_shared_shell_and_follows_the_chosen_place() {
 
 #[test]
 fn list_rows_open_items_and_toggle_favorites_through_the_list() {
-    let mut doc = AutoCommit::new();
-    let mut app = PasswordsSurface::demo();
-    let mut pane = ListPane::new(&app.core, &app.requests);
-    assert!(pane.perform_semantic_action(
-        "passwords.item:demo-mail",
-        &ui::a11y::Action::Activate,
-        &mut ui::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    ));
-    app.settle();
-    assert_eq!(
-        app.core().selected.as_ref().map(|id| id.0.as_str()),
-        Some("demo-mail")
-    );
+    let mut app =
+        ui::framework::testing::TestApp::<crate::resource::PasswordsShell>::capture(None).unwrap();
+    let selected = |app: &mut ui::framework::testing::TestApp<crate::resource::PasswordsShell>| {
+        app.surface::<PasswordsSurface, _>(|surface| {
+            surface.core().selected.as_ref().map(|id| id.0.clone())
+        })
+        .flatten()
+    };
+    let favorites = |app: &mut ui::framework::testing::TestApp<crate::resource::PasswordsShell>| {
+        app.surface::<PasswordsSurface, _>(|surface| surface.core().count(VaultFilter::Favorites))
+            .unwrap()
+    };
 
-    let before = app.core().count(VaultFilter::Favorites);
-    request(
-        &mut app,
-        Request::ToggleFavorite(SecretId("demo-mail".into())),
-    );
-    assert_eq!(app.core().count(VaultFilter::Favorites), before + 1);
+    // A press on a row opens its item.
+    app.harness()
+        .click_named("passwords.item:demo-mail")
+        .unwrap();
+    app.settle();
+    assert_eq!(selected(&mut app).as_deref(), Some("demo-mail"));
+
+    // So does assistive technology, by the row's own target.
+    app.harness()
+        .perform_semantic_named(
+            "passwords.item:demo-recovery",
+            Some("passwords.item:demo-recovery"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    app.settle();
+    assert_eq!(selected(&mut app).as_deref(), Some("demo-recovery"));
+
+    // The row's star toggles the item's favorite.
+    let before = favorites(&mut app);
+    app.harness()
+        .perform_semantic_named(
+            "passwords.item:demo-mail",
+            Some("passwords.item:demo-mail/action/0"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    app.settle();
+    assert_eq!(favorites(&mut app), before + 1);
 
     // The arrow keys step through the list.
-    app.core_mut().step(true);
-    assert_eq!(
-        app.core().selected.as_ref().map(|id| id.0.as_str()),
-        Some("demo-recovery")
-    );
+    app.surface::<PasswordsSurface, _>(|surface| surface.core_mut().step(false));
+    assert_eq!(selected(&mut app).as_deref(), Some("demo-mail"));
 }
 
 #[test]

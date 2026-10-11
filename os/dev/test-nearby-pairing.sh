@@ -132,13 +132,46 @@ collect() {
   "$each" shot "$label-final" >/dev/null 2>&1 \
     && cp -f "$run/$label-final.png" "$out/" 2>/dev/null || true
 }
+boot_owned_vm() {
+  local label=$1 run=$2 each=$3 boot_rc=0 identity_rc=0
+  "$each" boot "--$display" --disk "$run/disk.qcow2" || boot_rc=$?
+  printf '%s\n' "$boot_rc" > "$out/$label-boot-exit-status.txt"
+  "$each" tool python3 "$dev_dir/nearby-vm-identity.py" snapshot "$run/qemu.pid" \
+    > "$out/$label-qemu-identity.json" 2> "$out/$label-qemu-identity-error.txt" || identity_rc=$?
+  [ "$boot_rc" = 0 ] || return "$boot_rc"
+  return "$identity_rc"
+}
+stop_owned_vm() {
+  local label=$1 each=$2 identity="$out/$1-qemu-identity.json"
+  if ! "$each" tool python3 "$dev_dir/nearby-vm-identity.py" before-stop "$identity" \
+      > "$out/$label-cleanup-before.json" 2> "$out/$label-cleanup-before-error.txt"; then
+    return 1
+  fi
+  local stop_rc=0 verify_rc=0
+  "$each" stop > "$out/$label-cleanup-stop.txt" 2>&1 || stop_rc=$?
+  "$each" tool python3 "$dev_dir/nearby-vm-identity.py" after-stop "$identity" \
+    > "$out/$label-cleanup-after.json" 2> "$out/$label-cleanup-after-error.txt" || verify_rc=$?
+  printf 'stop=%s verify=%s\n' "$stop_rc" "$verify_rc" > "$out/$label-cleanup-status.txt"
+  [ "$stop_rc" = 0 ] && [ "$verify_rc" = 0 ]
+}
 cleanup() {
-  local rc=$?
+  local rc=$? cleanup_rc=0
   trap - EXIT
+  # Keep the original gate result and pre-stop evidence, including failures.
+  printf '%s\n' "$rc" > "$out/gate-exit-status.txt" || cleanup_rc=1
+  if [ -f "$out/verdict.txt" ]; then
+    cp "$out/verdict.txt" "$out/gate-verdict.txt" || cleanup_rc=1
+  fi
   collect a "$run_a" vm_a
   collect b "$run_b" vm_b
-  vm_a stop >/dev/null 2>&1 || true
-  vm_b stop >/dev/null 2>&1 || true
+  stop_owned_vm a vm_a || cleanup_rc=1
+  stop_owned_vm b vm_b || cleanup_rc=1
+  printf '%s\n' "$cleanup_rc" > "$out/cleanup-exit-status.txt"
+  if [ "$cleanup_rc" != 0 ]; then
+    printf 'FAIL\n' > "$out/verdict.txt"
+    note "normal cleanup of an owned VM failed; see cleanup evidence"
+    [ "$rc" != 0 ] || rc=1
+  fi
   printf '%s\n' "$rc" > "$out/exit-status.txt"
   exit "$rc"
 }
@@ -150,8 +183,8 @@ qemu-img create -f qcow2 -F qcow2 -b "$base" "$run_b/disk.qcow2" >/dev/null
 # --unlock moves B's root onto a new LUKS2 partition at least its own size;
 # the overlay stays sparse, so only the data actually copied takes host space.
 [ "$unlock" = 0 ] || qemu-img resize -q "$run_b/disk.qcow2" "+$(qemu-img info --output=json "$base" | jq -r '."virtual-size"')"
-vm_a boot "--$display" --disk "$run_a/disk.qcow2"
-vm_b boot "--$display" --disk "$run_b/disk.qcow2"
+boot_owned_vm a "$run_a" vm_a
+boot_owned_vm b "$run_b" vm_b
 vm_a wait
 vm_b wait
 for each in vm_a vm_b; do

@@ -30,7 +30,7 @@ pub(crate) struct Sources {
 }
 
 impl Sources {
-    fn contacts(&self) -> Rc<ContactDirectory> {
+    pub(crate) fn contacts(&self) -> Rc<ContactDirectory> {
         self.directory.as_ref().map_or_else(
             || Rc::new(self.fixture.directory.clone()),
             PersonRecord::get,
@@ -68,10 +68,10 @@ pub(crate) struct Choice {
 }
 
 impl Choice {
-    fn value(&self) -> String {
+    pub(crate) fn value(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }
-    fn label(&self, sources: &Sources) -> String {
+    pub(crate) fn label(&self, sources: &Sources) -> String {
         let account = if self.account.is_empty() {
             CATALOG.t("messages-no-account")
         } else if self.service == "tilo" {
@@ -254,6 +254,14 @@ fn answer(
         | MessagesEffect::CompleteLink { .. }
         | MessagesEffect::CancelLink
         | MessagesEffect::ListAccountStates
+        | MessagesEffect::ListGroups { .. }
+        | MessagesEffect::ReadGroupMembership { .. }
+        | MessagesEffect::ReadGroupHistory { .. }
+        | MessagesEffect::SendGroupText { .. }
+        | MessagesEffect::AddGroupMember { .. }
+        | MessagesEffect::RemoveGroupMember { .. }
+        | MessagesEffect::LeaveGroup { .. }
+        | MessagesEffect::CloseGroups
         | MessagesEffect::ReadHistory { .. }
         | MessagesEffect::Send { .. } => {
             return Err(CATALOG.t("messages-transport-unavailable"));
@@ -354,10 +362,14 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
         live.then(|| cx.take_lent()).flatten(),
         cx.me(),
     );
-    register_effects(cx, &sources, &selection, &sending, &history, &setup);
+    let groups = crate::groups::GroupsView::new(sending.client());
+    register_effects(
+        cx, &sources, &selection, &sending, &history, &setup, &groups,
+    );
     register_capture_selection(cx, &sources, &selection);
     let changed_history = history.clone();
     let watched_history = history.clone();
+    let watched_groups = groups.clone();
     let watched_sources = sources.clone();
     let watched_selection = selection.clone();
     let watched_sending = sending.clone();
@@ -368,6 +380,7 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
     let actions = cx.actions();
     let projected_setup = setup.clone();
     let scheduled_setup = setup.clone();
+    let projected_groups = groups.clone();
     Box::new(
         ModelView::from_document(
             move |_, _| {
@@ -376,9 +389,10 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
                     projected_selection.get(),
                     changed_history.revision(),
                     projected_setup.key(),
+                    projected_groups.key(),
                 )
             },
-            move |(_, selected, change, _)| {
+            move |(_, selected, change, _, _)| {
                 if discard_invalid_route(
                     &watched_sources,
                     &watched_selection,
@@ -388,6 +402,7 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
                     watched_jobs.cancel("messages.history");
                 }
                 if last_change.replace(*change) != *change && watched_history.available() {
+                    watched_groups.refresh_loaded(&watched_sources, &watched_jobs);
                     let choice = watched_selection.get().choice;
                     watched_jobs.start::<()>("messages.history", |cx| {
                         watched_history.read(&watched_sources, &watched_selection, &choice, cx)
@@ -406,7 +421,9 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
                         &detail_sending,
                     )
                 }));
-                let detail = if setup.visible() {
+                let detail = if groups.visible() {
+                    groups.panel(&sources, &actions)
+                } else if setup.visible() {
                     setup.panel(&sources, &actions)
                 } else {
                     conversation
@@ -417,7 +434,7 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
                         .filling()
                         .with_child(detail),
                 );
-                navigation(detail, &sources, &actions, selected, &setup)
+                navigation(detail, &sources, &actions, selected, &setup, &groups)
             },
         )
         .with_wake_deadline(move || scheduled_setup.next_wake_deadline()),
@@ -430,13 +447,20 @@ fn navigation(
     actions: &Actions<Messages>,
     selected: &Selection,
     setup: &crate::setup::SetupView,
+    groups: &crate::groups::GroupsView,
 ) -> Element {
-    let overview = overview(sources, actions, &selected.person);
-    let pane = LocalState::new(if selected.person.is_empty() && !setup.visible() {
-        NavPane::Overview
-    } else {
-        NavPane::Content
-    });
+    let overview = Box::new(
+        Column::new()
+            .push(groups.entries(sources, actions))
+            .push(overview(sources, actions, &selected.person)),
+    );
+    let pane = LocalState::new(
+        if selected.person.is_empty() && !setup.visible() && !groups.visible() {
+            NavPane::Overview
+        } else {
+            NavPane::Content
+        },
+    );
     Box::new(
         NavShell::new()
             .overview(overview)
@@ -445,7 +469,9 @@ fn navigation(
                 vec![account_setup_action(actions)],
             )
             .content(detail)
-            .content_header_leading(if setup.visible() {
+            .content_header_leading(if groups.visible() {
+                Box::new(Text::new(&CATALOG.t("messages-list-groups")))
+            } else if setup.visible() {
                 Box::new(Text::new(&CATALOG.t("messages-setup-accounts")))
             } else {
                 route_header(sources, actions, selected)
@@ -512,7 +538,9 @@ fn register_effects(
     sending: &crate::sending::Sending,
     history: &crate::history::HistoryView,
     setup: &crate::setup::SetupView,
+    groups: &crate::groups::GroupsView,
 ) {
+    let effect_groups = groups.clone();
     let effect_setup = setup.clone();
     let effect_sending = sending.clone();
     let state = selection.clone();
@@ -522,8 +550,9 @@ fn register_effects(
     let jobs = cx.jobs();
     let status_history = history.clone();
     cx.effects(move |effect: MessagesEffect, cx| {
-        if crate::setup::SetupView::handles(&effect) { return effect_setup.effect(&effect_sources, effect, cx); }
-        if matches!(effect, MessagesEffect::OpenPerson { .. } | MessagesEffect::Back) { effect_setup.close(); }
+        if crate::groups::GroupsView::handles(&effect) { effect_setup.close(); return effect_groups.effect(&effect_sources, effect, cx); }
+        if crate::setup::SetupView::handles(&effect) { effect_groups.close(); return effect_setup.effect(&effect_sources, effect, cx); }
+        if matches!(effect, MessagesEffect::OpenPerson { .. } | MessagesEffect::Back) { effect_setup.close(); effect_groups.close(); }
 
         if matches!(effect, MessagesEffect::ListAccountStates) {
             let values: Vec<_> = effect_sources.accounts().accounts.iter().filter(|(_, account)| matches!(account.type_id.as_str(), "tilo" | "whatsapp" | "signal" | "sms")).map(|(id, account)| {

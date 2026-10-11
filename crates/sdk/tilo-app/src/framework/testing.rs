@@ -1241,6 +1241,29 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .unwrap_or_default()
     }
 
+    /// What each version did through an action, oldest first.
+    pub fn history(&self) -> Vec<tilo_actions::ActionContext> {
+        self.versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .collect()
+    }
+
+    /// The sentences History shows for `entries` in en-US, through the app's
+    /// own catalogue.
+    pub fn sentences<'e>(
+        &self,
+        entries: impl IntoIterator<Item = &'e tilo_actions::ActionContext>,
+    ) -> Vec<String> {
+        let source = A::catalog().and_then(ui_core::i18n::EmbeddedCatalog::source);
+        let catalogue = tilo_history::Catalogue::new("en-US", &Vec::from_iter(source));
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        entries
+            .into_iter()
+            .map(|entry| reader.sentence(entry))
+            .collect()
+    }
+
     /// The version at `heads` as History mode previews it: the app's own
     /// view, read-only, over the document as it was then.
     ///
