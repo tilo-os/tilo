@@ -1242,6 +1242,7 @@ pub fn build_tilo_overlay_host_with_inputs(
     // handle drives subsequent updates.
     let tree: WorkspaceTree = tree_handle.read().clone();
     launcher::action_authority::Export::of(&tree).publish();
+    launcher::action_authority::follow_tree(&tree_handle);
     for room in tree.rooms() {
         launcher::set_trusted_identity_projection(room, &tree.trusted_identity_projection(room));
     }

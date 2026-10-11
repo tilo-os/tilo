@@ -11,7 +11,9 @@ use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use local_app_records::LocalAppRecord;
-pub use tree_handle::{WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard};
+pub use tree_handle::{
+    WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard, next_policy_revision,
+};
 pub use window_hosting::WindowHosting;
 
 pub use collab_types::caps::{
@@ -692,6 +694,14 @@ pub struct WorkspaceTree {
     /// Projected from the owner, so not persisted.
     #[serde(skip)]
     pub stewarded_rooms: BTreeSet<RoomId>,
+    /// Which version of the authorization-relevant state (grants, roster,
+    /// owner, ...) this tree holds. Advanced by the released write guard that
+    /// changed it ([`WorkspaceTreeHandle::write`]), from one process-wide
+    /// counter, so a larger value is always a later state. A launch records
+    /// the value its captured grants came from; the published policy carries
+    /// the value it was exported at.
+    #[serde(skip)]
+    pub policy_revision: u64,
     /// The host-independent desktop: workspaces, focus pointers and the
     /// schema version. Flattened, so `state.json` keeps its shape.
     #[serde(flatten)]
@@ -815,6 +825,7 @@ impl Default for WorkspaceTree {
             native_authority: super::native_workspace_owner::NativeAuthorityStorage::default(),
             native_runtime: super::native_workspace_owner::NativeStateRuntime::default(),
             stewarded_rooms: BTreeSet::new(),
+            policy_revision: 0,
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
             room_authority: HashMap::new(),
@@ -2645,6 +2656,13 @@ impl WorkspaceTree {
     /// keypress never waits on the disk.
     /// [`crate::shell::persist::wait_for_saves`] waits for them. A copy the
     /// state file refuses (a stale authority snapshot) exports nothing.
+    ///
+    /// There is no debounce or batching: the copy is taken and submitted
+    /// before this returns, and a submission for a path that has not started
+    /// writing is replaced by the newer copy, which holds every earlier
+    /// revision. The released write guard calls this itself for every write
+    /// that changes authorization state, so no policy revision depends on a
+    /// caller remembering to save.
     pub fn queue_save(&self) {
         let started = std::time::Instant::now();
         let export = self.fs_capability_export();
