@@ -237,7 +237,8 @@ impl Vocabulary {
     /// ([`reset_type_schemas`](crate::reset_type_schemas)) and answers the
     /// same list after: publishing, binding a verb or reading an action no
     /// longer rebuilds every verb's parameters and builder.
-    pub(crate) fn declarations(&self) -> Rc<[Declaration]> {
+    #[must_use]
+    pub fn declarations(&self) -> Rc<[Declaration]> {
         type Kept = (u64, HashMap<TypeId, Rc<[Declaration]>>);
         thread_local! {
             static KEPT: RefCell<Kept> = RefCell::new((0, HashMap::new()));

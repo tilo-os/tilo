@@ -731,9 +731,10 @@ pub fn offered_on_items<R: Resource>(
     others: &[tilo_actions::Resource],
     sizes: &[(&'static str, usize)],
     actions: &[ItemAction],
-) -> Option<Vec<&'static str>> {
-    let mut declared: Vec<(&'static str, Vec<&str>)> = Vec::new();
+    nested: &dyn Fn(&ItemAction) -> bool,
+) -> Vec<&'static str> {
     let declarations = vocabulary::<R>().declarations();
+    let mut declared: Vec<(&'static str, Vec<&str>)> = Vec::with_capacity(declarations.len());
     for decl in declarations.iter() {
         let mut names = Vec::with_capacity(decl.params.len());
         for param in &decl.params {
@@ -741,44 +742,53 @@ pub fn offered_on_items<R: Resource>(
         }
         declared.push((decl.id, names));
     }
-    offered_on_items_of(others, sizes, actions, &declared)
+    offered_on_items_of(others, sizes, actions, &declared, nested)
 }
 
 /// [`offered_on_items`] over the declarations `declared` (id and parameter
-/// names each).
+/// names each). A verb on items of a nested collection is offered when
+/// `nested` says such an item is published.
 fn offered_on_items_of(
     others: &[tilo_actions::Resource],
     sizes: &[(&'static str, usize)],
     actions: &[ItemAction],
     declared: &[(&'static str, Vec<&str>)],
-) -> Option<Vec<&'static str>> {
-    // Verbs on items of a nested collection are known only from the items.
-    if actions.iter().any(|action| !action.within.is_empty()) {
-        return None;
-    }
+    nested: &dyn Fn(&ItemAction) -> bool,
+) -> Vec<&'static str> {
     let fields: Vec<&str> = sizes.iter().map(|(field, _)| *field).collect();
     // `item_children` binds the first declaration of an action's id.
     let first = |id: &str| declared.iter().find(|(declared, _)| *declared == id);
-    declared
-        .iter()
-        .filter(|(id, params)| {
-            let on_items = actions.iter().any(|action| {
-                action.action == *id
-                    && first(action.action).is_some_and(|(_, bound)| {
-                        // What `offered_bound` asks of the item's spec: it
-                        // takes fewer parameters than the declaration.
-                        let kept = bound.iter().filter(|name| **name != action.param).count();
-                        kept < params.len()
-                    })
+    let mut offered = Vec::new();
+    for (id, params) in declared {
+        let on_items = actions.iter().any(|action| {
+            if action.action != *id {
+                return false;
+            }
+            let Some((_, bound)) = first(action.action) else {
+                return false;
+            };
+            if action.within.is_empty() {
+                // What `offered_bound` asks of the item's spec: it takes
+                // fewer parameters than the declaration.
+                let kept = bound.iter().filter(|name| **name != action.param).count();
+                kept < params.len()
                     && sizes
                         .iter()
                         .any(|&(field, size)| size > 0 && targets(action, &fields, field))
-            });
-            on_items || offered_bound_as(others, id, params.len())
-        })
-        .map(|(id, _)| *id)
-        .collect::<Vec<_>>()
-        .into()
+            } else {
+                // A nested item binds the ids of the items it sits in too.
+                let kept = bound
+                    .iter()
+                    .filter(|name| **name != action.param && !action.within_params.contains(name))
+                    .count();
+                kept < params.len() && nested(action)
+            }
+        });
+        if on_items || offered_bound_as(others, id, params.len()) {
+            offered.push(*id);
+        }
+    }
+    offered
 }
 
 /// The spec of `decl` with its item parameter bound to `item`.

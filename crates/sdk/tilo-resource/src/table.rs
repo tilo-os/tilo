@@ -106,7 +106,7 @@ enum Desc {
 }
 
 impl ModelTable {
-    const fn record(&self) -> Option<&'static RecordDesc> {
+    pub(crate) const fn record(&self) -> Option<&'static RecordDesc> {
         match self.desc {
             Desc::Record(record) => Some(record),
             _ => None,
@@ -168,6 +168,15 @@ pub struct ItemOps {
     label_of_item: fn(&dyn Any, &crate::Id) -> Option<String>,
     item_texts: fn(&dyn Any, &'static str, &mut Vec<ItemText>),
     nested_items: fn(&dyn Any, &'static str, &mut Vec<ItemCollection>),
+    /// The items, whatever their type.
+    list: for<'a> fn(&'a dyn Any) -> Option<&'a dyn crate::collection::ItemList>,
+    /// The items' type's table.
+    item_table: &'static ModelTable,
+}
+
+/// A collection whose items are published: its items' type's table.
+pub trait PublishedItems: crate::collection::ItemList + ItemSource + 'static {
+    const ITEM_TABLE: &'static ModelTable;
 }
 
 /// One field of a record, as [`RecordDesc`] lists it.
@@ -621,8 +630,10 @@ fn no_schemas(_: &ModelTable, _: &str, _: &mut Vec<(String, serde_json::Value)>)
 /// The [`ItemOps`] of a collection type.
 pub struct ItemOpsOf<C>(PhantomData<C>);
 
-impl<C: ItemSource + 'static> ItemOpsOf<C> {
+impl<C: PublishedItems> ItemOpsOf<C> {
     pub const OPS: ItemOps = ItemOps {
+        list: |value| Some(value.downcast_ref::<C>()? as &dyn crate::collection::ItemList),
+        item_table: C::ITEM_TABLE,
         item_collection: item_collection_of::<C>,
         item_presence: item_presence_of::<C>,
         label_of_item: label_of_item_of::<C>,
@@ -3127,3 +3138,35 @@ pub static MAP_OPS: ModelOps = ModelOps {
         }
     },
 };
+
+/// Whether the record `value` (described by `record`) holds an item at the
+/// end of `path`: collection fields by their Rust names, the outer ones
+/// looked into item by item over their first published page, as a
+/// publication lists them.
+#[must_use]
+pub fn holds_nested_items(record: &RecordDesc, value: &dyn Any, path: &[&str]) -> bool {
+    let Some((name, rest)) = path.split_first() else {
+        return false;
+    };
+    let Some((index, field)) = record
+        .fields
+        .iter()
+        .enumerate()
+        .find(|(_, field)| field.items.is_some() && field.name == *name)
+    else {
+        return false;
+    };
+    let (Some(items), Some(inner)) = (field.items, (record.field)(value, index)) else {
+        return false;
+    };
+    if rest.is_empty() {
+        return (items.item_presence)(inner) > 0;
+    }
+    let (Some(list), Some(item)) = ((items.list)(inner), items.item_table.record()) else {
+        return false;
+    };
+    (0..list.count().min(crate::items::ITEM_PAGE)).any(|at| {
+        list.item(at)
+            .is_some_and(|(_, value)| holds_nested_items(item, value, rest))
+    })
+}

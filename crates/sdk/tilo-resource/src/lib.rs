@@ -185,6 +185,22 @@ pub mod __private {
 
     pub use crate::apply_cache::forget_all;
 
+    /// Whether `record` holds an item where the nested item verb `action`
+    /// acts: what its children would offer it bound on.
+    #[must_use]
+    pub fn holds_nested_items(
+        record: &crate::table::RecordDesc,
+        state: &dyn std::any::Any,
+        action: &crate::items::ItemAction,
+    ) -> bool {
+        let Some(field) = action.collection else {
+            return false;
+        };
+        let mut path: Vec<&str> = action.within.to_vec();
+        path.push(field);
+        crate::table::holds_nested_items(record, state, &path)
+    }
+
     /// A record to copy, if its type can be copied: `#[resource]` asks for
     /// `(&&Snapshot(record)).snapshot()`, which method resolution answers
     /// with [`SnapshotByClone`] for a `Clone` record and with

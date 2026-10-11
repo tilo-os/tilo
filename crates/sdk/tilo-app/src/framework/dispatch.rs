@@ -686,7 +686,10 @@ impl<R: Resource> Dispatcher<R> {
                 Err(_) => !self.read_only(),
             };
         }
-        match R::declarations().iter().find(|decl| decl.id == invoke.id) {
+        // The kept list: building every declaration per invocation was a
+        // keystroke's worth of work.
+        let declarations = tilo_resource::vocabulary::<R>().declarations();
+        match declarations.iter().find(|decl| decl.id == invoke.id) {
             Some(decl) => self.may(&ActionNeed {
                 kind: decl.kind,
                 field: decl.field.map(str::to_owned),

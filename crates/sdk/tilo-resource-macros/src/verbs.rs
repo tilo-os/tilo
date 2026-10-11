@@ -1305,15 +1305,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                     &others,
                     &<Self as #krate::Fields>::item_collection_sizes(state),
                     &[#(#item_actions),*],
+                    &|action| #krate::__private::holds_nested_items(&Self::__RECORD, state, action),
                 )
-                .unwrap_or_else(|| {
-                    let children = <Self as #krate::Resource>::children(state);
-                    <Self as #krate::Resource>::declarations()
-                        .iter()
-                        .filter(|decl| #krate::items::offered_bound(&children, decl))
-                        .map(|decl| decl.id)
-                        .collect()
-                })
             }
         }
     };

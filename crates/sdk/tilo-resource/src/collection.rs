@@ -958,9 +958,14 @@ impl<T: Model> crate::items::ItemSource for Collection<T> {
 
 /// Items with their ids, whatever their type and wherever their ids are
 /// kept: what listing them for publication and search reads.
-pub(crate) trait ItemList {
+#[doc(hidden)]
+pub trait ItemList {
     fn count(&self) -> usize;
     fn item(&self, at: usize) -> Option<(Id, &dyn Any)>;
+}
+
+impl<T: Model> crate::table::PublishedItems for Collection<T> {
+    const ITEM_TABLE: &'static ModelTable = T::TABLE;
 }
 
 impl<T: 'static> ItemList for Collection<T> {

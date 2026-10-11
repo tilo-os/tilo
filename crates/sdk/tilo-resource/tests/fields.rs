@@ -856,3 +856,36 @@ fn a_field_edit_refuses_null_for_a_field_that_is_not_optional() {
         .unwrap();
     assert_eq!(board.state().unwrap().cards, 3);
 }
+
+#[test]
+fn a_nested_item_verb_is_known_offered_without_building_children() {
+    use tilo_resource::Resource as _;
+    let built = |deck: &Deck| -> Vec<&'static str> {
+        let children = Deck::children(deck);
+        let mut ids = Vec::new();
+        for decl in Deck::declarations() {
+            if tilo_resource::items::offered_bound(&children, &decl) {
+                ids.push(decl.id);
+            }
+        }
+        ids
+    };
+    let mut deck = Deck::default();
+    assert_eq!(Deck::children_offer_bound(&deck), built(&deck), "no slides");
+    deck.slides.push(Id::from_raw("s1"), Slide::default());
+    assert_eq!(
+        Deck::children_offer_bound(&deck),
+        built(&deck),
+        "a slide, no elements"
+    );
+    assert!(Deck::children_offer_bound(&deck).is_empty());
+    if let Some(slide) = deck.slides.get_mut(&Id::from_raw("s1")) {
+        slide.elements.push(Id::from_raw("e1"), Element::default());
+    }
+    assert_eq!(
+        Deck::children_offer_bound(&deck),
+        built(&deck),
+        "an element"
+    );
+    assert_eq!(Deck::children_offer_bound(&deck), ["nudge"]);
+}

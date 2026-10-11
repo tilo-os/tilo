@@ -456,6 +456,10 @@ impl<T: Model + Identified, S> crate::items::ItemSource for Items<T, S> {
     }
 }
 
+impl<T: Model + Identified, S: 'static> crate::table::PublishedItems for Items<T, S> {
+    const ITEM_TABLE: &'static crate::table::ModelTable = T::TABLE;
+}
+
 impl<T: Model + Identified, S> crate::collection::ItemList for Items<T, S> {
     fn count(&self) -> usize {
         self.items.len()
