@@ -1050,3 +1050,6 @@ params = []
     );
     relay.shutdown().await;
 }
+
+#[path = "governed_rooms/topology_namespace.rs"]
+mod topology_namespace;

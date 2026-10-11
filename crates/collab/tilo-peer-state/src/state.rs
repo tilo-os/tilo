@@ -32,6 +32,7 @@ use backend::{LegacyNative, PeerCore, PeerDocument};
 mod local_admission;
 mod local_outbox;
 mod owner_membership;
+mod topology_namespace;
 mod workspace_effects;
 mod workspace_membership;
 mod workspace_tasks;

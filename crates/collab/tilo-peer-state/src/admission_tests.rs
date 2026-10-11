@@ -331,6 +331,50 @@ fn source_room_signature_and_aged_checkpoint_fail_closed() {
     );
     assert!(receiver.rows().is_empty());
 }
+/// [`seeded`], with the room owned by another person and the fixture's
+/// person an Editor of it: a member whose grants a governor can narrow.
+pub(crate) fn seeded_editor() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
+    let (a, ac, b, bc, now) = fixtures();
+    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let mut doc = crate::room::candidate(
+        None,
+        &seed_room(room, &ac, &[ac.clone(), bc.clone()]).unwrap(),
+    )
+    .unwrap();
+    doc.put(ROOT, "owner", "another-person").unwrap();
+    let members = doc.get(ROOT, "members").unwrap().unwrap().1;
+    doc.put(
+        &members,
+        hex::encode(bc.user_public_key).as_str(),
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&collab_types::Role::Editor).unwrap()),
+    )
+    .unwrap();
+    let room_changes = doc
+        .get_changes(&[])
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    let mut native = StatePeer::new(
+        room,
+        ac.clone(),
+        vec![ac, bc.clone()],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    native
+        .install_seed(
+            SeedState {
+                room_changes,
+                documents: vec![],
+            },
+            &a,
+            now,
+        )
+        .unwrap();
+    (native, a, b, bc, now)
+}
+
 pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
     let (a, ac, b, bc, now) = fixtures();
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

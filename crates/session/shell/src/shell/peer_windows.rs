@@ -429,19 +429,39 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
         return Err("That workspace is gone".to_string());
     };
     let room = ws.room;
-    let Some(record) = tree
-        .room_tab_record(room, item.tab)
-        .and_then(|record| ui::record::RecordId::parse(&record))
-    else {
-        return Ok(false);
+    let record = if let Some(record) = tree.room_tab_record(room, item.tab) {
+        let Some(record) = ui::record::RecordId::parse(&record) else {
+            return Ok(false);
+        };
+        record
+    } else {
+        // Reuse the SDK's existing component identity rule. A primary
+        // document belongs to (room, app), not to a minted window record.
+        // Other unbound apps keep waiting for their exact record binding.
+        let checkout = ui::record::RecordCheckout::for_component_tab(
+            &item.app_id,
+            item.tab,
+            ui::record::RecordKind::new("primary"),
+        );
+        if !checkout.id.is_package_primary() {
+            return Ok(false);
+        }
+        checkout.id
     };
-    let (Some(reader), Some(data_home)) =
-        (HOSTED_RECORDS.get(), ::launcher::appdir::host_data_home())
-    else {
+    let Some(reader) = HOSTED_RECORDS.get() else {
         return Err("This workspace's records are not reachable here".to_string());
     };
     let Ok(bytes) = reader(room, &item.app_id, &record) else {
         return Ok(false);
+    };
+    if record.is_package_primary() {
+        // The native SDK opens this existing admitted document through its
+        // normal broker/channel. Never copy it into a minted-record profile
+        // or turn a peer window into a new primary document.
+        return Ok(true);
+    }
+    let Some(data_home) = ::launcher::appdir::host_data_home() else {
+        return Err("This workspace's records are not reachable here".to_string());
     };
     let address = RecordAddress {
         room,
