@@ -802,7 +802,18 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
         .and_then(std::num::NonZeroUsize::new)
         .unwrap_or(std::num::NonZeroUsize::MIN.saturating_add(1));
     tilo_startup_metrics::mark("window-vello-init-start");
-    let renderer = Renderer::new(
+    // This app's own pipelines from its last launch, else the session's.
+    let pipelines = crate::pipeline_cache::AppPipelineCache::open(device_handle);
+    // The first frame waits for this. Build only what it dispatches; the
+    // render worker starts the rest once that frame is presented. On a
+    // software adapter the worker rasterizes frames on the CPU and vello draws
+    // only backdrop blurs, so none of its pipelines are on the way there.
+    let deferral = if crate::render_thread::rasterizes_on_cpu(&device_handle.adapter.get_info()) {
+        vello::PipelineDeferral::All
+    } else {
+        vello::PipelineDeferral::Unused
+    };
+    let renderer = Renderer::new_deferring(
         device,
         RendererOptions {
             // Diagnostic/low-end fallback: CPU coarse stages with the same
@@ -815,13 +826,20 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
             // memory pressure on exactly the low-end devices we target.
             antialiasing_support: vello::AaSupport::area_only(),
             num_init_threads: Some(shader_threads),
-            // The session's compiled pipelines, so an app's first launch
-            // does not compile vello again for its own empty shader cache.
-            pipeline_cache: crate::pipeline_seed::seeded(device_handle),
+            // Pipelines already compiled, so a launch does not compile vello
+            // again for its own empty shader cache.
+            pipeline_cache: pipelines
+                .as_ref()
+                .map(|pipelines| pipelines.cache().clone()),
         },
+        deferral,
     )
     .map_err(|e| format!("could not create the renderer: {e}"))?;
     tilo_startup_metrics::mark("window-vello-init-done");
+    // Kept once the render worker has built the deferred pipelines too.
+    if let Some(pipelines) = pipelines {
+        pipelines.keep_until_built();
+    }
     #[cfg(all(windows, feature = "dx12-shader-cache"))]
     device_handle.finish_shader_cache();
     Ok(renderer)
