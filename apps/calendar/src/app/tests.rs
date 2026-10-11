@@ -1146,17 +1146,7 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
     }
     // Case `direct_task_detail_choices_match_their_resource_action_envelopes`.
     {
-        use tilo_actions::ActionInput;
         use ui::widget::Widget;
-
-        fn prompted(spec: &tilo_actions::ActionSpec, value: &str) -> tilo_actions::EncodedAction {
-            match &spec.input {
-                ActionInput::Prompted { build, .. } => build(value),
-                ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                    panic!("{} must prompt for a choice", spec.id)
-                }
-            }
-        }
 
         let mut app = CalendarApp::new_demo();
         let mut state = demo_document(&app);
@@ -1207,7 +1197,7 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
         app.apply_action(Action::SetTaskDue(Some(due)), &mut Edits::lend(&mut state));
         assert_eq!(
             app.last_dispatched().unwrap().payload,
-            prompted(due_spec, "2026-09-09").payload
+            due_spec.build_text("2026-09-09").unwrap().payload
         );
 
         let priority_spec = task
@@ -1218,7 +1208,7 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
         app.set_selected_task_priority(Priority::Medium, &mut Edits::lend(&mut state));
         assert_eq!(
             app.last_dispatched().unwrap().payload,
-            prompted(priority_spec, "p2").payload
+            priority_spec.build_text("p2").unwrap().payload
         );
 
         let project = app.model.projects[0].id;
@@ -1230,7 +1220,10 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
         app.set_selected_task_project(Some(project), &mut Edits::lend(&mut state));
         assert_eq!(
             app.last_dispatched().unwrap().payload,
-            prompted(project_spec, &crate::actions::project_resource_id(project),).payload
+            project_spec
+                .build_text(&crate::actions::project_resource_id(project))
+                .unwrap()
+                .payload
         );
     }
 }
