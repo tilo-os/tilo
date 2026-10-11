@@ -3069,13 +3069,16 @@ pub(crate) fn queue_package_target_in_workspace(
     workspace: &Workspace,
     uri: String,
 ) -> Result<(), LaunchError> {
-    queue_package_open(package_id, workspace, None, Some(uri))
+    queue_package_open(package_id, None, workspace, None, Some(uri))
 }
 
 /// Open `document` or `uri` (or just the app) in the package `package_id`
 /// into `workspace`, resolving the package on the preflight worker. For
 /// callers on the compositor thread that hold an app id and not an
-/// [`InstalledApp`]; a refusal arrives as a launch event.
+/// [`InstalledApp`]; a refusal arrives as a launch event, named
+/// `display_name` when the caller knows what the person asked to open (a
+/// package that is no longer installed has no registry name to fall back
+/// on), else the package's own display name.
 ///
 /// # Errors
 ///
@@ -3083,6 +3086,7 @@ pub(crate) fn queue_package_target_in_workspace(
 /// worker cannot be started.
 pub(crate) fn queue_package_open(
     package_id: String,
+    display_name: Option<String>,
     workspace: &Workspace,
     document: Option<PathBuf>,
     uri: Option<String>,
@@ -3121,7 +3125,8 @@ pub(crate) fn queue_package_open(
             if let Err(error) = outcome {
                 super::launch_readiness::fail_current(error.user_message());
                 push_event(LaunchEvent {
-                    display_name: package_id.clone(),
+                    display_name: display_name
+                        .unwrap_or_else(|| display_name_for_package_id(&package_id)),
                     package_id,
                     managed_agent_id: None,
                     managed_workspace_id: None,

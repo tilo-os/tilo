@@ -57,12 +57,13 @@ fn window_widths_clamp_migrate_and_round_trip_as_fractions() {
     // Phase `window_width_clamp`.
     {
         // A width is a fraction of the strip, so out-of-range fractions clamp
-        // into the legal share band rather than into a pixel band.
-        assert_eq!(WindowWidth::Fraction(5).permille(), 150);
-        assert_eq!(WindowWidth::Fraction(9999).permille(), 1000);
-        // And the resolved pixels track the display, which is the point.
-        assert!((WindowWidth::Fraction(9999).resolve(1600.0) - 1600.0).abs() <= f64::EPSILON);
-        assert!((WindowWidth::Fraction(9999).resolve(3840.0) - 3840.0).abs() <= f64::EPSILON);
+        // into the storable band rather than into a pixel band.
+        assert_eq!(WindowWidth::Fraction(0).permille(), 1);
+        assert_eq!(WindowWidth::Fraction(65_000).permille(), 10_000);
+        // And the resolved pixels track the display, which is the point: a
+        // group may be wider than the strip, which then scrolls.
+        assert!((WindowWidth::Fraction(1500).resolve(1600.0) - 2400.0).abs() < 1e-9);
+        assert!((WindowWidth::Fraction(1500).resolve(3840.0) - 5760.0).abs() < 1e-9);
     }
 
     // Phase `fraction_widths_round_trip_through_persisted_json`.

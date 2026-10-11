@@ -66,6 +66,16 @@ fn assert_xrgb_pixels_eq(actual: &[u8], expected: &[u8], label: &str) {
             });
         }
     }
+    {
+        // TEMP-DEBUG
+        let mut list = Vec::new();
+        for (index, (&a, &e)) in actual.iter().zip(expected).enumerate() {
+            if a != e && list.len() < 40 {
+                list.push((index / 4 % NATIVE_WIDTH as usize, index / xrgb_pitch(), index % 4, a, e));
+            }
+        }
+        eprintln!("TEMP-DEBUG {label} mismatches {list:?}");
+    }
     // Independent WGPU recordings can differ by a one-unit rounding result at a
     // handful of blend edges. Keep the oracle tight enough to catch structural
     // divergence while admitting that bounded backend raster noise.
@@ -1184,6 +1194,12 @@ fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels(
             dirty_pixels * 2 < u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT),
             "a wide tile's two small edits must exercise sparse admission"
         );
+        // A fresh dense oracle: its image atlas keeps the previous frame
+        // resident for two passes, and at density 2 this 3456x2056 tile's
+        // 6912x4112 buffer cannot share the 8192 px atlas with its own
+        // predecessor, so a reused oracle would omit the new frame and
+        // compare against a blank tile rather than against the truth.
+        oracle = bridge();
         paint_retained_and_compare(
             &mut retained,
             &mut oracle,
