@@ -581,7 +581,7 @@ fn open_reader<A: ResourceApp>(
 fn unopened<A: ResourceApp>(context: HostContext, reason: String) -> AppComponent {
     let mut component = AppComponent::new(
         context,
-        Box::new(super::root::Unopened::<A::Resource>::new(
+        Box::new(super::root::Unopened::new::<A::Resource>(
             A::TITLE,
             icon::<A>(),
             reason,

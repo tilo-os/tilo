@@ -2283,30 +2283,42 @@ mod search_tests {
 /// The window of a record that did not read as the resource when it was
 /// opened: why, instead of the app's view, and the resource's actions
 /// published as unavailable for that reason.
-pub(crate) struct Unopened<R: Resource> {
+pub(crate) struct Unopened {
     title: &'static str,
     icon: IconDescriptor,
-    reason: String,
+    /// What it publishes: the resource's declared actions, every document
+    /// one unavailable for the reason.
+    resource: tilo_actions::Resource,
     shown: ui_core::widget::EmptyState,
-    marker: std::marker::PhantomData<fn() -> R>,
 }
 
-impl<R: Resource> Unopened<R> {
-    pub(crate) fn new(title: &'static str, icon: IconDescriptor, reason: String) -> Self {
+impl Unopened {
+    /// The window of a record that does not read as `R`. Only this
+    /// constructor knows `R`; the widget itself is the same for every
+    /// resource type.
+    pub(crate) fn new<R: Resource>(
+        title: &'static str,
+        icon: IconDescriptor,
+        reason: String,
+    ) -> Self {
+        let mut resource = tilo_actions::Resource::new(R::KIND, R::KIND, R::LABEL);
+        for decl in R::declarations() {
+            resource = resource.with_action(tilo_resource::declaration_spec::<R>(&decl));
+        }
+        withhold_document_actions(&mut resource, &reason);
         Self {
             title,
             icon,
             shown: ui_core::widget::EmptyState::error(
                 ui_core::i18n::I18nManager::lookup_plain("framework-unreadable"),
-                reason.clone(),
+                reason,
             ),
-            reason,
-            marker: std::marker::PhantomData,
+            resource,
         }
     }
 }
 
-impl<R: Resource> Decorator for Unopened<R> {
+impl Decorator for Unopened {
     ui_core::provides!(dyn ui_core::resources::PublishesResources);
 
     type Inner = ui_core::widget::EmptyState;
@@ -2320,18 +2332,13 @@ impl<R: Resource> Decorator for Unopened<R> {
     }
 }
 
-impl<R: Resource> ui_core::resources::PublishesResources for Unopened<R> {
+impl ui_core::resources::PublishesResources for Unopened {
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resource = tilo_actions::Resource::new(R::KIND, R::KIND, R::LABEL);
-        for decl in R::declarations() {
-            resource = resource.with_action(tilo_resource::declaration_spec::<R>(&decl));
-        }
-        withhold_document_actions(&mut resource, &self.reason);
-        vec![resource]
+        vec![self.resource.clone()]
     }
 }
 
-impl<R: Resource> AppWidget for Unopened<R> {
+impl AppWidget for Unopened {
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
     }

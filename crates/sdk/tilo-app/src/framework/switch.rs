@@ -16,28 +16,40 @@ use ui_core::{LocalState, Theme, taffy};
 
 type BuildPart<K> = Box<dyn Fn(&K, &Rc<()>) -> Element>;
 
+/// The part for the key now, built with the given liveness token, when the
+/// key moved since the part shown was built; `None` while it has not.
+type Rebuild = Box<dyn FnMut(&Rc<()>) -> Option<Element>>;
+
 /// The part [`ViewCx::switch`](super::ViewCx::switch) shows for the current
 /// key. Rebuilt when the key changes; dropping the old part retires every
-/// binding it registered.
-pub(crate) struct Switch<K> {
-    key: LocalState<K>,
-    shown: K,
-    build: BuildPart<K>,
+/// binding it registered. The key's type stays in the constructor, so the
+/// widget is one type whatever the key.
+pub(crate) struct Switch {
+    rebuild: Rebuild,
     /// Dropping it retires every binding the shown part registered.
     alive: Rc<()>,
     part: Element,
     structure_dirty: bool,
 }
 
-impl<K: Clone + PartialEq + 'static> Switch<K> {
-    pub(crate) fn new(key: LocalState<K>, build: BuildPart<K>) -> Self {
-        let shown = key.with(Clone::clone);
+impl Switch {
+    pub(crate) fn new<K: Clone + PartialEq + 'static>(
+        key: LocalState<K>,
+        build: BuildPart<K>,
+    ) -> Self {
+        let mut shown = key.with(Clone::clone);
         let alive = Rc::new(());
         let part = build(&shown, &alive);
         Self {
-            key,
-            shown,
-            build,
+            rebuild: Box::new(move |alive| {
+                let current = key.with(Clone::clone);
+                if current == shown {
+                    return None;
+                }
+                let part = build(&current, alive);
+                shown = current;
+                Some(part)
+            }),
             alive,
             part,
             structure_dirty: false,
@@ -45,19 +57,16 @@ impl<K: Clone + PartialEq + 'static> Switch<K> {
     }
 
     fn reconcile(&mut self) {
-        let current = self.key.with(Clone::clone);
-        if current == self.shown {
-            return;
-        }
         let alive = Rc::new(());
-        self.part = (self.build)(&current, &alive);
-        self.alive = alive;
-        self.shown = current;
-        self.structure_dirty = true;
+        if let Some(part) = (self.rebuild)(&alive) {
+            self.part = part;
+            self.alive = alive;
+            self.structure_dirty = true;
+        }
     }
 }
 
-impl<K: Clone + PartialEq + 'static> Widget for Switch<K> {
+impl Widget for Switch {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.reconcile();
         self.part.sync(state, path);
