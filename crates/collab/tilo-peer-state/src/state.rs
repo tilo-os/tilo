@@ -1561,6 +1561,41 @@ impl StatePeer {
             .map(|entry| entry.doc.base_heads())
     }
 
+    /// Whether `record`'s governed checkpoint is still arriving: the room
+    /// already carries its coverage, but the checkpoint body it names has
+    /// not been admitted, so the document's accepted checkpoint is an older
+    /// one. A restoring read refuses this room until the body arrives; it is
+    /// a cut in flight, not a damaged replica.
+    #[must_use]
+    pub fn checkpoint_pending(&self, app: &str, record: &str) -> bool {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let Some(document) = self.core.documents.get(&route) else {
+            return false;
+        };
+        let snapshot = document
+            .covered_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.0.bytes.as_slice());
+        let room = self
+            .core
+            .room_doc
+            .as_deref()
+            .map(crate::room::read::LegacyRead);
+        matches!(
+            crate::coverage::read::governed_snapshot_matches(
+                room.as_ref(),
+                app,
+                record,
+                snapshot,
+                &crate::coverage::read::LegacyCoverage,
+            ),
+            Err(crate::coverage::read::CoverageMatchError::NoMatch)
+        )
+    }
+
     /// Heads of a plaintext, causally complete document. Missing, encrypted,
     /// and incomplete routes return `None` so a caller falls through to a
     /// restoring read and keeps that refusal.

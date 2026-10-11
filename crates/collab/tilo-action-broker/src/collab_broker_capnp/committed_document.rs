@@ -64,6 +64,9 @@ impl NativeDocumentReadContext {
 /// Data only. Its provider retains the actual bounded native save's lifetime.
 pub enum NativeDocumentRead {
     Unchanged([u8; 32]),
+    /// The record's governed checkpoint is still arriving: not readable
+    /// yet, and no failure. The reader asks again.
+    Pending,
     Captured {
         revision: [u8; 32],
         body: Box<dyn DocumentBytes>,
@@ -443,6 +446,7 @@ impl CapnpChannelHandle {
         service.authorize(&context)?;
         match read {
             NativeDocumentRead::Unchanged(revision) => Ok(Reply::Unchanged { revision }),
+            NativeDocumentRead::Pending => Ok(Reply::Unavailable),
             NativeDocumentRead::Captured { revision, body } => {
                 let id = self
                     .state
