@@ -21,7 +21,7 @@ use smithay::input::keyboard::FilterResult;
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
     GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
-    GestureSwipeUpdateEvent, MotionEvent,
+    GestureSwipeUpdateEvent,
 };
 use smithay::input::touch::{
     DownEvent as TouchDownEvent, MotionEvent as TouchMotionEvent, UpEvent as TouchUpEvent,
@@ -623,15 +623,7 @@ impl State {
             .and_then(|_| target.map(|(_, origin)| origin));
         let serial = mint_serial(self);
         let time = event_time(self);
-        pointer.motion(
-            self,
-            focus,
-            &MotionEvent {
-                location: SmithayPoint::from(global),
-                serial,
-                time,
-            },
-        );
+        self.move_seat_pointer(&pointer, focus, global, (serial, time));
         pointer.frame(self);
         // `wl_pointer.motion` itself has no serial. Smithay uses this serial
         // only when the motion changes focus and emits `wl_pointer.enter`, so
