@@ -2263,6 +2263,17 @@ pub trait Widget {
         }
     }
 
+    /// Whether, after this frame's draw, this widget's own
+    /// [`Self::collect_damage`] covers every pixel a relayout changed by
+    /// moving or resizing its layout box: a host that repaints where moved
+    /// widgets were and are may then leave this widget's box to it (its
+    /// children's boxes still count). A block editor that grew by a
+    /// paragraph says where its blocks were and are; the default does not
+    /// claim it.
+    fn damage_covers_own_box(&self) -> bool {
+        false
+    }
+
     /// Called after this widget's scene lands in the composed frame, to
     /// clear a `dirty` flag. Default forwards to children.
     fn mark_drawn(&mut self) {

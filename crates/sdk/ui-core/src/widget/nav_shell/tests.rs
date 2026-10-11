@@ -1109,3 +1109,32 @@ fn a_hidden_inspector_animation_waits_until_the_drawer_is_painted() {
         "opening the drawer paints the retained animation"
     );
 }
+
+#[test]
+fn a_toast_floats_over_the_bottom_corner_and_a_click_dismisses_it() {
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    h.root_mut::<NavShell>().mark_drawn();
+    h.root_mut::<NavShell>().toast("Saved", ToastKind::Success);
+    assert!(h.root::<NavShell>().needs_redraw(), "a new notice repaints");
+    settle(&mut h, 1280, 800);
+    let card = h.root::<NavShell>().toasts.get_rect();
+    assert!(
+        card.width() > 0.0 && card.x1 < 1280.0 && card.y1 < 800.0 && card.y0 > 400.0,
+        "the notice sits inside the window's bottom trailing corner: {card:?}"
+    );
+    assert_eq!(h.root::<NavShell>().toast_text(), Some("Saved"));
+    let announced = h
+        .root::<NavShell>()
+        .children()
+        .last()
+        .and_then(|child| child.accessibility())
+        .and_then(|node| node.value);
+    assert_eq!(
+        announced.as_deref(),
+        Some("Saved"),
+        "a live region announces it"
+    );
+    h.click_at(card.center().x, card.center().y);
+    assert_eq!(h.root::<NavShell>().toast_text(), None);
+}

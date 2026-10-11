@@ -863,6 +863,187 @@ fn tagging_a_note_damages_its_header_not_the_app() {
     }
 }
 
+/// Write `lines` as the note's paragraphs, the caret ending in the last.
+fn write_paragraphs(app: &mut App, host: &mut Host, lines: &[&str]) {
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            host.key(app, &Key::Named(NamedKey::Enter));
+        }
+        type_text(app, host, line);
+    }
+    host.frames(app, 3);
+}
+
+/// Put the caret in the paragraph showing `text`, `back` characters before
+/// its end.
+fn caret_in(app: &mut App, host: &mut Host, text: &str, back: usize) {
+    host.click(app, bounds_of_value(app, text).center());
+    // The pointer leaves the text, so no hover comes and goes meanwhile.
+    host.input(app, cursor_moved(640.0, 860.0));
+    host.key(app, &Key::Named(NamedKey::End));
+    for _ in 0..back {
+        host.key(app, &Key::Named(NamedKey::ArrowLeft));
+    }
+    host.frames(app, 3);
+}
+
+/// Press `key` after the previous edit's save landed, as a person does
+/// between edits: what the key repainted, checked against a full render and
+/// logged as `case`, and its keystroke→frame time.
+fn measure_key(
+    app: &mut App,
+    host: &mut Host,
+    (theme, case): (&Theme, &str),
+    key: &Key,
+) -> (Repainted, std::time::Duration) {
+    let_the_save_land(app, host);
+    let_it_rest(app, host);
+    let (pressed, elapsed) = measure(app, host, theme, case, |app, host| host.key(app, key));
+    eprintln!(
+        "notes-damage {case} frame_px={:.0} total_px={:.0} whole={} of {:.0} keystroke_to_frame={elapsed:?}",
+        pressed.largest,
+        pressed.total,
+        pressed.whole,
+        app_area(),
+    );
+    (pressed, elapsed)
+}
+
+/// A key that adds or removes a block: the block, the rows of the blocks
+/// below it that moved (where they were and are), the caret's drag handle and
+/// the save bubble; never the window, nor the page.
+fn assert_block_change(name: &str, case: &str, repainted: Repainted) {
+    assert!(!repainted.whole, "{name}: {case} repainted the app whole");
+    assert!(
+        repainted.largest < app_area() * 0.25,
+        "{name}: {case} repainted {:.0} px, over 25 % of the app",
+        repainted.largest
+    );
+}
+
+#[test]
+fn enter_that_adds_a_block_damages_the_blocks_below_not_the_window() {
+    let _serial = start();
+    for (name, theme) in THEMES {
+        let theme = theme();
+        drive_live_window::<NotesShell, _>(|app| {
+            let mut host = Host::new();
+            open_a_new_note(app, &mut host, theme.clone());
+            write_paragraphs(
+                app,
+                &mut host,
+                &["Alpha line", "Bravo line", "Charlie line", "Delta line"],
+            );
+            // Splitting a paragraph: "Bravo " stays, "line" moves down.
+            caret_in(app, &mut host, "Bravo line", "line".len());
+            let label = format!("{name} enter-split-paragraph");
+            let (split, _) = measure_key(
+                app,
+                &mut host,
+                (&theme, &label),
+                &Key::Named(NamedKey::Enter),
+            );
+            // The caret went with "line" to the start of its new paragraph.
+            type_text(app, &mut host, "a ");
+            host.frames(app, 3);
+            assert!(
+                values_of(app, "Block text").contains(&"a line".to_owned()),
+                "{label}: the paragraph split, the caret at the new one's start: {:?}",
+                values_of(app, "Block text")
+            );
+            // A new empty paragraph after one, as a person ends a line.
+            caret_in(app, &mut host, "Charlie line", 0);
+            let label = format!("{name} enter-new-paragraph");
+            let (new, _) = measure_key(
+                app,
+                &mut host,
+                (&theme, &label),
+                &Key::Named(NamedKey::Enter),
+            );
+            // A list item after one: "- " starts a list.
+            caret_in(app, &mut host, "Alpha line", 0);
+            host.key(app, &Key::Named(NamedKey::Enter));
+            type_text(app, &mut host, "- milk");
+            host.frames(app, 3);
+            let label = format!("{name} enter-list-item");
+            let (item, _) = measure_key(
+                app,
+                &mut host,
+                (&theme, &label),
+                &Key::Named(NamedKey::Enter),
+            );
+            type_text(app, &mut host, "eggs");
+            host.frames(app, 3);
+            assert!(
+                mentions(app, "milk") && mentions(app, "eggs"),
+                "{label}: the list has both items"
+            );
+            for (case, repainted) in [
+                ("splitting a paragraph", split),
+                ("ending a paragraph", new),
+                ("adding a list item", item),
+            ] {
+                assert_block_change(name, case, repainted);
+            }
+        })
+        .unwrap();
+    }
+}
+
+#[test]
+fn backspace_that_removes_a_block_damages_the_blocks_below_not_the_window() {
+    let _serial = start();
+    for (name, theme) in THEMES {
+        let theme = theme();
+        drive_live_window::<NotesShell, _>(|app| {
+            let mut host = Host::new();
+            open_a_new_note(app, &mut host, theme.clone());
+            write_paragraphs(
+                app,
+                &mut host,
+                &["Alpha line", "Bravo line", "Charlie line", "Delta line"],
+            );
+            // Joining two paragraphs: the caret at the start of "Charlie".
+            caret_in(app, &mut host, "Charlie line", "Charlie line".len());
+            let label = format!("{name} backspace-join-paragraphs");
+            let (joined, _) = measure_key(
+                app,
+                &mut host,
+                (&theme, &label),
+                &Key::Named(NamedKey::Backspace),
+            );
+            assert!(
+                values_of(app, "Block text").contains(&"Bravo lineCharlie line".to_owned()),
+                "{label}: the paragraphs joined: {:?}",
+                values_of(app, "Block text")
+            );
+            // Removing an empty paragraph between two.
+            caret_in(app, &mut host, "Alpha line", 0);
+            host.key(app, &Key::Named(NamedKey::Enter));
+            host.frames(app, 3);
+            let label = format!("{name} backspace-remove-empty");
+            let (removed, _) = measure_key(
+                app,
+                &mut host,
+                (&theme, &label),
+                &Key::Named(NamedKey::Backspace),
+            );
+            assert_eq!(
+                values_of(app, "Block text"),
+                ["Alpha line", "Bravo lineCharlie line", "Delta line"],
+                "{label}: the empty paragraph went"
+            );
+            for (case, repainted) in [
+                ("joining two paragraphs", joined),
+                ("removing an empty paragraph", removed),
+            ] {
+                assert_block_change(name, case, repainted);
+            }
+        })
+        .unwrap();
+    }
+}
+
 #[test]
 fn renaming_a_note_damages_its_row_not_the_page_tree() {
     let _serial = start();

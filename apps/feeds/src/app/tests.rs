@@ -693,8 +693,8 @@ fn opml_portal_import_and_export_report_honestly() {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), xml);
         assert!(a.core().export_rx.is_none());
         assert!(
-            a.core()
-                .toast_visible()
+            a.shell()
+                .toast_text()
                 .is_some_and(|t| t.starts_with("Exported subscriptions"))
         );
         std::fs::remove_dir_all(directory).unwrap();
@@ -709,7 +709,7 @@ fn opml_portal_import_and_export_report_honestly() {
         let doc = synced(&mut a);
         export_with(&a, outcome.clone());
         a.sync(&doc, &automerge::ROOT);
-        let message = a.core().toast_visible().map(str::to_owned).unwrap();
+        let message = a.shell().toast_text().map(str::to_owned).unwrap();
         match outcome {
             PortalOutcome::Cancelled => assert_eq!(message, "Export cancelled"),
             PortalOutcome::Failed(reason) => {
@@ -1010,12 +1010,13 @@ fn the_list_scrolls_and_keeps_the_open_article_in_view() {
 /// Links open only web, Gemini and mail addresses.
 #[test]
 fn article_links_reject_local_files() {
-    let reader = FeedsApp::new();
+    let mut reader = FeedsApp::new();
     reader
         .core_mut()
         .open_url("file:///does-not-exist-tilo-link-proof");
+    reader.take_toast();
     assert_eq!(
-        reader.core().toast_visible(),
+        reader.shell().toast_text(),
         Some(ui::i18n!("feeds-open-link-invalid").as_str())
     );
 }
@@ -1087,7 +1088,7 @@ fn check_add_dialog_enter_subscribes() {
     assert!(a.modal.is_none());
     assert!(loaded(&doc).feed_at(url).is_some());
     assert_eq!(
-        a.core().toast_visible(),
+        a.shell().toast_text(),
         Some(format!("Subscribing to {url}").as_str())
     );
 }

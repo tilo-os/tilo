@@ -18,8 +18,7 @@ use ui::framework::{
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::time::{Duration, Instant};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::{AppModel, Column, ModalDialog, ModelPath, NavShell, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -32,7 +31,6 @@ enum View {
     Destinations,
     Schedules,
 }
-const TOAST_TTL: Duration = Duration::from_millis(3500);
 /// Which screen the window shows instead of the catalog, if any.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SetupKey {
@@ -68,7 +66,6 @@ pub struct BackupsApp {
     order: Order,
     restore: Option<ModalDialog<Column>>,
     restore_changed: bool,
-    toast: Option<(String, ToastKind, Instant)>,
     failure: Option<(String, String)>,
     status_bubble: ui::StatusBubble,
     cursor: Option<Point>,
@@ -184,7 +181,6 @@ impl BackupsApp {
             ],
             order: Order::NewestFirst,
             restore: None,
-            toast: None,
             failure: None,
             status_bubble: ui::StatusBubble::new(),
             cursor: None,
@@ -304,7 +300,7 @@ impl BackupsApp {
     }
 
     fn toast_now(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), ToastKind::Success, ui::time::now()));
+        self.shell.toast(msg, ToastKind::Success);
     }
 
     /// Errors must read as errors — a green success toast after a rejected
@@ -312,7 +308,7 @@ impl BackupsApp {
     fn toast_error(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
         self.failure = Some(("Backup paused".into(), msg.clone()));
-        self.toast = Some((msg, ToastKind::Error, ui::time::now()));
+        self.shell.toast(msg, ToastKind::Error);
     }
 
     /// Why the repository effects cannot run here now, if they cannot.
@@ -1011,32 +1007,6 @@ impl BackupsApp {
 
     // ---- overlays -----------------------------------------------------------
 
-    fn paint_toast(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        window: Rect,
-    ) {
-        let Some((message, kind, shown)) = &self.toast else {
-            return;
-        };
-        if shown.elapsed() >= TOAST_TTL {
-            self.toast = None;
-            return;
-        }
-        paint_transient(
-            scene,
-            transform,
-            text,
-            theme,
-            window,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new(message, *kind),
-        );
-    }
-
     fn paint_status(
         &mut self,
         scene: &mut Scene,
@@ -1176,21 +1146,19 @@ impl ui::widget::Decorator for BackupsApp {
             .get()
             .unwrap_or_else(|| self.shell.get_rect());
         self.paint_status(scene, transform, text, theme, window);
-        self.paint_toast(scene, transform, text, theme, window);
         if let Some(dialog) = &mut self.restore {
             dialog.draw_overlay(scene, transform, text, theme, presence);
         }
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.toast.is_some()
-            || self.work != Work::Idle
+        self.work != Work::Idle
             || self.status_bubble.needs_frame(ui::time::now())
             || self.shell.needs_animation_frame()
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.toast.is_some() || self.restore.is_some() || self.shell.needs_redraw()
+        self.dirty || self.restore.is_some() || self.shell.needs_redraw()
     }
 
     fn mark_drawn(&mut self) {

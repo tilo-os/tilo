@@ -28,7 +28,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Instant;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::{
     AppModel, Button, Column, Element, ModalDialog, ModelPath, NavPane, NavShell, Popover,
     PopoverSide, SidebarPlacement, TextInputKind, Widget,
@@ -78,11 +78,14 @@ fn opml_export_request() -> PickRequest {
 /// while the UI stays interactive.
 pub(crate) const FLUSH_BUDGET: usize = 3;
 
-/// How long a toast stays up.
-const TOAST_FOR: std::time::Duration = std::time::Duration::from_secs(4);
-
 /// The core every part of the window reads and changes.
 pub(crate) type Shared = Rc<RefCell<Core>>;
+
+/// What the core asks of the window's notice.
+enum ToastChange {
+    Show(String),
+    Dismiss,
+}
 
 /// What retained controls (the sidebar list, header buttons, the reading
 /// settings) ask for. The root applies them with the document in hand.
@@ -365,7 +368,8 @@ pub(crate) struct Core {
     /// Whether the root presents a dialog.
     pub(crate) modal_open: bool,
     pub(crate) menu: Option<OpenMenu>,
-    pub(crate) toast: Option<(String, Instant)>,
+    /// A change to the window's notice, for the root to hand its shell.
+    toast: Option<ToastChange>,
     pub(crate) refresh: RefreshState,
     pub(crate) pending_landings: Vec<Landing>,
     /// Articles opened from search or by an agent, to mark read on the next
@@ -471,14 +475,7 @@ impl Core {
     }
 
     pub(crate) fn set_toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), ui::time::now()));
-    }
-
-    pub(crate) fn toast_visible(&self) -> Option<&str> {
-        self.toast
-            .as_ref()
-            .filter(|(_, since)| since.elapsed() < TOAST_FOR)
-            .map(|(message, _)| message.as_str())
+        self.toast = Some(ToastChange::Show(msg.into()));
     }
 
     fn worker(&mut self) -> &mut FetchWorker {
@@ -681,7 +678,7 @@ impl Core {
     pub(crate) fn refresh_all(&mut self) {
         let ids: Vec<Id> = self.store.feeds.ids().cloned().collect();
         self.refresh_feeds(&ids);
-        self.toast = None;
+        self.toast = Some(ToastChange::Dismiss);
     }
 
     /// Enqueue a background refresh of `ids`.
@@ -1487,14 +1484,14 @@ impl Core {
 
     /// Whether background work still needs frames: outstanding fetches (the
     /// draw-time drain lands them), visible progress, queued writes, an open
-    /// file chooser, a toast.
+    /// file chooser, a notice not yet handed to the shell.
     pub(crate) fn needs_frames(&self) -> bool {
         self.worker.as_ref().is_some_and(|w| w.pending() > 0)
             || self.refresh.visible()
             || !self.pending_landings.is_empty()
             || self.import_rx.is_some()
             || self.export_rx.is_some()
-            || self.toast_visible().is_some()
+            || self.toast.is_some()
     }
 }
 
@@ -1981,6 +1978,15 @@ impl FeedsApp {
 
     /// Apply what retained controls asked for, bring the screen a choice
     /// asked for to the front, and keep the column titles current.
+    /// Hand the core's latest notice to the shell, which shows and expires it.
+    fn take_toast(&mut self) {
+        match self.core.borrow_mut().toast.take() {
+            Some(ToastChange::Show(message)) => self.shell.toast(message, ToastKind::Info),
+            Some(ToastChange::Dismiss) => self.shell.dismiss_toast(),
+            None => {}
+        }
+    }
+
     fn settle_controls(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let opened = std::mem::take(&mut *self.opened.borrow_mut());
         for id in opened {
@@ -2029,27 +2035,7 @@ impl FeedsApp {
             self.shell.set_content_title(titles.1.clone());
         }
         self.titles = titles;
-    }
-
-    fn paint_toast(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let core = self.core.borrow();
-        if let Some(message) = core.toast_visible() {
-            paint_transient(
-                scene,
-                transform,
-                text,
-                theme,
-                core.window,
-                ToastAnchor::BottomRight,
-                &ToastCard::new(message, ToastKind::Info),
-            );
-        }
+        self.take_toast();
     }
 
     fn handle_semantic(
@@ -2172,6 +2158,7 @@ impl ui::widget::Decorator for FeedsApp {
             let (doc, _) = ui::doc::document_ref(state, path);
             self.core.borrow_mut().sync_document(doc);
         }
+        self.take_toast();
         Widget::sync(&mut self.shell, state, path);
         if let Some(modal) = self.modal.as_mut() {
             modal.dialog.sync(state, path);
@@ -2324,6 +2311,7 @@ impl ui::widget::Decorator for FeedsApp {
     ) {
         // Results land live, every frame, without a document in hand.
         self.core.borrow_mut().drain_fetches_live();
+        self.take_toast();
         Widget::draw(&mut self.shell, scene, transform, text, theme, presence);
     }
 
@@ -2346,7 +2334,6 @@ impl ui::widget::Decorator for FeedsApp {
                 Widget::draw_overlay(&mut open.menu, scene, transform, text, theme, presence);
             }
         }
-        self.paint_toast(scene, transform, text, theme);
         if let Some(modal) = self.modal.as_mut() {
             modal
                 .dialog
@@ -2506,7 +2493,7 @@ impl ui::widget::Decorator for FeedsApp {
                     .with_live(Politeness::Polite),
             );
         }
-        if let Some(message) = core.toast_visible() {
+        if let Some(message) = self.shell.toast_text() {
             children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(message.to_string())

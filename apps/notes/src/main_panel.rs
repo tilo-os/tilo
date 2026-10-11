@@ -1546,9 +1546,12 @@ impl Widget for MainPanel {
             scene.pop_layer();
             outside.pop_layer();
             let mut complete = std::mem::take(scene);
+            // Its own part: a paragraph that came or went moves the thumb of
+            // a long note, which repaints the track, not the page.
+            let mut scrollbar_scene = Scene::new();
             if self.scroll_thumb().is_some() {
                 self.scrollbar.draw(
-                    scene,
+                    &mut scrollbar_scene,
                     transform,
                     self.scroll_track,
                     self.scroll_metrics(),
@@ -1556,6 +1559,7 @@ impl Widget for MainPanel {
                     self.scroll_focused,
                 );
             }
+            complete.append(&scrollbar_scene, None);
             // Overlay popovers (slash menu / link popover) — drawn AFTER the
             // main editor scene so they land on top of every block, and
             // OUTSIDE the scroll clip so they stay visible at their anchor.
@@ -1569,11 +1573,29 @@ impl Widget for MainPanel {
             scene.append(&complete, None);
             let mut editor_damage = Vec::new();
             self.editor.collect_damage(&mut editor_damage);
+            // The editor's top edge and width, not its height: a paragraph
+            // that came or went grows or shrinks it, and its damage says
+            // where its blocks were and are.
+            let editor_rect = self.editor.get_rect();
             parts.push(ui::widget::paint_damage::PaintPart::new(
                 page_id.to_string(),
-                self.editor.get_rect(),
+                Rect::new(
+                    editor_rect.x0,
+                    editor_rect.y0,
+                    editor_rect.x1,
+                    editor_rect.y0 + 1.0,
+                ),
                 editor_scene,
                 editor_damage,
+            ));
+            // The thumb and its focus ring stay within a spacing step of the
+            // track.
+            let track_reach = f64::from(theme.tokens.spacing.s2);
+            parts.push(ui::widget::paint_damage::PaintPart::new(
+                "note-scrollbar".into(),
+                self.scroll_track,
+                scrollbar_scene,
+                vec![self.scroll_track.inflate(track_reach, track_reach)],
             ));
             // The field's caret, selection and focus ring stay within a
             // spacing step of its band.
