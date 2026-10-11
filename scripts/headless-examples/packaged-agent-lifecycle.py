@@ -74,6 +74,7 @@ PERMISSION_OBSERVATION_FIELDS = PERMISSION_OBSERVATION_COUNTS + (
     "at_unknown_object", "at_unknown_interface", "at_known_stale_transport",
     "at_other_transport_failure",
     "catalogue_ids_observable",
+    "queue_unexpected_role",
 )
 PERMISSION_WINDOW_COUNTS = (
     "heading_count", "notice_count", "retained_count", "send_message_count",
@@ -1911,6 +1912,9 @@ def agent_write_restricted_accessibility(agent_name, expected, *, observation=No
                             queue_tabs += 1
                             continue
                         if role != AT_SPI_ROLE_BUTTON:
+                            if observation is not None:
+                                observation["queue_unexpected_role"] = role \
+                                    if type(role) is int and 0 <= role <= 2**32 - 1 else None
                             permission_count(observation, "at_unobservable")
                             raise RuntimeError("restricted Queue control role is unobservable")
                         permission_count(observation, "queue_buttons")
@@ -2595,7 +2599,7 @@ def semantic_editor_continuity_observation(before, after, response, child, same_
     return {"editor": closed_editor_continuity(before, after), "native": native}
 
 
-def wait_for_semantic_float_editor_continuity(socket, output, child, expected, process):
+def wait_for_semantic_float_editor_continuity(socket, output, child, expected, process, *, primary=None):
     """Require exact adopted child ownership and original editor state without input."""
     evidence = {"observation_count": 0, "initial": None, "last": None}
 
@@ -2607,6 +2611,7 @@ def wait_for_semantic_float_editor_continuity(socket, output, child, expected, p
                                 "child_suspended", "child_transferring", "child_error_present",
                                 "ordinary_child_route", "same_chat_process", "accessibility_observable",
                                 "pending_accessibility_publication", "pending_focus_publication",
+                                "exact_primary_exists", "primary_keyboard_focused", "pending_native_focus",
                                 "content_matches", "caret_equal", "selection_equal",
                                 "accessibility_focus_equal", "accessibility_focused_before",
                                 "accessibility_focused_after", "accepted"), False)
@@ -2637,7 +2642,20 @@ def wait_for_semantic_float_editor_continuity(socket, output, child, expected, p
             sample["child_error_present"] = current.get("last_error") is not None
             sample["ordinary_child_route"] = current.get("input_route") is None \
                 and current.get("input_source_surface_id") is None
-            if not current["keyboard_focused"] or not current["presented"] \
+            if primary is not None:
+                primaries = [row for row in foreign_frames(response)
+                             if row.get("app_id") == primary["app_id"]
+                             and not row.get("floating_id")]
+                sample["exact_primary_exists"] = len(primaries) == 1 \
+                    and primaries[0].get("surface_id") == native_surface_id(primary)
+                if not sample["exact_primary_exists"] \
+                        or type(primaries[0].get("keyboard_focused")) is not bool:
+                    raise RuntimeError("pointer Float lost its exact native source focus custody")
+                sample["primary_keyboard_focused"] = primaries[0]["keyboard_focused"]
+                if current["keyboard_focused"] == sample["primary_keyboard_focused"]:
+                    raise RuntimeError("pointer Float has contradictory native focus custody")
+                sample["pending_native_focus"] = not current["keyboard_focused"]
+            if (not current["keyboard_focused"] and primary is None) or not current["presented"] \
                     or current["suspended"] \
                     or current["transferring"] or sample["child_error_present"] \
                     or not sample["ordinary_child_route"]:
@@ -2666,16 +2684,21 @@ def wait_for_semantic_float_editor_continuity(socket, output, child, expected, p
             editor_ready = detached == expected["observation"] \
                 and detached["accessibility_focused"] is True
             sample["pending_focus_publication"] = not editor_ready
-            sample["accepted"] = current["pixels_ready"] and editor_ready
+            sample["accepted"] = current["pixels_ready"] and editor_ready \
+                and current["keyboard_focused"] and not sample["primary_keyboard_focused"]
             return (current, access, detached) if sample["accepted"] else None
         finally:
             if evidence["initial"] is None:
                 evidence["initial"] = sample.copy()
             evidence["last"] = sample
-            (output / "semantic-float-editor-adoption-observations.json").write_text(
+            receipt = "pointer-float-editor-adoption-observations.json" if primary is not None \
+                else "semantic-float-editor-adoption-observations.json"
+            (output / receipt).write_text(
                 json.dumps(evidence, indent=2, allow_nan=False) + "\n")
 
-    return wait_for("semantic Float's exact retained editor focus publication", observe, process)
+    label = "pointer Float's exact retained editor focus publication" if primary is not None \
+        else "semantic Float's exact retained editor focus publication"
+    return wait_for(label, observe, process)
 
 
 def native_semantic_float_return(socket, room, record, draft, previous, process, output):
@@ -3180,9 +3203,16 @@ def native_float_return(socket, room, record, output, size, process):
         except Exception:
             pass  # Diagnostic I/O must not replace the original gate failure.
         raise
+    source_access = access
     access = wait_for("detached Tide editor", lambda: agent_conversation_accessibility("Tide", detached=True), process)
     detached = private_editor_observation(access, draft)
     write_pointer_float_editor_continuity(output, before, detached)
+    continuity = closed_editor_continuity(before, detached)
+    if not all(continuity[name] for name in ("content_matches", "caret_equal", "selection_equal")):
+        raise RuntimeError("Float changed private editor content, caret or selection")
+    frame, access, detached = wait_for_semantic_float_editor_continuity(
+        socket, output, frame, {"access": source_access, "draft": draft, "observation": before},
+        process, primary=primary)
     if detached != before:
         raise RuntimeError("Float changed private editor content, caret, selection or keyboard focus")
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"after-float-{size}.png")}))

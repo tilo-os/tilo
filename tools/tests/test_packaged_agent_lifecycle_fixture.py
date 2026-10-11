@@ -748,6 +748,16 @@ class PresentedPermissionWindowTests(unittest.TestCase):
 
 
 class RestrictedQueueRoleTests(unittest.TestCase):
+    def test_unexpected_queue_role_is_closed_observable_and_still_fatal(self):
+        for role in (83, 116, 0, 2**32 - 1):
+            with self.subTest(role=role):
+                observation = {}
+                with self.assertRaisesRegex(RuntimeError, "Queue control role is unobservable"):
+                    self.observe(f"(uint32 {role},)", observation=observation)
+                self.assertEqual(observation["queue_unexpected_role"], role)
+                self.assertNotIn("PRIVATE", json.dumps(observation))
+                self.assertNotIn("/queue", json.dumps(observation))
+
     def observe(self, role, *, revoked=False, editable=False, forbidden=None, queue_button=False,
                 observation=None, heading_options=None):
         heading_options = heading_options or {}
@@ -5943,6 +5953,87 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 self.assertEqual(receipt["native"]["observation_valid"], valid)
                 self.assertTrue(receipt["editor"]["accessibility_focus_equal"])
                 self.assertNotIn("9974", json.dumps(receipt))
+
+    def test_pointer_float_barrier_requires_child_seat_source_clear_and_editor_publication(self):
+        primary, child, access, before, expected = self.return_editor_continuity_subjects()
+        ready = {**child, "presented": True, "pixels_ready": True,
+                 "suspended": False, "transferring": False}
+        pending = {**ready, "keyboard_focused": False}
+        access = {**access, "detached": True}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "call", side_effect=[
+                    {"answer": {"frames": [pending, {**primary, "keyboard_focused": True}]}},
+                    {"answer": {"frames": [ready, primary]}},
+                    {"answer": {"frames": [ready, primary]}}]) as native, \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "private_editor_observation", side_effect=[
+                    {**before, "accessibility_focused": False},
+                    {**before, "accessibility_focused": False}, before.copy()]):
+            output = pathlib.Path(directory)
+            self.assertEqual(PROOF.wait_for_semantic_float_editor_continuity(
+                "socket", output, ready, expected, None, primary=primary), (ready, access, before))
+            self.assertEqual(native.call_args_list, [call("socket", {"op": "foreign_frames"})] * 3)
+            receipt = json.loads((output / "pointer-float-editor-adoption-observations.json").read_text())
+            self.assertTrue(receipt["initial"]["pending_native_focus"])
+            self.assertTrue(receipt["initial"]["content_matches"])
+            self.assertFalse(receipt["initial"]["accepted"])
+            self.assertTrue(receipt["last"]["child_keyboard_focused"])
+            self.assertFalse(receipt["last"]["primary_keyboard_focused"])
+            self.assertTrue(receipt["last"]["accepted"])
+            self.assertTrue(all(type(value) is bool for sample in (receipt["initial"], receipt["last"])
+                                for value in sample.values()))
+            self.assertNotIn("997", json.dumps(receipt))
+            self.assertNotIn("draft-secret", json.dumps(receipt))
+        source = inspect.getsource(PROOF.native_float_return)
+        barrier = source.index("wait_for_semantic_float_editor_continuity(")
+        strict = source.index("if detached != before:", barrier)
+        self.assertLess(barrier, strict)
+        self.assertIn("process, primary=primary)", source[barrier:strict])
+
+    def test_pointer_float_barrier_never_waits_through_editor_mutation_or_ambiguous_seat(self):
+        primary, child, access, before, expected = self.return_editor_continuity_subjects()
+        pending = {**child, "presented": True, "pixels_ready": True,
+                   "suspended": False, "transferring": False, "keyboard_focused": False}
+        source = {**primary, "keyboard_focused": True}
+        access = {**access, "detached": True}
+        for mutation in ({"draft_matches": False}, {"caret": 4}, {"selection": None}):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF.time, "sleep") as sleep, \
+                    patch.object(PROOF, "call", return_value={"answer": {"frames": [pending, source]}}), \
+                    patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                    patch.object(PROOF, "private_editor_observation", return_value={**before, **mutation}):
+                with self.assertRaisesRegex(RuntimeError, "content, caret or selection"):
+                    PROOF.wait_for_semantic_float_editor_continuity(
+                        "socket", pathlib.Path(directory), pending, expected, None, primary=primary)
+                sleep.assert_not_called()
+        for frames in ([pending, primary], [{**pending, "keyboard_focused": True}, source],
+                       [pending], [pending, {**source, "surface_id": 9980}],
+                       [pending, source, source]):
+            with self.subTest(frames=frames), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF.time, "sleep") as sleep, \
+                    patch.object(PROOF, "call", return_value={"answer": {"frames": frames}}):
+                with self.assertRaises(RuntimeError):
+                    PROOF.wait_for_semantic_float_editor_continuity(
+                        "socket", pathlib.Path(directory), pending, expected, None, primary=primary)
+                sleep.assert_not_called()
+
+    def test_pointer_float_barrier_persistent_native_focus_pending_uses_original_deadline(self):
+        primary, child, access, before, expected = self.return_editor_continuity_subjects()
+        pending = {**child, "presented": True, "pixels_ready": True,
+                   "suspended": False, "transferring": False, "keyboard_focused": False}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 31]), \
+                patch.object(PROOF, "call", return_value={"answer": {"frames": [
+                    pending, {**primary, "keyboard_focused": True}]}}), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value={**access, "detached": True}), \
+                patch.object(PROOF, "private_editor_observation", return_value={
+                    **before, "accessibility_focused": False}) as editor:
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for_semantic_float_editor_continuity(
+                    "socket", pathlib.Path(directory), pending, expected, None, primary=primary)
+            editor.assert_called_once()
 
     def test_semantic_float_observer_requires_real_focus_publication_on_exact_ordinary_child(self):
         _, child, access, before, expected = self.return_editor_continuity_subjects()
