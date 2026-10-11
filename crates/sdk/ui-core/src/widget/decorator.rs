@@ -48,14 +48,13 @@
 //!   `take_control_invocation`) includes the inner widget's answer:
 //!   `let mut all = mine; all.extend(self.inner().resources(doc)); all`.
 //! * **Override the host's entry point.** Some [`Widget`] defaults are
-//!   derived from another method (`draw_with_presence` calls `draw`,
-//!   `perform_action_at` calls `perform_action`, `tooltip_target_at` calls
-//!   `tooltip`, `collect_damage` calls `needs_redraw`). Here each forwards to the inner
+//!   derived from another method (`perform_action_at` calls
+//!   `perform_action`, `tooltip_target_at` calls `tooltip`,
+//!   `collect_damage` calls `needs_redraw`). Here each forwards to the inner
 //!   widget's own method, so an override of the derived-from method alone is
-//!   not what the host calls: override the entry point the host uses
-//!   (`draw_with_presence` for painting in a live frame, and `draw` for
-//!   callers that paint directly). Input has a single entry point,
-//!   [`handle_event`](Widget::handle_event).
+//!   not what the host calls: override the entry point the host uses.
+//!   Painting and input each have a single entry point,
+//!   [`draw`](Widget::draw) and [`handle_event`](Widget::handle_event).
 //! * **The decorator stands in for its inner widget's layout node.** The
 //!   inner widget registers itself in the node map during `build_layout`;
 //!   the decorator then takes that entry, so a host that reaches a widget
@@ -338,6 +337,10 @@ pub trait Decorator {
 
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.inner().get_rect()
+    }
+
+    fn paint_bounds(&self) -> vello::kurbo::Rect {
+        self.inner().paint_bounds()
     }
 
     fn child_clip_rect(&self) -> Option<vello::kurbo::Rect> {
@@ -672,25 +675,6 @@ pub trait Decorator {
         self.inner().layout_needs_measure()
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.inner_mut().draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -984,6 +968,10 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn get_rect(&self) -> vello::kurbo::Rect {
         Decorator::get_rect(self)
+    }
+
+    fn paint_bounds(&self) -> vello::kurbo::Rect {
+        Decorator::paint_bounds(self)
     }
 
     fn child_clip_rect(&self) -> Option<vello::kurbo::Rect> {
@@ -1313,26 +1301,6 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn layout_needs_measure(&self) -> bool {
         Decorator::layout_needs_measure(self)
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        Decorator::draw_with_presence(
-            self,
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 
     fn draw_overlay(

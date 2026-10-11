@@ -50,7 +50,7 @@ pub struct ShotFrame {
     pub text: TextRenderer,
     /// Presence passed to the draw passes; empty unless a shot stages peers.
     pub presence: PresenceCtx,
-    /// Permission context passed to `draw_with_presence`.
+    /// Permission context scoped around the root `draw`.
     pub permission: PermissionContext,
     viewport: (u32, u32),
     layout_mode: ShotLayout,
@@ -224,14 +224,15 @@ impl ShotFrame {
         let recording = crate::backdrop::BackdropRecording::begin();
         crate::backdrop::layer_scene(&scene, 0);
         let previous = self.presence.push_viewport(self.window());
-        widget.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut self.text,
-            &self.theme,
-            &self.presence,
-            &self.permission,
-        );
+        self.presence.with_permissions(self.permission.clone(), || {
+            widget.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            )
+        });
         self.presence.pop_viewport(previous);
         self.backdrop = recording.finish();
         scene
