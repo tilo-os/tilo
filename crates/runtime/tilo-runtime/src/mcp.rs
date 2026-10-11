@@ -1972,9 +1972,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Value::Object(answer)
     }
     /// [`Self::run`], with the session handles `arguments` name expanded
-    /// where the action takes a resource. Refused with a handle left as
-    /// text, the call runs once more with that handle's resource id, and
-    /// the answer says so in `adjusted`.
+    /// where the action takes a resource. Text arguments stay literal: a
+    /// failed invocation may already have mutated state, so a text handle
+    /// is never grounds to replay it under a fresh invocation id.
     async fn run_with_handles(
         &self,
         target: RemoteActionTarget,
@@ -1983,34 +1983,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         revision: Option<String>,
         wait: std::time::Duration,
     ) -> Result<Value, String> {
-        let unexpanded = self
-            .expand_handles(&target, revision.clone(), &mut arguments)
+        self.expand_handles(&target, revision.clone(), &mut arguments)
             .await;
-        let retry = (!unexpanded.is_empty()).then(|| (target.clone(), arguments.clone()));
-        let value = self
-            .run(target, arguments, invocation, revision.clone(), wait)
-            .await?;
-        let Some((target, mut arguments)) = retry
-            .filter(|_| value.pointer("/update/state").and_then(Value::as_str) == Some("failed"))
-        else {
-            return Ok(value);
-        };
-        for (name, _, id) in &unexpanded {
-            arguments.insert(name.clone(), id.clone().into());
-        }
-        let mut value = self
-            .run(
-                target,
-                arguments,
-                tilo_actions::InvocationId::new(),
-                revision,
-                wait,
-            )
-            .await?;
-        if let Some(fields) = value.as_object_mut() {
-            fields.insert("adjusted".into(), handle_note(&unexpanded).into());
-        }
-        Ok(value)
+        self.run(target, arguments, invocation, revision, wait)
+            .await
     }
     /// Start one invocation of `target` and answer with its update once it
     /// is terminal or `wait` has passed. An omitted revision is the
@@ -2160,28 +2136,27 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Value::Object(value)
     }
     /// Replace each argument naming a session handle with the resource id
-    /// it stands for, where the action takes a resource there. Answers the
-    /// handles left as they were, as `(argument, handle, resource id)`: the
-    /// action takes text there, which may mean the handle literally.
+    /// it stands for, where the action takes a resource there. Leave other
+    /// arguments as given: text may mean the handle literally.
     async fn expand_handles(
         &self,
         target: &RemoteActionTarget,
         revision: Option<String>,
         arguments: &mut serde_json::Map<String, Value>,
-    ) -> Vec<(String, String, String)> {
-        let named: Vec<(String, String, String)> = {
+    ) {
+        let named: Vec<(String, String)> = {
             let handles = self.handles();
             arguments
                 .iter()
                 .filter_map(|(name, value)| {
                     let handle = value.as_str()?;
                     let id = handles.issued(handle)?;
-                    Some((name.clone(), handle.to_owned(), id.to_owned()))
+                    Some((name.clone(), id.to_owned()))
                 })
                 .collect()
         };
         if named.is_empty() {
-            return named;
+            return;
         }
         let params = match self.revision_for(&target.provider, revision).await {
             Ok((revision, _)) => self
@@ -2193,18 +2168,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .unwrap_or_default(),
             Err(_) => Vec::new(),
         };
-        let mut unexpanded = Vec::new();
-        for (name, handle, id) in named {
+        for (name, id) in named {
             let takes_resource = params.iter().any(|param| {
                 param.name == name.as_str() && param.ty == tilo_actions::ParamType::Resource
             });
             if takes_resource {
                 arguments.insert(name, id.into());
-            } else {
-                unexpanded.push((name, handle, id));
             }
         }
-        unexpanded
     }
     /// The action of `provider` that opens `path`, by the directory's
     /// convention.
@@ -2726,16 +2697,6 @@ fn batch_invocation(parent: Option<&str>, index: usize) -> Result<Option<String>
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(Some(uuid::Uuid::from_bytes(bytes).to_string()))
-}
-/// What a call refused with session handles as text ran again with: each
-/// handle's resource id in full.
-fn handle_note(expanded: &[(String, String, String)]) -> String {
-    let named = expanded
-        .iter()
-        .map(|(name, handle, id)| format!("{name} {handle} was refused; used its id {id}"))
-        .collect::<Vec<_>>()
-        .join("; ");
-    format!("{named} (this argument takes ids, not handles)")
 }
 /// The `path` an application `open` names, taken out of its arguments: the
 /// workspace launches the app empty and this bridge hands the path to the

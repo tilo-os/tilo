@@ -1758,6 +1758,15 @@ impl ActionSpec {
         let bound = ActionArgs::bind_json(&self.params, supplied)?;
         self.validate_built(self.build.build(&bound))
     }
+
+    /// The palette lane's encoding for one typed text argument, exactly as a
+    /// prompted affordance builds it. `None` when this action collects no text.
+    pub fn build_text(&self, text: &str) -> Option<EncodedAction> {
+        match &self.input {
+            ActionInput::Prompted { build, .. } => Some(build(text)),
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => None,
+        }
+    }
 }
 
 fn enforce_operation_type(encoded: EncodedAction, expected: &str) -> EncodedAction {

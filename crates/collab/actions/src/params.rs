@@ -1525,7 +1525,7 @@ mod rich_schema_tests {
 
     #[test]
     fn shared_schema_preserves_wire_binding_and_copy_on_write() {
-        use crate::{ActionInput, ActionSpec, EncodedAction, ExecutionLocus};
+        use crate::{ActionSpec, EncodedAction, ExecutionLocus};
         use std::sync::Arc;
 
         let schema = serde_json::json!({"type": "integer", "minimum": 1});
@@ -1564,11 +1564,11 @@ mod rich_schema_tests {
             spec.build_json(serde_json::json!({"count":0}).as_object().unwrap())
                 .is_err()
         );
-        let ActionInput::Prompted { build, .. } = &spec.input else {
-            panic!("typed palette input");
-        };
-        assert_eq!(build("2"), encoded);
-        assert_eq!(build("0").type_id, crate::resource::INVALID_ARGUMENTS_TYPE);
+        assert_eq!(spec.build_text("2"), Some(encoded));
+        assert_eq!(
+            spec.build_text("0").unwrap().type_id,
+            crate::resource::INVALID_ARGUMENTS_TYPE
+        );
         let mut edited = original.clone();
         Arc::make_mut(edited.schema.as_mut().unwrap())["minimum"] = serde_json::json!(3);
         assert_eq!(original.schema.as_ref().unwrap()["minimum"], 1);

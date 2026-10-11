@@ -1,7 +1,7 @@
 //! Comparison-only Writer invocation identities; never authority.
 use tilo_actions::{
-    ActionInput, ActionSpec, ContinuationArguments, ContinuationEvidence, ContinuationKey,
-    ContinuationQuery, EncodedAction,
+    ActionSpec, ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
+    EncodedAction,
 };
 
 type Parts = Vec<Vec<u8>>;
@@ -31,10 +31,7 @@ fn pure_encoding(spec: &ActionSpec, args: &ContinuationArguments<'_>) -> Option<
             Some(encoded) => encoded.clone(),
             None => spec.build_json(&serde_json::Map::new()).ok()?,
         },
-        ContinuationArguments::Text(text) => match &spec.input {
-            ActionInput::Prompted { build, .. } => build(text),
-            _ => return None,
-        },
+        ContinuationArguments::Text(text) => spec.build_text(text)?,
     };
     (encoded.type_id != tilo_actions::resource::INVALID_ARGUMENTS_TYPE).then_some(encoded)
 }

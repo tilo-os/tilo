@@ -748,34 +748,7 @@ impl SearchFilters {
                 crate::chrome::SelectionState::new(is_active, hover, false),
             );
             let radius = crate::chrome::ChromeRole::Selector.radius(theme, seg.height());
-            let shape = RoundedRect::from_rect(seg, radius);
-            if tier.fill.components[3] > 0.0 {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    tier.fill,
-                    None,
-                    &shape,
-                );
-            }
-            if let Some(border) = tier.border {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    border,
-                    None,
-                    &shape,
-                );
-            }
-            if let Some(glow) = tier.inner_glow {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    glow,
-                    None,
-                    &RoundedRect::from_rect(seg.inset(1.0), (radius - 1.0).max(0.0)),
-                );
-            }
+            tier.paint(scene, transform, seg, radius);
             let under = if is_active || hover {
                 tier.fill
             } else {
@@ -1129,35 +1102,8 @@ pub fn draw_filter_chip(
 ) {
     let colors = &theme.tokens.colors;
     let radius = crate::chrome::ChromeRole::Selector.radius(theme, rect.height());
-    let shape = RoundedRect::from_rect(rect, radius);
     let tier = crate::chrome::selection_tier(theme, state);
-    if tier.fill.components[3] > 0.0 {
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tier.fill,
-            None,
-            &shape,
-        );
-    }
-    if let Some(border) = tier.border {
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            border,
-            None,
-            &shape,
-        );
-    }
-    if let Some(glow) = tier.inner_glow {
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            glow,
-            None,
-            &RoundedRect::from_rect(rect.inset(1.0), (radius - 1.0).max(0.0)),
-        );
-    }
+    tier.paint(scene, transform, rect, radius);
     // The chosen chip's label is the control label (`text_primary`); the
     // others recede to `text_dim`. Either way the ink is measured against
     // the surface actually under it — the lifted body, or the panel ground
