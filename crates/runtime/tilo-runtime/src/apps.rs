@@ -27,6 +27,8 @@ use tilo_action_broker::{
 use tilo_installed_apps::InstalledApp;
 
 #[cfg(target_os = "linux")]
+mod creation;
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -197,7 +199,9 @@ impl Apps {
             blobs: self.root.join(BLOB_SOCKET),
         };
         #[cfg(target_os = "linux")]
-        let mut launch = linux::launch(self, &app, &sockets)?;
+        let original = self.original_launch(&app)?;
+        #[cfg(target_os = "linux")]
+        let mut launch = linux::launch(self, &app, &sockets, &original)?;
         #[cfg(target_os = "macos")]
         let mut launch = macos::launch(self, &app, &sockets)?;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -205,7 +209,14 @@ impl Apps {
             let _ = (&app, &sockets);
             return Err("refusing to launch: no app sandbox on this platform".into());
         };
-        if !self.launched.record(launch.pid, &app.package_id, room) {
+        #[cfg(target_os = "linux")]
+        let creation = original.creation;
+        #[cfg(not(target_os = "linux"))]
+        let creation = None;
+        if !self
+            .launched
+            .record(launch.pid, &app.package_id, room, creation)
+        {
             launch.kill();
             return Err(format!(
                 "refusing to keep {app_id} running: its process could not be identified"
@@ -252,6 +263,14 @@ impl LauncherServices for Apps {
 
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
         self.launched.attest(pid, app, room)
+    }
+    fn application_creation_evidence(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<tilo_action_broker::services::ApplicationCreationEvidence>, String> {
+        Ok(self.launched.creation(pid, app, room))
     }
     #[cfg(target_os = "linux")]
     fn attest_executing_process(
@@ -344,12 +363,19 @@ struct LaunchRecord {
     start_time: u64,
     app: String,
     room: String,
+    creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
 }
 
 impl Launched {
     /// Record `pid` as `app` in `room`; `false` when its start time cannot
     /// be read.
-    fn record(&self, pid: u32, app: &str, room: &str) -> bool {
+    fn record(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+        creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
+    ) -> bool {
         let Some(start_time) = process_start_time(pid) else {
             return false;
         };
@@ -362,6 +388,7 @@ impl Launched {
                     start_time,
                     app: app.to_owned(),
                     room: room.to_owned(),
+                    creation,
                 },
             );
         true
@@ -377,6 +404,26 @@ impl Launched {
         let (recorded, same) = (record.start_time, record.app == app && record.room == room);
         drop(launches);
         same && process_start_time(pid) == Some(recorded)
+    }
+
+    /// Original declarations belong to this live launch, never to a later
+    /// package replacement or a process that reused the same pid.
+    fn creation(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Option<tilo_action_broker::services::ApplicationCreationEvidence> {
+        let start = process_start_time(pid)?;
+        let launches = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = launches.get(&pid)?;
+        let creation = (record.start_time == start && record.app == app && record.room == room)
+            .then(|| record.creation.clone())
+            .flatten();
+        drop(launches);
+        (process_start_time(pid) == Some(start))
+            .then_some(creation)
+            .flatten()
     }
 
     /// Forget `pid`, once its process has been reaped.
