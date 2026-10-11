@@ -3145,13 +3145,13 @@ mod tests {
         };
         let model = AgentModelsModel::from_read(cx, control, down);
         assert!(!model.manager_available);
-        assert!(
-            model
-                .notice
-                .as_deref()
-                .is_some_and(|notice| notice.contains("the manager is not running")),
-            "{:?}",
-            model.notice
+        assert_eq!(
+            model.notice,
+            Some(t_args(
+                "agent-notice-service-down",
+                &[("error", "the manager is not running".into())]
+            )),
+            "the person is told the manager is down"
         );
     }
 }
