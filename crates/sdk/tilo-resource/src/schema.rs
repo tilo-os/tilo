@@ -619,7 +619,7 @@ pub fn record_action_schema<R: crate::Resource>() -> Value {
 /// first content or not.
 fn record_action_schema_of(vocabulary: &crate::Vocabulary, seeds: bool) -> Value {
     let mut operations: Vec<Value> = Vec::new();
-    for decl in &(vocabulary.declarations)() {
+    for decl in vocabulary.declarations().iter() {
         operations.push(declared_operation(
             decl.id,
             &decl.params,

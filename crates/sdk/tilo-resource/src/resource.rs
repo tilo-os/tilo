@@ -183,7 +183,7 @@ pub trait Resource: Sized + 'static {
     /// change of its `comments` for a resource someone who may only comment
     /// can still reply in.
     fn least_need() -> ActionNeed {
-        least_need_declared(&(vocabulary::<Self>().declarations)())
+        least_need_declared(&vocabulary::<Self>().declarations())
     }
 
     /// Mutations offered by name. The generic [`APPLY`] action is always
@@ -253,10 +253,7 @@ pub trait Resource: Sized + 'static {
     /// items each collection holds. The default builds the children and
     /// looks.
     fn children_offer_bound(state: &Self::State) -> Vec<&'static str> {
-        offered_bound_ids(
-            &Self::children(state),
-            &(vocabulary::<Self>().declarations)(),
-        )
+        offered_bound_ids(&Self::children(state), &vocabulary::<Self>().declarations())
     }
 
     /// The nested resource `id`, when [`children`](Self::children) leaves it
@@ -1940,7 +1937,7 @@ pub(crate) fn apply_param(vocabulary: &Vocabulary) -> ActionParam {
         let schema = (vocabulary.action_schema)()?;
         Some(crate::schema::fold_declared(
             &schema,
-            &declared_args(&(vocabulary.declarations)()),
+            &declared_args(&vocabulary.declarations()),
         ))
     });
     match schema {
@@ -2022,9 +2019,9 @@ fn cached_schema(
 /// action is checked against that declaration first, so it is refused with
 /// the reason the named action would give.
 fn read_apply(vocabulary: &Vocabulary, value: serde_json::Value) -> Result<Built, String> {
-    let declarations = (vocabulary.declarations)();
+    let declarations = vocabulary.declarations();
     let mut ids: Vec<&str> = Vec::with_capacity(declarations.len());
-    for decl in &declarations {
+    for decl in declarations.iter() {
         ids.push(decl.id);
     }
     if let Some((id, fields)) = crate::schema::declared_invocation(&value, &ids)
@@ -2043,9 +2040,9 @@ fn read_apply(vocabulary: &Vocabulary, value: serde_json::Value) -> Result<Built
 /// member carries `apply`'s schema, without its descriptions.
 pub(crate) fn group_param(vocabulary: &Vocabulary) -> ActionParam {
     let schema = per_type(vocabulary, TypeSchema::Group, &|| {
-        let declarations = (vocabulary.declarations)();
+        let declarations = vocabulary.declarations();
         let mut ids: Vec<&str> = Vec::with_capacity(declarations.len());
-        for decl in &declarations {
+        for decl in declarations.iter() {
             ids.push(decl.id);
         }
         let apply = apply_param(vocabulary).schema;
@@ -2408,16 +2405,16 @@ fn publish_own(
     let mut resource = tilo_actions::Resource::new(id, vocabulary.kind, label);
     // Describe the declared domain ID before any host dispatch alias projection.
     resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(vocabulary.kind, id);
-    for decl in (vocabulary.declarations)() {
+    for decl in vocabulary.declarations().iter() {
         let _phase = crate::profiling::Phase::start("resource.declaration_spec");
-        let mut spec = spec_of_declaration(&decl);
+        let mut spec = spec_of_declaration(decl);
         if let Some(availability) = own.availability {
             spec.contract.availability = availability(decl.id);
         }
         // Offered on the items it acts on, with some of its arguments bound
         // ([`items::bound`](crate::items::bound)), it stays published here
         // for scripts that name the item, out of the palette's way.
-        resource = resource.with_action(if offered_bound(&decl) {
+        resource = resource.with_action(if offered_bound(decl) {
             spec.programmatic()
         } else {
             spec
@@ -2483,10 +2480,8 @@ pub(crate) fn build_action_of(
         action.stamp(now_ms);
         return Ok(action);
     }
-    let Some(decl) = (vocabulary.declarations)()
-        .into_iter()
-        .find(|decl| decl.id == id)
-    else {
+    let declarations = vocabulary.declarations();
+    let Some(decl) = declarations.iter().find(|decl| decl.id == id) else {
         return Err(format!("{} has no action `{id}`", vocabulary.label));
     };
     let args = match ActionArgs::bind_json(&decl.params, arguments) {

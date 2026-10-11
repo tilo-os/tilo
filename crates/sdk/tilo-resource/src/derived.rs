@@ -97,9 +97,8 @@ fn bound_declaration(
     id: &'static str,
     label: String,
 ) -> Option<Declaration> {
-    let verb = (vocabulary.declarations)()
-        .into_iter()
-        .find(|decl| decl.id == action)?;
+    let declarations = vocabulary.declarations();
+    let verb = declarations.iter().find(|decl| decl.id == action)?;
     let mut params = Vec::new();
     for param in &verb.params {
         if !values.iter().any(|(name, _)| param.name == name.as_str()) {
@@ -125,7 +124,7 @@ fn bound_declaration(
     let mut decl = Declaration::new(vocabulary, id, label, params, build);
     decl.kind = verb.kind;
     decl.field = verb.field;
-    decl.description = verb.description;
+    decl.description.clone_from(&verb.description);
     decl.destructive = verb.destructive;
     Some(decl)
 }
@@ -335,9 +334,9 @@ impl<R: Resource> Derived<R> {
         // Built only when a verb is bound here: a long list of derived
         // places offering effects alone stays cheap to publish.
         let declarations = if self.actions.is_empty() {
-            Vec::new()
+            Vec::new().into()
         } else {
-            (crate::vocabulary::<R>().declarations)()
+            crate::vocabulary::<R>().declarations()
         };
         let kind = self.kind.as_deref().unwrap_or("derived");
         let mut child =

@@ -485,7 +485,7 @@ fn scoped_item(
     id: &Id,
     label: &str,
 ) -> tilo_actions::Resource {
-    let declarations = (vocabulary.declarations)();
+    let declarations = vocabulary.declarations();
     let scoped = scoped(&declarations, actions, fields, field);
     item_resource(vocabulary, &scoped, field, id, label)
 }
@@ -632,7 +632,7 @@ fn for_each_item_child_of(
     actions: &[ItemAction],
     each: &mut ItemChildVisitor<'_>,
 ) {
-    let declarations = (vocabulary.declarations)();
+    let declarations = vocabulary.declarations();
     let fields = own_fields(collections);
     for collection in collections {
         if !collection.within.is_empty() {
@@ -645,7 +645,7 @@ fn for_each_item_child_of(
                 {
                     continue;
                 }
-                for decl in &declarations {
+                for decl in declarations.iter() {
                     if decl.id == action.action {
                         verbs.push((action, decl));
                         break;
@@ -795,8 +795,8 @@ pub fn offered_on_items<R: Resource>(
     actions: &[ItemAction],
 ) -> Option<Vec<&'static str>> {
     let mut declared: Vec<(&'static str, Vec<&str>)> = Vec::new();
-    let declarations = (vocabulary::<R>().declarations)();
-    for decl in &declarations {
+    let declarations = vocabulary::<R>().declarations();
+    for decl in declarations.iter() {
         let mut names = Vec::with_capacity(decl.params.len());
         for param in &decl.params {
             names.push(param.name.as_ref());

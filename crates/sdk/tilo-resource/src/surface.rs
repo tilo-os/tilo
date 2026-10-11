@@ -90,8 +90,8 @@ fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
         }
     }
     let mut verbs = Vec::new();
-    for decl in (vocabulary.declarations)() {
-        verbs.push(verb_of(&decl));
+    for decl in vocabulary.declarations().iter() {
+        verbs.push(verb_of(decl));
     }
     Surface {
         kind: vocabulary.kind.to_owned(),

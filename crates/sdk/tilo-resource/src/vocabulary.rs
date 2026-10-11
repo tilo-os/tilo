@@ -10,6 +10,9 @@
 //! app.
 
 use std::any::{Any, TypeId};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use tilo_actions::{
@@ -217,13 +220,53 @@ pub struct Vocabulary {
     pub(crate) op_schemas: fn() -> Vec<(String, serde_json::Value)>,
     pub(crate) action_schema: fn() -> Option<serde_json::Value>,
     pub(crate) least_need: fn() -> ActionNeed,
-    pub(crate) declarations: fn() -> Vec<Declaration>,
+    /// Builds every declaration afresh; read them through
+    /// [`Vocabulary::declarations`], which keeps them.
+    pub(crate) declare: fn() -> Vec<Declaration>,
     pub(crate) item_effects: fn(&str, &Id) -> Vec<ActionSpec>,
     pub(crate) item_views: fn(&str, &Id) -> Vec<ResourceViewSpec>,
     /// An action from its JSON form (serde's), unstamped.
     pub(crate) read: fn(serde_json::Value) -> Result<Built, String>,
     /// The action a field edit is ([`Resource::edit_action`]), unstamped.
     pub(crate) edit: fn(Edit<()>) -> Option<Built>,
+}
+
+impl Vocabulary {
+    /// Every declaration of the resource. They depend on its type alone, so
+    /// each thread builds them once per generation of app code
+    /// ([`reset_type_schemas`](crate::reset_type_schemas)) and answers the
+    /// same list after: publishing, binding a verb or reading an action no
+    /// longer rebuilds every verb's parameters and builder.
+    pub(crate) fn declarations(&self) -> Rc<[Declaration]> {
+        type Kept = (u64, HashMap<TypeId, Rc<[Declaration]>>);
+        thread_local! {
+            static KEPT: RefCell<Kept> = RefCell::new((0, HashMap::new()));
+        }
+        let epoch = crate::resource::type_epoch();
+        let key = (self.type_id)();
+        let found = KEPT.with(|kept| {
+            let kept = kept.borrow();
+            if kept.0 == epoch {
+                kept.1.get(&key).cloned()
+            } else {
+                None
+            }
+        });
+        if let Some(found) = found {
+            return found;
+        }
+        // Built outside the borrow: a declaration may read another
+        // resource's vocabulary.
+        let built: Rc<[Declaration]> = (self.declare)().into();
+        KEPT.with(|kept| {
+            let mut kept = kept.borrow_mut();
+            if kept.0 != epoch {
+                *kept = (epoch, HashMap::new());
+            }
+            kept.1.insert(key, Rc::clone(&built));
+        });
+        built
+    }
 }
 
 fn declarations<R: Resource>() -> Vec<Declaration> {
@@ -258,7 +301,7 @@ impl<R: Resource> VocabularyOf<R> {
         op_schemas: R::op_schemas,
         action_schema: R::action_schema,
         least_need: R::least_need,
-        declarations: declarations::<R>,
+        declare: declarations::<R>,
         item_effects: R::item_effects,
         item_views: R::item_views,
         read: read::<R>,
