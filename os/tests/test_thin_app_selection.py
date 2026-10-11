@@ -45,7 +45,7 @@ class ThinAppSelectionTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         for name in ("os/scripts/build-thin-apps.sh", "tools/ci/rustc-thin-app-wrapper.sh",
-                     "tools/ci/runtime-dylib-lazy-link.py"):
+                     "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/sccache"):
             self.write(name, (ROOT / name).read_text())
         self.write("Cargo.toml", """[workspace]
 members = ["apps/calculator", "apps/other", "apps/extra", "runtime", "shared", "app_sdk"]
