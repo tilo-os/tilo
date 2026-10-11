@@ -325,6 +325,9 @@ test ! -e %{buildroot}%{_datadir}/tilo-apps/pkgs
 # One runtime build of the 2026.07 release, named by its ABI digest.
 test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07+native.*/bundle.toml
 test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07+native.*/bundle.toml)" = 644
+# The runtime collector's lock lives in a per-user root; the system root is
+# read-only and never collected, so staging leaves no .gc.lock to ship.
+test ! -e %{buildroot}%{_prefix}/lib/tilo-runtime/.gc.lock
 grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
 test -s %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
 # What the ush supervisor runs, at the paths it looks for them.
