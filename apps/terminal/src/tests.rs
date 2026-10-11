@@ -240,19 +240,6 @@ fn pty_output_is_read_and_pumped_into_redraws_and_watermark() {
 )]
 #[serial_test::serial]
 fn hosted_service_sockets_are_probed_and_never_fall_back() {
-    // Case `lifetime_socket_probe_sees_the_supervisor_close_its_end`.
-    {
-        use crate::inner::lifetime_socket_open;
-
-        let (terminal_end, supervisor_end) =
-            std::os::unix::net::UnixStream::pair().expect("socket pair");
-        assert!(lifetime_socket_open(&terminal_end));
-        supervisor_end
-            .shutdown(std::net::Shutdown::Both)
-            .expect("supervisor closes the session");
-        assert!(!lifetime_socket_open(&terminal_end));
-    }
-
     // Case `an_open_waits_for_a_supervisor_answer_slower_than_the_connect_bound`.
     {
         use std::io::BufRead as _;

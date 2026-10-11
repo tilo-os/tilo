@@ -204,14 +204,12 @@ fn system_sources_from(
 }
 
 fn read_system_config(path: &str) -> Option<String> {
-    use std::io::Read as _;
-    let mut text = String::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(SYSTEM_CONFIG_LIMIT)
-        .read_to_string(&mut text)
-        .ok()?;
-    Some(text)
+    let bytes = tilo_files::native::bounded::read(
+        std::path::Path::new(path),
+        usize::try_from(SYSTEM_CONFIG_LIMIT).ok()?,
+    )
+    .ok()??;
+    String::from_utf8(bytes).ok()
 }
 
 /// Source ids from XKB rule names: comma-separated layouts with one variant
