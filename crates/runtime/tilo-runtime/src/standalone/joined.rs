@@ -427,18 +427,15 @@ impl OwnerCommitService for Joined {
 
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
         let room = RoomId::parse(&request.room);
-        let receipt = match room {
-            Some(room) => self.owner.commit_document_with_opening(
+        let receipt = match (room, self.keys.get()) {
+            (Some(room), Some(keys)) => self.owner.commit_document_with_opening(
                 request,
-                &mut |envelope| {
-                    self.keys
-                        .get()
-                        .ok_or("the joined room's channel keys are not available")?
-                        .open_new_write(room, envelope)
-                },
+                &mut |envelope| keys.open_new_write(room, envelope),
                 SystemTime::now(),
             ),
-            None => Err("invalid native document room".into()),
+            // Keyless replicas retain the established opaque signed custody.
+            // A scoped evaluator must independently require held opening.
+            _ => self.owner.commit_document(request, SystemTime::now()),
         };
         if receipt.is_ok()
             && let Some(room) = room
