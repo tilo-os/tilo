@@ -478,6 +478,13 @@ impl AnimationSettle {
 
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
+
+/// Loop iterations of work after which a quiet park asks for a heap trim: startup
+/// or a burst of input, not the one tick of a minute's clock repaint.
+const QUIET_TRIM_AFTER_TICKS: u32 = 30;
+
+/// A park at least this long (or one only an fd ends) is the loop going quiet.
+const QUIET_PARK: Duration = Duration::from_secs(1);
 const WAYLAND_CLIENT_SERVICE_FALLBACK: Duration = Duration::from_millis(4);
 const WAYLAND_REQUESTS_PER_CLIENT_PER_TICK: usize = 64;
 const WAYLAND_PENDING_RETRY_FLOOR: Duration = Duration::from_millis(1);
@@ -8229,6 +8236,9 @@ pub fn run() {
         eprintln!("tilo compositor: cannot establish session lock recovery: {error}");
         std::process::exit(1);
     });
+    // Startup frees its scratch (renderer warm-up, identity, network, search) over its first
+    // seconds, never all at once, and glibc keeps it: one trim once it is over.
+    crate::shell::heap_trim::request_after(crate::shell::heap_trim::STARTUP_SETTLED);
     // Calloop drives the whole compositor; smithay is callback-oriented and
     // expects every wakeup to fan out from a single `EventLoop::<State>`.
     let mut event_loop: EventLoop<'static, State> = match EventLoop::try_new() {
@@ -8552,9 +8562,10 @@ pub fn run() {
         initial_size,
         crate::shell::session_record_store(),
     );
-    frame_builder
-        .host_mut()
-        .set_pixel_aligned_strip_pan(backend.pixel_aligned_strip_pan());
+    frame_builder.set_strip_pan_presenter(
+        backend.pixel_aligned_strip_pan(),
+        backend.composites_strip_layers(),
+    );
     let clipboard_store = state.selection_store();
     frame_builder
         .host_mut()
@@ -8669,6 +8680,8 @@ pub fn run() {
     });
     let mut spatial_control: Option<SpatialControlSession> = None;
     let mut spatial_pointer_parked = false;
+    // Loop iterations since the last quiet trim was asked for.
+    let mut ticks_since_trim: u32 = 0;
     // The session's CRDT fan-out broker, bound before the wayland socket is
     // published (before any app launches) — an app resolves its collab
     // descriptor once at spawn, so a broker arriving later is one it never gets.
@@ -13279,6 +13292,15 @@ pub fn run() {
                 ("control-followup", control_followup.then_some(park_now)),
             ],
         );
+        // Work (startup, a burst of input, windows closing) leaves freed heap glibc keeps. A
+        // loop going to sleep for a while after it asks for one trim once it stays quiet; a
+        // minute's clock repaint is not work enough to ask.
+        ticks_since_trim = ticks_since_trim.saturating_add(1);
+        if ticks_since_trim >= QUIET_TRIM_AFTER_TICKS && park.is_none_or(|park| park >= QUIET_PARK)
+        {
+            crate::shell::heap_trim::request_when_quiet();
+            ticks_since_trim = 0;
+        }
         let t_sleep_start = Instant::now();
         if let Err(err) = event_loop.dispatch(park, &mut state) {
             eprintln!("tilo compositor: event loop dispatch error: {err}");
