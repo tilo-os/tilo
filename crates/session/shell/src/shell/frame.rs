@@ -2285,21 +2285,20 @@ impl FrameBuilder {
         });
         let backdrop =
             self.backdrop_to_scene(backdrop_surfaces, |layer| sections.below_layer(layer));
-        let (scene, scanout, cache) = match layered {
-            // The scene a full render of this frame draws, composed from the
-            // layers exactly as the presenter composites them. No filter is
-            // on (filters keep the strips in screen space) and no fullscreen
-            // client is up.
-            Some(cache) => (
+        // A layered frame's scene is the one a full render of it draws,
+        // composed from the layers exactly as the presenter composites them.
+        // No filter is on (filters keep the strips in screen space) and no
+        // fullscreen client is up.
+        let (scene, scanout, cache) = if let Some(cache) = layered {
+            (
                 crate::shell::render::strip_layers::compose(&cache),
                 None,
                 separable.then_some(cache),
-            ),
-            None => {
-                let (scene, scanout) =
-                    self.screen_space_scene(&sections, fullscreen_on_top, global_filter);
-                (scene, scanout, None)
-            }
+            )
+        } else {
+            let (scene, scanout) =
+                self.screen_space_scene(&sections, fullscreen_on_top, global_filter);
+            (scene, scanout, None)
         };
 
         self.last_produced_sections = Some(ProducedSections {
