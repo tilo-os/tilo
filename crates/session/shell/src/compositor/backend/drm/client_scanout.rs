@@ -5,10 +5,11 @@
 //! direct path can page-flip the client's dma-buf instead of rendering the
 //! frame: no raster, no copy into a scanout slot, one flip. This module holds
 //! the parts of that route that touch KMS — the primary plane's formats, the
-//! framebuffer made from a client buffer, the `TEST_ONLY` commit that proves
-//! the plane takes it — and the pure rules that decide when the route is
-//! taken ([`client_scanout_rejection`]) and how long a buffer is held
-//! ([`ClientHold`]).
+//! framebuffer made from a client buffer, which a `TEST_ONLY` commit of the
+//! very request its flip makes proves on the plane
+//! ([`super::kms_flip::test_on_plane`]) — and the pure rules that decide
+//! when the route is taken ([`client_scanout_rejection`]) and how long a
+//! buffer is held ([`ClientHold`]).
 //!
 //! Any refusal composites the same frame instead, so the output never shows
 //! anything but the frame or the frame before it.
@@ -20,15 +21,10 @@ use smithay::backend::allocator::Buffer as _;
 use smithay::backend::allocator::dmabuf::{Dmabuf, WeakDmabuf};
 use smithay::reexports::drm as drm_re;
 
-use drm_re::ClientCapability;
-use drm_re::Device as BasicDevice;
 use drm_re::buffer::{self as drm_buffer, DrmFourcc, DrmModifier, PlanarBuffer};
-use drm_re::control::atomic::AtomicModeReq;
-use drm_re::control::{
-    AtomicCommitFlags, Device as ControlDevice, FbCmd2Flags, crtc, framebuffer, plane, property,
-};
+use drm_re::control::{Device as ControlDevice, FbCmd2Flags, crtc, framebuffer};
 
-use super::output_signal::find_property;
+use super::kms_flip::{self, FlipTarget, PlaneCommit, PrimaryPlane};
 use super::scanout::Card;
 use crate::compositor::backend::OutputId;
 use crate::compositor::scanout_feedback::ScanoutPlane;
@@ -41,9 +37,6 @@ pub const CLIENT_SCANOUT_ENV: &str = "TILO_CLIENT_SCANOUT";
 /// Client buffers whose framebuffer (or refusal) is remembered per output: a
 /// swapchain of up to four, and the buffers of the size it is leaving.
 const REMEMBERED_BUFFERS: usize = 8;
-
-/// `DRM_PLANE_TYPE_PRIMARY`.
-const PLANE_TYPE_PRIMARY: u64 = 1;
 
 /// `DRM_FORMAT_MOD_LINEAR`.
 const MODIFIER_LINEAR: u64 = 0;
@@ -82,9 +75,11 @@ pub(super) struct ClientEligibility {
     pub sdr: bool,
     /// The frame composites no HDR layer.
     pub no_hdr_layers: bool,
-    /// The buffer has the format of the framebuffer KMS shows now. A legacy
-    /// page flip cannot change the format.
-    pub same_format: bool,
+    /// A flip can go from the framebuffer KMS shows now to the buffer: it
+    /// has the same format, or the output's flips are atomic and may change
+    /// format ([`super::kms_flip::KmsFlip::changes_format`]). A legacy page
+    /// flip cannot change the format.
+    pub format_reachable: bool,
 }
 
 /// Why a frame's candidate cannot be scanned out on this output, or `None`
@@ -111,7 +106,7 @@ pub(super) fn client_scanout_rejection(input: ClientEligibility) -> Option<&'sta
     if !input.sdr || !input.no_hdr_layers {
         return Some("the output composites HDR");
     }
-    if !input.same_format {
+    if !input.format_reachable {
         return Some("the client's buffer format differs from the output's");
     }
     None
@@ -121,8 +116,9 @@ pub(super) fn client_scanout_rejection(input: ClientEligibility) -> Option<&'sta
 /// alpha is padding because the client declared the whole surface opaque
 /// (`wl_surface.set_opaque_region`, [`GpuFrame::opaque`]) — the `X` twin of
 /// its alpha format. The two lay pixels out identically; KMS then ignores the
-/// alpha, as the composited frame does, and a legacy flip from the output's
-/// own `XRGB8888` targets onto it keeps the format.
+/// alpha, as the composited frame does, and an `ARGB8888` buffer follows the
+/// output's own `XRGB8888` targets even by a legacy flip, which keeps the
+/// format. An `ABGR8888` one, shown as `XBGR8888`, needs an atomic flip.
 pub(super) fn scanout_fourcc(fourcc: DrmFourcc, opaque: bool) -> DrmFourcc {
     match (fourcc, opaque) {
         (DrmFourcc::Argb8888, true) => DrmFourcc::Xrgb8888,
@@ -131,14 +127,26 @@ pub(super) fn scanout_fourcc(fourcc: DrmFourcc, opaque: bool) -> DrmFourcc {
     }
 }
 
+/// What an output's framebuffers are, for the client formats that can
+/// follow them onto its primary plane ([`client_formats`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct OfferTarget {
+    /// The format of the framebuffers KMS shows now.
+    pub format: DrmFourcc,
+    /// The output's flips may change format (they are atomic).
+    pub changes_format: bool,
+}
+
 /// The client buffer formats a fullscreen client may hand this output to be
-/// scanned out, with every modifier the plane takes: those whose
-/// [`scanout_fourcc`] — for a buffer declared opaque — is `target`, the
-/// format of the framebuffers KMS shows now, since a legacy flip cannot
-/// change format. A driver without modifiers takes its formats linear.
+/// scanned out, with every modifier the plane takes for its
+/// [`scanout_fourcc`] (as for a buffer declared opaque). On legacy flips,
+/// which cannot change format, only those shown as `target.format`, the
+/// format of the framebuffers KMS shows now; on atomic flips
+/// (`target.changes_format`) every one the plane scans out. A driver without
+/// modifiers takes its formats linear.
 pub(super) fn client_formats(
     plane: &PlaneFormats,
-    target: DrmFourcc,
+    target: OfferTarget,
 ) -> Vec<smithay::backend::allocator::Format> {
     use smithay::backend::allocator::Format;
     const CLIENT: [DrmFourcc; 4] = [
@@ -150,7 +158,7 @@ pub(super) fn client_formats(
     let mut formats: Vec<Format> = Vec::new();
     for code in CLIENT {
         let shown = scanout_fourcc(code, true);
-        if shown != target {
+        if !target.changes_format && shown != target.format {
             continue;
         }
         let modifiers: Vec<u64> = match plane {
@@ -277,61 +285,6 @@ pub(super) fn parse_in_formats(blob: &[u8]) -> Option<Vec<(u32, u64)>> {
     Some(pairs)
 }
 
-/// The plane KMS shows this CRTC's framebuffers on.
-#[derive(Clone, Debug)]
-pub(super) struct PrimaryPlane {
-    handle: plane::Handle,
-    fb_id: property::Handle,
-    formats: PlaneFormats,
-}
-
-/// Find the primary plane on `crtc`, enabling atomic modesetting on `card`
-/// so that buffers can be tried on it in a `TEST_ONLY` commit.
-///
-/// The scanout keeps presenting through legacy page flips; atomic is enabled
-/// for the test commit only. It makes the kernel report aspect-ratio flags
-/// in modes, which the rest of the backend does not expect, so that is
-/// switched back off.
-fn probe_primary_plane(card: &Card, crtc: crtc::Handle) -> Result<PrimaryPlane, String> {
-    card.set_client_capability(ClientCapability::Atomic, true)
-        .map_err(|error| format!("atomic modesetting is unavailable: {error}"))?;
-    if let Err(error) = card.set_client_capability(ClientCapability::AspectRatio, false) {
-        tracing::debug!(%error, "could not switch mode aspect-ratio flags back off");
-    }
-    let planes = card
-        .plane_handles()
-        .map_err(|error| format!("list planes: {error}"))?;
-    for handle in planes {
-        let Ok(info) = card.get_plane(handle) else {
-            continue;
-        };
-        if info.crtc() != Some(crtc) {
-            continue;
-        }
-        let Some((_, kind, _)) = find_property(card, handle, "type") else {
-            continue;
-        };
-        if kind != PLANE_TYPE_PRIMARY {
-            continue;
-        }
-        let (fb_id, _, _) = find_property(card, handle, "FB_ID")
-            .ok_or_else(|| "the primary plane has no FB_ID property".to_owned())?;
-        let formats = find_property(card, handle, "IN_FORMATS")
-            .and_then(|(_, blob, _)| card.get_property_blob(blob).ok())
-            .and_then(|blob| parse_in_formats(&blob))
-            .map_or_else(
-                || PlaneFormats::Implicit(info.formats().to_vec()),
-                PlaneFormats::Modifiers,
-            );
-        return Ok(PrimaryPlane {
-            handle,
-            fb_id,
-            formats,
-        });
-    }
-    Err("no primary plane shows this CRTC".to_owned())
-}
-
 /// A KMS framebuffer made from a client's dma-buf. Removed when the last
 /// holder lets go — never while KMS shows it or has it queued, since the
 /// output's [`ClientHold`] is one of those holders.
@@ -440,23 +393,6 @@ impl PlanarBuffer for DmabufPlanes<'_> {
     }
 }
 
-/// Ask KMS, without changing anything, whether `plane` takes `framebuffer`
-/// in place of the one it shows.
-fn test_on_plane(
-    card: &Card,
-    plane: &PrimaryPlane,
-    framebuffer: framebuffer::Handle,
-) -> Result<(), String> {
-    let mut request = AtomicModeReq::new();
-    request.add_property(
-        plane.handle,
-        plane.fb_id,
-        property::Value::Framebuffer(Some(framebuffer)),
-    );
-    card.atomic_commit(AtomicCommitFlags::TEST_ONLY, request)
-        .map_err(|error| format!("the primary plane refused the buffer in a test commit: {error}"))
-}
-
 /// A client buffer KMS shows, or has queued: the frame it was imported for,
 /// which holds the buffer back from its client, and its framebuffer.
 #[derive(Clone, Debug)]
@@ -556,8 +492,8 @@ pub(super) struct ClientPlane {
     plane: Option<Result<PrimaryPlane, String>>,
     buffers: Vec<Remembered>,
     status: Option<ClientStatus>,
-    /// The offer last built, for the target format it was built for.
-    built_offer: Option<(DrmFourcc, Option<Arc<ScanoutPlane>>)>,
+    /// The offer last built, for the target it was built for.
+    built_offer: Option<(OfferTarget, Option<Arc<ScanoutPlane>>)>,
     /// What the output offers a fullscreen client now ([`Self::offer`]).
     offered: Option<Arc<ScanoutPlane>>,
     /// What [`Self::publish_offer`] last published.
@@ -565,6 +501,16 @@ pub(super) struct ClientPlane {
 }
 
 impl ClientPlane {
+    /// Client scanout on an output whose flips already found its primary
+    /// plane (atomic flips, [`super::kms_flip::KmsFlip::plane`]); with
+    /// `None` the plane is probed the first time a client buffer is tried.
+    pub fn with_plane(plane: Option<PrimaryPlane>) -> Self {
+        Self {
+            plane: plane.map(Ok),
+            ..Self::default()
+        }
+    }
+
     /// Refresh what this output offers a fullscreen client covering it: the
     /// buffers its primary plane would scan out in place of `target`
     /// framebuffers ([`client_formats`]), on the KMS device `device`; nothing
@@ -578,7 +524,7 @@ impl ClientPlane {
         card: &Card,
         crtc: crtc::Handle,
         device: u64,
-        target: Option<DrmFourcc>,
+        target: Option<OfferTarget>,
     ) {
         let Some(target) = target else {
             self.offered = None;
@@ -592,7 +538,7 @@ impl ClientPlane {
         }
         let offer = match self
             .plane
-            .get_or_insert_with(|| probe_primary_plane(card, crtc))
+            .get_or_insert_with(|| kms_flip::probe_primary_plane(card, crtc))
         {
             Ok(plane) => {
                 let formats = client_formats(&plane.formats, target);
@@ -616,13 +562,13 @@ impl ClientPlane {
     }
 
     /// The framebuffer `dmabuf` scans out through as `fourcc`
-    /// ([`scanout_fourcc`]), made and tried in a `TEST_ONLY` commit the first
-    /// time the buffer comes by as that format; a refusal is remembered as
-    /// well, so a buffer the plane refused is not asked again.
+    /// ([`scanout_fourcc`]) on `target`, made and tried in a `TEST_ONLY`
+    /// commit the first time the buffer comes by as that format; a refusal is
+    /// remembered as well, so a buffer the plane refused is not asked again.
     pub fn framebuffer(
         &mut self,
         card: &Card,
-        crtc: crtc::Handle,
+        target: FlipTarget,
         dmabuf: &Dmabuf,
         fourcc: DrmFourcc,
     ) -> Result<Arc<ClientFramebuffer>, String> {
@@ -635,7 +581,7 @@ impl ClientPlane {
         if let Some(entry) = self.buffers.iter().find(|entry| entry.buffer == weak) {
             return entry.verdict.clone();
         }
-        let verdict = self.import(card, crtc, dmabuf, fourcc);
+        let verdict = self.import(card, target, dmabuf, fourcc);
         if self.buffers.len() >= REMEMBERED_BUFFERS {
             self.buffers.remove(0);
         }
@@ -650,14 +596,23 @@ impl ClientPlane {
     fn import(
         &mut self,
         card: &Card,
-        crtc: crtc::Handle,
+        target: FlipTarget,
         dmabuf: &Dmabuf,
         fourcc: DrmFourcc,
     ) -> Result<Arc<ClientFramebuffer>, String> {
         let plane = self
             .plane
-            .get_or_insert_with(|| probe_primary_plane(card, crtc))
+            .get_or_insert_with(|| kms_flip::probe_primary_plane(card, target.crtc))
             .clone()?;
+        // A flip shows the whole mode from the buffer's origin: a buffer of
+        // another size would be cropped or refused.
+        let size = (dmabuf.width(), dmabuf.height());
+        if size != target.size {
+            return Err(format!(
+                "the client's buffer is {}x{}, the mode {}x{}",
+                size.0, size.1, target.size.0, target.size.1
+            ));
+        }
         let modifier = u64::from(dmabuf.format().modifier);
         if !plane.formats.supports(fourcc as u32, modifier) {
             return Err(format!(
@@ -665,7 +620,14 @@ impl ClientPlane {
             ));
         }
         let framebuffer = ClientFramebuffer::import(card, dmabuf, fourcc)?;
-        test_on_plane(card, &plane, framebuffer.handle())?;
+        kms_flip::test_on_plane(
+            card,
+            &plane,
+            PlaneCommit {
+                target,
+                framebuffer: framebuffer.handle(),
+            },
+        )?;
         Ok(Arc::new(framebuffer))
     }
 
@@ -723,7 +685,7 @@ mod tests {
             opaque: true,
             sdr: true,
             no_hdr_layers: true,
-            same_format: true,
+            format_reachable: true,
         }
     }
 
@@ -764,7 +726,7 @@ mod tests {
                 ..eligible()
             },
             ClientEligibility {
-                same_format: false,
+                format_reachable: false,
                 ..eligible()
             },
         ];
@@ -776,14 +738,27 @@ mod tests {
         }
     }
 
+    /// How an output's flips reach KMS, for [`plane_choice`].
+    #[derive(Clone, Copy)]
+    enum Flips {
+        Legacy,
+        Atomic,
+    }
+
     /// The plane choice `present_client` makes for a fullscreen buffer of
     /// `fourcc` on an output whose direct targets are `XRGB8888`: the format
-    /// it is scanned out as, or why it is composited.
-    fn plane_choice(fourcc: DrmFourcc, opaque: bool) -> Result<DrmFourcc, &'static str> {
+    /// it is scanned out as, or why it is composited. `format_reachable` is
+    /// computed as `present_client` computes it.
+    fn plane_choice(
+        fourcc: DrmFourcc,
+        opaque: bool,
+        flips: Flips,
+    ) -> Result<DrmFourcc, &'static str> {
         let shown = scanout_fourcc(fourcc, opaque);
+        let changes_format = matches!(flips, Flips::Atomic);
         let eligibility = ClientEligibility {
             opaque,
-            same_format: shown == DrmFourcc::Xrgb8888,
+            format_reachable: changes_format || shown == DrmFourcc::Xrgb8888,
             ..eligible()
         };
         client_scanout_rejection(eligibility).map_or(Ok(shown), Err)
@@ -791,33 +766,54 @@ mod tests {
 
     #[test]
     fn argb_scans_out_as_xrgb_only_when_declared_opaque() {
-        // Phase `argb_with_an_opaque_region_covering_the_surface`: what a
-        // fullscreen browser commits. Its alpha is padding, so KMS reads the
-        // same bytes as XRGB and the output's legacy flip keeps its format.
-        assert_eq!(
-            plane_choice(DrmFourcc::Argb8888, true),
-            Ok(DrmFourcc::Xrgb8888)
-        );
-        // Phase `argb_partly_translucent`: no or a partial opaque region
-        // (rounded corners, a shadow, a translucent terminal) composites.
-        assert_eq!(
-            plane_choice(DrmFourcc::Argb8888, false),
-            Err("the fullscreen client's buffer has an alpha channel")
-        );
-        // Phase `xrgb_unchanged`.
-        assert_eq!(
-            plane_choice(DrmFourcc::Xrgb8888, true),
-            Ok(DrmFourcc::Xrgb8888)
-        );
+        for flips in [Flips::Legacy, Flips::Atomic] {
+            // Phase `argb_with_an_opaque_region_covering_the_surface`: what
+            // a fullscreen browser commits. Its alpha is padding, so KMS
+            // reads the same bytes as XRGB and even a legacy flip keeps the
+            // output's format.
+            assert_eq!(
+                plane_choice(DrmFourcc::Argb8888, true, flips),
+                Ok(DrmFourcc::Xrgb8888)
+            );
+            // Phase `argb_partly_translucent`: no or a partial opaque region
+            // (rounded corners, a shadow, a translucent terminal) composites.
+            assert_eq!(
+                plane_choice(DrmFourcc::Argb8888, false, flips),
+                Err("the fullscreen client's buffer has an alpha channel")
+            );
+            // Phase `xrgb_unchanged`.
+            assert_eq!(
+                plane_choice(DrmFourcc::Xrgb8888, true, flips),
+                Ok(DrmFourcc::Xrgb8888)
+            );
+            // Phase `abgr_translucent`: composited whatever the flips.
+            assert_eq!(
+                plane_choice(DrmFourcc::Abgr8888, false, flips),
+                Err("the fullscreen client's buffer has an alpha channel")
+            );
+        }
         // Phase `abgr_declared_opaque`: its X twin is not the targets'
-        // format, and a legacy flip cannot change formats.
+        // format. A legacy flip cannot change formats; an atomic one can.
         assert_eq!(
             scanout_fourcc(DrmFourcc::Abgr8888, true),
             DrmFourcc::Xbgr8888
         );
         assert_eq!(
-            plane_choice(DrmFourcc::Abgr8888, true),
+            plane_choice(DrmFourcc::Abgr8888, true, Flips::Legacy),
             Err("the client's buffer format differs from the output's")
+        );
+        assert_eq!(
+            plane_choice(DrmFourcc::Abgr8888, true, Flips::Atomic),
+            Ok(DrmFourcc::Xbgr8888)
+        );
+        // Phase `xbgr`: the same.
+        assert_eq!(
+            plane_choice(DrmFourcc::Xbgr8888, true, Flips::Legacy),
+            Err("the client's buffer format differs from the output's")
+        );
+        assert_eq!(
+            plane_choice(DrmFourcc::Xbgr8888, true, Flips::Atomic),
+            Ok(DrmFourcc::Xbgr8888)
         );
         // Phase `only_alpha_formats_change`.
         assert_eq!(
@@ -939,43 +935,65 @@ mod tests {
             (DrmFourcc::Xbgr8888 as u32, MODIFIER_LINEAR),
         ]);
 
+        let legacy = |format| OfferTarget {
+            format,
+            changes_format: false,
+        };
+        let atomic = |format| OfferTarget {
+            format,
+            changes_format: true,
+        };
+
         // Phase `xrgb_targets`: an XRGB buffer, and an ARGB one declared
         // opaque (shown as XRGB), with every modifier XRGB takes. The
         // plane's own ARGB listing does not matter: the buffer is shown as
         // XRGB. XBGR and ABGR cannot follow an XRGB framebuffer by a legacy
         // flip.
-        assert_eq!(
-            client_formats(&plane, DrmFourcc::Xrgb8888),
-            vec![
-                format(DrmFourcc::Xrgb8888, MODIFIER_LINEAR),
-                format(DrmFourcc::Xrgb8888, TILED),
-                format(DrmFourcc::Argb8888, MODIFIER_LINEAR),
-                format(DrmFourcc::Argb8888, TILED),
-            ]
-        );
+        let xrgb = vec![
+            format(DrmFourcc::Xrgb8888, MODIFIER_LINEAR),
+            format(DrmFourcc::Xrgb8888, TILED),
+            format(DrmFourcc::Argb8888, MODIFIER_LINEAR),
+            format(DrmFourcc::Argb8888, TILED),
+        ];
+        assert_eq!(client_formats(&plane, legacy(DrmFourcc::Xrgb8888)), xrgb);
 
         // Phase `xbgr_targets`.
-        assert_eq!(
-            client_formats(&plane, DrmFourcc::Xbgr8888),
-            vec![
-                format(DrmFourcc::Xbgr8888, MODIFIER_LINEAR),
-                format(DrmFourcc::Abgr8888, MODIFIER_LINEAR),
-            ]
-        );
+        let xbgr = vec![
+            format(DrmFourcc::Xbgr8888, MODIFIER_LINEAR),
+            format(DrmFourcc::Abgr8888, MODIFIER_LINEAR),
+        ];
+        assert_eq!(client_formats(&plane, legacy(DrmFourcc::Xbgr8888)), xbgr);
+
+        // Phase `atomic_flips`: an atomic flip changes format, so XRGB
+        // targets are followed by every format the plane scans out.
+        let every = [xrgb, xbgr].concat();
+        assert_eq!(client_formats(&plane, atomic(DrmFourcc::Xrgb8888)), every);
+        assert_eq!(client_formats(&plane, atomic(DrmFourcc::Xbgr8888)), every);
 
         // Phase `targets_no_client_format_matches`: HDR targets.
-        assert!(client_formats(&plane, DrmFourcc::Xrgb2101010).is_empty());
+        assert!(client_formats(&plane, legacy(DrmFourcc::Xrgb2101010)).is_empty());
 
         // Phase `a_driver_without_modifiers`: linear.
+        let implicit = PlaneFormats::Implicit(vec![XRGB]);
+        let linear = vec![
+            format(DrmFourcc::Xrgb8888, MODIFIER_LINEAR),
+            format(DrmFourcc::Argb8888, MODIFIER_LINEAR),
+        ];
         assert_eq!(
-            client_formats(&PlaneFormats::Implicit(vec![XRGB]), DrmFourcc::Xrgb8888),
-            vec![
-                format(DrmFourcc::Xrgb8888, MODIFIER_LINEAR),
-                format(DrmFourcc::Argb8888, MODIFIER_LINEAR),
-            ]
+            client_formats(&implicit, legacy(DrmFourcc::Xrgb8888)),
+            linear
+        );
+        assert_eq!(
+            client_formats(&implicit, atomic(DrmFourcc::Xrgb8888)),
+            linear,
+            "atomic flips offer only what the plane scans out"
         );
         assert!(
-            client_formats(&PlaneFormats::Implicit(vec![NV12]), DrmFourcc::Xrgb8888).is_empty()
+            client_formats(
+                &PlaneFormats::Implicit(vec![NV12]),
+                atomic(DrmFourcc::Xrgb8888)
+            )
+            .is_empty()
         );
     }
 
@@ -989,7 +1007,13 @@ mod tests {
         );
         let offer = Arc::new(ScanoutPlane {
             device: 226,
-            formats: client_formats(&PlaneFormats::Implicit(vec![XRGB]), DrmFourcc::Xrgb8888),
+            formats: client_formats(
+                &PlaneFormats::Implicit(vec![XRGB]),
+                OfferTarget {
+                    format: DrmFourcc::Xrgb8888,
+                    changes_format: false,
+                },
+            ),
         });
         plane.offered = Some(Arc::clone(&offer));
         assert!(plane.publish_offer(OutputId(3), &planes), "a new offer");
