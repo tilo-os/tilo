@@ -135,6 +135,14 @@ macro_rules! retained_parts {
                 child.mark_drawn();
             }
         }
+        // A pure layout container: what changed is what its parts changed,
+        // not the whole box, so a hover or a caret elsewhere on the page
+        // does not repaint the page.
+        fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+            for child in &self.parts.children {
+                child.collect_damage(regions);
+            }
+        }
         fn take_structure_dirty(&mut self) -> bool {
             let mut dirty = false;
             for child in &mut self.parts.children {
