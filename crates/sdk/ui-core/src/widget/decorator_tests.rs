@@ -167,6 +167,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             children: Vec<Box<dyn Widget>>,
         }
         impl Widget for Plain {
+            crate::testing::inert_widget_methods!(apply_layout, draw, get_rect);
             fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
             }
             fn build_layout(
@@ -177,21 +178,8 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             ) -> NodeId {
                 taffy.leaf_node(taffy::Style::default())
             }
-            fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-            fn draw(
-                &mut self,
-                _scene: &mut Scene,
-                _transform: Affine,
-                _text_renderer: &mut TextRenderer,
-                _theme: &Theme,
-                _presence: &PresenceCtx,
-            ) {
-            }
             fn name(&self) -> &'static str {
                 "Plain"
-            }
-            fn get_rect(&self) -> Rect {
-                Rect::ZERO
             }
             fn children(&self) -> Vec<&dyn Widget> {
                 self.children.iter().map(AsRef::as_ref).collect()

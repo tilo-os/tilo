@@ -1,6 +1,4 @@
 use super::*;
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use std::collections::HashMap;
@@ -26,6 +24,7 @@ impl Boxed {
 }
 
 impl Widget for Boxed {
+    crate::testing::inert_widget_methods!(apply_layout, draw);
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -33,18 +32,6 @@ impl Widget for Boxed {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
-    }
-
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn name(&self) -> &'static str {

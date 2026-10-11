@@ -41,6 +41,12 @@ struct Owner {
     sibling: Option<Box<Owner>>,
 }
 impl Widget for Owner {
+    crate::testing::inert_widget_methods!(
+        apply_layout,
+        draw,
+        get_rect,
+        name = "Acknowledgment owner"
+    );
     crate::provides!(
         dyn crate::history_mode::capability::DocumentHistory,
         dyn crate::widget::document_effects::DocumentEffects
@@ -67,23 +73,6 @@ impl Widget for Owner {
         _: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         t.new_leaf(taffy::Style::default()).unwrap()
-    }
-    fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: taffy::NodeId, _: vello::kurbo::Point) {
-    }
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut crate::TextRenderer,
-        _: &crate::Theme,
-        _: &crate::presence::PresenceCtx,
-    ) {
-    }
-    fn name(&self) -> &str {
-        "Acknowledgment owner"
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         self.sibling

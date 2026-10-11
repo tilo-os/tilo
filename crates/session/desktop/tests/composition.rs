@@ -175,6 +175,7 @@ struct OverlayApp {
     draws: std::rc::Rc<std::cell::Cell<usize>>,
 }
 impl ui::widget::Widget for OverlayApp {
+    ui::testing::inert_widget_methods!(draw);
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.capture.then(ui::time::Instant::now)
     }
@@ -205,15 +206,6 @@ impl ui::widget::Widget for OverlayApp {
         map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::Widget>,
     ) -> taffy::NodeId {
         self.leaf.build_layout(tree, theme, map)
-    }
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut ui::TextRenderer,
-        _: &ui::Theme,
-        _: &ui::presence::PresenceCtx,
-    ) {
     }
     fn draw_overlay(
         &mut self,

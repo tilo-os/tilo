@@ -35,6 +35,7 @@ struct TextOwner {
     emitter: Option<crate::widget::ActionEmitter<String>>,
 }
 impl Widget for TextOwner {
+    crate::testing::inert_widget_methods!(apply_layout, draw, get_rect, name = "Text owner");
     crate::provides!(
         dyn crate::history_mode::capability::DocumentHistory,
         dyn crate::widget::controls::ActionControls
@@ -47,22 +48,6 @@ impl Widget for TextOwner {
         _: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         tree.new_leaf(taffy::Style::default()).unwrap()
-    }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut crate::TextRenderer,
-        _: &crate::Theme,
-        _: &crate::presence::PresenceCtx,
-    ) {
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
-    }
-    fn name(&self) -> &str {
-        "Text owner"
     }
 }
 impl crate::widget::controls::ActionControls for TextOwner {

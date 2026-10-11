@@ -42,6 +42,7 @@ struct MailRoot {
 }
 
 impl Widget for MailRoot {
+    crate::testing::inert_widget_methods!(draw, get_rect);
     crate::provides!(
         dyn crate::resources::PublishesResources,
         dyn crate::search::capability::SearchSource
@@ -60,8 +61,6 @@ impl Widget for MailRoot {
         let child = taffy.children(node).unwrap()[0];
         self.search.apply_layout(taffy, child, origin);
     }
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.search]
     }
@@ -70,9 +69,6 @@ impl Widget for MailRoot {
     }
     fn name(&self) -> &'static str {
         "mail-root"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 

@@ -471,6 +471,7 @@ struct Capturing {
 }
 
 impl Widget for Capturing {
+    crate::testing::inert_widget_methods!(draw);
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -489,16 +490,6 @@ impl Widget for Capturing {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -567,6 +558,7 @@ impl Filterable for Filtered {
 }
 
 impl Widget for Filtered {
+    crate::testing::inert_widget_methods!(draw);
     crate::provides!(dyn Filterable);
 
     fn build_layout(
@@ -580,16 +572,6 @@ impl Widget for Filtered {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.inner.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn name(&self) -> &'static str {

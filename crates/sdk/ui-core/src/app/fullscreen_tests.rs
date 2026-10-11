@@ -38,6 +38,7 @@ impl crate::widget::FullscreenProvider for FsRoot {
 }
 
 impl Widget for FsRoot {
+    crate::testing::inert_widget_methods!(apply_layout, draw);
     crate::provides!(dyn crate::widget::FullscreenProvider);
 
     fn build_layout(
@@ -47,16 +48,6 @@ impl Widget for FsRoot {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _tr: &mut TextRenderer,
-        _theme: &Theme,
-        _p: &PresenceCtx,
-    ) {
     }
     fn name(&self) -> &'static str {
         "FsRoot"

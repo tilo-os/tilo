@@ -8,6 +8,7 @@ struct DrawUpdatedDamage {
 }
 
 impl Widget for DrawUpdatedDamage {
+    crate::testing::inert_widget_methods!(apply_layout);
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -16,8 +17,6 @@ impl Widget for DrawUpdatedDamage {
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
-
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
 
     fn draw(
         &mut self,
@@ -84,6 +83,7 @@ struct Shiftable {
 }
 
 impl Widget for Shiftable {
+    crate::testing::inert_widget_methods!(draw);
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -110,16 +110,6 @@ impl Widget for Shiftable {
             x + f64::from(layout.size.width),
             y + f64::from(layout.size.height),
         );
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn name(&self) -> &'static str {

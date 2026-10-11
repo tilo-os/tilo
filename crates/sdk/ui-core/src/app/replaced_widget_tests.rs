@@ -8,13 +8,10 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 use crate::app::App;
-use crate::presence::PresenceCtx;
 use crate::state::State;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{AppModel, ModelPath, Text, Widget};
 
@@ -29,6 +26,7 @@ struct Swapper {
 }
 
 impl Widget for Swapper {
+    crate::testing::inert_widget_methods!(draw);
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if !self.replace_on_poll && self.swap.replace(false) {
             self.child = Box::new(Text::new("after"));
@@ -60,15 +58,6 @@ impl Widget for Swapper {
         {
             self.child.apply_layout(taffy, *child, origin);
         }
-    }
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![self.child.as_ref()]

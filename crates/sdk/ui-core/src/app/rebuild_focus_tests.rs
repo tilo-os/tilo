@@ -47,6 +47,7 @@ impl RebuildHarness {
 }
 
 impl Widget for RebuildHarness {
+    crate::testing::inert_widget_methods!(draw);
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -68,15 +69,6 @@ impl Widget for RebuildHarness {
                 c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
             }
         }
-    }
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _tr: &mut TextRenderer,
-        _theme: &Theme,
-        _p: &PresenceCtx,
-    ) {
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.children.iter().map(Box::as_ref).collect()

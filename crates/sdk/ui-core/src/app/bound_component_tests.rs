@@ -214,6 +214,7 @@ impl crate::search::SearchProvider for LazyProbe {
     }
 }
 impl Widget for Probe {
+    crate::testing::inert_widget_methods!(get_rect);
     crate::provides!(
         dyn crate::undo::CommittedActions,
         dyn crate::widget::controls::ActionControls,
@@ -372,9 +373,6 @@ impl Widget for Probe {
     }
     fn name(&self) -> &'static str {
         "bound-probe"
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
     fn is_focusable(&self) -> bool {
         Self::capture("focus-order");

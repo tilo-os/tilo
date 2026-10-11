@@ -773,11 +773,14 @@ impl AnonymousFocusProbe {
 }
 #[cfg(test)]
 impl Widget for AnonymousFocusProbe {
+    crate::testing::inert_widget_methods!(
+        apply_layout,
+        draw,
+        get_rect,
+        name = "AnonymousFocusProbe"
+    );
     crate::provides!(dyn crate::undo::UndoPoints);
 
-    fn name(&self) -> &str {
-        "AnonymousFocusProbe"
-    }
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -792,19 +795,6 @@ impl Widget for AnonymousFocusProbe {
         let node = tree.new_leaf(taffy::Style::default()).unwrap();
         nodes.insert(node, self as *mut dyn Widget);
         node
-    }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut TextRenderer,
-        _: &crate::Theme,
-        _: &crate::PresenceCtx,
-    ) {
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
     fn is_focusable(&self) -> bool {
         true

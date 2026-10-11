@@ -29,7 +29,6 @@ use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{Capability, GRANT_ONCE, Workspace, WorkspaceId, WorkspaceTree};
 use ui::widget::PromptChoice;
 
-use taffy::{Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
@@ -76,26 +75,7 @@ struct StubContent {
     rect: Rect,
 }
 impl ui::widget::Widget for StubContent {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &ui::theme::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
-    ) -> taffy::NodeId {
-        let n = taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(n, std::ptr::from_mut::<dyn ui::widget::Widget>(self));
-        n
-    }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: taffy::NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut vello::Scene,
-        _transform: vello::kurbo::Affine,
-        _text_renderer: &mut ui::text_render::TextRenderer,
-        _theme: &ui::theme::Theme,
-        _presence: &ui::presence::PresenceCtx,
-    ) {
-    }
+    ui::testing::inert_widget_methods!(apply_layout, draw, leaf_layout);
     fn name(&self) -> &'static str {
         "StubContent"
     }

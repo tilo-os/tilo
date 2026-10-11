@@ -478,6 +478,7 @@ struct Keypad {
 }
 
 impl Widget for Keypad {
+    crate::testing::inert_widget_methods!(draw);
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -497,8 +498,6 @@ impl Widget for Keypad {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.targets.begin_frame();
         self.targets.target("seven", self.rect, "7");
-    }
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         self.targets.handle_event(event, ctx);

@@ -3,87 +3,6 @@
 //! Each macro expands inside an `impl Widget for ...` (or produces the whole
 //! `impl AppWidget`) so a probe only spells out the methods it observes.
 
-/// No-op implementations of required [`Widget`](crate::widget::Widget)
-/// methods. Without arguments it emits `apply_layout`, `draw` and a zero
-/// `get_rect`; with a list it emits exactly the named pieces:
-///
-/// - `apply_layout`, `draw`: do nothing
-/// - `get_rect`: [`Rect::ZERO`](vello::kurbo::Rect::ZERO)
-/// - `leaf_layout`: a default-styled leaf registered for this widget
-/// - `unregistered_leaf_layout`: a default-styled leaf left out of the node map
-/// - `name = "..."`: a fixed widget name
-/// - `name_field`: the name stored in `self.name`
-///
-/// `handle_event` needs no stub: the trait default ignores every event.
-macro_rules! inert_widget_methods {
-    () => {
-        $crate::testing::inert_widget_methods!(apply_layout, draw, get_rect);
-    };
-    (@ apply_layout) => {
-        fn apply_layout(
-            &mut self,
-            _: &::taffy::TaffyTree<()>,
-            _: ::taffy::NodeId,
-            _: ::vello::kurbo::Point,
-        ) {
-        }
-    };
-    (@ draw) => {
-        fn draw(
-            &mut self,
-            _: &mut ::vello::Scene,
-            _: ::vello::kurbo::Affine,
-            _: &mut $crate::text_render::TextRenderer,
-            _: &$crate::theme::Theme,
-            _: &$crate::presence::PresenceCtx,
-        ) {
-        }
-    };
-    (@ get_rect) => {
-        fn get_rect(&self) -> ::vello::kurbo::Rect {
-            ::vello::kurbo::Rect::ZERO
-        }
-    };
-    (@ leaf_layout) => {
-        fn build_layout(
-            &mut self,
-            tree: &mut ::taffy::TaffyTree<()>,
-            _: &$crate::theme::Theme,
-            nodes: &mut ::std::collections::HashMap<
-                ::taffy::NodeId,
-                *mut dyn $crate::widget::Widget,
-            >,
-        ) -> ::taffy::NodeId {
-            let node = tree.new_leaf(::taffy::Style::default()).unwrap();
-            nodes.insert(node, ::std::ptr::from_mut::<dyn $crate::widget::Widget>(self));
-            node
-        }
-    };
-    (@ unregistered_leaf_layout) => {
-        fn build_layout(
-            &mut self,
-            tree: &mut ::taffy::TaffyTree<()>,
-            _: &$crate::theme::Theme,
-            _: &mut ::std::collections::HashMap<::taffy::NodeId, *mut dyn $crate::widget::Widget>,
-        ) -> ::taffy::NodeId {
-            tree.new_leaf(::taffy::Style::default()).unwrap()
-        }
-    };
-    (@ name = $name:literal) => {
-        fn name(&self) -> &str {
-            $name
-        }
-    };
-    (@ name_field) => {
-        fn name(&self) -> &str {
-            self.name
-        }
-    };
-    ($($method:ident $(= $value:literal)?),+ $(,)?) => {
-        $($crate::testing::inert_widget_methods!(@ $method $(= $value)?);)+
-    };
-}
-
 /// Forwards the named required [`Widget`](crate::widget::Widget) methods to
 /// the widget in field `$field` (a name or a tuple index):
 /// `delegate_widget_methods!(inner: sync, build_layout, apply_layout, draw,
@@ -191,4 +110,4 @@ macro_rules! test_app_widget {
     };
 }
 
-pub(crate) use {delegate_widget_methods, inert_widget_methods, test_app_widget};
+pub(crate) use {delegate_widget_methods, test_app_widget};

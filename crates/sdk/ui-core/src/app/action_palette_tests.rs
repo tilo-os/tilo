@@ -67,19 +67,7 @@ impl crate::search::SearchProvider for LazyProvider {
 struct Publisher;
 struct ConsumingKeyboardRoot;
 impl Widget for ConsumingKeyboardRoot {
-    fn build_layout(
-        &mut self,
-        tree: &mut TaffyTree<()>,
-        _: &Theme,
-        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = tree.new_leaf(taffy::Style::default()).unwrap();
-        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
+    crate::testing::inert_widget_methods!(apply_layout, draw, get_rect, leaf_layout);
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if matches!(
             event,
@@ -92,14 +80,12 @@ impl Widget for ConsumingKeyboardRoot {
             *ctx.handled = true;
         }
     }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
-    }
     fn name(&self) -> &'static str {
         "consuming-keyboard-root"
     }
 }
 impl Widget for Publisher {
+    crate::testing::inert_widget_methods!(apply_layout, draw, get_rect);
     crate::provides!(
         dyn crate::resources::PublishesResources,
         dyn crate::search::capability::SearchSource
@@ -113,21 +99,8 @@ impl Widget for Publisher {
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 
@@ -185,6 +158,7 @@ impl crate::resources::PublishesResources for Publisher {
 struct CountingPublisher(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
 impl Widget for CountingPublisher {
+    crate::testing::inert_widget_methods!(apply_layout, draw, get_rect);
     crate::provides!(dyn crate::resources::PublishesResources);
 
     fn build_layout(
@@ -195,21 +169,8 @@ impl Widget for CountingPublisher {
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "counting-publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 
@@ -1077,6 +1038,13 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
         }
     }
     impl Widget for Native {
+        crate::testing::inert_widget_methods!(
+            apply_layout,
+            draw,
+            get_rect,
+            leaf_layout,
+            name = "Native history fixture"
+        );
         crate::provides!(dyn LocalUndo);
         fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
         fn start_operation(
@@ -1095,32 +1063,6 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
                 .borrow_mut()
                 .push(serde_json::from_slice(request.payload).unwrap());
             Ok(Some(crate::widget::ResourceOperationStart::Accepted))
-        }
-        fn name(&self) -> &str {
-            "Native history fixture"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
-        }
-        fn build_layout(
-            &mut self,
-            tree: &mut TaffyTree<()>,
-            _: &Theme,
-            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            let node = tree.new_leaf(taffy::Style::default()).unwrap();
-            nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
-        }
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
         }
         fn handle_event(&mut self, _: &WindowEvent, _: &mut crate::widget::EventCtx<'_>) {}
     }

@@ -13,6 +13,7 @@ struct Probe {
 }
 
 impl Widget for Probe {
+    crate::testing::inert_widget_methods!(draw);
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -37,16 +38,6 @@ impl Widget for Probe {
             origin.x + f64::from(layout.size.width),
             origin.y + f64::from(layout.size.height),
         );
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {

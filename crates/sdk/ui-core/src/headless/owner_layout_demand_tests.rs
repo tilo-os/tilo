@@ -12,9 +12,7 @@ struct Demand {
 }
 struct Intrinsic(Demand);
 impl Widget for Intrinsic {
-    fn name(&self) -> &str {
-        "DeferredIntrinsic"
-    }
+    crate::testing::inert_widget_methods!(draw, name = "DeferredIntrinsic");
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -40,8 +38,6 @@ impl Widget for Intrinsic {
             origin.x + f64::from(layout.size.width),
             origin.y + f64::from(layout.size.height),
         ));
-    }
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
     fn get_rect(&self) -> Rect {
         self.0.rect.get()

@@ -1,6 +1,4 @@
 use super::*;
-use crate::PresenceCtx;
-use crate::TextRenderer;
 use crate::Theme;
 use crate::record::{RecordCheckout, RecordId, RecordKind};
 use crate::state::State;
@@ -10,8 +8,7 @@ use crate::widget::Widget;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use taffy::TaffyTree;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect as KurboRect};
+use vello::kurbo::Rect as KurboRect;
 
 /// No focus field — [`ViewSubset`] excludes the caret.
 struct ViewRoot {
@@ -33,6 +30,7 @@ impl ViewRoot {
 }
 
 impl Widget for ViewRoot {
+    crate::testing::inert_widget_methods!(apply_layout, draw);
     crate::provides!(
         dyn crate::record::capability::RecordScoped,
         dyn crate::view::capability::ViewState
@@ -45,16 +43,6 @@ impl Widget for ViewRoot {
         node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: taffy::NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
     }
     fn name(&self) -> &'static str {
         "view-root"

@@ -141,6 +141,7 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
 }
 
 impl Widget for SemanticCountingPublisher {
+    crate::testing::inert_widget_methods!(apply_layout, draw, get_rect);
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources
@@ -155,21 +156,8 @@ impl Widget for SemanticCountingPublisher {
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "counting-publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.counts[1].set(self.counts[1].get() + 1);
@@ -348,6 +336,7 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
 }
 
 impl Widget for InventoryOnlyPublisher {
+    crate::testing::inert_widget_methods!(apply_layout, draw, get_rect);
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources
@@ -361,21 +350,8 @@ impl Widget for InventoryOnlyPublisher {
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "counting-publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.counts[1].set(self.counts[1].get() + 1);
@@ -416,6 +392,7 @@ struct FastInventoryPublisher {
 }
 
 impl Widget for FastInventoryPublisher {
+    crate::testing::inert_widget_methods!(apply_layout, draw, get_rect);
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources
@@ -429,21 +406,8 @@ impl Widget for FastInventoryPublisher {
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "counting-publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.counts[1].set(self.counts[1].get() + 1);

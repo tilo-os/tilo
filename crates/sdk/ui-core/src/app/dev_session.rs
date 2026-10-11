@@ -296,44 +296,14 @@ struct DevCaretField {
 
 #[cfg(test)]
 impl crate::widget::Widget for DevCaretField {
+    crate::testing::inert_widget_methods!(
+        apply_layout,
+        draw,
+        get_rect,
+        leaf_layout,
+        name = "DevCaretField"
+    );
     crate::provides!(dyn crate::undo::UndoPoints);
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut taffy::TaffyTree<()>,
-        _theme: &crate::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
-    ) -> taffy::NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn crate::widget::Widget>(self));
-        node
-    }
-
-    fn apply_layout(
-        &mut self,
-        _taffy: &taffy::TaffyTree<()>,
-        _node: taffy::NodeId,
-        _origin: vello::kurbo::Point,
-    ) {
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut vello::Scene,
-        _transform: vello::kurbo::Affine,
-        _text_renderer: &mut crate::text_render::TextRenderer,
-        _theme: &crate::Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
-    }
-
-    fn name(&self) -> &str {
-        "DevCaretField"
-    }
-
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
-    }
 
     fn is_focusable(&self) -> bool {
         true

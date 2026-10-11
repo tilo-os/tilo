@@ -110,6 +110,7 @@ impl PtyRoot {
     }
 }
 impl Widget for PtyRoot {
+    crate::testing::inert_widget_methods!(apply_layout, get_rect);
     crate::provides!(dyn crate::resources::PublishesResources);
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
     fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
@@ -133,12 +134,8 @@ impl Widget for PtyRoot {
     ) -> NodeId {
         taffy.new_leaf(taffy::Style::default()).unwrap()
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
     fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
         panic!("hidden PTY progress must not paint");
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn name(&self) -> &'static str {
         "native-pty"
