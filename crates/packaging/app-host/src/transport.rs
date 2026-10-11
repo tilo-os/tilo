@@ -7,10 +7,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
-use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use crate::app_host_capnp::app_host;
 
@@ -100,17 +98,9 @@ pub async fn handle_connection(
             && handoff.get("app_id").and_then(serde_json::Value::as_str) == Some("so.tilo.store"),
         "caller is not authorized for app-host"
     );
-    let (reader, writer) = stream.into_split();
-    let reader = reader.compat();
-    let writer = tokio_util::compat::TokioAsyncWriteCompatExt::compat_write(writer);
-    let network = Box::new(twoparty::VatNetwork::new(
-        futures_util::io::BufReader::new(reader),
-        futures_util::io::BufWriter::new(writer),
-        rpc_twoparty_capnp::Side::Server,
-        capnp::message::ReaderOptions::default(),
-    ));
     let service = AppHostServer::new(store, catalog, max_store_bytes);
     let client: app_host::Client = capnp_rpc::new_client(service);
-    let rpc_system = RpcSystem::new(network, Some(client.client));
-    rpc_system.await.map_err(|e| anyhow::anyhow!("{e}"))
+    runtime_portal::serve_connected_io(stream, client.client)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }

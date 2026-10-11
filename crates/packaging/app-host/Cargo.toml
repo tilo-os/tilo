@@ -32,7 +32,6 @@ service = [
     "dep:install",
     "dep:runtime-bundle",
     "dep:wire-frame",
-    "dep:futures-util",
     "dep:clap",
     "dep:anyhow",
     "dep:tracing",
@@ -69,11 +68,7 @@ capnp-rpc.workspace = true
 
 # Async runtime + transport.
 tokio = { workspace = true, features = ["macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
-tokio-util.workspace = true
 wire-frame = { path = "../../system/wire-frame", features = ["tokio"], optional = true }
-# capnp-rpc speaks futures-io; `io` supplies its buffered reader/writer.
-futures-util = { workspace = true, features = ["io"], optional = true }
-
 # Daemon plumbing.
 clap = { workspace = true, optional = true }
 serde_json.workspace = true
