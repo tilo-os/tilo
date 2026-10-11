@@ -173,6 +173,8 @@ mod permissions_tab_test;
 mod persisted_app_placeholders;
 #[path = "pointer_lock_protocol.rs"]
 mod pointer_lock_protocol;
+#[path = "popover_pointer_routing.rs"]
+mod popover_pointer_routing;
 #[path = "portal_file_chooser_e2e.rs"]
 mod portal_file_chooser_e2e;
 #[path = "portal_grant_reaches_sandbox.rs"]
