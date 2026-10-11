@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .. import session_unit
 from ..core import check, expect
 
 AREA = "provenance"
@@ -64,6 +65,23 @@ def _this_boot_restarts(journal: str) -> dict[str, int]:
     return restarts
 
 
+def session_unit_problem(fields: dict | None, during: list[str], slot: str) -> str | None:
+    """Why P03 fails over the slot's session unit, a system unit the user journal never
+    holds: it could not be read, or its main process (the compositor's wrapper) ended on
+    its own and `Restart=` started a fresh session, every window lost. `during` names the
+    checks `run_check` saw it happen in; `NRestarts` also counts any before the first."""
+    unit = session_unit.unit(slot)
+    if fields is None:
+        return f"{unit} could not be read, so a restart of the desktop session would go unseen"
+    restarts = int(fields["NRestarts"])
+    if not restarts and not during:
+        return None
+    where = f" (during {', '.join(during)})" if during else ""
+    return (f"the desktop session restarted on its own: systemd restarted {unit} "
+            f"{max(restarts, len(during))} time(s) this boot{where}; last, "
+            f"{session_unit.how_it_ended(fields)}")
+
+
 @check("P03", AREA, "No failed or restart-looping user services in the session")
 def services(ctx, res):
     # Failed units are live state. Restart counts must be this boot: NRestarts
@@ -93,5 +111,8 @@ def services(ctx, res):
         res.metrics["restart_source"] = "NRestarts (user journal unavailable)"
     looping = {u: n for u, n in restarts.items() if n >= 3}
     res.metrics.update(failed=failed, restarts={u: n for u, n in restarts.items() if n})
-    expect(not failed and not looping,
-           (f"failed: {failed}; " if failed else "") + (f"restart loops: {looping}" if looping else ""))
+    fields = session_unit.show(ctx)
+    res.metrics["session_unit"] = fields
+    session = session_unit_problem(fields, ctx.facts.get("session_restarted_during") or [], ctx.vm.slot)
+    problems = ([f"failed: {failed}"] if failed else []) + ([f"restart loops: {looping}"] if looping else [])
+    expect(not problems and not session, "; ".join(problems + ([session] if session else [])))

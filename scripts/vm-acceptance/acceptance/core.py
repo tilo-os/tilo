@@ -8,6 +8,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import session_unit
 from .vm import VmError, wait_until
 
 # Who fixes what: each area's failures are routed to its owner.
@@ -70,6 +71,9 @@ def run_check(ctx, chk: Check) -> Result:
     res = Result(chk.id, chk.area, chk.title)
     started = time.monotonic()
     ctx.current = res
+    if "session_unit" not in ctx.facts:
+        ctx.facts["session_unit"] = session_unit.show(ctx)
+        ctx.facts["session_requested"] = getattr(ctx.vm, "requested_restarts", 0)
     try:
         for need in chk.needs:
             if not ctx.facts.get(need):
@@ -89,6 +93,10 @@ def run_check(ctx, chk: Check) -> Result:
         (ctx.out / "errors" / f"{chk.id}.txt").write_text(traceback.format_exc())
     leave_unlocked(ctx, chk, res)
     leave_no_dialog(ctx, chk, res)
+    restarted = session_restart(ctx, chk.id)
+    if restarted:
+        res.status = "fail"
+        res.detail = _join(res.detail, restarted)
     res.seconds = round(time.monotonic() - started, 2)
     ctx.current = None
     return res
@@ -118,6 +126,44 @@ def leave_unlocked(ctx, chk: Check, res: Result) -> None:
                                        f"{exc.reason()}")
         return
     res.detail = _join(res.detail, f"{LEFT_LOCKED}; the harness restarted the slot session")
+
+
+SESSION_RESTARTED = "the slot's desktop session restarted on its own"
+
+
+def session_restart(ctx, during: str) -> str | None:
+    """Why the check fails if the slot's session ended on its own since the last reading
+    (`acceptance/session_unit.py`): every window was lost, and nothing the check measured
+    after it is about the session it started in. Writes what the ended run left behind as
+    `data/<check>-<n>-session-restart.log` once per ending; None while the session is the
+    one the last reading saw, the harness asked for the restart (`TiloVm.restart_session`),
+    or the unit cannot be read (P03 reports that)."""
+    fields = session_unit.show(ctx)
+    before = ctx.facts.get("session_unit")
+    requested = getattr(ctx.vm, "requested_restarts", 0)
+    asked = requested != ctx.facts.get("session_requested", requested)
+    if fields is not None:
+        ctx.facts["session_unit"] = fields
+    ctx.facts["session_requested"] = requested
+    ended, ctx.facts["session_pending"] = session_unit.ended_on_its_own(
+        before, fields, asked, ctx.facts.get("session_pending", False))
+    if not ended:
+        return None
+    seen = ctx.facts.setdefault("session_restarted_during", [])
+    seen.append(during)
+    where, how = session_unit.dump(ctx, f"{ctx.current.id if ctx.current is not None else 'run'}-{len(seen)}",
+                                   fields)
+    return (f"{SESSION_RESTARTED} during {during}: {how}, and systemd starts "
+            f"{session_unit.unit(ctx.vm.slot)} again with every window gone; what the ended run "
+            f"left: {where}")
+
+
+def adopt_session(ctx) -> None:
+    """Take the slot session as it is now as the guard's baseline: for a check that ends
+    the session on purpose, the way a crash would (A17), once it has recovered."""
+    ctx.facts["session_unit"] = session_unit.show(ctx)
+    ctx.facts["session_requested"] = getattr(ctx.vm, "requested_restarts", 0)
+    ctx.facts["session_pending"] = False
 
 
 LEFT_OPEN = "left a dialog open"
