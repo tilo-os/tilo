@@ -17637,6 +17637,7 @@ dependencies = [
  "neighbour-wire",
  "postcard",
  "serde",
+ "serde_bytes",
  "serde_json",
  "tilo-action-policy",
  "tilo-actions",

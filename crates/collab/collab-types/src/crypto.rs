@@ -80,7 +80,7 @@ impl Ed25519PublicKey {
 /// rationale as [`Ed25519PublicKey`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct Signature(#[serde(with = "serde_bytes_64")] pub [u8; 64]);
+pub struct Signature(#[serde(with = "serde_bytes")] pub [u8; 64]);
 
 impl std::fmt::Debug for Signature {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -102,32 +102,6 @@ impl Signature {
     /// Borrow the raw 64 bytes.
     pub fn as_bytes(&self) -> &[u8; 64] {
         &self.0
-    }
-}
-
-/// A 64-byte-array serde adapter: serialise as a borrowed bytes slice so
-/// postcard uses length-prefixed bytes rather than 64 separate `u8`s —
-/// saves 63 bytes of varint overhead per signature.
-mod serde_bytes_64 {
-    use serde::de::Error as _;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8; 64], s: S) -> Result<S::Ok, S::Error> {
-        serde_bytes::Bytes::new(bytes).serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 64], D::Error> {
-        let v: serde_bytes::ByteBuf = serde_bytes::ByteBuf::deserialize(d)?;
-        let bytes = v.into_vec();
-        if bytes.len() != 64 {
-            return Err(D::Error::custom(format!(
-                "expected 64-byte signature, got {}",
-                bytes.len()
-            )));
-        }
-        let mut out = [0u8; 64];
-        out.copy_from_slice(&bytes);
-        Ok(out)
     }
 }
 
