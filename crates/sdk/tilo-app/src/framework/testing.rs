@@ -427,15 +427,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     ) -> Result<Self, LaunchError> {
         let mut configure = Some(configure);
         let opened = open_app(
-            &Opening {
-                definition: definition::<A>(),
-                id: A::ID,
-                options: A::OPTIONS,
-                flags: A::FLAGS,
-                private_windows: A::PRIVATE_WINDOWS,
-                launch_record: A::launch_record,
-                shot_viewport: A::shot_viewport,
-            },
+            &Opening::of::<A>(),
             Launch {
                 profile,
                 role,
@@ -1531,6 +1523,20 @@ struct Opening {
     shot_viewport: fn(Option<&str>) -> (u32, u32),
 }
 
+impl Opening {
+    fn of<A: ResourceApp>() -> Self {
+        Self {
+            definition: definition::<A>(),
+            id: A::ID,
+            options: A::OPTIONS,
+            flags: A::FLAGS,
+            private_windows: A::PRIVATE_WINDOWS,
+            launch_record: A::launch_record,
+            shot_viewport: A::shot_viewport,
+        }
+    }
+}
+
 /// How one headless app is opened: on which profile, as whom, with what.
 struct Launch<'a> {
     profile: Profile,
@@ -1724,32 +1730,62 @@ fn split_command_line(
 /// ([`reserved_action_ids`](super::reserved_action_ids)).
 #[must_use]
 pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
+    report_surface(
+        &Opening::of::<A>(),
+        <A::Resource as Resource>::surface(),
+        &|harness| {
+            harness
+                .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
+                    let effects = root.effects.specs().into_iter().map(|spec| spec.id);
+                    let views = <A::Resource as Resource>::views(&root.live().get())
+                        .into_iter()
+                        .map(|view| view.id);
+                    (effects.collect(), views.collect())
+                })
+                .unwrap_or_default()
+        },
+    )
+}
+
+/// The ids of the effects and of the named views a built view publishes.
+type PublishedIds = (Vec<String>, Vec<String>);
+
+/// [`surface_report`] of the app `opening` describes, whose resource's
+/// surface is `surface`; `published` reads the ids of the effects and the
+/// named views a built view publishes.
+fn report_surface(
+    opening: &Opening,
+    surface: tilo_resource::Surface,
+    published: &dyn Fn(&mut FrameHarness) -> PublishedIds,
+) -> serde_json::Value {
     let collecting = collect_unbound();
-    let mut built = TestApp::<A>::new();
+    let profile = tempfile::tempdir().map(Rc::new).map_err(operation);
+    let built = profile.and_then(|profile| {
+        open_app(
+            opening,
+            Launch {
+                profile: Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+                role: Role::Owner,
+                author: AUTHOR,
+                arguments: &[],
+                file: None,
+                handoff: None,
+                capture: None,
+            },
+            &mut |_| {},
+        )
+    });
     // What the view publishes besides the resource's verbs: its effects and
     // the resource's named views, whose ids must not be the framework's.
-    let (effects, views) = match &mut built {
-        Ok(app) => {
-            let effects = app
-                .harness()
-                .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
-                    root.effects
-                        .specs()
-                        .into_iter()
-                        .map(|spec| spec.id)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let views = <A::Resource as Resource>::views(&app.state())
-                .into_iter()
-                .map(|view| view.id)
-                .collect::<Vec<_>>();
-            (effects, views)
+    let (effects, views, view) = match built {
+        Ok(mut opened) => {
+            let (effects, views) = published(&mut opened.harness);
+            (effects, views, None)
         }
-        Err(_) => (Vec::new(), Vec::new()),
+        Err(error) => (Vec::new(), Vec::new(), Some(error.to_string())),
     };
     let (unbound, opened) = collecting.finish();
-    let mut resources = vec![<A::Resource as Resource>::surface()];
+    let mut resources = vec![surface];
     resources.extend(opened);
     serde_json::json!({
         "resources": resources,
@@ -1757,7 +1793,7 @@ pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
         "effects": effects,
         "views": views,
         "reserved": super::reserved_action_ids(),
-        "view": built.err().map(|error| error.to_string()),
+        "view": view,
     })
 }
 

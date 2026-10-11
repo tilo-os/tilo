@@ -2271,7 +2271,7 @@ pub(crate) struct Unopened {
     /// What it publishes: the resource's declared actions, every document
     /// one unavailable for the reason.
     resource: tilo_actions::Resource,
-    shown: Element,
+    shown: ui_core::widget::EmptyState,
 }
 
 impl Unopened {
@@ -2291,10 +2291,10 @@ impl Unopened {
         Self {
             title,
             icon,
-            shown: Box::new(ui_core::widget::EmptyState::error(
+            shown: ui_core::widget::EmptyState::error(
                 ui_core::i18n::I18nManager::lookup_plain("framework-unreadable"),
                 reason,
-            )),
+            ),
             resource,
         }
     }
@@ -2303,14 +2303,14 @@ impl Unopened {
 impl Decorator for Unopened {
     ui_core::provides!(dyn ui_core::resources::PublishesResources);
 
-    type Inner = dyn Widget;
+    type Inner = ui_core::widget::EmptyState;
 
-    fn inner(&self) -> &(dyn Widget + 'static) {
-        self.shown.as_ref()
+    fn inner(&self) -> &ui_core::widget::EmptyState {
+        &self.shown
     }
 
-    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
-        self.shown.as_mut()
+    fn inner_mut(&mut self) -> &mut ui_core::widget::EmptyState {
+        &mut self.shown
     }
 }
 
