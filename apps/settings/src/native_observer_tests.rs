@@ -396,27 +396,27 @@ fn focused_seat_configuration_survives_page_recomposition_without_off_page_key_c
     );
 }
 
+/// On a narrow page the keyboard map stays the page's prominent element and
+/// still reads the seat's real symbols live through its own accessible value.
+/// The redesigned page drops the separate key selector and details dump (this
+/// test used to look for `input.map.inspect-key` and
+/// `input.keyboard-map.details`); inspection is the map plus its action.
 #[test]
-fn narrow_keyboard_inspection_has_touch_sized_selector_and_live_readable_details() {
-    fn find(widget: &dyn Widget, id: &str) -> Option<(vello::kurbo::Rect, String)> {
+fn narrow_keyboard_map_stays_prominent_and_live_readable() {
+    fn find_rect(widget: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
         if widget.test_id() == Some(id) {
-            return Some((
-                widget.get_rect(),
-                widget.accessibility().unwrap().name.unwrap_or_default(),
-            ));
+            return Some(widget.get_rect());
         }
         widget
             .children()
             .into_iter()
-            .find_map(|child| find(child, id))
+            .find_map(|child| find_rect(child, id))
     }
     let config = crate::prefs::test_env::ScratchConfig::new();
     let mut h = hosted(&config, 600.0, 1800.0);
+    crate::panes::mouse_keyboard::show_live_map(h.input());
     select(&mut h, Category::Keyboard);
-    let (selector, _) = find(&*h, "input.map.inspect-key").unwrap();
-    let minimum = f64::from(ui::Theme::dark().tokens.metrics.min_pointer_target);
-    assert!(selector.width() >= minimum && selector.height() >= minimum);
-    let (map, _) = find(&*h, "input.keyboard_map").unwrap();
+    let map = find_rect(&*h, "input.keyboard_map").unwrap();
     assert!(map.width() > 300.0, "the visual map remains prominent");
     let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyQ);
     for text in ["λ", "Λ"] {
@@ -436,29 +436,19 @@ fn narrow_keyboard_inspection_has_touch_sized_selector_and_live_readable_details
             }),
         )));
         rebuild(&mut h);
-        let (rect, content) = find(&*h, "input.keyboard-map.details").unwrap();
+        let value = keyboard_map_value(&*h).unwrap();
         assert!(
-            content.contains(text),
-            "native modifier symbols update the actual Text: {content}"
+            value.contains(&format!("AD01: {text}")),
+            "native symbols update the map's accessible value: {value}"
         );
-        assert!(!content.contains(": q"), "no preview fallback in live mode");
         assert!(
-            rect.height()
-                >= f64::from(
-                    ui::Theme::dark()
-                        .text(ui::tokens::TextRole::Body)
-                        .line_height_px()
-                )
+            !value.contains("AD01: q"),
+            "no preview fallback in live mode"
         );
     }
     h.observe_physical_input(ui::widget::PhysicalInput::Focused(false));
     rebuild(&mut h);
-    assert!(
-        !find(&*h, "input.keyboard-map.details")
-            .unwrap()
-            .1
-            .contains("Λ")
-    );
+    assert!(!keyboard_map_value(&*h).unwrap().contains("AD01: Λ"));
 }
 
 #[test]
