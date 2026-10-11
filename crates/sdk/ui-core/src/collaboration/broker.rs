@@ -7826,6 +7826,7 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
     struct FakeBroker {
         captures: SharedCaptures,
         op_backlog: Vec<(Vec<u8>, String)>,
@@ -8115,10 +8116,7 @@ mod tests {
                 requests_tx.send(requests).unwrap();
                 let broker = FakeBroker {
                     captures: broker_captures,
-                    op_backlog: vec![],
-                    presence_backlog: vec![],
-                    context_backlog: vec![],
-                    scrollback_response: None,
+                    ..FakeBroker::default()
                 };
                 let (client, server) = tokio::io::duplex(64 * 1024);
                 let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
@@ -8459,13 +8457,7 @@ mod tests {
                         .build()
                         .unwrap();
                     tokio::task::LocalSet::new().block_on(&runtime, async move {
-                        let broker = Rc::new(FakeBroker {
-                            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-                            op_backlog: vec![],
-                            presence_backlog: vec![],
-                            context_backlog: vec![],
-                            scrollback_response: None,
-                        });
+                        let broker = Rc::new(FakeBroker::default());
                         let gate = HostJoinGate {
                             broker,
                             release: RefCell::new(delayed.then_some(wait)),
@@ -8517,13 +8509,7 @@ mod tests {
 
     #[test]
     fn session_owner_commit_sdk_failure_stops_queued_terminal() {
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
+        let broker = FakeBroker::default();
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
         captures.lock().unwrap().fail_document = true;
@@ -8556,13 +8542,7 @@ mod tests {
 
     #[test]
     fn session_owner_commit_sdk_terminal_failure_disconnects_before_next_request() {
-        let broker = FakeBroker {
-            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
+        let broker = FakeBroker::default();
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
         captures.lock().unwrap().fail_terminal = true;
@@ -8611,10 +8591,7 @@ mod tests {
         }
         let broker = FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let cluster_id = Uuid::new_v4();
@@ -8775,10 +8752,7 @@ mod tests {
         };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(captures)),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, _captures, thread) = stand_up_fake_broker(broker);
         let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -8926,9 +8900,7 @@ mod tests {
                 ..Captures::default()
             })),
             op_backlog: vec![(postcard::to_stdvec(&op).unwrap(), "peer".to_owned())],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, _captures, thread) = stand_up_fake_broker(broker);
         let released = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
@@ -9001,10 +8973,7 @@ mod tests {
                 key_changes: changes,
                 ..Captures::default()
             })),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, _captures, thread) = stand_up_fake_broker(broker);
         let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -9130,13 +9099,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn document_publication_certified_signing_refusal_never_reports_success() {
-        let broker = FakeBroker {
-            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
+        let broker = FakeBroker::default();
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let sdk = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
@@ -9211,10 +9174,7 @@ mod tests {
             });
         let broker = FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
@@ -9278,10 +9238,7 @@ mod tests {
             });
         let broker = FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
@@ -9336,10 +9293,7 @@ mod tests {
             });
         let broker = FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, _, thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
@@ -9521,10 +9475,7 @@ mod tests {
         captures.lock().unwrap().media_gates.push_back(unmute_wait);
         let (fd, captures, worker) = stand_up_fake_broker(FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         });
         let mut manager =
             CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", Uuid::new_v4());
@@ -9589,10 +9540,7 @@ mod tests {
             });
         let (fd, captures, worker) = stand_up_fake_broker(FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         });
         let mut manager =
             CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", Uuid::new_v4());
@@ -9641,10 +9589,7 @@ mod tests {
         }
         let (fd, captures, worker) = stand_up_fake_broker(FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         });
         let cluster_id = Uuid::new_v4();
         let mut manager =
@@ -9725,10 +9670,7 @@ mod tests {
                     }));
                     let broker: collab_service::Client = capnp_rpc::new_client(FakeBroker {
                         captures: captures.clone(),
-                        op_backlog: vec![],
-                        presence_backlog: vec![],
-                        context_backlog: vec![],
-                        scrollback_response: None,
+                        ..FakeBroker::default()
                     });
                     let channel = runtime_collab::CollabClient::from_raw(broker)
                         .join_channel("fixture-admitted-route", b"fixture")
@@ -9810,10 +9752,7 @@ mod tests {
                     captures.lock().unwrap().media_gates.push_back(gate);
                     let broker: collab_service::Client = capnp_rpc::new_client(FakeBroker {
                         captures: captures.clone(),
-                        op_backlog: vec![],
-                        presence_backlog: vec![],
-                        context_backlog: vec![],
-                        scrollback_response: None,
+                        ..FakeBroker::default()
                     });
                     let channel = runtime_collab::CollabClient::from_raw(broker)
                         .join_channel("fixture-admitted-route", b"fixture")
@@ -9980,10 +9919,7 @@ mod tests {
         }));
         let broker = FakeBroker {
             captures,
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, thread) = stand_up_fake_broker(broker);
         let refresh_captures = captures.clone();
@@ -10036,10 +9972,7 @@ mod tests {
                 committed_history_fixture: Some(history),
                 ..Captures::default()
             })),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
         let replace = captures.clone();
@@ -10078,10 +10011,7 @@ mod tests {
         };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(initial)),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
         (
@@ -10102,10 +10032,7 @@ mod tests {
                 committed_recheck_gate: Some(gate),
                 ..Captures::default()
             })),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
         (
@@ -10134,10 +10061,7 @@ mod tests {
         let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
         let broker = FakeBroker {
             captures: captures.clone(),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, _, _thread) = stand_up_fake_broker(broker);
         let manager =
@@ -10161,13 +10085,7 @@ mod tests {
 
     #[cfg(unix)]
     pub(super) fn connected_manager_for(app: &str, room: Uuid) -> CollaborationManager {
-        let broker = FakeBroker {
-            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
+        let broker = FakeBroker::default();
         let (fd, _, _thread) = stand_up_fake_broker(broker);
         CollaborationManager::from_sdk_fd_for_test(fd, app, room)
     }
@@ -10217,10 +10135,7 @@ mod tests {
         };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(captures)),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, _, _thread) = stand_up_fake_broker(broker);
         super::super::channel_settings::install(APP);
@@ -10282,10 +10197,7 @@ mod tests {
         };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(captures)),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, _, _thread) = stand_up_fake_broker(broker);
         // Shown before the channel joins: the join sends it.
@@ -10320,13 +10232,7 @@ mod tests {
         crate::wake::WakeScope,
         mpsc::Receiver<()>,
     ) {
-        let broker = FakeBroker {
-            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
-        };
+        let broker = FakeBroker::default();
         let (fd, _, _thread) = stand_up_fake_broker(broker);
         let (scope, wakes) = wake_channel();
         let manager = {
@@ -10827,13 +10733,7 @@ mod tests {
 
         // Case `a_background_connection_becomes_ready_and_wakes_the_owner`.
         {
-            let broker = FakeBroker {
-                captures: Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _thread) = stand_up_fake_broker(broker);
             let (scope, wakes) = wake_channel();
             let entry = scope.enter();
@@ -10871,13 +10771,7 @@ mod tests {
 
         // Case `explicit_test_join_forwards_its_identity_presentation`.
         {
-            let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let cluster = Uuid::new_v4();
             let presentation = b"certified-test-presentation".to_vec();
@@ -10898,13 +10792,7 @@ mod tests {
 
         // Case `first_frame_publishes_actions_without_input`.
         {
-            let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _thread) = stand_up_fake_broker(broker);
             let app_id = crate::collaboration::local_app_id();
             let manager = CollaborationManager::from_sdk_fd_for_test(fd, &app_id, Uuid::new_v4());
@@ -10934,13 +10822,7 @@ mod tests {
 
         // Case `a_refused_action_publication_is_republished`.
         {
-            let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _thread) = stand_up_fake_broker(broker);
             captures.lock().unwrap().refuse_action_publications = 1;
             let app_id = crate::collaboration::local_app_id();
@@ -11040,13 +10922,7 @@ mod tests {
     fn sdk_transport_forwards_signed_documents_and_presence() {
         // Case `hello_joins_channel_and_send_forwards_signed_op`.
         {
-            let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let cluster = Uuid::new_v4();
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", cluster);
@@ -11087,13 +10963,7 @@ mod tests {
         // Case `owned_route_raw_documents_use_typed_signed_sdk_transport`.
         {
             use automerge::transaction::Transactable;
-            let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _thread) = stand_up_fake_broker(broker);
             let workspace = Uuid::new_v4();
             let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "shell", workspace);
@@ -11163,13 +11033,7 @@ mod tests {
         // what lets an owner end its session without discarding a change still
         // in transit.
         {
-            let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _thread) = stand_up_fake_broker(broker);
             let mut manager =
                 CollaborationManager::from_sdk_fd_for_test(fd, "shell", Uuid::new_v4());
@@ -11193,13 +11057,7 @@ mod tests {
         // a pointer publishes keyed, like a caret, rather than through
         // `publish_cursor(x, y)`, which has nowhere to put one.
         {
-            let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
-            };
+            let broker = FakeBroker::default();
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
             tilo_test_env::wait_until("join_channel must be observed", || {
@@ -11540,16 +11398,13 @@ mod tests {
             drop(alice);
 
             let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
                 scrollback_response: Some(SeedScrollback {
                     ops: history,
                     earliest_seq: 1,
                     latest_seq: 20,
                     done: true,
                 }),
+                ..FakeBroker::default()
             };
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, app_id, cluster);
@@ -11620,11 +11475,8 @@ mod tests {
             let op_bytes = postcard::to_stdvec(&op).unwrap();
 
             let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
                 op_backlog: vec![(op_bytes, "peer-bob".to_owned())],
-                presence_backlog: vec![],
-                context_backlog: vec![],
-                scrollback_response: None,
+                ..FakeBroker::default()
             };
             let (fd, _captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
@@ -11657,9 +11509,6 @@ mod tests {
         // Case `context_stream_translates_to_context_event`.
         {
             let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
                 context_backlog: vec![SeedContext {
                     collaborators: vec![
                         ("alice".to_owned(), "Alice".to_owned(), 0x00FF_8000),
@@ -11667,7 +11516,7 @@ mod tests {
                     ],
                     permissions: vec!["edit".to_owned(), "share".to_owned()],
                 }],
-                scrollback_response: None,
+                ..FakeBroker::default()
             };
             let (fd, _captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
@@ -11741,11 +11590,8 @@ mod tests {
                 },
             ];
             let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
                 presence_backlog,
-                context_backlog: vec![],
-                scrollback_response: None,
+                ..FakeBroker::default()
             };
             let (fd, _captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
@@ -11829,11 +11675,8 @@ mod tests {
                 done: true,
             };
             let broker = FakeBroker {
-                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-                op_backlog: vec![],
-                presence_backlog: vec![],
-                context_backlog: vec![],
                 scrollback_response: Some(seed),
+                ..FakeBroker::default()
             };
             let (fd, captures, _th) = stand_up_fake_broker(broker);
             let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
@@ -12111,10 +11954,7 @@ mod tests {
         };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(captures)),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, worker) = stand_up_fake_broker(broker);
         let sdk = CollaborationManager::spawn_sdk(
@@ -12211,10 +12051,7 @@ mod tests {
                 action_catalogue_fixture: Some(vec![snapshot]),
                 ..Captures::default()
             })),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, worker) = stand_up_fake_broker(broker);
         let sdk = CollaborationManager::spawn_sdk(
@@ -12307,10 +12144,7 @@ mod tests {
         };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(captures)),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
         let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.test", cluster);
@@ -12380,10 +12214,7 @@ mod tests {
         };
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(captures)),
-            op_backlog: vec![],
-            presence_backlog: vec![],
-            context_backlog: vec![],
-            scrollback_response: None,
+            ..FakeBroker::default()
         };
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
         let definition = runner_probe_definition();
