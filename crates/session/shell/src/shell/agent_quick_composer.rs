@@ -681,11 +681,13 @@ impl Default for AgentQuickComposer {
     }
 }
 
-fn origin_context_text(context: &LocalState<String>) -> Text {
-    Text::from_state(context, Clone::clone)
-        .with_id("agent-quick-origin-context")
-        .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph)
-        .dimmed()
+fn origin_context_text(context: &LocalState<String>) -> Container {
+    Container::new().with_no_padding().with_child(Box::new(
+        Text::from_state(context, Clone::clone)
+            .with_id("agent-quick-origin-context")
+            .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph)
+            .dimmed(),
+    ))
 }
 
 fn quick_composer_popover(controls: &ComposerControls<'_>) -> Popover<Container> {
@@ -2555,6 +2557,43 @@ mod tests {
         value as f32
     }
 
+    fn assert_opened_context_layout(origin: &dyn Widget, intent: &dyn Widget, theme: &Theme) {
+        assert!(
+            origin.get_rect().width() + 0.5 >= intent.get_rect().width(),
+            "context {:?} must use the body width established by intent {:?}",
+            origin.get_rect(),
+            intent.get_rect()
+        );
+        let context = t_args(
+            "agent-quick-origin-context",
+            &[("context", t("agent-quick-shots-context").into())],
+        );
+        let style = theme
+            .text(ui::tokens::TextRole::Body)
+            .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph);
+        let (_, measured_height) = ui::text_render::TextRenderer::new().measure_style(
+            &context,
+            Some(logical_dimension(origin.get_rect().width() + 1.0)),
+            &style,
+        );
+        // Taffy pixel-rounds the absolute top and bottom independently, so
+        // their difference can vary from fractional text height by < 1 px.
+        let height_delta = origin.get_rect().height() - f64::from(measured_height);
+        assert!(
+            height_delta.abs() < 1.0 && origin.get_rect().y1 <= intent.get_rect().y0,
+            "context {:?} must match its measured {measured_height}px within Taffy's edge rounding before intent {:?}",
+            origin.get_rect(),
+            intent.get_rect()
+        );
+        assert_eq!(
+            origin
+                .accessibility()
+                .and_then(|node| node.name.or(node.value)),
+            Some(context),
+            "measured wrapping preserves the complete localized context"
+        );
+    }
+
     #[test]
     fn task_center_button_uses_shared_accessibility_activation() {
         let mut composer = task_composer(4);
@@ -3802,7 +3841,17 @@ mod tests {
     }
 
     #[test]
-    fn hc200_panel_and_actual_controls_fit_the_560_pixel_marker_viewport() {
+    fn hc200_panel_context_and_controls_fit_normal_and_compact_viewports() {
+        fn widget_with_id<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+            if widget.test_id() == Some(id) {
+                return Some(widget);
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| widget_with_id(child, id))
+        }
+
         fn assert_inside(widget: &dyn Widget, panel: Rect) {
             let rect = widget.get_rect();
             if rect.width() > 0.0 && rect.height() > 0.0 {
@@ -3819,11 +3868,20 @@ mod tests {
                 assert_inside(child, panel);
             }
         }
-        let viewport = Rect::new(0.0, 0.0, 560.0, 560.0);
         let theme = Theme::high_contrast().with_text_scale(2.0);
-        for anchor in [
-            Rect::new(264.0, 188.0, 288.0, 212.0),
-            Rect::new(510.0, 110.0, 534.0, 134.0),
+        for (viewport, anchor) in [
+            (
+                Rect::new(0.0, 0.0, 1280.0, 800.0),
+                Rect::new(420.0, 180.0, 444.0, 204.0),
+            ),
+            (
+                Rect::new(0.0, 0.0, 560.0, 560.0),
+                Rect::new(264.0, 188.0, 288.0, 212.0),
+            ),
+            (
+                Rect::new(0.0, 0.0, 560.0, 560.0),
+                Rect::new(510.0, 110.0, 534.0, 134.0),
+            ),
         ] {
             let mut composer = AgentQuickComposer::default();
             composer.open_for_shots(
@@ -3842,6 +3900,11 @@ mod tests {
             );
             assert!(panel.y0 >= viewport.y0 && panel.y1 <= viewport.y1);
             assert_inside(composer.popover.content(), panel);
+            let origin = widget_with_id(&composer, "agent-quick-origin-context")
+                .expect("the immutable opened context uses the shared Text widget");
+            let intent = widget_with_id(&composer, "agent-quick-intent")
+                .expect("the intent control establishes the usable body width");
+            assert_opened_context_layout(origin, intent, &theme);
         }
     }
 }
