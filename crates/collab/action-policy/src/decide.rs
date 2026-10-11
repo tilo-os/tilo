@@ -166,6 +166,29 @@ impl<'g> Authority<'g> {
     }
 }
 
+impl Authority<'_> {
+    /// [`Self::decide`]'s answer alone, made [`Verdict::privileged`] when
+    /// `privileged`, without keeping each party's decision: what a check
+    /// that only needs the answer asks.
+    #[must_use]
+    pub fn answer(
+        &self,
+        node: &TreePath,
+        kind: ActionKind,
+        privileged: bool,
+        cx: &Context<'_>,
+    ) -> Answer {
+        let person = self.person.decide(node, kind, cx).answer;
+        if privileged && person == Answer::Ask {
+            return Answer::Deny;
+        }
+        self.bounds
+            .iter()
+            .map(|bound| bound.decide(node, kind, cx).answer)
+            .fold(person, Answer::min)
+    }
+}
+
 /// The combined answer for one node and kind, with each party's part.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verdict<'g> {

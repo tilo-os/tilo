@@ -686,6 +686,14 @@ impl PermissionContext {
         action_id: &str,
         need: &tilo_actions::ActionNeed,
     ) -> Answer {
+        if self.action_authority.is_none() {
+            return self
+                .published_answers(|answer| {
+                    let mut node = answer.resource(app_id, resource_kind, resource_id);
+                    answer.action(&mut node, need.field.as_deref(), action_id, need)
+                })
+                .unwrap_or(Answer::Deny);
+        }
         let node = tilo_actions::action_node(
             &TreePath::root(),
             app_id,
@@ -791,27 +799,84 @@ impl PermissionContext {
         }
         // Otherwise one authority decides every action of the tree. An
         // unavailable clock refuses them all, as each verdict would.
-        let now = self.policy_now().ok()?;
-        let cx = policy::Context::at_secs(now.unwrap_or(0));
+        self.published_answers(|answers| answers.keep_permitted(app_id, resource))
+            .ok()
+            .flatten()
+    }
+
+    /// `decide` with one authority for the standing as it is, for answers
+    /// about published actions (no host action authority, no `Once` grant
+    /// spent). An unavailable clock is an error.
+    fn published_answers<R>(
+        &self,
+        decide: impl FnOnce(&PublishedAnswers<'_>) -> R,
+    ) -> Result<R, String> {
+        let now = self.policy_now()?;
         let standing = self.usable(&self.standing, false);
-        let authority = standing.authority();
-        let room = standing.policy.node();
-        keep_permitted(resource, &|kind, id, action| {
+        let answers = PublishedAnswers {
+            authority: standing.authority(),
+            room: standing.policy.node(),
+            cx: policy::Context::at_secs(now.unwrap_or(0)),
+        };
+        Ok(decide(&answers))
+    }
+}
+
+/// One authority's answers for the actions a room's apps publish.
+struct PublishedAnswers<'s> {
+    authority: policy::Authority<'s>,
+    room: TreePath,
+    cx: policy::Context<'static>,
+}
+
+impl PublishedAnswers<'_> {
+    /// The node of a published resource in this room.
+    fn resource(&self, app_id: &str, kind: &str, id: &str) -> TreePath {
+        self.room.clone().app(app_id).kind(kind).resource(id)
+    }
+
+    /// The answer for `action` (of `need`) on the resource `node` names, as
+    /// [`tilo_actions::action_node`] places it; `node` is left as it was.
+    fn action(
+        &self,
+        node: &mut TreePath,
+        field: Option<&str>,
+        action: &str,
+        need: &tilo_actions::ActionNeed,
+    ) -> Answer {
+        let resource = node.len();
+        for part in field
+            .unwrap_or_default()
+            .split('.')
+            .filter(|part| !part.is_empty())
+        {
+            node.push_name(policy::Level::Field, part);
+        }
+        node.push_name(policy::Level::Action, action);
+        let answer = self
+            .authority
+            .answer(node, need.kind, need.privileged, &self.cx);
+        node.truncate(resource);
+        answer
+    }
+
+    /// [`PermissionContext::permitted_resource`] with these answers.
+    fn keep_permitted(
+        &self,
+        app_id: &str,
+        mut resource: tilo_actions::Resource,
+    ) -> Option<tilo_actions::Resource> {
+        let mut node = self.resource(app_id, &resource.kind, resource.id.as_str());
+        resource.actions.retain(|action| {
             let need = action.contract.need();
-            let node = tilo_actions::action_node(
-                &TreePath::root(),
-                app_id,
-                kind,
-                id,
-                need.field.as_deref(),
-                &action.id,
-            );
-            let mut verdict = authority.decide(&room.clone().joined(&node), need.kind, &cx);
-            if need.privileged {
-                verdict = verdict.privileged();
-            }
-            verdict.answer != Answer::Deny
-        })
+            self.action(&mut node, need.field.as_deref(), &action.id, &need) != Answer::Deny
+        });
+        resource.children = resource
+            .children
+            .into_iter()
+            .filter_map(|child| self.keep_permitted(app_id, child))
+            .collect();
+        (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
     }
 }
 

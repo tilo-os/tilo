@@ -307,6 +307,29 @@ impl TreePath {
         Specificity(self.trimmed().iter().map(Segment::weight).collect())
     }
 
+    /// How many segments the path has.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the path is the root.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Drops every segment after the first `len`: back to an ancestor a
+    /// caller extended, to extend it again.
+    pub fn truncate(&mut self, len: usize) {
+        self.0.truncate(len);
+    }
+
+    /// Appends a named segment in place.
+    pub fn push_name(&mut self, level: Level, id: impl Into<String>) {
+        self.0.push(Segment::Name(level, id.into()));
+    }
+
     /// `self.specificity().cmp(&other.specificity())`, without building either.
     pub(crate) fn cmp_specificity(&self, other: &Self) -> std::cmp::Ordering {
         let theirs = other.trimmed().iter().map(Segment::weight);
