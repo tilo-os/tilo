@@ -686,6 +686,10 @@ pub struct FrameBuilder {
     /// Widget-pointer map captured during `build_layout`, kept alive so the
     /// measure closure in `compute_layout_with_measure` can re-borrow each frame.
     node_map: HashMap<NodeId, *mut dyn Widget>,
+    /// Exact owned-widget preorder and parent depth admitted by this layout.
+    /// These identity pointers are compared only, never dereferenced.
+    ime_widget_topology: Vec<(usize, *const (), &'static str)>,
+    ime_widget_types: HashMap<NodeId, &'static str>,
     ime_stamp_key: zeroize::Zeroizing<[u8; 32]>,
     /// Inner node — the host's own root child, target of `apply_layout` so
     /// the host's rect tree roots at the viewport origin.
@@ -1037,6 +1041,8 @@ impl FrameBuilder {
             chrome,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
+            ime_widget_topology: Vec::new(),
+            ime_widget_types: HashMap::new(),
             ime_stamp_key: {
                 let a = uuid::Uuid::new_v4();
                 let b = uuid::Uuid::new_v4();
@@ -1240,6 +1246,31 @@ impl FrameBuilder {
         let child = self
             .host
             .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
+        self.ime_widget_topology.clear();
+        fn snapshot(
+            widget: &dyn Widget,
+            depth: usize,
+            out: &mut Vec<(usize, *const (), &'static str)>,
+        ) {
+            out.push((
+                depth,
+                std::ptr::from_ref(widget).cast(),
+                widget.concrete_type_name(),
+            ));
+            for child in widget.children() {
+                snapshot(child, depth.saturating_add(1), out);
+            }
+        }
+        snapshot(self.host.as_ref(), 0, &mut self.ime_widget_topology);
+        self.ime_widget_types = self
+            .node_map
+            .iter()
+            .map(|(&node, &pointer)| {
+                // SAFETY: build_layout just captured these pointers from the owned
+                // tree; no structural mutation occurs before this identity capture.
+                (node, unsafe { &*pointer }.concrete_type_name())
+            })
+            .collect();
         let (w, h) = self.viewport;
         // Layout dimensions are bounded logical-pixel viewport sizes; the
         // f64->f32 narrowing for taffy's `Dimension` cannot lose meaningful
@@ -4633,28 +4664,75 @@ impl FrameBuilder {
         best.map(|(_, icon)| icon)
     }
 
+    /// Resolve an IME target against the owned tree, not an old layout lifetime.
+    fn live_ime_widget(&self, focus: NodeId) -> Option<&dyn Widget> {
+        fn find<'a>(
+            widget: &'a dyn Widget,
+            wanted: *const dyn Widget,
+            concrete_type: &'static str,
+        ) -> Option<&'a dyn Widget> {
+            if std::ptr::addr_eq(std::ptr::from_ref(widget), wanted)
+                && widget.concrete_type_name() == concrete_type
+            {
+                return Some(widget);
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| find(child, wanted, concrete_type))
+        }
+        // Host reconciliation can replace widgets before the next relayout.
+        // Compare the cached address without reading it; duplicate compiler
+        // vtables must not hide a valid currently owned reference.
+        // Only references obtained from the currently owned tree may be used.
+        find(
+            self.host.as_ref(),
+            self.node_map.get(&focus)?.cast_const(),
+            *self.ime_widget_types.get(&focus)?,
+        )
+    }
+
+    fn ime_node_map_is_live(&self) -> bool {
+        fn matches(
+            widget: &dyn Widget,
+            depth: usize,
+            expected: &mut std::slice::Iter<'_, (usize, *const (), &'static str)>,
+        ) -> bool {
+            let Some((expected_depth, pointer, concrete_type)) = expected.next() else {
+                return false;
+            };
+            if depth != *expected_depth
+                || std::ptr::from_ref(widget).cast::<()>() != *pointer
+                || widget.concrete_type_name() != *concrete_type
+            {
+                return false;
+            }
+            widget
+                .children()
+                .into_iter()
+                .all(|child| matches(child, depth.saturating_add(1), expected))
+        }
+        let mut expected = self.ime_widget_topology.iter();
+        matches(self.host.as_ref(), 0, &mut expected) && expected.next().is_none()
+    }
+
     /// What the focused chrome widget asks of an input method — its purpose
     /// and caret — when it takes text; `None` otherwise.
     pub fn focused_ime_field(&self, focus: Option<NodeId>) -> Option<ui::ime::ImeWindowState> {
         if self.host.palette_visible() {
             return self.host.palette_ime_field();
         }
-        let widget = *self.node_map.get(&focus?)?;
-        // SAFETY: `node_map` is rebuilt from widgets owned by `host`; the
-        // pointer stays valid until the next structural rebuild, the same
-        // invariant every focused-node dispatch here relies on.
-        ui::ime::ImeWindowState::from_widget(unsafe { &*widget })
+        ui::ime::ImeWindowState::from_widget(self.live_ime_widget(focus?)?)
     }
 
     pub(crate) fn focused_ime_requires_deferred_ack(&self, focus: Option<NodeId>) -> bool {
         if self.host.palette_visible() {
             return false;
         }
-        let Some(widget) = focus.and_then(|focus| self.node_map.get(&focus)) else {
+        let Some(widget) = focus.and_then(|focus| self.live_ime_widget(focus)) else {
             return false;
         };
-        // SAFETY: the same live host/pointer map and read lifetime as focused_ime_field.
-        unsafe { &**widget }.ime_requires_deferred_ack()
+        widget.ime_requires_deferred_ack()
     }
 
     pub(crate) fn start_deferred_text(
@@ -4663,7 +4741,7 @@ impl FrameBuilder {
         document: &mut automerge::AutoCommit,
         root: &automerge::ObjId,
     ) -> Option<ui::webview::text_input::Receipt> {
-        if self.host.palette_visible() {
+        if self.host.palette_visible() || !self.ime_node_map_is_live() {
             return None;
         }
         let focus = focus?;
@@ -4699,7 +4777,7 @@ impl FrameBuilder {
         document: &mut automerge::AutoCommit,
         root: &automerge::ObjId,
     ) -> Option<ui::webview::text_input::Receipt> {
-        if self.host.palette_visible() {
+        if self.host.palette_visible() || !self.ime_node_map_is_live() {
             return None;
         }
         let focus = focus?;
@@ -4739,8 +4817,11 @@ impl FrameBuilder {
                     .palette_ime_edit_fingerprint(&self.ime_stamp_key)?,
             });
         }
+        if !self.ime_node_map_is_live() {
+            return None;
+        }
         let focus = focus?;
-        let widget = *self.node_map.get(&focus)?;
+        let widget = self.live_ime_widget(focus)?;
         let mut admitted = ui::bound_dispatch::BoundNodeMap::new();
         // SAFETY: the host, layout and pointer map are the same exclusively
         // owned live build used by focused_ime_field; nothing mutates here.
@@ -4754,9 +4835,7 @@ impl FrameBuilder {
         }
         Some(crate::compositor::shell_text_input::NativeEditStamp {
             document: admitted.document_edit_stamp(focus, document).ok()?,
-            // SAFETY: the live map's pointer remains owned by the host during
-            // this read; no raw field value escapes the keyed fingerprint.
-            fingerprint: unsafe { &*widget }.ime_edit_fingerprint(&self.ime_stamp_key)?,
+            fingerprint: widget.ime_edit_fingerprint(&self.ime_stamp_key)?,
         })
     }
 
@@ -6493,6 +6572,145 @@ mod tests {
         );
         assert!(!fb.host().palette_visible());
         assert!(fb.focused_ime_field(None).is_none());
+    }
+
+    #[test]
+    fn ime_queries_reject_retired_workspace_widgets_before_relayout() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        let original_nodes: Vec<_> = fb.node_map.keys().copied().collect();
+        let mut switched = false;
+        fb.with_chrome(|chrome| switched = chrome.switch_workspace(1));
+        assert!(switched, "the production desktop has another workspace");
+        assert!(fb.host_mut().tick_workspace_content_for_tests());
+        let retired = original_nodes
+            .into_iter()
+            .find(|node| fb.live_ime_widget(*node).is_none())
+            .expect("workspace reconciliation retired a mapped widget before layout");
+        assert!(
+            fb.node_map.contains_key(&retired),
+            "the old layout map is still pending"
+        );
+        assert!(!fb.ime_node_map_is_live());
+        let mut document = AutoCommit::new();
+        let before = (document.base_heads(), document.pending_ops());
+        assert!(fb.focused_ime_field(Some(retired)).is_none());
+        assert!(!fb.focused_ime_requires_deferred_ack(Some(retired)));
+        assert!(
+            fb.focused_ime_edit_stamp(Some(retired), &document)
+                .is_none()
+        );
+        assert!(
+            fb.start_deferred_text(Some(retired), &mut document, &automerge::ROOT)
+                .is_none()
+        );
+        assert!(
+            fb.commit_deferred_text(Some(retired), "direction", &mut document, &automerge::ROOT)
+                .is_none()
+        );
+        assert_eq!(before, (document.base_heads(), document.pending_ops()));
+        fb.relayout();
+        assert!(
+            fb.ime_node_map_is_live(),
+            "relayout admits only the current owned tree"
+        );
+    }
+
+    #[test]
+    fn deferred_ime_rejects_reordered_and_reparented_retained_widgets() {
+        fn field_node(frame: &FrameBuilder) -> NodeId {
+            frame
+                .node_map
+                .keys()
+                .copied()
+                .find(|node| {
+                    frame
+                        .live_ime_widget(*node)
+                        .is_some_and(|widget| widget.test_id() == Some("retained-ime"))
+                })
+                .expect("the actual retained text input is mapped")
+        }
+        fn column(frame: &mut FrameBuilder) -> &mut ui::widget::Column {
+            frame
+                .host_mut()
+                .children_mut()
+                .into_iter()
+                .find_map(|widget| widget.as_any_mut()?.downcast_mut::<ui::widget::Column>())
+                .expect("the host owns the production Column")
+        }
+        fn reject_deferred(frame: &mut FrameBuilder, node: NodeId, document: &mut AutoCommit) {
+            assert!(!frame.ime_node_map_is_live());
+            assert!(
+                frame.live_ime_widget(node).is_some(),
+                "the same boxed field still exists"
+            );
+            assert!(frame.focused_ime_edit_stamp(Some(node), document).is_none());
+            assert!(
+                frame
+                    .start_deferred_text(Some(node), document, &automerge::ROOT)
+                    .is_none()
+            );
+            assert!(
+                frame
+                    .commit_deferred_text(Some(node), "direction", document, &automerge::ROOT)
+                    .is_none()
+            );
+        }
+        let value = ui::LocalState::new("Retained draft".to_string());
+        let mut input = ui::widget::TextInput::from_state(&value).with_id("retained-ime");
+        input.set_focus(true);
+        let content = ui::widget::Column::new()
+            .push(Box::new(input))
+            .push(Box::new(
+                ui::widget::Column::new().push(Box::new(ui::widget::Text::new("Other"))),
+            ));
+        let host = ShellOverlayHost::with_fixture_content(Box::new(content));
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let mut frame = FrameBuilder::from_parts((host, chrome), (480, 320));
+        frame.relayout();
+        assert!(frame.ime_node_map_is_live());
+        let node = field_node(&frame);
+        assert_eq!(
+            frame
+                .focused_ime_field(Some(node))
+                .expect("real focused text input")
+                .purpose,
+            winit::window::ImePurpose::Normal
+        );
+        let mut document = AutoCommit::new();
+        let before = (document.base_heads(), document.pending_ops());
+        let mut children = column(&mut frame).take_children();
+        children.swap(0, 1);
+        column(&mut frame).set_children(children);
+        reject_deferred(&mut frame, node, &mut document);
+        // Direct Column composition leaves rebuilding to its owner; unlike
+        // workspace reconciliation it does not raise a structure-dirty flag.
+        frame.rebuild_layout_tree();
+        frame.relayout();
+        assert!(frame.ime_node_map_is_live());
+        let node = field_node(&frame);
+        let mut children = column(&mut frame).take_children();
+        let retained_input = children.pop().expect("retained input after reorder");
+        let nested = children[0]
+            .as_any_mut()
+            .and_then(|widget| widget.downcast_mut::<ui::widget::Column>())
+            .expect("retained nested parent");
+        let mut nested_children = nested.take_children();
+        nested_children.push(retained_input);
+        nested.set_children(nested_children);
+        column(&mut frame).set_children(children);
+        reject_deferred(&mut frame, node, &mut document);
+        assert_eq!(before, (document.base_heads(), document.pending_ops()));
+        frame.rebuild_layout_tree();
+        frame.relayout();
+        assert!(frame.ime_node_map_is_live());
+        assert_eq!(
+            frame
+                .focused_ime_field(Some(field_node(&frame)))
+                .expect("retained field after relayout")
+                .purpose,
+            winit::window::ImePurpose::Normal
+        );
     }
 
     #[test]

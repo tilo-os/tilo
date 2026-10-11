@@ -11834,15 +11834,15 @@ pub fn run() {
         frame_builder.with_chrome(|chrome| chrome.set_awake_holders(awake_holders));
         // A chrome field with the focus, while no client holds the keyboard,
         // is served to the seat's input method like an application field.
-        let deferred_field =
-            frame_builder.focused_ime_requires_deferred_ack(test_control_ctx.focus);
+        let chrome_owns_keyboard =
+            !session.is_locked() && state.client_input.keyboard_focus().is_none();
+        let deferred_field = chrome_owns_keyboard
+            && frame_builder.focused_ime_requires_deferred_ack(test_control_ctx.focus);
         let speech_field_needed = frame_builder
             .host_mut()
             .dictation_surface_mut()
             .needs_original_field();
-        let shell_field = (!session.is_locked()
-            && state.client_input.keyboard_focus().is_none()
-            && (!deferred_field || speech_field_needed))
+        let shell_field = (chrome_owns_keyboard && (!deferred_field || speech_field_needed))
             .then(|| frame_builder.focused_ime_field(test_control_ctx.focus))
             .flatten();
         if shell_field.is_some() && shell_text_input.is_none() {
