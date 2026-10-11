@@ -1334,9 +1334,8 @@ pub fn surface_in_root<A: ResourceApp, S: 'static>(
 }
 
 fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot) -> Option<&mut S> {
-    if root.typed::<A::Resource>().is_none() {
-        return None;
-    }
+    // A root of another app's resource does not host `A`'s surfaces.
+    root.typed::<A::Resource>()?;
     root.content
         .as_mut()
         .as_any_mut()
