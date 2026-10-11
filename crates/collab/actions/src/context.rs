@@ -524,6 +524,9 @@ mod wire {
         item: Option<(String, String)>,
         #[serde(rename = "w", skip_serializing_if = "Option::is_none")]
         what: Option<Did>,
+        /// The path every field edit of a group shares, written once.
+        #[serde(rename = "wp", skip_serializing_if = "Option::is_none")]
+        shared_path: Option<Vec<PathStep>>,
         #[serde(rename = "k", skip_serializing_if = "Option::is_none")]
         kind: Option<ActionKind>,
         #[serde(rename = "pu", skip_serializing_if = "Option::is_none")]
@@ -696,6 +699,55 @@ mod wire {
         }
     }
 
+    /// The path every field edit member of a group shares, when there are
+    /// at least two and the path is more than the field itself.
+    fn shared_path(what: &Did) -> Option<Vec<PathStep>> {
+        let Did::Group(group) = what else {
+            return None;
+        };
+        let mut edits = group.members.iter().filter_map(|member| match member {
+            Did::Edit(edit) => Some(edit),
+            _ => None,
+        });
+        let first = edits.next()?;
+        let mut more = false;
+        for edit in edits {
+            if edit.path != first.path {
+                return None;
+            }
+            more = true;
+        }
+        let trivial =
+            matches!(first.path.as_slice(), [PathStep::Field(field)] if *field == first.field);
+        (more && !first.path.is_empty() && !trivial).then(|| first.path.clone())
+    }
+
+    /// `what` with its edit members' shared path left to [`shared_path`].
+    fn without_shared_path(mut what: Did) -> Did {
+        if shared_path(&what).is_some()
+            && let Did::Group(group) = &mut what
+        {
+            for member in &mut group.members {
+                if let Did::Edit(edit) = member {
+                    edit.path.clear();
+                }
+            }
+        }
+        what
+    }
+
+    /// `what` with the shared path given back to its edit members.
+    fn with_shared_path(mut what: Did, shared: Option<&[PathStep]>) -> Did {
+        if let (Some(shared), Did::Group(group)) = (shared, &mut what) {
+            for member in &mut group.members {
+                if let Did::Edit(edit) = member {
+                    edit.path = shared.to_vec();
+                }
+            }
+        }
+        what
+    }
+
     /// A group's distinct actions, as [`Did::group`] keeps them.
     fn distinct_of(members: &[Did]) -> Vec<Did> {
         match Did::group(members.iter().cloned()) {
@@ -722,7 +774,11 @@ mod wire {
                     .item
                     .as_ref()
                     .map(|item| (item.id.clone(), item.label.clone())),
-                what: context.what.as_ref().map(trimmed),
+                shared_path: context.what.as_ref().and_then(shared_path),
+                what: context
+                    .what
+                    .as_ref()
+                    .map(|what| without_shared_path(trimmed(what))),
                 kind: context.kind.filter(|_| !undoable),
                 purpose: context.purpose.clone(),
                 group: context.group.clone(),
@@ -746,7 +802,9 @@ mod wire {
                     .map_or_else(|| inferred(action.as_ref()), App::into_app),
                 resource: self.resource.map(Resource::into_resource),
                 item: self.item.map(|(id, label)| ActionItem { id, label }),
-                what: self.what.map(filled),
+                what: self
+                    .what
+                    .map(|what| filled(with_shared_path(what, self.shared_path.as_deref()))),
                 kind: self
                     .kind
                     .or_else(|| action.as_ref().map(|_| ActionKind::Undoable)),
@@ -1104,6 +1162,43 @@ mod tests {
         let bare = ActionContext { app: None, ..entry };
         let read = ActionContext::from_change_message(&bare.change_message().unwrap()).unwrap();
         assert_eq!(read, bare);
+    }
+
+    #[test]
+    fn a_group_writes_what_its_members_share_once() {
+        let path = vec![
+            PathStep::Field("sheets".into()),
+            PathStep::Item("s1".into()),
+            PathStep::Field("cells".into()),
+        ];
+        let edit = |op| {
+            Did::Edit(FieldEdit {
+                ty: "sheet".into(),
+                field: "cells".into(),
+                path: path.clone(),
+                op,
+                old: None,
+                new: None,
+                args: std::collections::BTreeMap::new(),
+            })
+        };
+        let mut entry =
+            ActionContext::for_resource("sheets.workbook", "sheets.workbook", "Workbook");
+        entry.what = Some(Did::group([edit(EditOp::InsertRow), edit(EditOp::SetCell)]));
+        let message = entry.change_message().unwrap();
+        assert!(!message.contains("distinct"), "{message}");
+        assert_eq!(
+            message.matches("\"cells\"").count(),
+            3,
+            "the path once: {message}"
+        );
+        let read = ActionContext::from_change_message(&message).unwrap();
+        assert_eq!(read, entry);
+        assert_eq!(
+            read.change_message().unwrap(),
+            message,
+            "written again the same"
+        );
     }
 
     #[test]
