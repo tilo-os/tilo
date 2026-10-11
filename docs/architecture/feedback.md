@@ -61,6 +61,9 @@ status changes, duplicate targets and typed task references without creating a
 task or granting access to one. The SDK supplies the actual source record stamp;
 a returning participant can read this history after reconnecting. As with the
 receipt projection, the returned JSON alone is not a durability witness.
+Each report also exports `reply`, using the existing attributed Chat message
+action with that report's exact message as its thread parent. It requires the
+ordinary message Write permission and grants no new publication authority.
 
 ## Host integration
 
@@ -101,8 +104,18 @@ worker; only the purpose-specific receipt digest reaches the existing owner
 signer. `read-feedback-destination` confirms an existing text channel and
 `read-feedback-receipt` can require the exact attributed reporter root. A
 signed acknowledgment binds the owner, reporter, destination, publication verb,
-submission identity and approved digest. Screenshot receipts remain refused
-until an actual owner content store supplies a durable content witness.
+submission identity and approved digest. `ReviewedAttachments` stores only a
+masked PNG through the existing content store and validates its full bounded
+decode, hash and dimensions. The content backend must supply a current durability
+barrier; memory, regenerable and unqualified backends cannot attest custody.
+`CanonicalDestination::with_attachments` binds the canonical owner's existing
+store, checked before and after receipt signing. The reporter's local copy or
+saved report metadata is insufficient. Losing the bytes during signing prevents
+acknowledgment. This does not install capture, create content transport or grant
+access: the production relay/browser/native description-only bindings continue
+to refuse screenshot receipts until their actual owner content custody is wired
+and qualified. Chat reports declare an exact opening view for the existing
+browser/native resource-view path; reading a status does not navigate.
 
 The browser's existing `CertifiedPeer.configureFeedback({room, provider, channel})`
 selects a destination before desktop mounting. `WasmPeer` requests admission from
@@ -119,6 +132,24 @@ Live configuration must name the already-authorized room UUID, exact provider
 `record:so.tilo.chat:` and text channel ID, and select the already-certified
 reporter's root/device. These values are not present in the public demo's verified
 configuration. No destination, enrollment or grant is created by this feature.
+
+The remaining image path is missing implementation, independently of that live
+configuration. The native SDK's `RecordContent` wrapper preserves its backing
+store's current durability result, but a served content lane is not a destination
+witness. `DeviceBackend` and the browser `FilesBackend` still lack an attestation
+from their storage owner; `DocumentBlobs` exposes presence and reads, not a
+durability barrier. The relay's `RoomRecordsLink` exposes retained documents and
+current Read policy, but no owner-scoped document-media binding. Complete the
+image path through the existing record-content broker and scoped content store,
+including owner persistence and current authorization before receipt signing;
+do not substitute the reporter's cache or a new upload endpoint. The production
+native/browser `NoCapture` bindings also require an explicit focused-surface
+producer with inspected privacy bounds and frame identity. The pure masking
+permit and private preview are already present; they are not that producer.
+Implementing these adapters needs no live capture or enrollment. Exercising them
+against an actual person's surface, reporter identity and destination does, and
+those selections and permissions remain prerequisites for deployed acceptance.
+
 Native startup reads optional `feedback-destination.json` under the existing
 `org.tilo.Shell/apps` private profile. Its closed JSON contains only `room`,
 `provider` and `channel`; it contains no role, capability, identity or key. Missing

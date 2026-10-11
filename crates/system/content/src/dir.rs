@@ -407,6 +407,87 @@ impl DirBackend {
 }
 
 impl ContentBackend for DirBackend {
+    fn durability(&self, hash: &str) -> Result<crate::ContentDurability, ContentError> {
+        #[cfg(not(unix))]
+        {
+            let _ = hash;
+            return Ok(crate::ContentDurability::Unsupported);
+        }
+        #[cfg(unix)]
+        {
+            use crate::ContentDurability;
+            use tilo_files::native::atomic::{
+                FileIdentity, Privacy, StorageDirectory, reconcile_directory,
+            };
+            if !valid_hash(hash) {
+                return Err(ContentError::InvalidHash(hash.to_owned()));
+            }
+            if !self.durable {
+                return Ok(ContentDurability::Unsupported);
+            }
+            // Hold the existing writer/collector lock through verification and all
+            // barriers. A cached `has` or a file in a read-only fallback is not proof.
+            let root_lock = self.lock_root_for_write()?;
+            let path = Self::path_in(&self.root, hash)
+                .ok_or_else(|| ContentError::InvalidHash(hash.to_owned()))?;
+            let parent = path.parent().ok_or(ContentError::HashMismatch)?;
+            let directory = match StorageDirectory::open(parent) {
+                Ok(directory) => directory,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(ContentDurability::Absent);
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let name = path.file_name().ok_or(ContentError::HashMismatch)?;
+            let mut file = match directory.open_read(name, Privacy::Inherit) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(ContentDurability::Absent);
+                }
+                Err(error) => return Err(error.into()),
+            };
+            if file.metadata()?.len()
+                > u64::try_from(self.limits.max_item_bytes).unwrap_or(u64::MAX)
+            {
+                return Err(ContentError::HashMismatch);
+            }
+            let identity = FileIdentity::of(&file)?;
+            let mut digest = blake3::Hasher::new();
+            let mut buffer = [0; 8192];
+            let mut total = 0usize;
+            loop {
+                let len = file.read(&mut buffer)?;
+                if len == 0 {
+                    break;
+                }
+                total = total.saturating_add(len);
+                if total > self.limits.max_item_bytes {
+                    return Err(ContentError::HashMismatch);
+                }
+                let bytes = buffer.get(..len).ok_or(ContentError::HashMismatch)?;
+                digest.update(bytes);
+            }
+            if !digest
+                .finalize()
+                .to_hex()
+                .as_str()
+                .eq_ignore_ascii_case(hash)
+            {
+                return Err(ContentError::HashMismatch);
+            }
+            directory
+                .commit_existing(name, &identity, Privacy::Inherit)
+                .map_err(|error| ContentError::Io(error.to_string()))?;
+            // Existing ancestor custody is reconciled without creating names or
+            // repairing permissions. A shard-only flush cannot attest a new root.
+            reconcile_directory(parent, &directory, Privacy::Inherit)
+                .map_err(|error| ContentError::Io(error.to_string()))?;
+            drop(file);
+            drop(directory);
+            drop(root_lock);
+            Ok(ContentDurability::Durable)
+        }
+    }
     fn put(&self, reader: &mut dyn Read, _mime: &str) -> Result<Stored, ContentError> {
         let (tmp, hash, len) = self.receive(reader)?;
         let stored = Stored {

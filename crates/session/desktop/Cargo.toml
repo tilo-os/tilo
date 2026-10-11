@@ -29,6 +29,7 @@ durable-store = { path = "../../system/durable-store" }
 emoji = { path = "../../text/emoji" }
 
 [dev-dependencies]
+tilo-content = { path = "../../system/content" }
 chat = { path = "../../../apps/chat", default-features = false }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 word-processor = { path = "../../../apps/word-processor" }

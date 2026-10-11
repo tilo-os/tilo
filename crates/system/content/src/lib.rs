@@ -177,10 +177,26 @@ pub struct Collected {
 /// read verified content.
 pub type ContentReader = Box<dyn Read + Send>;
 
+/// Presence alone does not prove that binary content survived a storage barrier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentDurability {
+    Unsupported,
+    Absent,
+    Durable,
+}
+
 /// What a [`ContentStore`] runs on. Implementations treat the address as authoritative and verify
 /// content against it; a store that trusts the key would let one peer poison every replica that
 /// later reads that address.
 pub trait ContentBackend: Send + Sync {
+    /// Verify the current addressed bytes and their storage barrier. Backends
+    /// without such a barrier must refuse to attest, even when `has` is true.
+    ///
+    /// # Errors
+    /// Integrity or storage failures prevent a durability acknowledgment.
+    fn durability(&self, _hash: &str) -> Result<ContentDurability, ContentError> {
+        Ok(ContentDurability::Unsupported)
+    }
     /// Store everything `reader` yields, returning its address. Storing content already present
     /// is a no-op that succeeds. `mime` is advisory (a backend may index or serve by it).
     ///
@@ -240,6 +256,16 @@ impl std::fmt::Debug for ContentStore {
 }
 
 impl ContentStore {
+    /// The backend's current durability witness for this exact content address.
+    ///
+    /// # Errors
+    /// Refuses invalid addresses, corrupted content and failed barriers.
+    pub fn durability(&self, hash: &str) -> Result<ContentDurability, ContentError> {
+        if !valid_hash(hash) {
+            return Err(ContentError::InvalidHash(hash.to_owned()));
+        }
+        self.backend.durability(hash)
+    }
     /// A store over `backend`.
     pub fn new(backend: impl ContentBackend + 'static) -> Self {
         Self {

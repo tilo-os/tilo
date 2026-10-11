@@ -348,6 +348,7 @@ pub struct CanonicalDestination {
     destination: Destination,
     source: Box<dyn CanonicalReceiptSource>,
     signer: Box<dyn ReceiptSigner>,
+    attachments: Option<tilo_app::feedback::ReviewedAttachments>,
 }
 
 impl CanonicalDestination {
@@ -386,7 +387,29 @@ impl CanonicalDestination {
             destination,
             source,
             signer,
+            attachments: None,
         })
+    }
+
+    /// Supply the canonical owner's existing content store, never the reporter's
+    /// local cache. This does not install capture or grant content access.
+    #[must_use]
+    pub fn with_attachments(
+        mut self,
+        attachments: tilo_app::feedback::ReviewedAttachments,
+    ) -> Self {
+        self.attachments = Some(attachments);
+        self
+    }
+
+    fn verify_attachments(&self, submission: &Submission) -> Result<(), Error> {
+        if let Some(reference) = &submission.feedback.screenshot {
+            self.attachments
+                .as_ref()
+                .ok_or(Error::NotDurable)?
+                .verify(reference)?;
+        }
+        Ok(())
     }
 
     /// Current canonical durability and attributed content, then a signed ack.
@@ -403,9 +426,6 @@ impl CanonicalDestination {
         let pin = enrollment.authorize_receipt(submission)?;
         // Saved report metadata does not prove custody of referenced content.
         // Attachment acknowledgments need the owner's durable content witness.
-        if submission.feedback.screenshot.is_some() {
-            return Err(Error::NotDurable);
-        }
         if enrollment.owner != self.owner
             || self.signer.owner() != &self.owner
             || submission.destination != self.destination
@@ -421,6 +441,7 @@ impl CanonicalDestination {
         {
             return Err(Error::ReceiptMismatch);
         }
+        self.verify_attachments(submission)?;
         let request = ReceiptSigningRequest {
             digest: *digest(&pin, &receipt)?.as_bytes(),
         };
@@ -440,6 +461,7 @@ impl CanonicalDestination {
         if current != receipt || current_author != author {
             return Err(Error::ReceiptMismatch);
         }
+        self.verify_attachments(submission)?;
         Ok(SignedReceipt { receipt, signature })
     }
 

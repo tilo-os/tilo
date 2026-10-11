@@ -240,6 +240,13 @@ impl RecordContent {
 }
 
 impl ContentBackend for RecordContent {
+    fn durability(&self, hash: &str) -> Result<tilo_content::ContentDurability, ContentError> {
+        self.keep_arrived();
+        // The lane transports bytes, not persistence attestations. Only this
+        // device's backing store can prove its own current custody.
+        self.local.durability(hash)
+    }
+
     fn put(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError> {
         let mut bytes = Vec::new();
         reader

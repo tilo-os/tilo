@@ -7,6 +7,7 @@
 //! Hosts supply their existing durable profile store and authenticated room
 //! transport. This crate neither captures surfaces nor connects accounts.
 
+mod attachments;
 mod capture;
 mod composer;
 mod outbox;
@@ -14,6 +15,7 @@ mod review;
 #[cfg(test)]
 mod test_store;
 
+pub use attachments::ReviewedAttachments;
 pub use capture::{CapturePermit, MaskedScreenshot, PixelRect, SurfaceCapture};
 pub use composer::{Composer, Consent, FeedbackHost};
 pub use durable_store::{DurableStore, MemoryStore, StorageKey};
