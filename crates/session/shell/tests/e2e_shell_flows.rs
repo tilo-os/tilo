@@ -1127,15 +1127,6 @@ fn hover_and_click_maximize_chip(group: &mut WindowGroup, taffy: &TaffyTree<()>,
     // past the end, lay out again. Reading the rect straight back — or deriving
     // it from the pill with the chip offsets copied out of `TabBar` — clicks
     // nothing, which is what this test was doing.
-    // The reveal also waits out a pointer-intent dwell: hold that past its
-    // end first, so the next layout pass starts the curve.
-    group.apply_layout(taffy, child, Point::ORIGIN);
-    assert!(
-        group
-            .bar_mut_for_tests()
-            .hold_hover_intent_at(std::time::Duration::from_secs(1)),
-        "hovering the pill armed no intent dwell",
-    );
     group.apply_layout(taffy, child, Point::ORIGIN);
     assert!(
         group

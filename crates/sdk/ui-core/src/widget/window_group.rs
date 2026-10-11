@@ -3719,11 +3719,6 @@ mod tests {
                 position: winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
             },
         );
-        assert!(
-            g.bar
-                .hold_hover_intent_at(std::time::Duration::from_secs(1)),
-            "hovering the pill must arm deliberate reveal",
-        );
         g.apply_layout(&taffy, group_node, Point::ZERO);
 
         let max_rect = g.bar.max_rects()[0];

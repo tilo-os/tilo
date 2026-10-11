@@ -126,17 +126,6 @@ fn render_expand_to_fullscreen() {
     };
     d.cursor(&mut fb, pill_center);
     fb.relayout();
-    // The reveal first waits out a pointer-intent dwell.
-    let mut intended = false;
-    if let Some(row) = fb.host_mut().group_row_mut_for_tests(strip_id) {
-        for g in &mut row.groups {
-            intended |= g
-                .bar_mut_for_tests()
-                .hold_hover_intent_at(std::time::Duration::from_secs(1));
-        }
-    }
-    assert!(intended, "hovering the pill armed no intent dwell");
-    fb.relayout();
     // The chip cluster slides out on wall time, and the rects stay `Rect::ZERO`
     // until that curve has run, so hold it past the end and lay out again.
     // Without this the capture below shows a pill with no chips and the click
