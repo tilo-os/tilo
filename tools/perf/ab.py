@@ -360,6 +360,11 @@ class Group:
     # executable baked in at compile time (`env!("CARGO_BIN_EXE_shell")`).
     stage: dict[str, str]
     run: Callable[[RunContext], list[record.Record]]
+    # Artifact name -> (source file, build command, path after the build): a
+    # benchmark built only on a side whose commit has its source, so a base
+    # older than the benchmark still runs; its KPIs are then the candidate's
+    # alone, listed but not paired.
+    optional: dict[str, tuple[str, tuple[str, ...], str]] = dataclasses.field(default_factory=dict)
 
 
 def call(command: list[str], log: Path, cwd: Path, env: dict[str, str] | None = None,
@@ -403,8 +408,9 @@ def run_agent(ctx: RunContext) -> list[record.Record]:
 
 def run_render(ctx: RunContext) -> list[record.Record]:
     records = ctx.dir / "records.jsonl"
+    pans = ["--strip-pan-bench", ctx.bins["strip_pan_bench"]] if "strip_pan_bench" in ctx.bins else []
     call([sys.executable, "scripts/perf/render_bench.py", "timing", ctx.bins["ui-perf"],
-          ctx.bins["redraw_bench"], "--env-json", ctx.env_json, "--out", ctx.dir, "--records", records],
+          ctx.bins["redraw_bench"], "--env-json", ctx.env_json, "--out", ctx.dir, *pans, "--records", records],
          ctx.dir / "bench.log", ctx.repo)
     opening = ctx.dir / "framework-open.log"
     call([ctx.bins["framework-scaling"], "5000,50000", "open"], opening, ctx.repo)
@@ -452,7 +458,11 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
             "--example", "framework-scaling")),
           {"ui-perf": "target/release/examples/ui-perf", "redraw_bench": "target/release/examples/redraw_bench",
            "framework-scaling": "target/release/examples/framework-scaling"},
-          {}, {}, run_render),
+          {}, {}, run_render,
+          {"strip_pan_bench": ("crates/session/shell/examples/strip_pan_bench.rs",
+                               ("cargo", "build", "--locked", "--release", "-p", "shell", "--example",
+                                "strip_pan_bench"),
+                               "target/release/examples/strip_pan_bench")}),
     Group("wakeups", "dev", "lavapipe", (),
           {"shell": "target/debug/shell"},
           {"it": (("cargo", "test", "--locked", "-p", "shell", "--test", "it", "--no-run"), "it")},
@@ -510,6 +520,12 @@ def build_side(groups: list[Group], side: str, commit: str, repo: Path, out: Pat
             shutil.copy2(executable, directory / name)
             cwd[name] = str(package)
         for name, path in group.binaries.items():
+            shutil.copy2(repo / path, directory / name)
+        for name, (source, command, path) in group.optional.items():
+            if not (repo / source).is_file():
+                print(f"== {side} {commit[:10]} has no {source}; {name} is not built", flush=True)
+                continue
+            call(list(command), log, repo)
             shutil.copy2(repo / path, directory / name)
         manifest[group.name] = {"cwd": cwd}
     return manifest

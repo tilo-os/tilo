@@ -415,6 +415,9 @@ suites = [
 name = "perf-tools"
 inputs = [
   "scripts/perf/", "apps/settings/src/categories.rs", "tools/perf/",
+  # tools/perf/test_compare.py and test_ab.py hold the workflows' groups and
+  # benchmarks equal to the budgets' lanes and the A/B groups.
+  ".forgejo/workflows/perf-scheduled.yml", ".forgejo/workflows/vm-acceptance.yml",
   # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the gate's SLOs
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
   "crates/system/fs/tests/performance_gate.rs",
