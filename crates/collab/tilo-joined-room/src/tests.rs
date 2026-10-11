@@ -575,6 +575,124 @@ fn task_action_admission_and_direction_commit_are_one_serialized_owner_turn() {
         .unwrap();
 }
 
+fn sealed_edit(joined: &Enrolled) -> (OwnerCommitRequest, Vec<u8>) {
+    let mut request = edit(&joined.owner, joined.room, joined.now);
+    let CommitOperation::Document { envelope, .. } = &mut request.operation else {
+        panic!("test edit is a document");
+    };
+    let opened = envelope.payload.clone();
+    envelope.payload = b"sealed local document".to_vec();
+    envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
+        1,
+        collab_types::document_channel_id(APP, ROOM, ""),
+    ));
+    collab_types::sign_op(envelope, &member()).unwrap();
+    (request, opened)
+}
+
+#[test]
+fn opened_sealed_local_write_refuses_bad_plaintext_without_publication() {
+    let joined = enrolled();
+    let (request, _) = sealed_edit(&joined);
+    let before = std::fs::read(&joined.path).unwrap();
+    let mut opened = 0;
+    let result = joined.owner.commit_document_with_opening(
+        request,
+        &mut |_| {
+            opened += 1;
+            Ok(b"not an Automerge document mutation".to_vec())
+        },
+        joined.now,
+    );
+    assert!(
+        result.is_err(),
+        "sealed ciphertext must not hide malformed plaintext"
+    );
+    assert_eq!(
+        opened, 1,
+        "the actual owner must open after envelope validation"
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+}
+
+#[test]
+fn opened_sealed_local_write_verifies_signature_before_opening() {
+    let joined = enrolled();
+    let (mut request, plaintext) = sealed_edit(&joined);
+    let CommitOperation::Document { envelope, .. } = &mut request.operation else {
+        panic!("test edit is a document");
+    };
+    envelope.payload.push(0);
+    let before = std::fs::read(&joined.path).unwrap();
+    let mut opened = 0;
+    assert!(
+        joined
+            .owner
+            .commit_document_with_opening(
+                request,
+                &mut |_| {
+                    opened += 1;
+                    Ok(plaintext.clone())
+                },
+                joined.now,
+            )
+            .is_err()
+    );
+    assert_eq!(
+        opened, 0,
+        "tampered envelopes must never reach channel opening"
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+}
+
+#[test]
+fn opened_sealed_local_write_recovers_from_key_refusal_and_reopens_exact_history() {
+    let joined = enrolled();
+    let (request, plaintext) = sealed_edit(&joined);
+    let before = std::fs::read(&joined.path).unwrap();
+    assert!(
+        joined
+            .owner
+            .commit_document_with_opening(
+                request.clone(),
+                &mut |_| Err("held channel epoch unavailable".into()),
+                joined.now,
+            )
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+    let receipt = joined
+        .owner
+        .commit_document_with_opening(request.clone(), &mut |_| Ok(plaintext.clone()), joined.now)
+        .unwrap();
+    receipt.validate_for(&request).unwrap();
+    let committed = std::fs::read(&joined.path).unwrap();
+    let reopened = open_file(&joined.path).unwrap();
+    reopened
+        .with_current(joined.room, |view| {
+            let bytes = view
+                .peer()
+                .document(APP, "")
+                .ok_or("opened document missing")?;
+            let doc = AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+            assert_eq!(
+                doc.get(ROOT, "topic").unwrap().unwrap().0.to_string(),
+                "\"written while joined\""
+            );
+            Ok(())
+        })
+        .unwrap();
+    let retry = reopened
+        .commit_document_with_opening(
+            request,
+            &mut |_| panic!("an exact durable retry must not reopen ciphertext"),
+            joined.now,
+        )
+        .unwrap();
+    assert_eq!(retry.generation, receipt.generation);
+    assert_eq!(std::fs::read(&joined.path).unwrap(), committed);
+}
+
 #[test]
 fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
     let joined = enrolled();

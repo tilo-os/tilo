@@ -88,6 +88,8 @@ pub(crate) fn restore(
     crate::effect_receipt::validate(&view)?;
     Ok(view)
 }
+type DocumentOpener<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>;
+
 impl NativeWorkspaceOwner {
     /// Persist the signed Complete proof before it is sent, so a lost
     /// response is retried with the exact same proof. `local` is the
@@ -432,6 +434,23 @@ impl NativeWorkspaceOwner {
         self.commit_document_with_current(room, |_| Ok(request), now)
     }
 
+    /// Admit a sealed local write through the owner's held channel keys.
+    /// Envelope checks precede opening; opening and bounded plaintext admission
+    /// run in the same serialized turn as durable publication. An exact committed
+    /// retry retains its existing receipt and needs no second decryption.
+    ///
+    /// # Errors
+    /// Current authority, opening, bounded admission or durable publication refuses.
+    pub fn commit_document_with_opening(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        open: &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>,
+        now: SystemTime,
+    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+        let room = RoomId::parse(&request.room).ok_or("invalid native document room")?;
+        self.commit_document_prepared(room, |_| Ok(request), Some(open), now)
+    }
+
     /// Prepare a signed local document mutation from the current committed
     /// room and admit it in the same owner turn. This keeps its sequence and
     /// document basis current when other publications race the caller.
@@ -446,6 +465,19 @@ impl NativeWorkspaceOwner {
             &crate::NativeCommittedView,
         )
             -> Result<tilo_peer_state::owner_commit::OwnerCommitRequest, String>,
+        now: SystemTime,
+    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+        self.commit_document_prepared(room, prepare, None, now)
+    }
+
+    fn commit_document_prepared(
+        &self,
+        room: RoomId,
+        prepare: impl FnOnce(
+            &crate::NativeCommittedView,
+        )
+            -> Result<tilo_peer_state::owner_commit::OwnerCommitRequest, String>,
+        open: Option<DocumentOpener<'_>>,
         now: SystemTime,
     ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
         use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt};
@@ -487,9 +519,21 @@ impl NativeWorkspaceOwner {
             });
         }
         publication::reserve(&candidate, &outgoing)?;
-        candidate
-            .peer
-            .admit_new_local_document(&app, &record, *envelope, now)?;
+        if envelope.encryption.is_some() {
+            if let Some(open) = open {
+                candidate
+                    .peer
+                    .admit_new_opened_local_document(&app, &record, *envelope, open, now)?;
+            } else {
+                candidate
+                    .peer
+                    .admit_new_local_document(&app, &record, *envelope, now)?;
+            }
+        } else {
+            candidate
+                .peer
+                .admit_new_local_document(&app, &record, *envelope, now)?;
+        }
         publication::append_local(&mut candidate, outgoing)?;
         candidate.record.peer = candidate.peer.durable()?;
         candidate.record.generation = candidate
