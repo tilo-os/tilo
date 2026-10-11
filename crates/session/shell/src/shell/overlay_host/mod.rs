@@ -15,6 +15,7 @@ mod axis_navigation;
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
+use ui::num::{f32_of_f64, f64_of_usize, isize_of_usize, usize_of_f64, usize_of_isize};
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
@@ -1214,28 +1215,6 @@ fn instant_capture(
 // helpers: name the conversion, scope the `#[allow]` to it alone, and
 // use the named function everywhere instead of a bare `as`.
 
-/// Lossy but bounded: UI row/slot/element counts never approach f64's
-/// 53-bit exact-integer range.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "row/slot/element counts stay far below f64's exact-integer range"
-)]
-fn usize_to_f64_lossy(n: usize) -> f64 {
-    n as f64
-}
-
-/// Narrows an `f64` pixel/width/alpha value to the `f32` that
-/// `taffy`/`vello`/`cosmic-text`'s own APIs take. Screen-space geometry
-/// in this UI never approaches a magnitude where this loses meaningful
-/// precision.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space geometry stays well within f32's precision for this UI"
-)]
-fn f64_to_f32_lossy(v: f64) -> f32 {
-    v as f32
-}
-
 /// Same rationale as [`usize_to_f64_lossy`], for the millisecond
 /// durations `Instant::elapsed().as_millis()` and this file's transition
 /// constants use.
@@ -1245,42 +1224,6 @@ fn f64_to_f32_lossy(v: f64) -> f32 {
 )]
 fn millis_to_f32_lossy(ms: u128) -> f32 {
     ms as f32
-}
-
-/// A workspace/overview-selection index, `usize -> isize`, for the
-/// ring-wraparound arithmetic in [`ShellOverlayHost::handle_event`]. The
-/// tree never holds anywhere near `isize::MAX` workspaces.
-#[allow(
-    clippy::cast_possible_wrap,
-    reason = "workspace counts stay far below isize::MAX"
-)]
-fn usize_to_isize_lossy(n: usize) -> isize {
-    n as isize
-}
-
-/// The inverse of [`usize_to_isize_lossy`], used only on the result of
-/// `isize::rem_euclid` with a positive divisor — which is defined to
-/// always return a non-negative value, so this never actually discards a
-/// sign.
-#[allow(
-    clippy::cast_sign_loss,
-    reason = "only called on rem_euclid's result with a positive divisor, which is never negative"
-)]
-fn isize_to_usize_lossy(n: isize) -> usize {
-    n as usize
-}
-
-/// Floors a row-count computation into `usize`. Rust's `f64 as usize`
-/// cast already saturates a negative input to `0` rather than wrapping
-/// or panicking (defined since Rust 1.45), so this is memory-safe for
-/// any `v`; callers additionally `.max(1)` the result.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "float-to-usize casts saturate; a negative input already floors to 0"
-)]
-fn f64_floor_to_usize_saturating(v: f64) -> usize {
-    v.floor() as usize
 }
 
 const OVERVIEW_TRANSITION_MS: u64 = 400;
@@ -1335,7 +1278,7 @@ const _: () = assert!(
 /// Widgets that paint against the full desktop rect use this instead of
 /// duplicating a rail width.
 pub fn workspace_rail_clearance_for_viewport(viewport_h: f64) -> f64 {
-    f64::from(sidebar_width_for_viewport(f64_to_f32_lossy(viewport_h))) + WHEEL_TO_STRIP_GAP_PX
+    f64::from(sidebar_width_for_viewport(f32_of_f64(viewport_h))) + WHEEL_TO_STRIP_GAP_PX
 }
 
 /// Wallpaper gutter at the far edge of a display, matching
@@ -4130,7 +4073,7 @@ impl ShellOverlayHost {
             .map(|o| {
                 let hosts_chrome = strip_left >= o.x && strip_left < o.x + o.width;
                 let leading = if hosts_chrome && self.sidebar.is_some() {
-                    f64::from(sidebar_width_for_viewport(f64_to_f32_lossy(o.height)))
+                    f64::from(sidebar_width_for_viewport(f32_of_f64(o.height)))
                         + WHEEL_TO_STRIP_GAP_PX
                 } else {
                     0.0
@@ -10246,8 +10189,7 @@ impl ShellOverlayHost {
     }
 
     fn qs_device_fabric_visible_rows(&self) -> usize {
-        f64_floor_to_usize_saturating((self.quick_settings_rect().height() - 78.0) / 58.0)
-            .clamp(1, 7)
+        usize_of_f64((self.quick_settings_rect().height() - 78.0) / 58.0).clamp(1, 7)
     }
 
     fn clamp_qs_device_fabric_start(&mut self, row_count: usize) -> bool {
@@ -11091,7 +11033,7 @@ impl ShellOverlayHost {
         m.here_h
             + self.overview_windows_row_height()
             + m.caption_h
-            + usize_to_f64_lossy(rows) * m.share_row_h
+            + f64_of_usize(rows) * m.share_row_h
     }
 
     /// The current room's windows get a row of live previews once any of
@@ -11107,7 +11049,7 @@ impl ShellOverlayHost {
         let m = self.overview_metrics;
         let panel_w = self.overview_panel_width();
         let content_w = (panel_w - m.pad * 2.0).max(0.0);
-        let columns = usize_to_f64_lossy(OVERVIEW_WINDOWS_MAX);
+        let columns = f64_of_usize(OVERVIEW_WINDOWS_MAX);
         let tile_w = ((content_w - (columns - 1.0) * m.window_gap) / columns).max(0.0);
         (tile_w, tile_w * 10.0 / 16.0)
     }
@@ -11177,7 +11119,7 @@ impl ShellOverlayHost {
         let content = self.overview_content_rect();
         let (tile_w, well_h) = self.overview_window_tile_size();
         let top = self.overview_here_rect().y0 + m.here_h - m.here_air + m.window_gap;
-        let x0 = content.x0 + usize_to_f64_lossy(index) * (tile_w + m.window_gap);
+        let x0 = content.x0 + f64_of_usize(index) * (tile_w + m.window_gap);
         Rect::new(
             x0,
             top,
@@ -11296,7 +11238,7 @@ impl ShellOverlayHost {
 
     /// Height the list would take if nothing clipped it.
     fn overview_content_height(&self) -> f64 {
-        let k = usize_to_f64_lossy(self.overview_list_slots());
+        let k = f64_of_usize(self.overview_list_slots());
         let m = self.overview_metrics;
         (k * (m.room_row_h + m.room_row_gap) - m.room_row_gap).max(0.0)
     }
@@ -11444,7 +11386,7 @@ impl ShellOverlayHost {
             self.overview_scroll_y
         };
         let y0 = self.overview_list_top() - scroll
-            + usize_to_f64_lossy(slot) * (m.room_row_h + m.room_row_gap);
+            + f64_of_usize(slot) * (m.room_row_h + m.room_row_gap);
         Rect::new(c.x0, y0, c.x1, y0 + m.room_row_h)
     }
 
@@ -11492,7 +11434,7 @@ impl ShellOverlayHost {
                     0.0
                 };
                 (
-                    header + usize_to_f64_lossy(slot) * (m.room_row_h + m.room_row_gap),
+                    header + f64_of_usize(slot) * (m.room_row_h + m.room_row_gap),
                     m.room_row_h,
                 )
             }
@@ -13539,10 +13481,10 @@ impl ShellOverlayHost {
         if !tab && current >= count {
             current = if back { 0 } else { count.saturating_sub(1) };
         }
-        let next = usize_to_isize_lossy(current)
+        let next = isize_of_usize(current)
             .wrapping_add(if back { -1 } else { 1 })
-            .rem_euclid(usize_to_isize_lossy(focus_count));
-        self.overview_selection = Some(isize_to_usize_lossy(next));
+            .rem_euclid(isize_of_usize(focus_count));
+        self.overview_selection = Some(usize_of_isize(next));
     }
 
     fn activate_overview_selection(&mut self, count: usize) {
@@ -17085,7 +17027,7 @@ impl ShellOverlayHost {
             let (dx, dy) = match *delta {
                 winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
                 winit::event::MouseScrollDelta::PixelDelta(p) => {
-                    (f64_to_f32_lossy(p.x) / 40.0, f64_to_f32_lossy(p.y) / 40.0)
+                    (f32_of_f64(p.x) / 40.0, f32_of_f64(p.y) / 40.0)
                 }
             };
             if dx.abs() > 0.5 && dx.abs() > dy.abs() {
@@ -18059,9 +18001,9 @@ impl Widget for ShellOverlayHost {
                 * f64::from(theme.text_scale))
             .min((area.width() - 32.0).max(320.0));
             palette_style.max_size.height =
-                Dimension::length(f64_to_f32_lossy((area.height() - 112.0).max(200.0)));
+                Dimension::length(f32_of_f64((area.height() - 112.0).max(200.0)));
             palette_style.size = Size {
-                width: Dimension::length(f64_to_f32_lossy(palette_target_w)),
+                width: Dimension::length(f32_of_f64(palette_target_w)),
                 height: palette_style.size.height,
             };
             palette_style.margin = TaffyRect {
@@ -18072,9 +18014,9 @@ impl Widget for ShellOverlayHost {
             };
             let left = (area.x0 - self.rect.x0) + (area.width() - palette_target_w) / 2.0;
             palette_style.inset = TaffyRect {
-                left: LengthPercentageAuto::length(f64_to_f32_lossy(left.max(0.0))),
+                left: LengthPercentageAuto::length(f32_of_f64(left.max(0.0))),
                 right: LengthPercentageAuto::auto(),
-                top: LengthPercentageAuto::length(f64_to_f32_lossy(area.y0 - self.rect.y0 + 96.0)),
+                top: LengthPercentageAuto::length(f32_of_f64(area.y0 - self.rect.y0 + 96.0)),
                 bottom: LengthPercentageAuto::auto(),
             };
             let _ = taffy.set_style(palette_node, palette_style);
@@ -18104,9 +18046,9 @@ impl Widget for ShellOverlayHost {
                 // desktop that is its own left edge and height.
                 let (left, top, bottom) = match primary {
                     Some(p) => (
-                        f64_to_f32_lossy(p.x - self.rect.x0),
-                        f64_to_f32_lossy(p.y - self.rect.y0) + self.sidebar_top_y,
-                        f64_to_f32_lossy((self.rect.y1 - (p.y + p.height)).max(0.0)),
+                        f32_of_f64(p.x - self.rect.x0),
+                        f32_of_f64(p.y - self.rect.y0) + self.sidebar_top_y,
+                        f32_of_f64((self.rect.y1 - (p.y + p.height)).max(0.0)),
                     ),
                     None => (0.0, self.sidebar_top_y, 0.0),
                 };
@@ -20601,7 +20543,7 @@ impl ShellOverlayHost {
 /// on screen, dimmed by the scrim, for the whole gesture.
 fn overview_panel_curve(t: f32) -> (f32, f64, f64) {
     let o = ui::ease_out(f64::from(t.clamp(0.0, 1.0)));
-    let alpha = f64_to_f32_lossy(o);
+    let alpha = f32_of_f64(o);
     let dy = OVERVIEW_PANEL_RISE_PX * (1.0 - o);
     let scale = OVERVIEW_PANEL_START_SCALE + (1.0 - OVERVIEW_PANEL_START_SCALE) * o;
     (alpha, dy, scale)
@@ -22190,7 +22132,7 @@ impl ShellOverlayHost {
             &title,
             colors.text_primary,
             transform.pre_translate((panel.x0 + 24.0, panel.y0 + 20.0).into()),
-            Some(f64_to_f32_lossy(panel.width() - 140.0)),
+            Some(f32_of_f64(panel.width() - 140.0)),
             &title_style,
         );
         let (title_width, _) = text_renderer.measure_style(&title, None, &title_style);
@@ -22228,7 +22170,7 @@ impl ShellOverlayHost {
             &t("guide-reopen-hint"),
             colors.text_dim,
             transform.pre_translate((panel.x0 + 24.0, panel.y0 + 54.0).into()),
-            Some(f64_to_f32_lossy(panel.width() - 56.0)),
+            Some(f32_of_f64(panel.width() - 56.0)),
             &theme.text(TextRole::Caption),
         );
 
@@ -22309,7 +22251,7 @@ impl ShellOverlayHost {
                     &feedback,
                     colors.text_primary,
                     transform.pre_translate((body.x0, panel.y0 + 76.0).into()),
-                    Some(f64_to_f32_lossy(body.width())),
+                    Some(f32_of_f64(body.width())),
                     &theme.text(TextRole::Caption),
                 );
             }
@@ -22330,7 +22272,7 @@ impl ShellOverlayHost {
                     &t_args("guide-controller-intro", &[("guide", guide.into())]),
                     colors.text_primary,
                     transform.pre_translate((body.x0 + 104.0, body.y0 + 8.0).into()),
-                    Some(f64_to_f32_lossy(body.width() - 104.0)),
+                    Some(f32_of_f64(body.width() - 104.0)),
                     &theme.text(TextRole::Caption),
                 );
                 let one = |button| (vec![button], vec![button]);
@@ -22397,8 +22339,8 @@ impl ShellOverlayHost {
                 for (index, (label, (first, second))) in rows.iter().enumerate() {
                     let column = index.checked_div(per_column).unwrap_or(0);
                     let row = index.checked_rem(per_column).unwrap_or(index);
-                    let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
-                    let y = body.y0 + 66.0 + usize_to_f64_lossy(row) * row_step;
+                    let x = body.x0 + f64_of_usize(column) * (body.width() / 2.0);
+                    let y = body.y0 + 66.0 + f64_of_usize(row) * row_step;
                     text_renderer.draw_style(
                         scene,
                         &t(label),
@@ -22461,10 +22403,10 @@ impl ShellOverlayHost {
                 for (index, (label, gesture)) in gestures.iter().enumerate() {
                     let column = if narrow { 0 } else { index % 2 };
                     let row = if narrow { index } else { index / 2 };
-                    let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
+                    let x = body.x0 + f64_of_usize(column) * (body.width() / 2.0);
                     let y = body.y0
                         + if narrow { 36.0 } else { 52.0 }
-                        + usize_to_f64_lossy(row) * if narrow { 54.0 } else { 82.0 };
+                        + f64_of_usize(row) * if narrow { 54.0 } else { 82.0 };
                     text_renderer.draw_style(
                         scene,
                         &t(label),
@@ -22533,11 +22475,9 @@ impl ShellOverlayHost {
                     let column = index % 2;
                     let row = index / 2;
                     let column_width = (navigation_surface.width() - 36.0) / 2.0;
-                    let x = navigation_surface.x0
-                        + 14.0
-                        + usize_to_f64_lossy(column) * (column_width + 8.0);
-                    let y =
-                        navigation_surface.y0 + 31.0 + usize_to_f64_lossy(row) * navigation_step;
+                    let x =
+                        navigation_surface.x0 + 14.0 + f64_of_usize(column) * (column_width + 8.0);
+                    let y = navigation_surface.y0 + 31.0 + f64_of_usize(row) * navigation_step;
                     text_renderer.draw_style(
                         scene,
                         &t(label),
@@ -22648,8 +22588,8 @@ impl ShellOverlayHost {
                 let reference_top = essentials_y + 18.0;
                 let reference_gap = 12.0;
                 let reference_width = (body.width()
-                    - reference_gap * usize_to_f64_lossy(reference_columns.saturating_sub(1)))
-                    / usize_to_f64_lossy(reference_columns);
+                    - reference_gap * f64_of_usize(reference_columns.saturating_sub(1)))
+                    / f64_of_usize(reference_columns);
                 let reference_height = shortcut_reference_group_height(compact);
                 let group_titles = [
                     "guide-group-windows",
@@ -22657,8 +22597,7 @@ impl ShellOverlayHost {
                     "guide-group-capture",
                 ];
                 for (group_index, group_rows) in references.chunks(6).enumerate() {
-                    let x = body.x0
-                        + usize_to_f64_lossy(group_index) * (reference_width + reference_gap);
+                    let x = body.x0 + f64_of_usize(group_index) * (reference_width + reference_gap);
                     let group = Rect::new(
                         x,
                         reference_top,
@@ -22684,14 +22623,13 @@ impl ShellOverlayHost {
                         &t(group_title),
                         colors.text_dim,
                         transform.pre_translate((group.x0 + 12.0, group.y0 + 10.0).into()),
-                        Some(f64_to_f32_lossy(group.width() - 24.0)),
+                        Some(f32_of_f64(group.width() - 24.0)),
                         &theme
                             .text(TextRole::Caption)
                             .with_weight(TextWeight::Semibold),
                     );
                     for (row_index, (label, chord)) in group_rows.iter().enumerate() {
-                        let entry_y =
-                            group.y0 + 29.0 + usize_to_f64_lossy(row_index) * reference_step;
+                        let entry_y = group.y0 + 29.0 + f64_of_usize(row_index) * reference_step;
                         let chord_style = theme.text(TextRole::Caption);
                         let (chord_width, chord_height) =
                             text_renderer.measure_style(chord, None, &chord_style);
@@ -22707,7 +22645,7 @@ impl ShellOverlayHost {
                             label,
                             colors.text_primary,
                             transform.pre_translate((group.x0 + 12.0, entry_y).into()),
-                            Some(f64_to_f32_lossy(group.width() - 24.0)),
+                            Some(f32_of_f64(group.width() - 24.0)),
                             &chord_style,
                         );
                         scene.fill(
@@ -22722,7 +22660,7 @@ impl ShellOverlayHost {
                             chord,
                             colors.text_primary,
                             transform.pre_translate((pill.x0 + 6.0, pill.y0 + 3.0).into()),
-                            Some(f64_to_f32_lossy((pill.width() - 12.0).max(0.0))),
+                            Some(f32_of_f64((pill.width() - 12.0).max(0.0))),
                             &chord_style.clone().with_weight(TextWeight::Semibold),
                         );
                     }
@@ -22743,7 +22681,7 @@ impl ShellOverlayHost {
                         &t("guide-pointer"),
                         colors.text_primary,
                         transform.pre_translate((body.x0, pointer_y + 14.0).into()),
-                        Some(f64_to_f32_lossy(body.width())),
+                        Some(f32_of_f64(body.width())),
                         &theme.text(TextRole::Caption),
                     );
                     if let Some(summary) = shortcut_action_summary(shortcuts)
@@ -22754,7 +22692,7 @@ impl ShellOverlayHost {
                             &summary,
                             colors.text_primary,
                             transform.pre_translate((body.x0, pointer_y + 32.0).into()),
-                            Some(f64_to_f32_lossy(body.width())),
+                            Some(f32_of_f64(body.width())),
                             &theme.text(TextRole::Caption),
                         );
                     }
@@ -23281,7 +23219,7 @@ impl ShellOverlayHost {
         }
         let right = right_x - r;
         for (idx, person) in people.iter().take(shown).enumerate() {
-            let cx = right - usize_to_f64_lossy(slots.saturating_sub(1).saturating_sub(idx)) * step;
+            let cx = right - f64_of_usize(slots.saturating_sub(1).saturating_sub(idx)) * step;
             let (cr, cg, cb) = colors_for
                 .get(&person.id)
                 .copied()
@@ -23317,7 +23255,7 @@ impl ShellOverlayHost {
                 Some(ground),
             );
         }
-        right - usize_to_f64_lossy(slots.saturating_sub(1)) * step - r
+        right - f64_of_usize(slots.saturating_sub(1)) * step - r
     }
 
     /// Per-identity avatar colours for one room, matching that person's
@@ -23407,8 +23345,7 @@ impl ShellOverlayHost {
         let text_w = (marks_left - s3 - x0).max(40.0);
 
         let name_style = tokens.typography.style(TextRole::Heading);
-        let name =
-            text_renderer.elide_to_width_style(&card.name, f64_to_f32_lossy(text_w), &name_style);
+        let name = text_renderer.elide_to_width_style(&card.name, f32_of_f64(text_w), &name_style);
         let (_, name_h) = text_renderer.measure_style(&name, None, &name_style);
         let sub_style = tokens.typography.style(TextRole::Caption);
         // Who's in the room now outranks who could be; access is what
@@ -23418,7 +23355,7 @@ impl ShellOverlayHost {
         if let Some(shares) = tilo_desktop::overview::room_shares_label(card) {
             sub = format!("{sub} · {shares}");
         }
-        let sub = text_renderer.elide_to_width_style(&sub, f64_to_f32_lossy(text_w), &sub_style);
+        let sub = text_renderer.elide_to_width_style(&sub, f32_of_f64(text_w), &sub_style);
         let (_, sub_h) = text_renderer.measure_style(&sub, None, &sub_style);
         // Name and sub-line are one stack, `s1` apart, centred on the row.
         let line_gap = f64::from(tokens.spacing.s1);
@@ -23711,7 +23648,7 @@ impl ShellOverlayHost {
             );
             let title = text_renderer.elide_to_width_style(
                 &window.title,
-                f64_to_f32_lossy(bounds.width()),
+                f32_of_f64(bounds.width()),
                 &title_style,
             );
             text_renderer.draw_style(
@@ -23875,7 +23812,7 @@ impl ShellOverlayHost {
         let name = text_renderer.elide_to_width_weighted(
             &card.name,
             name_size,
-            f64_to_f32_lossy(name_avail),
+            f32_of_f64(name_avail),
             TextWeight::Bold,
         );
         let (name_w, name_h) =
@@ -24207,11 +24144,8 @@ impl ShellOverlayHost {
         let what_x = content.x0 + glyph + f64::from(tokens.spacing.s2);
         let what_avail =
             (content.x1 - f64::from(with_w) - f64::from(tokens.spacing.s3) - what_x).max(40.0);
-        let what = text_renderer.elide_to_width_style(
-            &share.what,
-            f64_to_f32_lossy(what_avail),
-            &body_style,
-        );
+        let what =
+            text_renderer.elide_to_width_style(&share.what, f32_of_f64(what_avail), &body_style);
         text_renderer.draw_style(
             scene,
             &what,
@@ -25117,7 +25051,7 @@ impl ShellOverlayHost {
 
     fn qs_device_row_rect(&self, index: usize) -> Rect {
         let panel = self.quick_settings_rect();
-        let y0 = panel.y0 + 78.0 + usize_to_f64_lossy(index) * 58.0;
+        let y0 = panel.y0 + 78.0 + f64_of_usize(index) * 58.0;
         Rect::new(panel.x0 + 12.0, y0, panel.x1 - 12.0, y0 + 52.0)
     }
 
@@ -25288,7 +25222,7 @@ impl ShellOverlayHost {
             &t("qs-bluetooth-move-note"),
             theme.tokens.colors.text_dim,
             transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
-            Some(f64_to_f32_lossy(panel.width() - 24.0)),
+            Some(f32_of_f64(panel.width() - 24.0)),
             &theme.text(TextRole::Caption),
         );
         let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
@@ -25356,7 +25290,7 @@ impl ShellOverlayHost {
                 &title,
                 theme.tokens.colors.text_primary,
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
-                Some(f64_to_f32_lossy(row.width() - 54.0)),
+                Some(f32_of_f64(row.width() - 54.0)),
                 &theme.text(TextRole::Label),
             );
             text_renderer.draw_style(
@@ -25364,7 +25298,7 @@ impl ShellOverlayHost {
                 &detail,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
-                Some(f64_to_f32_lossy(row.width() - 54.0)),
+                Some(f32_of_f64(row.width() - 54.0)),
                 &theme.text(TextRole::Caption),
             );
         }
@@ -25388,7 +25322,7 @@ impl ShellOverlayHost {
                 ),
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((panel.x0 + 12.0, panel.y1 - 14.0).into()),
-                Some(f64_to_f32_lossy(panel.width() - 24.0)),
+                Some(f32_of_f64(panel.width() - 24.0)),
                 &theme.text(TextRole::Caption),
             );
         }
@@ -25434,7 +25368,7 @@ impl ShellOverlayHost {
             &t("qs-devices-note"),
             theme.tokens.colors.text_dim,
             transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
-            Some(f64_to_f32_lossy(panel.width() - 24.0)),
+            Some(f32_of_f64(panel.width() - 24.0)),
             &theme.text(TextRole::Caption),
         );
         let realtime = self
@@ -26095,7 +26029,7 @@ impl ShellOverlayHost {
                 &title,
                 text_color,
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
-                Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
+                Some(f32_of_f64(row.width() - 54.0 - trailing)),
                 &theme.text(TextRole::Label),
             );
             text_renderer.draw_style(
@@ -26107,7 +26041,7 @@ impl ShellOverlayHost {
                     theme.tokens.colors.text_dim
                 },
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
-                Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
+                Some(f32_of_f64(row.width() - 54.0 - trailing)),
                 &theme.text(TextRole::Caption),
             );
             if tethering_consent
@@ -26281,7 +26215,7 @@ impl ShellOverlayHost {
                 &position,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((panel.x0 + 12.0, panel.y1 - 22.0).into()),
-                Some(f64_to_f32_lossy(panel.width() - 24.0)),
+                Some(f32_of_f64(panel.width() - 24.0)),
                 &theme.text(TextRole::Caption),
             );
         }
@@ -26290,7 +26224,7 @@ impl ShellOverlayHost {
     fn qs_clipboard_row_rect(&self, visible_index: usize) -> Rect {
         const ROW_HEIGHT: f64 = 70.0;
         let panel = self.quick_settings_rect();
-        let y0 = panel.y0 + 76.0 + usize_to_f64_lossy(visible_index) * ROW_HEIGHT;
+        let y0 = panel.y0 + 76.0 + f64_of_usize(visible_index) * ROW_HEIGHT;
         Rect::new(panel.x0 + 12.0, y0, panel.x1 - 12.0, y0 + ROW_HEIGHT - 6.0)
     }
 
@@ -26326,7 +26260,7 @@ impl ShellOverlayHost {
                 theme.tokens.colors.text_primary
             },
             transform.pre_translate((search.x0 + 9.0, search.y0 + 5.0).into()),
-            Some(f64_to_f32_lossy(search.width() - 18.0)),
+            Some(f32_of_f64(search.width() - 18.0)),
             &theme.text(TextRole::Caption),
         );
     }
@@ -26450,7 +26384,7 @@ impl ShellOverlayHost {
                 &preview,
                 colors.text_primary,
                 transform.pre_translate((body.x0 + 12.0, body.y0 + 14.0).into()),
-                Some(f64_to_f32_lossy(body.width() - 24.0)),
+                Some(f32_of_f64(body.width() - 24.0)),
                 &theme.text(TextRole::Label),
             );
             let source = clipboard_history_source_label(item, fabric.as_ref());
@@ -26468,7 +26402,7 @@ impl ShellOverlayHost {
                 &detail,
                 colors.text_dim,
                 transform.pre_translate((body.x0 + 12.0, body.y0 + 40.0).into()),
-                Some(f64_to_f32_lossy(body.width() - 24.0)),
+                Some(f32_of_f64(body.width() - 24.0)),
                 &theme.text(TextRole::Caption),
             );
             Button::paint(

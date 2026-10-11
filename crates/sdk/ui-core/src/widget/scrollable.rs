@@ -1,3 +1,4 @@
+use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::cell::Cell;
@@ -53,19 +54,6 @@ const LINE_STEP: f32 = 48.0;
 const PAGE_FRACTION: f32 = crate::widget::scrollbar::PAGE_FRACTION as f32;
 const HOLD_INITIAL_MS: u64 = 300;
 const HOLD_REPEAT_MS: u64 = 55;
-
-/// Narrows a viewport/layout coordinate to `f32` for vello/taffy, which use
-/// `f32` throughout. Every call site here is a screen-space pixel value,
-/// always well within `f32` range, so only harmless precision loss is
-/// possible.
-#[inline]
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space px value, always well within f32 range"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
-}
 
 /// `Instant + Duration` can panic on overflow; the fallback (keep `from`
 /// unchanged) is unreachable outside decades of continuous uptime and just
@@ -544,7 +532,10 @@ impl Scrollable {
     /// [`Scrollable::set_content_size`].
     pub fn set_viewport_rect(&mut self, rect: Rect) {
         self.rect = rect;
-        self.set_viewport_size(px(rect.width().max(0.0)), px(rect.height().max(0.0)));
+        self.set_viewport_size(
+            f32_of_f64(rect.width().max(0.0)),
+            f32_of_f64(rect.height().max(0.0)),
+        );
     }
 
     pub fn draw_bar_overlay(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
@@ -884,9 +875,9 @@ impl Scrollable {
             return;
         }
         if hold.vertical {
-            self.scroll_by(0.0, px(hold.dir) * page);
+            self.scroll_by(0.0, f32_of_f64(hold.dir) * page);
         } else {
-            self.scroll_by(px(hold.dir) * page, 0.0);
+            self.scroll_by(f32_of_f64(hold.dir) * page, 0.0);
         }
     }
 
@@ -1011,7 +1002,7 @@ impl Scrollable {
             if let Some(track) = self.vertical_track()
                 && let Some(target) = self.vbar.drag_to(track, self.v_metrics(), cur)
             {
-                self.scroll_by(0.0, px(target) - self.offset_y);
+                self.scroll_by(0.0, f32_of_f64(target) - self.offset_y);
             }
             return CursorMoveOutcome::DragConsumed;
         }
@@ -1019,7 +1010,7 @@ impl Scrollable {
             if let Some(track) = self.horizontal_track()
                 && let Some(target) = self.hbar.drag_to(track, self.h_metrics(), cur)
             {
-                self.scroll_by(px(target) - self.offset_x, 0.0);
+                self.scroll_by(f32_of_f64(target) - self.offset_x, 0.0);
             }
             return CursorMoveOutcome::DragConsumed;
         }
@@ -1062,7 +1053,7 @@ impl Scrollable {
                 }
                 PressOutcome::Page(target) => {
                     let dir = (target - f64::from(self.offset_y)).signum();
-                    self.scroll_by(0.0, px(target) - self.offset_y);
+                    self.scroll_by(0.0, f32_of_f64(target) - self.offset_y);
                     if dir != 0.0 {
                         self.hold = Some(TrackHold {
                             vertical: true,
@@ -1085,7 +1076,7 @@ impl Scrollable {
                 }
                 PressOutcome::Page(target) => {
                     let dir = (target - f64::from(self.offset_x)).signum();
-                    self.scroll_by(px(target) - self.offset_x, 0.0);
+                    self.scroll_by(f32_of_f64(target) - self.offset_x, 0.0);
                     if dir != 0.0 {
                         self.hold = Some(TrackHold {
                             vertical: false,
@@ -1157,7 +1148,7 @@ impl Scrollable {
                     let release = self.kinetic.release(crate::time::now());
                     return match release {
                         Some((vx, vy)) if !self.reduce_motion_active => {
-                            self.fling(px(vx), px(vy));
+                            self.fling(f32_of_f64(vx), f32_of_f64(vy));
                             true
                         }
                         _ => false,
@@ -1177,9 +1168,10 @@ impl Scrollable {
         self.fling(0.0, 0.0);
         let (mut dx, mut dy) = match delta {
             MouseScrollDelta::LineDelta(x, y) => (*x * -LINE_PX, *y * -LINE_PX),
-            MouseScrollDelta::PixelDelta(pp) => {
-                (-px(pp.x / scale_factor), -px(pp.y / scale_factor))
-            }
+            MouseScrollDelta::PixelDelta(pp) => (
+                -f32_of_f64(pp.x / scale_factor),
+                -f32_of_f64(pp.y / scale_factor),
+            ),
         };
         if shift && self.axis_has_horizontal() && dx == 0.0 {
             dx = dy;
@@ -1553,7 +1545,7 @@ impl Widget for Scrollable {
                 // always reaches the real last pixel.
                 let scroll_origin_y = self.rect.y0 - f64::from(self.offset_y);
                 let max_y = max_bottom_edge(c.as_ref());
-                let walked_h = px((max_y - scroll_origin_y).max(0.0));
+                let walked_h = f32_of_f64((max_y - scroll_origin_y).max(0.0));
                 if walked_h > self.content_h {
                     self.content_h = walked_h;
                 }
@@ -1584,10 +1576,10 @@ impl Widget for Scrollable {
                 self.last_focus_path = path;
                 if let Some((_, rect)) = focus {
                     self.scroll_into_view(
-                        px(rect.x0 - self.rect.x0) + self.offset_x,
-                        px(rect.y0 - self.rect.y0) + self.offset_y,
-                        px(rect.width()),
-                        px(rect.height()),
+                        f32_of_f64(rect.x0 - self.rect.x0) + self.offset_x,
+                        f32_of_f64(rect.y0 - self.rect.y0) + self.offset_y,
+                        f32_of_f64(rect.width()),
+                        f32_of_f64(rect.height()),
                     );
                     let clip = self.content_viewport_rect();
                     if let (Some(child), Some(node)) = (&mut self.child, self.child_node) {
