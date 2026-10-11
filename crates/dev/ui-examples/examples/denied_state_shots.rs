@@ -3,7 +3,7 @@
 //!
 //! Each row draws the same control twice — once through a permissive
 //! [`PermissionContext`] and once through one that grants nothing — via the
-//! real `draw_with_presence` path, which is where the scrim is applied. What
+//! real `draw` path, which is where the scrim is applied. What
 //! the PNG shows is therefore the production denied state, not a mock of it.
 //!
 //! Both a neutral control (primary text on the card) and an accent-filled one
@@ -78,14 +78,10 @@ fn stamp(
         )
         .map_err(|error| format!("layout failed: {error}"))?;
     widget.apply_layout(&taffy, node, origin);
-    widget.draw_with_presence(
-        scene,
-        Affine::IDENTITY,
-        tr,
-        theme,
-        &PresenceCtx::default(),
-        permissions,
-    );
+    let presence = PresenceCtx::default();
+    presence.with_permissions(permissions.clone(), || {
+        widget.draw(scene, Affine::IDENTITY, tr, theme, &presence);
+    });
     Ok(())
 }
 

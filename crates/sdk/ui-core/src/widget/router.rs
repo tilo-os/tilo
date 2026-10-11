@@ -7,13 +7,10 @@ use std::rc::Rc;
 
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 
 use crate::gesture::NavDirection;
 use crate::nav_stack::NavStack;
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 use super::{Element, TaffyTreeExt, Widget};
@@ -458,25 +455,6 @@ impl Widget for Router {
 
     fn restore_dev_route(&mut self, route: &RouteSnapshot) -> bool {
         self.handle.adopt_stack(route).unwrap_or(false)
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 

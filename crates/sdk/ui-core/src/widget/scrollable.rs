@@ -1627,42 +1627,9 @@ impl Widget for Scrollable {
         );
         let previous_viewport = presence.push_viewport(self.content_viewport_rect());
         if let Some(c) = &mut self.child {
-            c.draw(scene, transform, tr, theme, presence);
+            crate::widget::draw_child(c.as_mut(), scene, transform, tr, theme, presence);
         }
         presence.pop_viewport(previous_viewport);
-        scene.pop_layer();
-        self.draw_edge_fades(scene, transform, theme);
-        self.draw_scrollbars(scene, transform, theme);
-    }
-
-    /// Overridden so the inner viewport is set to this scrollable's clip
-    /// rect — otherwise content past the edge would still emit primitives
-    /// the `push_layer` above merely clips away, defeating the cull check.
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.reduce_motion_active = theme.reduce_motion;
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            transform,
-            &self.paint_clip_rect(theme),
-        );
-        let prev_vp = presence.push_viewport(self.content_viewport_rect());
-        if let Some(c) = &mut self.child {
-            c.draw_with_presence(scene, transform, tr, theme, presence, permissions);
-        }
-        presence.pop_viewport(prev_vp);
         scene.pop_layer();
         self.draw_edge_fades(scene, transform, theme);
         self.draw_scrollbars(scene, transform, theme);
@@ -2281,7 +2248,7 @@ mod tests {
         {
             let observed = Rc::new(Cell::new(None));
             let mut scroll = Scrollable::new_vertical().with_child(Box::new(EventSpy {
-                rect: Rect::ZERO,
+                rect: Rect::new(20.0, 30.0, 420.0, 330.0),
                 pointer_events: Rc::default(),
                 activations: Rc::default(),
                 draw_viewport: observed.clone(),
