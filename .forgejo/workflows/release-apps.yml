@@ -49,6 +49,10 @@ on:
       - ".forgejo/workflows/release-apps.yml"
   workflow_dispatch:
     inputs:
+      recover_97894:
+        description: "Reuse only pinned run97894 archives; no builds or reruns. Publish defaults false."
+        type: boolean
+        default: false
       signal_provider_only:
         description: "Publish only Signal's optional service and runtime using existing authorities; main, x86_64 and publish=true required."
         type: boolean
@@ -237,7 +241,7 @@ jobs:
             sh -c 'python3 -I tools/ci/python.py tools/app_packaging_qualification.py --preflight && printf "coordinator preguard accepted exact source closure\n"'
 
   plan:
-    if: "!startsWith(github.ref, 'refs/tags/')"
+    if: "!startsWith(github.ref, 'refs/tags/') && github.event.inputs.recover_97894 != 'true'"
     needs: coordinator-preguard
     runs-on: runner-quality
     timeout-minutes: 15
@@ -1117,3 +1121,80 @@ jobs:
           TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
           ENGINE_ARCHITECTURES: ${{ needs.plan.outputs.matrix }}
         run: tools/apps/publish-browser-runtime.sh
+
+  recover-publication-97894:
+    # Same protected workflow/audience as normal publication. The source and
+    # archive IDs/digests are reviewed constants, never dispatch parameters.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.recover_97894 == 'true'
+    runs-on: runner-native-portable
+    container:
+      image: registry.tilo.so/tilo/tilo-release-tools@sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa
+    timeout-minutes: 60
+    enable-openid-connect: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Preserve and bind original successful build artifacts without rerunning
+        env:
+          FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ $GITHUB_REF == refs/heads/main && $GITHUB_EVENT_NAME == workflow_dispatch ]]
+          [[ $(git rev-parse HEAD) == "$GITHUB_SHA" ]]
+          python3 -I tools/ci/python.py tools/apps/recover_app_publication.py prepare             --manifest tools/apps/publication-recovery-97894.json             --preserved "$RUNNER_TEMP/recovery-97894" --release release
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: preserved-publication-97894
+          path: ${{ runner.temp }}/recovery-97894
+          if-no-files-found: error
+          retention-days: 30
+      - name: Verify original signed packages with independently provisioned policy
+        env:
+          FINAL_RECEIPT_POLICY: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY }}
+          FINAL_RECEIPT_POLICY_SHA256: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY_SHA256 }}
+          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$FINAL_RECEIPT_POLICY" > "$RUNNER_TEMP/recovery-policy.json"
+          python3 -I tools/ci/python.py tools/apps/recover_app_publication.py verify             --manifest tools/apps/publication-recovery-97894.json --release release             --policy "$RUNNER_TEMP/recovery-policy.json" --policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256"             --tools "$RUNNER_TEMP/recovery-verifiers"
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: publication-97894-verification
+          path: release/recovery-verification.json
+          if-no-files-found: error
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: github.event.inputs.publish == 'true'
+        with:
+          ref: 919dfbd901dff103b79e3d0fdef9f4af4b2e24c5
+          path: original-source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Recover exact immutable publication after verification
+        # Operator keeps any namespace hold intact: do not dispatch publish=true
+        # until its scope is reconciled. No key, policy or grant is created here.
+        if: github.event.inputs.publish == 'true'
+        env:
+          MAIN_AUDIENCE: ${{ vars.TILO_APP_RELEASE_MAIN_AUDIENCE }}
+          TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
+          TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}
+          TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+          TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
+          VERSION: 0.0.0-919dfbd901dff103b79e3d0fdef9f4af4b2e24c5
+          COLLECTION: default
+          COMPLETE: 'true'
+          VERIFY_FINAL_RECEIPT: 'false'
+        run: |
+          set -euo pipefail
+          test -s release/recovery-verification.json
+          [[ $(git -C original-source rev-parse HEAD) == 919dfbd901dff103b79e3d0fdef9f4af4b2e24c5 ]]
+          # Availability is a prerequisite, never permission to drop stage or
+          # accept an invalid snapshot. Normal publisher validates its contents.
+          curl --fail --silent --show-error --connect-timeout 10 --max-time 30             "${TILO_REGISTRY_URL%/}/entries" --output "$RUNNER_TEMP/recovery-catalogue.json"
+          jq -e '.entries | type == "array"' "$RUNNER_TEMP/recovery-catalogue.json" >/dev/null
+          mv release original-source/release
+          cd original-source
+          export GITHUB_SHA=919dfbd901dff103b79e3d0fdef9f4af4b2e24c5
+          tools/apps/publish-collections.sh
