@@ -1546,3 +1546,9 @@ by = "tools/tests/test_android_fixture_resources.py"
 [[unrequired]]
 suite = "os/tests/flatpak_default_initialization_test.py"
 reason = "requires native Flatpak, GPG and bubblewrap user namespaces; the digest-pinned ci-fast image has no Flatpak; run explicitly with python3 os/tests/flatpak_default_initialization_test.py, failing when prerequisites are absent"
+
+[[cargo]]
+package = "install"
+# Real signed runtime installation is checked against its broker service grants.
+inputs = ["crates/packaging/app-host/systemd/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-app-host.service"]
+readers = ["crates/packaging/install/tests/runtime_package.rs"]
