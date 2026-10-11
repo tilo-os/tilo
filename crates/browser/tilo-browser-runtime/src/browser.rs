@@ -2490,22 +2490,6 @@ pub fn desktop_apply_tree(id: u64, tree: &str) -> Result<(), JsValue> {
     })
 }
 
-/// The desktop's current tree as `DesktopTree` JSON, for peers; `None` for
-/// a single-application mount.
-///
-/// # Errors
-///
-/// Rejects a closed mount or a failure to serialize the tree.
-#[wasm_bindgen]
-pub fn desktop_tree(id: u64) -> Result<Option<String>, JsValue> {
-    with_mount(id, |m| {
-        m.desktop
-            .as_ref()
-            .map(|d| d.handle.read(serde_json::to_string).map_err(error))
-            .transpose()
-    })
-}
-
 /// A room member's presence from the page's live layer: `publisher` (the
 /// member's device, hex) with its participant `label`, `kind` (`person` or
 /// `agent`) and `color` (`#rrggbb`), and its caret or selection as the live
