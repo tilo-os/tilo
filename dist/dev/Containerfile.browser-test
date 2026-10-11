@@ -1,0 +1,12 @@
+# A browser qualification image, derived from an existing immutable Tilo builder.
+# Fedora's signed package retains Chromium's packaged sandbox and license files.
+# No browser sandbox flags, extra capabilities or host devices are added here.
+FROM registry.tilo.so/tilo/tilo-builder@sha256:a6c837087b34284966df94feb21b02686ed684cd5df84de7f1b7ce8d52acfabe
+
+RUN dnf install -y --setopt=install_weak_deps=False chromium-154.0.8037.97-1.fc44 \
+    && dnf clean all \
+    && if ! getent passwd 1000 >/dev/null; then useradd --uid 1000 --create-home browser-test; fi \
+    && install -d -o 1000 -g 1000 /home/browser-test
+
+USER 1000:1000
+ENV HOME=/home/browser-test

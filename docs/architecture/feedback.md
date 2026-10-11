@@ -336,6 +336,18 @@ uses synthetic bytes and a throwaway profile; it exercises reload, exact-write
 failure, retry, deletion, corruption and bounded readback. A compiled probe is
 not evidence that this browser journey ran or that live capture is enabled.
 
+`dist/dev/Containerfile.browser-test` adds an exact signed Fedora Chromium
+package to an existing immutable builder, preserving the packaged sandbox and
+license files. Use a scoped rcargo configuration with that Containerfile and
+`container_args = ["--userns=keep-id"]`; it runs as UID 1000 without the ordinary
+OS-build capability/device additions. Keep default seccomp and Chromium's
+sandbox enabled. The fixture does not need WebGPU, so it omits that helper's
+unsafe-WebGPU option. Its throwaway profile also owns Chrome's HOME/config/cache.
+Before testing content, it requires Chromium's own `chrome://sandbox` report
+to attest both the namespace and seccomp layers. Missing or disabled sandboxes
+fail qualification. The same browser journey then checks all fifteen custody
+assertions. Startup failures clean up their exact owned process and profile.
+
 `FocusedCapture` implements the existing capture interface over a host-supplied
 focused renderer source. Construction starts no readback. An explicit request
 checks complete classified geometry and protection before reading exactly one

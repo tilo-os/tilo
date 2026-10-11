@@ -67,7 +67,7 @@ function chromeBinary() {
 }
 
 /** A headless browser on a fresh profile. */
-export async function launch({args = []} = {}) {
+export async function launch({args = [], webgpu = true} = {}) {
   const profile = mkdtempSync(join(tmpdir(), 'tilo-chrome-'));
   const child = spawn(chromeBinary(), [
     '--headless=new',
@@ -75,23 +75,47 @@ export async function launch({args = []} = {}) {
     `--user-data-dir=${profile}`,
     '--no-first-run',
     '--no-default-browser-check',
-    '--enable-unsafe-webgpu',
+    ...(webgpu ? ['--enable-unsafe-webgpu'] : []),
     // Tabs a test drives in turn must not be throttled as background tabs.
     '--disable-background-timer-throttling',
     '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows',
     ...args,
     'about:blank',
-  ], {stdio: ['ignore', 'ignore', 'pipe']});
-  const endpoint = await new Promise((resolve, reject) => {
-    let buffered = '';
-    child.stderr.on('data', chunk => {
-      buffered += chunk;
-      const match = buffered.match(/DevTools listening on (ws:\/\/\S+)/);
-      if (match) resolve(match[1]);
-    });
-    child.on('exit', code => reject(new Error(`Chrome exited (${code}): ${buffered.slice(-400)}`)));
+  ], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+    // The admitted non-root runner's Cargo HOME need not be browser-writable.
+    // Keep crashpad/config/cache in this launch's disposable profile too.
+    env: {...process.env, HOME: profile, XDG_CONFIG_HOME: join(profile, 'config'), XDG_CACHE_HOME: join(profile, 'cache')},
   });
+  let endpoint;
+  try {
+    endpoint = await new Promise((resolve, reject) => {
+      let buffered = '';
+      const deadline = setTimeout(() => reject(new Error('Chrome startup timed out')), 45_000);
+      const finish = callback => value => {clearTimeout(deadline); callback(value);};
+      child.stderr.on('data', chunk => {
+        buffered += chunk;
+        const match = buffered.match(/DevTools listening on (ws:\/\/\S+)/);
+        if (match) finish(resolve)(match[1]);
+      });
+      child.once('error', finish(reject));
+      child.once('exit', code => finish(reject)(new Error(`Chrome exited (${code}): ${buffered.slice(-400)}`)));
+    });
+  } catch (error) {
+    // This exact child and profile belong to this launch, including failures
+    // before a caller can receive a browser handle and close it.
+    if (child.pid && child.exitCode === null && child.signalCode === null) {
+      await new Promise(resolve => {
+        child.once('close', resolve);
+        const deadline = setTimeout(() => child.kill('SIGKILL'), 2_000);
+        child.once('close', () => clearTimeout(deadline));
+        child.kill('SIGTERM');
+      });
+    }
+    rmSync(profile, {recursive: true, force: true});
+    throw error;
+  }
   const ws = new WebSocket(endpoint);
   await new Promise((resolve, reject) => {
     ws.addEventListener('open', resolve, {once: true});
