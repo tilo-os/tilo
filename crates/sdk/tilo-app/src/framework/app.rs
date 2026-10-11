@@ -554,7 +554,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     editing: Editing,
     storage: AppStorage,
     hosted: super::settings::Hosted,
-) -> ResourceRoot<A::Resource> {
+) -> ResourceRoot {
     let app = hooks::<A>();
     // History names this app's fields by their titles.
     if let Some(shape) = <A::Resource as Resource>::shape() {
@@ -785,12 +785,12 @@ fn open_root<A: ResourceApp>(
         Err(reason) => return Ok(Err(reason)),
     };
     let root = build_root::<A>(reader, editing, context.storage(), hosted(context));
-    {
-        let record = root.live().get();
+    if let Some(typed) = root.typed::<A::Resource>() {
+        let record = typed.live.get();
         let launch = root.launch().with_record(&*record);
         if !capture || !launch.is_empty() {
             for invoke in A::launch(&launch, created) {
-                root.dispatcher().submit(invoke);
+                typed.dispatch.submit(invoke);
             }
         }
     }

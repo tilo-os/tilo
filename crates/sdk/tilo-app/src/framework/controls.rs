@@ -397,11 +397,6 @@ impl<R: Resource> Actions<R> {
         ))
     }
 
-    /// Follow the canonical publication of this same hosted resource.
-    pub(crate) fn update(&self, published: tilo_actions::Resource) {
-        self.table.update(published);
-    }
-
     /// The table these actions bind from, which follows the publication
     /// whatever the resource's type.
     pub(crate) fn table(&self) -> ActionTable {

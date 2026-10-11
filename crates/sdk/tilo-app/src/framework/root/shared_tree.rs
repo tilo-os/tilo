@@ -6,12 +6,14 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use tilo_resource::Resource;
+use std::any::Any;
+
 use tilo_resource::items::{ItemAction, ItemCollection};
 use ui_core::automerge::AutoCommit;
 use ui_core::published::{SharedChildren, SharedResource};
 
 use super::super::rows::outside_document;
+use super::typed::ResourceType;
 use super::{Decoration, ResourceRoot, mark_document_jobs, offer_item_open, open_spec};
 
 /// The document-owned tree at one live revision, locale and
@@ -48,20 +50,20 @@ pub(super) struct PublishedChildren {
     published: SharedChildren,
 }
 
-impl<R: Resource> ResourceRoot<R> {
+impl ResourceRoot {
     /// The document-owned tree of `state`: [`tilo_resource::publish`],
     /// sharing every item child whose collection, id and label are the ones
     /// it was built with. Cached per live revision when `state` is the live
     /// state and the resource opts in ([`Resource::publication_cache_epoch`]);
     /// a version the view has not synced yet is built afresh (sharing the
     /// items all the same).
-    pub(super) fn shared_document_tree(&self, state: &R::State) -> SharedResource {
-        let live = std::ptr::eq(Rc::as_ptr(&self.live.get()), state);
-        let Some(epoch) = R::publication_cache_epoch(state).filter(|_| live) else {
+    pub(super) fn shared_document_tree(&self, state: &dyn Any) -> SharedResource {
+        let live = std::ptr::addr_eq(Rc::as_ptr(&self.typed.state()), state);
+        let Some(epoch) = self.typed.cache_epoch(state).filter(|_| live) else {
             return self.build_document_tree(state, live);
         };
         let revision = (
-            self.live.revision(),
+            self.typed.revision(),
             ui_core::i18n::I18nManager::revision(),
             epoch,
         );
@@ -83,9 +85,9 @@ impl<R: Resource> ResourceRoot<R> {
 
     /// The document-owned tree of `state`; `live` when it is the live
     /// state, whose items the next version shares.
-    fn build_document_tree(&self, state: &R::State, live: bool) -> SharedResource {
+    fn build_document_tree(&self, state: &dyn Any, live: bool) -> SharedResource {
         let _profile = tilo_resource::profiling::Phase::start("framework.resource_tree");
-        let parts = R::children_parts(state);
+        let parts = self.typed.children_parts(state);
         let items = self.item_children(parts.items, &parts.item_actions, live);
         let children = if parts.others.is_empty() {
             items
@@ -99,8 +101,9 @@ impl<R: Resource> ResourceRoot<R> {
                     .collect(),
             )
         };
-        let head =
-            tilo_resource::publish_head::<R>(self.dispatch.resource_id(), &self.label, state);
+        let head = self
+            .typed
+            .head(self.dispatch.resource_id(), &self.label, state);
         SharedResource::new(head, children)
     }
 
@@ -123,7 +126,7 @@ impl<R: Resource> ResourceRoot<R> {
         if let Some(last) = memo.as_ref().filter(|last| last.collections == collections) {
             return last.children.clone();
         }
-        let children = build_items::<R>(memo.as_ref(), &collections, actions);
+        let children = build_items(&self.resource, memo.as_ref(), &collections, actions);
         if keep {
             *memo = Some(ItemChildren {
                 i18n,
@@ -136,7 +139,7 @@ impl<R: Resource> ResourceRoot<R> {
 
     /// The view operation types of the nested resources of the live state.
     pub(super) fn nested_views(&self) -> Rc<HashSet<String>> {
-        let revision = self.live.revision();
+        let revision = self.typed.revision();
         if let Some(pinned) = self
             .nested_views
             .borrow()
@@ -145,15 +148,15 @@ impl<R: Resource> ResourceRoot<R> {
         {
             return Rc::clone(&pinned.views);
         }
-        let tree = self.shared_document_tree(&self.live.get());
+        let tree = self.shared_document_tree(&*self.typed.state());
         self.keep_nested_views(revision, tree.children())
     }
 
     /// Answer the nested views of `state`, a version the view has not
     /// synced yet, until the live revision moves.
-    pub(super) fn pin_nested_views(&self, state: &R::State) {
+    pub(super) fn pin_nested_views(&self, state: &dyn Any) {
         let tree = self.shared_document_tree(state);
-        self.keep_nested_views(self.live.revision(), tree.children());
+        self.keep_nested_views(self.typed.revision(), tree.children());
     }
 
     fn keep_nested_views(&self, revision: u64, children: &SharedChildren) -> Rc<HashSet<String>> {
@@ -182,17 +185,17 @@ impl<R: Resource> ResourceRoot<R> {
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
     ) -> Option<Vec<SharedResource>> {
-        if participant.is_some() || self.live.unreadable().is_some() {
+        if participant.is_some() || self.typed.unreadable().is_some() {
             return None;
         }
         let surface = self.has_surface();
-        let current = if self.live.follows(doc) {
+        let current = if self.typed.follows(doc) {
             None
         } else {
-            Some(R::read(doc).ok()?)
+            Some(self.typed.read(doc).ok()?)
         };
-        let live = self.live.get();
-        let state = current.as_ref().unwrap_or(&*live);
+        let live = self.typed.state();
+        let state: &dyn Any = &**current.as_ref().unwrap_or(&live);
         let opens = self.stages.opens();
         let root = {
             let _profile = tilo_resource::profiling::Phase::start("framework.publication");
@@ -205,7 +208,7 @@ impl<R: Resource> ResourceRoot<R> {
             if current.is_some() {
                 // As `current_publication`: nested views follow this state
                 // until the view syncs to it.
-                self.keep_nested_views(self.live.revision(), tree.children());
+                self.keep_nested_views(self.typed.revision(), tree.children());
             }
             let mut head =
                 self.decorate_publication(state, tree.head().clone(), Decoration::Actions);
@@ -220,7 +223,7 @@ impl<R: Resource> ResourceRoot<R> {
                         .cloned()
                         .chain(records.into_iter().map(|mut record| {
                             if opens {
-                                offer_item_open::<R>(&mut record);
+                                offer_item_open(self.resource.item_of, &mut record);
                             }
                             SharedResource::from_resource(record)
                         }))
@@ -256,7 +259,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// as [`Self::decorate_publication`] and `resources_for` add them to the
     /// whole tree. A child the last publication carried is that very node.
     fn published_children(&self, document: &SharedChildren, opens: bool) -> SharedChildren {
-        let adds = (opens, self.effects.has_causal_drains());
+        let adds = (opens, self.typed.has_causal_drains());
         if adds == (false, false) {
             return document.clone();
         }
@@ -288,7 +291,7 @@ impl<R: Resource> ResourceRoot<R> {
                                     mark_document_jobs(&mut resource);
                                 }
                                 if adds.0 {
-                                    offer_item_open::<R>(&mut resource);
+                                    offer_item_open(self.resource.item_of, &mut resource);
                                 }
                                 SharedResource::from_resource(resource)
                             },
@@ -329,7 +332,7 @@ impl<R: Resource> ResourceRoot<R> {
         self.surfaces(&mut |surface| {
             head_only = head_only
                 && surface.live_rows().is_empty()
-                && all.iter().all(|id| surface.row_declarations(id).is_empty());
+                && all.iter().all(|id| !surface.offers_on_row(id));
         });
         head_only
     }
@@ -338,7 +341,8 @@ impl<R: Resource> ResourceRoot<R> {
 /// The item children of `collections`, each the one `last` holds for its
 /// item while its label is unchanged: by position when the items are the
 /// same ones in the same order, else by id.
-fn build_items<R: Resource>(
+fn build_items(
+    resource: &ResourceType,
     last: Option<&ItemChildren>,
     collections: &[ItemCollection],
     actions: &[ItemAction],
@@ -354,24 +358,20 @@ fn build_items<R: Resource>(
             .collect()
     };
     let mut children = Vec::with_capacity(last_children.len());
-    tilo_resource::items::for_each_item_child::<R>(
-        collections,
-        actions,
-        &mut |collection, id, label, build| {
-            let kept = if in_place {
-                last_children.get(children.len())
-            } else {
-                by_id
-                    .get(tilo_resource::items::item_child_id::<R>(collection, id).as_str())
-                    .copied()
-            };
-            children.push(
-                kept.filter(|child| child.head().label == label)
-                    .cloned()
-                    .unwrap_or_else(|| SharedResource::from_resource(build())),
-            );
-        },
-    );
+    (resource.items)(collections, actions, &mut |collection, id, label, build| {
+        let kept = if in_place {
+            last_children.get(children.len())
+        } else {
+            by_id
+                .get((resource.item_id)(collection, id).as_str())
+                .copied()
+        };
+        children.push(
+            kept.filter(|child| child.head().label == label)
+                .cloned()
+                .unwrap_or_else(|| SharedResource::from_resource(build())),
+        );
+    });
     SharedChildren::new(children)
 }
 
@@ -557,13 +557,13 @@ mod tests {
     fn kept_tree(app: &mut TestApp<BoardApp>) -> SharedResource {
         let doc = app.read_document(Clone::clone);
         app.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<Board>| {
-                let state = root.live.get();
-                let kept = root.shared_document_tree(&state);
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                let state = root.typed::<Board>().expect("a board").live.get();
+                let kept = root.shared_document_tree(&*state);
                 let fresh = tilo_resource::publish::<Board>(
                     root.dispatch.resource_id(),
                     &root.label,
-                    &state,
+                    &*state,
                 );
                 assert_eq!(
                     outline(&kept.to_resource()),
@@ -625,7 +625,8 @@ mod tests {
                     "an unsynced version's document tree"
                 );
                 assert!(
-                    root.shared_document_tree(&root.live.get()).ptr_eq(&kept),
+                    root.shared_document_tree(&*root.typed.state())
+                        .ptr_eq(&kept),
                     "the live tree is the one kept for this revision"
                 );
                 kept

@@ -534,7 +534,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                 *pending.borrow_mut() = Some(scenario.map(str::to_owned));
             }),
         );
-        Box::new(host)
+        super::surface::HostedSurface::element(Box::new(host))
     }
 
     /// Answer the effect vocabulary `E` — work with no document delta that a
