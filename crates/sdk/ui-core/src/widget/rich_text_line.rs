@@ -85,6 +85,9 @@ pub(super) enum ImagePreview {
     Present {
         dimensions: Option<(u32, u32)>,
         editing: bool,
+        /// The tallest the preview may be, in logical pixels: a share of the
+        /// host's visible height, so a tall picture never fills the editor.
+        max_height: Option<u32>,
     },
 }
 
@@ -988,6 +991,7 @@ impl Widget for RichTextLine {
         if let ImagePreview::Present {
             dimensions,
             editing,
+            max_height,
         } = self.image_preview
         {
             let width = known
@@ -1011,13 +1015,19 @@ impl Widget for RichTextLine {
                 reason = "bounded image pixel dimensions are converted to the f32 layout coordinate space"
             )]
             // The image stands on the editor's content edge, inside the
-            // line's text inset on both sides, at its native aspect.
+            // line's text inset on both sides, at its native aspect, and
+            // never taller than its share of the visible height: a capped
+            // picture is painted narrower, its aspect kept.
             let pad = self.text_inset(&self.measurement_theme) as f32;
             let image_width = (width - 2.0 * pad).max(1.0);
-            let preview_height = dimensions.map_or(
-                220.0 * self.measurement_theme.text_scale,
-                |(image_w, image_h)| image_width * image_h.max(1) as f32 / image_w.max(1) as f32,
-            );
+            let preview_height = dimensions
+                .map_or(
+                    220.0 * self.measurement_theme.text_scale,
+                    |(image_w, image_h)| {
+                        image_width * image_h.max(1) as f32 / image_w.max(1) as f32
+                    },
+                )
+                .min(max_height.map_or(f32::INFINITY, |max| crate::num::f32_of_u32(max.max(1))));
             return Size {
                 width,
                 height: self.image_source_height

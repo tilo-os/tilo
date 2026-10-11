@@ -286,6 +286,54 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         }
     }
 
+    fn a_tall_image_takes_at_most_its_share_of_the_viewport_at_its_aspect() {
+        let bytes = crate::png::encode_rgba8(300, 1200, &vec![255; 300 * 1200 * 4]).unwrap();
+        let fetch: crate::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![
+            Block::paragraph("![Phone screenshot](assets/tall.png)"),
+            Block::paragraph("Text below the screenshot"),
+        ]);
+        editor.set_image_store(Some(crate::ImageStore::new(&fetch)));
+        assert!(
+            editor.prewarm_images_for_shots(),
+            "fixture image must decode"
+        );
+        let mut renderer = TextRenderer::new();
+        layout_image_editor(&mut editor, 1000.0, &mut renderer);
+        let inner = 1000.0 - editor.handle_column() - 2.0 * editor.text_pad;
+        let natural = editor.image_preview_rects[0].unwrap();
+        assert!(
+            (natural.height() - inner * 4.0).abs() <= 0.5,
+            "a host that reports no viewport keeps the native size: {natural:?}"
+        );
+
+        assert!(editor.set_viewport_height(Some(900.0)));
+        assert!(!editor.set_viewport_height(Some(900.0)), "unchanged");
+        layout_image_editor(&mut editor, 1000.0, &mut renderer);
+        let preview = editor.image_preview_rects[0].unwrap();
+        let cap = 900.0 * IMAGE_VIEWPORT_FRACTION;
+        assert!(
+            (preview.height() - cap).abs() <= 0.5,
+            "a tall picture is capped to {cap}: {preview:?}"
+        );
+        let following = editor.blocks[1].line.get_rect();
+        assert!(following.y0 >= preview.y1, "the text below moves up");
+        let painted = fitted_image_rect(preview, (300, 1200));
+        assert!(
+            (painted.width() / painted.height() - 0.25).abs() < 1e-6,
+            "its aspect is kept: {painted:?}"
+        );
+        assert!((painted.height() - preview.height()).abs() < 1e-6);
+        assert!(painted.width() < preview.width(), "so it is drawn narrower");
+
+        // A picture shorter than the cap keeps its native size.
+        assert!(editor.set_viewport_height(Some(20_000.0)));
+        layout_image_editor(&mut editor, 1000.0, &mut renderer);
+        let preview = editor.image_preview_rects[0].unwrap();
+        assert!((preview.height() - inner * 4.0).abs() <= 0.5, "{preview:?}");
+    }
+
     fn missing_image_reserves_placeholder_and_wraps_its_editable_source() {
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![Block::paragraph(
@@ -439,6 +487,7 @@ fn image_attachments_size_reserve_and_guard_their_source() {
     }
 
     image_attachment_sizes_to_available_width_without_layout_feedback();
+    a_tall_image_takes_at_most_its_share_of_the_viewport_at_its_aspect();
     missing_image_reserves_placeholder_and_wraps_its_editable_source();
     image_source_mode_is_explicit_stable_and_does_not_mutate_content();
     image_preview_rejects_hidden_typing_and_ime_and_deletes_atomically();

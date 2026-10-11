@@ -661,6 +661,9 @@ pub struct BlockEditor {
     /// Layout must not alternate between a placeholder and the actual aspect ratio.
     image_dimensions: HashMap<String, (u32, u32)>,
     image_attachments: HashMap<String, ImageAttachment>,
+    /// Height of the host's visible document area, which bounds an image
+    /// preview (see [`Self::set_viewport_height`]).
+    viewport_height: Option<f64>,
     formula_chrome: Vec<Option<FormulaChrome>>,
     visual_formulas: HashMap<usize, VisualFormulaState>,
     visual_formula_focus: Option<usize>,
@@ -820,6 +823,7 @@ impl BlockEditor {
             image_preview_rects: Vec::new(),
             image_store: None,
             image_dimensions: HashMap::new(),
+            viewport_height: None,
             image_attachments: HashMap::new(),
             formula_chrome: Vec::new(),
             visual_formulas: HashMap::new(),
@@ -891,6 +895,18 @@ impl BlockEditor {
     /// window-coordinate clip as painting (including the handle gutter).
     pub fn set_tooltip_viewport(&mut self, viewport: Option<Rect>) {
         self.tooltip_viewport = viewport;
+    }
+
+    /// The height of the host's visible document area (a scrolling host's
+    /// viewport, not the editor's content extent). An image preview is
+    /// never taller than [`IMAGE_VIEWPORT_FRACTION`] of it, so a large
+    /// picture leaves room to see and drag past it. Hosts refresh it before
+    /// layout; returns whether it changed, so a host can lay out again.
+    pub fn set_viewport_height(&mut self, height: Option<f64>) -> bool {
+        let height = height.filter(|height| height.is_finite() && *height > 0.0);
+        let changed = self.viewport_height != height;
+        self.viewport_height = height;
+        changed
     }
 
     pub fn empty_hint(&self) -> &str {
@@ -6454,6 +6470,18 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     }
 }
 
+/// The share of the host's visible height an image preview may take at
+/// most, aspect kept: a large picture never fills the editor.
+pub const IMAGE_VIEWPORT_FRACTION: f64 = 0.6;
+
+/// The largest rect of the picture's aspect inside `rect`, centred.
+fn fitted_image_rect(rect: Rect, (width, height): (u32, u32)) -> Rect {
+    let ratio =
+        (rect.width() / f64::from(width).max(1.0)).min(rect.height() / f64::from(height).max(1.0));
+    let size = (f64::from(width) * ratio, f64::from(height) * ratio);
+    Rect::from_center_size(rect.center(), size)
+}
+
 fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     let Some((alt, destination)) = standalone_markdown_image(source) else {
         return;
@@ -6463,7 +6491,13 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     }
     let scale = f64::from(ctx.theme.text_scale);
     let radius = 8.0 * scale;
-    let shape = vello::kurbo::RoundedRect::from_rect(rect, radius);
+    let image = ctx.image_store.and_then(|store| store.get(destination));
+    // A preview capped to the viewport is narrower than the column: the
+    // plate hugs the picture rather than letterboxing it.
+    let plate = image.as_ref().map_or(rect, |image| {
+        fitted_image_rect(rect, (image.width, image.height))
+    });
+    let shape = vello::kurbo::RoundedRect::from_rect(plate, radius);
     ctx.scene.fill(
         vello::peniko::Fill::NonZero,
         ctx.transform,
@@ -6471,13 +6505,8 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         None,
         &shape,
     );
-    if let Some(image) = ctx.image_store.and_then(|store| store.get(destination)) {
-        let ratio = (rect.width() / f64::from(image.width).max(1.0))
-            .min(rect.height() / f64::from(image.height).max(1.0));
-        let width = f64::from(image.width) * ratio;
-        let height = f64::from(image.height) * ratio;
-        let fitted = Rect::from_center_size(rect.center(), (width, height));
-        crate::image_store::paint_image_cover(ctx.scene, ctx.transform, fitted, &image, 0.0);
+    if let Some(image) = image {
+        crate::image_store::paint_image_cover(ctx.scene, ctx.transform, plate, &image, 0.0);
         ctx.scene.stroke(
             &vello::kurbo::Stroke::new(scale),
             ctx.transform,
@@ -7388,6 +7417,11 @@ impl Widget for BlockEditor {
                     || standalone_markdown_image(block.text()).is_some()
             })
             .collect();
+        let max_image_height = self.viewport_height.map(|height| {
+            crate::num::u32_of_i64(crate::num::i64_of_f64(
+                (height * IMAGE_VIEWPORT_FRACTION).round(),
+            ))
+        });
         for (i, b) in self.blocks.iter_mut().enumerate() {
             let image = self.image_attachments.get(&b.id);
             let image_preview = image
@@ -7397,6 +7431,7 @@ impl Widget for BlockEditor {
                 Some(dimensions) => super::rich_text_line::ImagePreview::Present {
                     dimensions,
                     editing: image.is_some_and(|image| image.editing),
+                    max_height: max_image_height,
                 },
                 None => super::rich_text_line::ImagePreview::Absent,
             });

@@ -1370,6 +1370,13 @@ impl Widget for MainPanel {
             self.tag_layout_dirty = true;
             self.dirty = true;
         }
+        // An image preview takes at most a share of what the page shows at
+        // once; a new window height measures the images again.
+        let visible = self.scroll_viewport().height();
+        if self.editor.editor_mut().set_viewport_height(Some(visible)) {
+            self.tag_layout_dirty = true;
+            self.dirty = true;
+        }
         // Lay the editor out at the unshifted origin first so we can
         // compute its natural content extent, then shift by -scroll_y
         // for the second pass. Cheaper than measuring twice through
