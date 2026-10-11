@@ -199,6 +199,7 @@ impl HostedTileInputs {
             picker_scope: Some(crate::portal::PickerScope {
                 initial_dir: directory.clone(),
                 roots: vec![directory.clone()],
+                home: Some(directory.clone()),
             }),
             files: Some(file_explorer::StartupInputs {
                 initial_dir: directory,

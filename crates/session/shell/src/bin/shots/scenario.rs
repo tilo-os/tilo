@@ -1156,6 +1156,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 picker.click_cancel();
             }
             driver.host_mut().pump_file_picker();
+            seed_file_picker_fixture(driver);
             let queue = FilePickerQueue::new();
             driver.host_mut().set_portal_queues(
                 PromptQueueHandle::new(PromptResolver::Channel),
@@ -1201,6 +1202,43 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
             driver.host_mut().pump_file_picker();
         }
         _ => {}
+    }
+}
+
+/// Fill the picker's fixture folder like a person's home — the usual
+/// folders and a few documents with sizes and dates — so the capture shows
+/// the sidebar and every column. The fixture is a throwaway directory the
+/// capture owns; nothing here exists outside `--shots`.
+fn seed_file_picker_fixture(driver: &mut ShellDriver) {
+    let mut home = None;
+    driver.with_chrome(|st: &mut ChromeState| {
+        home = st
+            .hosted_inputs()
+            .picker_scope
+            .as_ref()
+            .map(|scope| scope.initial_dir.clone());
+    });
+    let Some(home) = home else {
+        return;
+    };
+    for folder in ["Documents", "Downloads", "Pictures", "Music", "Projects"] {
+        let _ = std::fs::create_dir_all(home.join(folder));
+    }
+    for (name, kilobytes) in [
+        ("Quarterly report.odt", 84_u64),
+        ("Meeting notes.md", 3),
+        ("Budget 2027.ods", 212),
+        ("Holiday photo.png", 2_480),
+        ("Invoice March.pdf", 156),
+        ("Reading list.txt", 1),
+    ] {
+        let path = home.join(name);
+        if !path.exists() {
+            let _ = std::fs::write(
+                &path,
+                vec![b'x'; usize::try_from(kilobytes * 1000).unwrap_or(0)],
+            );
+        }
     }
 }
 

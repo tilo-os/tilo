@@ -1959,6 +1959,7 @@ fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
         scope: Some(crate::portal::PickerScope {
             initial_dir: folder.path().to_path_buf(),
             roots: vec![folder.path().to_path_buf()],
+            home: None,
         }),
         reply,
     });

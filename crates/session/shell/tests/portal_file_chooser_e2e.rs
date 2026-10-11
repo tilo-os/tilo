@@ -109,6 +109,7 @@ fn host_with_portal(
     inputs.picker_scope = Some(portal::PickerScope {
         initial_dir: picker_root.to_path_buf(),
         roots: vec![picker_root.to_path_buf()],
+        home: None,
     });
     let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_inputs(
         handle.clone(),
