@@ -1038,8 +1038,9 @@ fn capture_budget() -> &'static ByteBudget {
 /// acknowledgement; equal to the polling Open deadline.
 const ACKNOWLEDGEMENT_DEADLINE: Duration = Duration::from_secs(2);
 
-/// Only local deadlines permit retiring a capture and renewing its read epoch.
-/// Broker refusals, invalid replies and authority failures remain terminal.
+/// Only local deadlines permit retiring a capture and renewing its read epoch,
+/// or retrying a renewal. Broker refusals, invalid replies and authority
+/// failures remain terminal.
 #[derive(Debug)]
 enum CaptureFailure {
     Deadline(&'static str),
@@ -1223,7 +1224,7 @@ impl NativeReadJoin {
         &self,
         spec: &RouteSpec,
         reads: &Reads,
-    ) -> Result<runtime_collab::ChannelHandle, String> {
+    ) -> Result<runtime_collab::ChannelHandle, CaptureFailure> {
         let key = spec.channel_id();
         let expected_instance = reads.private_window(&key);
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -1249,10 +1250,11 @@ impl NativeReadJoin {
             {
                 return Err("renewed committed read launcher instance changed".into());
             }
-            Ok(channel)
+            Ok::<_, String>(channel)
         })
         .await
-        .map_err(|_| "original committed read renewal deadline elapsed")?
+        .map_err(|_| CaptureFailure::Deadline("original committed read renewal deadline elapsed"))?
+        .map_err(CaptureFailure::Rejected)
     }
 }
 
@@ -1305,10 +1307,15 @@ pub(super) async fn install(
     let spec = spec.clone();
     let inbound = inbound.clone();
     tokio::task::spawn_local(async move {
+        // One renewal per healthy read: a deadline renews unless the previous
+        // renewal has not yet produced a ready read. Readiness published on a
+        // renewed channel restores the budget, so a runner that stalls twice
+        // or a laptop that suspends twice recovers both times, while two
+        // deadlines with no successful read between them still close.
         let mut renewed = false;
         let mut current = initial;
         let mut revision = revision;
-        loop {
+        'read: loop {
             if !inbound.state.is_healthy() || !inbound.state.document_reads.current(&key, &ready) {
                 break;
             }
@@ -1368,6 +1375,7 @@ pub(super) async fn install(
             let renew = match result {
                 Ok(Ok(Reply::Unchanged { revision: checked })) if Some(checked) == revision => {
                     set_read_ready(&inbound, &ready, true);
+                    renewed = false;
                     false
                 }
                 Ok(Ok(reply @ Reply::Chunk { .. })) => {
@@ -1435,17 +1443,41 @@ pub(super) async fn install(
                     break;
                 };
                 ready = next_ready;
-                if let Ok(next) = join.renew(&spec, &inbound.state.document_reads).await {
-                    channel = next;
-                    revision = None;
-                    #[cfg(any(test, feature = "test-support"))]
-                    tracing::warn!("original committed read generation renewed");
-                    continue;
+                let mut turn = Some(turn);
+                loop {
+                    match join.renew(&spec, &inbound.state.document_reads).await {
+                        Ok(next) => {
+                            channel = next;
+                            revision = None;
+                            #[cfg(any(test, feature = "test-support"))]
+                            tracing::warn!("original committed read generation renewed");
+                            continue 'read;
+                        }
+                        // A slow rejoin is an unknown outcome, not a refusal.
+                        // Readiness stays withheld and no capture exists in
+                        // this generation; release the delivery turn and
+                        // rejoin again. Every attempt is a fresh admission
+                        // the broker re-verifies, so a revoked peer is still
+                        // refused by the first rejoin that is answered.
+                        Err(CaptureFailure::Deadline(_)) => {
+                            #[cfg(any(test, feature = "test-support"))]
+                            tracing::warn!("committed read renewal deadline elapsed; rejoining");
+                            drop(turn.take());
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            if !inbound.state.is_healthy()
+                                || !inbound.state.document_reads.current(&key, &ready)
+                            {
+                                break 'read;
+                            }
+                        }
+                        Err(CaptureFailure::Rejected(_)) => {
+                            inbound
+                                .state
+                                .fail_closed("committed read renewal unavailable");
+                            break 'read;
+                        }
+                    }
                 }
-                inbound
-                    .state
-                    .fail_closed("committed read renewal unavailable");
-                break;
             }
             drop(turn);
             tokio::time::sleep(Duration::from_millis(200)).await;
