@@ -495,9 +495,23 @@ pub(crate) fn note_native_writer_retiring(mut pid: u32) {
     }
 }
 
+/// How long the launch worker sleeps between looks at a retiring writer's
+/// launcher, in case its exit came without a wake-up.
+const RETIREMENT_RECHECK: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Wait on the launch worker, before spawning a replacement. Surface
 /// disappearance is not process exit: a native app may still checkpoint its
 /// canonical record. Never remove its lock or race a second writer into it.
+///
+/// The wait ends when the retiring launcher has exited, which the kernel
+/// proves: its pid no longer names a process with the start time it was
+/// registered with. The launcher outlives its sandbox, so the writer inside
+/// has exited too. Unregistering the launch is not that proof and can come
+/// much later or never: the launch worker does it only once every holder of
+/// the launcher's stderr has closed it, and a descendant that outlives the
+/// launcher (or a launch worker that never got there) would otherwise hold
+/// every later open of the app for `timeout` and then refuse it, for the
+/// rest of the session.
 fn wait_for_retiring_app(
     package_id: &str,
     command: &LaunchCommand,
@@ -510,7 +524,11 @@ fn wait_for_retiring_app(
     let mut processes = LAUNCHED_PROCESSES
         .lock()
         .map_err(|_| crate::shell::i18n::t("shell-launch-registry-unavailable"))?;
-    let retiring = |processes: &HashMap<u32, LaunchedProcess>| {
+    let retiring = |processes: &mut HashMap<u32, LaunchedProcess>| {
+        processes.retain(|pid, process| {
+            !process.retiring
+                || proc_stat(*pid).is_some_and(|(_, start)| start == process.start_time)
+        });
         processes.values().any(|process| {
             process.confined
                 && process.retiring
@@ -518,19 +536,25 @@ fn wait_for_retiring_app(
                 && process.workspace_id.as_deref() == Some(identity.workspace_id.as_str())
         })
     };
-    if retiring(&processes) {
+    if retiring(&mut processes) {
         eprintln!(
             "app-writer-retirement-wait: package={package_id} room={}",
             identity.workspace_id
         );
     }
-    while retiring(&processes) {
+    while retiring(&mut processes) {
         let remaining = timeout
             .checked_sub(started.elapsed())
             .filter(|remaining| !remaining.is_zero())
-            .ok_or_else(|| crate::shell::i18n::t("shell-launch-writer-still-closing"))?;
+            .ok_or_else(|| {
+                eprintln!(
+                    "app-writer-retirement-timeout: package={package_id} room={} after={:?}",
+                    identity.workspace_id, timeout
+                );
+                crate::shell::i18n::t("shell-launch-writer-still-closing")
+            })?;
         let (next, _) = LAUNCH_RETIREMENT_CHANGED
-            .wait_timeout(processes, remaining)
+            .wait_timeout(processes, remaining.min(RETIREMENT_RECHECK))
             .map_err(|_| crate::shell::i18n::t("shell-launch-registry-unavailable"))?;
         processes = next;
     }
@@ -3834,7 +3858,9 @@ fn start_launch(
         let status = child.wait();
         // Reaped: the registry's liveness check now fails for this pid, even
         // while a descendant keeps stderr open and delays unregistering it.
+        // A replacement waiting for this writer to retire may go now.
         note_running_changed();
+        LAUNCH_RETIREMENT_CHANGED.notify_all();
         // Every end of an app, clean or not, with how it ended (a signal has
         // no exit code). The session's default log passes errors only, so a
         // clean exit would otherwise leave no trace; stderr is recorded.
@@ -6840,6 +6866,67 @@ mod tests {
             replacement.exists(),
             "the replacement acquired the unchanged canonical lock after retirement"
         );
+    }
+
+    /// A retiring launch whose launcher exited but was never unregistered
+    /// (a descendant still holds its stderr, so its launch worker never gets
+    /// there) must not hold the app's next open for the whole timeout, nor
+    /// refuse it, for the rest of the session.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn retiring_writer_whose_launcher_exited_holds_no_replacement() {
+        let package = format!("so.tilo.retirement.{}", uuid::Uuid::new_v4());
+        let room = uuid::Uuid::new_v4().to_string();
+        let mut launcher = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = launcher.id();
+        register_launched_process(pid, &package, Some(&room), true);
+        note_native_writer_retiring(pid);
+        let command = LaunchCommand {
+            program: PathBuf::from("/bin/true"),
+            args: Vec::new(),
+            env: Vec::new(),
+            service_identity: Some(ServiceLaunchIdentity {
+                app_id: package.clone(),
+                workspace_id: room,
+                allowed_compat_entry_ids: Vec::new(),
+                compat_entry_generation: 0,
+                application_creation: None,
+            }),
+            portal_workspace_id: None,
+            managed_agent_id: None,
+        };
+        assert!(
+            wait_for_retiring_app(&package, &command, std::time::Duration::from_millis(1)).is_err(),
+            "a live retiring launcher still holds the replacement"
+        );
+        // The launcher exits while the replacement waits; nothing unregisters it.
+        let reaper = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            launcher.kill().unwrap();
+            launcher.wait().unwrap();
+        });
+        let started = std::time::Instant::now();
+        assert!(
+            wait_for_retiring_app(&package, &command, std::time::Duration::from_secs(30)).is_ok()
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the replacement went once the launcher had exited, not after the timeout: {:?}",
+            started.elapsed()
+        );
+        reaper.join().unwrap();
+        assert!(
+            !LAUNCHED_PROCESSES.lock().unwrap().contains_key(&pid),
+            "the exited launcher's retiring record is gone"
+        );
+        let again = std::time::Instant::now();
+        assert!(
+            wait_for_retiring_app(&package, &command, std::time::Duration::from_secs(30)).is_ok()
+        );
+        assert!(again.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[cfg(target_os = "linux")]
