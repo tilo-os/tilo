@@ -2534,3 +2534,7 @@ activity-morning-description = Chosen morning sources · links to existing works
 activity-morning-unavailable = Source unavailable in this workspace · no current evidence
 activity-morning-source = { $source } · last recorded workspace activity: { $time } · external freshness unknown
 activity-morning-open = Open morning source
+
+# Canonical first-use action admission; never includes private identity material.
+onboarding-semantic-unavailable = This setup action is no longer available at this step.
+onboarding-semantic-failed = Setup could not complete this action. The desktop remains protected.
