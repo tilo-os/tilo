@@ -40,7 +40,7 @@ impl Source for Applications {
                     app.category.as_deref(),
                     app.description.as_deref(),
                 )?;
-                let (section, presented) = rank::empty_palette_presentation(&app.id);
+                let presented = ui::search::system::starting_point_rank(&app.id);
                 if let Some(reason) = &app.unavailable {
                     let score = if needle.trim().is_empty() {
                         presented
@@ -65,7 +65,14 @@ impl Source for Applications {
                     });
                 }
                 let (score, subtitle) = if needle.trim().is_empty() {
-                    (presented, format!("{section} · {}", app.id))
+                    (
+                        presented,
+                        format!(
+                            "{} · {}",
+                            ui::search::system::starting_point_group(&app.id),
+                            app.id
+                        ),
+                    )
                 } else {
                     let detail = app.category.as_deref().map_or_else(
                         || app.id.clone(),

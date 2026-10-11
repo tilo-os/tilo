@@ -257,50 +257,6 @@ pub fn application_match_score(
     )
 }
 
-/// Product-owned ordering for the empty Applications palette. Search queries
-/// continue to rank purely by match quality; this only prevents a fresh system
-/// from presenting forty alphabetised tools as though they were equally likely
-/// starting points. The first group is deliberately useful to curious
-/// tinkerers without assuming they are developers.
-pub fn empty_palette_presentation(package_id: &str) -> (&'static str, i32) {
-    match package_id {
-        "so.tilo.browser" => ("Start here", 90),
-        "so.tilo.file-explorer" => ("Start here", 89),
-        "so.tilo.notes" => ("Start here", 88),
-        "so.tilo.terminal" => ("Start here", 87),
-        "so.tilo.settings" => ("Start here", 86),
-        "so.tilo.store" => ("Start here", 85),
-
-        "so.tilo.calendar" => ("Everyday", 74),
-        "so.tilo.mail" => ("Everyday", 73),
-        "so.tilo.contacts" => ("Everyday", 72),
-        "so.tilo.chat" => ("Everyday", 71),
-        "so.tilo.calculator" => ("Everyday", 70),
-
-        "so.tilo.word-processor" => ("Work", 59),
-        "so.tilo.sheets" => ("Work", 58),
-        "so.tilo.slides" => ("Work", 57),
-        "so.tilo.pdf-viewer" => ("Work", 56),
-        "so.tilo.typst-editor" => ("Work", 55),
-
-        "so.tilo.music" => ("Media", 49),
-        "so.tilo.tube" => ("Media", 48),
-        "so.tilo.video-player" => ("Media", 47),
-        "so.tilo.photos" => ("Media", 46),
-        "so.tilo.camera" => ("Media", 45),
-        "so.tilo.weather" => ("Everyday", 44),
-        "so.tilo.maps" => ("Everyday", 43),
-        "so.tilo.feeds" => ("Everyday", 42),
-        "so.tilo.ebook" => ("Media", 41),
-        "so.tilo.totp" => ("Everyday", 40),
-
-        "so.tilo.monitor" | "so.tilo.disks" | "so.tilo.logs" | "so.tilo.firewall"
-        | "so.tilo.vpn" | "so.tilo.remote" | "so.tilo.backups" | "so.tilo.imager"
-        | "so.tilo.themes" => ("System tools", 25),
-        _ => ("More apps", 10),
-    }
-}
-
 /// How well `needle` names a record, by the shared ranker. Title first; the
 /// identity is matched last and lowest — a file record's id contains its
 /// whole path, so a directory-name match is a weaker signal than the title.
