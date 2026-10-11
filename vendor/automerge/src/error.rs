@@ -76,6 +76,13 @@ pub enum AutomergeError {
     EncodingError(String),
     #[error("failed to unbundle: {0}")]
     Unbundle(Box<dyn std::error::Error + Send + Sync + 'static>),
+    /// TILO(peer-change-check): a change that cannot be applied to this
+    /// document as it stands (vendor/automerge/TILO-PATCH.md).
+    #[error("change {hash} cannot be applied: {reason}")]
+    InvalidChange {
+        hash: ChangeHash,
+        reason: &'static str,
+    },
 }
 
 impl AutomergeError {

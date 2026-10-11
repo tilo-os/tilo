@@ -218,6 +218,13 @@ impl ChangeGraph {
             .unwrap_or(0) as u64
     }
 
+    // TILO(peer-change-check): the highest op counter of a change in the
+    // graph (vendor/automerge/TILO-PATCH.md).
+    pub(crate) fn max_op_for_hash(&self, hash: &ChangeHash) -> Option<u64> {
+        let node = self.nodes_by_hash.get(hash)?;
+        self.max_ops.get(node.0 as usize).map(|max| u64::from(*max))
+    }
+
     pub(crate) fn seq_for_actor(&self, actor: usize) -> u64 {
         self.seq_index
             .get(actor)
