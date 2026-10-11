@@ -118,7 +118,6 @@ impl Rooms {
             role: PeerRole::from_cert(&cert),
             cert,
         };
-        let host = &self.inner.host;
         let now_ns = tilo_clock::unix_now_ns();
         let now = system_time(now_ns);
         let live = if self.agent_admitted(room, &peer).await {
@@ -131,16 +130,16 @@ impl Rooms {
         let changed = match (live, recorded) {
             (Some(delegation), recorded) => {
                 let known = recorded.is_some_and(|(_, known, _)| known == delegation);
-                !known && candidate.admit_agent(peer.cert, delegation, &host.key, now)?
+                !known && candidate.admit_agent(peer.cert, delegation, &self.inner.host.key, now)?
             }
-            (None, Some(_)) => candidate.withdraw_agent(device, &host.key, now)?,
+            (None, Some(_)) => candidate.withdraw_agent(device, &self.inner.host.key, now)?,
             (None, None) => false,
         };
         if !changed {
             return Ok(());
         }
         let state = room.collaboration().clone();
-        room.commit(candidate, &host.key, now, |_, _| Ok(state))?;
+        room.commit(candidate, &self.inner.host.key, now, |_, _| Ok(state))?;
         self.settle(room).await?;
         tracing::info!(room = %room.room(), device = %hex::encode(device),
             "an agent's place on the room's roster changed with its grant");
