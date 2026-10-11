@@ -535,12 +535,12 @@ mod confirmation_tests {
             signature: [0; 64],
         };
         sign_device_cert(&mut cert, &root).unwrap();
-        CertificationProtocol::new(
-            root.verifying_key().to_bytes(),
+        CertificationProtocol::new(LiveIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
             cert,
-            key,
-            Arc::new(std::sync::RwLock::new(RevocationList::new())),
-        )
+            signing_key: key,
+            revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
+        })
     }
 
     fn question(id: u8, wait: Duration) -> PendingConfirmation {
