@@ -538,9 +538,11 @@ enum Change {
     Anywhere,
 }
 
-/// Vello rasterises in 16-pixel tiles; a changed edge can round its tile's
-/// other pixels by a unit, so a change is repaired in whole tiles.
-const TILE_EDGE: f64 = 16.0;
+/// Vello rasterises in tiles of this many device pixels a side
+/// (`TILE_WIDTH`/`TILE_HEIGHT` in vello_encoding's config); a changed edge can
+/// round its tile's other pixels by a unit, so a change is repaired in whole
+/// tiles. A raster unit, not a spacing.
+const TILE_EDGE: u32 = 16;
 
 /// How `new_drawn` (with `new_parts`), shown through `blit` on an output of
 /// `size`, changed from `old_drawn` (with `old_parts`).
@@ -565,7 +567,8 @@ fn strip_change(
     for rect in rects {
         // The strip is drawn in canvas coordinates and shown `scroll_x`
         // pixels to the left ([`append_panned`]), clipped to its band.
-        let tile = |value: f64, round: fn(f64) -> f64| round(value / TILE_EDGE) * TILE_EDGE;
+        let edge = f64::from(TILE_EDGE);
+        let tile = |value: f64, round: fn(f64) -> f64| round(value / edge) * edge;
         let clamp = |value: f64, low: u32, high: u32| -> u32 {
             ui::num::u32_of_f64(value.clamp(f64::from(low), f64::from(high)))
         };
