@@ -76,9 +76,6 @@ impl Widget for TwoButtons {
     fn name(&self) -> &'static str {
         "two-buttons"
     }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
-    }
 }
 
 fn app_with_reader() -> (App, SharedRecorder) {
@@ -207,9 +204,6 @@ impl Widget for LiveWidget {
     }
     fn name(&self) -> &'static str {
         "live-widget"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         let v = self.value.borrow().clone();

@@ -187,9 +187,6 @@ impl tilo_ui::widget::Widget for NoOpWidget {
     fn name(&self) -> &'static str {
         "noop"
     }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
-    }
 }
 
 #[test]
@@ -231,9 +228,6 @@ impl tilo_ui::widget::Widget for GatedButton {
     }
     fn name(&self) -> &'static str {
         "gated"
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
 }
 

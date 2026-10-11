@@ -1183,10 +1183,6 @@ impl Widget for InertPart {
     fn is_layout_dirty(&self) -> bool {
         false
     }
-
-    fn get_rect(&self) -> Rect {
-        Rect::ZERO
-    }
 }
 
 /// The one window shell. See the module docs.

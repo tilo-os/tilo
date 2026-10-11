@@ -228,9 +228,6 @@ mod floating_source_focus_tests {
         fn name(&self) -> &'static str {
             "FocusProbe"
         }
-        fn get_rect(&self) -> KurboRect {
-            KurboRect::ZERO
-        }
     }
 
     #[test]

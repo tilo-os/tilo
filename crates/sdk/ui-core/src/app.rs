@@ -2995,9 +2995,6 @@ mod legacy_owner_routing_tests {
         fn name(&self) -> &'static str {
             "LegacyOwnerProbe"
         }
-        fn get_rect(&self) -> KurboRect {
-            KurboRect::ZERO
-        }
         fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
             use crate::a11y::{AccessNode, AccessState, Role};
             Some(AccessNode::new(Role::Generic).with_children(vec![

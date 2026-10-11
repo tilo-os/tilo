@@ -29,7 +29,6 @@ use automerge::{AutoCommit, ROOT};
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Column, Container, Row, Stack, Widget};
-use vello::kurbo::Rect;
 
 /// Counts `update` calls and reports a change on every one, so a
 /// container that forwards must also surface the child's `true`.
@@ -54,10 +53,6 @@ impl Widget for Probe {
 
     fn name(&self) -> &'static str {
         "Probe"
-    }
-
-    fn get_rect(&self) -> Rect {
-        Rect::ZERO
     }
 }
 

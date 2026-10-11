@@ -89,9 +89,6 @@ impl Widget for ConsumingKeyboardRoot {
             *ctx.handled = true;
         }
     }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
-    }
     fn name(&self) -> &'static str {
         "consuming-keyboard-root"
     }
@@ -112,9 +109,6 @@ impl Widget for Publisher {
     }
     fn name(&self) -> &'static str {
         "publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 
@@ -183,9 +177,6 @@ impl Widget for CountingPublisher {
     }
     fn name(&self) -> &'static str {
         "counting-publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 
@@ -1072,9 +1063,6 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
         }
         fn name(&self) -> &str {
             "Native history fixture"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
         fn build_layout(
             &mut self,

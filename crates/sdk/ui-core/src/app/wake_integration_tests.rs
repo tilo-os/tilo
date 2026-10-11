@@ -63,10 +63,6 @@ impl Widget for CaptureRoot {
     fn name(&self) -> &'static str {
         "capture-root"
     }
-
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
-    }
 }
 
 impl crate::view::capability::ViewState for CaptureRoot {

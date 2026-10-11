@@ -2068,9 +2068,6 @@ mod host_driven_tests {
             ) -> NodeId {
                 taffy.widget_leaf(Style::default(), node_map, self)
             }
-            fn get_rect(&self) -> Rect {
-                Rect::ZERO
-            }
             fn name(&self) -> &'static str {
                 "Page"
             }

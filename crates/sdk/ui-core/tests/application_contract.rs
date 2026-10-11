@@ -1283,9 +1283,6 @@ mod save_status_fixture {
         fn name(&self) -> &'static str {
             "Status"
         }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
-        }
         fn settle(&mut self, _: &mut tilo_ui::widget::Edits<'_>, _: &automerge::ObjId) {
             // Only settlement holds an exclusive record loan; sync/update
             // are immutable projections and may share durability reads.
@@ -1613,9 +1610,6 @@ mod paired_local {
         }
         fn name(&self) -> &'static str {
             "Local pair"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
         fn is_focusable(&self) -> bool {
             true

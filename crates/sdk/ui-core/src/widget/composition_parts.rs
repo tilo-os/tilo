@@ -168,9 +168,6 @@ mod tests {
         fn name(&self) -> &str {
             "MutableAdmission"
         }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
-        }
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,

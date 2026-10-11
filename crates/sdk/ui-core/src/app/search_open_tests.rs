@@ -69,9 +69,6 @@ impl Widget for MailRoot {
     fn name(&self) -> &'static str {
         "mail-root"
     }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
-    }
 }
 
 impl crate::search::capability::SearchSource for MailRoot {

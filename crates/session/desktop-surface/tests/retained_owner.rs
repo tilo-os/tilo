@@ -51,9 +51,6 @@ impl Widget for Root {
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn get_rect(&self) -> ui::kurbo::Rect {
-        ui::kurbo::Rect::ZERO
-    }
 }
 impl AppWidget for Root {
     fn app_kind(&self) -> AppKind {

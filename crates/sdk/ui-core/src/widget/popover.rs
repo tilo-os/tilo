@@ -63,9 +63,6 @@ impl Widget for NoContent {
     fn name(&self) -> &'static str {
         "NoContent"
     }
-    fn get_rect(&self) -> Rect {
-        Rect::ZERO
-    }
 }
 
 /// The options of an option menu and where the highlight and selection

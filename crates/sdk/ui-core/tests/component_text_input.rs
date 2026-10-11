@@ -547,9 +547,6 @@ impl Widget for WithdrawableResource {
     fn name(&self) -> &'static str {
         "WithdrawableResource"
     }
-    fn get_rect(&self) -> tilo_ui::kurbo::Rect {
-        tilo_ui::kurbo::Rect::ZERO
-    }
     fn build_layout(
         &mut self,
         tree: &mut tilo_ui::taffy::TaffyTree<()>,

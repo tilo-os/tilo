@@ -180,9 +180,6 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             fn name(&self) -> &'static str {
                 "Plain"
             }
-            fn get_rect(&self) -> Rect {
-                Rect::ZERO
-            }
             fn children(&self) -> Vec<&dyn Widget> {
                 self.children.iter().map(AsRef::as_ref).collect()
             }

@@ -1161,9 +1161,6 @@ mod tests {
         fn name(&self) -> &'static str {
             "tw"
         }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
-        }
         fn accessibility(&self) -> Option<AccessNode> {
             self.access.clone()
         }

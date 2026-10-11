@@ -23,9 +23,6 @@ impl Widget for DeclaredDirectory {
     fn name(&self) -> &'static str {
         "declared-directory"
     }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
-    }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.semantic_calls.set(self.semantic_calls.get() + 1);
         Some(crate::a11y::AccessNode::new(crate::a11y::Role::Group))
@@ -631,9 +628,6 @@ impl Widget for ExtendedDirectory {
     }
     fn name(&self) -> &'static str {
         "extended-directory"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]

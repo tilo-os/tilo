@@ -3295,9 +3295,6 @@ mod tests {
         fn name(&self) -> &'static str {
             "Scribe"
         }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
-        }
         fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
             Some(
                 crate::a11y::AccessNode::new(crate::a11y::Role::Document)
@@ -3377,9 +3374,6 @@ mod tests {
         }
         fn name(&self) -> &'static str {
             "FloatingProbe"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 
@@ -3758,9 +3752,6 @@ mod tests {
             let node = tree.leaf_node(Style::default());
             nodes.insert(node, self as *mut dyn Widget);
             node
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 
@@ -4169,9 +4160,6 @@ mod tests {
         fn name(&self) -> &'static str {
             "EventProbe"
         }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
-        }
     }
 
     impl crate::widget::app_widget::AppWidget for EventProbe {
@@ -4206,9 +4194,6 @@ mod tests {
         }
         fn name(&self) -> &'static str {
             "ScopeProbe"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 
