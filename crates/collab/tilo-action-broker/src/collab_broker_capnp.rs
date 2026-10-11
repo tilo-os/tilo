@@ -18894,7 +18894,7 @@ mod person_record_join_tests {
     #[test]
     fn an_app_joins_the_persons_room_only_for_the_records_it_declares() {
         static TERMINAL: &[u8] = b"[[resources]]\nkind = \"test-person.session\"\nlabel = \"Session\"\nversion = 1\n\n[[resources]]\nkind = \"test-person.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n\n[[resources]]\nkind = \"test-person.accounts\"\nlabel = \"Accounts\"\nperson = true\nversion = 1\n";
-        ui::app_surface::register_committed("test.person-terminal", Some(TERMINAL));
+        ui::app_surface::register_package("test.person-terminal", TERMINAL);
         let history = collab_types::person_record_id("test-person.history");
         let accounts = collab_types::person_record_id("test-person.accounts");
         assert_eq!(

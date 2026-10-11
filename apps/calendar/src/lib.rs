@@ -61,5 +61,5 @@ pub use resource::CalendarShell;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<CalendarShell>()
+    ui::built_in_definition!(CalendarShell)
 }

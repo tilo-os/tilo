@@ -12,7 +12,7 @@ pub fn book_resource(book_id: &str) -> String {
 }
 
 pub fn definition() -> &'static ApplicationDefinition {
-    ui::framework::definition::<crate::EbookShell>()
+    ui::built_in_definition!(crate::EbookShell)
 }
 
 #[cfg(test)]

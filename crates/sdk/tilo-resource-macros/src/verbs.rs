@@ -1764,8 +1764,6 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         impl #krate::Resource for #self_ty {
             const KIND: &'static str = #kind;
             const LABEL: &'static str = #label;
-            const COMMITTED_SURFACE: ::core::option::Option<&'static [u8]> =
-                #krate::committed_surface!();
             type State = #self_ty;
             type Action = #krate::Stamped<#action_enum>;
 

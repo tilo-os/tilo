@@ -179,5 +179,5 @@ impl ResourceApp for MessagesShell {
 
 #[must_use]
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<MessagesShell>()
+    ui::built_in_definition!(MessagesShell)
 }

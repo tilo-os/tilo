@@ -81,5 +81,5 @@ pub use resource::{Weather, WeatherShell};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<WeatherShell>()
+    ui::built_in_definition!(WeatherShell)
 }

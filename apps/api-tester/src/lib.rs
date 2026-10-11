@@ -53,5 +53,5 @@ pub use resource::{ApiTesterShell, LOCALES, Workspace};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<ApiTesterShell>()
+    ui::built_in_definition!(ApiTesterShell)
 }

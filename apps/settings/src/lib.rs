@@ -82,7 +82,7 @@ pub use resource::{Settings, SettingsShell, parse_settings_uri};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<SettingsShell>()
+    ui::built_in_definition!(SettingsShell)
 }
 
 #[cfg(test)]

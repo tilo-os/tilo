@@ -207,7 +207,9 @@ pub fn receipt_from_record(
         .save_status(record)
         .map_err(|error| refused(error.to_string()))?;
     let (package, room) = store.package_and_home();
-    if package != crate::definition().app_id || room != actual_destination.room {
+    if package != <crate::resource::ChatShell as ui::framework::ResourceApp>::ID
+        || room != actual_destination.room
+    {
         return Err(refused("feedback canonical store mismatch"));
     }
     store
@@ -503,7 +505,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(temp.path().join("profile"));
         let store = owners
-            .open(crate::definition().app_id, &submission.destination.room)
+            .open(
+                <crate::resource::ChatShell as ui::framework::ResourceApp>::ID,
+                &submission.destination.room,
+            )
             .unwrap();
         let primary = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
         store

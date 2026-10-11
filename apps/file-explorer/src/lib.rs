@@ -82,5 +82,5 @@ pub fn mounted_files_in(
 
 /// The Files application definition: the one every host mounts.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<FileExplorerShell>()
+    ui::built_in_definition!(FileExplorerShell)
 }

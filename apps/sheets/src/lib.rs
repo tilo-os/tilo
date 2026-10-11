@@ -77,5 +77,5 @@ pub use workbook::Workbook;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<SheetsShell>()
+    ui::built_in_definition!(SheetsShell)
 }

@@ -46,5 +46,5 @@ pub use resource::{Firewall, FirewallShell};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<FirewallShell>()
+    ui::built_in_definition!(FirewallShell)
 }

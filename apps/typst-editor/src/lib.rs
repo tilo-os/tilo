@@ -46,7 +46,7 @@ pub mod worker;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<TypstEditorShell>()
+    ui::built_in_definition!(TypstEditorShell)
 }
 
 pub use resource::{LOCALES, TypstEditorShell, Workspace};

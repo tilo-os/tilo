@@ -60,27 +60,13 @@ macro_rules! main {
         fn main() {
             // A browser page mounts the definition itself; its binary is empty.
             #[cfg(not(target_arch = "wasm32"))]
-            {
-                $crate::register_committed_surface(
-                    $definition().app_id,
-                    $crate::tilo_resource::committed_surface!(),
-                );
-                $crate::launch::run_or_exit(&$crate::framework::definition_launch_spec(
-                    $definition(),
-                ));
-            }
+            $crate::launch::run_or_exit(&$crate::framework::definition_launch_spec($definition()));
         }
     };
     ($app:ty) => {
         fn main() {
             #[cfg(not(target_arch = "wasm32"))]
-            {
-                $crate::register_committed_surface(
-                    <$app as $crate::framework::ResourceApp>::ID,
-                    $crate::tilo_resource::committed_surface!(),
-                );
-                $crate::framework::run::<$app>();
-            }
+            $crate::framework::run::<$app>();
         }
     };
 }
@@ -132,24 +118,41 @@ macro_rules! dev_reload_entry {
             $crate::framework::dev_reload::publish_root::<$app>()
         }
 
-        /// The app's toolkit definition, which the web build registers.
+        /// The app's toolkit definition, which a host running the app in its
+        /// own process (the web build, the shell's built-in apps) mounts. It
+        /// carries the app's committed surface: such a host runs no package
+        /// whose payload could name one. The app's own binary never calls it.
         #[must_use]
         pub fn definition() -> &'static $crate::prelude::ApplicationDefinition {
-            $crate::register_committed_surface(
-                <$app as $crate::framework::ResourceApp>::ID,
-                $crate::tilo_resource::committed_surface!(),
-            );
-            $crate::framework::definition::<$app>()
+            $crate::built_in_definition!($app)
         }
     };
 }
 
-/// Name the app's committed surface (its `surface.toml`) as the one its
-/// changes are decided against, unless its launcher named another. Called by
-/// [`main!`] and [`dev_reload_entry!`].
+/// The definition of the [`framework::ResourceApp`] `$app` for a host that
+/// runs it in its own process (the shell's built-in apps, the web desktop, an
+/// agent's participant host), naming the app crate's committed `surface.toml`
+/// as its surface: such a host runs no package whose payload names one. An
+/// app's library defines its `definition()` with it; the app's own binary
+/// uses [`framework::definition`], so it does not carry the file.
+#[macro_export]
+macro_rules! built_in_definition {
+    ($app:ty) => {{
+        $crate::register_built_in_surface(
+            <$app as $crate::framework::ResourceApp>::ID,
+            $crate::tilo_resource::committed_surface!(),
+        );
+        $crate::framework::definition::<$app>()
+    }};
+}
+
+/// Name the committed surface of an app a host runs in its own process,
+/// unless a package already named one. Called by [`built_in_definition!`].
 #[doc(hidden)]
-pub fn register_committed_surface(app_id: &str, bytes: Option<&'static [u8]>) {
-    ui_core::app_surface::register_committed(app_id, bytes);
+pub fn register_built_in_surface(app_id: &str, bytes: Option<&'static [u8]>) {
+    if let Some(bytes) = bytes {
+        ui_core::app_surface::register_built_in(app_id, bytes);
+    }
 }
 
 /// The resource layer, re-exported under its own name so `#[resource]` and

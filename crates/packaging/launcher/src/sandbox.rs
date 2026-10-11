@@ -431,16 +431,22 @@ pub fn build_bwrap_argv(
     )
 }
 
-/// The hash of the surface the package ships (`surface.toml` at its payload
-/// root), which the app names in every change it signs. A package without
-/// one names none, and its changes wait wherever surfaces decide them.
-fn push_surface(argv: &mut Vec<String>, payload_root: &Path) {
+/// The surface the package ships (`surface.toml` at its payload root), by
+/// its path in the sandbox and its hash: the app reads it from there, checks
+/// the hash and names it in every change it signs. A package without one
+/// names none, and its changes wait wherever surfaces decide them.
+fn push_surface(argv: &mut Vec<String>, payload_root: &Path, payload_mount: &Path) {
     let Ok(bytes) = std::fs::read(payload_root.join("surface.toml")) else {
         return;
     };
-    argv.push("--setenv".to_string());
-    argv.push("TILO_SURFACE".to_string());
-    argv.push(blake3::hash(&bytes).to_hex().to_string());
+    argv.extend([
+        "--setenv".to_string(),
+        "TILO_SURFACE".to_string(),
+        payload_mount.join("surface.toml").display().to_string(),
+        "--setenv".to_string(),
+        "TILO_SURFACE_HASH".to_string(),
+        blake3::hash(&bytes).to_hex().to_string(),
+    ]);
 }
 
 fn push_continuity_environment(argv: &mut Vec<String>) {
@@ -658,7 +664,7 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("--setenv".to_string());
     argv.push("TILO_PACKAGE_ID".to_string());
     argv.push(manifest.package_id.clone());
-    push_surface(&mut argv, payload_root);
+    push_surface(&mut argv, payload_root, &payload_mount);
 
     // Same-identity continuation is launcher-authored metadata. bwrap clears
     // the parent environment, so forward only the compact identifiers/payload
@@ -1341,9 +1347,9 @@ mod tests {
         {
             let m = mk_manifest("off");
             let payload = tempfile::tempdir().unwrap();
-            let named = |argv: &[String]| {
+            let named = |argv: &[String], key: &str| {
                 argv.windows(3)
-                    .find(|w| w[0] == "--setenv" && w[1] == "TILO_SURFACE")
+                    .find(|w| w[0] == "--setenv" && w[1] == key)
                     .map(|w| w[2].clone())
             };
             let without = build_bwrap_argv(
@@ -1356,7 +1362,7 @@ mod tests {
                 &CapabilityPlan::empty(),
             );
             assert_eq!(
-                named(&without),
+                named(&without, "TILO_SURFACE"),
                 None,
                 "a package without a surface names none"
             );
@@ -1371,7 +1377,12 @@ mod tests {
                 &CapabilityPlan::empty(),
             );
             assert_eq!(
-                named(&with),
+                named(&with, "TILO_SURFACE").as_deref(),
+                Some("/var/tilo-apps/com.example.notes/surface.toml"),
+                "the file in the sandbox's payload"
+            );
+            assert_eq!(
+                named(&with, "TILO_SURFACE_HASH"),
                 Some(blake3::hash(b"[[resources]]\n").to_hex().to_string())
             );
         }

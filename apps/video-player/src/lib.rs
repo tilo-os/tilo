@@ -42,5 +42,5 @@ pub use shared::Library;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<VideoPlayerShell>()
+    ui::built_in_definition!(VideoPlayerShell)
 }

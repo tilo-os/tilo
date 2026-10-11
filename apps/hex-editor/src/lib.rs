@@ -44,5 +44,5 @@ pub use view::HexView;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<HexEditorShell>()
+    ui::built_in_definition!(HexEditorShell)
 }

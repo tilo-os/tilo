@@ -64,7 +64,7 @@ pub use app::{GitClientApp, Screen};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<GitClientShell>()
+    ui::built_in_definition!(GitClientShell)
 }
 
 pub use resource::{GitClient, GitClientShell, SCENARIOS};

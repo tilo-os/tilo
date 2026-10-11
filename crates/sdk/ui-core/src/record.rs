@@ -3849,7 +3849,7 @@ mod tests {
     fn two_creators_of_one_record_make_one_identical_genesis() {
         let kind = RecordKind::new("test.genesis-note");
         // The app's surface is named in the record's identity.
-        crate::app_surface::register_committed("so.tilo.test-genesis", Some(b"surface"));
+        crate::app_surface::register_package("so.tilo.test-genesis", b"surface");
         crate::app_surface::register_kind(kind.as_str(), "so.tilo.test-genesis");
         let checkout = RecordCheckout::new(RecordId::for_tab(3), kind);
         let create = |actor: &[u8]| {
