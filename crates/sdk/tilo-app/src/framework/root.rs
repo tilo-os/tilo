@@ -30,29 +30,36 @@ use ui_core::widget::capability::{capability, capability_mut};
 use ui_core::widget::{AppKind, AppWidget, Decorator, Element, IconDescriptor, Widget};
 use ui_core::{LocalState, Theme};
 
-use super::dispatch::Dispatcher;
-use super::effect::{EffectStatus, Effects};
-use super::live::Live;
+use super::dispatch::DispatchCore;
+use super::effect::{EffectStatus, EffectsCore};
 use super::rows::{find, join, merge, outside_document};
 use super::scenario::Run;
 use super::stage::Stages;
 use super::surface::SurfacePublication;
-use super::view::{Bindings, Updaters, ViewCx};
+use super::view::ViewCx;
 
 mod shared_tree;
 use shared_tree::SharedTree;
+mod typed;
+pub(crate) use typed::Typed;
+use typed::TypedRoot;
 
-pub(crate) struct ResourceRoot<R: Resource> {
+pub(crate) struct ResourceRoot {
     title: &'static str,
     icon: IconDescriptor,
     label: String,
-    live: Live<R>,
-    updaters: Updaters<R>,
-    action_bindings: super::controls::Actions<R>,
+    /// The resource type the root shows, and what it says of itself.
+    resource: ResourceType,
+    /// What depends on the resource type: its live state, the views'
+    /// updaters and bound edits, the dispatcher and the effects. Everything
+    /// else here is compiled once in the shared runtime.
+    typed: Box<dyn TypedRoot>,
+    /// What bound controls look up ([`super::controls::Actions`]).
+    action_bindings: super::controls::PublishedActions,
     /// The live revision bound controls last followed.
     followed: std::cell::Cell<u64>,
     _alive: Rc<()>,
-    dispatch: Dispatcher<R>,
+    dispatch: DispatchCore,
     saved: LocalState<RecordSaveStatus>,
     /// The participant's permissions, re-checked every sync so a role change
     /// while the app runs takes effect at once. `None` for a read-only view
@@ -65,10 +72,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     pub(crate) run: Run,
     /// The settings the view follows, re-read when their document changes.
     pub(crate) storage: Rc<super::settings::ViewStorage>,
-    /// Edits the views bound to their local state.
-    bindings: Bindings<R>,
     /// The effect handlers and projection drains the view registered.
-    effects: Effects<R>,
+    effects: EffectsCore,
     /// The app's view: the custom surface itself when the view is one.
     pub(crate) content: Element,
     /// View and effect operations of the app's presentation, attached to the
@@ -89,7 +94,34 @@ pub(crate) struct ResourceRoot<R: Resource> {
     native_presentation: crate::runner::Presentation,
 }
 
-impl<R: Resource> ui_core::component_lifecycle::WindowActivation for ResourceRoot<R> {
+/// What a root knows of its resource type without being generic over it.
+#[derive(Clone, Copy)]
+pub(crate) struct ResourceType {
+    /// The type itself, which a root's hosted surfaces share.
+    pub(crate) id: std::any::TypeId,
+    /// [`Resource::KIND`].
+    pub(crate) kind: &'static str,
+    /// [`Resource::LABEL`].
+    pub(crate) label: &'static str,
+    /// [`Resource::READABLE`].
+    readable: bool,
+    /// [`Resource::local_operations`].
+    local_operations: fn() -> Vec<tilo_actions::ActionSpec>,
+}
+
+impl ResourceType {
+    pub(crate) fn of<R: Resource>() -> Self {
+        Self {
+            id: std::any::TypeId::of::<R>(),
+            kind: R::KIND,
+            label: R::LABEL,
+            readable: R::READABLE,
+            local_operations: R::local_operations,
+        }
+    }
+}
+
+impl ui_core::component_lifecycle::WindowActivation for ResourceRoot {
     fn take_window_activation_intent(&self) -> bool {
         self.native_presentation.take_window_activation_intent()
     }
@@ -175,28 +207,38 @@ fn read_spec() -> tilo_actions::ActionSpec {
     spec.reads_document()
 }
 
-/// Answer a `read` request against `R`'s committed document.
-fn read<R: Resource>(
-    state: &R::State,
-    doc: &AutoCommit,
-    payload: &[u8],
-) -> Result<tilo_actions::ActionOutput, String> {
+/// The item a `read` request's payload names, if any.
+fn read_item(payload: &[u8]) -> Result<Option<String>, String> {
     let args: serde_json::Value = if payload.is_empty() {
         serde_json::Value::Null
     } else {
         serde_json::from_slice(payload).map_err(|error| error.to_string())?
     };
-    let item = args.get("item").and_then(serde_json::Value::as_str);
-    Ok(tilo_actions::ActionOutput {
-        value: Some(R::read_content(state, doc, item)?),
-        resources: Vec::new(),
-    })
+    Ok(args
+        .get("item")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned))
 }
 
-impl<R: Resource> ResourceRoot<R> {
+/// What a root is assembled from besides its resource type's part.
+pub(crate) struct RootParts {
+    pub(crate) title: &'static str,
+    pub(crate) icon: IconDescriptor,
+    pub(crate) label: String,
+    pub(crate) action_bindings: super::controls::PublishedActions,
+    pub(crate) dispatch: DispatchCore,
+    pub(crate) saved: LocalState<RecordSaveStatus>,
+    pub(crate) stages: Stages,
+    pub(crate) feeds: super::history::HistoryFeeds,
+    pub(crate) run: Run,
+    pub(crate) storage: Rc<super::settings::ViewStorage>,
+    pub(crate) effects: EffectsCore,
+}
+
+impl ResourceRoot {
     /// A root over `content`, the view built in `cx`, whose handles the root
     /// keeps; `alive` is the scope `cx`'s bindings are tied to.
-    pub(crate) fn new(
+    pub(crate) fn new<R: Resource>(
         title: &'static str,
         icon: IconDescriptor,
         label: String,
@@ -204,27 +246,77 @@ impl<R: Resource> ResourceRoot<R> {
         alive: Rc<()>,
         content: Element,
     ) -> Self {
-        let native_presentation = crate::runner::Presentation::new(&cx);
-        cx.dispatch.name_resource(&label);
-        Self {
+        let ViewCx {
+            live,
+            updaters,
+            dispatch,
+            action_bindings,
+            saved,
+            stages,
+            feeds,
+            run,
+            storage,
+            bindings,
+            effects,
+            ..
+        } = cx;
+        let parts = RootParts {
             title,
             icon,
             label,
-            live: cx.live,
-            updaters: cx.updaters,
-            action_bindings: cx.action_bindings,
+            action_bindings: action_bindings.published(),
+            dispatch: dispatch.core().clone(),
+            saved,
+            stages,
+            feeds,
+            run,
+            storage,
+            effects: effects.core(),
+        };
+        let typed = Typed {
+            live,
+            updaters,
+            dispatch,
+            bindings,
+            effects,
+        };
+        Self::assemble(
+            parts,
+            ResourceType::of::<R>(),
+            Box::new(typed),
+            alive,
+            content,
+        )
+    }
+
+    /// [`Self::new`] past what depends on the resource type.
+    fn assemble(
+        parts: RootParts,
+        resource: ResourceType,
+        typed: Box<dyn TypedRoot>,
+        alive: Rc<()>,
+        content: Element,
+    ) -> Self {
+        let native_presentation = crate::runner::Presentation::new(parts.run.content());
+        parts.dispatch.name_resource(&parts.label);
+        Self {
+            title: parts.title,
+            icon: parts.icon,
+            label: parts.label,
+            resource,
+            typed,
+            action_bindings: parts.action_bindings,
             followed: std::cell::Cell::new(0),
             _alive: alive,
-            dispatch: cx.dispatch,
-            saved: cx.saved,
+            dispatch: parts.dispatch,
+            saved: parts.saved,
             permissions: None,
             write: None,
-            stages: cx.stages,
-            feeds: cx.feeds,
-            run: cx.run,
-            storage: cx.storage,
-            bindings: cx.bindings,
-            effects: cx.effects,
+            stages: parts.stages,
+            feeds: parts.feeds,
+            run: parts.run,
+            storage: parts.storage,
+            effects: parts.effects,
             content,
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
@@ -233,6 +325,22 @@ impl<R: Resource> ResourceRoot<R> {
             history: true,
             native_presentation,
         }
+    }
+
+    /// The part of the root that depends on its resource type, when that
+    /// is `R`.
+    pub(crate) fn typed<R: Resource>(&self) -> Option<&Typed<R>> {
+        self.typed.as_any().downcast_ref::<Typed<R>>()
+    }
+
+    /// Whether the root shows a resource of type `R`.
+    pub(crate) fn is_of<R: Resource>(&self) -> bool {
+        self.resource.id == std::any::TypeId::of::<R>()
+    }
+
+    /// [`Resource::LABEL`] of the resource the root shows.
+    pub(crate) fn resource_label(&self) -> &'static str {
+        self.resource.label
     }
 
     /// A root whose resource keeps no document state: it publishes no
@@ -267,7 +375,7 @@ impl<R: Resource> ResourceRoot<R> {
             .collaborators()
             .iter()
             .map(|(name, at)| {
-                let (key, payload) = at.presence::<R>(self.dispatch.app_id());
+                let (key, payload) = at.presence_of(self.resource.kind, self.dispatch.app_id());
                 (name.clone(), key, payload)
             })
             .collect()
@@ -298,29 +406,22 @@ impl<R: Resource> ResourceRoot<R> {
         self.dispatch.refresh_permission_states();
     }
 
-    pub(crate) fn live(&self) -> &Live<R> {
-        &self.live
-    }
-
     /// What the launch that opened the window named.
     pub(crate) fn launch(&self) -> super::launch::LaunchInput<'_> {
         self.run.launch()
     }
 
-    /// Every hosted surface of this resource in the view, in tree order.
-    fn surfaces(&self, visit: &mut dyn FnMut(&dyn SurfacePublication<R>)) {
-        fn walk<R: Resource>(
-            widget: &dyn Widget,
-            visit: &mut dyn FnMut(&dyn SurfacePublication<R>),
-        ) {
-            if let Some(surface) =
-                ui_core::widget::capability::capability::<dyn SurfacePublication<R>>(widget)
-            {
-                visit(surface);
-            }
-            widget.for_each_child(&mut |child| walk(child, visit));
+    /// Bring the live state up to `doc`, as a change from another window or
+    /// participant moved it.
+    fn sync_live(&self, doc: &AutoCommit) {
+        if let Err(error) = self.typed.sync(doc) {
+            tracing::warn!(%error, kind = self.resource.kind, "resource unreadable");
         }
-        walk(self.content.as_ref(), visit);
+    }
+
+    /// Every hosted surface of this resource in the view, in tree order.
+    fn surfaces(&self, visit: &mut dyn FnMut(&dyn SurfacePublication)) {
+        surfaces_in(self.content.as_ref(), self.resource.id, visit);
     }
 
     /// Bind the edits surfaces offer on the rows `rows` name
@@ -333,18 +434,13 @@ impl<R: Resource> ResourceRoot<R> {
         if rows.is_empty() {
             return;
         }
-        let mut decls: Vec<Vec<tilo_resource::ActionDecl<R>>> = Vec::new();
+        let mut decls: Option<Box<dyn std::any::Any>> = None;
         self.surfaces(&mut |surface| {
-            decls.resize_with(rows.len(), Vec::new);
-            for (row, offered) in rows.iter().zip(decls.iter_mut()) {
-                offered.extend(surface.row_declarations(row.id.as_str()));
-            }
+            let offered = decls.get_or_insert_with(|| self.typed.row_declarations(rows.len()));
+            surface.row_declarations(rows, &mut **offered);
         });
-        for (row, offered) in rows.iter_mut().zip(decls) {
-            for decl in offered {
-                let bound = std::mem::replace(row, tilo_actions::Resource::new("", "", ""));
-                *row = tilo_resource::bind_declaration(bound, &decl);
-            }
+        if let Some(decls) = decls {
+            self.typed.bind_rows(rows, decls);
         }
     }
 
@@ -353,9 +449,9 @@ impl<R: Resource> ResourceRoot<R> {
     /// show, and the framework's operations every app answers.
     fn publication(&self) -> tilo_actions::Resource {
         let _profile = tilo_resource::profiling::Phase::start("framework.publication");
-        let state = self.live.get();
-        let tree = self.shared_document_tree(&state).to_resource();
-        self.decorate_publication(&state, tree, Decoration::Tree)
+        let state = self.typed.state();
+        let tree = self.shared_document_tree(&*state).to_resource();
+        self.decorate_publication(&*state, tree, Decoration::Tree)
     }
 
     /// The document-owned part of what controls bind to: the live
@@ -364,15 +460,19 @@ impl<R: Resource> ResourceRoot<R> {
     /// without building a child, so it costs the same however many items
     /// the resource holds.
     fn binding_head(&self) -> BindingHead {
-        let state = self.live.get();
-        let revision = (self.live.revision(), ui_core::i18n::I18nManager::revision());
-        let epoch = R::publication_cache_epoch(&state);
+        let state = self.typed.state();
+        let revision = (
+            self.typed.revision(),
+            ui_core::i18n::I18nManager::revision(),
+        );
+        let epoch = self.typed.cache_epoch(&*state);
         let cached = epoch
             .as_ref()
             .and_then(|epoch| self.tree.head_at(&(revision.0, revision.1, epoch.clone())));
         let resource = cached.unwrap_or_else(|| {
             let _profile = tilo_resource::profiling::Phase::start("framework.resource_head");
-            tilo_resource::publish_head::<R>(self.dispatch.resource_id(), &self.label, &state)
+            self.typed
+                .head(self.dispatch.resource_id(), &self.label, &*state)
         });
         BindingHead {
             revision,
@@ -387,7 +487,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// moved since. A resource that may not is published afresh each sync.
     fn retained_head(&self) -> Option<BindingHead> {
         let head = self.binding_head.borrow_mut().take()?;
-        let current = self.live.with(R::publication_cache_epoch);
+        let current = self.typed.cache_epoch(&*self.typed.state());
         (head.epoch.is_some() && head.epoch == current).then_some(head)
     }
 
@@ -396,7 +496,11 @@ impl<R: Resource> ResourceRoot<R> {
     /// [`Self::publication`] publishes them, without building or decorating
     /// its children.
     fn binding_publication(&self, head: &BindingHead) -> tilo_actions::Resource {
-        self.decorate_publication(&self.live.get(), head.resource.clone(), Decoration::Actions)
+        self.decorate_publication(
+            &*self.typed.state(),
+            head.resource.clone(),
+            Decoration::Actions,
+        )
     }
 
     /// Refresh the actions bound controls look up, reusing `head` while the
@@ -404,7 +508,10 @@ impl<R: Resource> ResourceRoot<R> {
     /// they were refreshed from.
     fn refresh_bindings(&self, head: Option<BindingHead>) -> BindingHead {
         let _profile = tilo_resource::profiling::Phase::start("framework.action_bindings");
-        let revision = (self.live.revision(), ui_core::i18n::I18nManager::revision());
+        let revision = (
+            self.typed.revision(),
+            ui_core::i18n::I18nManager::revision(),
+        );
         let head = match head {
             Some(head) if head.revision == revision => head,
             _ => self.binding_head(),
@@ -417,20 +524,20 @@ impl<R: Resource> ResourceRoot<R> {
     /// change from another window or participant may have moved past what
     /// this view last synced.
     fn current_publication(&self, doc: &AutoCommit) -> tilo_actions::Resource {
-        if !self.live.follows(doc)
-            && let Ok(current) = R::read(doc)
+        if !self.typed.follows(doc)
+            && let Ok(current) = self.typed.read(doc)
         {
             // Publication can run after an edit and before the view syncs.
             // Validate its nested views against this same state, rather than
             // withdrawing the new resource tree using the previous frame's
             // handler table. The next live revision replaces this cache.
-            self.pin_nested_views(&current);
-            return self.publication_of(&current);
+            self.pin_nested_views(&*current);
+            return self.publication_of(&*current);
         }
         self.publication()
     }
 
-    fn publication_of(&self, state: &R::State) -> tilo_actions::Resource {
+    fn publication_of(&self, state: &dyn std::any::Any) -> tilo_actions::Resource {
         let _profile = tilo_resource::profiling::Phase::start("framework.publication");
         let tree = self.shared_document_tree(state).to_resource();
         self.decorate_publication(state, tree, Decoration::Tree)
@@ -441,20 +548,20 @@ impl<R: Resource> ResourceRoot<R> {
     /// resource's own actions; its children stay as they are.
     fn decorate_publication(
         &self,
-        state: &R::State,
-        mut resource: tilo_actions::Resource,
+        state: &dyn std::any::Any,
+        resource: tilo_actions::Resource,
         decoration: Decoration,
     ) -> tilo_actions::Resource {
         let children = decoration == Decoration::Tree;
         let mut bound = {
             let _profile = tilo_resource::profiling::Phase::start("framework.bound_declarations");
-            self.bindings.declarations(state)
+            self.typed.declarations(state)
         };
         let mut rows = Vec::new();
         let mut availability = Vec::new();
         self.surfaces(&mut |surface| {
             let _profile = tilo_resource::profiling::Phase::start("framework.surface_publication");
-            bound.extend(surface.bound_declarations());
+            surface.bound_declarations(&mut *bound);
             availability.extend(surface.availability());
             if children {
                 rows.extend(
@@ -465,9 +572,7 @@ impl<R: Resource> ResourceRoot<R> {
                 );
             }
         });
-        for decl in bound {
-            resource = tilo_resource::bind_declaration(resource, &decl);
-        }
+        let mut resource = self.typed.bind(resource, bound);
         overlay_availability(&mut resource, &availability);
         if children {
             merge(&mut resource.children, rows);
@@ -481,7 +586,7 @@ impl<R: Resource> ResourceRoot<R> {
         let mut resource = FrameworkActions {
             presentation: &self.presentation,
             effects,
-            readable: R::READABLE,
+            readable: self.resource.readable,
             history: self.history,
             document_jobs: self.effects.has_causal_drains(),
         }
@@ -492,11 +597,6 @@ impl<R: Resource> ResourceRoot<R> {
         resource
     }
 
-    /// The dispatcher the root's views submit through, which the host drains.
-    pub(crate) fn dispatcher(&self) -> &Dispatcher<R> {
-        &self.dispatch
-    }
-
     /// Follow the document when it moved — a local action, a
     /// collaborator's change, an undo or a restore — reading only what the
     /// change touched.
@@ -504,24 +604,55 @@ impl<R: Resource> ResourceRoot<R> {
     /// Answers the document-owned head the bindings were refreshed from, for
     /// the refresh after the view synced to reuse.
     fn refresh(&self, doc: &AutoCommit) -> BindingHead {
-        if let Err(error) = self.live.sync(doc) {
-            tracing::warn!(%error, kind = R::KIND, "resource unreadable");
-        }
+        self.sync_live(doc);
         // Refresh the same declarations the host publishes before rebuilt
         // controls look up their bindings. Retained surface handles share it.
         let head = self.refresh_bindings(self.retained_head());
         // A surface may have synced the state itself after its own edit.
-        let revision = self.live.revision();
+        let revision = self.typed.revision();
         if revision != self.followed.get() {
             self.followed.set(revision);
-            self.updaters.run(&self.live.get());
+            self.typed.run_updaters();
         }
         self.feeds.refresh(doc);
-        self.live
-            .with(|state| self.effects.drain_projections(state, revision));
-        self.effects.poll_jobs();
+        self.effects
+            .drain_projections(&*self.typed.state(), revision);
+        self.typed.poll_jobs();
         head
     }
+}
+
+/// Every hosted surface of `resource` in `widget`, in tree order.
+fn surfaces_in(
+    widget: &dyn Widget,
+    resource: std::any::TypeId,
+    visit: &mut dyn FnMut(&dyn SurfacePublication),
+) {
+    if let Some(surface) = capability::<dyn SurfacePublication>(widget)
+        && surface.resource() == resource
+    {
+        visit(surface);
+    }
+    widget.for_each_child(&mut |child| surfaces_in(child, resource, visit));
+}
+
+/// What the first hosted surface of `resource` in `widget` that answers
+/// `visit` answers, depth first.
+fn find_surface_mut<T>(
+    widget: &mut dyn Widget,
+    resource: std::any::TypeId,
+    visit: &mut dyn FnMut(&mut dyn SurfacePublication) -> Option<T>,
+) -> Option<T> {
+    if let Some(surface) = capability_mut::<dyn SurfacePublication>(widget)
+        && surface.resource() == resource
+        && let Some(found) = visit(surface)
+    {
+        return Some(found);
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .find_map(|child| find_surface_mut(child, resource, visit))
 }
 
 /// How much of a publication [`ResourceRoot::decorate_publication`] adds.
@@ -749,13 +880,13 @@ fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
     }
 }
 
-impl<R: Resource> ui_core::widget::document_effects::DocumentEffects for ResourceRoot<R> {
+impl ui_core::widget::document_effects::DocumentEffects for ResourceRoot {
     fn start_document_effects(
         &mut self,
         operation: &ui_core::host_operation::ResourceOperation<'_>,
         applied: &ui_core::widget::document_effects::AppliedDocument<'_>,
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
-        self.effects.start_document_effects(operation, applied)
+        self.typed.start_document_effects(operation, applied)
     }
 }
 
@@ -1122,7 +1253,7 @@ impl ResourceSearch {
 // state current, publishes the resource, forwards edits and indexes search.
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
-impl<R: Resource> Decorator for ResourceRoot<R> {
+impl Decorator for ResourceRoot {
     ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation; inner = content);
 
     type Inner = dyn Widget;
@@ -1242,11 +1373,11 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         // Opening another app is routed by the host to the workspace
         // broker, whichever resource offers it.
         handlers.insert(tilo_actions::remote::ApplicationLaunch::TYPE.to_owned());
-        if R::READABLE {
+        if self.resource.readable {
             handlers.insert(READ_TYPE.to_owned());
         }
         handlers.extend(self.effects.operations().into_iter().map(str::to_owned));
-        for spec in R::local_operations()
+        for spec in (self.resource.local_operations)()
             .into_iter()
             .chain(self.presentation.iter().cloned())
         {
@@ -1287,11 +1418,18 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
         }
-        if R::READABLE
+        if self.resource.readable
             && let Some(request) = op.unscoped()
             && request.type_id == READ_TYPE
         {
-            let output = read::<R>(&self.live.get(), doc, request.payload)?;
+            let item = read_item(request.payload)?;
+            let value = self
+                .typed
+                .read_content(&*self.typed.state(), doc, item.as_deref())?;
+            let output = tilo_actions::ActionOutput {
+                value: Some(value),
+                resources: Vec::new(),
+            };
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
@@ -1303,9 +1441,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         }
         // An effect reads the resource as the document stands, though no
         // frame has run since a collaborator's change arrived.
-        if let Err(error) = self.live.sync(doc) {
-            tracing::warn!(%error, kind = R::KIND, "resource unreadable");
-        }
+        self.sync_live(doc);
         if let Some(started) = self.effects.start(op)? {
             return Ok(Some(started));
         }
@@ -1322,7 +1458,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         if request.kind != tilo_actions::OperationKind::View {
             return Ok(None);
         }
-        let known = R::local_operations()
+        let known = (self.resource.local_operations)()
             .into_iter()
             .chain(self.presentation.iter().cloned())
             .any(|spec| spec.operation_type.as_deref() == Some(request.type_id))
@@ -1339,7 +1475,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     }
 }
 
-impl<R: Resource> ResourceRoot<R> {
+impl ResourceRoot {
     /// The window ground is the framework's: an app never fills it, and one
     /// that paints nothing still stands on it.
     fn paint_ground(
@@ -1367,7 +1503,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// one before it.
     fn current_search_index(&self, revision: u64, shown: Vec<SearchEntry>) -> Arc<IndexedEntries> {
         current_search_index(&self.search, revision, shown, &|| {
-            R::search(&self.live.get())
+            self.typed.search(&*self.typed.state())
         })
     }
 }
@@ -1441,12 +1577,12 @@ fn current_search_index(
     indexed
 }
 
-impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> {
+impl ui_core::search::capability::SearchSource for ResourceRoot {
     fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
         // The resource's entries change with its revision; what the surfaces
         // show (a page's text, live rows) changes on their own, so their
         // entries are read now and the index rebuilt only when either moved.
-        let revision = self.live.revision();
+        let revision = self.typed.revision();
         let mut shown = Vec::new();
         let mut queries = Vec::new();
         self.surfaces(&mut |surface| {
@@ -1457,8 +1593,8 @@ impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> 
         // The app's one search source: what its content widgets show beside
         // the resource reaches it as their surfaces' entries, never as a
         // provider of their own.
-        let mut source = ResourceSearch::new(R::LABEL, indexed);
-        source.scopes = R::search_scopes(&self.live.get());
+        let mut source = ResourceSearch::new(self.resource.label, indexed);
+        source.scopes = self.typed.search_scopes(&*self.typed.state());
         source.queries = queries;
         vec![Box::new(source)]
     }
@@ -1482,7 +1618,7 @@ impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> 
     }
 }
 
-impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
+impl ui_core::resources::PublishesResources for ResourceRoot {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         ui_core::resources::PublishesResources::resources_for(self, None, doc)
     }
@@ -1504,10 +1640,8 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
             .cloned()
             .map(ui_core::invocation_scope::ViewerScope::enter);
         let resource = self.current_publication(doc);
-        let surface = ui_core::widget::capability::capability::<dyn SurfacePublication<R>>(
-            self.content.as_ref(),
-        )
-        .is_some();
+        let surface = capability::<dyn SurfacePublication>(self.content.as_ref())
+            .is_some_and(|surface| surface.resource() == self.resource.id);
         BesideContent {
             content: self.content.as_ref(),
             surface,
@@ -1534,15 +1668,14 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         if let Some(published) = find(&[self.current_publication(doc)], id) {
             return Some(published);
         }
-        let current = if self.live.follows(doc) {
+        let current = if self.typed.follows(doc) {
             None
         } else {
-            R::read(doc).ok()
+            self.typed.read(doc).ok()
         };
-        let child = match &current {
-            Some(current) => R::child(current, id),
-            None => R::child(&self.live.get(), id),
-        };
+        let child = self
+            .typed
+            .child(&*current.unwrap_or_else(|| self.typed.state()), id);
         if child.is_some() {
             return child;
         }
@@ -1572,7 +1705,7 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
             if super::history::is_edit(&address.action) {
                 return super::history::result(&address.action, doc, changes);
             }
-            if let Some(answer) = R::answer(doc, &address.action, changes) {
+            if let Some(answer) = self.typed.answer(doc, &address.action, changes) {
                 return Some(answer);
             }
         }
@@ -1580,7 +1713,7 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
     }
 }
 
-impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> {
+impl ui_core::widget::controls::ActionControls for ResourceRoot {
     fn action_control_bindings(&self) -> Vec<ui_core::widget::ControlBindingMetadata> {
         let mut bindings = Vec::new();
         ui_core::widget::Widget::for_each_child(self, &mut |child| {
@@ -1629,7 +1762,7 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
             if !matches!(error, tilo_actions::DoorError::ConfirmationRequired) {
                 self.dispatch.refuse(&address.action, error.to_string());
             }
-            self.live.represent();
+            self.typed.represent();
         }
         ui_core::widget::controls::on_control_invocation_result(
             self.content.as_mut(),
@@ -1646,7 +1779,7 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
 // The root owns the file whose history it shows beside the resource's (the
 // runner checks the source it registered is this root's); everything else
 // about History is its content's, as before.
-impl<R: Resource> ui_core::history_mode::capability::DocumentHistory for ResourceRoot<R> {
+impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
     fn history_registration(
         &self,
     ) -> Result<
@@ -1696,21 +1829,7 @@ impl<R: Resource> ui_core::history_mode::capability::DocumentHistory for Resourc
         previous: Option<&tilo_actions::EncodedAction>,
         next: &tilo_actions::EncodedAction,
     ) -> (bool, bool) {
-        if next.type_id != R::ACTION_TYPE {
-            return (false, false);
-        }
-        let Ok(next) = serde_json::from_slice::<R::Action>(&next.payload) else {
-            return (false, false);
-        };
-        let previous = previous
-            .filter(|encoded| encoded.type_id == R::ACTION_TYPE)
-            .and_then(|encoded| serde_json::from_slice::<R::Action>(&encoded.payload).ok());
-        (
-            previous
-                .as_ref()
-                .is_some_and(|previous| R::coalesces(previous, &next)),
-            R::continuable(&next),
-        )
+        self.typed.text_policy(previous, next)
     }
 
     fn document_action_applied(
@@ -1729,7 +1848,7 @@ impl<R: Resource> ui_core::history_mode::capability::DocumentHistory for Resourc
     }
 }
 
-impl<R: Resource> ui_core::undo::CommittedActions for ResourceRoot<R> {
+impl ui_core::undo::CommittedActions for ResourceRoot {
     fn take_committed_action(&mut self) -> Option<Vec<ui_core::automerge::ChangeHash>> {
         self.dispatch.take_committed()
     }
@@ -1738,7 +1857,7 @@ impl<R: Resource> ui_core::undo::CommittedActions for ResourceRoot<R> {
     }
 }
 
-impl<R: Resource> AppWidget for ResourceRoot<R> {
+impl AppWidget for ResourceRoot {
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
     }
@@ -1759,59 +1878,39 @@ impl<R: Resource> AppWidget for ResourceRoot<R> {
         &mut self,
         operation: &ui_core::floating_surface::DeviceShellOperation,
     ) -> Result<serde_json::Value, String> {
-        fn perform<R: Resource>(
-            widget: &mut dyn Widget,
-            operation: &ui_core::floating_surface::DeviceShellOperation,
-        ) -> Option<Result<serde_json::Value, String>> {
-            if let Some(surface) = capability_mut::<dyn SurfacePublication<R>>(widget)
-                && surface.supports_device_shell()
-            {
-                return Some(surface.device_shell_operation(operation));
-            }
-            widget
-                .children_mut()
-                .into_iter()
-                .find_map(|child| perform::<R>(child, operation))
-        }
-        perform::<R>(self.content.as_mut(), operation)
-            .unwrap_or_else(|| Err("Terminal is not available".into()))
+        find_surface_mut(self.content.as_mut(), self.resource.id, &mut |surface| {
+            surface
+                .supports_device_shell()
+                .then(|| surface.device_shell_operation(operation))
+        })
+        .unwrap_or_else(|| Err("Terminal is not available".into()))
     }
 
     fn request_device_shell(&mut self) -> bool {
-        fn request<R: Resource>(widget: &mut dyn Widget) -> bool {
-            if let Some(surface) = capability_mut::<dyn SurfacePublication<R>>(widget)
-                && surface.request_device_shell()
-            {
-                return true;
-            }
-            widget.children_mut().into_iter().any(request::<R>)
-        }
-        request::<R>(self.content.as_mut())
+        find_surface_mut(self.content.as_mut(), self.resource.id, &mut |surface| {
+            surface.request_device_shell().then_some(())
+        })
+        .is_some()
     }
 
     fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
-        fn take<R: Resource>(widget: &mut dyn Widget) -> Option<ui_core::widget::AppHostIntent> {
-            if let Some(surface) = capability_mut::<dyn SurfacePublication<R>>(widget)
-                && let Some(intent) = surface.take_host_intent()
-            {
-                return Some(intent);
-            }
-            widget.children_mut().into_iter().find_map(take::<R>)
-        }
-        take::<R>(self.content.as_mut())
+        find_surface_mut(self.content.as_mut(), self.resource.id, &mut |surface| {
+            surface.take_host_intent()
+        })
     }
 
     fn take_save_retry(&mut self) -> bool {
-        fn take<R: Resource>(widget: &mut dyn Widget) -> bool {
-            let own = capability_mut::<dyn SurfacePublication<R>>(widget)
+        fn take(widget: &mut dyn Widget, resource: std::any::TypeId) -> bool {
+            let own = capability_mut::<dyn SurfacePublication>(widget)
+                .filter(|surface| surface.resource() == resource)
                 .is_some_and(SurfacePublication::take_save_retry);
             // Consume every surface's one-shot even when another requested it.
             widget
                 .children_mut()
                 .into_iter()
-                .fold(own, |retry, child| take::<R>(child) || retry)
+                .fold(own, |retry, child| take(child, resource) || retry)
         }
-        take::<R>(self.content.as_mut())
+        take(self.content.as_mut(), self.resource.id)
     }
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
@@ -1977,7 +2076,7 @@ mod search_tests {
         let mut app = TestApp::<QueryApp>::new().unwrap();
         QUERIES.with_borrow_mut(Vec::clear);
         app.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<Mailbox>| {
+            .with_widget_mut(|root: &mut ResourceRoot| {
                 let providers = ui_core::search::capability::search_providers(root);
                 assert_eq!(providers.len(), 1, "one canonical resource source");
                 let search = &providers[0];
@@ -2012,7 +2111,7 @@ mod search_tests {
         let mut app = TestApp::<MailApp>::new().unwrap();
         let (titles, mut scoped, declared, reminder) = app
             .harness()
-            .with_widget_mut(|root: &mut ResourceRoot<Mailbox>| {
+            .with_widget_mut(|root: &mut ResourceRoot| {
                 let providers = ui_core::search::capability::search_providers(root);
                 let search = providers.first().unwrap();
                 let titles = |query: &SearchQuery| {
@@ -2050,7 +2149,7 @@ mod search_tests {
 
         // Picking a hit opens the app at it.
         app.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<Mailbox>| {
+            .with_widget_mut(|root: &mut ResourceRoot| {
                 let mut doc = ui_core::automerge::AutoCommit::new();
                 ui_core::search::capability::activate_search_result(
                     root,
