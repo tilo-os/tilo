@@ -22,7 +22,7 @@ target-specific `cfg`. A host that cannot use the native implementations builds
 | Document storage | `durable_store::DurableStore` | `app_state::FsStore` | `MemoryStore::new()`, `MemoryStore::queued()` |
 | Desktop settings | `settings_store::SettingsSource` (`install_source`, `load`, `stamp`) | `settings.json` (nothing installed) | `settings_store::HostDocument` (the browser page) |
 | Local person's identity | `ui::local_identity::LocalIdentitySource` | `RuntimeIdentity` (feature `local-daemons`) | `NoLocalIdentity` |
-| Collaboration transport | `ui::collaboration::CollabTransport` | `BrokerTransport` (feature `broker-transport`) | `LoopbackTransport` |
+| Collaboration transport | `ui::collaboration::CollabTransport` | `BrokerTransport` (feature `broker-transport`) | — |
 | Action invocation | `tilo_actions::remote::ActionHost` | the shell's broker host | any host serving the same vocabulary |
 | Peer wire format | `neighbour-wire` | — | — |
 | Desktop model | `tilo-desktop-model` | wrapped by the shell's `WorkspaceTree` | — |

@@ -2659,6 +2659,41 @@ impl ShellOverlayHost {
         roots
     }
 
+    fn paint_profile_control_focus(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        profile: &ui::a11y::AccessNode,
+        target: &str,
+    ) {
+        fn register_controls(
+            node: &ui::a11y::AccessNode,
+            controls: &mut ui::widget::PaintedTargets,
+            focused: &str,
+        ) -> bool {
+            let mut found = false;
+            if let (Some(id), Some(bounds)) = (node.action_target.as_deref(), node.bounds)
+                && node.state.focusable
+                && !node.state.disabled
+            {
+                controls.target(id, bounds.to_rect(), node.name.clone().unwrap_or_default());
+                found = id == focused;
+            }
+            for child in &node.children {
+                found |= register_controls(child, controls, focused);
+            }
+            found
+        }
+
+        let mut controls = ui::widget::PaintedTargets::new();
+        controls.begin_frame();
+        if register_controls(profile, &mut controls, target) {
+            controls.focus(target);
+            controls.set_host_focus(true);
+            controls.paint_focus(scene, transform, theme.radius_standard, theme);
+        }
+    }
+
     fn profile_add_agent_accessibility(
         &self,
         state: &crate::shell::chrome_state::ChromeState,
@@ -23427,7 +23462,7 @@ impl ShellOverlayHost {
             if let Some(target) = self.profile_control_focus.as_deref() {
                 let profile = ui::a11y::AccessNode::new(ui::a11y::Role::Group)
                     .with_children(self.workspace_profile_accessibility(&state));
-                ui::widget::paint_semantic_focus(scene, plan.transform, theme, &profile, target);
+                Self::paint_profile_control_focus(scene, plan.transform, theme, &profile, target);
             }
         }
         WorkspaceSettingsOverlay::finish_draw(scene, plan);

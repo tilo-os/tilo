@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use ui::time::Instant;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -4679,30 +4680,23 @@ impl Widget for MapsApp {
         self.nav_card_size = navigation_card_size(theme);
         self.navigation_placement
             .set_preferred_size(self.nav_card_size);
-        #[allow(
-            clippy::unwrap_used,
-            reason = "a fresh leaf on a live taffy tree cannot fail short of OOM, and \
-                      `Widget::build_layout` returns `NodeId` directly with no fallible path"
-        )]
-        let node = taffy
-            .new_leaf(Style {
+        let node = taffy.widget_leaf(
+            Style {
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),
                 },
                 ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            },
+            node_map,
+            self,
+        );
         self.node = Some(node);
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         // Arm the first POI fetch once a real viewport exists (live app only).
         if self.online
             && self.poi_fetched_bounds.is_none()

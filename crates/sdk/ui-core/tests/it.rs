@@ -79,8 +79,6 @@ mod group_row_visual_journey;
 mod host_entry_points;
 #[path = "icon_grid_test.rs"]
 mod icon_grid_test;
-#[path = "identity_flow_layout.rs"]
-mod identity_flow_layout;
 #[path = "immersive_widget_geometry.rs"]
 mod immersive_widget_geometry;
 #[path = "incremental_render_regressions.rs"]

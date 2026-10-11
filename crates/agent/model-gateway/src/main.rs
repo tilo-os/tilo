@@ -29,7 +29,7 @@ use std::future::Future;
 use tilo_model_gateway::{
     EVENT_TOOL_CALL, EVENT_TOOL_CALL_DELTA, FRAMING, FaceImage, MAX_DELTA_EVENTS,
     MAX_STREAM_EVENTS, PlanTrace, RPC_VERSION, Request, RequestFrame, Response, TraceEvent,
-    VisionImage,
+    VisionImage, is_pinned_revision, is_supervised_loopback,
 };
 #[cfg(test)]
 use tilo_model_gateway::{Frame, read_frame, write_frame};
@@ -2354,10 +2354,7 @@ fn vision_request(
 ) -> Result<(ProviderProfile, serde_json::Value), String> {
     validate_vision_image(image)?;
     let profile = configured_profile(profile_id)?;
-    if profile.location != EndpointLocation::ThisDevice
-        || profile.protocol != ProviderProtocol::OpenAiCompatible
-        || !loopback_http_endpoint(&profile.endpoint)
-    {
+    if !is_supervised_loopback(&profile) {
         return Err("image analysis requires a supervised loopback OpenAI-compatible model".into());
     }
     let model = profile
@@ -2407,10 +2404,7 @@ fn face_request(
 ) -> Result<(ProviderProfile, serde_json::Value), String> {
     validate_face_images(images)?;
     let profile = configured_profile(profile_id)?;
-    if profile.location != EndpointLocation::ThisDevice
-        || profile.protocol != ProviderProtocol::OpenAiCompatible
-        || !loopback_http_endpoint(&profile.endpoint)
-    {
+    if !is_supervised_loopback(&profile) {
         return Err("face clustering requires a supervised loopback local model".into());
     }
     let model = profile
@@ -2500,30 +2494,6 @@ fn validate_face_images(images: &[FaceImage]) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn loopback_http_endpoint(endpoint: &str) -> bool {
-    let Ok(url) = url::Url::parse(endpoint) else {
-        return false;
-    };
-    if !matches!(url.scheme(), "http" | "https") || url.username() != "" || url.password().is_some()
-    {
-        return false;
-    }
-    match url.host() {
-        Some(url::Host::Domain("localhost")) => true,
-        Some(url::Host::Ipv4(address)) => address.is_loopback(),
-        Some(url::Host::Ipv6(address)) => address.is_loopback(),
-        _ => false,
-    }
-}
-
-fn is_pinned_revision(revision: &str) -> bool {
-    matches!(revision.len(), 40 | 64)
-        && revision
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn local_vision_body(model_id: &str, image: &VisionImage) -> serde_json::Value {
@@ -3008,25 +2978,6 @@ mod tests {
             let mut bad_hash = vision_image();
             bad_hash.source_content_hash = "x".repeat(64);
             assert!(validate_vision_image(&bad_hash).is_err());
-        }
-
-        // Phase: local_vision_never_routes_to_a_lan_or_hosted_endpoint.
-        {
-            assert!(loopback_http_endpoint("http://127.0.0.1:8123/v1"));
-            assert!(loopback_http_endpoint("http://[::1]:8123/v1"));
-            assert!(!loopback_http_endpoint("http://192.168.1.20:8123/v1"));
-            assert!(!loopback_http_endpoint("https://models.example.test/v1"));
-            assert!(!loopback_http_endpoint(
-                "http://localhost.evil.test:8123/v1"
-            ));
-        }
-
-        // Phase: local_vision_requires_an_immutable_model_revision.
-        {
-            assert!(is_pinned_revision(&"a".repeat(40)));
-            assert!(is_pinned_revision(&"b".repeat(64)));
-            assert!(!is_pinned_revision("main"));
-            assert!(!is_pinned_revision(&"A".repeat(40)));
         }
 
         // Phase: local_vision_prompt_is_fixed_and_contains_no_identity_request.

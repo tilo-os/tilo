@@ -18,6 +18,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, SyncSender};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -6176,10 +6177,7 @@ impl Widget for ChatApp {
                 ..Default::default()
             }
         };
-        // `new_leaf` on a freshly created tree never fails.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
-        let video_node = taffy.new_leaf(video_style).unwrap();
-        node_map.insert(video_node, &raw mut self.video as *mut dyn Widget);
+        let video_node = taffy.widget_leaf(video_style, node_map, &mut self.video);
         self.video_node = Some(video_node);
 
         // `new_with_children` only fails when a child belongs to a different
@@ -6206,14 +6204,11 @@ impl Widget for ChatApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
         if !self.presented {
             self.presented = true;
             self.read_on_present = true;
         }
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if !self.call.expanded {
             self.call
                 .placement

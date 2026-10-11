@@ -3024,14 +3024,9 @@ impl Widget for CodeApp {
         taffy.widget_node(style, &[content_node], node_map, self)
     }
 
-    #[allow(
-        clippy::unwrap_used,
-        reason = "Widget::apply_layout is infallible by trait contract; every node looked up here was created by this widget's own build_layout in the same tree, so a lookup failure means the taffy tree is already corrupted and there is no meaningful layout to fall back to"
-    )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = ui::widget::placed(layout, origin);
-        let new_origin = Point::new(self.rect.x0, self.rect.y0);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        let new_origin = self.rect.origin();
 
         // Cache the real measured width so `sidebar_layout()` is consistent
         // across passes (it's read in `build_layout`, before this runs), and
@@ -3041,27 +3036,16 @@ impl Widget for CodeApp {
         self.drawer.resolve(self.rect);
 
         if let Some(content_node) = self.content_node {
-            let content_layout = taffy.layout(content_node).unwrap();
-            let content_origin = Point::new(
-                new_origin.x + f64::from(content_layout.location.x),
-                new_origin.y + f64::from(content_layout.location.y),
-            );
+            let content_origin = ui::widget::layout_rect(taffy, content_node, new_origin).origin();
             if let Some(n) = self.sidebar_node {
                 self.sidebar.apply_layout(taffy, n, content_origin);
             }
             // Editor column origin within the content row.
             if let Some(col) = self.editor_col_node {
-                let col_layout = taffy.layout(col).unwrap();
-                let col_origin = Point::new(
-                    content_origin.x + f64::from(col_layout.location.x),
-                    content_origin.y + f64::from(col_layout.location.y),
-                );
+                let col_origin = ui::widget::layout_rect(taffy, col, content_origin).origin();
                 if let Some(header_node) = self.editor_header_node {
-                    let header_layout = taffy.layout(header_node).unwrap();
-                    let header_origin = Point::new(
-                        col_origin.x + f64::from(header_layout.location.x),
-                        col_origin.y + f64::from(header_layout.location.y),
-                    );
+                    let header_origin =
+                        ui::widget::layout_rect(taffy, header_node, col_origin).origin();
                     if let Some(n) = self.header_node {
                         self.header.apply_layout(taffy, n, header_origin);
                     }
@@ -3082,13 +3066,7 @@ impl Widget for CodeApp {
                     self.panel.apply_layout(taffy, n, col_origin);
                 }
                 if let Some(n) = self.status_node {
-                    let status = taffy.layout(n).unwrap();
-                    self.status_rect = Rect::new(
-                        col_origin.x + f64::from(status.location.x),
-                        col_origin.y + f64::from(status.location.y),
-                        col_origin.x + f64::from(status.location.x) + f64::from(status.size.width),
-                        col_origin.y + f64::from(status.location.y) + f64::from(status.size.height),
-                    );
+                    self.status_rect = ui::widget::layout_rect(taffy, n, col_origin);
                 }
             }
         }

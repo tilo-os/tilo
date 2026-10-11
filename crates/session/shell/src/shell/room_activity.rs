@@ -97,6 +97,7 @@ const SHORTCUT_RUN_LOOK_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) struct NativeActivityHost {
     broker: Option<crate::shell::collab_broker::AppActionBroker>,
     review: Option<super::task_review::NativeTaskReview>,
+    morning: Option<Rc<super::morning_sources::NativeMorningSources>>,
 }
 
 /// A document's revision when a waiting run last looked at it: the heads of
@@ -507,7 +508,10 @@ impl HistoryBatch {
 /// Palette actions use only this device's explicit choices for the active room.
 pub(crate) fn morning_source_actions(workspace: &Workspace) -> Vec<(String, String)> {
     use crate::shell::i18n::t;
-    use tilo_desktop::activity::morning::{MORNING_OPEN, MORNING_REMOVE, MorningPreferences};
+    use tilo_desktop::activity::morning::{
+        MORNING_DRAFT, MORNING_NEXT, MORNING_OPEN, MORNING_REFRESH, MORNING_REMOVE,
+        MorningPreferences,
+    };
     let choices: HashMap<u64, MorningPreferences> = load_history_map("morning_sources");
     choices
         .get(&workspace.id.raw())
@@ -520,10 +524,30 @@ pub(crate) fn morning_source_actions(workspace: &Workspace) -> Vec<(String, Stri
                         .unwrap_or_else(|| source.app.clone());
                     [
                         (
+                            format!("{MORNING_NEXT}{}.{}", workspace.room, source.key()),
+                            t("activity-morning-next"),
+                        ),
+                        (
                             format!("{MORNING_OPEN}{}.{}", workspace.room, source.key()),
                             format!(
                                 "{}: {app} · {}",
                                 t("activity-morning-open"),
+                                source.resource
+                            ),
+                        ),
+                        (
+                            format!("{MORNING_REFRESH}{}.{}", workspace.room, source.key()),
+                            format!(
+                                "{}: {app} · {}",
+                                t("activity-morning-refresh"),
+                                source.resource
+                            ),
+                        ),
+                        (
+                            format!("{MORNING_DRAFT}{}.{}", workspace.room, source.key()),
+                            format!(
+                                "{}: {app} · {}",
+                                t("activity-morning-draft"),
                                 source.resource
                             ),
                         ),
@@ -581,6 +605,34 @@ impl ActivityHost for NativeActivityHost {
             let user = self.local_user();
             (!user.is_empty()).then_some(user)
         }
+    }
+    fn morning_sources_available(&self) -> bool {
+        true
+    }
+    fn morning_payload(
+        &self,
+        room: &str,
+        source: &tilo_desktop::activity::morning::MorningSource,
+    ) -> Option<tilo_desktop::activity::morning::MorningPayload> {
+        self.morning.as_ref()?.payload(room, source)
+    }
+    fn submit_morning_command(
+        &self,
+        room: &str,
+        source: &tilo_desktop::activity::morning::MorningSource,
+        command: tilo_desktop::activity::morning::MorningCommand,
+    ) -> Result<(), String> {
+        self.morning
+            .as_ref()
+            .ok_or_else(|| super::i18n::t("activity-morning-command-unavailable"))?
+            .submit(room, source, command)
+    }
+    fn morning_command_status(
+        &self,
+        room: &str,
+        source: &tilo_desktop::activity::morning::MorningSource,
+    ) -> Option<String> {
+        self.morning.as_ref()?.command_status(room, source)
     }
     fn load_morning_sources(
         &self,
@@ -1034,6 +1086,9 @@ impl RoomActivityPane {
     pub fn attach_task_broker(&mut self, broker: crate::shell::collab_broker::AppActionBroker) {
         self.1 = Some(broker.clone());
         self.set_host(Rc::new(NativeActivityHost {
+            morning: Some(Rc::new(super::morning_sources::NativeMorningSources::new(
+                broker.clone(),
+            ))),
             broker: Some(broker),
             review: None,
         }));
@@ -1041,6 +1096,9 @@ impl RoomActivityPane {
     pub(crate) fn attach_task_review(&mut self, review: super::task_review::NativeTaskReview) {
         let broker = self.1.clone();
         self.set_host(Rc::new(NativeActivityHost {
+            morning: broker
+                .clone()
+                .map(|broker| Rc::new(super::morning_sources::NativeMorningSources::new(broker))),
             broker,
             review: Some(review),
         }));
@@ -1619,5 +1677,14 @@ mod tests {
         drop(pane);
         assert!(!still_pending, "given up once settled");
         assert!(ui::read_runs(&tree.doc).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod morning_host_regression {
+    use super::*;
+    #[test]
+    fn native_morning_sources_advertise_private_selection() {
+        assert!(NativeActivityHost::default().morning_sources_available());
     }
 }

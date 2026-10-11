@@ -184,15 +184,39 @@ up to eight resources. Selecting it does not grant access, refresh a provider,
 connect an account or acknowledge activity.
 
 **Activity → Catch up** shows these choices with their latest admitted resource
-history and last recorded activity time. External freshness remains unknown:
-these links do not claim to contain a fresh forecast, news report or market quote.
+history and last recorded activity time. The native host separately reads bounded
+provider previews through its certified, room-bound action catalogue. Provider
+source, observation/fetch time and freshness remain provider-owned data, distinct
+from history time; an unavailable preview makes no fresh-data claim. Weather
+publishes its existing cached observation, never a fabricated summary.
+One chosen source is shown at a time with a bounded visual preview; full
+provider text stays available to accessibility. Use the keyboard source pager
+or the room-bound `room.activity.morning.next.<room>.<key>` navigation action
+to inspect the remaining choices, including unavailable sources.
+
 Open/remove actions are enumerated for the current room as
 `room.activity.morning.open.<room>.<key>` and
-`room.activity.morning.remove.<room>.<key>`; use the returned IDs rather than
-constructing keys. Queued actions remain bound to that room. Opening uses the
-existing history resource launcher (file/URI targets where available, otherwise
-the owning app), with its ordinary workspace permission checks. Missing evidence
-is shown as unavailable and can still be removed.
+`room.activity.morning.remove.<room>.<key>`. Native opening invokes the existing
+provider's exact resource `open` action through the ordinary broker, including
+its launch and current permission checks. Hosts without that adapter retain the
+history launcher. Missing history evidence is unavailable and can still be removed.
+
+`room.activity.morning.refresh.<room>.<key>` requests the selected resource's
+currently offered, nullary read-effect `refresh`. The broker rechecks the real
+operation at invocation; status reports a request, not a fabricated refresh result.
+`room.activity.morning.draft.<room>.<key>` imports an unsaved, authority-free
+single-resource refresh program into Shortcuts through `draft-shortcut` on
+`shortcuts.workbench`. Use returned IDs rather than constructing keys. Queued
+commands remain room-bound. No catalogue read connects accounts or refreshes data.
+
+In Shortcuts, **Daily schedule** chooses a daily device-local time on the draft
+through its `set-schedule` action. The existing permission review shows the time
+and the exact action grant; only the person's explicit save uses the existing
+owner-checked shortcut library and scheduler. The existing durable schedule ledger,
+fire claims and catch-up policy avoid duplicate restart fires. Disable and save
+to stop future runs. Importing a draft drops imported triggers, consents and saver
+identity; opening the editor creates no user schedule. Real sources/account access
+and real schedule creation require the user's applicable authorization.
 
 The providers on a stock build are `actions` (the shell's own chrome),
 `applications`, `host-applications`, `notes`, `files`, `records` and `editor`.

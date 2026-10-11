@@ -454,7 +454,7 @@ async fn sign_complete_native_document(
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             identity.signing_public_key()
         }
-        LocalSdkDocumentSigner::Host(identity) => identity.signing_public_key(),
+        LocalSdkDocumentSigner::Host(identity) => identity.metadata().signing_public_key(),
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_)) => {
             return Err(refused(
                 "native Message requires a certified native document signer",

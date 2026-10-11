@@ -321,6 +321,18 @@ pub fn push_gpu_selection(
     }
 }
 
+/// The loader pin of a GPU-less machine (`gpu::SoftwarePin`): its manifests
+/// read-only and the variables that name them. No device is bound beyond
+/// the system profile's.
+pub fn push_software_pin(argv: &mut Vec<String>, pin: &crate::gpu::SoftwarePin) {
+    for file in pin.manifest_files() {
+        push_bind(argv, "--ro-bind-try", &file, &file);
+    }
+    for (key, value) in pin.env() {
+        argv.extend(["--setenv".to_string(), key.to_string(), value]);
+    }
+}
+
 /// Bind the trusted session seed read-only, independently of DRM access.
 pub fn push_pipeline_seed(argv: &mut Vec<String>, seed: &Path) {
     push_bind(

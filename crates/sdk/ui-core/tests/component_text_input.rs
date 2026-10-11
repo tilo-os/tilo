@@ -103,11 +103,7 @@ impl Widget for Page {
         node: tilo_ui::taffy::NodeId,
         origin: tilo_ui::kurbo::Point,
     ) {
-        let location = tree.layout(node).map(|l| l.location).unwrap_or_default();
-        let inner = tilo_ui::kurbo::Point::new(
-            origin.x + f64::from(location.x),
-            origin.y + f64::from(location.y),
-        );
+        let inner = tilo_ui::widget::layout_rect(tree, node, origin).origin();
         if let Some(&child) = tree.children(node).unwrap_or_default().first() {
             self.0.apply_layout(tree, child, inner);
         }

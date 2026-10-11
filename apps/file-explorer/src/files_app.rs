@@ -9042,14 +9042,7 @@ impl Widget for FileExplorerWidget {
         node: taffy::NodeId,
         origin: vello::kurbo::Point,
     ) {
-        // `node` was created by `build_layout` in this same tree, so a
-        // lookup miss would mean the frame cycle called these out of order.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
-        )]
-        let l = taffy.layout(node).unwrap();
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let base = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
         if let Ok(children) = taffy.children(node)
             && let Some(&nav_n) = children.first()

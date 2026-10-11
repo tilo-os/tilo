@@ -40,6 +40,44 @@ pub const MAX_TRANSFORM_TIMEOUT: Duration = Duration::from_secs(30);
 /// The largest model answer a [`Request::Transform`] returns.
 pub const MAX_TRANSFORM_OUTPUT_BYTES: usize = 256 * 1024;
 
+/// Whether `profile` is a model runner the gateway supervises on this device:
+/// OpenAI-compatible and reachable only on loopback. The device-local image
+/// operations admit nothing else, and apps discovering such a model apply this
+/// same rule so they never offer one the gateway would refuse.
+#[must_use]
+pub fn is_supervised_loopback(profile: &agent_provider_config::ProviderProfile) -> bool {
+    use agent_provider_config::{EndpointLocation, ProviderProtocol};
+    profile.location == EndpointLocation::ThisDevice
+        && profile.protocol == ProviderProtocol::OpenAiCompatible
+        && loopback_http_endpoint(&profile.endpoint)
+}
+
+fn loopback_http_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") || url.username() != "" || url.password().is_some()
+    {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        _ => false,
+    }
+}
+
+/// Whether `revision` names an immutable model revision: a full lowercase
+/// SHA-1 or SHA-256 commit id, never a branch or tag.
+#[must_use]
+pub fn is_pinned_revision(revision: &str) -> bool {
+    matches!(revision.len(), 40 | 64)
+        && revision
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// The only encoded-preview media types accepted by the local vision RPC.
 /// Keeping this vocabulary closed means a caller cannot ask the trusted
 /// gateway to fetch a URL or interpret an arbitrary document as an image.
@@ -774,5 +812,30 @@ mod unsupported_platform_tests {
             remove_api_key("hosted"),
             Err(ClientError::Unavailable)
         ));
+    }
+}
+
+#[cfg(test)]
+mod local_model_tests {
+    use super::*;
+
+    #[test]
+    fn local_vision_never_routes_to_a_lan_or_hosted_endpoint() {
+        assert!(loopback_http_endpoint("http://127.0.0.1:8123/v1"));
+        assert!(loopback_http_endpoint("http://[::1]:8123/v1"));
+        assert!(!loopback_http_endpoint("http://192.168.1.20:8123/v1"));
+        assert!(!loopback_http_endpoint("https://models.example.test/v1"));
+        assert!(!loopback_http_endpoint(
+            "http://localhost.evil.test:8123/v1"
+        ));
+    }
+
+    #[test]
+    fn local_vision_requires_an_immutable_model_revision() {
+        assert!(is_pinned_revision(&"a".repeat(40)));
+        assert!(is_pinned_revision(&"b".repeat(64)));
+        assert!(!is_pinned_revision("main"));
+        assert!(!is_pinned_revision(&"A".repeat(40)));
+        assert!(!is_pinned_revision(&"g".repeat(40)));
     }
 }

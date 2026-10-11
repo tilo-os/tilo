@@ -458,54 +458,6 @@ pub struct RemoteDesktopSessionHandle {
 }
 
 impl RemoteDesktopSessionHandle {
-    /// Bind Clipboard access before `Start`. Only the authenticated portal
-    /// frontend generation that created this remote-desktop session may do so.
-    pub fn request_clipboard(&self, session_handle: &str, owner: &str) -> bool {
-        self.sessions.lock().ok().is_some_and(|mut sessions| {
-            sessions.get_mut(session_handle).is_some_and(|session| {
-                if session.owner != owner || session.started {
-                    return false;
-                }
-                session.clipboard_requested = true;
-                true
-            })
-        })
-    }
-
-    /// True only after the same owner has requested Clipboard and committed
-    /// the RemoteDesktop session with `Start`.
-    pub fn clipboard_active(&self, session_handle: &str, owner: &str) -> bool {
-        self.sessions.lock().ok().is_some_and(|sessions| {
-            sessions.get(session_handle).is_some_and(|session| {
-                session.owner == owner && session.started && session.clipboard_requested
-            })
-        })
-    }
-
-    /// Non-DBus lifecycle check for the clipboard bridge.  It intentionally
-    /// exposes no caller identity or device capability: it only lets the
-    /// bridge discard bytes after a session has been closed.
-    pub fn clipboard_live(&self, session_handle: &str) -> bool {
-        self.sessions.lock().ok().is_some_and(|sessions| {
-            sessions
-                .get(session_handle)
-                .is_some_and(|session| session.started && session.clipboard_requested)
-        })
-    }
-    /// Active clipboard recipients for compositor-originated ownership
-    /// changes. Names are implementation-side session paths, not app input.
-    pub fn clipboard_sessions(&self) -> Vec<String> {
-        self.sessions.lock().map_or_else(
-            |_| Vec::new(),
-            |sessions| {
-                sessions
-                    .iter()
-                    .filter(|(_, session)| session.started && session.clipboard_requested)
-                    .map(|(path, _)| path.clone())
-                    .collect()
-            },
-        )
-    }
     pub fn close(&self, session_handle: &str) -> bool {
         self.sessions
             .lock()
@@ -524,16 +476,32 @@ impl RemoteDesktopSessionHandle {
 
 impl super::clipboard::ClipboardSessionProvider for RemoteDesktopSessionHandle {
     fn request_clipboard(&self, session: &str, owner: &str) -> bool {
-        Self::request_clipboard(self, session, owner)
+        self.sessions.lock().ok().is_some_and(|mut sessions| {
+            sessions.get_mut(session).is_some_and(|session| {
+                if session.owner != owner || session.started {
+                    return false;
+                }
+                session.clipboard_requested = true;
+                true
+            })
+        })
     }
-    fn clipboard_active(&self, session: &str, owner: &str) -> bool {
-        Self::clipboard_active(self, session, owner)
-    }
-    fn clipboard_live(&self, session: &str) -> bool {
-        Self::clipboard_live(self, session)
+    fn clipboard_owner(&self, session: &str) -> Option<String> {
+        let sessions = self.sessions.lock().ok()?;
+        let session = sessions.get(session)?;
+        (session.started && session.clipboard_requested).then(|| session.owner.clone())
     }
     fn clipboard_sessions(&self) -> Vec<String> {
-        Self::clipboard_sessions(self)
+        self.sessions.lock().map_or_else(
+            |_| Vec::new(),
+            |sessions| {
+                sessions
+                    .iter()
+                    .filter(|(_, session)| session.started && session.clipboard_requested)
+                    .map(|(path, _)| path.clone())
+                    .collect()
+            },
+        )
     }
 }
 

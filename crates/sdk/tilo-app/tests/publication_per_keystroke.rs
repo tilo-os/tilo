@@ -9,10 +9,10 @@
 
 use std::cell::Cell;
 
-use tilo_app::framework::profiling::observe;
 use tilo_app::framework::testing::drive_live_window;
 use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
+use tilo_app::tilo_resource::profiling::observe;
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
@@ -144,12 +144,10 @@ fn one_keystroke(tasks: u32) -> Result<Phases, String> {
             app.state().draft
         ));
     }
-    let mut counts = Phases::new();
-    for phase in phases {
-        let count = counts.entry(phase.phase).or_insert(0);
-        *count = count.saturating_add(1);
-    }
-    Ok(counts)
+    Ok(phases
+        .into_iter()
+        .map(|phase| (phase.phase, phase.calls))
+        .collect())
 }
 
 #[test]
@@ -247,8 +245,8 @@ fn hosted_keystrokes(tasks: u32) -> Result<Vec<usize>, String> {
                 counts.push(
                     phases
                         .iter()
-                        .filter(|phase| phase.phase == "framework.publication")
-                        .count(),
+                        .find(|phase| phase.phase == "framework.publication")
+                        .map_or(0, |phase| phase.calls),
                 );
             }
             Ok((counts, draft_value(app)))
