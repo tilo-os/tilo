@@ -34,13 +34,13 @@ pub const HANDLE_HOVER_PX: f64 = 3.0;
 /// the strip's canvas (`GroupRow::usable_per_group`) has to step by this
 /// between adjacent groups.
 pub const HANDLE_SLOT_PX: f64 = 8.0;
-/// 8 px each side → 16 px total, the smallest touch-friendly target
-/// Fitts'-law-wise while still leaving room for the surrounding tab-bar
-/// affordances (the bar's drag-detach pill rect is also ~16 px tall).
-pub const HANDLE_HIT_HALF_PX: f64 = 8.0;
+/// The seam's hit zone is the slot plus one grab zone of each neighbour
+/// (`RESIZE_HANDLE_PX` inside each window), so every window edge, seam or
+/// outer, has the same size of target. Half of the 20 px total each side.
+pub const HANDLE_HIT_HALF_PX: f64 = HANDLE_SLOT_PX / 2.0 + crate::widget::RESIZE_HANDLE_PX;
 
 /// Captured-at-press snapshot of the two adjacent groups' widths and the
-/// cursor's x, so mid-drag each group's new width is `cursor_x -
+/// cursor's x, so mid-drag each group's new width is offset by `cursor_x -
 /// origin_cursor_x` and the edge follows the cursor 1:1.
 #[derive(Clone, Copy, Debug)]
 struct DragOrigin {
@@ -64,6 +64,8 @@ pub struct ResizeHandle {
     /// Drives the "thicken to 3 px" paint branch; the OS `EwResize`
     /// cursor hint is driven separately by [`Widget::cursor_shape`].
     hover: bool,
+    /// Last pointer x, so a press anchors the drag where the pointer is.
+    last_cursor_x: f64,
     /// `Some` once the user pressed inside the hit area. Carries the
     /// press-time cursor x and both neighbours' press-time widths so the
     /// per-frame update changes only the left width by default; Shift at
@@ -105,6 +107,7 @@ impl ResizeHandle {
             left_rect: Rect::ZERO,
             right_rect: Rect::ZERO,
             hover: false,
+            last_cursor_x: 0.0,
             drag: None,
             rect: Rect::ZERO,
             pending: None,
@@ -288,6 +291,7 @@ impl Widget for ResizeHandle {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor_x = pt.x;
                 self.hover = self.rect.contains(pt) && self.drag.is_none();
                 if let Some(origin) = self.drag {
                     let dx = pt.x - origin.cursor_x;
@@ -318,10 +322,9 @@ impl Widget for ResizeHandle {
                 let (min, max) = self.bounds;
                 let left_w = self.left_rect.width().max(0.0).clamp(min, max);
                 let right_w = self.right_rect.width().max(0.0).clamp(min, max);
-                // `GroupRow::handle_event` always dispatches CursorMoved
-                // before any MouseInput on the same frame, so the centre
-                // of `self.rect` is accurate to the nearest pixel here.
-                let cursor_x = f64::midpoint(self.rect.x0, self.rect.x1);
+                // Anchor at the pointer, not the seam centre: the hit zone is
+                // wider than the gap, so the edge must not jump to the cursor.
+                let cursor_x = self.last_cursor_x;
                 self.drag = Some(DragOrigin {
                     cursor_x,
                     left_w,
@@ -415,18 +418,18 @@ mod tests {
                 Rect::new(608.0, 0.0, 1208.0, 400.0),
             );
             let r0 = h.get_rect();
-            // Gap centre (600 + 608) / 2 = 604; hit area extends 8 px each
-            // side → x0=596, x1=612.
-            assert!((r0.x0 - 596.0).abs() < 0.1);
-            assert!((r0.x1 - 612.0).abs() < 0.1);
+            // Gap centre (600 + 608) / 2 = 604; hit area extends 10 px each
+            // side (half the gap plus one grab zone) → x0=594, x1=614.
+            assert!((r0.x0 - 594.0).abs() < 0.1);
+            assert!((r0.x1 - 614.0).abs() < 0.1);
 
             h.set_neighbour_rects(
                 Rect::new(100.0, 0.0, 700.0, 400.0),
                 Rect::new(708.0, 0.0, 1308.0, 400.0),
             );
             let r1 = h.get_rect();
-            assert!((r1.x0 - 696.0).abs() < 0.1);
-            assert!((r1.x1 - 712.0).abs() < 0.1);
+            assert!((r1.x0 - 694.0).abs() < 0.1);
+            assert!((r1.x1 - 714.0).abs() < 0.1);
         }
     }
 

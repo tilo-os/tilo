@@ -218,6 +218,13 @@ pub struct WindowGroup {
     /// `(press-time cursor x, press-time resolved width in px)`.
     resize_origin: Option<(f32, f64, WindowWidth)>,
     pub hover_resize: bool,
+    /// Whether the edge being hovered or dragged is the leading (left) one.
+    /// Dragging it away from the window widens it, so the pointer delta is
+    /// subtracted from the width instead of added.
+    resize_leading: bool,
+    /// The group starts its lane: no seam handle sits at its left edge, so
+    /// the group answers to presses there itself.
+    leads_lane: bool,
     /// The pointer entered or left the resize band since the last frame,
     /// which shows or hides the grip.
     grip_dirty: bool,
@@ -429,6 +436,8 @@ impl WindowGroup {
             external_navigation: false,
             resize_origin: None,
             hover_resize: false,
+            resize_leading: false,
+            leads_lane: false,
             grip_dirty: false,
             maximized: false,
             search_active: false,
@@ -687,6 +696,11 @@ impl WindowGroup {
         self.width.resolve(self.strip_usable_px)
     }
 
+    /// Mark whether this group starts its lane (the row sets it each layout).
+    pub fn set_leads_lane(&mut self, leads: bool) {
+        self.leads_lane = leads;
+    }
+
     pub fn begin_resize(&mut self, pointer_x: f32) {
         let visible_width = if self.rect.width() > 1.0 {
             self.rect.width()
@@ -699,7 +713,10 @@ impl WindowGroup {
     }
     pub fn update_resize(&mut self, pointer_x: f32) {
         if let Some((origin_x, origin_w, _)) = self.resize_origin {
-            let delta = f64::from(pointer_x - origin_x);
+            let mut delta = f64::from(pointer_x - origin_x);
+            if self.resize_leading {
+                delta = -delta;
+            }
             let usable = self.strip_usable_px;
             let clamped = (origin_w + delta).clamp(min_group_px(usable), max_group_px(usable));
             self.set_width_px(clamped);
@@ -707,6 +724,7 @@ impl WindowGroup {
     }
     pub fn end_resize(&mut self) {
         self.resize_origin = None;
+        self.resize_leading = false;
         self.pending_width_change = Some(self.width.permille());
     }
 
@@ -1096,6 +1114,8 @@ impl WindowGroup {
             external_navigation: false,
             resize_origin: None,
             hover_resize: false,
+            resize_leading: false,
+            leads_lane: false,
             grip_dirty: false,
             maximized: false,
             search_active: false,
@@ -1154,7 +1174,7 @@ impl WindowGroup {
         if !self.bar_rect().contains(p) {
             return false;
         }
-        if p.x >= self.rect.x1 - RESIZE_HANDLE_PX {
+        if self.resize_grab_hit(p) {
             return false;
         }
         let plus = self.bar.new_tab_rect();
@@ -1170,7 +1190,7 @@ impl WindowGroup {
         if self.external_navigation || !self.bar_rect().contains(p) {
             return false;
         }
-        if p.x >= self.rect.x1 - RESIZE_HANDLE_PX {
+        if self.resize_grab_hit(p) {
             return false;
         }
         let plus = self.bar.new_tab_rect();
@@ -1182,7 +1202,49 @@ impl WindowGroup {
     /// gestures cannot race; this matters especially for a one-group strip,
     /// where this grip is the only resize affordance.
     pub fn resize_grab_hit(&self, p: Point) -> bool {
-        self.resize_grab_rect().is_some_and(|rect| rect.contains(p))
+        self.resize_grab_rects().iter().any(|rect| rect.contains(p))
+    }
+
+    /// The group's own pointer chrome (edge grips, maximized controls), ahead
+    /// of its tab bar and tile. The row offers every group this before any
+    /// group's tile sees the event: a tile that swallows pointer events (one
+    /// still loading, or whose record is gone) must not hide a neighbour's
+    /// edge grip, because the grips sit on the windows' edges.
+    pub fn handle_edge_input(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        let handle_rect = Rect::new(
+            self.rect.x1 - RESIZE_HANDLE_PX,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y1,
+        );
+        self.handle_direct_input(event, scale_factor, modifiers, handle_rect)
+    }
+
+    /// Both edge zones, leading first. Empty while maximized.
+    pub fn resize_grab_rects(&self) -> Vec<Rect> {
+        [self.leading_resize_grab_rect(), self.resize_grab_rect()]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    /// Leading-edge zone, the mirror of [`Self::resize_grab_rect`]: the same
+    /// width, inside the window. Between two groups the seam handle covers
+    /// it; at the start of a lane the group itself answers.
+    pub fn leading_resize_grab_rect(&self) -> Option<Rect> {
+        (!self.maximized).then(|| {
+            Rect::new(
+                self.rect.x0,
+                self.rect.y0,
+                self.rect.x0 + RESIZE_HANDLE_PX,
+                self.rect.y1,
+            )
+        })
     }
 
     /// Painted trailing-edge grip, shared with compositor input admission.
@@ -1589,7 +1651,16 @@ impl WindowGroup {
                 self.last_cursor = pt;
                 // A maximized group owns the output; its former tiled-width
                 // grip must neither paint nor remain an active resize target.
-                let hover = !self.maximized && handle_rect.contains(pt);
+                let on_trailing = !self.maximized && handle_rect.contains(pt);
+                let on_leading = !self.maximized
+                    && self.leads_lane
+                    && self
+                        .leading_resize_grab_rect()
+                        .is_some_and(|r| r.contains(pt));
+                let hover = on_trailing || on_leading;
+                if self.resize_origin.is_none() {
+                    self.resize_leading = on_leading && !on_trailing;
+                }
                 self.grip_dirty |= hover != self.hover_resize;
                 self.hover_resize = hover;
                 self.restore_hover = self.maximized && self.restore_rect.contains(pt);
@@ -1864,7 +1935,11 @@ impl WindowGroup {
         // `RESIZE_HANDLE_PX` band exactly: centred on the band's own centre,
         // one on either side of it, so the painted grip and the pointer
         // zone are the same thing.
-        let grip_cx = self.rect.x1 - RESIZE_HANDLE_PX / 2.0;
+        let grip_cx = if self.resize_leading {
+            self.rect.x0 + RESIZE_HANDLE_PX / 2.0
+        } else {
+            self.rect.x1 - RESIZE_HANDLE_PX / 2.0
+        };
         let grip_cy = self.rect.center().y;
         let bar = |dx: f64| {
             vello::kurbo::RoundedRect::from_rect(
@@ -2787,17 +2862,11 @@ impl Widget for WindowGroup {
         let tile_child = children
             .get(usize::from(!self.external_navigation))
             .copied();
-        let handle_rect = Rect::new(
-            self.rect.x1 - RESIZE_HANDLE_PX,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1,
-        );
         self.handle_maximized_controls(event, ctx);
         if *ctx.handled {
             return;
         }
-        if self.handle_direct_input(event, ctx.scale_factor, *ctx.modifiers, handle_rect) {
+        if self.handle_edge_input(event, ctx.scale_factor, *ctx.modifiers) {
             *ctx.handled = true;
             return;
         }

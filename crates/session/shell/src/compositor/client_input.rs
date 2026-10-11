@@ -1448,9 +1448,10 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
             .collect::<Vec<_>>();
         let chrome_regions = foreign_tiles(&tree, fb.host())
             .iter()
-            .filter_map(|hit| {
+            .flat_map(|hit| {
                 fb.host()
-                    .group_resize_rect(hit.group)
+                    .group_resize_rects(hit.group)
+                    .into_iter()
                     .map(|rect| (hit.surface_id, rect))
             })
             .collect();
@@ -2538,9 +2539,10 @@ mod tests {
             .chrome_regions(
                 tiles
                     .iter()
-                    .filter_map(|hit| {
+                    .flat_map(|hit| {
                         fb.host()
-                            .group_resize_rect(hit.group)
+                            .group_resize_rects(hit.group)
+                            .into_iter()
                             .map(|rect| (hit.surface_id, rect))
                     })
                     .collect(),

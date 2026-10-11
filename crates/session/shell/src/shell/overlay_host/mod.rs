@@ -7803,17 +7803,22 @@ impl ShellOverlayHost {
     /// The shared window grip overlays client content. Resolve it in laid-out
     /// screen coordinates, after strip panning, before forwarding client input.
     pub fn group_resize_hit(&self, group_id: u64, point: (f64, f64)) -> bool {
-        self.group_resize_rect(group_id)
-            .is_some_and(|rect| rect.contains(Point::new(point.0, point.1)))
+        self.group_resize_rects(group_id)
+            .iter()
+            .any(|rect| rect.contains(Point::new(point.0, point.1)))
     }
 
-    /// Visible grip geometry shared by local routing and remote admission.
-    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
-        self.group_row_ptrs.values().find_map(|&ptr| {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &GroupRow = unsafe { &*ptr };
-            row.group_resize_rect(group_id)
-        })
+    /// Visible grip geometry (leading and trailing edge) shared by local
+    /// routing and remote admission.
+    pub fn group_resize_rects(&self, group_id: u64) -> Vec<Rect> {
+        self.group_row_ptrs
+            .values()
+            .flat_map(|&ptr| {
+                // SAFETY: see field doc on `group_row_ptrs`.
+                let row: &GroupRow = unsafe { &*ptr };
+                row.group_resize_rects(group_id)
+            })
+            .collect()
     }
 
     /// Every tile laid out on this device, with the tab it shows, in
@@ -14550,6 +14555,17 @@ impl ShellOverlayHost {
         false
     }
 
+    /// Whether `p` is on a window's edge grip. The strip ribbon and rail hit
+    /// zones are wider than their painted segments and reach into the
+    /// windows, so inside a window the grip has to win.
+    fn point_on_window_edge_grip(&self, p: Point) -> bool {
+        self.group_row_ptrs.values().any(|&ptr| {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.resize_grab_hit_at(p)
+        })
+    }
+
     fn handle_workspace_navigation_click(&mut self, p: Point) -> bool {
         if !self.cursor_over_open_overlay(p) && self.follow_stop_rect.contains(p) {
             self.set_followed_peer(None);
@@ -14581,6 +14597,7 @@ impl ShellOverlayHost {
         // under an open panel goes to the panel.
         if !self.overlay_flags().overview
             && !self.cursor_over_open_overlay(p)
+            && !self.point_on_window_edge_grip(p)
             && let Some(i) = self.strip_ribbon().hit(p)
             && let Some(chrome) = self.chrome.clone()
         {
@@ -14591,6 +14608,7 @@ impl ShellOverlayHost {
         // one pointer path that also pans the strip.
         if !self.overlay_flags().overview
             && !self.cursor_over_open_overlay(p)
+            && !self.point_on_window_edge_grip(p)
             && let Some(i) = self.strip_rail().hit(p)
             && let Some((strip, group)) = self.strip_rail_target(i)
         {
