@@ -624,6 +624,42 @@ pub enum WindowCloseAdmission {
     Defer,
 }
 
+/// What a structural change a subtree reported ([`Widget::take_structure_change`])
+/// asks of its host. Ordered: a change joined with a larger one is the larger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum StructureChange {
+    /// Nothing was inserted or removed.
+    #[default]
+    None,
+    /// The host rebuilds its tree, but the frame's damage still describes it:
+    /// the widget that reported it replaced only widgets of its own, and its
+    /// own damage this frame covers every pixel that changed with them.
+    Described,
+    /// The host rebuilds its tree, and any widget may have been replaced:
+    /// the frame repaints whole.
+    Rebuild,
+}
+
+impl StructureChange {
+    /// A structural flag as a change: any change is a [`Self::Rebuild`].
+    #[must_use]
+    pub fn of(dirty: bool) -> Self {
+        if dirty { Self::Rebuild } else { Self::None }
+    }
+
+    /// Whether the host rebuilds its tree for it.
+    #[must_use]
+    pub fn rebuilds(self) -> bool {
+        self != Self::None
+    }
+
+    /// This change and `other`, as one.
+    #[must_use]
+    pub fn join(self, other: Self) -> Self {
+        self.max(other)
+    }
+}
+
 /// Optional cross-device continuation capability for an app root.
 ///
 /// Continuation is deliberately separate from [`Widget`]: ordinary controls
@@ -2174,6 +2210,18 @@ pub trait Widget {
             dirty |= child.take_structure_dirty();
         }
         dirty
+    }
+
+    /// [`Self::take_structure_dirty`], saying whether the frame's damage can
+    /// still describe the rebuild ([`StructureChange::Described`]). Reading
+    /// clears what `take_structure_dirty` clears; the two must agree on
+    /// whether there is a change. The default is the flag, as a
+    /// [`StructureChange::Rebuild`]: only a widget that knows every pixel its
+    /// change touches lands in its own damage says less, and a container
+    /// forwards a child's [`StructureChange::Described`] only by overriding
+    /// this.
+    fn take_structure_change(&mut self) -> StructureChange {
+        StructureChange::of(self.take_structure_dirty())
     }
 
     /// Work already requested by this view whose completion will replace a

@@ -215,6 +215,8 @@ fn app_area() -> f64 {
 struct Repainted {
     total: f64,
     largest: f64,
+    /// A frame could not say where it changed and repainted the app whole.
+    whole: bool,
 }
 
 /// Present `frames` over `before` as the host does, each only where its
@@ -231,18 +233,30 @@ fn present_and_compare(
     let _ = retained.render(before, background);
     let mut repainted = Repainted::default();
     for (scene, damage) in frames {
-        let damage = damage
-            .as_ref()
-            .unwrap_or_else(|why| panic!("{label}: a frame repainted the app whole: {why}"));
+        let damage = match damage {
+            Ok(damage) => damage,
+            // Counted as the whole app, which every budget refuses; drawn
+            // whole, so the frames after it are still compared.
+            Err(why) => {
+                eprintln!("{label}: a frame repainted the app whole: {why}");
+                let _ = retained.render(scene, background);
+                repainted.total += app_area();
+                repainted.largest = app_area();
+                repainted.whole = true;
+                continue;
+            }
+        };
         if damage.is_empty() {
             continue;
         }
         let rasterized = retained.render_damage_regions_gpu_wait(scene, background, damage);
+        let pixels = area(damage);
+        // Damage over half the app renders whole, as a host does (a header
+        // that grew moves the page under it); less must render sparsely.
         assert!(
-            rasterized < PIXELS,
+            rasterized < PIXELS || pixels >= app_area() / 2.0,
             "{label}: the damage must exercise a sparse render: {damage:?}"
         );
-        let pixels = area(damage);
         repainted.total += pixels;
         repainted.largest = repainted.largest.max(pixels);
     }
@@ -301,6 +315,18 @@ fn measure(
     (present_and_compare(&before, &frames, theme, label), elapsed)
 }
 
+/// Begin a test: these share the toolkit's frozen wall clock (one test's
+/// minute turning over would change another's "Edited" line), so they run
+/// one at a time.
+fn start() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ui::i18n::I18nManager::init("en-US");
+    serial
+}
+
 /// Pin the wall clock `seconds` after the epoch, so when a note says it was
 /// created and edited is the test's to choose.
 fn pin_wall(seconds: u64) {
@@ -329,6 +355,9 @@ fn open_a_new_note(app: &mut App, host: &mut Host, theme: Theme) {
     host.frames(app, 5);
     let first = bounds_of(app, "New note");
     host.click(app, first.center());
+    // The pointer rests in the empty page below the note, so no button's
+    // tooltip comes and goes while a test measures the note.
+    host.input(app, cursor_moved(640.0, 700.0));
     host.frames(app, 5);
 }
 
@@ -349,9 +378,136 @@ fn character(text: &str) -> Key {
     Key::Character(text.into())
 }
 
+/// Type `text` key by key, measuring nothing.
+fn type_text(app: &mut App, host: &mut Host, text: &str) {
+    for letter in text.chars() {
+        host.key(app, &character(&letter.to_string()));
+    }
+}
+
+/// Type each of `letters` after the previous key's save landed, as a person
+/// types: each key and each landing measured, checked against a full render
+/// and logged as `case`. Returns the largest frame and the median
+/// keystroke→frame time.
+fn measure_typing(
+    app: &mut App,
+    host: &mut Host,
+    theme: &Theme,
+    case: &str,
+    letters: &[&str],
+) -> (f64, std::time::Duration) {
+    let mut worst: f64 = 0.0;
+    let mut times = Vec::new();
+    for letter in letters {
+        let label = format!("{case}: the save landing before {letter:?}");
+        let (landed, _) = measure(app, host, theme, &label, let_the_save_land);
+        let label = format!("{case}: typing {letter:?}");
+        let (typed, elapsed) = measure(app, host, theme, &label, |app, host| {
+            host.key(app, &character(letter));
+        });
+        eprintln!(
+            "notes-damage {case} key={letter:?} frame_px={:.0} save_landing_px={:.0} of {:.0} keystroke_to_frame={elapsed:?}",
+            typed.largest,
+            landed.largest,
+            app_area(),
+        );
+        assert!(typed.total > 0.0, "{label}: the key changed the note");
+        worst = worst.max(typed.largest).max(landed.largest);
+        times.push(elapsed);
+    }
+    times.sort();
+    let median = times[times.len() / 2];
+    eprintln!(
+        "notes-damage {case} worst_frame_px={worst:.0} ({:.2} % of the app) p50_keystroke_to_frame={median:?}",
+        worst / app_area() * 100.0
+    );
+    (worst, median)
+}
+
+/// The bounds of the published node whose value is `value`.
+fn bounds_of_value(app: &App, value: &str) -> Rect {
+    app.semantic_tree()
+        .iter()
+        .find(|node| node.value.as_deref() == Some(value))
+        .and_then(|node| node.bounds)
+        .unwrap_or_else(|| panic!("no node showing {value:?} on screen"))
+}
+
+/// Whether a published node's value is `value`.
+fn shows_value(app: &App, value: &str) -> bool {
+    app.semantic_tree()
+        .iter()
+        .any(|node| node.value.as_deref() == Some(value))
+}
+
+/// Whether a published node is named `name`.
+fn shows_name(app: &App, name: &str) -> bool {
+    app.semantic_tree()
+        .iter()
+        .any(|node| node.name.as_deref() == Some(name))
+}
+
+/// Whether a published node's name or value mentions `text`.
+fn mentions(app: &App, text: &str) -> bool {
+    app.semantic_tree().iter().any(|node| {
+        [&node.name, &node.value]
+            .into_iter()
+            .flatten()
+            .any(|said| said.contains(text))
+    })
+}
+
+/// The bounds of the first published node whose action target ends with
+/// `suffix` and starts with `prefix`.
+fn bounds_of_target(app: &App, prefix: &str, suffix: &str) -> Rect {
+    app.semantic_tree()
+        .iter()
+        .find(|node| {
+            node.semantic_target
+                .as_deref()
+                .is_some_and(|target| target.starts_with(prefix) && target.ends_with(suffix))
+        })
+        .and_then(|node| node.bounds)
+        .unwrap_or_else(|| panic!("no {prefix}…{suffix} on screen"))
+}
+
+/// The ids (from `kind`, as `notes.page:…`) of the published resources of
+/// `kind` named `name`.
+fn resource_ids(app: &App, kind: &str, name: &str) -> Vec<String> {
+    let marker = format!(":{kind}:");
+    app.semantic_tree()
+        .iter()
+        .filter(|node| node.name.as_deref() == Some(name))
+        .filter_map(|node| {
+            let start = node.id.0.find(&marker)?;
+            Some(node.id.0[start..].strip_prefix(':')?.to_owned())
+        })
+        .collect()
+}
+
+/// The id of the one published resource of `kind` named `name`.
+fn resource_id(app: &App, kind: &str, name: &str) -> String {
+    let ids = resource_ids(app, kind, name);
+    assert_eq!(ids.len(), 1, "one {kind} named {name:?}: {ids:?}");
+    ids[0].clone()
+}
+
+/// Invoke `action` on `resource` as the app's person does from the palette.
+fn invoke(app: &mut App, resource: &str, action: &str, value: Option<&str>) {
+    let mut arguments = serde_json::Map::new();
+    if let Some(value) = value {
+        arguments.insert(tilo_actions::PROMPTED_PARAM.into(), value.into());
+    }
+    app.invoke_local_resource_action(
+        &tilo_actions::ActionAddress::new(resource, action),
+        &arguments,
+    )
+    .unwrap_or_else(|error| panic!("{resource} {action}: {error:?}"));
+}
+
 #[test]
 fn a_keystroke_in_a_note_damages_its_line_not_the_app() {
-    ui::i18n::I18nManager::init("en-US");
+    let _serial = start();
     for (name, theme) in THEMES {
         let theme = theme();
         drive_live_window::<NotesShell, _>(|app| {
@@ -422,7 +578,7 @@ fn a_keystroke_in_a_note_damages_its_line_not_the_app() {
 
 #[test]
 fn naming_a_note_damages_its_title_not_the_page() {
-    ui::i18n::I18nManager::init("en-US");
+    let _serial = start();
     for (name, theme) in THEMES {
         let theme = theme();
         drive_live_window::<NotesShell, _>(|app| {
@@ -465,7 +621,7 @@ fn naming_a_note_damages_its_title_not_the_page() {
 
 #[test]
 fn resting_on_a_toolbar_button_damages_the_button_not_the_app() {
-    ui::i18n::I18nManager::init("en-US");
+    let _serial = start();
     let theme = Theme::dark();
     drive_live_window::<NotesShell, _>(|app| {
         let mut host = Host::new();
@@ -488,4 +644,225 @@ fn resting_on_a_toolbar_button_damages_the_button_not_the_app() {
         );
     })
     .unwrap();
+}
+
+#[test]
+fn a_keystroke_in_a_code_block_damages_its_run_not_the_editor() {
+    let _serial = start();
+    for (name, theme) in THEMES {
+        let theme = theme();
+        drive_live_window::<NotesShell, _>(|app| {
+            let mut host = Host::new();
+            open_a_new_note(app, &mut host, theme.clone());
+            // A few lines of prose, so the editor is more than its code.
+            for line in ["Intro", "Some prose", "More prose", "Then code"] {
+                type_text(app, &mut host, line);
+                host.key(app, &Key::Named(NamedKey::Enter));
+            }
+            // Three backticks open a code block; Enter ends its language.
+            type_text(app, &mut host, "```rust");
+            host.key(app, &Key::Named(NamedKey::Enter));
+            host.frames(app, 3);
+            // The first line of a run also paints the run's ground.
+            let case = format!("{name} code-block-first-line");
+            let (first, _) = measure_typing(app, &mut host, &theme, &case, &["l", "e", "t"]);
+            host.key(app, &Key::Named(NamedKey::Enter));
+            host.frames(app, 3);
+            let case = format!("{name} code-block-later-line");
+            let (later, _) = measure_typing(app, &mut host, &theme, &case, &["x", "+", "1"]);
+            assert!(
+                mentions(app, "let") && mentions(app, "x+1"),
+                "{name}: the keys reached the code block"
+            );
+            // A note that holds a code block types its prose as any note.
+            host.click(app, bounds_of_value(app, "Intro").center());
+            host.frames(app, 3);
+            let case = format!("{name} paragraph-beside-code");
+            let (prose, _) = measure_typing(app, &mut host, &theme, &case, &["!"]);
+            for (case, worst) in [
+                ("the run's first line", first),
+                ("a later line", later),
+                ("a paragraph beside the code", prose),
+            ] {
+                // The line or the run's rows, the caret and the save bubble:
+                // not the editor.
+                assert!(
+                    worst < app_area() * 0.06,
+                    "{name}: typing in {case} repainted {worst:.0} px, over 6 % of the app"
+                );
+            }
+        })
+        .unwrap();
+    }
+}
+
+#[test]
+fn a_keystroke_in_a_table_cell_damages_its_cell_not_the_editor() {
+    let _serial = start();
+    for (name, theme) in THEMES {
+        let theme = theme();
+        drive_live_window::<NotesShell, _>(|app| {
+            let mut host = Host::new();
+            open_a_new_note(app, &mut host, theme.clone());
+            type_text(app, &mut host, "/table");
+            host.key(app, &Key::Named(NamedKey::Enter));
+            host.frames(app, 5);
+            // Into the table's first body cell.
+            host.click(
+                app,
+                bounds_of_target(app, "notes.table-cell:", ":1:0").center(),
+            );
+            host.frames(app, 3);
+            let case = format!("{name} table-cell");
+            let (cell, _) =
+                measure_typing(app, &mut host, &theme, &case, &["4", "2", " ", "k", "g"]);
+            assert!(
+                shows_value(app, "42 kg"),
+                "{name}: the keys reached the cell"
+            );
+            // The cell, its editor and the save bubble: not the editor.
+            assert!(
+                cell < app_area() * 0.06,
+                "{name}: typing in a table cell repainted {cell:.0} px, over 6 % of the app"
+            );
+        })
+        .unwrap();
+    }
+}
+
+#[test]
+fn tagging_a_note_damages_its_header_not_the_app() {
+    let _serial = start();
+    for (name, theme) in THEMES {
+        let theme = theme();
+        drive_live_window::<NotesShell, _>(|app| {
+            let mut host = Host::new();
+            open_a_new_note(app, &mut host, theme.clone());
+            type_text(app, &mut host, "Plan");
+            let_the_save_land(app, &mut host);
+            host.frames(app, 3);
+            let page = resource_id(app, "notes.page", "Untitled");
+            let tag = |name: &str| {
+                let page = page.clone();
+                let name = name.to_owned();
+                move |app: &mut App, host: &mut Host| {
+                    invoke(app, &page, "new-and-assign-tag", Some(&name));
+                    host.frames(app, 6);
+                }
+            };
+            // The first tag adds the header's row of tags: the note's body
+            // moves down under it.
+            let label = format!("{name}: the first tag");
+            let (first, _) = measure(app, &mut host, &theme, &label, tag("work"));
+            assert!(shows_name(app, "Tag: work"), "{label}: the chip shows");
+            let_the_save_land(app, &mut host);
+            // A second tag joins the row: the header keeps its height.
+            let label = format!("{name}: a second tag");
+            let (second, _) = measure(app, &mut host, &theme, &label, tag("home"));
+            assert!(shows_name(app, "Tag: home"), "{label}: the chip shows");
+            let_the_save_land(app, &mut host);
+            let work = resource_id(app, "notes.tag", "work");
+            let work = work.trim_start_matches("notes.tag:");
+            let label = format!("{name}: removing a tag");
+            let (removed, _) = measure(app, &mut host, &theme, &label, |app, host| {
+                invoke(app, &page, &format!("unassign-tag:{work}"), None);
+                host.frames(app, 6);
+            });
+            assert!(!shows_name(app, "Tag: work"), "{label}: the chip went");
+            for (case, repainted) in [
+                ("the first tag", first),
+                ("a second tag", second),
+                ("removing a tag", removed),
+            ] {
+                eprintln!(
+                    "notes-damage {name} tag case={case:?} frame_px={:.0} total_px={:.0} of {:.0}",
+                    repainted.largest,
+                    repainted.total,
+                    app_area()
+                );
+                // The header rebuilt its widgets; the app's tree with them,
+                // but the frame still says what changed.
+                assert!(!repainted.whole, "{name}: {case} repainted the app whole");
+            }
+            // The row of tags and the bubble, not the page.
+            assert!(
+                second.largest < app_area() * 0.1,
+                "{name}: a second tag repainted {:.0} px, over 10 % of the app",
+                second.largest
+            );
+        })
+        .unwrap();
+    }
+}
+
+#[test]
+fn renaming_a_note_damages_its_row_not_the_page_tree() {
+    let _serial = start();
+    for (name, theme) in THEMES {
+        let theme = theme();
+        drive_live_window::<NotesShell, _>(|app| {
+            let mut host = Host::new();
+            open_a_new_note(app, &mut host, theme.clone());
+            let title = bounds_of(app, "Page title");
+            host.click(app, title.center());
+            host.frames(app, 3);
+            type_text(app, &mut host, "Plan");
+            // Naming the note in its title renames its row in the page tree.
+            let label = format!("{name}: naming the note in its title");
+            let (named, _) = measure(app, &mut host, &theme, &label, |app, host| {
+                host.key(app, &Key::Named(NamedKey::Enter));
+                host.frames(app, 4);
+            });
+            assert!(shows_name(app, "Plan"), "{label}: the row shows it");
+            let_the_save_land(app, &mut host);
+            // Renaming it from the page tree: F2 opens the row's field.
+            host.click(app, bounds_of(app, "Plan").center());
+            // The pointer leaves the row, so its buttons' tooltips stay away.
+            host.input(app, cursor_moved(640.0, 700.0));
+            host.frames(app, 3);
+            host.key(app, &Key::Named(NamedKey::F2));
+            host.frames(app, 3);
+            let mut field: f64 = 0.0;
+            // The field opens with the caret after the name.
+            for letter in [" ", "v", "2"] {
+                let label = format!("{name}: renaming in the page tree, {letter:?}");
+                let (typed, elapsed) = measure(app, &mut host, &theme, &label, |app, host| {
+                    host.key(app, &character(letter));
+                });
+                eprintln!(
+                    "notes-damage {name} rename-field key={letter:?} frame_px={:.0} of {:.0} keystroke_to_frame={elapsed:?}",
+                    typed.largest,
+                    app_area()
+                );
+                field = field.max(typed.largest);
+            }
+            let label = format!("{name}: committing the rename");
+            let (renamed, _) = measure(app, &mut host, &theme, &label, |app, host| {
+                host.key(app, &Key::Named(NamedKey::Enter));
+                host.frames(app, 4);
+            });
+            assert!(shows_name(app, "Plan v2"), "{label}: the row shows it");
+            eprintln!(
+                "notes-damage {name} rename named_px={:.0} field_px={field:.0} committed_px={:.0} of {:.0}",
+                named.largest,
+                renamed.largest,
+                app_area()
+            );
+            // The field's row, not the tree's column.
+            assert!(
+                field < app_area() * 0.015,
+                "{name}: a key in the rename field repainted {field:.0} px, over 1.5 % of the app"
+            );
+            // The title, the row, the line the caret goes back to and the
+            // save bubble: not the page tree.
+            for (case, repainted) in [("naming", named), ("renaming", renamed)] {
+                assert!(
+                    repainted.largest < app_area() * 0.1,
+                    "{name}: {case} the note repainted {:.0} px, over 10 % of the app",
+                    repainted.largest
+                );
+            }
+        })
+        .unwrap();
+    }
 }
