@@ -6490,6 +6490,7 @@ impl Widget for ChatApp {
                     state = state.disabled(!self.focused_send_enabled());
                 }
                 let mut node = AccessNode::new(role)
+                    .with_hashed_key(&semantic_id)
                     .with_name(name)
                     .with_state(state)
                     .with_bounds(rect)
