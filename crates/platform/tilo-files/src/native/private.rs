@@ -322,6 +322,77 @@ pub fn bind_socket(path: &Path) -> io::Result<std::os::unix::net::UnixListener> 
     Ok(listener)
 }
 
+/// The one listener systemd socket activation passed this process, or `None`
+/// when it was not socket-activated. The descriptor is marked close-on-exec
+/// and the `LISTEN_*` variables are cleared, so no child inherits the endpoint
+/// or the activation. A listener bound to a path other than `expected` is
+/// refused, so an unrelated inherited descriptor never becomes the endpoint;
+/// one without a pathname is accepted, as systemd may pass it unnamed.
+///
+/// # Errors
+///
+/// Returns an error when the activation does not pass exactly one open
+/// descriptor, the descriptor is bound elsewhere, or it cannot be marked
+/// close-on-exec.
+///
+/// # Safety
+///
+/// Clears environment variables: no other thread may read or write the
+/// environment while this runs.
+#[cfg(unix)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "systemd socket activation: LISTEN_* must not leak to children; the caller guarantees no other thread touches the environment"
+)]
+pub unsafe fn activated_socket(
+    expected: &Path,
+) -> io::Result<Option<std::os::unix::net::UnixListener>> {
+    use std::os::fd::FromRawFd as _;
+
+    const SYSTEMD_LISTEN_FD: libc::c_int = 3;
+    let pid_matches = std::env::var("LISTEN_PID")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        == Some(std::process::id());
+    if !pid_matches {
+        return Ok(None);
+    }
+    if std::env::var("LISTEN_FDS").as_deref() != Ok("1") {
+        return Err(io::Error::other(format!(
+            "systemd must pass exactly one listener for {}",
+            expected.display()
+        )));
+    }
+    // SAFETY: fcntl only checks whether the scalar descriptor is open.
+    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the LISTEN_PID/LISTEN_FDS contract hands fd 3 to this process
+    // exactly once, and the variables are cleared below.
+    let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
+    if let Some(actual) = listener.local_addr()?.as_pathname()
+        && actual != expected
+    {
+        return Err(io::Error::other(format!(
+            "systemd passed {} where {} was expected",
+            actual.display(),
+            expected.display()
+        )));
+    }
+    // systemd passes activation descriptors without close-on-exec.
+    // SAFETY: fcntl on an open descriptor with integer arguments.
+    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the caller guarantees no concurrent environment access.
+    unsafe {
+        std::env::remove_var("LISTEN_PID");
+        std::env::remove_var("LISTEN_FDS");
+        std::env::remove_var("LISTEN_FDNAMES");
+    }
+    Ok(Some(listener))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

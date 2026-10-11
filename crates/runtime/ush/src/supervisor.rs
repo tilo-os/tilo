@@ -32,7 +32,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::FromRawFd;
 use std::os::fd::{AsRawFd, RawFd};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -707,7 +707,13 @@ pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
 /// cannot be set to owner-only.
 pub fn serve(socket: &Path, store: &Store, host_root: &Path) -> anyhow::Result<()> {
     store.ensure()?;
-    let listener = if let Some(listener) = systemd_listener(socket)? {
+    // Invalid activation addressed to this process is fatal: unlinking and
+    // rebinding would race queued clients and could replace an endpoint
+    // systemd already exposed.
+    // SAFETY: called from the `tilo-ush serve` main thread before it spawns
+    // any connection thread; nothing else has started a thread.
+    let activated = unsafe { tilo_files::native::private::activated_socket(socket)? };
+    let listener = if let Some(listener) = activated {
         listener
     } else {
         if let Some(parent) = socket.parent() {
@@ -728,56 +734,6 @@ pub fn serve(socket: &Path, store: &Store, host_root: &Path) -> anyhow::Result<(
         });
     }
     Ok(())
-}
-
-/// Consume systemd's one pre-bound service socket when activation metadata is
-/// addressed to this process. Invalid matching metadata is fatal: falling back
-/// to unlinking and rebinding would race queued clients and could replace an
-/// endpoint systemd already exposed.
-#[allow(
-    clippy::disallowed_methods,
-    reason = "systemd socket activation: LISTEN_* must not leak to guest children; \
-              cleared right after fd 3 is taken, and `serve` calls this before it \
-              spawns any connection thread, from a `tilo-ush serve` main thread \
-              that has started no other threads"
-)]
-fn systemd_listener(expected: &Path) -> anyhow::Result<Option<UnixListener>> {
-    const SYSTEMD_LISTEN_FD: libc::c_int = 3;
-
-    let pid_matches = std::env::var("LISTEN_PID")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        == Some(std::process::id());
-    if !pid_matches {
-        return Ok(None);
-    }
-    anyhow::ensure!(
-        std::env::var("LISTEN_FDS").as_deref() == Ok("1"),
-        "systemd must pass exactly one ush listener"
-    );
-    // SAFETY: fcntl only validates the scalar descriptor.
-    anyhow::ensure!(
-        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } != -1,
-        "systemd ush listener fd is closed"
-    );
-    // SAFETY: validated activation metadata transfers ownership of fd 3 once.
-    let listener = unsafe { UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
-    anyhow::ensure!(
-        listener.local_addr()?.as_pathname() == Some(expected),
-        "systemd ush listener has an unexpected path"
-    );
-    // Guest processes must never inherit the host supervisor endpoint.
-    anyhow::ensure!(
-        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } != -1,
-        "cannot mark systemd ush listener close-on-exec"
-    );
-    // SAFETY: serve is entered before any worker thread is started.
-    unsafe {
-        std::env::remove_var("LISTEN_PID");
-        std::env::remove_var("LISTEN_FDS");
-        std::env::remove_var("LISTEN_FDNAMES");
-    }
-    Ok(Some(listener))
 }
 
 /// Requests one connection may make. A refused open spends nothing — the
