@@ -293,6 +293,7 @@ impl HostApplicationsProvider {
                         &app.window_identities,
                         &tree,
                         st.strip_viewport(),
+                        st.open_target,
                     );
                     let portal_workspace_id = tree
                         .desktop

@@ -30,6 +30,9 @@ pub enum Destination {
     /// Join the focused group as a tab, whatever the rule would say.
     /// Falls back to `Beside` when nothing is focused.
     Here,
+    /// Join this very group as a tab: the group whose "+" asked.
+    /// Falls back to `Here` when the group has since closed.
+    InGroup(GroupId),
 }
 
 /// The group the user is looking at, or `None` when the active workspace
@@ -58,6 +61,18 @@ fn placement_for(st: &ChromeState, dest: Destination) -> Placement {
             Some(g) => Placement::TabIn(g),
             None => rule_placement(st),
         },
+        Destination::InGroup(group) => {
+            let exists = st.tree().desktop.active_workspace().is_some_and(|ws| {
+                ws.strips
+                    .iter()
+                    .any(|strip| strip.window_groups.iter().any(|g| g.id == group))
+            });
+            if exists {
+                Placement::TabIn(group)
+            } else {
+                placement_for(st, Destination::Here)
+            }
+        }
         Destination::Beside => rule_placement(st),
         Destination::Search => {
             let tree = st.tree();
@@ -71,6 +86,40 @@ fn placement_for(st: &ChromeState, dest: Destination) -> Placement {
 fn rule_placement(st: &ChromeState) -> Placement {
     let tree = st.tree();
     crate::shell::placement::placement_for(&tree, OpenIntent::Launch, st.strip_viewport())
+}
+
+/// The package id of the native Terminal app.
+pub const TERMINAL_PACKAGE: &str = "so.tilo.terminal";
+
+/// A new Terminal session at `dest`, always: another Terminal process in a
+/// tab of the focused group (or by the placement rule), however many the
+/// room already shows. Ordinary "Open Terminal" refocuses the running one;
+/// this is the explicit ask for another shell — the group's "+", the
+/// palette's "New terminal", Duplicate on a terminal tab. When no Terminal
+/// package is installed the tab is hosted in-process instead, so the first
+/// window of an image without one still opens.
+///
+/// # Errors
+///
+/// The launch was refused; nothing opened.
+pub fn new_terminal(
+    st: &mut ChromeState,
+    dest: Destination,
+) -> Result<(), crate::shell::app_tabs::AppTabError> {
+    let anchor = match (dest, focused_group(st)) {
+        (Destination::InGroup(group), _) | (Destination::Here, Some(group)) => {
+            let tree = st.tree();
+            crate::shell::app_tabs::anchor_in_group(&tree, group)
+        }
+        _ => None,
+    };
+    match crate::shell::app_tabs::open_beside(st, TERMINAL_PACKAGE, None, anchor, false) {
+        Err(crate::shell::app_tabs::AppTabError::UnknownApp(_)) => {
+            open_terminal(st, dest);
+            Ok(())
+        }
+        other => other,
+    }
 }
 
 /// Hosted in-process, so this is a tree splice rather than a launch — a
@@ -145,7 +194,7 @@ impl DuplicateError {
               -> tab), so the ChromeState borrow can't be dropped before the last one without \
               cloning each step early for no real gain"
 )]
-pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateError> {
+pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<Option<TabId>, DuplicateError> {
     let (kind, title, group) = {
         let tree = st.tree();
         let ws = tree
@@ -176,6 +225,24 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateErro
             TileContent::AppPlaceholder { kind, label } | TileContent::Stub { kind, label } => {
                 (kind.clone(), label.clone(), group.id)
             }
+            // A terminal of this machine is the case this exists for: a
+            // second shell is another Terminal process, a tab right after it.
+            TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. }
+                if app_id == TERMINAL_PACKAGE
+                    && crate::shell::state::peer_salt_of(tab.id) == tree.local_salt() =>
+            {
+                let anchor = crate::shell::app_tabs::anchor_for_tab(&tree, tab.id);
+                drop(tree);
+                return crate::shell::app_tabs::open_beside(
+                    st,
+                    TERMINAL_PACKAGE,
+                    None,
+                    anchor,
+                    false,
+                )
+                .map(|()| None)
+                .map_err(|_| DuplicateError::ForeignWindow);
+            }
             // None can be duplicated: the workspace recap, a live client's
             // surface, or a window belonging to somebody else's machine.
             TileContent::WorkspaceActivity
@@ -194,7 +261,7 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateErro
     };
     st.create_new_tab_record(id);
     st.bump();
-    Ok(id)
+    Ok(Some(id))
 }
 
 /// Why a tab could not be closed or split. One type for the chord, the
@@ -728,7 +795,9 @@ mod tests {
                 "Notes",
                 Destination::Beside,
             );
-            let second = duplicate_active_tab(&mut st).unwrap();
+            let second = duplicate_active_tab(&mut st)
+                .unwrap()
+                .expect("hosted duplicate");
             for id in [first, second] {
                 assert!(
                     st.records()
@@ -968,7 +1037,9 @@ mod tests {
                 id
             };
             let before = focused_group_tab_count(&st);
-            let new_id = duplicate_active_tab(&mut st).expect("a hosted tab duplicates");
+            let new_id = duplicate_active_tab(&mut st)
+                .expect("a hosted tab duplicates")
+                .expect("a hosted duplicate is a tab of this tree");
             assert_ne!(new_id, terminal_tab, "a duplicate is a new tab");
             assert_eq!(focused_group_tab_count(&st), before + 1);
             let tree = st.tree();

@@ -1928,11 +1928,11 @@ impl Action {
             "search-action-tab-new-terminal-here",
             "search-action-tab-new-terminal-here-subtitle",
             |st, _| {
-                crate::shell::window_actions::open_terminal(
+                crate::shell::window_actions::new_terminal(
                     st,
                     crate::shell::window_actions::Destination::Here,
-                );
-                Ok(())
+                )
+                .map_err(|error| ActionError::Refused(error.to_string()))
             },
         ),
         chrome(
@@ -1940,11 +1940,11 @@ impl Action {
             "search-action-window-new-terminal",
             "search-action-window-new-terminal-subtitle",
             |st, _| {
-                crate::shell::window_actions::open_terminal(
+                crate::shell::window_actions::new_terminal(
                     st,
                     crate::shell::window_actions::Destination::Beside,
-                );
-                Ok(())
+                )
+                .map_err(|error| ActionError::Refused(error.to_string()))
             },
         ),
         chrome(
