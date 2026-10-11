@@ -109,6 +109,11 @@ impl Column {
         self.extra_top_padding = px;
     }
 
+    /// Update the extra bottom inset before the next layout pass.
+    pub fn set_extra_bottom_padding(&mut self, px: f32) {
+        self.extra_bottom_padding = px;
+    }
+
     /// Extra padding on the bottom, on top of the default
     /// `spacing.s6` inset.
     #[must_use]

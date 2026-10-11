@@ -30,8 +30,9 @@ pub enum WorkArea {
     /// An 8 px band above and below the strips.
     #[default]
     Framed,
-    /// Window surfaces meet the bottom edge and `top` px separate them from
-    /// the top bar. A maximized window abuts the bar directly.
+    /// `top` px separate the window surfaces from the top bar and the same
+    /// margin separates them from the bottom edge. A maximized window abuts
+    /// the bar and the bottom edge directly.
     Flush { top: f32 },
 }
 pub struct SurfaceChrome {
@@ -246,7 +247,9 @@ impl DesktopSurface {
                 if maximized {
                     column.with_gap(0.0)
                 } else {
-                    column.with_extra_top_padding(top)
+                    column
+                        .with_extra_top_padding(top)
+                        .with_extra_bottom_padding(top)
                 }
             }
         };

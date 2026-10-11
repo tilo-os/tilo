@@ -862,3 +862,44 @@ fn external_navigation_lone_window_keeps_pointer_resize_and_local_width_intent()
         tilo_desktop::composition::ui_width(width)
     );
 }
+
+#[test]
+fn flush_work_area_leaves_a_bottom_margin_under_the_windows() {
+    use tilo_desktop::composition::WorkArea;
+    use ui::widget::Widget;
+    let mut test = NavigationFrame::with_chrome(
+        navigation_tree(),
+        1472,
+        SurfaceChrome {
+            work_area: WorkArea::Flush { top: 12.0 },
+            ..SurfaceChrome::default()
+        },
+    );
+    test.frame.poll_frame().unwrap();
+    let row = test.surface().row(StripId(2)).unwrap().get_rect();
+    assert!(
+        (720.0 - row.y1 - 12.0).abs() < 0.5,
+        "windows keep the bottom margin: {row:?}"
+    );
+}
+
+#[test]
+fn flush_work_area_maximized_abuts_bar_and_bottom() {
+    use tilo_desktop::composition::WorkArea;
+    use ui::widget::Widget;
+    let mut tree = navigation_tree();
+    tree.workspaces[0].strips[0].window_groups[0].maximized = true;
+    let mut test = NavigationFrame::with_chrome(
+        tree,
+        1472,
+        SurfaceChrome {
+            work_area: WorkArea::Flush { top: 12.0 },
+            ..SurfaceChrome::default()
+        },
+    );
+    test.frame.poll_frame().unwrap();
+    let bar = test.surface().topbar().unwrap().bar_rect();
+    let row = test.surface().row(StripId(2)).unwrap().get_rect();
+    assert!((row.y0 - bar.y1).abs() < 0.5, "{bar:?} {row:?}");
+    assert!((720.0 - row.y1).abs() < 0.5, "{row:?}");
+}
