@@ -390,7 +390,7 @@ pub(crate) struct AppHooks {
     room_record: bool,
     behaviour: ComponentBehaviour,
     document_history: bool,
-    file_history: bool,
+    file_history: Option<FileHistory>,
     #[cfg(tilo_native_runner)]
     private_windows: bool,
     #[cfg(tilo_native_runner)]
@@ -437,7 +437,7 @@ impl<A: ResourceApp> Hooks<A> {
         room_record: A::ROOM_RECORD,
         behaviour: A::BEHAVIOUR,
         document_history: A::DOCUMENT_HISTORY,
-        file_history: A::FILE_HISTORY.is_some(),
+        file_history: A::FILE_HISTORY,
         #[cfg(tilo_native_runner)]
         private_windows: A::PRIVATE_WINDOWS,
         #[cfg(tilo_native_runner)]
@@ -791,7 +791,7 @@ fn create_component(
         (app.new_record)(&mut context, &arguments, file.as_ref(), &options)?;
     }
     let capture = context.capture().is_some();
-    let file_history = app.file_history.then(FileHistorySource::default);
+    let file_history = app.file_history.map(|_| FileHistorySource::default());
     // A window someone uses can open another record in its place; a
     // capture shows the one it staged.
     let opener = (!capture).then(|| {
@@ -886,7 +886,7 @@ fn prepare_capture<A: ResourceApp>(
 /// Merge into the record `context` opened what `write` writes into a fork
 /// of it, as another participant's changes arrive.
 fn merge_peer(
-    context: &mut HostContext,
+    context: &HostContext,
     write: &mut dyn FnMut(&mut tilo_resource::Doc) -> Result<(), String>,
 ) -> Result<(), LaunchError> {
     let mut peer = context

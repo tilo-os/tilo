@@ -1145,7 +1145,7 @@ impl ui_core::resources::PublishesResources for HostedSurface {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        SurfaceResources(self.host.surface()).resource_for(None, doc, id)
+        SurfaceResources(self.host.surface()).resource(doc, id)
     }
 
     fn resources_for(
@@ -1162,7 +1162,7 @@ impl ui_core::resources::PublishesResources for HostedSurface {
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::Resource> {
-        SurfaceResources(self.host.surface()).resource_for(Some(participant), doc, id)
+        SurfaceResources(self.host.surface()).resource_for(participant, doc, id)
     }
 
     fn action_directory_visibility(
@@ -1229,20 +1229,18 @@ impl SurfaceResources<'_> {
             .collect()
     }
 
-    /// Resource `id` as the surface resolves it: for `participant` when one
-    /// is named (`Some`), else as
-    /// [`resource`](ui_core::resources::PublishesResources::resource) does.
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        ui_core::resources::resource(self.0, doc, id).map(resolved_outside_document)
+    }
+
     fn resource_for(
         &self,
-        participant: Option<Option<&tilo_actions::ParticipantId>>,
+        participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::Resource> {
-        match participant {
-            Some(participant) => ui_core::resources::resource_for(self.0, participant, doc, id),
-            None => ui_core::resources::resource(self.0, doc, id),
-        }
-        .map(resolved_outside_document)
+        ui_core::resources::resource_for(self.0, participant, doc, id)
+            .map(resolved_outside_document)
     }
 }
 
