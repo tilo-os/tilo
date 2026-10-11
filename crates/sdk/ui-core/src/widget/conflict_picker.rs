@@ -20,6 +20,7 @@
 //! [`PickerOutcome::PickedMerged`], [`PickerOutcome::KeepCurrent`],
 //! [`PickerOutcome::Cancel`] (Esc / scrim click).
 
+use crate::num::f64_of_usize;
 use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
@@ -58,17 +59,6 @@ const MIN_CARD_W: f64 = 260.0;
 const CARD_H: f64 = 160.0;
 /// Scrim alpha — matches the command-palette dim treatment.
 const SCRIM_ALPHA: u8 = 153; // ~ 60%
-
-/// A card count is a handful of alternatives plus maybe a merged preview —
-/// always tiny, so the `usize -> f64` conversion used for layout division
-/// cannot lose precision.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "card count is a small UI count, well within f64 precision"
-)]
-fn card_count_f64(n: usize) -> f64 {
-    n as f64
-}
 
 /// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
 /// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
@@ -287,7 +277,7 @@ impl ConflictPicker {
 
         let gap = ROW_GAP;
         let available_w = inner.width();
-        let total_f = card_count_f64(total_cards);
+        let total_f = f64_of_usize(total_cards);
         let side_by_side_card_w = (available_w - gap * (total_f - 1.0).max(0.0)) / total_f;
 
         if available_w >= NARROW_THRESHOLD && side_by_side_card_w >= MIN_CARD_W {

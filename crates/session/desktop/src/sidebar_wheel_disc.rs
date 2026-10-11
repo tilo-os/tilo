@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::num::{f32_of_f64, f32_of_u32, f32_of_usize, f64_of_usize, i32_of_f64};
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
@@ -461,7 +462,7 @@ impl SidebarWheelDisc {
         let Some(span) = self.band_angular_height_deg() else {
             return SPOKE_ANGLE_STEP_DEG; // No layout yet.
         };
-        let gap = span / usize_to_f32_lossy(n.min(SECTORS_ACROSS_BAND)) * SECTOR_SIZE_BOOST;
+        let gap = span / f32_of_usize(n.min(SECTORS_ACROSS_BAND)) * SECTOR_SIZE_BOOST;
         if gap.is_finite() {
             gap.clamp(MIN_SPOKE_GAP_DEG, MAX_SPOKE_GAP_DEG)
         } else {
@@ -497,7 +498,7 @@ impl SidebarWheelDisc {
     /// of the visible arc. Later workspaces sit at more negative
     /// rotations.
     fn rotation_for_idx(&self, idx: usize) -> f32 {
-        -usize_to_f32_lossy(idx) * self.spoke_gap_deg()
+        -f32_of_usize(idx) * self.spoke_gap_deg()
     }
 
     /// The rotations the wheel can actually rest at, as `(last, first)`.
@@ -516,7 +517,7 @@ impl SidebarWheelDisc {
             return 0;
         };
         let steps = (-rot / self.spoke_gap_deg()).round();
-        let clamped = steps.clamp(0.0, usize_to_f32_lossy(last));
+        let clamped = steps.clamp(0.0, f32_of_usize(last));
         // `clamped` is bounded to `[0.0, last]` by the clamp just above,
         // and `last` is a spoke count — never near `usize::MAX` — so the
         // truncation this cast performs never actually discards range.
@@ -799,26 +800,6 @@ impl SidebarWheelDisc {
     }
 }
 
-/// Lossy but bounded: the wheel never carries anywhere near 2^24
-/// workspaces/sectors, so this never actually drops a representable
-/// integer — it only silences the generic `usize -> f32` lint.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "workspace/spoke/sector counts stay far below f32's 24-bit exact-integer range"
-)]
-fn usize_to_f32_lossy(n: usize) -> f32 {
-    n as f32
-}
-
-/// Same rationale as [`usize_to_f32_lossy`], for the `f64` call sites.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "workspace/spoke/sector counts stay far below f64's 53-bit exact-integer range"
-)]
-fn usize_to_f64_lossy(n: usize) -> f64 {
-    n as f64
-}
-
 /// Rounds and casts to `i64` for cache-fingerprint fields: screen
 /// coordinates and rotation-centidegrees never come remotely close to
 /// `i64`'s range, so this never actually truncates.
@@ -846,29 +827,6 @@ fn f64_round_to_u64_lossy(v: f64) -> u64 {
     v.round() as u64
 }
 
-/// Rust's `f64 as i32` cast saturates rather than wrapping, so this is
-/// memory-safe regardless of `v`; the caller (`slot_reach`) clamps the
-/// result into `[0, MAX_SLOT_REACH]` immediately afterward anyway.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "saturating float-to-int cast; result is clamped by the caller"
-)]
-fn f64_saturating_to_i32(v: f64) -> i32 {
-    v as i32
-}
-
-/// Narrows an `f64` pixel/angle/duration value to the `f32` that
-/// `taffy`/`vello`'s own APIs take. The wheel's geometry never
-/// approaches a magnitude where this loses meaningful precision, so
-/// this is a deliberate, bounded narrowing rather than an accident.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space geometry stays well within f32's precision for this UI"
-)]
-fn f64_to_f32_lossy(v: f64) -> f32 {
-    v as f32
-}
-
 /// Clamps an alpha-channel value into `u8`'s range before the (otherwise
 /// saturating but silently-wrong-looking) narrowing cast, for stroke/fill
 /// alphas computed from a fixed base times a `[0, 1]`-ish fade factor.
@@ -879,17 +837,6 @@ fn f64_to_f32_lossy(v: f64) -> f32 {
 )]
 fn f32_to_u8_saturating(v: f32) -> u8 {
     v.clamp(0.0, 255.0) as u8
-}
-
-/// Lossy but bounded: motion-token durations (fling projection, timeouts)
-/// are always tiny millisecond counts, nowhere near f32's exact-integer
-/// range.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "motion durations are always tiny millisecond counts"
-)]
-fn u32_to_f32_lossy(n: u32) -> f32 {
-    n as f32
 }
 
 /// Safe lookup into a [`SidebarWheelDisc::slot_indices`] result for
@@ -915,9 +862,7 @@ fn slot_reach(sweep_rad: f64, gap_deg: f64) -> i32 {
     if !reach.is_finite() {
         return 0;
     }
-    f64_saturating_to_i32(reach)
-        .saturating_add(1)
-        .clamp(0, MAX_SLOT_REACH)
+    i32_of_f64(reach).saturating_add(1).clamp(0, MAX_SLOT_REACH)
 }
 
 /// Point on the circle of radius `r` about `c` at `angle` radians,
@@ -938,7 +883,7 @@ fn disc_segment(c: Point, r_out: f64, a0: f64, a1: f64) -> BezPath {
         path.line_to(polar(
             c,
             r_out,
-            a0 + span * (usize_to_f64_lossy(i) / usize_to_f64_lossy(STEPS)),
+            a0 + span * (f64_of_usize(i) / f64_of_usize(STEPS)),
         ));
     }
     path.close_path();
@@ -974,7 +919,7 @@ impl Widget for SidebarWheelDisc {
         taffy.widget_leaf(
             Style {
                 size: Size {
-                    width: Dimension::length(f64_to_f32_lossy(self.visible_width_px())),
+                    width: Dimension::length(f32_of_f64(self.visible_width_px())),
                     height: Dimension::percent(1.0),
                 },
                 flex_grow: 0.0,
@@ -1764,9 +1709,9 @@ impl SidebarWheelDisc {
         let peer_count = peers.len().min(3);
         let dot_r = geom.r_out - LABEL_RIM_GAP / 2.0;
         let spacing = 7.0_f64 / dot_r;
-        let centre_bias = (usize_to_f64_lossy(peer_count) - 1.0) / 2.0;
+        let centre_bias = (f64_of_usize(peer_count) - 1.0) / 2.0;
         for (kk, user) in peers.iter().take(peer_count).enumerate() {
-            let off = (usize_to_f64_lossy(kk) - centre_bias) * spacing;
+            let off = (f64_of_usize(kk) - centre_bias) * spacing;
             let (rr, gg, bb) = ctx.presence.color_for(user);
             // Empty-initials Avatar chip in the peer's own colour,
             // matching the cursor/avatar sites.
@@ -1898,7 +1843,7 @@ impl SidebarWheelDisc {
         self.last_cursor_pos = Some(p);
         if let Some(origin) = self.drag_from {
             let dy = p.y - origin.y;
-            let delta_deg = f64_to_f32_lossy(dy) * Self::deg_per_pixel();
+            let delta_deg = f32_of_f64(dy) * Self::deg_per_pixel();
             // Where the pointer asks the wheel to be, before
             // resistance and detent magnetism have a say.
             let raw = self.drag_rotation_origin + delta_deg;
@@ -1943,7 +1888,7 @@ impl SidebarWheelDisc {
         }
         let dy = match *delta {
             winit::event::MouseScrollDelta::LineDelta(_, y) => y * 16.0,
-            winit::event::MouseScrollDelta::PixelDelta(p) => f64_to_f32_lossy(p.y),
+            winit::event::MouseScrollDelta::PixelDelta(p) => f32_of_f64(p.y),
         };
         // Every `WHEEL_DETENT_PX` triggers a workspace advance via
         // `click_to_spoke` (a spring settle, not a teleport); at an
@@ -2083,7 +2028,7 @@ impl SidebarWheelDisc {
         } else {
             // Project from where the gesture *ended*, not the trailing rim
             // position — the lag is meant to be visible, not subtracted.
-            let coast_s = u32_to_f32_lossy(Gesture::default().fling_projection_ms) / 1000.0;
+            let coast_s = f32_of_u32(Gesture::default().fling_projection_ms) / 1000.0;
             let projected = self.rotation_deg + velocity * coast_s;
             self.rotation_for_idx(self.idx_at_rotation(projected))
         };
@@ -2869,7 +2814,7 @@ mod tests {
             layout_into_slot(&mut d, live_slot());
 
             for step in 0_usize..24 {
-                d.rotation_deg = usize_to_f32_lossy(step) * 15.0;
+                d.rotation_deg = f32_of_usize(step) * 15.0;
                 paint(&mut d);
                 let (r_in, r_out) = d.label_band_radii();
                 let c = d.disc_centre();
@@ -2903,7 +2848,7 @@ mod tests {
             layout_into_slot(&mut d, live_slot());
 
             for step in 0..72 {
-                d.rotation_deg = usize_to_f32_lossy(step) * 5.0;
+                d.rotation_deg = f32_of_usize(step) * 5.0;
                 paint(&mut d);
                 assert!(
                     d.plus_rect.area() > 0.0,
@@ -3228,8 +3173,8 @@ mod tests {
         let node = d.build_layout(&mut taffy, &theme, &mut node_map);
         let mut style = taffy.style(node).unwrap().clone();
         style.size = Size {
-            width: Dimension::length(f64_to_f32_lossy(d.visible_width_px().min(slot.width()))),
-            height: Dimension::length(f64_to_f32_lossy(slot.height())),
+            width: Dimension::length(f32_of_f64(d.visible_width_px().min(slot.width()))),
+            height: Dimension::length(f32_of_f64(slot.height())),
         };
         taffy.set_style(node, style).unwrap();
         taffy
@@ -3722,7 +3667,7 @@ mod tests {
                 // Each hand-off happens as the wheel crosses the boundary
                 // between the two, i.e. half a detent from either's home.
                 for (idx, rot) in &steps_at {
-                    let boundary = -(usize_to_f32_lossy(*idx) - 0.5) * gap;
+                    let boundary = -(f32_of_usize(*idx) - 0.5) * gap;
                     assert!(
                         (rot - boundary).abs() < gap * 0.15,
                         "the indicator changed to {idx} at {rot:.2}°, but the boundary \
@@ -3784,7 +3729,7 @@ mod tests {
                     worst_overshoot * 100.0
                 );
 
-                let ms = usize_to_f32_lossy(frames_taken) * 1000.0 / 60.0;
+                let ms = f32_of_usize(frames_taken) * 1000.0 / 60.0;
                 assert!(
                     (250.0..900.0).contains(&ms),
                     "the settle took {ms:.0} ms. Under ~250 ms it snaps and the weight is \
@@ -3902,7 +3847,7 @@ mod tests {
                         "overscroll reached {at:.1}°, past its {reach:.1}° ceiling — the \
                          wheel can be dragged somewhere it does not belong"
                     );
-                    let raw = f64_to_f32_lossy(pull_px) * DRAG_FACTOR;
+                    let raw = f32_of_f64(pull_px) * DRAG_FACTOR;
                     assert!(
                         at < raw,
                         "pulling {pull_px} px past the end moved the wheel {at:.1}° of the \

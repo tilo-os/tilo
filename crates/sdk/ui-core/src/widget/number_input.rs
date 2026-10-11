@@ -24,6 +24,7 @@
 //! between them) for a painted host that lays its own rows, so a stepper
 //! drawn by hand is the one the widget draws.
 
+use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -134,17 +135,6 @@ const I64_MAX_AS_F64: f64 = 9_223_372_036_854_775_807.0;
 )]
 fn round_to_i64(v: f64) -> i64 {
     v.round().clamp(I64_MIN_AS_F64, I64_MAX_AS_F64) as i64
-}
-
-/// Narrows a screen-space length (`f64`, this widget's own unit) to the
-/// `f32` taffy consumes. Control widths/heights never approach `f32`'s
-/// range, so this never truncates in practice.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "widget widths/heights are always far below f32's range"
-)]
-fn px_f32(v: f64) -> f32 {
-    v as f32
 }
 
 /// `kurbo::Affine` composition is plain f64 matrix math with no panic
@@ -679,7 +669,7 @@ impl NumberInput {
         let (value_width, _) = text.measure_style(display, None, style);
         minimum
             .width
-            .max(value_width + field_padding * 2.0 + minimum.height * 2.0 + px_f32(GAP * 2.0))
+            .max(value_width + field_padding * 2.0 + minimum.height * 2.0 + f32_of_f64(GAP * 2.0))
             .ceil()
     }
 
@@ -700,8 +690,8 @@ impl NumberInput {
             DEFAULT_WIDTH * f64::from(theme.text_scale)
         };
         Size {
-            width: px_f32(width),
-            height: px_f32(height),
+            width: f32_of_f64(width),
+            height: f32_of_f64(height),
         }
     }
 
@@ -714,7 +704,7 @@ impl NumberInput {
     /// sized from it never clips a value the widget would have held.
     pub fn preferred_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
         let minimum = self.base_footprint(theme);
-        let padding = px_f32(self.field.text_padding_x(theme));
+        let padding = f32_of_f64(self.field.text_padding_x(theme));
         let style = self.value_style_in(theme);
         let widest = [self.value, self.min, self.max]
             .into_iter()
@@ -845,7 +835,7 @@ impl Widget for NumberInput {
     ) -> NodeId {
         let size = self.base_footprint(theme);
         self.minimum = size;
-        self.field_padding = px_f32(self.field.text_padding_x(theme));
+        self.field_padding = f32_of_f64(self.field.text_padding_x(theme));
         self.value_style = self.value_style_in(theme);
         let style = Style {
             size: Size {
@@ -1346,9 +1336,9 @@ mod tests {
                 None,
                 &theme.text(crate::tokens::TextRole::Body),
             );
-            let padding = px_f32(input.field.text_padding_x(&theme));
-            let height = px_f32(crate::widget::ControlSize::Regular.height(&theme));
-            let required = f64::from(widest + padding * 2.0 + height * 2.0 + px_f32(GAP * 2.0));
+            let padding = f32_of_f64(input.field.text_padding_x(&theme));
+            let height = f32_of_f64(crate::widget::ControlSize::Regular.height(&theme));
+            let required = f64::from(widest + padding * 2.0 + height * 2.0 + f32_of_f64(GAP * 2.0));
             assert!(
                 preferred + 1e-6 >= required,
                 "preferred {preferred} must hold the widest value ({required})"

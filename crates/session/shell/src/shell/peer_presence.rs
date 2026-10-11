@@ -32,6 +32,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use ui::num::f32_of_f64;
 
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::{PresenceCtx, PresenceKey};
@@ -957,17 +958,6 @@ fn handles_seen_in(presence: &PresenceCtx, room: &str) -> std::collections::BTre
 /// frames identify their sender by.
 pub type PeerLabels = std::collections::BTreeMap<u64, String>;
 
-/// Narrows a placed cursor coordinate (this device's scene space) to the
-/// `f32` [`PresencePayload::Pointer`] takes. Screen coordinates never
-/// approach a magnitude where this loses meaningful precision.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "desktop pixel coordinates stay well within f32's precision"
-)]
-fn cursor_coord_to_f32(v: f64) -> f32 {
-    v as f32
-}
-
 /// Every peer pointer received and not yet superseded, by presence id
 /// (`peer@<handle>`): the room it was sent in, where it is anchored, and
 /// when it was last heard. Kept after it goes quiet — somebody who pointed
@@ -1056,7 +1046,7 @@ pub fn place_pointers(
             continue;
         };
         let key = PresenceKey::Workspace { id: room.clone() };
-        let at = (cursor_coord_to_f32(x), cursor_coord_to_f32(y));
+        let at = (f32_of_f64(x), f32_of_f64(y));
         let placed = presence
             .pointers
             .get(&key)

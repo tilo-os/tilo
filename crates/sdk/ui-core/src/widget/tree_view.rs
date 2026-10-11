@@ -6,6 +6,7 @@
 //! Expand/select/focus state lives on the widget; `on_select` is how the
 //! caller persists a choice into its own (e.g. CRDT-backed) storage.
 
+use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
@@ -1951,7 +1952,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
 
     #[must_use]
     pub fn scroll_y(&self) -> f32 {
-        px(self.scroll_offset())
+        f32_of_f64(self.scroll_offset())
     }
 
     #[must_use]
@@ -1961,7 +1962,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
 
     #[must_use]
     pub fn max_scroll_y(&self) -> f32 {
-        px(self.max_scroll_offset())
+        f32_of_f64(self.max_scroll_offset())
     }
 
     #[must_use]
@@ -2781,15 +2782,6 @@ impl<T, M: TreeModel> TreeView<T, M> {
     }
 }
 
-#[inline]
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "bounded logical-pixel geometry is represented as f32 by the widget API"
-)]
-fn px(value: f64) -> f32 {
-    value as f32
-}
-
 impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     fn set_interaction_environment(
         &mut self,
@@ -2889,12 +2881,11 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             let child = row.widget.build_layout(taffy, theme, node_map);
             let mut style = taffy.style(child).cloned().unwrap_or_default();
             style.position = taffy::Position::Absolute;
-            style.inset.left = length(px(idx_to_f64(row.depth) * indent_px + disclosure_w));
+            style.inset.left = length(f32_of_f64(idx_to_f64(row.depth) * indent_px + disclosure_w));
             style.inset.right = length(0.0_f32);
-            style.inset.top = length(px(self
-                .viewport
-                .item_view_top(row.index)
-                .unwrap_or_default()));
+            style.inset.top = length(f32_of_f64(
+                self.viewport.item_view_top(row.index).unwrap_or_default(),
+            ));
             style.size.width = Dimension::auto();
             let _ = taffy.set_style(child, style);
             row.node = Some(child);
@@ -2903,7 +2894,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         let (height, min_height, grow) = if self.fill {
             (percent(1.0_f32), length(0.0_f32), 1.0)
         } else {
-            let content = Dimension::length(px(self.heading_h + height));
+            let content = Dimension::length(f32_of_f64(self.heading_h + height));
             (content, Dimension::auto(), 0.0)
         };
         let node = taffy.parent_node(
@@ -3017,7 +3008,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             let max_w = (end - x - f64::from(tokens.spacing.s3)).max(0.0);
             let heading = text_renderer.elide_to_width_style(
                 heading,
-                px(max_w),
+                f32_of_f64(max_w),
                 &heading_style
                     .clone()
                     .with_weight(crate::text_render::TextWeight::Semibold),
@@ -3342,8 +3333,11 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     // The current item is set in the heavier weight; elision is
                     // measured with it, so the label never jumps.
                     let strong = text_style.clone().strong();
-                    let label =
-                        text_renderer.elide_to_width_style(label, px(label_max.max(0.0)), &strong);
+                    let label = text_renderer.elide_to_width_style(
+                        label,
+                        f32_of_f64(label_max.max(0.0)),
+                        &strong,
+                    );
                     text_renderer.draw_style(
                         scene,
                         &label,
@@ -4611,7 +4605,7 @@ mod tests {
             let mut view = TreeView::new(sample_tree())
                 .with_expanded([1])
                 .reorderable();
-            view.set_viewport(88.0, px(ROW_HEIGHT));
+            view.set_viewport(88.0, f32_of_f64(ROW_HEIGHT));
             let (taffy, node) = lay_out_tree(&mut view, 240.0);
 
             dispatch_laid_out(&mut view, &cursor_moved(80.0, 33.0), &taffy, node);
@@ -5113,7 +5107,7 @@ mod tests {
                 node,
                 Size {
                     width: taffy::AvailableSpace::Definite(width),
-                    height: taffy::AvailableSpace::Definite(px(view.body_height())),
+                    height: taffy::AvailableSpace::Definite(f32_of_f64(view.body_height())),
                 },
             )
             .unwrap();
@@ -5314,7 +5308,7 @@ mod tests {
                     node,
                     Size {
                         width: taffy::AvailableSpace::Definite(320.0),
-                        height: taffy::AvailableSpace::Definite(px(view.body_height())),
+                        height: taffy::AvailableSpace::Definite(f32_of_f64(view.body_height())),
                     },
                 )
                 .unwrap();
@@ -5586,7 +5580,7 @@ mod tests {
                 .collect();
             let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
             view.toggle_expand(1);
-            view.set_viewport(44.0, px(ROW_HEIGHT));
+            view.set_viewport(44.0, f32_of_f64(ROW_HEIGHT));
             view.set_focus(true);
             view.focused = Some(TreeRowKey::Node(1));
 
@@ -5782,7 +5776,7 @@ mod tests {
                 .collect();
             let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
             view.toggle_expand(1);
-            view.set_viewport(110.0, px(ROW_HEIGHT));
+            view.set_viewport(110.0, f32_of_f64(ROW_HEIGHT));
             view.set_scroll_y(view.max_scroll_y() / 2.0);
 
             let visible = view.visible_row_range();
@@ -5799,7 +5793,7 @@ mod tests {
         {
             let mut view = TreeView::new(sample_tree());
             view.toggle_expand(1);
-            view.set_viewport(px(ROW_HEIGHT * 2.0), px(ROW_HEIGHT));
+            view.set_viewport(f32_of_f64(ROW_HEIGHT * 2.0), f32_of_f64(ROW_HEIGHT));
             view.set_scroll_y(10.0);
             let _ = lay_out_tree(&mut view, 320.0);
 
@@ -5834,8 +5828,8 @@ mod tests {
             );
             let mut view = TreeView::new(root);
             view.toggle_expand(1);
-            view.set_viewport(px(ROW_HEIGHT), px(ROW_HEIGHT));
-            view.set_scroll_y(px(ROW_HEIGHT * 2.0 + 5.0));
+            view.set_viewport(f32_of_f64(ROW_HEIGHT), f32_of_f64(ROW_HEIGHT));
+            view.set_scroll_y(f32_of_f64(ROW_HEIGHT * 2.0 + 5.0));
             let before = view.viewport.item_view_top(2);
 
             view.toggle_expand(2);
@@ -5889,8 +5883,8 @@ mod tests {
                 "the collapsed folder's child is not queried into visible order"
             );
 
-            view.set_viewport(px(ROW_HEIGHT), px(ROW_HEIGHT));
-            view.set_scroll_y(px(ROW_HEIGHT * 2.0 + 5.0));
+            view.set_viewport(f32_of_f64(ROW_HEIGHT), f32_of_f64(ROW_HEIGHT));
+            view.set_scroll_y(f32_of_f64(ROW_HEIGHT * 2.0 + 5.0));
             let before = view
                 .viewport
                 .item_view_top(view.visible_index_of(3).unwrap());
@@ -5923,7 +5917,7 @@ mod tests {
                 children: Rc::clone(&children),
             })
             .with_expanded([1]);
-            view.set_viewport(px(ROW_HEIGHT), px(ROW_HEIGHT));
+            view.set_viewport(f32_of_f64(ROW_HEIGHT), f32_of_f64(ROW_HEIGHT));
             view.set_scroll_offset(ROW_HEIGHT * 2.0 + 5.0);
             let before = view
                 .viewport
@@ -5946,7 +5940,7 @@ mod tests {
                 .with_expanded([1])
                 .with_selected(Some(3));
             view.focused = Some(TreeRowKey::Node(3));
-            view.set_viewport(66.0, px(ROW_HEIGHT));
+            view.set_viewport(66.0, f32_of_f64(ROW_HEIGHT));
             let offset = view.scroll_y();
 
             view.update_source(&[TreeModelChange::RowsChanged { ids: vec![3] }], |model| {
@@ -6013,7 +6007,7 @@ mod tests {
                 .collect();
             let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
             view.toggle_expand(1);
-            view.set_viewport(100.0, px(ROW_HEIGHT));
+            view.set_viewport(100.0, f32_of_f64(ROW_HEIGHT));
             assert!(view.set_row_height(0, 300.0));
             assert!(view.focus_at(0));
 
@@ -6047,7 +6041,7 @@ mod tests {
                 .collect();
             let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
             view.toggle_expand(1);
-            view.set_viewport(100.0, px(ROW_HEIGHT));
+            view.set_viewport(100.0, f32_of_f64(ROW_HEIGHT));
             let (taffy, node) = lay_out_tree(&mut view, 320.0);
 
             dispatch_laid_out(&mut view, &cursor_moved(100.0, 80.0), &taffy, node);
@@ -6110,7 +6104,7 @@ mod tests {
             })
             .with_expanded([1])
             .on_load_request(move |request| captured.borrow_mut().push(request));
-            view.set_viewport(66.0, px(ROW_HEIGHT));
+            view.set_viewport(66.0, f32_of_f64(ROW_HEIGHT));
             view.set_scroll_offset(idx_to_f64(50_000_000) * ROW_HEIGHT);
 
             let demanded = view.request_visible_rows();
@@ -6140,7 +6134,7 @@ mod tests {
                 changes: Vec::new(),
             })
             .with_expanded([1]);
-            view.set_viewport(66.0, px(ROW_HEIGHT));
+            view.set_viewport(66.0, f32_of_f64(ROW_HEIGHT));
             assert!(matches!(
                 view.index.row_at(&view.model, 1).map(|(key, _)| key),
                 Some(TreeRowKey::Slot(_))
@@ -6178,7 +6172,7 @@ mod tests {
             })
             .with_expanded([1])
             .on_load_request(move |request| captured.borrow_mut().push(request));
-            view.set_viewport(px(ROW_HEIGHT), px(ROW_HEIGHT));
+            view.set_viewport(f32_of_f64(ROW_HEIGHT), f32_of_f64(ROW_HEIGHT));
             view.set_scroll_offset(ROW_HEIGHT + 5.0);
             assert!(view.focus_at(1));
             view.set_focus(true);
@@ -6261,7 +6255,7 @@ mod tests {
                     Rc::new(Cell::new(0)),
                 ))
             });
-            view.set_viewport(120.0, px(ROW_HEIGHT));
+            view.set_viewport(120.0, f32_of_f64(ROW_HEIGHT));
             let _ = lay_out_tree(&mut view, 360.0);
 
             assert_eq!(builds.get(), 2);
@@ -6364,7 +6358,7 @@ mod tests {
             let mut view = TreeView::from_model(model)
                 .with_expanded([1, HugeModel::branch_id()])
                 .with_accessible_name("Huge tree");
-            view.set_viewport(720.0, px(ROW_HEIGHT));
+            view.set_viewport(720.0, f32_of_f64(ROW_HEIGHT));
             view.set_scroll_offset(idx_to_f64(HUGE_BRANCH_POSITION) * ROW_HEIGHT);
 
             assert_eq!(view.visible_len(), 100_000_003);
@@ -6397,7 +6391,7 @@ mod tests {
                     Rc::new(Cell::new(0)),
                 ))
             });
-            view.set_viewport(110.0, px(ROW_HEIGHT));
+            view.set_viewport(110.0, f32_of_f64(ROW_HEIGHT));
             view.set_scroll_offset(idx_to_f64(HUGE_BRANCH_POSITION) * ROW_HEIGHT);
             let _ = lay_out_tree(&mut view, 320.0);
 
@@ -6424,7 +6418,7 @@ mod tests {
                         Rc::clone(&captured),
                     ))
                 });
-            view.set_viewport(66.0, px(ROW_HEIGHT));
+            view.set_viewport(66.0, f32_of_f64(ROW_HEIGHT));
             let (taffy, node) = lay_out_tree(&mut view, 260.0);
 
             dispatch_laid_out(&mut view, &cursor_moved(80.0, 11.0), &taffy, node);
@@ -6455,7 +6449,7 @@ mod tests {
                         Rc::new(Cell::new(0)),
                     ))
                 });
-            view.set_viewport(120.0, px(ROW_HEIGHT));
+            view.set_viewport(120.0, f32_of_f64(ROW_HEIGHT));
             let _ = lay_out_tree(&mut view, 260.0);
             assert_eq!(builds.get(), 4);
             assert_eq!(view.viewport.item_height(1), Some(55.0));
@@ -6522,7 +6516,7 @@ mod tests {
                         true
                     },
                 );
-            view.set_viewport(px(4.0 * ROW_HEIGHT), px(ROW_HEIGHT));
+            view.set_viewport(f32_of_f64(4.0 * ROW_HEIGHT), f32_of_f64(ROW_HEIGHT));
             let (taffy, node) = lay_out_tree(&mut view, 240.0);
 
             dispatch_laid_out(&mut view, &cursor_moved(80.0, row_y(2.5)), &taffy, node);
@@ -6546,7 +6540,7 @@ mod tests {
             let mut view = TreeView::from_model(external_model())
                 .with_expanded([1, 2])
                 .with_reorder(|_, _, _| true, |_, _| true);
-            view.set_viewport(px(5.0 * ROW_HEIGHT), px(ROW_HEIGHT));
+            view.set_viewport(f32_of_f64(5.0 * ROW_HEIGHT), f32_of_f64(ROW_HEIGHT));
             let (taffy, node) = lay_out_tree(&mut view, 240.0);
 
             dispatch_laid_out(&mut view, &cursor_moved(80.0, row_y(1.5)), &taffy, node);
@@ -6565,7 +6559,7 @@ mod tests {
             view.reorder = ReorderController::new()
                 .with_drag_threshold(0.0)
                 .with_hover_expand_delay(Duration::ZERO);
-            view.set_viewport(px(4.0 * ROW_HEIGHT), px(ROW_HEIGHT));
+            view.set_viewport(f32_of_f64(4.0 * ROW_HEIGHT), f32_of_f64(ROW_HEIGHT));
             let (taffy, node) = lay_out_tree(&mut view, 240.0);
 
             dispatch_laid_out(&mut view, &cursor_moved(80.0, row_y(2.5)), &taffy, node);
@@ -6587,7 +6581,7 @@ mod tests {
         // Case `keyed_tree_transitions_move_survivors_and_retain_departing_rows`.
         {
             let mut view = TreeView::from_model(external_model()).with_expanded([1]);
-            view.set_viewport(110.0, px(ROW_HEIGHT));
+            view.set_viewport(110.0, f32_of_f64(ROW_HEIGHT));
             let _ = lay_out_tree(&mut view, 240.0);
             view.transitions.clear();
             view.refresh_transition_snapshot();
@@ -6630,7 +6624,7 @@ mod tests {
         // Case `reduced_motion_snaps_tree_structure_without_transition_state`.
         {
             let mut view = TreeView::from_model(external_model()).with_expanded([1]);
-            view.set_viewport(110.0, px(ROW_HEIGHT));
+            view.set_viewport(110.0, f32_of_f64(ROW_HEIGHT));
             view.reduce_motion = true;
             view.transitions.clear();
             view.refresh_transition_snapshot();

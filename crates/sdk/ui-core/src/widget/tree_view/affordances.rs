@@ -6,9 +6,10 @@
 
 use super::{
     Affine, Icon, NodeId, Point, Rect, Scene, TextRenderer, Theme, TreeModel, TreeRowKey, TreeView,
-    idx_to_f64, px,
+    idx_to_f64,
 };
 use crate::a11y::{AccessNode, AccessState, Role};
+use crate::num::f32_of_f64;
 use crate::text_render::TextStyle;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{ChipFace, ChipLead, Widget};
@@ -198,7 +199,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         for item in items {
             menu.push(item);
         }
-        menu.open_at([px(at.x), px(at.y)]);
+        menu.open_at([f32_of_f64(at.x), f32_of_f64(at.y)]);
         self.menu = menu;
         self.menu_target = target;
         self.rename = None;
@@ -564,7 +565,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         );
         let x = ghost.x0 + self.disclosure_w;
         let max_w = (ghost.x1 - x - self.row_gap).max(0.0);
-        let label = text_renderer.elide_to_width_style(label, px(max_w), text_style);
+        let label = text_renderer.elide_to_width_style(label, f32_of_f64(max_w), text_style);
         #[allow(
             clippy::arithmetic_side_effects,
             reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"

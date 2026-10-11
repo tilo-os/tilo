@@ -5,6 +5,7 @@
 //! No demotion once a block is a heading. Promotion only fires on an
 //! *empty* paragraph, matching the slash-menu convention.
 
+use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -6268,14 +6269,6 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "text layout accepts f32 widths; these values are finite viewport-sized geometry, so f64 precision beyond f32 subpixels is immaterial"
-)]
-fn text_layout_width(width: f64) -> f32 {
-    width as f32
-}
-
 /// See [`translated`]: `Affine * Point` is the same plain f64 math.
 #[allow(
     clippy::arithmetic_side_effects,
@@ -6575,7 +6568,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
             rect.x0 + 58.0 * scale,
             rect.y0 + 18.0 * scale,
         ),
-        Some(text_layout_width((rect.width() - 76.0 * scale).max(1.0))),
+        Some(f32_of_f64((rect.width() - 76.0 * scale).max(1.0))),
         &TextStyle::new(16.0).with_weight(crate::text_render::TextWeight::Medium),
     );
     ctx.text_renderer.draw_text(
@@ -6588,7 +6581,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
             rect.x0 + 58.0 * scale,
             rect.y0 + 42.0 * scale,
         ),
-        Some(text_layout_width((rect.width() - 76.0 * scale).max(1.0))),
+        Some(f32_of_f64((rect.width() - 76.0 * scale).max(1.0))),
     );
 }
 

@@ -31,6 +31,7 @@ use std::io::Read as _;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use ui::num::i32_of_f64;
 
 use smithay::backend::session::Session;
 use smithay::reexports::drm as drm_re;
@@ -1606,7 +1607,7 @@ impl CursorPlanes {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = (gx, gy);
         let rects: Vec<_> = self.outputs.iter().map(|o| o.rect).collect();
-        let (xi, yi) = (pixel_coord(gx), pixel_coord(gy));
+        let (xi, yi) = (i32_of_f64(gx), i32_of_f64(gy));
         let Some(i) = output_index_at(&rects, xi, yi) else {
             return;
         };
@@ -1677,18 +1678,6 @@ pub(crate) fn logical_to_physical_point(
         ),
         T::Rotate270 => (y, width.saturating_sub(1).saturating_sub(x)),
     }
-}
-
-/// Truncate a sub-pixel logical coordinate to a whole pixel. Rust's `as` cast from `f64` to
-/// `i32` already saturates to `i32::MIN`/`MAX` and maps NaN to 0 (no panic, no wraparound), so an
-/// out-of-range or NaN pointer position clamps rather than misbehaving; dropping the fractional
-/// part is the intended pixel-snapping behaviour, not a bug.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "float-to-int `as` saturates and maps NaN to 0; truncating the fractional pixel is intentional"
-)]
-fn pixel_coord(value: f64) -> i32 {
-    value as i32
 }
 
 /// Index of the first output rect containing `(xi, yi)`, or `None` in a gap between mismatched-size outputs; pure so cursor routing is unit-testable without a DRM device.
@@ -2675,8 +2664,8 @@ impl DrmScanout {
                         pitch,
                         dw,
                         dh,
-                        pixel_coord(px),
-                        pixel_coord(py),
+                        i32_of_f64(px),
+                        i32_of_f64(py),
                         bitmap,
                     );
                 }
@@ -2885,7 +2874,7 @@ impl DrmScanout {
                 if let Some((px, py)) = cursor
                     && let Some(bitmap) = cursor_bitmap.as_deref()
                 {
-                    draw_cursor(dst, pitch, dw, dh, pixel_coord(px), pixel_coord(py), bitmap);
+                    draw_cursor(dst, pitch, dw, dh, i32_of_f64(px), i32_of_f64(py), bitmap);
                 }
                 if let Some(slot) = self.xrgb_software_cursor.get_mut(idx) {
                     *slot = current_cursor;
@@ -2996,13 +2985,13 @@ impl DrmScanout {
                         pitch,
                         dw,
                         dh,
-                        (pixel_coord(px), pixel_coord(py)),
+                        (i32_of_f64(px), i32_of_f64(py)),
                         bitmap,
                         encoder,
                     ),
                     (true, None) => {}
                     (false, _) => {
-                        draw_cursor(dst, pitch, dw, dh, pixel_coord(px), pixel_coord(py), bitmap);
+                        draw_cursor(dst, pitch, dw, dh, i32_of_f64(px), i32_of_f64(py), bitmap);
                     }
                 }
             }
@@ -3790,8 +3779,8 @@ fn software_cursor_damage_rect(
     let bitmap = bitmap?;
     let span_x = i32::try_from(bitmap.width).ok()?;
     let span_y = i32::try_from(bitmap.height).ok()?;
-    let x0 = pixel_coord(px).saturating_sub(i32::try_from(bitmap.hotspot.0).ok()?);
-    let y0 = pixel_coord(py).saturating_sub(i32::try_from(bitmap.hotspot.1).ok()?);
+    let x0 = i32_of_f64(px).saturating_sub(i32::try_from(bitmap.hotspot.0).ok()?);
+    let y0 = i32_of_f64(py).saturating_sub(i32::try_from(bitmap.hotspot.1).ok()?);
     let right = x0.saturating_add(span_x);
     let bottom = y0.saturating_add(span_y);
     let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
@@ -4616,8 +4605,8 @@ mod tests {
                         pitch,
                         width,
                         height,
-                        pixel_coord(x),
-                        pixel_coord(y),
+                        i32_of_f64(x),
+                        i32_of_f64(y),
                         &arrow(48),
                     );
                 }

@@ -8,6 +8,7 @@
 //! both `entry.name` and `entry.space_name` so typing a space prefix
 //! narrows the list.
 
+use crate::num::f32_of_f64;
 use crate::search::ListIndex;
 use crate::time::SystemTime;
 use std::collections::HashMap;
@@ -1005,18 +1006,6 @@ fn rows_to_f64(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
-/// Narrows a layout dimension to `f32` for taffy. The only call site is
-/// this sheet's overall height, always many orders of magnitude below
-/// `f32::MAX`, so the truncation the lint warns about can't actually
-/// occur.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "sheet layout height in this widget never approaches f32::MAX"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
-}
-
 impl Widget for ChannelBrowser {
     fn build_layout(
         &mut self,
@@ -1037,7 +1026,7 @@ impl Widget for ChannelBrowser {
         let style = Style {
             size: Size {
                 width: Dimension::length(640.0),
-                height: Dimension::length(px(height)),
+                height: Dimension::length(f32_of_f64(height)),
             },
             ..Default::default()
         };
