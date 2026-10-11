@@ -20,7 +20,6 @@ use ui::time::Instant;
 
 use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -174,7 +173,6 @@ struct BenchHarness {
     text_renderer: TextRenderer,
     theme: Theme,
     presence: PresenceCtx,
-    permission: PermissionContext,
     renderer: OffscreenRenderer,
     modifiers: winit::event::Modifiers,
     viewport: (u32, u32),
@@ -189,7 +187,6 @@ impl BenchHarness {
             text_renderer: TextRenderer::new(),
             theme: Theme::dark(),
             presence: PresenceCtx::empty(),
-            permission: PermissionContext::permissive(),
             renderer: OffscreenRenderer::new(w, h),
             modifiers: winit::event::Modifiers::default(),
             viewport,
@@ -254,13 +251,12 @@ impl BenchHarness {
 
         let mut scene = Scene::new();
         let t = ui::time::now();
-        self.widget.draw_with_presence(
+        self.widget.draw(
             &mut scene,
             Affine::IDENTITY,
             &mut self.text_renderer,
             &self.theme,
             &self.presence,
-            &self.permission,
         );
         let draw_us = us(t);
 

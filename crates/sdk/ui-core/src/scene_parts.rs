@@ -366,8 +366,22 @@ pub fn append(
     parts: Option<&SectionParts>,
     transform: Option<vello::kurbo::Affine>,
 ) {
+    append_with(scene, parts, transform, |scene| {
+        scene.append(other, transform)
+    });
+}
+
+/// [`append`] for a caller that appends the recorded scene itself (with
+/// [`crate::backdrop::append_nested`], say): `append` must append exactly
+/// that scene at `transform`.
+pub fn append_with<R>(
+    scene: &mut Scene,
+    parts: Option<&SectionParts>,
+    transform: Option<vello::kurbo::Affine>,
+    append: impl FnOnce(&mut Scene) -> R,
+) -> R {
     let base = Marks::of(scene.encoding());
-    scene.append(other, transform);
+    let result = append(scene);
     let tracked = RECORDING.with(|slot| {
         let mut slot = slot.borrow_mut();
         let Some(log) = slot
@@ -401,6 +415,7 @@ pub fn append(
         // `other` encoded.
         scene.encoding_mut().force_next_transform_and_style();
     }
+    result
 }
 
 /// Why two frames of a section cannot be compared piece by piece.

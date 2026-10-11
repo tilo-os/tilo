@@ -13,8 +13,8 @@ use super::page_part::PagePart;
 use super::{
     Action, Affine, AlbumPage, Arc, ArtistPage, AutoCommit, CacheState, Color, Dimension, Drag,
     Fill, HashMap, HomeItem, HomeItemKind, HomeSection, Instant, MusicApp, NodeId, ObjId,
-    PermissionContext, PlaylistPage, Point, PresenceCtx, Rect, RepeatMode, Scene, Size, Style,
-    TaffyTree, TextRenderer, TextStyle, Theme, View, Widget, elide, is_live_album_id, is_live_id,
+    PlaylistPage, Point, PresenceCtx, Rect, RepeatMode, Scene, Size, Style, TaffyTree,
+    TextRenderer, TextStyle, Theme, View, Widget, elide, is_live_album_id, is_live_id,
     is_live_playlist_id, live_track_id, lyrics,
 };
 use ui::widget::TaffyTreeExt;
@@ -974,19 +974,6 @@ impl Widget for MusicApp {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        self.render_frame(scene, transform, text_renderer, theme);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        // Root rect is the whole window — always paint.
         self.render_frame(scene, transform, text_renderer, theme);
     }
 
