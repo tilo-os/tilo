@@ -319,13 +319,15 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
                 .filter(|(_, a)| match view {
                     View::Month => matches!(a, Action::PickDate(_)),
                     View::Week | View::Day => matches!(a, Action::OpenDay(_)),
-                    View::Agenda => matches!(a, Action::OpenEvent(_) | Action::OpenTask(_)),
+                    View::Agenda | View::Tasks => {
+                        matches!(a, Action::OpenEvent(_) | Action::OpenTask(_))
+                    }
                 })
                 .map(|(r, _)| r.width())
                 .fold(0.0f64, f64::max)
         }
 
-        for view in [View::Month, View::Week, View::Agenda] {
+        for view in [View::Month, View::Week, View::Agenda, View::Tasks] {
             let mut hn = Harness::new(1280, 800);
             hn.app.detail_open = false;
             hn.app.view = view;
@@ -3441,4 +3443,84 @@ fn open_platform_history(harness: &mut ui::headless::FrameHarness) {
             None,
         )
         .unwrap();
+}
+
+/// A row's checkbox on the Tasks screen completes the task with the very
+/// edit the task's published `toggle` and the sidebar rail make; the rest of
+/// the row opens the task, and subtasks sit indented under their parent.
+#[test]
+fn tasks_screen_rows_toggle_like_the_rail_and_open_like_the_agenda() {
+    let mut h = Harness::new(1280, 800);
+    h.app.show_calendar();
+    let personal = h
+        .app
+        .model
+        .projects
+        .iter()
+        .find(|project| project.name == "Personal")
+        .expect("sample project")
+        .id;
+    h.app.list_sel = Some(ListSel::Project(personal));
+    h.app.view = View::Tasks;
+    h.relayout();
+
+    let flights = h
+        .app
+        .model
+        .tasks
+        .iter()
+        .find(|task| task.title == "Book flights for offsite")
+        .expect("sample task with subtasks")
+        .clone();
+    let toggle_of = |app: &CalendarApp, id: Id| {
+        app.hits
+            .iter()
+            .find(|(_, action)| matches!(action, Action::ToggleTask(t) if *t == id))
+            .map(|(rect, _)| *rect)
+    };
+    let open_of = |app: &CalendarApp, id: Id| {
+        app.hits
+            .iter()
+            .find(|(_, action)| matches!(action, Action::OpenTask(t) if *t == id))
+            .map(|(rect, _)| *rect)
+    };
+    let parent_toggle = toggle_of(&h.app, flights.id).expect("the row's checkbox");
+    let parent_open = open_of(&h.app, flights.id).expect("the row opens its task");
+    assert!(
+        h.app.tasks.list_rect().contains_rect(parent_open),
+        "the row sits in the Tasks screen, not the sidebar rail"
+    );
+    let sub = h.app.model.subtasks_of(flights.id)[0].id;
+    let sub_toggle = toggle_of(&h.app, sub).expect("the subtask's checkbox");
+    assert!(sub_toggle.x0 > parent_toggle.x0, "subtasks are indented");
+
+    let published = {
+        let doc = h.doc().clone();
+        published_resource(&h.app, &doc, &crate::actions::task_resource_id(flights.id))
+            .expect("the task is published")
+            .actions
+            .into_iter()
+            .find(|action| action.id == "toggle")
+            .expect("toggle")
+            .build_args(std::iter::empty::<(String, tilo_actions::ArgValue)>())
+            .expect("toggle takes no arguments")
+    };
+    h.click(parent_toggle.center());
+    assert_eq!(h.app.model.task(flights.id).map(|t| t.done), Some(true));
+    let dispatched = h.app.last_dispatched().expect("the checkbox dispatched");
+    assert_eq!(dispatched.payload, published.payload);
+    assert_eq!(
+        dispatched.payload,
+        crate::actions::encode(&crate::actions::set_task_done_action(
+            flights.id.to_string(),
+            true
+        ))
+        .payload,
+        "the rail's ToggleTask builds the same edit"
+    );
+
+    h.relayout();
+    let open = open_of(&h.app, flights.id).expect("the row opens its task");
+    h.click(Point::new(open.x1 - 4.0, open.center().y));
+    assert_eq!(h.app.selected_task(), Some(flights.id));
 }
