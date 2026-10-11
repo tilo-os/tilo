@@ -44,6 +44,10 @@ local-daemons = ["dep:runtime-portal", "dep:runtime-identity"]
 # `CollaborationManager::new` starts disabled.
 broker-transport = ["local-daemons", "runtime-collab/client", "dep:capnp", "dep:capnp-rpc", "tokio/full"]
 test-support = ["tilo-host/test-support", "dep:tilo-test-env"]
+# The UX benchmark runner (`ui::ux_bench`): scenarios, checks and the HTML
+# report the shell's `ux-bench` binary drives. Off by default, so the shared
+# runtime apps load does not ship it.
+ux-bench = []
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests

@@ -582,7 +582,7 @@ pub(crate) fn get_slot<'doc>(
 
 /// What `index` of the list `obj` holds; not generic, as [`get_slot`].
 #[inline(never)]
-fn get_item<'doc>(
+pub(crate) fn get_item<'doc>(
     doc: &'doc Doc,
     obj: &ObjId,
     index: usize,
@@ -1549,76 +1549,63 @@ impl<T: Model> Model for Vec<T> {
     }
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
+    // Run by one set of functions for every list, over `T`'s table.
+    const TABLE: &'static crate::table::ModelTable = &crate::table::VecOf::<T>::TABLE;
     leaf_paths!();
-    #[inline(never)]
+    #[inline]
     fn to_json(&self) -> serde_json::Value {
-        serde_json::Value::Array(self.iter().map(Model::to_json).collect())
+        Run(Self::TABLE).to_json(self)
     }
-    #[inline(never)]
+    #[inline]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
-        match value {
-            serde_json::Value::Array(items) => items
-                .iter()
-                .enumerate()
-                .map(|(index, item)| T::from_json(item).located(&index.to_string()))
-                .collect(),
-            serde_json::Value::Null => Ok(Self::new()),
-            _ => Err(json_shape("a list")),
-        }
+        Run(Self::TABLE).from_json(value)
     }
+    #[inline]
     fn check(&self) -> Result<(), Refusal> {
-        if T::CHECKS {
-            self.iter().try_for_each(Model::check)?;
-        }
-        Ok(())
+        Run(Self::TABLE).check(self)
     }
-    #[inline(never)]
+    #[inline]
+    fn edit(
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        path: &[Segment],
+        op: &EditOp,
+        cx: &mut ActionCx,
+    ) -> Result<(), ModelError> {
+        Run(Self::TABLE).edit(doc, slot, path, op, cx)
+    }
+    #[inline]
+    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
+        Run(Self::TABLE).diff(self, after, path, out);
+    }
+    #[inline]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
-        if !matches!(value, Value::Object(ObjType::List)) {
-            return Err(ModelError::shape("a list"));
-        }
-        (0..doc.length(id))
-            .map(|index| {
-                match get_item(doc, id, index)? {
-                    Some((value, item)) => T::load(doc, &value, &item),
-                    None => T::missing(),
-                }
-                .located(&index.to_string())
-            })
-            .collect()
+        Run(Self::TABLE).load(doc, value, id)
     }
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::new())
     }
-    #[inline(never)]
+    #[inline]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        let list = slot.object(doc, ObjType::List)?;
-        let existing = doc.length(&list);
-        for (index, item) in self.iter().enumerate() {
-            let slot = if index < existing {
-                Slot::Index(&list, index)
-            } else {
-                Slot::Insert(&list, index)
-            };
-            item.store(doc, slot).located(&index.to_string())?;
-        }
-        for index in (self.len()..existing).rev() {
-            doc.delete(&list, index)?;
-        }
-        Ok(())
+        Run(Self::TABLE).store(self, doc, slot)
     }
-    #[inline(never)]
+    #[inline]
     fn stores_as(&self, before: &Self) -> bool {
-        self.len() == before.len()
-            && self
-                .iter()
-                .zip(before)
-                .all(|(value, before)| value.stores_as(before))
+        Run(Self::TABLE).stores_as(self, before)
     }
+    #[inline]
+    fn refresh(
+        &mut self,
+        doc: &Doc,
+        value: &Value<'_>,
+        id: &ObjId,
+        delta: &Delta,
+    ) -> Result<(), ModelError> {
+        Run(Self::TABLE).refresh(self, doc, value, id, delta)
+    }
+    #[inline]
     fn collect_text(&self, out: &mut Vec<String>) {
-        for item in self {
-            item.collect_text(out);
-        }
+        Run(Self::TABLE).collect_text(self, out);
     }
 }
 

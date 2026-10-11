@@ -301,7 +301,7 @@ fn edit_from_json(value: serde_json::Value) -> Result<(Vec<Segment>, EditOp), se
         .remove("path")
         .ok_or_else(|| serde_json::Error::missing_field("path"))?;
     let path = segments_from_json(path)?;
-    let op = EditOp::deserialize(serde_json::Value::Object(map))?;
+    let op = op_from_json(serde_json::Value::Object(map))?;
     Ok((path, op))
 }
 
@@ -667,7 +667,7 @@ impl<R, T: Model, O: Serialize + serde::de::DeserializeOwned + 'static>
 }
 
 /// What an [`Edit`] does at its path. Text positions count characters.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum EditOp {
     /// Replace the value with one in its JSON form ([`Model::to_json`]).
@@ -754,6 +754,135 @@ pub enum EditOp {
     Rich {
         rich: serde_json::Value,
     },
+}
+
+// Read through one JSON value: the tag taken out by hand and the rest read
+// as an externally tagged twin, so no deserializer buffers the edit's content
+// to find its tag, and the reading is compiled once.
+impl<'de> Deserialize<'de> for EditOp {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match op_from_json(value) {
+            Ok(op) => Ok(op),
+            Err(error) => Err(serde::de::Error::custom(error)),
+        }
+    }
+}
+
+/// [`EditOp`] as its JSON form tags it, the tag outside.
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum EditOpWire {
+    Set {
+        value: serde_json::Value,
+    },
+    Splice {
+        at: usize,
+        delete: usize,
+        insert: String,
+    },
+    Replace {
+        text: String,
+    },
+    Add {
+        by: i64,
+    },
+    Insert {
+        value: serde_json::Value,
+    },
+    Remove {
+        value: serde_json::Value,
+    },
+    InsertItem {
+        #[serde(default)]
+        id: Option<Id>,
+        at: usize,
+        value: serde_json::Value,
+    },
+    RemoveItem {
+        id: Id,
+    },
+    MoveTo {
+        id: Id,
+        at: usize,
+    },
+    RemoveKey {
+        key: String,
+    },
+    SetCell {
+        row: Id,
+        column: Id,
+        #[serde(default)]
+        value: Option<serde_json::Value>,
+    },
+    InsertRow {
+        #[serde(default)]
+        id: Option<Id>,
+        at: usize,
+    },
+    InsertColumn {
+        #[serde(default)]
+        id: Option<Id>,
+        at: usize,
+    },
+    RemoveRow {
+        id: Id,
+    },
+    RemoveColumn {
+        id: Id,
+    },
+    Settle {
+        id: Id,
+        outcome: serde_json::Value,
+    },
+    Forget {
+        id: Id,
+    },
+    Rich {
+        rich: serde_json::Value,
+    },
+}
+
+impl From<EditOpWire> for EditOp {
+    fn from(wire: EditOpWire) -> Self {
+        match wire {
+            EditOpWire::Set { value } => Self::Set { value },
+            EditOpWire::Splice { at, delete, insert } => Self::Splice { at, delete, insert },
+            EditOpWire::Replace { text } => Self::Replace { text },
+            EditOpWire::Add { by } => Self::Add { by },
+            EditOpWire::Insert { value } => Self::Insert { value },
+            EditOpWire::Remove { value } => Self::Remove { value },
+            EditOpWire::InsertItem { id, at, value } => Self::InsertItem { id, at, value },
+            EditOpWire::RemoveItem { id } => Self::RemoveItem { id },
+            EditOpWire::MoveTo { id, at } => Self::MoveTo { id, at },
+            EditOpWire::RemoveKey { key } => Self::RemoveKey { key },
+            EditOpWire::SetCell { row, column, value } => Self::SetCell { row, column, value },
+            EditOpWire::InsertRow { id, at } => Self::InsertRow { id, at },
+            EditOpWire::InsertColumn { id, at } => Self::InsertColumn { id, at },
+            EditOpWire::RemoveRow { id } => Self::RemoveRow { id },
+            EditOpWire::RemoveColumn { id } => Self::RemoveColumn { id },
+            EditOpWire::Settle { id, outcome } => Self::Settle { id, outcome },
+            EditOpWire::Forget { id } => Self::Forget { id },
+            EditOpWire::Rich { rich } => Self::Rich { rich },
+        }
+    }
+}
+
+/// The operation in `value`, an edit's JSON form without its path.
+#[inline(never)]
+fn op_from_json(value: serde_json::Value) -> Result<EditOp, serde_json::Error> {
+    use serde::de::Error as _;
+    let serde_json::Value::Object(mut fields) = value else {
+        return Err(serde_json::Error::custom(
+            "an edit operation is a JSON object",
+        ));
+    };
+    let Some(serde_json::Value::String(op)) = fields.remove("op") else {
+        return Err(serde_json::Error::missing_field("op"));
+    };
+    let mut tagged = serde_json::Map::new();
+    tagged.insert(op, serde_json::Value::Object(fields));
+    EditOpWire::deserialize(serde_json::Value::Object(tagged)).map(EditOp::from)
 }
 
 impl EditOp {
