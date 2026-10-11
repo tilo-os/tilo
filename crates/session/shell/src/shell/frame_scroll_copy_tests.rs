@@ -209,7 +209,10 @@ fn scroll_and_present(
         });
         assert!(
             index > 0 || (scrolled_to - scrolled_from).abs() > f64::EPSILON,
-            "{label}: the wheel scrolls the note ({scrolled_from} -> {scrolled_to})"
+            "{label}: the wheel scrolls the note ({scrolled_from} -> {scrolled_to}): {}",
+            with_notes_on_screen(&*frame, |_, notes| notes
+                .main_panel_mut()
+                .scroll_state_for_test())
         );
         let previous = frame.last_produced_sections.clone();
         let painted = frame.paint_with_damage();
