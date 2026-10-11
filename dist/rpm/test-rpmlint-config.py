@@ -24,6 +24,10 @@ def messages(version, package="tilo-session-apps.x86_64"):
         f"{package}: E: invalid-soname {root}/lib/libruntime_dylib.so libruntime_dylib.so",
         f"{package}: E: call-to-mktemp {root}/lib/lib64/libc.so.6",
         f"{package}: E: invalid-soname {root}/lib/libtilo_typst_engine.so libtilo_typst_engine.so",
+        # The dependency closure signs a second glibc at lib/ beside the loader set's.
+        f"{package}: E: call-to-mktemp {root}/lib/libc.so.6",
+        f"{package}: E: missing-call-to-setgroups-before-setuid {root}/lib/libblkid.so.1",
+        f"{package}: E: missing-call-to-setgroups-before-setuid {root}/lib/libmount.so.1",
     ]
 
 
@@ -31,7 +35,7 @@ class RuntimeFilterContract(unittest.TestCase):
     def test_release_and_native_use_both_existing_exceptions(self):
         # One filter per exception covers both spellings. Separate release and
         # native filters would leave half unused on each valid package set.
-        self.assertEqual(len(RUNTIME_FILTERS), 2)
+        self.assertEqual(len(RUNTIME_FILTERS), 3)
         for version in ("2026.07", NATIVE):
             for package in ("tilo-session-apps", "tilo-session-apps.x86_64",
                             "tilo-session-apps.aarch64"):
@@ -64,7 +68,22 @@ class RuntimeFilterContract(unittest.TestCase):
                       cohort[2].replace(" libtilo_typst_engine.so", " libruntime_dylib.so"),
                       cohort[2].replace("libtilo_typst_engine.so", "libtilo_typst_engineXso"),
                       cohort[2].replace("/lib/libtilo_typst_engine.so", "/lib/libtilo__engine.so"),
-                      cohort[1].replace("/lib/lib64/libc.so.6", "/lib/libc.so.6"),
+                      cohort[1].replace("/lib/lib64/libc.so.6", "/lib/lib32/libc.so.6"),
+                      cohort[1].replace("/lib/lib64/libc.so.6", "/lib/usr/lib64/libc.so.6"),
+                      cohort[1].replace("/lib/lib64/libc.so.6", "/lib/lib64/lib64/libc.so.6"),
+                      cohort[3].replace("/lib/libc.so.6", "/lib/libcXso.6"),
+                      # The setgroups exception names exactly libblkid and libmount.
+                      cohort[4].replace("/lib/libblkid.so.1", "/lib/libc.so.6"),
+                      cohort[4].replace("/lib/libblkid.so.1", "/lib/libselinux.so.1"),
+                      cohort[4].replace("/lib/libblkid.so.1", "/lib/libblkid.so.1.1.0"),
+                      cohort[4].replace("/lib/libblkid.so.1", "/lib/lib64/libblkid.so.1"),
+                      cohort[5].replace("/lib/libmount.so.1", "/lib/libmountXso.1"),
+                      cohort[5].replace("/lib/libmount.so.1", "/libmount.so.1"),
+                      cohort[5].replace("/usr/lib/tilo-runtime/", "/usr/lib/other-runtime/"),
+                      cohort[4].replace("missing-call-to-setgroups-before-setuid",
+                                        "missing-call-to-chdir-with-chroot"),
+                      cohort[3].replace("call-to-mktemp", "executable-stack"),
+                      cohort[5] + "/extra",
                       cohort[1].replace("/lib/lib64/libc.so.6", "/lib/lib64/libother.so.6"),
                       cohort[1].replace("/usr/lib/tilo-runtime/", "/usr/lib/other-runtime/"),
                       cohort[1] + "/extra", "other-prefix " + cohort[1]]
@@ -98,10 +117,14 @@ class RuntimeFilterContract(unittest.TestCase):
                 engine.add_info("E", package, "call-to-mktemp", root + "/lib/lib64/libc.so.6")
                 engine.add_info("E", package, "invalid-soname",
                                 root + "/lib/libtilo_typst_engine.so", "libtilo_typst_engine.so")
+                engine.add_info("E", package, "call-to-mktemp", root + "/lib/libc.so.6")
+                for library in ("libblkid.so.1", "libmount.so.1"):
+                    engine.add_info("E", package, "missing-call-to-setgroups-before-setuid",
+                                    root + "/lib/" + library)
                 engine.add_info("W", package, "non-executable-script",
                                 "/usr/lib/tilo-apps/pkgs/" + "ab" * 32 + "/usr/bin/fixture")
                 engine.validate_filters(package)
-                self.assertEqual(engine.filtered_out, 4)
+                self.assertEqual(engine.filtered_out, 7)
                 self.assertEqual(engine.printed_messages["E"], 0)
                 self.assertEqual(engine.used_filters, set(PATTERNS))
                 # Validate a genuinely unused filter through rpmlint itself;
