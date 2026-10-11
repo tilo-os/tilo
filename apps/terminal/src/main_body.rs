@@ -25,7 +25,7 @@ use taffy::{NodeId, TaffyTree};
 use tilo_content::ContentStore;
 use ui::collaboration::PresencePayload;
 use ui::icons::Icon;
-use ui::permissions::{AppKind as PermAppKind, PermissionContext};
+use ui::permissions::AppKind as PermAppKind;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{
@@ -2718,7 +2718,7 @@ impl Widget for TerminalWidget {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &ui::presence::PresenceCtx,
+        presence: &ui::presence::PresenceCtx,
     ) {
         // Every visual parameter comes from the theme. The grid is document
         // content in the `Code` role; the window ground under it is the
@@ -2815,6 +2815,7 @@ impl Widget for TerminalWidget {
         // when the buffer overflows the viewport.
         self.draw_scrollbar(scene, transform, theme, start_y, visible_rows);
         self.draw_top_bands(scene, transform, text_renderer, theme);
+        self.draw_peer_marks(scene, transform, theme, presence);
     }
 
     /// The right-click Copy/Paste menu is a floating Panel: it paints in the
@@ -3207,42 +3208,6 @@ impl Widget for TerminalWidget {
             false
         }
     }
-
-    /// Paint the terminal, then overlay remote collaborators' selections and
-    /// carets in their own colours on top (following the `TextInput` model).
-    /// Grid content is shared via the session record; this adds the per-peer
-    /// decoration.
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(key) = ui::presence::capability::presence_key(self) {
-            if let Some(list) = presence.selections.get(&key) {
-                for (user, range) in list {
-                    for rect in self.peer_selection_rects(range.start, range.end) {
-                        presence.draw_peer_selection(scene, theme, transform, user, rect);
-                    }
-                }
-            }
-            if let Some(list) = presence.carets.get(&key) {
-                for (user, caret) in list {
-                    if let Some(rect) = self.peer_caret_rect(*caret) {
-                        presence.draw_peer_caret(scene, theme, transform, user, rect);
-                    }
-                }
-            }
-        }
-    }
 }
 
 impl ui::undo::LocalUndo for TerminalWidget {
@@ -3378,6 +3343,36 @@ impl ui::presence::capability::PublishesPresence for TerminalWidget {
 }
 
 impl TerminalWidget {
+    /// Overlay remote collaborators' selections and carets in their own
+    /// colours on top of the grid (following the `TextInput` model). Grid
+    /// content is shared via the session record; this adds the per-peer
+    /// decoration.
+    fn draw_peer_marks(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let Some(key) = ui::presence::capability::presence_key(self) else {
+            return;
+        };
+        if let Some(list) = presence.selections.get(&key) {
+            for (user, range) in list {
+                for rect in self.peer_selection_rects(range.start, range.end) {
+                    presence.draw_peer_selection(scene, theme, transform, user, rect);
+                }
+            }
+        }
+        if let Some(list) = presence.carets.get(&key) {
+            for (user, caret) in list {
+                if let Some(rect) = self.peer_caret_rect(*caret) {
+                    presence.draw_peer_caret(scene, theme, transform, user, rect);
+                }
+            }
+        }
+    }
+
     /// Record this terminal's session through `dispatcher`: the session
     /// record's own when the framework hosts the terminal, or a parent's
     /// child dispatcher when the terminal is nested in another resource (an

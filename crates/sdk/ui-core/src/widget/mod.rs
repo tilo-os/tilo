@@ -194,6 +194,21 @@ pub fn route_to_children(
     }
 }
 
+/// Draw `child` unless what it paints misses the viewport. Off-viewport
+/// widgets stay dirty, so they re-emit when scrolled back in.
+pub fn draw_child(
+    child: &mut (impl Widget + ?Sized),
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+) {
+    if !presence.should_cull(child.paint_bounds()) {
+        child.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
 /// What a gated, presence-publishing widget draws over itself once drawn:
 /// the denied-permission scrim, then the focus ring of the first peer on it.
 pub(crate) fn draw_gate_and_peer_focus(
@@ -202,11 +217,10 @@ pub(crate) fn draw_gate_and_peer_focus(
     transform: Affine,
     theme: &Theme,
     presence: &PresenceCtx,
-    permissions: &crate::permissions::PermissionContext,
 ) {
     let rect = widget.get_rect();
     if let Some(scope) = crate::permissions::capability::permission_scope(widget)
-        && !permissions.check(&scope)
+        && !presence.permits(&scope)
     {
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -2303,29 +2317,14 @@ pub trait Widget {
         }
     }
 
-    /// Default forwards to `draw`, then overlays the denied-permission scrim and
-    /// the first peer's focus ring (for gated or presence-publishing widgets).
-    /// **Spatial culling**: short-circuits via [`PresenceCtx::should_cull`]
-    /// when the rect misses `presence.viewport` — overrides MUST call it
-    /// first. Off-viewport widgets stay dirty so they re-emit when scrolled
-    /// back in.
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-        draw_gate_and_peer_focus(self, scene, transform, theme, presence, permissions);
+    /// Everything this widget paints, children included; [`draw_child`]
+    /// skips the draw when it misses the viewport. Override for widgets
+    /// that paint past their own rect.
+    fn paint_bounds(&self) -> vello::kurbo::Rect {
+        self.get_rect()
     }
 
-    /// **Top-layer pass**, run once after the whole `draw_with_presence`
+    /// **Top-layer pass**, run once after the whole `draw`
     /// recursion, so anything emitted here composites above every sibling
     /// regardless of tree order — the toolkit's overlay mechanism for
     /// content that escapes its layout box (an open [`Dropdown`], a
