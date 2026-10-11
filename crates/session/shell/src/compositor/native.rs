@@ -1273,11 +1273,17 @@ fn valid_agent_navigation_request(
         && request.anchor[3] - request.anchor[1]
             <= ui::floating_surface::MAX_AGENT_MARKER_LOGICAL_EXTENT
         && request.targets.iter().all(|target| {
+            let protected = target.protected.unwrap_or(target.locus);
             target.interaction.validate().is_ok()
                 && target.interaction.invocation == target.invocation
                 && target.interaction.actor.kind == tilo_actions::InteractionActorKind::Agent
                 && target.interaction.actor.id == target.actor.0
                 && valid_rect(target.locus)
+                && valid_rect(protected)
+                && protected[0] <= target.locus[0]
+                && protected[1] <= target.locus[1]
+                && protected[2] >= target.locus[2]
+                && protected[3] >= target.locus[3]
         })
 }
 
@@ -1421,14 +1427,21 @@ pub(crate) fn publish_agent_quick_composer_targets(
                     ),
                     app_rect,
                 );
-                marker_projection_is_current(
-                    frame_builder,
-                    target,
-                    app_id,
-                    &request.room,
-                    [app_rect, marker, locus],
-                    now,
-                )
+                let protected = target.protected.unwrap_or(target.locus);
+                let protected = app_local_to_desktop(
+                    Rect::new(protected[0], protected[1], protected[2], protected[3]),
+                    app_rect,
+                );
+                let protected_inside = app_rect.contains_rect(protected);
+                (protected_inside
+                    && marker_projection_is_current(
+                        frame_builder,
+                        target,
+                        app_id,
+                        &request.room,
+                        [app_rect, marker, locus],
+                        now,
+                    ))
                 .then(|| {
                     let label = agent_marker_label(frame_builder, target);
                     let description = agent_marker_description(frame_builder, target);
@@ -1440,6 +1453,7 @@ pub(crate) fn publish_agent_quick_composer_targets(
                         target: target.clone(),
                         marker,
                         locus,
+                        protected,
                         label,
                         description,
                         published_at: std::time::Instant::now(),
@@ -1742,14 +1756,23 @@ fn pump_floating_surface_service(
                                 ),
                                 *app_rect,
                             );
-                            app_rect.contains(locus.origin())
-                                && app_rect.contains(vello::kurbo::Point::new(locus.x1, locus.y1))
+                            let protected = target.protected.unwrap_or(target.locus);
+                            let protected = app_local_to_desktop(
+                                Rect::new(
+                                    protected[0],
+                                    protected[1],
+                                    protected[2],
+                                    protected[3],
+                                ),
+                                *app_rect,
+                            );
+                            app_rect.contains_rect(locus) && app_rect.contains_rect(protected)
                         })
                     });
                     if activated
                         && current
                         && loci_inside_source
-                        && let Some((_, _, room)) = source
+                        && let Some((_, app_rect, room)) = source
                         && let Some(marker) = marker
                         && request.room == room
                     {
@@ -1763,9 +1786,36 @@ fn pump_floating_surface_service(
                                 )
                             })
                             .collect::<Vec<_>>();
-                        changed |= frame_builder
-                            .host_mut()
-                            .open_agent_quick_composer_from_user_navigation(&room, &agents, marker);
+                        if let Some(target) = request.targets.first() {
+                            let protected = target.protected.unwrap_or(target.locus);
+                            let protected = app_local_to_desktop(
+                                Rect::new(
+                                    protected[0],
+                                    protected[1],
+                                    protected[2],
+                                    protected[3],
+                                ),
+                                app_rect,
+                            );
+                            let context = crate::shell::i18n::t_args(
+                                "agent-quick-origin-context",
+                                &[(
+                                    "context",
+                                    agent_marker_description(frame_builder, target).into(),
+                                )],
+                            );
+                            changed |= frame_builder
+                                .host_mut()
+                                .open_agent_quick_composer_from_user_navigation(
+                                    &room,
+                                    &agents,
+                                    crate::shell::agent_quick_composer::AgentQuickComposerOrigin {
+                                        marker,
+                                        protected,
+                                        context,
+                                    },
+                                );
+                        }
                     } else {
                         tracing::info!(%app_id, "refused stale or malformed Agent navigation");
                     }
@@ -20338,6 +20388,7 @@ mod external_floating_security_tests {
                 invocation,
                 interaction,
                 locus: [80.0, 80.0, 240.0, 140.0],
+                protected: None,
             }],
             anchor,
         }
@@ -20345,9 +20396,31 @@ mod external_floating_security_tests {
 
     #[test]
     fn agent_navigation_wire_geometry_is_tiny_finite_and_closed() {
-        assert!(valid_agent_navigation_request(&agent_navigation([
-            100.0, 100.0, 122.0, 120.0,
-        ])));
+        let legacy = agent_navigation([100.0, 100.0, 122.0, 120.0]);
+        assert!(valid_agent_navigation_request(&legacy));
+        let mut legacy_wire = serde_json::to_value(&legacy).unwrap();
+        legacy_wire["targets"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("protected");
+        let legacy: ui::floating_surface::AgentConversationNavigation =
+            serde_json::from_value(legacy_wire).unwrap();
+        assert_eq!(legacy.targets[0].protected, None);
+        assert!(valid_agent_navigation_request(&legacy));
+        let valid_anchor = [100.0, 100.0, 122.0, 120.0];
+        let mut protected = agent_navigation(valid_anchor);
+        protected.targets[0].protected = Some([72.0, 72.0, 260.0, 160.0]);
+        assert!(valid_agent_navigation_request(&protected));
+        for malformed_protected in [
+            [81.0, 72.0, 260.0, 160.0],
+            [72.0, 81.0, 260.0, 160.0],
+            [72.0, 72.0, 239.0, 160.0],
+            [72.0, 72.0, 260.0, f64::NAN],
+        ] {
+            let mut malformed = agent_navigation(valid_anchor);
+            malformed.targets[0].protected = Some(malformed_protected);
+            assert!(!valid_agent_navigation_request(&malformed));
+        }
         for malformed in [
             [100.0, 100.0, 100.0, 124.0],
             [100.0, 100.0, 124.0, 124.0],
@@ -20357,7 +20430,6 @@ mod external_floating_security_tests {
                 malformed
             )));
         }
-        let valid_anchor = [100.0, 100.0, 122.0, 120.0];
         let mut empty = agent_navigation(valid_anchor);
         empty.targets.clear();
         assert!(!valid_agent_navigation_request(&empty));

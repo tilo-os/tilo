@@ -35,6 +35,7 @@ struct ComposerControls<'a> {
     intent: &'a LocalState<ComposerIntent>,
     draft: &'a LocalState<String>,
     title: &'a LocalState<String>,
+    origin_context: &'a LocalState<String>,
     status: &'a LocalState<String>,
     send_enabled: &'a LocalState<bool>,
     send_requested: &'a LocalState<bool>,
@@ -44,6 +45,26 @@ struct ComposerControls<'a> {
     task_options: &'a LocalState<Vec<(String, String)>>,
     task_selected: &'a LocalState<String>,
     task_visible: &'a LocalState<bool>,
+}
+
+/// Validated descriptive origin for one marker-opened composer. Geometry can
+/// guide placement and the text can preserve context when overlap is
+/// unavoidable; neither is an execution capability.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AgentQuickComposerOrigin {
+    pub marker: Rect,
+    pub protected: Rect,
+    pub context: String,
+}
+
+impl AgentQuickComposerOrigin {
+    pub(crate) fn marker_only(marker: Rect) -> Self {
+        Self {
+            marker,
+            protected: marker,
+            context: String::new(),
+        }
+    }
 }
 
 /// A presentation choice, never an execution capability. Revision fences a
@@ -560,6 +581,7 @@ pub(crate) struct AgentQuickComposer {
     receipts: HashMap<DraftKey, ComposerReceipt>,
     draft: LocalState<String>,
     title: LocalState<String>,
+    origin_context: LocalState<String>,
     intent: LocalState<ComposerIntent>,
     shown_intent: ComposerIntent,
     status: LocalState<String>,
@@ -590,6 +612,7 @@ impl Default for AgentQuickComposer {
     fn default() -> Self {
         let draft = LocalState::new(String::new());
         let title = LocalState::new(t("agent-quick-accessible-name"));
+        let origin_context = LocalState::new(String::new());
         let intent = LocalState::new(ComposerIntent::Message);
         let status = LocalState::new(t("agent-quick-checking"));
         let send_enabled = LocalState::new(false);
@@ -605,6 +628,7 @@ impl Default for AgentQuickComposer {
             intent: &intent,
             draft: &draft,
             title: &title,
+            origin_context: &origin_context,
             status: &status,
             send_enabled: &send_enabled,
             send_requested: &send_requested,
@@ -627,6 +651,7 @@ impl Default for AgentQuickComposer {
             receipts: HashMap::new(),
             draft,
             title,
+            origin_context,
             intent,
             shown_intent: ComposerIntent::Message,
             status,
@@ -728,6 +753,12 @@ fn quick_composer_popover(controls: &ComposerControls<'_>) -> Popover<Container>
                 .push(Box::new(Badge::text(t("agent-quick-kind")))),
         ))
         .push(Box::new(
+            Text::from_state(controls.origin_context, Clone::clone)
+                .with_id("agent-quick-origin-context")
+                .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph)
+                .dimmed(),
+        ))
+        .push(Box::new(
             Container::new().with_no_padding().with_child(Box::new(
                 Text::from_state(controls.status, Clone::clone)
                     .with_id("agent-quick-status")
@@ -749,6 +780,7 @@ fn quick_composer_popover(controls: &ComposerControls<'_>) -> Popover<Container>
         .with_child(Box::new(body));
     Popover::with_content(content)
         .side(PopoverSide::Right)
+        .fallback_side(PopoverSide::Below)
         .confined_to_viewport()
         .with_label(t("agent-quick-accessible-name"))
 }
@@ -774,6 +806,10 @@ impl AgentQuickComposer {
             "agent-quick-title",
             &[("agent", label.to_owned().into())],
         ));
+        self.origin_context.set(t_args(
+            "agent-quick-origin-context",
+            &[("context", t("agent-quick-shots-context").into())],
+        ));
         self.frozen_anchor = anchor;
         self.shown_intent = ComposerIntent::Message;
         self.intent.set(ComposerIntent::Message);
@@ -788,6 +824,7 @@ impl AgentQuickComposer {
         self.pending_work = None;
         self.permission_refused = false;
         self.popover.set_anchor(anchor);
+        self.popover.set_avoid(Some(anchor));
         self.popover.set_viewport(viewport);
         self.popover.set_open(true);
         self.focus_reset = true;
@@ -800,7 +837,7 @@ impl AgentQuickComposer {
         room: String,
         agent: String,
         agent_label: String,
-        anchor: Rect,
+        origin: AgentQuickComposerOrigin,
         viewport: Rect,
     ) {
         let DesktopActionClient { actions, custody } = client;
@@ -815,6 +852,10 @@ impl AgentQuickComposer {
                 "agent-quick-title",
                 &[("agent", self.agent_label.clone().into())],
             ));
+            self.origin_context.set(origin.context);
+            self.frozen_anchor = origin.marker;
+            self.popover.set_anchor(origin.marker);
+            self.popover.set_avoid(Some(origin.protected));
             self.popover.set_viewport(viewport);
             self.popover.set_open(true);
             self.focus_reset = true;
@@ -836,7 +877,8 @@ impl AgentQuickComposer {
             "agent-quick-title",
             &[("agent", self.agent_label.clone().into())],
         ));
-        self.frozen_anchor = anchor;
+        self.frozen_anchor = origin.marker;
+        self.origin_context.set(origin.context);
         self.permission_refused = false;
         if let Some(session) = self.retained_sessions.remove(&(
             self.custody.clone(),
@@ -865,7 +907,8 @@ impl AgentQuickComposer {
         self.message_offer = None;
         self.status.set(t("agent-quick-checking"));
         self.refresh_message_offer_for_user_navigation();
-        self.popover.set_anchor(anchor);
+        self.popover.set_anchor(origin.marker);
+        self.popover.set_avoid(Some(origin.protected));
         self.popover.set_viewport(viewport);
         self.popover.set_open(true);
         self.focus_reset = true;
@@ -2466,6 +2509,8 @@ mod tests {
         composer.popover.set_anchor(anchor);
         composer.popover.set_viewport(viewport);
         composer.popover.set_open(true);
+        let state = ui::State::new();
+        composer.sync(&state.doc, &state.root);
         let mut taffy = taffy::TaffyTree::new();
         let mut nodes = HashMap::new();
         let node = composer.build_layout(&mut taffy, theme, &mut nodes);
@@ -2676,7 +2721,7 @@ mod tests {
             room.clone(),
             "scribe".into(),
             "Scribe".into(),
-            anchor,
+            AgentQuickComposerOrigin::marker_only(anchor),
             viewport,
         );
         let mut frame =
@@ -2693,7 +2738,7 @@ mod tests {
                     room.clone(),
                     "reed".into(),
                     "Reed".into(),
-                    anchor,
+                    AgentQuickComposerOrigin::marker_only(anchor),
                     viewport,
                 );
             })
@@ -2714,7 +2759,7 @@ mod tests {
                     room.clone(),
                     "scribe".into(),
                     "Scribe".into(),
-                    anchor,
+                    AgentQuickComposerOrigin::marker_only(anchor),
                     viewport,
                 );
             })
@@ -2734,7 +2779,7 @@ mod tests {
                     room.clone(),
                     "reed".into(),
                     "Reed".into(),
-                    anchor,
+                    AgentQuickComposerOrigin::marker_only(anchor),
                     viewport,
                 );
             })
@@ -2789,7 +2834,7 @@ mod tests {
             room.clone(),
             "scribe".into(),
             "Scribe".into(),
-            anchor,
+            AgentQuickComposerOrigin::marker_only(anchor),
             viewport,
         );
         composer.set_draft("person A private direction");
@@ -2818,7 +2863,7 @@ mod tests {
             room.clone(),
             "scribe".into(),
             "Scribe".into(),
-            anchor,
+            AgentQuickComposerOrigin::marker_only(anchor),
             viewport,
         );
         assert!(composer.custody.as_ref() == Some(&custody_b));
@@ -2831,7 +2876,7 @@ mod tests {
             room.clone(),
             "scribe".into(),
             "Scribe".into(),
-            anchor,
+            AgentQuickComposerOrigin::marker_only(anchor),
             viewport,
         );
         drop(session_a);
@@ -2844,7 +2889,7 @@ mod tests {
             room.clone(),
             "scribe".into(),
             "Scribe".into(),
-            anchor,
+            AgentQuickComposerOrigin::marker_only(anchor),
             viewport,
         );
         assert!(composer.custody.as_ref() == Some(&custody_b));
@@ -2856,7 +2901,7 @@ mod tests {
             room,
             "scribe".into(),
             "Scribe".into(),
-            anchor,
+            AgentQuickComposerOrigin::marker_only(anchor),
             viewport,
         );
         drop(session_b);
@@ -3590,6 +3635,12 @@ mod tests {
 
     #[test]
     fn presentation_names_the_agent_without_inventing_a_readiness_state() {
+        fn origin_node(widget: &dyn Widget) -> Option<ui::a11y::AccessNode> {
+            if widget.test_id() == Some("agent-quick-origin-context") {
+                return widget.accessibility();
+            }
+            widget.children().into_iter().find_map(origin_node)
+        }
         let mut composer = AgentQuickComposer::default();
         composer.open_for_shots(
             "room-a",
@@ -3604,6 +3655,23 @@ mod tests {
         assert!(
             has_accessible_value(&composer, "Agent"),
             "the visible collaborator kind is also published to accessibility"
+        );
+        let opened_context = t_args(
+            "agent-quick-origin-context",
+            &[("context", t("agent-quick-shots-context").into())],
+        );
+        let state = ui::State::new();
+        composer.sync(&state.doc, &state.root);
+        let context_node = origin_node(&composer).expect("opened context is accessible");
+        assert_eq!(context_node.role, ui::a11y::Role::StaticText);
+        assert_eq!(context_node.name.as_deref(), Some(opened_context.as_str()));
+        composer.status.set(t("agent-quick-checking"));
+        composer.sync(&state.doc, &state.root);
+        assert_eq!(composer.origin_context.get(), opened_context);
+        assert_eq!(
+            origin_node(&composer).unwrap().name.as_deref(),
+            Some(opened_context.as_str()),
+            "live status changes do not rewrite the validated context captured at open"
         );
     }
 

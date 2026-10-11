@@ -477,7 +477,7 @@ fn one_agent_marker_refuses_an_uncertified_navigation_session() {
     assert!(!host.open_agent_quick_composer_from_user_navigation(
         &room,
         &[("scribe".into(), "Scribe".into())],
-        anchor,
+        crate::shell::agent_quick_composer::AgentQuickComposerOrigin::marker_only(anchor),
     ));
     assert_eq!(host.agent_quick_composer.target(), None);
     assert!(
@@ -520,7 +520,9 @@ fn agent_quick_composer_captures_the_seat_and_receives_pointer_keyboard_input() 
         room,
         "scribe".into(),
         "Scribe".into(),
-        Rect::new(924.0, 180.0, 948.0, 204.0),
+        crate::shell::agent_quick_composer::AgentQuickComposerOrigin::marker_only(Rect::new(
+            924.0, 180.0, 948.0, 204.0,
+        )),
     ));
     frame.host_mut().agent_quick_composer.set_draft("");
     let _ = frame.paint_settled();
@@ -616,9 +618,11 @@ fn accessible_marker_fixture(published_at: Instant) -> AccessibleAgentMarker {
                 group: None,
             },
             locus: [80.0, 80.0, 240.0, 140.0],
+            protected: None,
         },
         marker: Rect::new(80.0, 80.0, 104.0, 104.0),
         locus: Rect::new(80.0, 80.0, 240.0, 140.0),
+        protected: Rect::new(80.0, 80.0, 260.0, 164.0),
         label: "Scribe".into(),
         description: "Editing draft".into(),
         published_at,

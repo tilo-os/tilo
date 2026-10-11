@@ -104,10 +104,20 @@ pub struct AgentActionMarker {
     pub pulse: f64,
 }
 
+/// Exact painted geometry associated with an Agent action marker. `locus`
+/// remains the semantic control; `protected` additionally covers descriptive
+/// paint such as the measured action receipt and is placement metadata only.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AgentMarkerGeometry {
+    pub locus: Rect,
+    pub protected: Rect,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct PaintedAgentMarker {
     interaction: SemanticInteraction,
     locus: Rect,
+    protected: Rect,
     viewport: Rect,
     bounds: Rect,
 }
@@ -127,6 +137,9 @@ pub struct AgentMarkerTarget {
     /// Exact current semantic control locus, separate from the moving cursor
     /// marker bounds.
     pub locus: Rect,
+    /// Exact painted control-and-receipt footprint. This never expands the
+    /// marker's hit target or the semantic action locus.
+    pub protected: Rect,
     pub bounds: Rect,
 }
 
@@ -178,6 +191,7 @@ impl PresenceCtx {
                     invocation: marker.interaction.invocation,
                     interaction: marker.interaction.clone(),
                     locus: marker.locus,
+                    protected: marker.protected,
                     bounds: marker.bounds,
                 })
             })
@@ -299,6 +313,7 @@ impl PresenceCtx {
                 invocation: marker.interaction.invocation,
                 interaction: marker.interaction.clone(),
                 locus: marker.locus,
+                protected: marker.protected,
                 bounds: marker.bounds,
             });
         }
@@ -564,13 +579,18 @@ impl PresenceCtx {
         &mut self,
         paint: &mut PaintCtx<'_>,
         interaction: &SemanticInteraction,
-        locus: Rect,
+        geometry: AgentMarkerGeometry,
         viewport: Rect,
         surface: &str,
         now: Instant,
     ) -> Option<AgentActionMarker> {
         if interaction.actor.kind != InteractionActorKind::Agent
-            || !valid_marker_rect(locus)
+            || !valid_marker_rect(geometry.locus)
+            || !valid_marker_rect(geometry.protected)
+            || geometry.protected.x0 > geometry.locus.x0
+            || geometry.protected.y0 > geometry.locus.y0
+            || geometry.protected.x1 < geometry.locus.x1
+            || geometry.protected.y1 < geometry.locus.y1
             || !valid_marker_rect(viewport)
         {
             return None;
@@ -584,7 +604,7 @@ impl PresenceCtx {
         {
             return None;
         }
-        let visible_locus = locus.intersect(viewport);
+        let visible_locus = geometry.locus.intersect(viewport);
         if visible_locus.is_zero_area() {
             return None;
         }
@@ -650,7 +670,8 @@ impl PresenceCtx {
                 user.clone(),
                 PaintedAgentMarker {
                     interaction: interaction.clone(),
-                    locus,
+                    locus: geometry.locus,
+                    protected: geometry.protected.intersect(viewport),
                     viewport,
                     bounds: agent_marker_bounds(marker.tip, viewport),
                 },
@@ -1304,7 +1325,10 @@ mod tests {
         presence.draw_agent_action_marker(
             &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, theme),
             interaction,
-            locus,
+            AgentMarkerGeometry {
+                locus,
+                protected: locus,
+            },
             viewport,
             surface,
             now,
@@ -1463,6 +1487,7 @@ mod tests {
                 invocation: action.invocation,
                 interaction: action.clone(),
                 locus,
+                protected: locus,
                 bounds,
             }])
         );

@@ -343,7 +343,7 @@ impl PresenceCtx {
         rect: Rect,
         radius: f64,
         bounds: Rect,
-    ) {
+    ) -> Option<Rect> {
         self.draw_peer_outline(ctx.scene, ctx.theme, ctx.transform, user, rect, radius);
         let gap = f64::from(ctx.theme.tokens.spacing.s1);
         let right = (bounds.x1 - rect.x1 - gap).max(0.0);
@@ -364,16 +364,13 @@ impl PresenceCtx {
         };
         let (label, w, h) = chip_fitting(ctx.theme, ctx.text, label, budget);
         if w <= 0.0 || h > bounds.height() {
-            return;
+            return None;
         }
         let x = x.min(bounds.x1 - w).max(bounds.x0);
         let y = y.min(bounds.y1 - h).max(bounds.y0);
-        draw_name_chip_in(
-            ctx,
-            color_for(self, user, ctx.theme),
-            &label,
-            Rect::new(x, y, x + w, y + h),
-        );
+        let chip = Rect::new(x, y, x + w, y + h);
+        draw_name_chip_in(ctx, color_for(self, user, ctx.theme), &label, chip);
+        Some(chip)
     }
 
     /// Draw a peer's fading "just typed" highlighter behind the glyph runs

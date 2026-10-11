@@ -600,6 +600,9 @@ pub(crate) struct AccessibleAgentMarker {
     pub target: ui::floating_surface::AgentConversationNavigationTarget,
     pub marker: Rect,
     pub locus: Rect,
+    /// Exact source-painted control and receipt footprint. Descriptive
+    /// placement metadata only; marker hit testing remains `marker`.
+    pub protected: Rect,
     pub label: String,
     pub description: String,
     pub published_at: Instant,
@@ -9040,7 +9043,7 @@ impl ShellOverlayHost {
         &mut self,
         room: &str,
         agents: &[(String, String)],
-        anchor: Rect,
+        origin: crate::shell::agent_quick_composer::AgentQuickComposerOrigin,
     ) -> bool {
         let [(agent, label)] = agents else {
             return self.open_agent_conversation_from_user_navigation(room, agents);
@@ -9078,7 +9081,7 @@ impl ShellOverlayHost {
             room.to_owned(),
             agent.clone(),
             label.clone(),
-            anchor,
+            origin,
         )
     }
 
@@ -9091,11 +9094,11 @@ impl ShellOverlayHost {
         room: String,
         agent: String,
         label: String,
-        anchor: Rect,
+        origin: crate::shell::agent_quick_composer::AgentQuickComposerOrigin,
     ) -> bool {
         let viewport = self.overlay_area();
         self.agent_quick_composer
-            .open(client, room, agent, label, anchor, viewport);
+            .open(client, room, agent, label, origin, viewport);
         true
     }
 

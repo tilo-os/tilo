@@ -10,8 +10,8 @@ mod layer;
 mod render;
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use interaction::{
-    ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, AgentMarkerHit, AgentMarkerTarget,
-    InteractionCardPlacement, TERMINAL_INTERACTION_DWELL,
+    ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, AgentMarkerGeometry, AgentMarkerHit,
+    AgentMarkerTarget, InteractionCardPlacement, TERMINAL_INTERACTION_DWELL,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
 pub use layer::{PresenceLayer, WidgetPresence};

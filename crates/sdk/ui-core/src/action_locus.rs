@@ -39,7 +39,7 @@ pub(crate) fn draw_action_presence(
         }
         let user = crate::permissions::UserId(interaction.actor.id.clone());
         let label = presence.interaction_status_label(&interaction);
-        presence.draw_action_outline_labeled_within(
+        let receipt = presence.draw_action_outline_labeled_within(
             paint,
             &user,
             &label,
@@ -47,7 +47,17 @@ pub(crate) fn draw_action_presence(
             f64::from(paint.theme.tokens.radii.detail),
             viewport,
         );
-        presence.draw_agent_action_marker(paint, &interaction, bounds, viewport, surface, now);
+        presence.draw_agent_action_marker(
+            paint,
+            &interaction,
+            crate::presence::AgentMarkerGeometry {
+                locus: bounds,
+                protected: receipt.map_or(bounds, |receipt| bounds.union(receipt)),
+            },
+            viewport,
+            surface,
+            now,
+        );
         resolved.push(interaction.invocation);
     }
     let rail_painted = presence.draw_interactions_excluding(

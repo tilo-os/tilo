@@ -130,7 +130,10 @@ mod agent_marker_gesture_tests {
         app.presence_ctx_mut().draw_agent_action_marker(
             &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
             &interaction,
-            Rect::new(200.0, 100.0, 260.0, 140.0),
+            crate::presence::AgentMarkerGeometry {
+                locus: Rect::new(200.0, 100.0, 260.0, 140.0),
+                protected: Rect::new(200.0, 100.0, 300.0, 160.0),
+            },
             viewport,
             "retained-primary",
             now,
@@ -162,6 +165,10 @@ mod agent_marker_gesture_tests {
         assert_eq!(request.targets[0].interaction.action.id, "edit");
         assert_eq!(request.targets[0].interaction.resource.id, "note:draft");
         assert_eq!(request.targets[0].locus, [200.0, 100.0, 260.0, 140.0]);
+        assert_eq!(
+            request.targets[0].protected,
+            Some([200.0, 100.0, 300.0, 160.0])
+        );
         assert!(app.handle_agent_marker_gesture(&button(ElementState::Released), 1.0));
         assert!(app.window.pending_agent_navigation.is_none());
 
@@ -1052,6 +1059,7 @@ impl App {
                             && left.interaction.resource == right.interaction.resource
                             && left.interaction.anchor == right.interaction.anchor
                             && left.locus == right.locus
+                            && left.protected == right.protected
                     })
                 {
                     return true;
@@ -1081,6 +1089,12 @@ impl App {
                                         target.locus.x1,
                                         target.locus.y1,
                                     ],
+                                    protected: Some([
+                                        target.protected.x0,
+                                        target.protected.y0,
+                                        target.protected.x1,
+                                        target.protected.y1,
+                                    ]),
                                 }
                             })
                             .collect(),

@@ -131,6 +131,10 @@ pub struct Popover<C: Widget = NoContent> {
     anchor: Rect,
     side: PopoverSide,
     resolved_side: PopoverSide,
+    fallback_side: Option<PopoverSide>,
+    /// Descriptive paint this panel should avoid when an alternate placement
+    /// genuinely fits. It never changes the anchor or hit testing.
+    avoid: Option<Rect>,
     align: PanelAlign,
     /// Bounds the panel stays inside. `None` uses the window the top layer
     /// paints over.
@@ -174,6 +178,8 @@ impl<C: Widget> Popover<C> {
             anchor: Rect::ZERO,
             side: PopoverSide::Below,
             resolved_side: PopoverSide::Below,
+            fallback_side: None,
+            avoid: None,
             align: PanelAlign::Leading,
             viewport: None,
             confine_to_viewport: false,
@@ -231,6 +237,21 @@ impl<C: Widget> Popover<C> {
         self.side = side;
         self.resolved_side = side;
         self
+    }
+
+    /// Try this axis when the ordinary preferred/opposite placement would
+    /// cover `avoid`. The fallback is used only when its measured panel fits
+    /// the viewport and is disjoint from the protected paint.
+    #[must_use]
+    pub fn fallback_side(mut self, side: PopoverSide) -> Self {
+        self.fallback_side = Some(side);
+        self
+    }
+
+    /// Protect exact painted geometry from an optional fallback placement.
+    /// This is presentation metadata, never an expanded input target.
+    pub fn set_avoid(&mut self, avoid: Option<Rect>) {
+        self.avoid = avoid;
     }
 
     /// Open or close at construction.
@@ -385,15 +406,13 @@ impl<C: Widget> Popover<C> {
         };
         let (w, h) = (body_w.ceil() + pad * 2.0, body_h.ceil() + pad * 2.0);
         let gap = f64::from(theme.tokens.spacing.s1);
-        let (mut rect, side) = floating_surface::place_aligned(
-            self.anchor,
-            (w, h),
-            self.side,
-            self.align,
-            gap,
-            viewport,
-        );
-        if self.confine_to_viewport {
+        let place = |side| {
+            floating_surface::place_aligned(self.anchor, (w, h), side, self.align, gap, viewport)
+        };
+        let confine = |rect: Rect| {
+            if !self.confine_to_viewport {
+                return rect;
+            }
             let x = if w <= viewport.width() {
                 rect.x0.clamp(viewport.x0, viewport.x1 - w)
             } else {
@@ -404,10 +423,30 @@ impl<C: Widget> Popover<C> {
             } else {
                 rect.y0
             };
-            rect = Rect::new(x, y, x + w, y + h);
+            Rect::new(x, y, x + w, y + h)
+        };
+        let (default_rect, default_side) = place(self.side);
+        let mut chosen = (confine(default_rect), default_side);
+        if let Some(avoid) = self.avoid
+            && chosen.0.intersect(avoid).area() > 0.0
+        {
+            for candidate_side in [Some(self.side.opposite()), self.fallback_side]
+                .into_iter()
+                .flatten()
+            {
+                let (candidate, resolved) = place(candidate_side);
+                let candidate = confine(candidate);
+                let contained = w <= viewport.width()
+                    && h <= viewport.height()
+                    && viewport.contains_rect(candidate);
+                if contained && candidate.intersect(avoid).area() == 0.0 {
+                    chosen = (candidate, resolved);
+                    break;
+                }
+            }
         }
-        self.resolved_side = side;
-        self.rect = rect;
+        self.rect = chosen.0;
+        self.resolved_side = chosen.1;
         if self.options.is_none() && self.host_content.is_none() {
             self.place_content(tr, theme);
         }

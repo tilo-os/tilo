@@ -420,6 +420,10 @@ pub struct AgentConversationNavigationTarget {
     /// not authority; the compositor checks it against the exact interaction
     /// and source surface before publishing accessibility.
     pub locus: [f64; 4],
+    /// Source-local painted control-and-receipt footprint. Older peers omit
+    /// it and conservatively fall back to the semantic locus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected: Option<[f64; 4]>,
 }
 
 /// Owner-only operations on Terminal's existing device-shell PTY.

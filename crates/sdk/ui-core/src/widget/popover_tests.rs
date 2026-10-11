@@ -343,6 +343,60 @@ fn placement_flips_and_stays_in_the_window() {
 }
 
 #[test]
+fn protected_paint_uses_an_existing_disjoint_side_or_the_configured_fallback() {
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let anchor = Rect::new(260.0, 250.0, 292.0, 282.0);
+    let make = || {
+        Popover::with_content(Fixed {
+            rect: Rect::ZERO,
+            w: 120.0,
+            h: 60.0,
+        })
+        .anchored(anchor)
+        .side(PopoverSide::Right)
+        .fallback_side(PopoverSide::Below)
+        .with_viewport(WINDOW)
+        .confined_to_viewport()
+        .open(true)
+    };
+
+    let mut ordinary = make();
+    ordinary.place(&mut tr, &theme);
+    assert_eq!(ordinary.resolved_side(), PopoverSide::Right);
+    let ordinary_rect = ordinary.rect();
+
+    let mut opposite = make();
+    opposite.set_avoid(Some(ordinary_rect));
+    opposite.place(&mut tr, &theme);
+    assert_eq!(opposite.resolved_side(), PopoverSide::Left);
+    assert_eq!(opposite.rect().intersect(ordinary_rect).area(), 0.0);
+
+    let mut below = make();
+    let horizontal_band = Rect::new(WINDOW.x0, 200.0, WINDOW.x1, anchor.y1);
+    below.set_avoid(Some(horizontal_band));
+    below.place(&mut tr, &theme);
+    assert_eq!(below.resolved_side(), PopoverSide::Below);
+    assert_eq!(below.rect().intersect(horizontal_band).area(), 0.0);
+
+    let gap = f64::from(theme.tokens.spacing.s1);
+    let margin = floating_surface::viewport_margin(&theme);
+    let edge_viewport = Rect::new(
+        WINDOW.x0,
+        WINDOW.y0,
+        WINDOW.x1,
+        anchor.y1 + gap + ordinary_rect.height() + margin,
+    );
+    let mut edge = make();
+    edge.set_viewport(edge_viewport);
+    edge.set_avoid(Some(horizontal_band));
+    edge.place(&mut tr, &theme);
+    assert_eq!(edge.resolved_side(), PopoverSide::Below);
+    assert_eq!(edge.rect().intersect(horizontal_band).area(), 0.0);
+    assert_eq!(edge.rect().y1, edge_viewport.y1 - margin);
+}
+
+#[test]
 fn the_panel_is_painted_in_the_top_layer_lighter_than_the_window() {
     // Case `draw_paints_nothing_draw_overlay_paints_the_panel`.
     {

@@ -4293,7 +4293,12 @@ impl FrameBuilder {
         let geometry_is_current = source_rect.contains(marker.marker.origin())
             && source_rect.contains(vello::kurbo::Point::new(marker.marker.x1, marker.marker.y1))
             && source_rect.contains(marker.locus.origin())
-            && source_rect.contains(vello::kurbo::Point::new(marker.locus.x1, marker.locus.y1));
+            && source_rect.contains(vello::kurbo::Point::new(marker.locus.x1, marker.locus.y1))
+            && source_rect.contains(marker.protected.origin())
+            && source_rect.contains(vello::kurbo::Point::new(
+                marker.protected.x1,
+                marker.protected.y1,
+            ));
         let now = ui::time::now();
         let binding_is_current = marker.target.interaction.invocation == marker.target.invocation
             && marker.target.interaction.actor.id == marker.target.actor.0
@@ -4314,7 +4319,14 @@ impl FrameBuilder {
         self.host.open_agent_quick_composer_from_user_navigation(
             &marker.room,
             &[(marker.target.agent, name)],
-            marker.marker,
+            crate::shell::agent_quick_composer::AgentQuickComposerOrigin {
+                marker: marker.marker,
+                protected: marker.protected,
+                context: crate::shell::i18n::t_args(
+                    "agent-quick-origin-context",
+                    &[("context", marker.description.into())],
+                ),
+            },
         )
     }
 
@@ -8990,7 +9002,9 @@ mod tests {
             room,
             "scribe".into(),
             "Scribe".into(),
-            Rect::new(720.0, 180.0, 744.0, 204.0),
+            crate::shell::agent_quick_composer::AgentQuickComposerOrigin::marker_only(Rect::new(
+                720.0, 180.0, 744.0, 204.0,
+            )),
         ));
         frame.reconcile_native_focus(&mut focus);
         assert_ne!(
@@ -9278,7 +9292,10 @@ mod tests {
                     &theme,
                 ),
                 &interaction,
-                locus,
+                ui::presence::AgentMarkerGeometry {
+                    locus,
+                    protected: locus,
+                },
                 viewport,
                 "retained-primary",
                 ui::time::now(),

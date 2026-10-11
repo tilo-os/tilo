@@ -619,6 +619,12 @@ impl App {
                             target.locus.x1,
                             target.locus.y1,
                         ],
+                        protected: Some([
+                            target.protected.x0,
+                            target.protected.y0,
+                            target.protected.x1,
+                            target.protected.y1,
+                        ]),
                     }],
                 },
             )
