@@ -93,6 +93,10 @@ from agent_rtt import (  # noqa: E402
 NOTES_APP = "so.tilo.notes"
 # Generous: each answer leaves as soon as its invocation or listing settles.
 WAIT_MS = 5000
+# How long a search may wait for the apps' directory pages to complete it
+# (`--listing-wait-ms`). An answer still incomplete then is what the agent
+# works from, as one through the MCP door (which does not wait) would be.
+LISTING_WAIT_MS = 1000
 STEPS = ("discover", "create", "locate", "write", "search", "open")
 INVOKE_STEPS = ("create", "write", "open")
 # The fake model's Messages API version and model name, echoed in records.
@@ -194,54 +198,86 @@ def invoke_input(row: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass
 class NotesTask:
-    """The scripted model of the Notes task: one tool call per turn, then a reply."""
+    """The scripted model of the Notes task: one tool call per turn, then a reply.
+
+    A step's listing discloses the address its invoke uses. When the desktop
+    refuses that address as gone ("list it again"), the model lists again and
+    retries, as a model reading the refusal would, at most MAX_RETRIES times
+    a task; those calls are named `<step>.retry` and count to their step.
+    """
 
     title: str
     body: str
     phrase: str
+    # The step of every tool call this model issued, in order.
+    steps: list[str] = field(default_factory=list)
+    retries: int = 0
 
     def prompt(self) -> str:
         return (f"Create a note titled {self.title!r} with the body {self.body!r} in Notes, "
                 f"then find it by searching for {self.phrase!r} and open it.")
 
+    # Each invoke step and the listing step that discloses its address.
+    LISTING = {"create": "discover", "write": "locate", "open": "search"}
+    MAX_RETRIES = 8
+
     def respond(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """The next turn's content blocks for this conversation."""
         done = conversation_calls(messages)
-        step = len(done)
-        last = done[-1][1] if done else None
-        if step == 0:
-            return [tool("tilo_enumerate_actions", {"query": "New note"})]
-        if step == 1:
+        if not done:
+            return [self.call("discover")]
+        last = done[-1][1]
+        step = self.steps[len(done) - 1].removesuffix(".retry")
+        if isinstance(last, dict) and "error" in last:
+            if step not in self.LISTING or not retriable(last) or self.retries >= self.MAX_RETRIES:
+                raise PolicyError(f"{step} was refused: {json.dumps(last)[:400]}")
+            self.retries += 1
+            return [self.call(self.LISTING[step], retry=True)]
+        if step == "discover":
             rows = rows_of(last)
             found = [r for r in rows if notes_row(r) and operation_of(r) == "new-page"]
             if not found:
                 raise PolicyError(f"no Notes new-page among {len(rows)} rows: {describe_rows(rows)}")
-            row = found[0]
-            return [tool("tilo_invoke_action", invoke_input(row, {text_param(row): self.title}))]
-        if step == 2:
+            return [self.call("create", found[0], {text_param(found[0]): self.title})]
+        if step == "create":
             check_succeeded(last, "create")
-            return [tool("tilo_enumerate_actions", {"query": self.title})]
-        if step == 3:
-            rows = rows_of(last)
-            row = self.body_action(rows)
-            return [tool("tilo_invoke_action", invoke_input(row, {text_param(row): self.body}))]
-        if step == 4:
+            return [self.call("locate")]
+        if step == "locate":
+            row = self.body_action(rows_of(last))
+            return [self.call("write", row, {text_param(row): self.body})]
+        if step == "write":
             check_succeeded(last, "write")
-            return [tool("tilo_enumerate_actions", {"query": self.phrase})]
-        if step == 5:
+            return [self.call("search")]
+        if step == "search":
             rows = rows_of(last)
-            # A search hit is the app's own search entry; prefer Notes' if
-            # another provider also matched the phrase.
-            hits = [r for r in rows if self.phrase in str(r.get("title", ""))]
+            # The phrase is in one block of one note, so the hit is that
+            # block's `open` ("Reveal block"), or a row naming the phrase.
+            hits = [r for r in rows if self.phrase in str(r.get("title", ""))
+                    or (notes_row(r) and operation_of(r) == "open"
+                        and resource_of(r).startswith("notes.block:"))]
             hits.sort(key=lambda r: not notes_row(r))
             if not hits:
                 raise PolicyError(f"no Notes hit for {self.phrase!r} among {len(rows)} rows: "
                                   f"{describe_rows(rows)}")
-            return [tool("tilo_invoke_action", invoke_input(hits[0], {}))]
-        if step == 6:
+            return [self.call("open", hits[0], {})]
+        if step == "open":
             check_succeeded(last, "open")
             return [{"type": "text", "text": f"Created {self.title!r} and opened it from search."}]
-        raise PolicyError(f"the task has no step {step}")
+        raise PolicyError(f"the task has no step after {step}")
+
+    def call(self, step: str, row: dict[str, Any] | None = None,
+             args: dict[str, Any] | None = None, retry: bool = False) -> dict[str, Any]:
+        """The tool call of `step`; an invoke step's after a retried listing
+        is a retry too."""
+        if retry or (row is not None and self.steps and self.steps[-1].endswith(".retry")):
+            name = f"{step}.retry"
+        else:
+            name = step
+        self.steps.append(name)
+        if row is None:
+            query = {"discover": "New note", "locate": self.title, "search": self.phrase}[step]
+            return tool("tilo_enumerate_actions", {"query": query})
+        return tool("tilo_invoke_action", invoke_input(row, args or {}))
 
     def body_action(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
         """The new note's body `append-paragraph`. The listing for the title
@@ -274,6 +310,13 @@ def resource_of(row: dict[str, Any]) -> str:
         except ValueError:
             pass
     return resource
+
+
+def retriable(result: dict[str, Any]) -> bool:
+    """Whether a refusal says the address went stale: list it again."""
+    error = result.get("error") or {}
+    message = str(error.get("message", ""))
+    return error.get("code") == "unknown_action" or "list it again" in message
 
 
 def check_succeeded(result: Any, what: str) -> None:
@@ -480,12 +523,32 @@ class ModelClient:
         return [blocks[index] for index in sorted(blocks)], stop, first_byte or 0.0
 
 
+class Refused(BenchError):
+    """The desktop refused an invocation; the model reads why."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
+def answer_or_refusal(line: bytes, what: str) -> Any:
+    """`answer_of`, with a refusal raised as Refused rather than a bench failure."""
+    reply = json.loads(line)
+    if isinstance(reply, dict) and "err" in reply:
+        err = reply["err"] or {}
+        raise Refused(str(err.get("code")), str(err.get("message")))
+    return answer_of(line, what)
+
+
 class Tools:
     """The agent's tools, run on one persistent control-socket connection."""
 
-    def __init__(self, conn: Connection, split: bool, unsettled: list[dict[str, Any]] | None = None):
+    def __init__(self, conn: Connection, split: bool, unsettled: list[dict[str, Any]] | None = None,
+                 listing_wait_ms: int = LISTING_WAIT_MS):
         self.conn = conn
         self.split = split
+        self.listing_wait_ms = listing_wait_ms
         # Listings that answered at their wait_ms without settling: what an
         # agent then works from is what the desktop had, and the step paid
         # the whole wait. Reported, never hidden.
@@ -495,12 +558,20 @@ class Tools:
         if name == "tilo_enumerate_actions":
             return self.enumerate(str(arguments.get("query", "")), step)
         if name == "tilo_invoke_action":
-            return self.invoke(arguments, step)
+            started = time.perf_counter_ns()
+            try:
+                return self.invoke(arguments, step)
+            except Refused as refusal:
+                # The refusal is the tool's result, as an MCP tool error is:
+                # the model reads it and decides.
+                return ({"error": {"code": refusal.code, "message": refusal.message}},
+                        ToolCall(step, name, (time.perf_counter_ns() - started) / 1e6,
+                                 len(refusal.message)))
         raise BenchError(f"the model called an unknown tool {name!r}")
 
     def enumerate(self, query: str, step: str) -> tuple[Any, ToolCall]:
         payload: dict[str, Any] = {"op": "actions_enumerate", "query": query,
-                                   "detail": "compact", "wait_ms": WAIT_MS}
+                                   "detail": "compact", "wait_ms": self.listing_wait_ms}
         rows: list[Any] = []
         total_ns = 0
         size = 0
@@ -533,11 +604,11 @@ class Tools:
         if not self.split:
             payload["wait_ms"] = WAIT_MS
             elapsed, line = self.conn.round_trip(request(payload))
-            answer = answer_of(line, f"{step}: actions_invoke")
+            answer = answer_or_refusal(line, f"{step}: actions_invoke")
             settled(answer, step)
             return answer, ToolCall(step, "tilo_invoke_action", elapsed / 1e6, len(line))
         accept_ns, line = self.conn.round_trip(request(payload))
-        answer = answer_of(line, f"{step}: actions_invoke")
+        answer = answer_or_refusal(line, f"{step}: actions_invoke")
         apply_ns = 0
         size = len(line)
         if receipt_state(answer) not in TERMINAL:
@@ -563,7 +634,8 @@ def settled(answer: Any, step: str) -> None:
         raise BenchError(f"{step}: the invocation ended {state}: {json.dumps(answer)[:600]}")
 
 
-def run_task(model: ModelClient, tools: Tools, prompt: str, max_turns: int = 12) -> TaskRun:
+def run_task(model: ModelClient, tools: Tools, prompt: str, max_turns: int = 24,
+             steps: list[str] | None = None) -> TaskRun:
     """One task: model turns and tool calls until the model ends its turn."""
     run = TaskRun()
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
@@ -582,7 +654,11 @@ def run_task(model: ModelClient, tools: Tools, prompt: str, max_turns: int = 12)
             break
         results = []
         for block in uses:
-            step = STEPS[len(run.calls)] if len(run.calls) < len(STEPS) else f"extra{len(run.calls)}"
+            index = len(run.calls)
+            if steps is not None and index < len(steps):
+                step = steps[index]
+            else:
+                step = STEPS[index] if index < len(STEPS) else f"extra{index}"
             result, call = tools.run(block["name"], block["input"], step)
             run.calls.append(call)
             results.append({"type": "tool_result", "tool_use_id": block["id"],
@@ -590,7 +666,7 @@ def run_task(model: ModelClient, tools: Tools, prompt: str, max_turns: int = 12)
         messages.append({"role": "user", "content": results})
     run.wall_ms = (time.perf_counter_ns() - start) / 1e6
     run.unsettled = list(tools.unsettled)
-    if [call.step for call in run.calls] != list(STEPS):
+    if [call.step for call in run.calls if not call.step.endswith(".retry")] != list(STEPS):
         raise BenchError(f"the task ran {[c.step for c in run.calls]}, not {list(STEPS)}")
     return run
 
@@ -697,20 +773,31 @@ def collect(runs: list[TaskRun], split_runs: list[TaskRun]) -> list[tuple[str, s
     results.append(("agent.task.notes.model", "ms", [r.model_ms for r in runs], {}))
     results.append(("agent.task.notes.client", "ms", [r.client_ms for r in runs], {}))
     results.append(("agent.task.notes.turns", "count", [float(r.turns) for r in runs], {}))
-    for index, step in enumerate(STEPS):
-        calls = [r.calls[index] for r in runs]
-        results.append((f"agent.task.notes.step.{step}", "ms", [c.ms for c in calls],
-                        {"tool": calls[0].name,
-                         "response_bytes_max": max(c.response_bytes for c in calls)}))
-    for index, step in enumerate(STEPS):
+    results.append(("agent.task.notes.retries", "count",
+                    [float(sum(c.step.endswith(".retry") for c in r.calls)) for r in runs], {}))
+    for step in STEPS:
+        results.append((f"agent.task.notes.step.{step}", "ms", [step_ms(r, step) for r in runs],
+                        {"tool": first_call(runs[0], step).name,
+                         "response_bytes_max": max(first_call(r, step).response_bytes
+                                                   for r in runs)}))
+    for step in STEPS:
         if step not in INVOKE_STEPS or not split_runs:
             continue
-        calls = [r.calls[index] for r in split_runs]
+        calls = [first_call(r, step) for r in split_runs]
         results.append((f"agent.task.notes.step.{step}.accept", "ms",
                         [c.accept_ms or 0.0 for c in calls], {"split": True}))
         results.append((f"agent.task.notes.step.{step}.apply", "ms",
                         [c.apply_ms or 0.0 for c in calls], {"split": True}))
     return results
+
+
+def step_ms(run: TaskRun, step: str) -> float:
+    """What `step` cost the agent: its call, and its retries'."""
+    return sum(c.ms for c in run.calls if c.step.removesuffix(".retry") == step)
+
+
+def first_call(run: TaskRun, step: str) -> ToolCall:
+    return next(c for c in run.calls if c.step == step)
 
 
 def summary(runs: list[TaskRun]) -> str:
@@ -720,8 +807,10 @@ def summary(runs: list[TaskRun]) -> str:
              f"  wall {p50([r.wall_ms for r in runs]):8.2f} ms   turns {p50([r.turns for r in runs]):.0f}",
              f"  tilo {p50([r.tilo_ms for r in runs]):8.2f} ms   model {p50([r.model_ms for r in runs]):.2f} ms"
              f"   client {p50([r.client_ms for r in runs]):.2f} ms"]
-    for index, step in enumerate(STEPS):
-        lines.append(f"  {step:9s}{p50([r.calls[index].ms for r in runs]):8.2f} ms")
+    for step in STEPS:
+        lines.append(f"  {step:9s}{p50([step_ms(r, step) for r in runs]):8.2f} ms")
+    retries = sum(c.step.endswith(".retry") for r in runs for c in r.calls)
+    lines.append(f"  retried calls: {retries}")
     return "\n".join(lines)
 
 
@@ -751,9 +840,9 @@ def measure(socket_path: str, args: argparse.Namespace) -> tuple[list[TaskRun], 
             task["value"] = NotesTask(title=f"Agent bench {tag} {index:03d}",
                                       body=f"Benchmark body {phrase} written by a scripted agent.",
                                       phrase=phrase)
-            tools = Tools(conn, split)
+            tools = Tools(conn, split, listing_wait_ms=getattr(args, "listing_wait_ms", LISTING_WAIT_MS))
             try:
-                run = run_task(client, tools, task["value"].prompt())
+                run = run_task(client, tools, task["value"].prompt(), steps=task["value"].steps)
             except BenchError as error:
                 why = model.errors[-1] if model.errors else str(error)
                 seen = "".join(f"\n  unsettled: {json.dumps(entry)[:1500]}" for entry in tools.unsettled)
@@ -784,6 +873,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--split-repetitions", type=int, default=10,
                         help="repetitions that time accept and apply apart (not the KPI)")
+    parser.add_argument("--listing-wait-ms", type=int, default=LISTING_WAIT_MS,
+                        help="how long a search waits for the apps to complete it (default %(default)s)")
     parser.add_argument("--think-ms", type=float, default=0.0,
                         help="the fake model's time to its first content block, per turn")
     parser.add_argument("--tokens-per-s", type=float, default=0.0,
@@ -817,7 +908,8 @@ def main(argv: list[str] | None = None) -> int:
     print(summary(runs), file=sys.stderr)
     unsettled = [entry for run in runs + split_runs for entry in run.unsettled]
     if unsettled:
-        print(f"agent_task: {len(unsettled)} listings answered unsettled at {WAIT_MS} ms; first:",
+        print(f"agent_task: {len(unsettled)} listings answered unsettled at "
+              f"{args.listing_wait_ms} ms; first:",
               file=sys.stderr)
         for entry in unsettled[:5]:
             print(f"  {json.dumps(entry)[:1500]}", file=sys.stderr)
