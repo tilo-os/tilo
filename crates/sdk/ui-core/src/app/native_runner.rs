@@ -3896,9 +3896,14 @@ impl App {
             self.wake_scope.is_some(),
             "live App requires from_factory, try_from_factory, or from_scoped_parts"
         );
+        // Everything from here to the window's creation is marked: Notes spent
+        // 259 ms between `app-construct-end` and `primary-window-created`
+        // with nothing in the startup file to say where.
+        tilo_startup_metrics::mark("run-start");
         self.prepare_native_presentation(crate::host_chrome::HostChrome::current(
             self.input.platform,
         ));
+        tilo_startup_metrics::mark("run-presentation-prepared");
         crate::host::native::install_default_if_unset(self.window.app_id.as_deref());
         // The event loop never waits on async work: anything that must is
         // spawned onto the app runtime and handed back through the wake scope.
@@ -3920,7 +3925,9 @@ impl App {
                     .clone(),
             );
         }
+        tilo_startup_metrics::mark("run-event-loop-build");
         let event_loop = event_loop_builder.build().unwrap();
+        tilo_startup_metrics::mark("run-event-loop-built");
         tilo_host_search::forward_to_runtime();
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
@@ -3962,14 +3969,18 @@ impl App {
                 })
                 .flatten()
         };
+        tilo_startup_metrics::mark("run-settings-watched");
         let host_appearance = {
             let _entry = self.enter_wake_scope();
             setup(proxy);
+            tilo_startup_metrics::mark("run-setup-done");
             self.init_layout();
+            tilo_startup_metrics::mark("run-init-layout-done");
             self.watch_system_settings
                 .then(crate::host_appearance::Source::start)
                 .flatten()
         };
+        tilo_startup_metrics::mark("run-host-appearance-started");
 
         let mut handler = AppHandler {
             app: self,
