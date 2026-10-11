@@ -679,6 +679,12 @@ inputs = [
 readers = ["crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs"]
 
 [[cargo]]
+package = "app-cli"
+# The canonical downloader proves its staging path against the installed host unit.
+inputs = ["crates/packaging/app-host/systemd/tilo-app-host.service"]
+readers = ["crates/packaging/app-cli/src/install.rs"]
+
+[[cargo]]
 package = "tilo-app-cli"
 # Scaffolding and the dev loop locate the SDK and the UI builder in the tree;
 # standalone scaffolds embed the workspace's lock, patches, profiles and toolchain.

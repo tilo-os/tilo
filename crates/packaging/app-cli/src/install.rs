@@ -913,6 +913,66 @@ mod tests {
         }
     }
 
+    #[test]
+    fn app_host_stages_verified_downloads_in_private_state_without_writable_home() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let unit = include_str!("../../app-host/systemd/tilo-app-host.service");
+        let setting = unit
+            .lines()
+            .find_map(|line| line.strip_prefix("Environment=TILO_STORE_CACHE_DIR="))
+            .expect("the hardened host must explicitly locate writable download state");
+        assert_eq!(setting, "%S/tilo-app-host/cache");
+        assert!(unit.lines().any(|line| line == "ProtectHome=read-only"));
+        let writes = unit
+            .lines()
+            .find_map(|line| line.strip_prefix("ReadWritePaths="))
+            .expect("scoped broker writes");
+        assert!(
+            writes
+                .split_whitespace()
+                .any(|path| path == "%S/tilo-app-host")
+        );
+        assert!(
+            !writes
+                .split_whitespace()
+                .any(|path| path == "%h" || path == "%h/.cache/tilo-store")
+        );
+
+        let mut home = tilo_test_env::TestHome::new().expect("isolated home");
+        let state = home.root().join("private-state");
+        let cache = PathBuf::from(setting.replace("%S", &state.to_string_lossy()));
+        home.env().set("TILO_STORE_CACHE_DIR", &cache);
+        let staging = staging_dir().expect("private staging directory");
+        assert_eq!(staging, cache.join("staged-tapp"));
+        assert!(!home.cache().join("tilo-store/staged-tapp").exists());
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback");
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("download request");
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntapp")
+                .expect("package bytes");
+        });
+        let dest = staging.join("package.tapp");
+        let result = download_reporting_limited(
+            &format!("http://{address}/app.tapp"),
+            &dest,
+            4,
+            &mut |_| {},
+        );
+        server.join().expect("server cleanup");
+        assert_eq!(result.expect("actual canonical staging write"), 4);
+        verify_download_metadata(&registry_app_for(b"tapp"), 4).expect("exact registry bytes");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"tapp");
+        assert!(!home.cache().join("tilo-store/staged-tapp").exists());
+        std::fs::remove_file(&dest).expect("disposable staging cleanup");
+    }
+
     fn registry_app_for(bytes: &[u8]) -> CatalogueApp {
         CatalogueApp {
             package_id: "so.tilo.test".into(),
