@@ -28,7 +28,7 @@ use crate::compute_session::ComputeProtocol;
 use crate::compute_transport::COMPUTE_ALPN;
 use crate::compute_worker::{ProductionComputeWorkerConfig, run_production_compute_worker};
 use crate::config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
-use crate::handshake::{EndpointTrust, HandshakeError, ServerAuth};
+use crate::handshake::{EndpointTrust, HandshakeError, LiveIdentity};
 use crate::metrics::Metrics;
 use crate::peer::{
     PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, run_peer_version,
@@ -269,17 +269,13 @@ pub struct Relay {
     workspaces: WorkspaceRegistry,
     /// Metrics — cheap counters.
     metrics: Arc<Metrics>,
-    /// Own certified device. Dedicated hosts require `can_act_as_host`; the
-    /// typed interactive-owner path is instead bound to one shell authority.
-    own_cert: DeviceCert,
-    /// Own device signing key.
-    own_signing_key: ed25519_dalek::SigningKey,
-    /// Own user pubkey — the one this relay chains to.
-    own_user_public_key: [u8; 32],
+    /// Own certified device, signing key, user root and live revocations.
+    /// Dedicated hosts require `can_act_as_host`; the typed interactive-owner
+    /// path is instead bound to one shell authority.
+    identity: LiveIdentity,
     /// Only the browser listener publishes this public navigation origin.
     #[cfg(feature = "web")]
     pub(crate) browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
-    live_revocations: Arc<std::sync::RwLock<RevocationList>>,
     /// Federation dial tasks — one per known peer relay. Aborted
     /// (per-handle) when the `Relay` drops.
     peer_relay_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
@@ -695,6 +691,12 @@ impl Relay {
         }
         let metrics = Arc::new(Metrics::default());
         let revocations = Arc::new(std::sync::RwLock::new(identity.revocations.clone()));
+        let live = LiveIdentity {
+            user_public_key: identity.user_public_key,
+            cert: identity.device_cert.clone(),
+            signing_key: identity.device_signing_key.clone(),
+            revocations: revocations.clone(),
+        };
 
         let handshake_trust = HandshakeTrust::new(
             &operator_trust_policy,
@@ -707,10 +709,7 @@ impl Relay {
             protocol: crate::peer::SessionProtocol::V1,
             workspaces: workspaces.clone(),
             trust_policy: live_trust_policy.clone(),
-            revocations: revocations.clone(),
-            own_user_pk: identity.user_public_key,
-            own_cert: identity.device_cert.clone(),
-            own_sk: identity.device_signing_key.clone(),
+            identity: live.clone(),
             metrics: metrics.clone(),
             autobind: (startup_mode == RelayStartupMode::CertifiedHost
                 && matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser))
@@ -727,11 +726,8 @@ impl Relay {
         };
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
-            own_user_pk: identity.user_public_key,
+            identity: live.clone(),
             trust_policy: live_trust_policy.clone(),
-            revocations: revocations.clone(),
-            own_cert: identity.device_cert.clone(),
-            own_sk: identity.device_signing_key.clone(),
             mesh_profile: mesh_profile.clone(),
             full_replica: full_replica.clone(),
             compute_ready: Arc::clone(&compute_ready),
@@ -745,10 +741,7 @@ impl Relay {
         };
         let management = ManagementProtocol {
             endpoint: endpoint.clone(),
-            own_user_pk: identity.user_public_key,
-            own_cert: identity.device_cert.clone(),
-            own_sk: identity.device_signing_key.clone(),
-            revocations: revocations.clone(),
+            identity: live.clone(),
             mesh_profile: mesh_profile.clone(),
             full_replica: full_replica.clone(),
             compute_ready: Arc::clone(&compute_ready),
@@ -757,24 +750,14 @@ impl Relay {
         };
         let compute = ComputeProtocol::new(
             workspaces.clone(),
-            crate::compute_session::ComputeIdentity {
-                user_public_key: identity.user_public_key,
-                cert: identity.device_cert.clone(),
-                signing_key: identity.device_signing_key.clone(),
-            },
+            live.clone(),
             crate::compute_session::ComputeTrust {
-                revocations: revocations.clone(),
                 trust_policy: live_trust_policy.clone(),
                 agents: handler.agents.clone(),
             },
             Arc::new(crate::environment_host::TracingMetering),
         );
-        let certification = crate::certification::CertificationProtocol::new(
-            identity.user_public_key,
-            identity.device_cert.clone(),
-            identity.device_signing_key.clone(),
-            revocations.clone(),
-        );
+        let certification = crate::certification::CertificationProtocol::new(live.clone());
         let web = Box::new(WebContext {
             relay: handler.clone(),
             #[cfg(feature = "web")]
@@ -884,14 +867,8 @@ impl Relay {
         }
         let router = router.spawn();
 
-        let peer_relay_tasks = spawn_background_tasks(
-            &cfg,
-            &identity,
-            &endpoint,
-            &workspaces,
-            &metrics,
-            &revocations,
-        );
+        let peer_relay_tasks =
+            spawn_background_tasks(&cfg, &identity, &endpoint, &workspaces, &metrics, &live);
         if cfg.services.compute {
             for workspace in workspaces.lock().await.values() {
                 workspace
@@ -941,12 +918,9 @@ impl Relay {
             router,
             workspaces,
             metrics,
-            own_cert: identity.device_cert,
-            own_signing_key: identity.device_signing_key,
-            own_user_public_key: identity.user_public_key,
+            identity: live,
             #[cfg(feature = "web")]
             browser_origin: Arc::new(std::sync::RwLock::new(None)),
-            live_revocations: revocations,
             peer_relay_tasks,
             mesh_profile,
             full_replica: full_replica.clone(),
@@ -1044,10 +1018,7 @@ impl Relay {
     pub fn add_peer_relay_at(&self, addr: EndpointAddr, label: String, priority: i32) {
         let task = PeerRelayDialer {
             endpoint: self.endpoint.clone(),
-            own_user_pk: self.own_user_public_key,
-            own_cert: self.own_cert.clone(),
-            own_sk: self.own_signing_key.clone(),
-            revocations: self.live_revocations.clone(),
+            identity: self.identity.clone(),
             workspaces: self.workspaces.clone(),
             metrics: self.metrics.clone(),
         }
@@ -1078,7 +1049,10 @@ impl Relay {
         &self,
         delegation: tilo_relay_protocol::agents::AgentDelegation,
     ) -> Result<(), tilo_relay_protocol::agents::DelegationError> {
-        delegation.verify(&self.web.relay.own_user_pk, tilo_clock::unix_now_ns())?;
+        delegation.verify(
+            &self.web.relay.identity.user_public_key,
+            tilo_clock::unix_now_ns(),
+        )?;
         self.web
             .relay
             .agents
@@ -1215,7 +1189,7 @@ impl Relay {
 
     /// Own user identity — for tests.
     pub fn own_user_public_key(&self) -> [u8; 32] {
-        self.own_user_public_key
+        self.identity.user_public_key
     }
 
     /// In-process access to the records of the workspaces this relay hosts,
@@ -1224,9 +1198,9 @@ impl Relay {
     pub fn room_records(&self) -> crate::room_records::RoomRecords {
         crate::room_records::RoomRecords::new(
             self.workspaces.clone(),
-            self.own_cert.device_public_key,
-            self.own_user_public_key,
-            self.own_signing_key.clone(),
+            self.identity.cert.device_public_key,
+            self.identity.user_public_key,
+            self.identity.signing_key.clone(),
             self.metrics.clone(),
         )
     }
@@ -1549,7 +1523,7 @@ fn spawn_background_tasks(
     endpoint: &Endpoint,
     workspaces: &WorkspaceRegistry,
     metrics: &Arc<Metrics>,
-    revocations: &Arc<std::sync::RwLock<RevocationList>>,
+    live: &LiveIdentity,
 ) -> Arc<std::sync::Mutex<Vec<AbortOnDrop>>> {
     let peer_relay_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1557,7 +1531,7 @@ fn spawn_background_tasks(
     let revocation_task = spawn_revocation_refresh_task(
         cfg.state_root.clone(),
         identity.revocations.clone(),
-        revocations.clone(),
+        live.revocations.clone(),
     );
     push_peer_relay_task(&peer_relay_tasks, revocation_task);
 
@@ -1571,8 +1545,7 @@ fn spawn_background_tasks(
         let task = spawn_peer_relay_dial(
             peer_cfg,
             endpoint.clone(),
-            identity.clone(),
-            revocations.clone(),
+            live.clone(),
             workspaces.clone(),
             metrics.clone(),
         );
@@ -2112,10 +2085,7 @@ pub(crate) struct RelayProtocol {
     pub(crate) protocol: crate::peer::SessionProtocol,
     pub(crate) workspaces: WorkspaceRegistry,
     pub(crate) trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
-    pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
-    pub(crate) own_user_pk: [u8; 32],
-    pub(crate) own_cert: DeviceCert,
-    pub(crate) own_sk: ed25519_dalek::SigningKey,
+    pub(crate) identity: LiveIdentity,
     pub(crate) metrics: Arc<Metrics>,
     pub(crate) autobind: Option<WorkspaceAutobind>,
     pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
@@ -2126,23 +2096,13 @@ pub(crate) struct RelayProtocol {
 }
 
 impl RelayProtocol {
-    /// The relay's identity and live revocations, for a handshake.
-    pub(crate) fn server_auth(&self) -> ServerAuth<'_> {
-        ServerAuth {
-            own_user: &self.own_user_pk,
-            cert: &self.own_cert,
-            key: &self.own_sk,
-            revocations: &self.revocations,
-        }
-    }
-
     /// This relay's certificate and agent trust.
     #[cfg(feature = "web")]
     pub(crate) fn trust(&self) -> crate::room_access::RelayTrust<'_> {
         crate::room_access::RelayTrust {
-            revocations: &self.revocations,
+            revocations: &self.identity.revocations,
             policy: &self.trust_policy,
-            own_user: &self.own_user_pk,
+            own_user: &self.identity.user_public_key,
             agents: &self.agents,
         }
     }
@@ -2152,17 +2112,17 @@ impl RelayProtocol {
         PeerContext {
             workspaces: self.workspaces.clone(),
             autobind: self.autobind.clone(),
-            revocations: self.revocations.clone(),
+            revocations: self.identity.revocations.clone(),
             trust_policy: self.trust_policy.clone(),
-            own_user_public_key: self.own_user_pk,
-            own_device_cert: self.own_cert.clone(),
+            own_user_public_key: self.identity.user_public_key,
+            own_device_cert: self.identity.cert.clone(),
             metrics: self.metrics.clone(),
-            own_device_public_key: self.own_cert.device_public_key,
+            own_device_public_key: self.identity.cert.device_public_key,
             app_serving: self.app_serving.clone(),
             live_bridge: self.live_bridge.get().cloned(),
             agents: self.agents.clone(),
             positions: Some(crate::position::PositionIssuer::new(
-                &self.own_sk.to_bytes(),
+                &self.identity.signing_key.to_bytes(),
             )),
             compactor: Some(self.compactor.clone()),
         }
@@ -2172,11 +2132,8 @@ impl RelayProtocol {
 #[derive(Clone)]
 struct DiscoveryProtocol {
     workspaces: WorkspaceRegistry,
-    own_user_pk: [u8; 32],
+    identity: LiveIdentity,
     trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
-    own_cert: DeviceCert,
-    own_sk: ed25519_dalek::SigningKey,
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     full_replica: ReplicaProof,
     compute_ready: Arc<AtomicBool>,
@@ -2188,9 +2145,9 @@ struct DiscoveryProtocol {
 impl DiscoveryProtocol {
     fn trust(&self) -> crate::room_access::RelayTrust<'_> {
         crate::room_access::RelayTrust {
-            revocations: &self.revocations,
+            revocations: &self.identity.revocations,
             policy: &self.trust_policy,
-            own_user: &self.own_user_pk,
+            own_user: &self.identity.user_public_key,
             agents: &self.agents,
         }
     }
@@ -2214,26 +2171,12 @@ async fn environment_offer(
 #[derive(Clone)]
 struct ManagementProtocol {
     endpoint: Endpoint,
-    own_user_pk: [u8; 32],
-    own_cert: DeviceCert,
-    own_sk: ed25519_dalek::SigningKey,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    identity: LiveIdentity,
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     full_replica: ReplicaProof,
     compute_ready: Arc<AtomicBool>,
     state_root: PathBuf,
     workspaces: WorkspaceRegistry,
-}
-
-impl ManagementProtocol {
-    fn server_auth(&self) -> ServerAuth<'_> {
-        ServerAuth {
-            own_user: &self.own_user_pk,
-            cert: &self.own_cert,
-            key: &self.own_sk,
-            revocations: &self.revocations,
-        }
-    }
 }
 
 impl std::fmt::Debug for ManagementProtocol {
@@ -2257,7 +2200,7 @@ impl ProtocolHandler for ManagementProtocol {
         // Only the owner's devices manage the home peer, whatever the live
         // policy admits.
         let peer = self
-            .server_auth()
+            .identity
             .authenticate(
                 EndpointTrust::Fixed(crate::auth::HandshakeTrust::OwnerDevicesOnly),
                 &mut recv,
@@ -2302,8 +2245,8 @@ impl ProtocolHandler for ManagementProtocol {
                 verify_revocation_entry(&revocation).map_err(|error| {
                     AcceptError::from_err(std::io::Error::other(error.to_string()))
                 })?;
-                if revocation.user_public_key != self.own_user_pk
-                    || revocation.revoked_device_public_key != self.own_cert.device_public_key
+                if revocation.user_public_key != self.identity.user_public_key
+                    || revocation.revoked_device_public_key != self.identity.cert.device_public_key
                 {
                     return Err(AcceptError::from_err(std::io::Error::other(
                         "revocation does not target this home peer",
@@ -2325,6 +2268,7 @@ impl ProtocolHandler for ManagementProtocol {
                 // back: this process stops serving its own revoked identity
                 // now. A conflicting entry is the log reader's to reject.
                 let applied = self
+                    .identity
                     .revocations
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2344,13 +2288,13 @@ impl ProtocolHandler for ManagementProtocol {
         let label = std::fs::read_to_string(self.state_root.join("home-peer-name"))
             .ok()
             .filter(|label| !label.trim().is_empty())
-            .unwrap_or_else(|| self.own_cert.device_label.clone());
+            .unwrap_or_else(|| self.identity.cert.device_label.clone());
         let files_ready = self.full_replica.current().is_some();
         let environments = environment_offer(&self.workspaces).await;
         write_frame(
             &mut send,
             &postcard::to_allocvec(&HomePeerManagementResponse {
-                device_public_key: self.own_cert.device_public_key,
+                device_public_key: self.identity.cert.device_public_key,
                 relay_endpoint: self.endpoint.addr(),
                 label: label.trim().to_string(),
                 files_ready,
@@ -2371,17 +2315,6 @@ impl ProtocolHandler for ManagementProtocol {
         }
         connection.closed().await;
         Ok(())
-    }
-}
-
-impl DiscoveryProtocol {
-    fn server_auth(&self) -> ServerAuth<'_> {
-        ServerAuth {
-            own_user: &self.own_user_pk,
-            cert: &self.own_cert,
-            key: &self.own_sk,
-            revocations: &self.revocations,
-        }
     }
 }
 
@@ -2414,7 +2347,7 @@ impl ProtocolHandler for DiscoveryProtocol {
         // Any device the live policy admits may ask; the request is then
         // scoped to a room it belongs to.
         let peer = self
-            .server_auth()
+            .identity
             .authenticate(
                 EndpointTrust::Live(&self.trust_policy),
                 &mut recv,
@@ -2426,7 +2359,7 @@ impl ProtocolHandler for DiscoveryProtocol {
         let request: ContentEndpointRequest =
             postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
                 .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        if peer.user_public_key == self.own_user_pk {
+        if peer.user_public_key == self.identity.user_public_key {
             get_or_autobind_workspace(
                 &self.workspaces,
                 self.autobind.as_ref(),
@@ -2477,7 +2410,7 @@ impl ProtocolHandler for DiscoveryProtocol {
             })
             .unwrap_or_default();
         profile.services.full_content_replication &= !profile.filesystem_endpoints.is_empty();
-        let same_owner = peer.user_public_key == self.own_user_pk;
+        let same_owner = peer.user_public_key == self.identity.user_public_key;
         let filesystem_ticket = std::fs::read_to_string(&self.home_peer_bundle)
             .ok()
             .and_then(|text| toml::from_str::<fs::full_replica::HomePeerSet>(&text).ok())
@@ -2552,7 +2485,7 @@ async fn handle_conn(
     // 1. The handshake, under the live policy: the owner and every user the
     // relay currently admits.
     let client_peer = match ctx
-        .server_auth()
+        .identity
         .authenticate(
             EndpointTrust::Live(&ctx.trust_policy),
             &mut recv,
@@ -2598,8 +2531,7 @@ pub use crate::frame::{read_frame, write_frame};
 fn spawn_peer_relay_dial(
     peer_cfg: PeerRelayConfig,
     endpoint: Endpoint,
-    identity: RelayIdentity,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    identity: LiveIdentity,
     workspaces: WorkspaceRegistry,
     metrics: Arc<Metrics>,
 ) -> JoinHandle<()> {
@@ -2614,10 +2546,7 @@ fn spawn_peer_relay_dial(
         let addr = EndpointAddr::new(node_id);
         PeerRelayDialer {
             endpoint,
-            own_user_pk: identity.user_public_key,
-            own_cert: identity.device_cert,
-            own_sk: identity.device_signing_key,
-            revocations,
+            identity,
             workspaces,
             metrics,
         }
@@ -2627,15 +2556,11 @@ fn spawn_peer_relay_dial(
 }
 
 /// What an outbound peer-relay dial carries: the local endpoint, this
-/// relay's own user key, device certificate and signing key, the live
-/// revocation list (read afresh for every dial and session), the hosted
-/// workspaces and metrics.
+/// relay's own identity (its revocation list read afresh for every dial and
+/// session), the hosted workspaces and metrics.
 struct PeerRelayDialer {
     endpoint: Endpoint,
-    own_user_pk: [u8; 32],
-    own_cert: DeviceCert,
-    own_sk: ed25519_dalek::SigningKey,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    identity: LiveIdentity,
     workspaces: WorkspaceRegistry,
     metrics: Arc<Metrics>,
 }
@@ -2654,26 +2579,24 @@ impl PeerRelayDialer {
     async fn dial_loop(self, addr: EndpointAddr, label: String, _priority: i32) {
         let PeerRelayDialer {
             endpoint,
-            own_user_pk,
-            own_cert,
-            own_sk,
-            revocations,
+            identity,
             workspaces,
             metrics,
         } = self;
         let mut backoff_ms: u64 = 1_000;
         loop {
             let ep = endpoint.clone();
-            let current_revocations = revocations
+            let current_revocations = identity
+                .revocations
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             match RelayClient::connect(
                 ep,
                 addr.clone(),
-                own_user_pk,
-                own_cert.clone(),
-                own_sk.clone(),
+                identity.user_public_key,
+                identity.cert.clone(),
+                identity.signing_key.clone(),
                 current_revocations,
             )
             .await
@@ -2684,8 +2607,8 @@ impl PeerRelayDialer {
                     if let Err(e) = run_peer_relay_session(
                         &client,
                         &workspaces,
-                        revocations.clone(),
-                        own_user_pk,
+                        identity.revocations.clone(),
+                        identity.user_public_key,
                         metrics.clone(),
                     )
                     .await

@@ -2,12 +2,12 @@
 //! ([`crate::auth`]), once for every endpoint.
 //!
 //! Each endpoint names who it admits with an [`EndpointTrust`] and runs
-//! [`ServerAuth::authenticate`] over its stream, or, split across two HTTPS
-//! requests, [`ServerAuth::begin`] and [`PendingServer::finish`]. Anything an
+//! [`LiveIdentity::authenticate`] over its stream, or, split across two HTTPS
+//! requests, [`LiveIdentity::begin`] and [`PendingServer::finish`]. Anything an
 //! endpoint checks beyond that (room membership, the owner gate on compute
 //! control) is authorization and stays with the endpoint.
 
-use std::sync::{PoisonError, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use thiserror::Error;
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -54,17 +54,18 @@ pub(crate) enum HandshakeError {
     Auth(#[from] AuthError),
 }
 
-/// The relay's identity and live revocations, as every endpoint's handshake
-/// reads them.
-#[derive(Clone, Copy)]
-pub(crate) struct ServerAuth<'a> {
-    pub(crate) own_user: &'a [u8; 32],
-    pub(crate) cert: &'a DeviceCert,
-    pub(crate) key: &'a ed25519_dalek::SigningKey,
-    pub(crate) revocations: &'a RwLock<RevocationList>,
+/// The relay's own identity and its live revocation list, shared by every
+/// endpoint and outbound dial.
+#[derive(Clone)]
+pub(crate) struct LiveIdentity {
+    /// The user root this relay chains to.
+    pub(crate) user_public_key: [u8; 32],
+    pub(crate) cert: DeviceCert,
+    pub(crate) signing_key: ed25519_dalek::SigningKey,
+    pub(crate) revocations: Arc<RwLock<RevocationList>>,
 }
 
-impl ServerAuth<'_> {
+impl LiveIdentity {
     /// First half without I/O: check `hello` under `trust` and the live
     /// revocations, both borrowed only for the check.
     ///
@@ -77,9 +78,9 @@ impl ServerAuth<'_> {
         hello: &Hello,
     ) -> Result<(PendingServer, HelloAck), AuthError> {
         let identity = ServerIdentity {
-            own_user: self.own_user,
-            cert: self.cert,
-            key: self.key,
+            own_user: &self.user_public_key,
+            cert: &self.cert,
+            key: &self.signing_key,
         };
         let now_ns = tilo_clock::unix_now_ns();
         let server_nonce: [u8; 32] = rand::random();
