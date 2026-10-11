@@ -572,20 +572,36 @@ async fn a_client_sends_its_pointer_at_the_rate_the_relay_forwards_it() {
     .await;
     let user_hex = hex::encode(user.user_pk);
 
-    // Alone in the room, every datagram the relay receives is the
-    // publisher's: unpaced, the drag alone would be one per move.
-    let before = relay_datagrams_received(&relay);
+    // A fresh connection still settles its path (MTU probes, address
+    // observations, their acknowledgements); let it, then measure what the
+    // relay receives from the publisher while it is quiet, and while it
+    // drags. Alone in the room, every datagram the relay receives is the
+    // publisher's: unpaced, the drag alone would add one per move.
+    for step in 0..MOVES {
+        publish(&publisher, &pointer(step, &user_hex));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let window = Duration::from_millis(10) * MOVES + Duration::from_millis(200);
+    let quiet_from = relay_datagrams_received(&relay);
+    tokio::time::sleep(window).await;
+    let quiet = relay_datagrams_received(&relay) - quiet_from;
+    let drag_from = relay_datagrams_received(&relay);
     for step in 0..MOVES {
         publish(&publisher, &pointer(step, &user_hex));
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let datagrams = relay_datagrams_received(&relay) - before;
-    println!("POINTER_PACING moves={MOVES} over_ms=600 relay_datagrams_received={datagrams}");
+    let drag = relay_datagrams_received(&relay) - drag_from;
+    println!(
+        "POINTER_PACING moves={MOVES} window_ms={} relay_datagrams_quiet={quiet} \
+         relay_datagrams_drag={drag}",
+        window.as_millis()
+    );
     assert!(
-        datagrams <= u64::from(MOVES) / 3,
-        "{MOVES} moves published over 600 ms reached the relay in {datagrams} datagrams; \
-         paced to one per 50 ms they take about 13"
+        drag.saturating_sub(quiet) <= u64::from(MOVES) / 3,
+        "{MOVES} moves published over 600 ms reached the relay in {drag} datagrams \
+         ({quiet} in as long a quiet window); paced to one per 50 ms they take about 13"
     );
 
     // With a member in the room, the last move arrives on its own: it is
