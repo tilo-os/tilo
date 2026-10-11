@@ -206,7 +206,7 @@ fn ids_made_inside_a_verb_replay_identically_and_surfaces_bind_verbs() {
         ]),
     )
     .unwrap();
-    let action = (here.build)(&args, 0).unwrap();
+    let action = here.build_action(&args, 0).unwrap();
     origin.apply_action(&action).unwrap();
     assert_eq!(
         origin

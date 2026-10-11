@@ -134,7 +134,7 @@ fn the_project_publishes_its_verbs_and_the_editor_binds_the_playhead_edits() {
             )]),
         )
         .unwrap();
-        (split.build)(&args, 0).unwrap()
+        split.build_action(&args, 0).unwrap()
     };
     let mut replica = holding(&sample);
     let clips = sample.clips.len();
@@ -169,7 +169,9 @@ fn edits_bound_to_the_playhead_follow_it_and_the_markers_near_it() {
         .find(|decl| decl.id == "remove-marker-here")
         .expect("a marker under the playhead can be removed there");
     assert!(remove.label.contains("Act two"), "{}", remove.label);
-    let action = (remove.build)(&tilo_actions::ActionArgs::default(), 0).unwrap();
+    let action = remove
+        .build_action(&tilo_actions::ActionArgs::default(), 0)
+        .unwrap();
     let mut replica = holding(&p);
     replica.apply_action(&action).unwrap();
     assert!(replica.state().unwrap().marker(marker).is_none());
@@ -192,14 +194,18 @@ fn edits_bound_to_the_playhead_follow_it_and_the_markers_near_it() {
     .unwrap();
     let mut replica = holding(&p);
     replica
-        .apply_action(&(here.build)(&args, 0).unwrap())
+        .apply_action(&here.build_action(&args, 0).unwrap())
         .unwrap();
     let state = replica.state().unwrap();
     let chorus = state.markers.iter().find(|m| m.name == "Chorus").unwrap();
     assert_eq!(chorus.t, 9.0, "at the playhead");
     let mark_in = far.iter().find(|decl| decl.id == "mark-in-here").unwrap();
     replica
-        .apply_action(&(mark_in.build)(&tilo_actions::ActionArgs::default(), 0).unwrap())
+        .apply_action(
+            &mark_in
+                .build_action(&tilo_actions::ActionArgs::default(), 0)
+                .unwrap(),
+        )
         .unwrap();
     assert_eq!(replica.state().unwrap().mark_in, Some(9.0));
 }
@@ -641,7 +647,7 @@ fn the_mix_is_trimmed_by_what_was_measured_and_lanes_stay_in_range() {
         .unwrap();
         let mut replica = holding(&p);
         replica
-            .apply_action(&(trim.build)(&args, 0).unwrap())
+            .apply_action(&trim.build_action(&args, 0).unwrap())
             .unwrap();
         let state = replica.state().unwrap();
         (

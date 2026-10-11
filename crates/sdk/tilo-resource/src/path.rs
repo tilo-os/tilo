@@ -801,6 +801,24 @@ impl<R> Edit<R> {
         &self.op
     }
 
+    /// The same edit, of the record `S`: the path and operation it carries
+    /// do not depend on the record type.
+    #[must_use]
+    pub fn retyped<S>(self) -> Edit<S> {
+        Edit::new(self.path, self.op)
+    }
+
+    /// The edit in `value`, its JSON form.
+    ///
+    /// # Errors
+    /// Why `value` is no field edit.
+    pub fn from_json(value: serde_json::Value) -> Result<Self, String> {
+        match edit_from_json(value) {
+            Ok((path, op)) => Ok(Self::new(path, op)),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     /// Whether `next`, by the same actor straight after `self`, continues
     /// the same gesture: one undo step. Setting one path again (dragging a
     /// slider) and typing on at the end of the previous splice (a word)

@@ -108,11 +108,23 @@ fn lands<R: Resource>(doc: &Doc, action: &EncodedAction) -> Option<Place> {
 }
 
 fn encode<R: Resource>(action: serde_json::Value) -> Result<EncodedAction, String> {
+    encode_in(crate::vocabulary::<R>(), action)
+}
+
+/// [`ResourceKind::encode`] of the resource `vocabulary`.
+fn encode_in(
+    vocabulary: &crate::Vocabulary,
+    action: serde_json::Value,
+) -> Result<EncodedAction, String> {
     let mut arguments = serde_json::Map::new();
     arguments.insert(resource::APPLY_PARAM.to_owned(), action);
-    let action =
-        resource::build_action::<R>(resource::APPLY, &arguments, resource::origin_now_ms())?;
-    resource::encode::<R>(&action).map_err(|error| error.to_string())
+    let action = resource::build_action_of(
+        vocabulary,
+        resource::APPLY,
+        &arguments,
+        resource::origin_now_ms(),
+    )?;
+    action.encode().map_err(|error| error.to_string())
 }
 
 impl ResourceKind {

@@ -25,6 +25,7 @@ use serde::Serialize;
 use crate::action::ActionRef;
 use crate::path::{Path, Segment};
 use crate::resource::{ActionDecl, Resource};
+use crate::vocabulary::Declaration;
 
 /// A verb with some of its parameters bound: what a derived resource offers.
 pub struct Bound<R> {
@@ -76,45 +77,57 @@ impl<R: Resource> Bound<R> {
     /// clip at the playhead"), built and checked as the verb is.
     #[must_use]
     pub fn declaration(&self, id: &'static str, label: impl Into<String>) -> Option<ActionDecl<R>> {
-        let verb = R::declarations()
-            .into_iter()
-            .find(|decl| decl.id == self.action)?;
-        let all = verb.params.clone();
-        let build = std::sync::Arc::clone(&verb.build);
-        let values = self.values.clone();
-        let mut decl = ActionDecl::new(
+        bound_declaration(
+            crate::vocabulary::<R>(),
+            self.action,
+            &self.values,
             id,
-            label,
-            verb.params
-                .iter()
-                .filter(|param| !values.iter().any(|(name, _)| param.name == name.as_str()))
-                .cloned()
-                .collect(),
-            move |args, now_ms| {
-                let mut arguments = args.to_json();
-                for (name, value) in &values {
-                    // An optional parameter bound to nothing is left out.
-                    if !value.is_null() {
-                        arguments.insert(name.clone(), value.clone());
-                    }
-                }
-                let args = tilo_actions::ActionArgs::bind_json(&all, &arguments)
-                    .map_err(|error| error.to_string())?;
-                build(&args, now_ms)
-            },
+            label.into(),
         )
-        .of_kind(verb.kind);
-        if let Some(field) = verb.field {
-            decl = decl.below_field(field);
-        }
-        if let Some(description) = verb.description {
-            decl = decl.describe(description);
-        }
-        if verb.destructive {
-            decl = decl.destructive();
-        }
-        Some(decl)
+        .map(ActionDecl::declared)
     }
+}
+
+/// [`Bound::declaration`] of the verb `action` of the resource `vocabulary`
+/// with `values` bound.
+fn bound_declaration(
+    vocabulary: &crate::Vocabulary,
+    action: &str,
+    values: &[(String, serde_json::Value)],
+    id: &'static str,
+    label: String,
+) -> Option<Declaration> {
+    let verb = (vocabulary.declarations)()
+        .into_iter()
+        .find(|decl| decl.id == action)?;
+    let mut params = Vec::new();
+    for param in &verb.params {
+        if !values.iter().any(|(name, _)| param.name == name.as_str()) {
+            params.push(param.clone());
+        }
+    }
+    let all = verb.params.clone();
+    let build = std::sync::Arc::clone(&verb.build);
+    let values = values.to_vec();
+    let build: crate::vocabulary::Builds = std::sync::Arc::new(move |args, now_ms| {
+        let mut arguments = args.to_json();
+        for (name, value) in &values {
+            // An optional parameter bound to nothing is left out.
+            if !value.is_null() {
+                arguments.insert(name.clone(), value.clone());
+            }
+        }
+        match tilo_actions::ActionArgs::bind_json(&all, &arguments) {
+            Ok(args) => build(&args, now_ms),
+            Err(error) => Err(error.to_string()),
+        }
+    });
+    let mut decl = Declaration::new(vocabulary, id, label, params, build);
+    decl.kind = verb.kind;
+    decl.field = verb.field;
+    decl.description = verb.description;
+    decl.destructive = verb.destructive;
+    Some(decl)
 }
 
 fn bound_value<P, V: Serialize>(param: Path<P, V>, value: &V) -> (String, serde_json::Value) {
@@ -324,7 +337,7 @@ impl<R: Resource> Derived<R> {
         let declarations = if self.actions.is_empty() {
             Vec::new()
         } else {
-            R::declarations()
+            (crate::vocabulary::<R>().declarations)()
         };
         let kind = self.kind.as_deref().unwrap_or("derived");
         let mut child =

@@ -477,10 +477,9 @@ fn an_action_without_arguments_is_built_when_it_is_taken() {
         .unwrap();
     let counted = Arc::clone(&takings);
     let decl = tilo_resource::ActionDecl::<Board>::new("clear", "Clear", Vec::new(), {
-        let clear = Arc::clone(&clear.build);
         move |args, now| {
             counted.fetch_add(1, Ordering::SeqCst);
-            clear(args, now)
+            clear.build_action(args, now)
         }
     });
     let resource = tilo_actions::Resource::new("board", "test.board", "Board")
@@ -536,7 +535,7 @@ fn action_parameter_examples_are_guidance_not_a_value_restriction() {
     let supplied = serde_json::json!({"title": "Another valid title"});
     let bound =
         tilo_actions::ActionArgs::bind_json(&rename.params, supplied.as_object().unwrap()).unwrap();
-    let action = (rename.build)(&bound, 0).unwrap();
+    let action = rename.build_action(&bound, 0).unwrap();
     let mut replica = Replica::<Board>::new();
     replica.apply_action(&action).unwrap();
     assert_eq!(replica.state().unwrap().title, "Another valid title");

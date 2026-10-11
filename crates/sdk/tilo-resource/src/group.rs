@@ -16,6 +16,7 @@ use tilo_actions::{ActionError, ActionRegistry, ExecutionLocus, RiskLevel};
 
 use crate::model::Doc;
 use crate::resource::Resource;
+use crate::vocabulary::{Built, Vocabulary, vocabulary};
 
 /// The id of the action every resource publishes that applies several of its
 /// actions, in order, as one.
@@ -161,15 +162,7 @@ where
     /// A group is as consequential as its most consequential member: one
     /// deletion in a gesture makes the gesture ask for confirmation.
     fn risk(&self) -> RiskLevel {
-        let mut risk = RiskLevel::None;
-        for action in &self.actions {
-            match action.risk() {
-                consequential if consequential.requires_confirmation() => return consequential,
-                RiskLevel::Low => risk = RiskLevel::Low,
-                _ => {}
-            }
-        }
-        risk
+        group_risk(self.actions.iter().map(tilo_actions::Action::risk))
     }
 
     /// A gesture records each of its members, and the item they share.
@@ -215,9 +208,30 @@ where
     }
 }
 
+/// How consequential a group of actions as consequential as `risks` is: as
+/// its most consequential member. One deletion in a gesture makes the
+/// gesture ask for confirmation.
+pub(crate) fn group_risk(risks: impl IntoIterator<Item = RiskLevel>) -> RiskLevel {
+    let mut risk = RiskLevel::None;
+    for member in risks {
+        match member {
+            consequential if consequential.requires_confirmation() => return consequential,
+            RiskLevel::Low => risk = RiskLevel::Low,
+            _ => {}
+        }
+    }
+    risk
+}
+
 /// The registry type id groups of `R`'s actions are replayed under.
 pub fn group_type<R: Resource>() -> String {
-    format!("{}+group", R::ACTION_TYPE)
+    group_type_of(R::ACTION_TYPE)
+}
+
+/// The registry type id groups of the actions of the type `action_type`
+/// are replayed under.
+pub(crate) fn group_type_of(action_type: &str) -> String {
+    format!("{action_type}+group")
 }
 
 /// Register everything a replica of `R` replays: the resource's own actions
@@ -236,32 +250,47 @@ pub fn build_group<R: Resource>(
     arguments: &serde_json::Map<String, serde_json::Value>,
     now_ms: i64,
 ) -> Result<ActionGroup<R::Action>, String> {
+    let members = build_members(vocabulary::<R>(), arguments, now_ms)?;
+    let mut actions = Vec::with_capacity(members.len());
+    for member in members {
+        match member.into_action::<R>() {
+            Some(action) => actions.push(action),
+            None => return Err(format!("not an action of a {}", R::LABEL)),
+        }
+    }
+    Ok(ActionGroup { actions })
+}
+
+/// [`build_group`]'s members, of the resource `vocabulary`.
+pub(crate) fn build_members(
+    vocabulary: &Vocabulary,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    now_ms: i64,
+) -> Result<Vec<Built>, String> {
     let Some(serde_json::Value::Array(members)) = arguments.get(GROUP_PARAM) else {
         return Err(format!("`{GROUP_PARAM}` must be an array of invocations"));
     };
-    members
-        .iter()
-        .enumerate()
-        .map(|(index, member)| {
-            let id = member
-                .get("action")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| format!("member {index} names no `action`"))?;
-            if id == GROUP {
-                return Err(format!("member {index}: a group member cannot be a group"));
+    let mut built = Vec::with_capacity(members.len());
+    for (index, member) in members.iter().enumerate() {
+        let Some(id) = member.get("action").and_then(serde_json::Value::as_str) else {
+            return Err(format!("member {index} names no `action`"));
+        };
+        if id == GROUP {
+            return Err(format!("member {index}: a group member cannot be a group"));
+        }
+        let args = match member.get("args") {
+            None | Some(serde_json::Value::Null) => serde_json::Map::new(),
+            Some(serde_json::Value::Object(args)) => args.clone(),
+            Some(_) => {
+                return Err(format!(
+                    "member {index}: the arguments of `{id}` must be an object"
+                ));
             }
-            let args = match member.get("args") {
-                None | Some(serde_json::Value::Null) => serde_json::Map::new(),
-                Some(serde_json::Value::Object(args)) => args.clone(),
-                Some(_) => {
-                    return Err(format!(
-                        "member {index}: the arguments of `{id}` must be an object"
-                    ));
-                }
-            };
-            crate::resource::build_action::<R>(id, &args, now_ms)
-                .map_err(|reason| format!("member {index} ({id}): {reason}"))
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(|actions| ActionGroup { actions })
+        };
+        match crate::resource::build_action_of(vocabulary, id, &args, now_ms) {
+            Ok(action) => built.push(action),
+            Err(reason) => return Err(format!("member {index} ({id}): {reason}")),
+        }
+    }
+    Ok(built)
 }

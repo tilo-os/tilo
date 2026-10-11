@@ -217,7 +217,7 @@ fn reading_declarations_build_the_librarys_verbs_for_the_place() {
             unreachable!()
         };
         let args = tilo_actions::ActionArgs::bind_json(&decl.params, &args).unwrap();
-        let action = (decl.build)(&args, 1).unwrap();
+        let action = decl.build_action(&args, 1).unwrap();
         library.apply_action(&action).unwrap();
     }
     let marks = library.state().unwrap().annotations_for(BOOK);

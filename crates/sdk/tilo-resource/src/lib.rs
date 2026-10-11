@@ -129,6 +129,7 @@ pub mod shape;
 pub mod storage;
 pub mod surface;
 pub mod text;
+pub mod vocabulary;
 
 pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
@@ -168,6 +169,7 @@ pub use surface::Surface;
 pub use text::{PlainText, TextEdit};
 pub use tilo_actions::Availability;
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, committed_surface, resource};
+pub use vocabulary::{Built, Declaration, Vocabulary, vocabulary};
 
 /// Items the generated code refers to. Not part of the public API.
 #[doc(hidden)]

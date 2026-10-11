@@ -93,7 +93,8 @@ use std::sync::Arc;
 use tilo_actions::{ActionArgs, ActionParam, ActionSpec, ExecutionLocus};
 
 use crate::collection::Id;
-use crate::resource::{ActionDecl, Resource};
+use crate::resource::Resource;
+use crate::vocabulary::{Declaration, Vocabulary, vocabulary};
 
 /// One labelled item of a collection, as search indexes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -205,7 +206,12 @@ pub(crate) fn nested_of<'a, T: crate::Model + 'a>(
 /// The id of the child resource an item of a nested collection is
 /// published as: `<kind>/slides/<slide>/elements/<element>`.
 pub fn nested_resource_id<R: Resource>(within: &[(&str, Id)], field: &str, item: &Id) -> String {
-    let mut id = R::KIND.to_owned();
+    nested_resource_id_in(R::KIND, within, field, item)
+}
+
+/// [`nested_resource_id`] of a resource of the kind `kind`.
+fn nested_resource_id_in(kind: &str, within: &[(&str, Id)], field: &str, item: &Id) -> String {
+    let mut id = kind.to_owned();
     for (outer, outer_id) in within {
         id.push('/');
         id.push_str(outer);
@@ -234,12 +240,22 @@ pub struct ItemAction {
 
 /// The id of the child resource an item is published as.
 pub fn item_resource_id<R: Resource>(field: &str, item: &Id) -> String {
-    format!("{}/{field}/{item}", R::KIND)
+    item_resource_id_in(R::KIND, field, item)
+}
+
+/// [`item_resource_id`] of a resource of the kind `kind`.
+pub(crate) fn item_resource_id_in(kind: &str, field: &str, item: &Id) -> String {
+    format!("{kind}/{field}/{item}")
 }
 
 /// The item an item resource id names, if it is one of `R`'s.
 pub fn item_of_resource<R: Resource>(resource_id: &str) -> Option<(&str, Id)> {
-    let rest = resource_id.strip_prefix(R::KIND)?.strip_prefix('/')?;
+    item_of_resource_in(R::KIND, resource_id)
+}
+
+/// [`item_of_resource`] of a resource of the kind `kind`.
+fn item_of_resource_in<'a>(kind: &str, resource_id: &'a str) -> Option<(&'a str, Id)> {
+    let rest = resource_id.strip_prefix(kind)?.strip_prefix('/')?;
     let (field, item) = rest.split_once('/')?;
     Some((field, Id::from_raw(item)))
 }
@@ -273,14 +289,15 @@ thread_local! {
 /// The item resource for `id` in `field`, labelled `label`, offering the
 /// item actions `scoped`: from the cache when it was built for the same
 /// label and code, else built and kept.
-fn item_resource<R: Resource>(
-    scoped: &[(&ItemAction, &ActionDecl<R>)],
+fn item_resource(
+    vocabulary: &'static Vocabulary,
+    scoped: &[(&ItemAction, &Declaration)],
     field: &str,
     id: &Id,
     label: &str,
 ) -> tilo_actions::Resource {
-    cached_item(TypeId::of::<R>(), field, id, label, &|| {
-        build_item(scoped, field, id, label)
+    cached_item((vocabulary.type_id)(), field, id, label, &|| {
+        build_item(vocabulary, scoped, field, id, label)
     })
 }
 
@@ -324,33 +341,34 @@ fn cached_item(
     resource
 }
 
-fn build_item<R: Resource>(
-    scoped: &[(&ItemAction, &ActionDecl<R>)],
+fn build_item(
+    vocabulary: &'static Vocabulary,
+    scoped: &[(&ItemAction, &Declaration)],
     field: &str,
     id: &Id,
     label: &str,
 ) -> tilo_actions::Resource {
     let mut child = tilo_actions::Resource::new(
-        item_resource_id::<R>(field, id),
-        format!("{}.{field}", R::KIND),
+        item_resource_id_in(vocabulary.kind, field, id),
+        format!("{}.{field}", vocabulary.kind),
         label,
     );
     for (action, decl) in scoped {
         child = child.with_action(item_spec(decl, action.param, id));
     }
-    for spec in R::item_effects(field, id) {
+    for spec in (vocabulary.item_effects)(field, id) {
         child = child.with_action(spec);
     }
-    for view in R::item_views(field, id) {
+    for view in (vocabulary.item_views)(field, id) {
         child = child.with_view(view);
     }
-    if let Some(rename) = rename_spec::<R>(field, id)
+    if let Some(rename) = rename_spec(vocabulary, field, id)
         && !child.actions.iter().any(|action| action.id == rename.id)
     {
         child = child.with_action(rename);
     }
     // Its fields, edited from the item.
-    if let Some(spec) = crate::resource::item_field_edit_spec::<R>(field, id) {
+    if let Some(spec) = crate::resource::item_field_edit_spec_of(vocabulary, field, id) {
         child = child.with_action(spec);
     }
     child
@@ -362,13 +380,13 @@ pub const RENAME: &str = "rename";
 /// "Rename" on an item whose `#[model(label)]` is a plain text field: the
 /// field edit that sets it, asking for the new name, so the palette and
 /// agents offer what a person would otherwise type into the item's title.
-fn rename_spec<R: Resource>(field: &str, id: &Id) -> Option<ActionSpec> {
+fn rename_spec(vocabulary: &'static Vocabulary, field: &str, id: &Id) -> Option<ActionSpec> {
     use crate::path::{EditOp, Segment};
     use crate::shape::Shape;
-    if !R::EDITS {
+    if !vocabulary.edits {
         return None;
     }
-    let collection = R::shape()?
+    let collection = (vocabulary.shape)()?
         .fields()
         .iter()
         .find(|candidate| candidate.name == field)?;
@@ -386,29 +404,28 @@ fn rename_spec<R: Resource>(field: &str, id: &Id) -> Option<ActionSpec> {
         Segment::Field(label.key.to_owned()),
     ];
     let param = label.name;
-    let decl = ActionDecl::<R>::new(
+    let build: crate::vocabulary::Builds = Arc::new(move |args, now_ms| {
+        let Some(tilo_actions::ArgValue::Text(name)) = args.get(param) else {
+            return Err(format!("missing `{param}`"));
+        };
+        let edit = crate::Edit::<()>::new(
+            path.clone(),
+            EditOp::Set {
+                value: serde_json::Value::String(name.clone()),
+            },
+        );
+        crate::resource::stamped_edit(vocabulary, edit, now_ms)
+    });
+    let decl = Declaration::new(
+        vocabulary,
         RENAME,
-        "Rename",
+        "Rename".to_owned(),
         vec![ActionParam::required_owned(
             param,
             tilo_actions::ParamType::Text,
             label.title,
         )],
-        move |args, now_ms| {
-            let Some(tilo_actions::ArgValue::Text(name)) = args.get(param) else {
-                return Err(format!("missing `{param}`"));
-            };
-            let edit = crate::Edit::<R>::new(
-                path.clone(),
-                EditOp::Set {
-                    value: serde_json::Value::String(name.clone()),
-                },
-            );
-            let mut action =
-                R::edit_action(edit).ok_or_else(|| format!("{} has no field edits", R::LABEL))?;
-            R::stamp(&mut action, now_ms);
-            Ok(action)
-        },
+        build,
     );
     Some(crate::resource::declaration_spec(&decl))
 }
@@ -450,20 +467,33 @@ pub fn item_child<R: Resource>(
     actions: &[ItemAction],
     label_of: impl FnOnce(&str, &Id) -> Option<String>,
 ) -> Option<tilo_actions::Resource> {
-    let (field, id) = item_of_resource::<R>(resource_id)?;
+    let vocabulary = vocabulary::<R>();
+    let (field, id) = item_of_resource_in(vocabulary.kind, resource_id)?;
     let field = *fields.iter().find(|candidate| **candidate == field)?;
-    let declarations = R::declarations();
-    let scoped = scoped::<R>(&declarations, actions, fields, field);
     let label = label_of(field, &id)?;
-    Some(item_resource(&scoped, field, &id, &label))
+    Some(scoped_item(vocabulary, fields, actions, field, &id, &label))
 }
 
-fn scoped<'d, 'a, R: Resource>(
-    declarations: &'d [ActionDecl<R>],
+/// The item resource of the item `id` of `field`, labelled `label`.
+fn scoped_item(
+    vocabulary: &'static Vocabulary,
+    fields: &[&str],
+    actions: &[ItemAction],
+    field: &str,
+    id: &Id,
+    label: &str,
+) -> tilo_actions::Resource {
+    let declarations = (vocabulary.declarations)();
+    let scoped = scoped(&declarations, actions, fields, field);
+    item_resource(vocabulary, &scoped, field, id, label)
+}
+
+fn scoped<'d, 'a>(
+    declarations: &'d [Declaration],
     actions: &'a [ItemAction],
     fields: &[&str],
     field: &str,
-) -> Vec<(&'a ItemAction, &'d ActionDecl<R>)> {
+) -> Vec<(&'a ItemAction, &'d Declaration)> {
     let mut out = Vec::new();
     for action in actions {
         if !targets(action, fields, field) {
@@ -558,15 +588,19 @@ const fn same(a: &[u8], b: &[u8]) -> bool {
 
 /// The item resources of a record: one per item of each collection, carrying
 /// the item actions that act on that collection with the item bound.
-#[inline(never)]
 pub fn item_children<R: Resource>(
     collections: &[ItemCollection],
     actions: &[ItemAction],
 ) -> Vec<tilo_actions::Resource> {
     let mut children = Vec::new();
-    for_each_item_child::<R>(collections, actions, &mut |_, _, _, build| {
-        children.push(build());
-    });
+    for_each_item_child_of(
+        vocabulary::<R>(),
+        collections,
+        actions,
+        &mut |_, _, _, build| {
+            children.push(build());
+        },
+    );
     children
 }
 
@@ -581,20 +615,29 @@ pub type ItemChildVisitor<'a> =
 /// that child exactly as [`item_children`] does. A child is a function of
 /// its collection (field and the items it sits in), its id and its label,
 /// and the locale its actions' labels are in.
-#[inline(never)]
 pub fn for_each_item_child<R: Resource>(
     collections: &[ItemCollection],
     actions: &[ItemAction],
     each: &mut ItemChildVisitor<'_>,
 ) {
-    let declarations = R::declarations();
+    for_each_item_child_of(vocabulary::<R>(), collections, actions, each);
+}
+
+/// [`for_each_item_child`] of the resource `vocabulary`.
+fn for_each_item_child_of(
+    vocabulary: &'static Vocabulary,
+    collections: &[ItemCollection],
+    actions: &[ItemAction],
+    each: &mut ItemChildVisitor<'_>,
+) {
+    let declarations = (vocabulary.declarations)();
     let fields = own_fields(collections);
     for collection in collections {
         if !collection.within.is_empty() {
             // An item of a collection inside an item: its label, its fields,
             // `open`, and the verbs declared on it (`item = slides.elements`).
             let outer = outer_fields(collection);
-            let mut verbs: Vec<(&ItemAction, &ActionDecl<R>)> = Vec::new();
+            let mut verbs: Vec<(&ItemAction, &Declaration)> = Vec::new();
             for action in actions {
                 if action.collection != Some(collection.field) || action.within != outer.as_slice()
                 {
@@ -610,8 +653,13 @@ pub fn for_each_item_child<R: Resource>(
             if collection.labelled || !verbs.is_empty() {
                 for (id, label) in &collection.items {
                     each(collection, id, label, &|| {
-                        let mut child =
-                            nested_item::<R>(&collection.within, collection.field, id, label);
+                        let mut child = nested_item(
+                            vocabulary,
+                            &collection.within,
+                            collection.field,
+                            id,
+                            label,
+                        );
                         for (action, decl) in &verbs {
                             let values = nested_values(action, &collection.within, id);
                             child = child.with_action(bound(decl, &values));
@@ -622,9 +670,9 @@ pub fn for_each_item_child<R: Resource>(
             }
             continue;
         }
-        let scoped = scoped::<R>(&declarations, actions, &fields, collection.field);
+        let scoped = scoped(&declarations, actions, &fields, collection.field);
         let offers_effects = match collection.items.first() {
-            Some((id, _)) => !R::item_effects(collection.field, id).is_empty(),
+            Some((id, _)) => !(vocabulary.item_effects)(collection.field, id).is_empty(),
             None => false,
         };
         if scoped.is_empty() && !offers_effects && !collection.labelled {
@@ -632,19 +680,19 @@ pub fn for_each_item_child<R: Resource>(
         }
         for (id, label) in &collection.items {
             each(collection, id, label, &|| {
-                item_resource(&scoped, collection.field, id, label)
+                item_resource(vocabulary, &scoped, collection.field, id, label)
             });
         }
-        forget_gone(TypeId::of::<R>(), collection);
+        forget_gone((vocabulary.type_id)(), collection);
     }
 }
 
 /// The id of the resource the item `id` of `collection` is published as.
 pub fn item_child_id<R: Resource>(collection: &ItemCollection, id: &Id) -> String {
     if collection.within.is_empty() {
-        item_resource_id::<R>(collection.field, id)
+        item_resource_id_in(R::KIND, collection.field, id)
     } else {
-        nested_resource_id::<R>(&collection.within, collection.field, id)
+        nested_resource_id_in(R::KIND, &collection.within, collection.field, id)
     }
 }
 
@@ -709,15 +757,16 @@ fn forget_gone(kind: TypeId, collection: &ItemCollection) {
 }
 
 /// The resource of an item of a nested collection.
-fn nested_item<R: Resource>(
+fn nested_item(
+    vocabulary: &'static Vocabulary,
     within: &[(&'static str, Id)],
     field: &'static str,
     id: &Id,
     label: &str,
 ) -> tilo_actions::Resource {
     let mut child = tilo_actions::Resource::new(
-        nested_resource_id::<R>(within, field, id),
-        format!("{}.{field}", R::KIND),
+        nested_resource_id_in(vocabulary.kind, within, field, id),
+        format!("{}.{field}", vocabulary.kind),
         label,
     );
     let mut path: Vec<crate::Segment> = Vec::new();
@@ -727,7 +776,7 @@ fn nested_item<R: Resource>(
     }
     path.push(crate::Segment::Field(field.to_owned()));
     path.push(crate::Segment::Item(id.clone()));
-    if let Some(spec) = crate::resource::field_edit_spec_at::<R>(path) {
+    if let Some(spec) = crate::resource::field_edit_spec_at_of(vocabulary, path) {
         child = child.with_action(spec);
     }
     child
@@ -744,7 +793,7 @@ pub fn offered_on_items<R: Resource>(
     actions: &[ItemAction],
 ) -> Option<Vec<&'static str>> {
     let mut declared: Vec<(&'static str, Vec<&str>)> = Vec::new();
-    let declarations = R::declarations();
+    let declarations = (vocabulary::<R>().declarations)();
     for decl in &declarations {
         let mut names = Vec::with_capacity(decl.params.len());
         for param in &decl.params {
@@ -793,7 +842,7 @@ fn offered_on_items_of(
 }
 
 /// The spec of `decl` with its item parameter bound to `item`.
-fn item_spec<R: Resource>(decl: &ActionDecl<R>, param: &'static str, item: &Id) -> ActionSpec {
+fn item_spec(decl: &Declaration, param: &'static str, item: &Id) -> ActionSpec {
     bound(
         decl,
         &[(
@@ -809,16 +858,16 @@ fn item_spec<R: Resource>(decl: &ActionDecl<R>, param: &'static str, item: &Id) 
 /// built, checked and undone exactly as the declaration is. Published on a
 /// child, the declaration stays on the resource for scripts that name the
 /// item, out of the palette's way.
-#[inline(never)]
-pub fn bound<R: Resource, N: AsRef<str>>(
-    decl: &ActionDecl<R>,
-    values: &[(N, serde_json::Value)],
-) -> ActionSpec {
+pub fn bound<N: AsRef<str>>(decl: &Declaration, values: &[(N, serde_json::Value)]) -> ActionSpec {
     let mut owned: Vec<(String, serde_json::Value)> = Vec::with_capacity(values.len());
     for (name, value) in values {
         owned.push((name.as_ref().to_owned(), value.clone()));
     }
-    let values = owned;
+    bound_to(decl, owned)
+}
+
+/// [`bound`] with its values owned.
+fn bound_to(decl: &Declaration, values: Vec<(String, serde_json::Value)>) -> ActionSpec {
     let params = unbound_params(&decl.params, &values);
     let all = decl.params.clone();
     let build = Arc::clone(&decl.build);
@@ -836,10 +885,11 @@ pub fn bound<R: Resource, N: AsRef<str>>(
                     arguments.insert(name.clone(), value.clone());
                 }
             }
-            let action = ActionArgs::bind_json(&all, &arguments)
-                .map_err(|error| error.to_string())
-                .and_then(|args| build(&args, crate::resource::origin_now_ms()));
-            crate::resource::encode_built::<R>(action)
+            let action = match ActionArgs::bind_json(&all, &arguments) {
+                Ok(args) => build(&args, crate::resource::origin_now_ms()),
+                Err(error) => Err(error.to_string()),
+            };
+            crate::resource::encode_built(action)
         },
     )
     .of_kind(decl.kind);
@@ -893,11 +943,8 @@ fn finish_bound(
 
 /// Whether some resource in `children`, at any depth, offers `decl` with
 /// arguments bound ([`bound`]).
-#[inline(never)]
-pub fn offered_bound<R: Resource>(
-    children: &[tilo_actions::Resource],
-    decl: &ActionDecl<R>,
-) -> bool {
+#[must_use]
+pub fn offered_bound(children: &[tilo_actions::Resource], decl: &Declaration) -> bool {
     offered_bound_as(children, decl.id, decl.params.len())
 }
 

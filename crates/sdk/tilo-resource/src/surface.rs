@@ -6,10 +6,11 @@
 
 pub use tilo_actions::surface::{FieldSurface, ParamSurface, Surface, VerbSurface};
 
-use crate::resource::{ActionDecl, Resource};
+use crate::resource::Resource;
 use crate::shape::Shape;
+use crate::vocabulary::{Declaration, vocabulary};
 
-fn verb_of<R: Resource>(decl: &ActionDecl<R>) -> VerbSurface {
+fn verb_of(decl: &Declaration) -> VerbSurface {
     VerbSurface {
         id: decl.id.to_owned(),
         label: decl.label.clone(),
@@ -74,21 +75,30 @@ fn fields_of(shape: Shape, prefix: &str, out: &mut Vec<FieldSurface>) {
 /// The surface of `R`, from its declarations and stored shape.
 #[must_use]
 pub fn surface_of<R: Resource>() -> Surface {
+    surface_in(vocabulary::<R>(), R::VERSION)
+}
+
+/// [`surface_of`] the resource `vocabulary`, stored at `version`.
+fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
     let mut fields = Vec::new();
-    if let Some(shape) = R::shape() {
+    if let Some(shape) = (vocabulary.shape)() {
         fields_of(shape, "", &mut fields);
     }
-    for (path, schema) in R::op_schemas() {
+    for (path, schema) in (vocabulary.op_schemas)() {
         if let Some(field) = fields.iter_mut().find(|field| field.path == path) {
             field.ops = Some(schema);
         }
     }
+    let mut verbs = Vec::new();
+    for decl in (vocabulary.declarations)() {
+        verbs.push(verb_of(&decl));
+    }
     Surface {
-        kind: R::KIND.to_owned(),
-        label: R::LABEL.to_owned(),
-        version: R::VERSION,
+        kind: vocabulary.kind.to_owned(),
+        label: vocabulary.label.to_owned(),
+        version,
         person: false,
-        verbs: R::declarations().iter().map(verb_of).collect(),
+        verbs,
         fields,
     }
 }

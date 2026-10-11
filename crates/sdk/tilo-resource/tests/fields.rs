@@ -605,7 +605,9 @@ fn an_optional_parameter_bound_to_nothing_is_left_out() {
         .and(board::Retitle::paths().suffix, None)
         .declaration("retitle-sprint", "Call it Sprint")
         .unwrap();
-    let action = (decl.build)(&tilo_actions::ActionArgs::default(), 0).expect("it builds");
+    let action = decl
+        .build_action(&tilo_actions::ActionArgs::default(), 0)
+        .expect("it builds");
     let mut board = Replica::<Board>::new();
     board.apply_action(&action).unwrap();
     assert_eq!(board.state().unwrap().title, "Sprint");

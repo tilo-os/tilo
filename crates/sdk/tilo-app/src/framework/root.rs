@@ -2285,7 +2285,7 @@ impl Unopened {
     ) -> Self {
         let mut resource = tilo_actions::Resource::new(R::KIND, R::KIND, R::LABEL);
         for decl in R::declarations() {
-            resource = resource.with_action(tilo_resource::declaration_spec::<R>(&decl));
+            resource = resource.with_action(tilo_resource::declaration_spec(&decl));
         }
         withhold_document_actions(&mut resource, &reason);
         Self {

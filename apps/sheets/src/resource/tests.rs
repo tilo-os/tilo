@@ -411,7 +411,9 @@ fn selection_edits_are_declarations_beside_the_published_workbook() {
         .iter()
         .find(|decl| decl.id == "format-percent")
         .expect("format the selection");
-    let built = (percent.build)(&tilo_actions::ActionArgs::default(), 0).unwrap();
+    let built = percent
+        .build_action(&tilo_actions::ActionArgs::default(), 0)
+        .unwrap();
     let mut book = sample();
     book.apply_action(&built).unwrap();
     let state = book.state().unwrap();

@@ -612,15 +612,21 @@ fn declared_operation(id: &str, params: &[ActionParam], description: &str) -> Va
 /// [`APPLY`](crate::APPLY) takes it: `{"op": {"action": id, "args": {..}},
 /// "at": ms}`, one alternative per declaration.
 pub fn record_action_schema<R: crate::Resource>() -> Value {
+    record_action_schema_of(crate::vocabulary::<R>(), R::seed().is_some())
+}
+
+/// [`record_action_schema`] of the resource `vocabulary`, which `seeds` its
+/// first content or not.
+fn record_action_schema_of(vocabulary: &crate::Vocabulary, seeds: bool) -> Value {
     let mut operations: Vec<Value> = Vec::new();
-    for decl in &R::declarations() {
+    for decl in &(vocabulary.declarations)() {
         operations.push(declared_operation(
             decl.id,
             &decl.params,
             decl.description.as_deref().unwrap_or(&decl.label),
         ));
     }
-    if R::EDITS {
+    if vocabulary.edits {
         // Described in full by the field-edit action itself.
         operations.push(describe(
             object(vec![
@@ -630,7 +636,7 @@ pub fn record_action_schema<R: crate::Resource>() -> Value {
             "A field edit, as the field-edit action takes it",
         ));
     }
-    if R::seed().is_some() {
+    if seeds {
         operations.push(describe(
             object(vec![("action", constant("seed"), true)]),
             "Write the record's first content",
