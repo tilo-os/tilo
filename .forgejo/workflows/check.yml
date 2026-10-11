@@ -856,7 +856,11 @@ jobs:
       - name: Package the selected tapps
         env:
           TILO_RELEASE_APPS: ${{ needs.select.outputs.tapp_apps }}
+          # Cargo records unit/rmeta/codegen timing without changing compile flags.
+          EXTRA_CARGO_ARGS: --timings
         run: |
+          # A failed build must not upload a previous command's timing report.
+          rm -f target/cargo-timings/cargo-timing.html
           # As Release / apps: every core, bounded by 2 GiB of memory per job.
           cpus=$(nproc)
           if read -r quota period 2>/dev/null < /sys/fs/cgroup/cpu.max && [[ $quota != max ]]; then
@@ -883,6 +887,15 @@ jobs:
         run: >-
           python3 tools/perf/tapp_size_ratchet.py measure dist/app-release
           --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Save package compiler timings
+        if: always()
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: package-compiler-timings-${{ matrix.arch }}
+          path: target/cargo-timings/cargo-timing.html
+          retention-days: 7
+          if-no-files-found: error
 
   checks:
     if: always()
