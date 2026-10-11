@@ -2797,9 +2797,7 @@ impl ShellOverlayHost {
 
     pub fn set_capture_recording_paused(&mut self, paused: bool) {
         self.capture_studio.set_recording_paused(paused);
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     pub fn set_capture_recording_state_transition_progress(&mut self, permille: u16) {
@@ -2814,9 +2812,7 @@ impl ShellOverlayHost {
 
     pub fn set_capture_recording_finished(&mut self) {
         self.capture_studio.set_recording_finished();
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     pub fn set_capture_screenshot_finished(
@@ -2844,23 +2840,17 @@ impl ShellOverlayHost {
 
     pub fn set_capture_screenshot_pin_pending(&mut self, pending: bool) {
         self.capture_studio.set_screenshot_pin_pending(pending);
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     pub fn set_capture_screenshot_pinned(&mut self) {
         self.capture_studio.set_screenshot_pinned();
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     pub fn set_capture_replay_active(&mut self, active: bool, audio: ui::widget::AudioCaptureMode) {
         self.capture_studio.set_replay_active(active, audio);
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     pub fn set_capture_replay_buffered_seconds(&mut self, seconds: u8) {
@@ -2869,16 +2859,12 @@ impl ShellOverlayHost {
 
     pub fn set_capture_replay_saved(&mut self) {
         self.capture_studio.set_replay_saved();
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     pub fn set_capture_audio_available(&mut self, system: bool, microphone: bool) {
         self.capture_studio.set_audio_available(system, microphone);
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     /// Render selected live apps in their virtual strip coordinates, without
@@ -3169,9 +3155,7 @@ impl ShellOverlayHost {
                 &crate::shell::i18n::current_locale(),
             );
         }
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     pub fn emoji_picker_open(&self) -> bool {
@@ -3444,6 +3428,13 @@ impl ShellOverlayHost {
             chrome
                 .borrow_mut()
                 .request_transition_paints(TRANSITION_PAINT_RUN);
+        }
+    }
+
+    /// Mark the shared chrome state changed so its readers repaint.
+    fn bump_chrome(&self) {
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
         }
     }
 
@@ -3952,9 +3943,7 @@ impl ShellOverlayHost {
         self.layers
             .display_confirm
             .show(transaction, tool, Instant::now());
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     /// Tell the person `tool` applied a display layout again right after
@@ -10033,9 +10022,7 @@ impl ShellOverlayHost {
         } else if index >= self.qs_clipboard_history_start.saturating_add(visible) {
             self.qs_clipboard_history_start = index.saturating_add(1).saturating_sub(visible);
         }
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     fn scroll_qs_clipboard_history(&mut self, movement: isize) -> bool {
@@ -10052,9 +10039,7 @@ impl ShellOverlayHost {
             return false;
         }
         self.qs_clipboard_history_start = next;
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
         true
     }
 
@@ -10122,9 +10107,7 @@ impl ShellOverlayHost {
                 self.qs_clipboard_history_start = 0;
                 let history = self.filtered_clipboard_history();
                 self.qs_selected_clipboard = history.first().map(|item| item.id);
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
             }
             return true;
         }
@@ -10220,9 +10203,7 @@ impl ShellOverlayHost {
             return false;
         }
         self.qs_device_fabric_start = next;
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
         true
     }
 
@@ -11084,9 +11065,7 @@ impl ShellOverlayHost {
         self.overview_window_selection = None;
         self.overview_window_interrupted = false;
         self.scroll_overview_selection_into_view();
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
         true
     }
 
@@ -12497,9 +12476,7 @@ impl ShellOverlayHost {
                 };
                 if let Some(intent) = instant {
                     self.instant_captures.push(intent);
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().bump();
-                    }
+                    self.bump_chrome();
                 } else {
                     let _ = self.open_capture_studio(ui::widget::CaptureMode::Screenshot);
                 }
@@ -12628,9 +12605,7 @@ impl ShellOverlayHost {
             } else {
                 self.capture_shortcut_chord(action, logical_key, modifiers);
             }
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().bump();
-            }
+            self.bump_chrome();
             *handled = true;
             return true;
         }
@@ -12734,9 +12709,7 @@ impl ShellOverlayHost {
                 }
                 _ => {}
             }
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().bump();
-            }
+            self.bump_chrome();
             *handled = true;
             return true;
         }
@@ -13209,9 +13182,7 @@ impl ShellOverlayHost {
                     A::DictationCancel => self.layers.dictation.request_cancel(),
                     _ => {}
                 }
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
             }
             return true;
         }
@@ -13387,9 +13358,7 @@ impl ShellOverlayHost {
         self.overview_window_interrupted = false;
         self.overview_selection = self.overview_here_index();
         self.scroll_overview_selection_into_view();
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
     }
 
     /// Navigate the overview before input reaches content. Arrows keep the
@@ -13451,9 +13420,7 @@ impl ShellOverlayHost {
             _ => self.step_overview_selection(logical_key, shift, count),
         }
         self.scroll_overview_selection_into_view();
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
+        self.bump_chrome();
         *handled = true;
         true
     }
@@ -14079,9 +14046,7 @@ impl ShellOverlayHost {
                 self.shortcut_rebind = Some(action);
                 self.shortcut_rebind_message = None;
                 self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(action));
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 *handled = true;
                 return true;
             }
@@ -14092,9 +14057,7 @@ impl ShellOverlayHost {
             {
                 self.reset_shortcut_pair(first, second);
                 self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(first));
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 *handled = true;
                 return true;
             }
@@ -14475,9 +14438,7 @@ impl ShellOverlayHost {
         if let Some(hit) = self.collaborators_overlay.key(logical_key, shift_down) {
             self.apply_collaborators_hit(hit, handled);
         } else {
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().bump();
-            }
+            self.bump_chrome();
             *handled = true;
         }
         true
@@ -14963,9 +14924,7 @@ impl ShellOverlayHost {
                 self.qs_selected_media = None;
                 self.qs_selected_gamepad = None;
                 self.qs_selected_remote_capture = None;
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 return;
             }
             DeviceFabricPaneRow::SpeakerConsent(consent) => {
@@ -15086,9 +15045,7 @@ impl ShellOverlayHost {
                 self.qs_selected_realtime = None;
                 self.qs_selected_media = None;
                 self.qs_selected_gamepad = None;
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 return;
             }
             DeviceFabricPaneRow::RemoteCaptureSession(session) => {
@@ -15148,9 +15105,7 @@ impl ShellOverlayHost {
                 self.qs_selected_gamepad = None;
                 self.qs_selected_remote_capture = None;
                 self.qs_selected_remote_audio = None;
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 return;
             }
             DeviceFabricPaneRow::BluetoothAuthorization(authorization) => {
@@ -15259,9 +15214,7 @@ impl ShellOverlayHost {
                     self.qs_selected_realtime = None;
                     self.qs_selected_remote_audio = None;
                     self.qs_selected_remote_capture = None;
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().bump();
-                    }
+                    self.bump_chrome();
                     return;
                 }
             }
@@ -15299,9 +15252,7 @@ impl ShellOverlayHost {
                 self.qs_selected_gamepad = None;
                 self.qs_selected_remote_audio = None;
                 self.qs_selected_remote_capture = None;
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 return;
             }
             DeviceFabricPaneRow::LocalOutput(output) if !output.is_default => Some((
@@ -15704,9 +15655,7 @@ impl ShellOverlayHost {
             {
                 self.qs_selected_clipboard = history.first().map(|item| item.id);
             }
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().bump();
-            }
+            self.bump_chrome();
             return;
         }
         let history = self.filtered_clipboard_history();
@@ -15747,9 +15696,7 @@ impl ShellOverlayHost {
                 }
                 return;
             }
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().bump();
-            }
+            self.bump_chrome();
             return;
         }
     }
@@ -16396,18 +16343,14 @@ impl ShellOverlayHost {
                         user,
                         current.unwrap_or(crate::shell::state::CapRole::Viewer),
                     );
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().bump();
-                    }
+                    self.bump_chrome();
                 }
             }
             WorkspaceSettingsOutcome::RemoveMember(user) => {
                 if is_owner {
                     self.workspace_settings_overlay
                         .open_remove_member_sheet(user);
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().bump();
-                    }
+                    self.bump_chrome();
                 }
             }
             WorkspaceSettingsOutcome::ManageOwnership => {
@@ -16418,9 +16361,7 @@ impl ShellOverlayHost {
             WorkspaceSettingsOutcome::Revoke(cap_id) => {
                 if is_owner {
                     self.workspace_settings_overlay.open_revoke_sheet(cap_id);
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().bump();
-                    }
+                    self.bump_chrome();
                 }
             }
             // Authority comes from the same function the `member.role.set` /
@@ -16510,9 +16451,7 @@ impl ShellOverlayHost {
             }
             WorkspaceSettingsOutcome::DismissMemberSheet => {
                 self.workspace_settings_overlay.dismiss_member_sheet();
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
             }
             WorkspaceSettingsOutcome::SelectTab(tab) => {
                 if let Some(chrome) = self.chrome.clone() {
@@ -17355,9 +17294,7 @@ impl ShellOverlayHost {
             LayerIntent::FocusWindow(address) => self.focus_switcher_window(address),
             LayerIntent::Dictation(request) => {
                 self.layers.dictation.enqueue(request);
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 true
             }
             LayerIntent::DictationSetup => {
@@ -17376,9 +17313,7 @@ impl ShellOverlayHost {
                 }
             }
             LayerIntent::Repaint => {
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
+                self.bump_chrome();
                 true
             }
         }
@@ -18488,9 +18423,7 @@ impl Widget for ShellOverlayHost {
                 },
             )
         {
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().bump();
-            }
+            self.bump_chrome();
             return;
         }
         // A display tool's change waits for Keep or Revert, possibly with a
