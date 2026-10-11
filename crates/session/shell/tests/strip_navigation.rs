@@ -1760,3 +1760,28 @@ fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
         "restore reuses the existing record rather than creating a default"
     );
 }
+
+/// With no strip above, Super+Up maximizes the focused group and Super+Down
+/// restores it; otherwise both stay strip navigation.
+#[test]
+fn super_up_on_the_top_strip_maximizes_and_super_down_restores() {
+    let (mut h, upper, lower, _resident, _groups) = two_strip_harness();
+    let maximized = |h: &mut Harness| {
+        h.host
+            .group_row_mut_for_tests(upper)
+            .expect("the upper strip is live")
+            .groups
+            .iter()
+            .any(|group| group.maximized)
+    };
+    assert_eq!(plane(&h).1, upper, "the harness starts on the top strip");
+    assert!(!maximized(&mut h));
+    h.key(Key::Named(NamedKey::ArrowUp), ModifiersState::SUPER);
+    assert!(maximized(&mut h), "Super+Up maximizes on the top strip");
+    assert_eq!(plane(&h).1, upper);
+    h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
+    assert!(!maximized(&mut h), "Super+Down restores a maximized group");
+    assert_eq!(plane(&h).1, upper, "restoring does not change strip");
+    h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
+    assert_eq!(plane(&h).1, lower, "Super+Down is strip navigation again");
+}
