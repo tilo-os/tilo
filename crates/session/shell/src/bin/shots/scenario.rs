@@ -3648,8 +3648,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
                 Action::Wait(4),
                 Action::Snapshot("04-four-windows"),
-                // Back to the first window, which pans the strip home the way
-                // focus always does — the starting position for the travel.
+                // Back to the first window, which pans it flush with the screen
+                // edge (the least pan that shows it) — the starting position
+                // for the travel.
                 Action::SelectGroup(Some(0)),
                 Action::Wait(PAN_SETTLE_FRAMES),
                 Action::Snapshot("05-strip-at-rest"),
@@ -4313,7 +4314,7 @@ mod tests {
     /// Sink that records what the strip's scroll looks like at each
     /// named snapshot, straight off the live `GroupRow` the shell pans.
     struct StripScrollSink {
-        seen: Vec<(String, f64, f64, f64)>,
+        seen: Vec<(String, f64, f64, f64, f64)>,
     }
     impl SnapshotSink for StripScrollSink {
         fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
@@ -4324,13 +4325,23 @@ mod tests {
                     .active_workspace()
                     .and_then(|ws| ws.strips.first().map(|s| s.id))
             };
-            let (scroll_x, max_scroll_x, pan_max_scroll_x) = strip_id
+            let (scroll_x, max_scroll_x, pan_max_scroll_x, leading_inset) = strip_id
                 .and_then(|sid| driver.host_mut().group_row_mut_for_tests(sid))
-                .map_or((f64::NAN, f64::NAN, f64::NAN), |row| {
-                    (row.scroll_x(), row.max_scroll_x(), row.pan_max_scroll_x())
+                .map_or((f64::NAN, f64::NAN, f64::NAN, f64::NAN), |row| {
+                    (
+                        row.scroll_x(),
+                        row.max_scroll_x(),
+                        row.pan_max_scroll_x(),
+                        row.leading_inset(),
+                    )
                 });
-            self.seen
-                .push((name.to_string(), scroll_x, max_scroll_x, pan_max_scroll_x));
+            self.seen.push((
+                name.to_string(),
+                scroll_x,
+                max_scroll_x,
+                pan_max_scroll_x,
+                leading_inset,
+            ));
         }
     }
 
@@ -4407,29 +4418,32 @@ mod tests {
             &mut sink,
         );
 
-        let at = |name: &str| -> (f64, f64, f64) {
-            let (_, sx, mx, pan_mx) = sink
+        let at = |name: &str| -> (f64, f64, f64, f64) {
+            let (_, sx, mx, pan_mx, inset) = sink
                 .seen
                 .iter()
-                .find(|(n, _, _, _)| n == name)
+                .find(|(n, ..)| n == name)
                 .unwrap_or_else(|| panic!("scenario should snapshot {name}"));
-            (*sx, *mx, *pan_mx)
+            (*sx, *mx, *pan_mx, *inset)
         };
-        let (rest_x, rest_max, rest_pan_max) = at("05-strip-at-rest");
+        let (rest_x, rest_max, rest_pan_max, rest_inset) = at("05-strip-at-rest");
         assert!(
             rest_max > 400.0,
             "four half-width windows must overflow the display by more than a third of \
              a screen, or there is nothing to pan across (max_scroll_x = {rest_max})"
         );
+        // Focusing the first window reveals it by the least pan: flush with
+        // the screen edge, the wheel-disc gutter scrolled off to its left.
         assert!(
-            rest_x < 1.0,
-            "the strip starts at its leftmost position (scroll_x = {rest_x})"
+            rest_x <= rest_inset + 1.0,
+            "the strip starts with its first window flush at the screen edge \
+             (scroll_x = {rest_x}, leading inset = {rest_inset})"
         );
         assert!(
             rest_pan_max > rest_max,
             "direct panning must expose legal trailing canvas beyond the content-tight bound"
         );
-        let (held_x, held_max, held_pan_max) = at("06-held-past-trailing-edge");
+        let (held_x, held_max, held_pan_max, _) = at("06-held-past-trailing-edge");
         assert!(
             held_x > held_pan_max,
             "the held gesture must visibly pull beyond its legal resting end \
@@ -4441,13 +4455,13 @@ mod tests {
             "rubber-band travel must stay below its 28%-viewport asymptote \
              (scroll_x = {held_x}, pan_max_scroll_x = {held_pan_max})"
         );
-        let (settled_x, _, settled_pan_max) = at("07-settled-trailing-room");
+        let (settled_x, _, settled_pan_max, _) = at("07-settled-trailing-room");
         assert!(
             (settled_x - settled_pan_max).abs() < 1.0,
             "release must settle to the legal 20%-viewport trailing rest \
              (scroll_x = {settled_x}, pan_max_scroll_x = {settled_pan_max})"
         );
-        let (back_x, _, _) = at("08-panned-back");
+        let (back_x, ..) = at("08-panned-back");
         assert!(
             back_x < 1.0,
             "the reverse direct pan returns the strip home (scroll_x = {back_x})"
