@@ -1237,16 +1237,6 @@ impl FrameBuilder {
     }
 
     fn rebuild_layout_tree(&mut self) {
-        self.taffy = TaffyTree::new();
-        self.node_map.clear();
-        // Push display geometry before the tree is built: the strips read it
-        // to resolve each group's width fraction in this same pass.
-        let outputs = self.effective_outputs();
-        self.host.set_output_geometry(&outputs);
-        let child = self
-            .host
-            .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
-        self.ime_widget_topology.clear();
         fn snapshot(
             widget: &dyn Widget,
             depth: usize,
@@ -1261,6 +1251,16 @@ impl FrameBuilder {
                 snapshot(child, depth.saturating_add(1), out);
             }
         }
+        self.taffy = TaffyTree::new();
+        self.node_map.clear();
+        // Push display geometry before the tree is built: the strips read it
+        // to resolve each group's width fraction in this same pass.
+        let outputs = self.effective_outputs();
+        self.host.set_output_geometry(&outputs);
+        let child = self
+            .host
+            .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
+        self.ime_widget_topology.clear();
         snapshot(self.host.as_ref(), 0, &mut self.ime_widget_topology);
         self.ime_widget_types = self
             .node_map
@@ -4688,7 +4688,7 @@ impl FrameBuilder {
         find(
             self.host.as_ref(),
             self.node_map.get(&focus)?.cast_const(),
-            *self.ime_widget_types.get(&focus)?,
+            self.ime_widget_types.get(&focus)?,
         )
     }
 
@@ -6578,13 +6578,16 @@ mod tests {
     fn ime_queries_reject_retired_workspace_widgets_before_relayout() {
         let mut fb = FrameBuilder::new((1600, 900));
         let _ = fb.paint_settled();
-        let original_nodes: Vec<_> = fb.node_map.keys().copied().collect();
+        // Retain the original layout identities before the host replaces its
+        // widgets; inspecting a map captured after that mutation proves less.
+        let original_nodes = fb.node_map.clone();
         let mut switched = false;
         fb.with_chrome(|chrome| switched = chrome.switch_workspace(1));
         assert!(switched, "the production desktop has another workspace");
         assert!(fb.host_mut().tick_workspace_content_for_tests());
         let retired = original_nodes
-            .into_iter()
+            .keys()
+            .copied()
             .find(|node| fb.live_ime_widget(*node).is_none())
             .expect("workspace reconciliation retired a mapped widget before layout");
         assert!(

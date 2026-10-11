@@ -5015,20 +5015,20 @@ mod tests {
             live: true,
         };
         broker.replace_published_surfaces_for_test(vec![surface.clone()]);
-        let root = ActionDirectoryRoot {
+        let directory_root = ActionDirectoryRoot {
             peer_id: surface.peer_id,
             app_id: surface.app_id.clone(),
             cluster_id: room,
-            record_id: surface.route.record_id.clone(),
+            record_id: surface.route.record_id,
         };
-        broker.replace_action_directory_roots_for_test(vec![root.clone()]);
+        broker.replace_action_directory_roots_for_test(vec![directory_root.clone()]);
         let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(broker));
         let read = exported("Open agent conversation", "open-agent");
         let mut write = exported("Message agent", "message");
         write.contract = tilo_actions::ActionContract::default();
         let row = |descriptor: tilo_actions::ActionDescriptor| CatalogueRow {
             provider: "7".into(),
-            app_id: root.app_id.clone(),
+            app_id: directory_root.app_id.clone(),
             parent_resource: String::new(),
             resource: CatalogueResource {
                 id: descriptor.address.resource.clone(),
@@ -5045,8 +5045,8 @@ mod tests {
             (7, actor.clone(), String::new(), Vec::new()),
             page(vec![row(read.clone()), row(write.clone())], Vec::new()),
         );
-        let read_id = LiveAppActionsProvider::directory_result_id(&root, "r1", &read);
-        let write_id = LiveAppActionsProvider::directory_result_id(&root, "r1", &write);
+        let read_id = LiveAppActionsProvider::directory_result_id(&directory_root, "r1", &read);
+        let write_id = LiveAppActionsProvider::directory_result_id(&directory_root, "r1", &write);
         let doc = AutoCommit::new();
         let mut registry = SearchRegistry::new();
         registry.register(provider.clone());
