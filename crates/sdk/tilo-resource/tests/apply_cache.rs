@@ -20,7 +20,7 @@ use tilo_automerge::ApplyIncoming as _;
 
 use tilo_resource::__private::{Value, forget_all};
 use tilo_resource::{
-    ActionCx, Collection, Doc, Fields, Id, Model, ModelError, Replica, Slot, resource,
+    ActionCx, Collection, Doc, Fields, Grid, Id, Model, ModelError, Replica, Slot, resource,
 };
 
 thread_local! {
@@ -478,4 +478,140 @@ fn a_record_kept_across_a_merged_slot_does_not_lose_it() {
         state.texts.get("notes").map(|text| text.0.as_str()),
         Some("later")
     );
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Table {
+    pub cells: Grid<Probe>,
+    pub title: String,
+}
+
+#[resource(kind = "test.cached-table", label = "Table")]
+impl Table {
+    /// Add a row.
+    #[action]
+    pub fn add_row(&mut self, cx: &mut ActionCx) {
+        let at = self.cells.rows().len();
+        self.cells.insert_row(at, cx.id());
+    }
+
+    /// Add a column.
+    #[action]
+    pub fn add_column(&mut self, cx: &mut ActionCx) {
+        let at = self.cells.columns().len();
+        self.cells.insert_column(at, cx.id());
+    }
+
+    /// Write a cell, or clear it with no text.
+    #[action]
+    pub fn write(&mut self, cell: (String, String), text: String) {
+        let value = (!text.is_empty()).then_some(Probe(text));
+        self.cells
+            .set_cell(&Id::from_raw(cell.0), &Id::from_raw(cell.1), value);
+    }
+
+    /// Remove a row.
+    #[action]
+    pub fn drop_row(&mut self, line: String) {
+        self.cells.remove_row(&Id::from_raw(line));
+    }
+
+    /// Rename the table.
+    #[action]
+    pub fn rename(&mut self, title: String) {
+        self.title = title;
+    }
+}
+
+fn random_table_invoke(
+    replica: &Replica<Table>,
+    rng: &mut Lcg,
+    step: usize,
+) -> tilo_resource::Invoke<Table> {
+    let state = replica.state().unwrap();
+    let rows: Vec<Id> = state.cells.rows().cloned().collect();
+    let columns: Vec<Id> = state.cells.columns().cloned().collect();
+    let cell = |rng: &mut Lcg| {
+        let row = rows.get(rng.next(rows.len()))?;
+        let column = columns.get(rng.next(columns.len()))?;
+        Some((row.as_str().to_owned(), column.as_str().to_owned()))
+    };
+    match rng.next(9) {
+        0 => Table::ADD_ROW.with(()),
+        1 => Table::ADD_COLUMN.with(()),
+        2 => match rows.get(rng.next(rows.len())) {
+            Some(row) => Table::DROP_ROW.with(row.as_str().to_owned()),
+            None => Table::ADD_ROW.with(()),
+        },
+        3 => Table::RENAME.with(format!("table {step}")),
+        4 => match cell(rng) {
+            Some(cell) => Table::WRITE.with((cell, String::new())),
+            None => Table::ADD_COLUMN.with(()),
+        },
+        _ => match cell(rng) {
+            Some(cell) => Table::WRITE.with((cell, format!("v{step}"))),
+            None => Table::ADD_ROW.with(()),
+        },
+    }
+}
+
+#[test]
+fn cached_grid_apply_is_replay_identical() {
+    let mut rng = Lcg(31);
+    let mut live = Replica::<Table>::new();
+    let mut cold = live.fork();
+    let mut remote = live.fork();
+    let mut replayed = 0;
+    for round in 0..40 {
+        let invoke = random_table_invoke(&remote, &mut rng, 1_000 + round);
+        remote.apply(invoke).unwrap();
+        if round % 2 == 0 {
+            live.doc_mut().merge_incoming(remote.doc_mut()).unwrap();
+            cold.doc_mut().merge_incoming(remote.doc_mut()).unwrap();
+        }
+        for step in 0..5 {
+            let invoke = random_table_invoke(&live, &mut rng, round * 10 + step);
+            live.live().unwrap();
+            live.apply(invoke).unwrap();
+            let envelope = live.log().last().unwrap().clone();
+            forget_all();
+            cold.replay(&envelope).unwrap();
+            replayed += 1;
+            assert_eq!(
+                live.heads(),
+                cold.heads(),
+                "round {round} step {step}: the replayed change differs"
+            );
+            assert_eq!(live.state().unwrap(), cold.state().unwrap());
+        }
+    }
+    assert!(replayed > 100, "only {replayed} actions replayed");
+}
+
+#[test]
+fn writing_one_cell_writes_only_that_cell() {
+    let mut replica = Replica::<Table>::new();
+    replica.apply(Table::ADD_COLUMN.with(())).unwrap();
+    for _ in 0..100 {
+        replica.apply(Table::ADD_ROW.with(())).unwrap();
+    }
+    let state = replica.state().unwrap();
+    let rows: Vec<String> = state
+        .cells
+        .rows()
+        .map(|row| row.as_str().to_owned())
+        .collect();
+    let column = state.cells.columns().next().unwrap().as_str().to_owned();
+    for (n, row) in rows.iter().enumerate() {
+        replica
+            .apply(Table::WRITE.with(((row.clone(), column.clone()), format!("cell {n}"))))
+            .unwrap();
+    }
+    replica.live().unwrap();
+    let (_, (_, stores)) = counted(|| {
+        replica
+            .apply(Table::WRITE.with(((rows[50].clone(), column.clone()), "changed".into())))
+            .unwrap()
+    });
+    assert_eq!(stores, 1, "one cell written");
 }

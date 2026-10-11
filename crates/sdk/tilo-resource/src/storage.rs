@@ -870,6 +870,24 @@ impl<T> Grid<T> {
 }
 
 impl<T: Model> Grid<T> {
+    /// Write the cells into the grid's `cells` map as [`Model::store`]
+    /// does: stale cells deleted in key order, then every cell.
+    fn store_cells(&self, doc: &mut Doc, cells: &ObjId) -> Result<(), ModelError> {
+        let held: std::collections::BTreeSet<String> = self
+            .cells()
+            .map(|(row, column, _)| cell_key(row.as_str(), column.as_str()))
+            .collect();
+        let stale: Vec<String> = doc.keys(cells).filter(|key| !held.contains(key)).collect();
+        for key in stale {
+            doc.delete(cells, key.as_str())?;
+        }
+        for (row, column, value) in self.cells() {
+            let key = cell_key(row.as_str(), column.as_str());
+            value.store(doc, Slot::Key(cells, &key)).located(&key)?;
+        }
+        Ok(())
+    }
+
     /// Bring the cells read earlier up to date after `delta`, reading only
     /// the cells it touched.
     fn refresh_cells(&mut self, doc: &Doc, grid: &ObjId, delta: &Delta) -> Result<(), ModelError> {
@@ -1084,25 +1102,79 @@ impl<T: Model> Model for Grid<T> {
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::new())
     }
+    /// The same rows, columns and cells, each storing as before.
+    #[inline(never)]
+    fn stores_as(&self, before: &Self) -> bool {
+        self.rows.stores_as(&before.rows)
+            && self.columns.stores_as(&before.columns)
+            && self.cells.len() == before.cells.len()
+            && self.cells.iter().all(|(row, cells)| {
+                before.cells.get(row).is_some_and(|was| {
+                    cells.len() == was.len()
+                        && cells.iter().all(|(column, value)| {
+                            was.get(column).is_some_and(|was| value.stores_as(was))
+                        })
+                })
+            })
+    }
+    /// What [`store`](Model::store) writes, from `before` instead of the
+    /// document: rows and columns as their collections write them, then the
+    /// stale cells deleted in key order and only the cells that differ from
+    /// `before`, or that someone else touched (`dirty`), written.
+    #[inline(never)]
+    fn store_changed(
+        &self,
+        before: &Self,
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        let map = grid_map(doc, slot)?;
+        crate::model::write_key_changed(doc, &map, ROWS, &self.rows, &before.rows, dirty)?;
+        crate::model::write_key_changed(doc, &map, COLUMNS, &self.columns, &before.columns, dirty)?;
+        let replaced = dirty.key(&map, CELLS) == crate::delta::Touch::Written;
+        let cells = Slot::Key(&map, CELLS).object(doc, ObjType::Map)?;
+        let touched = dirty.under(&cells);
+        if replaced || touched.is_all() {
+            return self.store_cells(doc, &cells);
+        }
+        // What the map may hold that this grid does not: the cells it held
+        // before and any key someone else wrote, in the map's key order.
+        let mut candidates: std::collections::BTreeSet<String> = before
+            .cells()
+            .map(|(row, column, _)| cell_key(row.as_str(), column.as_str()))
+            .collect();
+        candidates.extend(touched.keys().map(str::to_owned));
+        for key in candidates {
+            let held = key.split_once('/').is_some_and(|(row, column)| {
+                self.cells
+                    .get(row)
+                    .is_some_and(|cells| cells.contains_key(column))
+            });
+            if !held && doc.get(&cells, key.as_str())?.is_some() {
+                doc.delete(&cells, key.as_str())?;
+            }
+        }
+        for (row, column, value) in self.cells() {
+            let key = cell_key(row.as_str(), column.as_str());
+            let slot = Slot::Key(&cells, &key);
+            match (touched.key(&key), before.cell(&row, &column)) {
+                (crate::delta::Touch::Untouched, Some(was)) if value.stores_as(was) => {}
+                (crate::delta::Touch::Untouched | crate::delta::Touch::Below, Some(was)) => {
+                    value.store_changed(was, doc, slot, dirty).located(&key)?;
+                }
+                _ => value.store(doc, slot).located(&key)?,
+            }
+        }
+        Ok(())
+    }
     #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let map = grid_map(doc, slot)?;
         write_key(doc, &map, ROWS, &self.rows)?;
         write_key(doc, &map, COLUMNS, &self.columns)?;
         let cells = Slot::Key(&map, CELLS).object(doc, ObjType::Map)?;
-        let held: std::collections::BTreeSet<String> = self
-            .cells()
-            .map(|(row, column, _)| cell_key(row.as_str(), column.as_str()))
-            .collect();
-        let stale: Vec<String> = doc.keys(&cells).filter(|key| !held.contains(key)).collect();
-        for key in stale {
-            doc.delete(&cells, key.as_str())?;
-        }
-        for (row, column, value) in self.cells() {
-            let key = cell_key(row.as_str(), column.as_str());
-            value.store(doc, Slot::Key(&cells, &key)).located(&key)?;
-        }
-        Ok(())
+        self.store_cells(doc, &cells)
     }
     #[inline(never)]
     fn refresh(
