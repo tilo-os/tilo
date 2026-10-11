@@ -329,6 +329,7 @@ pub struct LiveAppActionsProvider {
     /// The long-lived index worker, started by the first rebuild.
     index_worker: RefCell<Option<mpsc::Sender<IndexJob>>>,
     auxiliary_snapshot: RefCell<Option<AuxiliarySnapshot>>,
+    directory_hierarchy_snapshot: RefCell<Option<DirectoryHierarchySnapshot>>,
     projection: Cell<QueryProjection>,
     #[cfg(test)]
     build_probe: Arc<BuildProbe>,
@@ -395,6 +396,7 @@ enum AuxiliaryEntry {
         root: ActionDirectoryRoot,
         revision: String,
         descriptor: tilo_actions::ActionDescriptor,
+        semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
         actor: String,
         cursor: Vec<u8>,
     },
@@ -418,6 +420,23 @@ struct AuxiliarySnapshot {
     entries: Vec<AuxiliaryEntry>,
     pending_directory: Vec<DirectoryContinuation>,
     next_resume: Option<AuxiliaryResume>,
+}
+
+#[derive(Clone, PartialEq)]
+struct DirectoryHierarchyWitness {
+    root: ActionDirectoryRoot,
+    page_revision: String,
+    directory_epoch: u64,
+    descriptor: tilo_actions::ActionDescriptor,
+    semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
+}
+
+struct DirectoryHierarchySnapshot {
+    revision: String,
+    query: String,
+    scope: String,
+    entries: HashMap<String, DirectoryHierarchyWitness>,
+    poisoned: HashSet<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -594,6 +613,64 @@ impl LiveAppActionsProvider {
         .then_some(identity)
     }
 
+    fn begin_directory_hierarchy_snapshot(
+        &self,
+        revision: &str,
+        query: &str,
+        scope: &str,
+        fresh: bool,
+    ) {
+        let mut snapshot = self.directory_hierarchy_snapshot.borrow_mut();
+        if !fresh
+            && snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.revision == revision && snapshot.query == query && snapshot.scope == scope
+            })
+        {
+            return;
+        }
+        *snapshot = Some(DirectoryHierarchySnapshot {
+            revision: revision.to_owned(),
+            query: query.to_owned(),
+            scope: scope.to_owned(),
+            entries: HashMap::new(),
+            poisoned: HashSet::new(),
+        });
+    }
+
+    fn retain_directory_hierarchy(
+        &self,
+        id: &str,
+        root: &ActionDirectoryRoot,
+        page_revision: &str,
+        descriptor: &tilo_actions::ActionDescriptor,
+        semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
+    ) {
+        let mut hierarchy_snapshot = self.directory_hierarchy_snapshot.borrow_mut();
+        let Some(snapshot) = hierarchy_snapshot.as_mut() else {
+            return;
+        };
+        if snapshot.poisoned.contains(id) {
+            return;
+        }
+        let witness = DirectoryHierarchyWitness {
+            root: root.clone(),
+            page_revision: page_revision.to_owned(),
+            directory_epoch: self.directory_epoch.load(Ordering::Relaxed),
+            descriptor: descriptor.clone(),
+            semantic_identity,
+        };
+        if snapshot
+            .entries
+            .get(id)
+            .is_some_and(|retained| retained != &witness)
+        {
+            snapshot.entries.remove(id);
+            snapshot.poisoned.insert(id.to_owned());
+        } else {
+            snapshot.entries.insert(id.to_owned(), witness);
+        }
+    }
+
     fn wants_resource_rows(wanted: &[ResourceKind]) -> bool {
         wanted.is_empty()
             || wanted
@@ -625,6 +702,7 @@ impl LiveAppActionsProvider {
             surface_build: RefCell::new(None),
             index_worker: RefCell::new(None),
             auxiliary_snapshot: RefCell::new(None),
+            directory_hierarchy_snapshot: RefCell::new(None),
             projection: Cell::new(QueryProjection::All),
             #[cfg(test)]
             build_probe: Arc::new(BuildProbe::default()),
@@ -1576,10 +1654,17 @@ impl LiveAppActionsProvider {
                     }
                     consumed = consumed.saturating_add(1);
                     if let Some(descriptor) = row.action.clone() {
+                        let semantic_identity = self.directory_semantic_identity(
+                            root.peer_id,
+                            &page.revision,
+                            &descriptor.address.resource,
+                            &descriptor.address.action,
+                        );
                         entries.push(AuxiliaryEntry::Directory {
                             root: root.clone(),
                             revision: page.revision.clone(),
                             descriptor,
+                            semantic_identity,
                             actor: root_actor.clone(),
                             cursor: remote_cursor.clone(),
                         });
@@ -2443,9 +2528,50 @@ impl LiveAppActionsProvider {
         };
         row.provider.parse::<u64>().ok() == Some(peer)
             && row.app_id == app
-            && descriptor.contract.permission == permission
+            && Self::directory_descriptor_matches(descriptor, permission, resource, action)
+    }
+
+    fn directory_descriptor_matches(
+        descriptor: &tilo_actions::ActionDescriptor,
+        permission: tilo_actions::PermissionRequirement,
+        resource: &str,
+        action: &str,
+    ) -> bool {
+        descriptor.contract.permission == permission
             && descriptor.address.resource == resource
             && descriptor.address.action == action
+    }
+
+    fn retained_directory_descriptor(
+        &self,
+        peer: u64,
+        revision: &str,
+        app: &str,
+        permission: tilo_actions::PermissionRequirement,
+        resource: &str,
+        operation: &str,
+    ) -> Result<Option<tilo_actions::ActionDescriptor>, ()> {
+        let pages = self.directory_pages.borrow();
+        let descriptors = pages
+            .iter()
+            .filter(|((cached_peer, _, _, _), page)| {
+                *cached_peer == peer && page.revision == revision
+            })
+            .flat_map(|(_, page)| &page.rows)
+            .filter(|row| {
+                Self::directory_row_matches(row, peer, app, permission, resource, operation)
+            })
+            .filter_map(|row| row.action.clone())
+            .collect::<Vec<_>>();
+        let Some(first) = descriptors.first() else {
+            return Ok(None);
+        };
+        descriptors
+            .iter()
+            .all(|descriptor| descriptor == first)
+            .then_some(first.clone())
+            .ok_or(())
+            .map(Some)
     }
 
     fn action_params(action: &PublishedAction) -> Vec<ActionParam> {
@@ -2872,29 +2998,50 @@ impl SearchProvider for LiveAppActionsProvider {
             if root.app_id != app {
                 return None;
             }
-            self.directory_pages
+            let Ok(retained_descriptor) = self.retained_directory_descriptor(
+                peer, revision, app, permission, resource, operation,
+            ) else {
+                return None;
+            };
+            let retained_semantic_identity = retained_descriptor.as_ref().and_then(|_| {
+                self.directory_semantic_identity(peer, revision, resource, operation)
+            });
+            if self
+                .directory_hierarchy_snapshot
                 .borrow()
-                .iter()
-                .find_map(|((cached_peer, _, _, _), page)| {
-                    if *cached_peer != peer || page.revision != revision {
-                        return None;
-                    }
-                    page.rows.iter().find_map(|row| {
-                        Self::directory_row_matches(
-                            row, peer, app, permission, resource, operation,
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.poisoned.contains(id))
+            {
+                return None;
+            }
+            let witnessed = self
+                .directory_hierarchy_snapshot
+                .borrow_mut()
+                .as_mut()
+                .and_then(|snapshot| snapshot.entries.remove(id))
+                .filter(|witness| {
+                    witness.root == root
+                        && witness.page_revision == revision
+                        && witness.directory_epoch == self.directory_epoch.load(Ordering::Relaxed)
+                        && witness.root.app_id == app
+                        && Self::directory_descriptor_matches(
+                            &witness.descriptor,
+                            permission,
+                            resource,
+                            operation,
                         )
-                        .then_some(())?;
-                        row.action.clone()
-                    })
-                })?;
+                });
+            if retained_descriptor.is_none() && witnessed.is_none() {
+                return None;
+            }
             return Some(ActionHierarchy {
                 application: root.app_id,
                 room: root.cluster_id,
                 record: root.record_id,
                 resource: resource.into(),
                 operation: operation.into(),
-                semantic_identity: self
-                    .directory_semantic_identity(peer, revision, resource, operation),
+                semantic_identity: retained_semantic_identity
+                    .or_else(|| witnessed.and_then(|witness| witness.semantic_identity)),
             });
         }
         let (application, room, record, resource, operation) = Self::hierarchy(id)?;
@@ -3457,6 +3604,7 @@ impl SearchProvider for LiveAppActionsProvider {
         self.poll_directory_pages();
         let revision = self.search_revision(&ctx);
         let scope = Self::surface_scope(&ctx);
+        self.begin_directory_hierarchy_snapshot(&revision, &needle, &scope, cursor.is_none());
         let (stage, after, resume) = match cursor {
             Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
             Some(cursor) => {
@@ -3562,9 +3710,18 @@ impl SearchProvider for LiveAppActionsProvider {
                         root,
                         revision,
                         descriptor,
+                        semantic_identity,
                         actor,
                         cursor,
                     } => {
+                        let id = Self::directory_result_id(root, revision, descriptor);
+                        self.retain_directory_hierarchy(
+                            &id,
+                            root,
+                            revision,
+                            descriptor,
+                            semantic_identity.clone(),
+                        );
                         if (descriptor.contract.is_programmatic() && !ctx.include_programmatic)
                             || (!ctx.wanted.is_empty()
                                 && !ctx.wanted.contains(&ResourceKind::Action))
@@ -3573,9 +3730,11 @@ impl SearchProvider for LiveAppActionsProvider {
                             work = work.saturating_add(1);
                             continue;
                         }
-                        self.directory_action_result(
+                        let result = self.directory_action_result(
                             root, revision, descriptor, &needle, actor, cursor,
-                        )
+                        );
+                        debug_assert_eq!(result.id, id);
+                        result
                     }
                     AuxiliaryEntry::Service {
                         room,
@@ -4077,11 +4236,8 @@ mod tests {
             page(vec![conflicting], Vec::new()),
         );
         assert!(
-            provider
-                .action_hierarchy(&id)
-                .unwrap()
-                .semantic_identity
-                .is_none()
+            provider.action_hierarchy(&id).is_none(),
+            "conflicting authenticated descriptors make the opaque address ambiguous"
         );
         provider.directory_pages.borrow_mut().clear();
         assert!(
@@ -4900,6 +5056,119 @@ mod tests {
         }
     }
 
+    struct TurnoverVisibility<'a> {
+        current: crate::shell::search::visibility::CapabilityVisibility<'a>,
+        retire_page: RefCell<Option<Box<dyn FnOnce() + 'a>>>,
+    }
+
+    impl crate::shell::search::action_api::ActionVisibility for TurnoverVisibility<'_> {
+        fn can_see(
+            &self,
+            resource: &crate::shell::search::action_api::ResourceRef,
+            kind: &ResourceKind,
+        ) -> bool {
+            if resource.id.starts_with("directory\u{1f}")
+                && let Some(retire_page) = self.retire_page.borrow_mut().take()
+            {
+                retire_page();
+            }
+            crate::shell::search::action_api::ActionVisibility::can_see(
+                &self.current,
+                resource,
+                kind,
+            )
+        }
+    }
+
+    fn directory_test_row(
+        root: &ActionDirectoryRoot,
+        descriptor: tilo_actions::ActionDescriptor,
+    ) -> CatalogueRow {
+        CatalogueRow {
+            provider: root.peer_id.to_string(),
+            app_id: root.app_id.clone(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: descriptor.address.resource.clone(),
+                kind: descriptor.resource_kind.clone(),
+                label: descriptor.resource_label.clone(),
+                presentation: None,
+            },
+            action: Some(descriptor),
+            has_children: false,
+            fresh_binding: None,
+            visibility: None,
+        }
+    }
+
+    fn fill_directory_page_cache(
+        provider: &LiveAppActionsProvider,
+        actor: &str,
+    ) -> DirectoryCacheKey {
+        let mut pages = provider.directory_pages.borrow_mut();
+        for peer in 1..=super::MAX_RETAINED_DIRECTORY_PAGES {
+            pages.insert(
+                (
+                    u64::try_from(peer).unwrap(),
+                    actor.to_owned(),
+                    String::new(),
+                    Vec::new(),
+                ),
+                page(Vec::new(), Vec::new()),
+            );
+        }
+        pages.keys().next().cloned().expect("a retained page")
+    }
+
+    fn assert_fresh_query_retires_witness(
+        provider: &LiveAppActionsProvider,
+        chrome: &crate::shell::chrome_state::ChromeState,
+        doc: &AutoCommit,
+        id: &str,
+    ) {
+        assert!(
+            provider
+                .directory_hierarchy_snapshot
+                .borrow()
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.entries.contains_key(id)),
+            "the denied sibling was emitted but never materialized"
+        );
+        provider
+            .directory_hierarchy_snapshot
+            .borrow_mut()
+            .as_mut()
+            .expect("current hierarchy snapshot")
+            .poisoned
+            .insert("stale-denied-id".into());
+        let _ = provider.query_page(context("", chrome, doc), None, SearchBudget::PALETTE);
+        assert!(
+            provider
+                .directory_hierarchy_snapshot
+                .borrow()
+                .as_ref()
+                .is_some_and(|snapshot| !snapshot.poisoned.contains("stale-denied-id")),
+            "a fresh same-revision query cannot retain prior witness state"
+        );
+    }
+
+    fn assert_single_directory_identity(
+        rows: &[crate::shell::search::action_api::ExportedAction],
+        root: &ActionDirectoryRoot,
+        descriptor: &tilo_actions::ActionDescriptor,
+        identity: &tilo_actions::ResourceSemanticIdentity,
+    ) {
+        assert_eq!(
+            rows.len(),
+            1,
+            "the current Read survives while Write is denied"
+        );
+        let hierarchy = rows[0].hierarchy.as_ref().expect("authenticated hierarchy");
+        assert_eq!(hierarchy.operation, descriptor.address.action);
+        assert_eq!(hierarchy.application, root.app_id);
+        assert_eq!(hierarchy.semantic_identity.as_ref(), Some(identity));
+    }
+
     #[test]
     fn cached_directory_action_replaces_only_its_exact_local_alias() {
         let chrome = chrome();
@@ -5083,9 +5352,147 @@ mod tests {
             assert!(provider.action_hierarchy(&forged).is_none());
             assert!(!build(&forged).contains(&ResourceRef::new(PROVIDER_ID, forged)));
         }
+        provider.begin_directory_hierarchy_snapshot("query-r1", "", "scope", true);
+        provider.retain_directory_hierarchy(&read_id, &directory_root, "r1", &read, None);
+        let mut conflicting = read;
+        conflicting.description = Some("different authenticated contract".into());
+        provider.retain_directory_hierarchy(&read_id, &directory_root, "r1", &conflicting, None);
+        assert!(provider.action_hierarchy(&read_id).is_none());
         provider.directory_pages.borrow_mut().clear();
         assert!(provider.action_hierarchy(&read_id).is_none());
         assert!(!build(&read_id).contains(&ResourceRef::new(PROVIDER_ID, read_id)));
+    }
+
+    #[test]
+    fn exhaustive_catalogue_keeps_authenticated_hierarchy_after_bounded_page_turnover() {
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::ActionCatalog;
+        use crate::shell::search::visibility::CapabilityVisibility;
+        use crate::shell::state::WorkspaceAuthority as _;
+        use collab_types::{CapOverride, Subject, Verb};
+
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(
+            broker.clone(),
+        ));
+        let state = chrome.borrow();
+        let workspace = &state.tree().desktop.workspaces[0];
+        let actor = state.local_user_for_room(&workspace.room);
+        let target_key = fill_directory_page_cache(&provider, &actor);
+        let root = ActionDirectoryRoot {
+            peer_id: target_key.0,
+            app_id: "so.tilo.chat".into(),
+            cluster_id: workspace.room.to_string(),
+            record_id: "chat".into(),
+        };
+        let mut read = exported("Open agent conversation", "open-agent-conversation");
+        read.resource_kind = "chat.agent".into();
+        let identity =
+            tilo_actions::ResourceSemanticIdentity::new("chat.agent", "chat.person:tide")
+                .expect("valid fixture identity");
+        read.semantic_identity = Some(identity.clone());
+        let mut write = exported("Message agent", "message");
+        write.contract = tilo_actions::ActionContract::default();
+        let write_id = LiveAppActionsProvider::directory_result_id(&root, "r1", &write);
+        provider.directory_pages.borrow_mut().insert(
+            target_key.clone(),
+            page(
+                vec![
+                    directory_test_row(&root, read.clone()),
+                    directory_test_row(&root, write),
+                ],
+                Vec::new(),
+            ),
+        );
+        broker.replace_action_directory_roots_for_test(vec![root.clone()]);
+
+        let (sender, receiver) = pending();
+        provider.directory_pending.borrow_mut().insert(
+            (u64::MAX, actor.clone(), String::new(), vec![1]),
+            PendingDirectoryPage {
+                receiver,
+                deadline: super::deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                initial_page: false,
+            },
+        );
+        let retiring_provider = Rc::clone(&provider);
+        let retire_page = move || {
+            sender.complete(Ok(page(Vec::new(), Vec::new())));
+            retiring_provider.poll_directory_pages_at(Instant::now());
+        };
+        let mut restricted = workspace.clone();
+        restricted.set_owner("another-owner");
+        restricted.grant_capability(CapOverride::membership(
+            Subject::person(actor.clone()),
+            restricted.room.to_string(),
+            Verb::Read,
+        ));
+        let visibility = TurnoverVisibility {
+            current: CapabilityVisibility::new(&restricted, restricted.actor_for_person(&actor)),
+            retire_page: RefCell::new(Some(Box::new(retire_page))),
+        };
+        let mut registry = SearchRegistry::new();
+        registry.register(provider.clone());
+        let doc = AutoCommit::new();
+        let args = crate::shell::search::QueryArgs {
+            needle: "",
+            scope: crate::shell::chrome_state::SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let catalogue = ActionCatalog::build_query(&registry, &args, &visibility, false);
+        assert!(!provider.directory_pages.borrow().contains_key(&target_key));
+        let rows = catalogue.enumerate();
+        assert_single_directory_identity(&rows, &root, &read, &identity);
+        assert_fresh_query_retires_witness(&provider, &state, &doc, &write_id);
+    }
+
+    #[test]
+    fn filtered_conflicting_directory_descriptor_poisons_the_emitted_address() {
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let state = chrome.borrow();
+        let workspace = &state.tree().desktop.workspaces[0];
+        let actor = state.local_user_for_room(&workspace.room);
+        let root = ActionDirectoryRoot {
+            peer_id: 7,
+            app_id: "so.tilo.chat".into(),
+            cluster_id: workspace.room.to_string(),
+            record_id: "chat".into(),
+        };
+        broker.replace_action_directory_roots_for_test(vec![root.clone()]);
+        let visible = exported("Open agent conversation", "open-agent-conversation");
+        let mut filtered = visible.clone();
+        filtered
+            .contract
+            .tags
+            .push(tilo_actions::PROGRAMMATIC_TAG.into());
+        provider.directory_pages.borrow_mut().insert(
+            (root.peer_id, actor, String::new(), Vec::new()),
+            page(
+                vec![
+                    directory_test_row(&root, visible),
+                    directory_test_row(&root, filtered),
+                ],
+                Vec::new(),
+            ),
+        );
+        let doc = AutoCommit::new();
+        let page = provider.query_page(context("", &state, &doc), None, SearchBudget::PALETTE);
+        assert_eq!(
+            page.results.len(),
+            1,
+            "the programmatic duplicate stays hidden"
+        );
+        assert!(
+            provider.action_hierarchy(&page.results[0].id).is_none(),
+            "a filtered conflicting descriptor cannot lend identity to the visible row"
+        );
     }
 
     #[test]
@@ -5486,6 +5893,7 @@ mod tests {
                         root: root.clone(),
                         revision: "r1".into(),
                         descriptor: exported(&format!("Open {suffix}"), suffix),
+                        semantic_identity: None,
                         actor: "fixture".into(),
                         cursor: Vec::new(),
                     })
