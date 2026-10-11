@@ -2244,12 +2244,18 @@ impl Widget for CommandPalette {
                 KeyEvent {
                     logical_key,
                     state: element_state,
+                    repeat,
                     ..
                 },
             ..
         } = event
         {
             if *element_state != ElementState::Pressed {
+                return;
+            }
+            // Submission needs a fresh press, including after loading or opening a prompt.
+            if *repeat && matches!(logical_key, Key::Named(NamedKey::Enter)) {
+                *ctx.handled = true;
                 return;
             }
             let mods = ctx.modifiers.state();
@@ -3835,5 +3841,85 @@ mod selected_status_tests {
         assert!(row.description.as_deref().unwrap().contains("Couldn't run"));
         palette.set_entries(vec![CommandEntry::new("two", "Fixture two")]);
         assert!(palette.visible_entries().first().unwrap().badge.is_none());
+    }
+}
+
+#[cfg(test)]
+mod state_submit_tests {
+    use super::*;
+    use crate::testing::dispatch;
+
+    fn key(key: NamedKey, repeat: bool) -> WindowEvent {
+        let mut event =
+            crate::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
+        event.repeat = repeat;
+        crate::synthetic_input::keyboard_input(event)
+    }
+
+    #[test]
+    fn loaded_results_require_a_fresh_enter_and_remain_navigable() {
+        let mut palette = CommandPalette::new();
+        palette.open();
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, false)));
+        assert!(palette.take_outcome().is_none());
+        palette.set_entries(vec![
+            CommandEntry::new("first", "First"),
+            CommandEntry::new("second", "Second"),
+        ]);
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, true)));
+        assert!(
+            palette.take_outcome().is_none(),
+            "loading must not turn held Enter into activation"
+        );
+        assert!(dispatch(&mut palette, &key(NamedKey::ArrowDown, true)));
+        assert_eq!(palette.selected_id(), Some("second"));
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, false)));
+        assert_eq!(
+            palette.take_outcome().expect("fresh Enter activates").id,
+            "second"
+        );
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, true)));
+        assert!(
+            palette.take_outcome().is_none(),
+            "one press must not invoke repeatedly"
+        );
+        palette.close();
+        palette.open();
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, true)));
+        assert!(
+            palette.take_outcome().is_none(),
+            "reopening must not accept an orphan repeat"
+        );
+    }
+
+    #[test]
+    fn opening_an_argument_requires_a_separate_confirmation() {
+        let mut palette = CommandPalette::commands();
+        palette.push(
+            CommandEntry::new("goto", "Go to cell")
+                .with_argument("Go to cell", "Cell")
+                .with_argument_prefill("A1"),
+        );
+        palette.open();
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, false)));
+        assert!(palette.arg_state.is_some());
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, true)));
+        assert!(palette.is_open(), "held Enter must leave the prompt open");
+        assert!(
+            palette.take_outcome().is_none(),
+            "prefill needs fresh confirmation"
+        );
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, false)));
+        let outcome = palette
+            .take_outcome()
+            .expect("fresh Enter submits the prompt");
+        assert_eq!(outcome.id, "goto");
+        assert_eq!(outcome.argument.as_deref(), Some("A1"));
+        assert!(!palette.is_open());
+        palette.open();
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, false)));
+        assert!(dispatch(&mut palette, &key(NamedKey::Escape, false)));
+        assert!(palette.arg_state.is_none(), "Escape cancels the argument");
+        assert!(palette.take_outcome().is_none());
     }
 }
