@@ -385,6 +385,20 @@ fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Apply `change` to the status, bump its generation and wake the watchers
+/// once the lock is released.
+fn change_status(shared: &Mutex<Shared>, change: impl FnOnce(&mut PeerStatus)) {
+    let wakes = {
+        let mut shared = lock(shared);
+        change(&mut shared.status);
+        shared.status.generation = shared.status.generation.wrapping_add(1);
+        shared.wakes.clone()
+    };
+    for wake in &wakes {
+        wake();
+    }
+}
+
 /// Add `failure`, replacing the one it supersedes: a session failure
 /// replaces one with its code, any other one its subject's.
 fn upsert(status: &mut PeerStatus, failure: Failure) {
@@ -839,15 +853,7 @@ impl PeerHandle {
     }
 
     fn change(&self, change: impl FnOnce(&mut PeerStatus)) {
-        let wakes = {
-            let mut shared = lock(&self.shared);
-            change(&mut shared.status);
-            shared.status.generation = shared.status.generation.wrapping_add(1);
-            shared.wakes.clone()
-        };
-        for wake in &wakes {
-            wake();
-        }
+        change_status(&self.shared, change);
     }
 
     /// Record the page store's durability of `route`. A failed write is the
@@ -1156,15 +1162,7 @@ impl Task {
     }
 
     fn update(&self, change: impl FnOnce(&mut PeerStatus)) {
-        let wakes = {
-            let mut shared = lock(&self.shared);
-            change(&mut shared.status);
-            shared.status.generation = shared.status.generation.wrapping_add(1);
-            shared.wakes.clone()
-        };
-        for wake in &wakes {
-            wake();
-        }
+        change_status(&self.shared, change);
     }
 
     fn emit(&self, event: &PeerEvent) {

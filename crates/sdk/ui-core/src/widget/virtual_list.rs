@@ -922,19 +922,6 @@ impl<M: ListModel> VirtualList<M> {
             });
     }
 
-    fn reconcile_after_reorder(&mut self, anchor: Option<&SparseAnchor<M::Key>>) {
-        self.viewport
-            .reconcile(self.model.len(), |key| self.model.index_of(key), anchor);
-        self.selection
-            .reconcile(|key| self.model.index_of(key).is_some());
-        self.focused_key = self
-            .focused_key
-            .take()
-            .filter(|key| self.model.index_of(key).is_some());
-        self.request_dirty = true;
-        self.visible_window_changed();
-    }
-
     fn commit_reorder(&mut self, dropped: ReorderDrop<M::Key>) -> bool {
         let anchor = self.capture_anchor();
         let changed = self
@@ -942,7 +929,7 @@ impl<M: ListModel> VirtualList<M> {
             .as_mut()
             .is_some_and(|commit| commit(&mut self.model, dropped));
         if changed {
-            self.reconcile_after_reorder(anchor.as_ref());
+            self.reconcile_model(anchor.as_ref());
         }
         changed
     }

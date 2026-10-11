@@ -379,7 +379,7 @@ impl ChatApp {
         }
         // Keep every shared input's hover/drag state current so clicks place
         // carets and press-drags extend selections on inline editors too.
-        self.forward_move_to_text_inputs(event, scale, modifiers, doc);
+        self.forward_pointer_to_text_inputs(event, scale, modifiers, doc);
     }
 
     /// A left-button press: begins a call-overlay drag, arms a channel-row
@@ -459,7 +459,7 @@ impl ChatApp {
     ) {
         self.call.placement.end_drag(self.desktop_floating_bounds());
         // End any composer drag-selection in progress.
-        self.forward_release_to_text_inputs(event, scale, modifiers, doc);
+        self.forward_pointer_to_text_inputs(event, scale, modifiers, doc);
         if let Some(sw) = self.swipe.take() {
             let channel = self
                 .ws_channels()
@@ -749,26 +749,10 @@ impl ChatApp {
         true
     }
 
-    /// Forward a `CursorMoved` to every text input so hover and drag-select
-    /// state stays current regardless of which surface is focused.
-    fn forward_move_to_text_inputs(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: Modifiers,
-        doc: &mut ui::widget::Edits<'_>,
-    ) {
-        self.composer_main.handle(event, scale, modifiers, doc);
-        self.composer_thread.handle(event, scale, modifiers, doc);
-        drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
-        self.edit_input.handle(event, scale, modifiers, doc);
-        if self.emoji_open {
-            drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
-        }
-    }
-
-    /// Forward a mouse release to every text input so drag-selection ends.
-    fn forward_release_to_text_inputs(
+    /// Forward a `CursorMoved` or mouse release to every text input so hover
+    /// and drag-select state stays current regardless of which surface is
+    /// focused, and drag-selection ends.
+    fn forward_pointer_to_text_inputs(
         &mut self,
         event: &WindowEvent,
         scale: f64,

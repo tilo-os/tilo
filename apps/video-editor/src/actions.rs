@@ -1042,7 +1042,7 @@ fn patch_matches(clip: &Clip, patch: &ClipFieldPatch) -> bool {
 
 fn write_patch(doc: &mut Doc, id: Uuid, patch: &ClipFieldPatch) -> bool {
     match patch {
-        ClipFieldPatch::Number { field, value, .. } => VideoDoc::set_existing_clip_number(
+        ClipFieldPatch::Number { field, value, .. } => VideoDoc::set_existing_clip_scalar(
             doc,
             id,
             match field {
@@ -1061,14 +1061,14 @@ fn write_patch(doc: &mut Doc, id: Uuid, patch: &ClipFieldPatch) -> bool {
             },
             *value,
         ),
-        ClipFieldPatch::Text { field, value, .. } => VideoDoc::set_existing_clip_text(
+        ClipFieldPatch::Text { field, value, .. } => VideoDoc::set_existing_clip_scalar(
             doc,
             id,
             match field {
                 ClipTextField::Track => "track",
                 ClipTextField::Transition => "transition",
             },
-            value,
+            value.as_str(),
         ),
         ClipFieldPatch::Compound { value, .. } => match value {
             ClipCompound::Transform(value) => {
@@ -1080,7 +1080,7 @@ fn write_patch(doc: &mut Doc, id: Uuid, patch: &ClipFieldPatch) -> bool {
             ClipCompound::Animation(value) => VideoDoc::set_existing_clip_animation(doc, id, value),
             ClipCompound::Markers(value) => VideoDoc::set_existing_clip_markers(doc, id, value),
         },
-        ClipFieldPatch::Bool { field, value, .. } => VideoDoc::set_existing_clip_bool(
+        ClipFieldPatch::Bool { field, value, .. } => VideoDoc::set_existing_clip_scalar(
             doc,
             id,
             match field {
@@ -1090,13 +1090,14 @@ fn write_patch(doc: &mut Doc, id: Uuid, patch: &ClipFieldPatch) -> bool {
             },
             *value,
         ),
-        ClipFieldPatch::Byte { field, value, .. } => VideoDoc::set_existing_clip_u8(
+        // Palette is read back as an Automerge integer, not a float.
+        ClipFieldPatch::Byte { field, value, .. } => VideoDoc::set_existing_clip_scalar(
             doc,
             id,
             match field {
                 ClipByteField::Palette => "palette",
             },
-            *value,
+            i64::from(*value),
         ),
         ClipFieldPatch::Link { value, .. } => {
             VideoDoc::set_existing_clip_link(doc, id, value.as_deref())

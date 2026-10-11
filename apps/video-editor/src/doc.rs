@@ -851,25 +851,13 @@ impl VideoDoc {
     /// Replace one existing clip scalar without materialising a stale clip map.
     /// The action layer owns the allowlist; this primitive only provides the
     /// narrow CRDT write used after that validation.
-    pub fn set_existing_clip_number(doc: &mut AutoCommit, id: Uuid, key: &str, value: f64) -> bool {
-        let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
-            return false;
-        };
-        let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
-            return false;
-        };
-        doc.put(&clip, key, value).is_ok()
-    }
-
-    /// Replace one existing clip text scalar.
-    pub fn set_existing_clip_text(doc: &mut AutoCommit, id: Uuid, key: &str, value: &str) -> bool {
-        let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
-            return false;
-        };
-        let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
-            return false;
-        };
-        doc.put(&clip, key, value).is_ok()
+    pub fn set_existing_clip_scalar(
+        doc: &mut AutoCommit,
+        id: Uuid,
+        key: &str,
+        value: impl Into<ScalarValue>,
+    ) -> bool {
+        Self::existing_clip(doc, id).is_some_and(|clip| doc.put(&clip, key, value).is_ok())
     }
 
     /// Typed compound writes used by current actions. None of them stores
@@ -926,36 +914,11 @@ impl VideoDoc {
         true
     }
 
-    pub fn set_existing_clip_bool(doc: &mut AutoCommit, id: Uuid, key: &str, value: bool) -> bool {
-        let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
-            return false;
-        };
-        let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
-            return false;
-        };
-        doc.put(&clip, key, value).is_ok()
-    }
-
-    /// Replace one existing clip's palette slot without changing its scalar
-    /// representation: palette is read as an Automerge integer, not a float.
-    pub fn set_existing_clip_u8(doc: &mut AutoCommit, id: Uuid, key: &str, value: u8) -> bool {
-        let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
-            return false;
-        };
-        let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
-            return false;
-        };
-        doc.put(&clip, key, i64::from(value)).is_ok()
-    }
-
     /// Replace or clear the membership key of an existing clip. `None` is a
     /// deletion rather than an empty sentinel, preserving the document's
     /// compatibility meaning for projects predating linked clips.
     pub fn set_existing_clip_link(doc: &mut AutoCommit, id: Uuid, value: Option<&str>) -> bool {
-        let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
-            return false;
-        };
-        let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
+        let Some(clip) = Self::existing_clip(doc, id) else {
             return false;
         };
         match value {

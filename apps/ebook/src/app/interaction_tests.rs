@@ -3215,7 +3215,7 @@ fn importing_and_removing_books_keeps_one_identity() {
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let path = PathBuf::from("/tmp/book.epub");
-        app.import_worker.as_ref().unwrap().close_for_test();
+        app.import_worker.as_ref().unwrap().close();
         std::thread::sleep(Duration::from_millis(10));
         let error = app
             .begin_import(path.clone(), ImportKind::Open)

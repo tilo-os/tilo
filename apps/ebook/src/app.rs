@@ -279,8 +279,7 @@ impl ImportWorker {
         self.results.try_recv()
     }
 
-    #[cfg(test)]
-    fn close_for_test(&self) {
+    fn close(&self) {
         let (lock, wake) = &*self.mailbox;
         let mut state = lock
             .lock()
@@ -294,14 +293,7 @@ impl ImportWorker {
 
 impl Drop for ImportWorker {
     fn drop(&mut self) {
-        let (lock, wake) = &*self.mailbox;
-        let mut state = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.closed = true;
-        state.pending = None;
-        drop(state);
-        wake.notify_one();
+        self.close();
     }
 }
 
