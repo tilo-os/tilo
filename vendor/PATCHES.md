@@ -440,6 +440,33 @@ atlas texture gains `RENDER_ATTACHMENT` usage for it. A source takes
 precedence over an `override_image` texture for the same image.
 `Renderer::image_source_writes()` counts the writes and their bytes.
 
+## `vendor/vello_shaders/build.rs`, `vendor/vello/src/lib.rs`: shader fingerprint
+
+The build script also emits `SOURCE_FINGERPRINT`, an FNV-1a hash over every
+shader's name and WGSL text in name order, and vello re-exports it as
+`vello::SHADER_FINGERPRINT`. A `wgpu::PipelineCache` an app keeps across
+launches (`ui::pipeline_cache`) is keyed by it, so a cache filled by other
+shaders is never used. Nothing else reads it.
+
+## `vendor/vello/src/lib.rs`, `shaders.rs`, `wgpu_engine.rs`: deferred pipelines
+
+`Renderer::new_deferring(device, options, deferral)` registers every shader
+as `Renderer::new` does, but builds a pipeline before returning only when
+`deferral` allows. `PipelineDeferral::Unused` defers the registrations a full
+frame on the default path never dispatches: the three-level path-tag scan,
+the GPU draw reduce and leaf while the CPU draw prefix serves, the indirect
+path stages while the direct ones serve, the clip reduce and the sparse fine
+stage. `PipelineDeferral::All` defers every one, for a caller that rasterizes
+its frames another way. `start_deferred_pipelines` builds them on one
+background thread, largest first, and runs a callback after the last. Before
+encoding, a render installs what the thread has finished. For a deferred
+pipeline it dispatches and that is not built yet, it waits for the thread, or
+builds it itself when no thread is running, so a dispatch never lacks its
+pipeline. On GL nothing is deferred (one context lock, see "one init thread
+on GL"). `Renderer::new` is unchanged except that the parallel initial build
+starts the longest shaders first. `deferred_pipelines()` reports what is
+pending and what a render had to build itself.
+
 ## zlink-macros
 
 `vendor/zlink-macros` is crates.io `zlink-macros` 0.7.0 (checksum

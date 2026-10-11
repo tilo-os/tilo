@@ -125,6 +125,7 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             user_home: path("TILO_USER_HOME"),
             home: path("HOME"),
             config_home: path("XDG_CONFIG_HOME"),
+            cache_home: path("XDG_CACHE_HOME"),
             pipeline_seed: path("TILO_PIPELINE_SEED_DIR"),
         },
         accessibility: crate::host::AccessibilityInputs {
