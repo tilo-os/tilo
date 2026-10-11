@@ -7148,6 +7148,35 @@ impl ShellOverlayHost {
         })
     }
 
+    /// Whether the focused group is maximized.
+    pub(crate) fn focused_group_maximized(&mut self) -> bool {
+        self.mutate_focused_group_widget(|row, group| {
+            row.groups
+                .iter()
+                .find(|candidate| candidate.id == group)
+                .is_some_and(|g| g.maximized)
+        })
+    }
+
+    /// Maximize or restore the focused group; `false` when it already is in
+    /// that state or nothing is focused.
+    pub(crate) fn set_focused_group_maximized(&mut self, maximized: bool) -> bool {
+        self.mutate_focused_group_widget(|row, group| {
+            let Some(group) = row
+                .groups
+                .iter_mut()
+                .find(|candidate| candidate.id == group)
+            else {
+                return false;
+            };
+            if group.maximized == maximized {
+                return false;
+            }
+            group.toggle_maximized();
+            true
+        })
+    }
+
     /// Super+F on a Tilo window: cover the output, including the wheel.
     /// A client `xdg_toplevel` fullscreen still goes through the compositor.
     pub(crate) fn toggle_focused_group_fullscreen(&self) -> bool {
@@ -13057,7 +13086,23 @@ impl ShellOverlayHost {
                 } else {
                     1
                 };
-                if let Some(chrome) = self.chrome.clone() {
+                // Super+Up/Down are strip navigation first. Where there is
+                // no strip to go to they are the Windows-style maximize and
+                // restore: Up on the topmost strip maximizes the focused
+                // group, Down on a maximized group restores it.
+                let focused = self
+                    .chrome
+                    .as_ref()
+                    .map_or(0, |c| c.borrow().strip_focus().1);
+                if direction < 0 && focused == 0 {
+                    if !repeat {
+                        let _ = self.set_focused_group_maximized(true);
+                    }
+                } else if direction > 0 && self.focused_group_maximized() {
+                    if !repeat {
+                        let _ = self.set_focused_group_maximized(false);
+                    }
+                } else if let Some(chrome) = self.chrome.clone() {
                     let _ = chrome.borrow_mut().switch_strip(direction);
                 }
             }
@@ -17949,12 +17994,13 @@ impl Widget for ShellOverlayHost {
                 work_area.set_extra_bottom_padding(0.0);
                 work_area.set_gap(0.0);
             } else {
+                // The same margin under the windows as above them. The
+                // column holds zero-height navigation leaves ahead of the
+                // rows; a gap between them (`gap_standard` here) stacked
+                // two stray gaps over the first strip.
                 work_area.set_vertical_padding(0.0);
                 work_area.set_extra_top_padding(12.0);
                 work_area.set_extra_bottom_padding(12.0);
-                // The column holds zero-height navigation leaves ahead of the
-                // rows; a gap between them (`gap_standard` here) stacked two
-                // stray gaps over the first strip.
                 work_area.set_gap(0.0);
             }
         }
