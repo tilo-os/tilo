@@ -1734,6 +1734,18 @@ impl FrameBuilder {
             settled = true;
             self.host.sync(doc, root);
         }
+        // `update` may have dropped widgets the pointer map still names: a
+        // workspace's content is rebuilt when its first window opens or its
+        // last one closes (the top bar and its toolbar go with it), and
+        // groups are spliced out. Rebuild the map now, not at the next
+        // paint: a backed-up renderer defers that paint for frames, and the
+        // loop reads the focused node through the map on every iteration
+        // (`focused_ime_requires_deferred_ack`), which then called through a
+        // freed widget and ended the session.
+        if self.host.take_structure_dirty() {
+            self.rebuild_layout_tree();
+            self.relayout();
+        }
         let update_done = std::time::Instant::now();
         let total = update_done.duration_since(started);
         if total >= std::time::Duration::from_millis(50) {
@@ -5159,6 +5171,45 @@ mod tests {
         // What peer sync does after a round lands, from the network thread.
         tree.desktop.room_epoch = tree.desktop.room_epoch.wrapping_add(1);
         tab_id
+    }
+
+    /// The widget addresses the pointer map holds.
+    fn mapped_widgets(frame: &FrameBuilder) -> std::collections::BTreeSet<usize> {
+        frame
+            .node_map
+            .values()
+            .map(|widget| widget.cast::<()>().addr())
+            .collect()
+    }
+
+    /// A pump that rebuilds the workspace's content (here a new workspace;
+    /// equally its first window opening or its last closing) drops the old
+    /// content's widgets, the top bar among them. The frame loop reads the
+    /// focused node through the pointer map before the next paint, which a
+    /// backed-up renderer can defer for frames: the map must already name
+    /// the new widgets when the pump returns, never the dropped ones.
+    #[test]
+    fn a_pump_that_rebuilds_the_content_leaves_no_pointer_to_dropped_widgets() {
+        let mut frame = FrameBuilder::new((1280, 800));
+        let mut doc = AutoCommit::new();
+        frame.pump_apps(&mut doc, &automerge::ROOT);
+        frame.relayout();
+        let before = mapped_widgets(&frame);
+        frame.with_chrome(|chrome| {
+            chrome.add_workspace("content rebuilt by the pump");
+        });
+        frame.pump_apps(&mut doc, &automerge::ROOT);
+        let after_pump = mapped_widgets(&frame);
+        assert_ne!(
+            after_pump, before,
+            "the pump rebuilt the workspace's content"
+        );
+        frame.rebuild_layout_tree();
+        assert_eq!(
+            after_pump,
+            mapped_widgets(&frame),
+            "after the pump the pointer map names exactly the live widgets a rebuild maps"
+        );
     }
 
     #[test]
