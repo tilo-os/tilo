@@ -297,6 +297,65 @@ class TimingTests(unittest.TestCase):
                 ("repos/tilo/tilo/actions/jobs/7/logs", True),
             ])
 
+    def test_resources_and_checkout_markers_survive_missing_runner_boundaries(self):
+        prefix = "2026-10-11T04:00:"
+        lines = [
+            "2026-10-11T03:59:58Z ⭐ Run Main Setup",
+            "2026-10-11T03:59:59Z   ✅  Success - Main Setup",
+            prefix + "00Z Syncing repository: private/repository",
+            prefix + "05Z ::remove-matcher owner=checkout-git::",
+            prefix + "06Z Syncing repository: another/private",
+            prefix + "08Z ::remove-matcher owner=checkout-git::",
+            prefix + "09Z ==> package tapps x86_64 measurements",
+            prefix + "09Z     wall_seconds=10.5",
+            prefix + "09Z     user_seconds=unavailable",
+            prefix + "09Z     system_seconds=2.5",
+            prefix + "09Z     max_rss_kib=12345",
+            prefix + "09Z     cgroup_cpu_max=600000 100000 ",
+            prefix + "09Z     cgroup_cpuset_cpus_effective=0,185-191 ",
+            prefix + "09Z     cgroup_cpu_stat_before=usage_usec 1000000 nr_throttled 1 throttled_usec 10000 ",
+            prefix + "09Z     cgroup_cpu_stat_after=usage_usec 16250000 nr_throttled 3 throttled_usec 260000 ",
+            prefix + "09Z     cgroup_cpu_pressure_before=some avg10=0.0 total=100 full avg10=0.0 total=10 ",
+            prefix + "09Z     cgroup_cpu_pressure_after=some avg10=0.0 total=300 full avg10=0.0 total=30 ",
+            prefix + "09Z     cgroup_memory_peak=1200000000",
+            prefix + "09Z SECRET_SHOULD_NOT_BE_RETAINED",
+            prefix + "09Z     cgroup_memory_peak=9999999999",
+            prefix + "10Z ==> test second measurements",
+            prefix + "10Z     wall_seconds=1",
+            prefix + "10Z     cgroup_cpu_stat_before=usage_usec 100 ",
+            prefix + "10Z     cgroup_cpu_stat_after=usage_usec 50 ",
+            prefix + "10Z     cgroup_memory_pressure_after=unavailable",
+            prefix + "10Z     cgroup_memory_peak=1000",
+        ]
+        metrics = timing.extract_job_metrics("\n".join(lines))
+        self.assertEqual([step['seconds'] for step in metrics['steps']], [1, 5, 2])
+        self.assertEqual(timing.phase_seconds(metrics), (7, 11.5))
+        first, second = metrics['measurements']
+        self.assertEqual(first['name'], 'build')
+        self.assertIsNone(first['user_seconds'])
+        self.assertEqual(first['system_seconds'], 2.5)
+        self.assertEqual(first['max_rss_kib'], 12345)
+        self.assertEqual(first['cpu_limit'], 6)
+        self.assertEqual(first['cpuset_cpu_count'], 8)
+        self.assertEqual(first['cgroup_cpu_seconds'], 15.25)
+        self.assertEqual(first['cgroup_throttled_seconds'], 0.25)
+        self.assertEqual(first['cpu_pressure_after'], {'some': 300, 'full': 30})
+        self.assertEqual(first['cgroup_memory_peak'], 1200000000)
+        self.assertNotIn('cgroup_cpu_seconds', second, 'reset counters cannot become negative usage')
+        self.assertIsNone(second['memory_pressure_after'])
+        self.assertEqual(second['cgroup_memory_peak'], 1000)
+        self.assertNotIn('private', str(metrics))
+        self.assertNotIn('SECRET', str(metrics))
+        for label, expected in [('Prepare toolchain', 'toolchain'),
+                                ('Restore Cargo downloads', 'cache'),
+                                ('Upload artifact', 'artifact'), ('Set up build cache', 'cache')]:
+            self.assertEqual(timing.fixed_phase_label(label), expected)
+        for line in ('cgroup_memory_peak=secret', 'cgroup_cpu_max=600000 0',
+                     'max_rss_kib=1.5', 'cgroup_cpu_max=6 secret',
+                     'cgroup_cpuset_cpus_effective=8-1'):
+            self.assertIsNone(timing.resource_metric(line))
+        self.assertEqual(timing.resource_metric('cgroup_cpu_max=max 100000'), ('cpu_limit', None))
+
     def test_log_metrics_are_extracted_without_retaining_log_text(self):
         with self.subTest(phase='extracts phase and cache metrics without retaining log text'):
             secret = "DO_NOT_RETAIN_THIS_COMMAND"
