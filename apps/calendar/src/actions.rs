@@ -1787,8 +1787,8 @@ mod tests {
     use super::*;
     use crate::app::CalendarApp;
     use automerge::{AutoCommit, ROOT};
+    use tilo_actions::LocalTransport;
     use tilo_actions::Resource;
-    use tilo_actions::{ActionInput, LocalTransport};
     use tilo_automerge::ApplyIncoming;
     use ui::widget::Widget;
 
@@ -1806,15 +1806,6 @@ mod tests {
             }
         }
         None
-    }
-
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                panic!("expected a prompted action: {}", spec.id)
-            }
-        }
     }
 
     /// A demo calendar synced into a fresh document, plus the app that owns it.
@@ -2293,7 +2284,7 @@ mod tests {
             let event = find_kind(&resources[0].children, "calendar.event").expect("an event");
             let edit_spec = event.actions.iter().find(|a| a.id == "edit").unwrap();
             assert_eq!(
-                prompted_encode(edit_spec, "   ").type_id,
+                edit_spec.build_text("   ").unwrap().type_id,
                 tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
                 "rename refuses a whitespace-only title"
             );
@@ -2561,7 +2552,7 @@ mod tests {
                 .unwrap();
             let before = CalDoc::read_model(&doc).events.len();
 
-            let encoded = prompted_encode(spec, "Coffee with Dana");
+            let encoded = spec.build_text("Coffee with Dana").unwrap();
             let decoded = registry().decode(&encoded).unwrap();
             let mut tx = LocalTransport::new();
             tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
@@ -2690,7 +2681,7 @@ mod tests {
                 .find(|action| action.id == "new-task")
                 .expect("new-task action");
             let before = CalDoc::read_model(&doc).tasks.len();
-            let encoded = prompted_encode(spec, "Book dentist appointment");
+            let encoded = spec.build_text("Book dentist appointment").unwrap();
             let decoded = registry().decode(&encoded).expect("calendar action");
             let mut tx = LocalTransport::new();
             tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
@@ -2703,7 +2694,7 @@ mod tests {
                     .iter()
                     .any(|task| task.title == "Book dentist appointment" && !task.done)
             );
-            let blank = prompted_encode(spec, "\t ");
+            let blank = spec.build_text("\t ").unwrap();
             assert_eq!(
                 blank.type_id,
                 tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
