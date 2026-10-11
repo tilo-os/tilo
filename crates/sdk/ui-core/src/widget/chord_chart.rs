@@ -20,6 +20,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
+use crate::widget::chart_data::{ChartLink, ChartNode};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchTracker, InteractiveChart, chart_leaf, handle_chart_event,
@@ -35,71 +36,6 @@ fn polar(center: Point, radius: f64, angle: f64) -> Point {
 fn append_arc(path: &mut BezPath, center: Point, radius: f64, start: f64, sweep: f64) {
     Arc::new(center, (radius, radius), start, sweep, 0.0)
         .to_cubic_beziers(0.1, |a, b, c| path.curve_to(a, b, c));
-}
-
-#[derive(Clone, Debug)]
-pub struct ChordNode {
-    pub id: String,
-    pub label: String,
-    pub color: Option<Color>,
-    pub detail: String,
-}
-impl ChordNode {
-    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-            color: None,
-            detail: String::new(),
-        }
-    }
-    #[must_use]
-    pub fn colored(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-    #[must_use]
-    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = detail.into();
-        self
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct ChordLink {
-    pub id: String,
-    pub source: String,
-    pub target: String,
-    pub value: f64,
-    pub color: Option<Color>,
-    pub detail: String,
-}
-impl ChordLink {
-    pub fn new(
-        id: impl Into<String>,
-        source: impl Into<String>,
-        target: impl Into<String>,
-        value: f64,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            source: source.into(),
-            target: target.into(),
-            value,
-            color: None,
-            detail: String::new(),
-        }
-    }
-    #[must_use]
-    pub fn colored(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-    #[must_use]
-    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = detail.into();
-        self
-    }
 }
 
 #[allow(
@@ -156,8 +92,8 @@ struct LinkGeom {
 }
 
 pub struct ChordChart {
-    nodes: Vec<ChordNode>,
-    links: Vec<ChordLink>,
+    nodes: Vec<ChartNode>,
+    links: Vec<ChartLink>,
     style: ChordStyle,
     title: String,
     height: f32,
@@ -173,7 +109,7 @@ pub struct ChordChart {
     label_room: f64,
 }
 impl ChordChart {
-    pub fn new(nodes: Vec<ChordNode>, links: Vec<ChordLink>) -> Self {
+    pub fn new(nodes: Vec<ChartNode>, links: Vec<ChartLink>) -> Self {
         Self {
             nodes,
             links,
@@ -216,7 +152,7 @@ impl ChordChart {
         self.height = height.max(180.0);
         self
     }
-    pub fn set_data(&mut self, nodes: Vec<ChordNode>, links: Vec<ChordLink>) {
+    pub fn set_data(&mut self, nodes: Vec<ChartNode>, links: Vec<ChartLink>) {
         self.nodes = nodes;
         self.links = links;
         self.hovered = None;
@@ -374,10 +310,10 @@ impl ChordChart {
                     .map(|g| ChordSelection::Link(g.id.clone()))
             })
     }
-    fn node(&self, id: &str) -> Option<&ChordNode> {
+    fn node(&self, id: &str) -> Option<&ChartNode> {
         self.nodes.iter().find(|node| node.id == id)
     }
-    fn link(&self, id: &str) -> Option<&ChordLink> {
+    fn link(&self, id: &str) -> Option<&ChartLink> {
         self.links.iter().find(|link| link.id == id)
     }
 }
@@ -739,15 +675,15 @@ mod tests {
             let mut chart = ChordChart::new(
                 ["Design", "Engineering", "Research", "Support", "Sales"]
                     .into_iter()
-                    .map(|label| ChordNode::new(label, label))
+                    .map(|label| ChartNode::new(label, label))
                     .collect(),
                 vec![
-                    ChordLink::new("d-e", "Design", "Engineering", 32.0),
-                    ChordLink::new("d-r", "Design", "Research", 14.0),
-                    ChordLink::new("e-r", "Engineering", "Research", 25.0),
-                    ChordLink::new("e-s", "Engineering", "Support", 18.0),
-                    ChordLink::new("s-s", "Support", "Sales", 27.0),
-                    ChordLink::new("s-d", "Sales", "Design", 21.0),
+                    ChartLink::new("d-e", "Design", "Engineering", 32.0),
+                    ChartLink::new("d-r", "Design", "Research", 14.0),
+                    ChartLink::new("e-r", "Engineering", "Research", 25.0),
+                    ChartLink::new("e-s", "Engineering", "Support", 18.0),
+                    ChartLink::new("s-s", "Support", "Sales", 27.0),
+                    ChartLink::new("s-d", "Sales", "Design", 21.0),
                 ],
             );
             chart.rect = Rect::new(0.0, 0.0, w, h);
@@ -787,8 +723,8 @@ mod tests {
 
         fn invalid_links_do_not_panic() {
             let mut chart = ChordChart::new(
-                vec![ChordNode::new("a", "A")],
-                vec![ChordLink::new("x", "missing", "a", 1.0)],
+                vec![ChartNode::new("a", "A")],
+                vec![ChartLink::new("x", "missing", "a", 1.0)],
             );
             assert!(chart.take_activated().is_none());
         }
