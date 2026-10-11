@@ -94,9 +94,10 @@ const IDLE_CPU_BUDGET: f64 = 1.5;
 /// they change; asking once a second cost 5.3/s together (TIL-754, run
 /// 92445); after it the Terminal's measured 0.60–0.70/s in all seven runs.
 ///
-/// The budget is per app with a shovel: until TIL-759 the restored Notes
-/// notebook never reached the broker, so only the Terminal had one. With
-/// both connected, CI measured 2.10/s for the two (PR #4197, run 94384).
+/// The budget is per app with a shovel: before the session waited for its
+/// services, the restored Notes notebook never reached the broker, so only
+/// the Terminal had one. With both connected, CI measured 2.10/s for the two
+/// (PR #4197, run 94384).
 const KEY_ASK_BUDGET: f64 = 1.5;
 
 /// Most iterations per second the compositor's frame loop may make while
@@ -575,7 +576,7 @@ pub(crate) fn wait_until_gone(desktop: &Desktop, name: &str) {
 /// hosted tabs while it builds the desktop, before it binds the
 /// collaboration broker and identity service they connect to; the tab found
 /// no socket, stayed offline and published nothing until it was reopened
-/// (TIL-759).
+/// (fixed by the session-services handshake).
 #[test]
 fn the_restored_notes_notebook_publishes_its_actions() {
     let desktop = Desktop::start();
