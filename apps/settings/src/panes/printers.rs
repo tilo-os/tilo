@@ -626,16 +626,19 @@ impl PrintersModel {
             rows(
                 self.scanners
                     .iter()
-                    .map(|s| item_row(&s.description, Vec::new(), &[s.device.clone()], Vec::new()))
+                    .map(|s| {
+                        item_row(
+                            &s.description,
+                            Vec::new(),
+                            std::slice::from_ref(&s.device),
+                            Vec::new(),
+                        )
+                    })
                     .collect(),
             )
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a queue's three controls, its state and its supplies"
-    )]
     fn printer_row(&self, printer: &PrinterQueue) -> Item {
         let name = printer.name.clone();
         let state = state_label(printer.state);

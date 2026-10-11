@@ -927,7 +927,7 @@ impl BrowserWidget {
             Some("loading") => self.debug_show_loading(),
             Some("error") => self.debug_show_load_error(),
             Some("suggestions") => {
-                self.debug_force_suggestions(crate::history::sample_entries());
+                self.debug_force_suggestions(&crate::history::sample_entries());
                 self.suggestions.move_selection(1);
             }
             Some("library-history") => self.debug_show_library("history"),
@@ -947,7 +947,7 @@ impl BrowserWidget {
 
     /// Test hook: pin a suggestion list into view (bypasses focus/query)
     /// so the overlay can be rendered headlessly for inspection.
-    pub fn debug_force_suggestions(&mut self, items: Vec<crate::history::HistoryEntry>) {
+    pub fn debug_force_suggestions(&mut self, items: &[crate::history::HistoryEntry]) {
         self.suggestions
             .set_suggestions(items.iter().map(omnibox::Row::history).collect());
         self.force_suggestions = true;
@@ -2775,11 +2775,12 @@ impl BrowserWidget {
         if dirty {
             self.on_query_changed(&query);
         }
-        if let Some(answer) = self.suggest_fetcher.take() {
-            if self.suggest_debounce.is_current(answer.generation) && answer.query == query {
-                self.remote = answer.suggestions;
-                dirty = true;
-            }
+        if let Some(answer) = self.suggest_fetcher.take()
+            && self.suggest_debounce.is_current(answer.generation)
+            && answer.query == query
+        {
+            self.remote = answer.suggestions;
+            dirty = true;
         }
         if let Some((generation, wanted)) = self
             .suggest_debounce
@@ -2810,9 +2811,6 @@ impl BrowserWidget {
     /// Select the untyped tail of an inline completion, once the address
     /// field holds the completed text.
     fn select_inline_completion(&mut self) {
-        let Some((end, start)) = self.select_completion.take() else {
-            return;
-        };
         fn select(widget: &mut dyn Widget, state: &str) -> bool {
             if widget.test_id() == Some(URL_INPUT_ID) {
                 ui::undo::set_state(widget, state);
@@ -2823,6 +2821,9 @@ impl BrowserWidget {
                 .into_iter()
                 .any(|child| select(child, state))
         }
+        let Some((end, start)) = self.select_completion.take() else {
+            return;
+        };
         if let Some(c) = self.composed.element_mut() {
             select(c, &format!("{end}:b:{start}"));
         }
@@ -2859,7 +2860,7 @@ impl BrowserWidget {
         {
             omnibox::lead_with_address(&mut rows, full);
         }
-        self.last_typed = query.to_owned();
+        query.clone_into(&mut self.last_typed);
         self.last_query = Some(query.to_owned());
         self.suggestions.set_suggestions(rows);
     }
@@ -7417,7 +7418,7 @@ mod tests {
         {
             let mut widget = BrowserWidget::new_headless();
             widget.attach_dispatcher(ui::framework::testing::dispatcher("so.tilo.browser"));
-            widget.debug_force_suggestions(vec![crate::history::HistoryEntry {
+            widget.debug_force_suggestions(&[crate::history::HistoryEntry {
                 url: "https://accessible.example/reading".into(),
                 title: "Accessible reading".into(),
                 last_visit: 1,

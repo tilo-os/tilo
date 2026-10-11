@@ -195,7 +195,7 @@ impl HistoryIndex {
             (0..self.indexed.len()).collect()
         };
         self.scanned = pool.len();
-        let mut hits: Vec<(usize, Tier)> = pool
+        let hits: Vec<(usize, Tier)> = pool
             .into_iter()
             .filter_map(|at| {
                 self.indexed
@@ -204,11 +204,11 @@ impl HistoryIndex {
                     .map(|t| (at, t))
             })
             .collect();
-        self.last_query = q.to_owned();
+        q.clone_into(&mut self.last_query);
         self.candidates = hits.iter().map(|(at, _)| *at).collect();
 
         let mut matches: Vec<Match> = hits
-            .drain(..)
+            .into_iter()
             .filter_map(|(at, tier)| {
                 let entry = self.entries.get(at)?;
                 Some(Match {
@@ -508,8 +508,12 @@ fn fetch_suggestions(endpoint: &str) -> Option<Vec<String>> {
 }
 
 /// The suggest endpoint for a search engine template, when it is one we
-/// know to speak OpenSearch suggestions. The typed text is only ever sent
+/// know to speak `OpenSearch` suggestions. The typed text is only ever sent
 /// to the engine the person chose to search with.
+#[allow(
+    clippy::literal_string_with_formatting_args,
+    reason = "search-engine templates carry a literal `{query}` placeholder"
+)]
 pub fn suggest_endpoint(search_template: &str, query: &str) -> Option<String> {
     let url = url::Url::parse(&search_template.replace("{query}", "")).ok()?;
     if url.scheme() != "https" {
@@ -530,7 +534,7 @@ pub fn suggest_endpoint(search_template: &str, query: &str) -> Option<String> {
     Some(endpoint)
 }
 
-/// The suggestions of an OpenSearch suggest response: `["query", ["a", "b"]]`.
+/// The suggestions of an `OpenSearch` suggest response: `["query", ["a", "b"]]`.
 pub fn parse_suggestions(body: &str) -> Vec<String> {
     let Ok(serde_json::Value::Array(parts)) = serde_json::from_str::<serde_json::Value>(body)
     else {

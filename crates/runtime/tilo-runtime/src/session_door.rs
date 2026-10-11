@@ -284,11 +284,15 @@ fn finish_refusal(stream: &mut std::os::unix::net::UnixStream) {
     while drained < 64 * 1024 {
         match stream.read(&mut sink) {
             Ok(0) | Err(_) => break,
-            Ok(n) => drained += n,
+            Ok(n) => drained = drained.saturating_add(n),
         }
     }
 }
 
+/// Serve one accepted session-door connection.
+///
+/// # Errors
+/// Returns the I/O error that ended the connection.
 #[cfg(unix)]
 pub fn serve<H>(
     mut stream: std::os::unix::net::UnixStream,

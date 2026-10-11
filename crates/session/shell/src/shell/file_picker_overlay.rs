@@ -261,7 +261,7 @@ impl ActiveFilePicker {
             .with_mode(mode)
             .with_multiple(request.multiple)
             .with_accept_label(request.accept_label.clone())
-            .with_home(scope.home.clone())
+            .with_home(scope.home)
             .with_filters(filters);
         if let Some(name) = request.current_name.as_deref() {
             widget = widget.with_filename(name);

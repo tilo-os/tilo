@@ -2622,6 +2622,10 @@ impl SearchProvider for LiveAppActionsProvider {
         results
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one resolution over every resource shape"
+    )]
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
         // A receipt read or cancellation names one actor-owned job. It must
         // not depend on that job still being inside the bounded browse preview.
@@ -5163,6 +5167,7 @@ mod tests {
     /// list their actions, the palette must not, and a nested row must resolve
     /// by its own address afterwards.
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn enumeration_lists_the_actions_of_resources_below_a_root() {
         fn resource_row(id: &str, label: &str, has_children: bool) -> CatalogueRow {
             CatalogueRow {

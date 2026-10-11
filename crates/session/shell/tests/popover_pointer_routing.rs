@@ -97,6 +97,10 @@ impl DerefMut for Harness {
 
 impl Harness {
     /// One mapped window spanning the whole strip, with a pointer bound.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the frame builder is held while the harness window is mapped"
+    )]
     fn with_wide_window() -> (Self, u64) {
         let wl = wayland::Harness::new();
         let fb = FrameBuilder::with_handle(wl.state.workspace_tree.clone(), false, (1280, 800));
@@ -140,9 +144,9 @@ impl Harness {
 
     fn map(&mut self, surface: &wl_surface::WlSurface, surface_id: u64) {
         use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
-        let (width, height) = (64, 64);
-        let stride = width * 4;
-        let len = usize::try_from(stride * height).unwrap();
+        let (width, height) = (64_i32, 64_i32);
+        let stride = width.checked_mul(4).unwrap();
+        let len = usize::try_from(stride.checked_mul(height).unwrap()).unwrap();
         let shm = self.bind::<wl_shm::WlShm>("wl_shm", 1);
         // SAFETY: a null-terminated name and a valid flag word are the whole
         // contract of `memfd_create`.

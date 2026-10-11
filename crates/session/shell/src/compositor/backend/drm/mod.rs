@@ -171,6 +171,10 @@ impl DrmBackend {
 /// hardware cursor (`CursorPlanes`) owns its own dup of the card
 /// fd, so pointer motion moves the KMS plane at input rate, decoupled from paint. Card fds are
 /// plain fds usable from any thread; page-flip completions are read only here.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent presenter state flags, each set by its own event"
+)]
 pub struct DrmPresenter {
     scanouts: Vec<ScanoutEntry>,
     outputs: Vec<Output>,

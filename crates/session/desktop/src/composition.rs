@@ -544,11 +544,6 @@ impl DesktopSurface {
         }
         out
     }
-    /// Reconcile retained groups and hosts. A changed strip set requires rebuilding with host chrome.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one retained-tree reconciliation: moves, removals and inserts must see each other's state"
-    )]
     /// A client that exits after refusing or deferring a close request
     /// retires its still-visible window here, once. This must precede every
     /// rebuild decision, which would otherwise drop the window unanimated.
@@ -572,6 +567,11 @@ impl DesktopSurface {
         }
     }
 
+    /// Reconcile retained groups and hosts. A changed strip set requires rebuilding with host chrome.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one retained-tree reconciliation: moves, removals and inserts must see each other's state"
+    )]
     pub fn reconcile(
         &mut self,
         tree: &DesktopTree,

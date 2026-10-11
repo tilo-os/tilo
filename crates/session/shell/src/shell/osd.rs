@@ -398,9 +398,10 @@ impl Osd {
         };
         match self.kind {
             OsdKind::Volume { muted: true } => t("osd-muted"),
-            OsdKind::Volume { muted: false } | OsdKind::Brightness => percent(),
             OsdKind::KeyboardBacklight if self.level <= 0.0 => t("osd-off"),
-            OsdKind::KeyboardBacklight => percent(),
+            OsdKind::Volume { muted: false } | OsdKind::Brightness | OsdKind::KeyboardBacklight => {
+                percent()
+            }
             OsdKind::Magnifier { zoom } if zoom <= settings_store::magnifier::OFF => t("osd-off"),
             OsdKind::Magnifier { zoom } => settings_store::magnifier::zoom_label(zoom).into(),
             _ => self.caption(),
@@ -462,11 +463,13 @@ impl Osd {
         }
         let muted = matches!(self.kind, OsdKind::Volume { muted: true });
         let colors = &theme.tokens.colors;
-        let text = text_renderer.elide_to_width_style(
-            &pill.text_value,
-            pill.text.width() as f32,
-            &text_style,
-        );
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a pill width in logical pixels is far inside f32 range"
+        )]
+        let pill_text_width = pill.text.width() as f32;
+        let text =
+            text_renderer.elide_to_width_style(&pill.text_value, pill_text_width, &text_style);
         let (tw, th) = text_renderer.measure_style(&text, None, &text_style);
         // The value hugs the bar's end; a bare message starts at the glyph.
         let x = if pill.bar.is_some() {
@@ -783,6 +786,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn osd_slab_fades_over_its_tail_and_is_replaced_not_stacked() {
         fn a_fresh_slab_is_opaque_and_an_old_one_is_gone() {
             let o = Osd::volume(0.5, false);

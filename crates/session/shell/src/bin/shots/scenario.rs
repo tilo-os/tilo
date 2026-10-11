@@ -1236,7 +1236,7 @@ fn seed_file_picker_fixture(driver: &mut ShellDriver) {
         if !path.exists() {
             let _ = std::fs::write(
                 &path,
-                vec![b'x'; usize::try_from(kilobytes * 1000).unwrap_or(0)],
+                vec![b'x'; usize::try_from(kilobytes.saturating_mul(1000)).unwrap_or(0)],
             );
         }
     }

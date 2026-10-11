@@ -864,7 +864,7 @@ impl MouseKeyboardPane {
                     level,
                 )
                 .with_id("input.map.level")
-                .with_accessible_name(&t("input-map-level"));
+                .with_accessible_name(t("input-map-level"));
                 let layers = self.cx.bind(
                     layers,
                     effect(InputEffect::SET_PREVIEW_LEVEL).map(|index: usize| index.to_string()),
@@ -1090,8 +1090,8 @@ impl MouseKeyboardPane {
     }
 }
 
-/// The name of a modifier layer: XKB levels run base, Shift, AltGr,
-/// Shift + AltGr.
+/// The name of a modifier layer: XKB levels run base, Shift, `AltGr`,
+/// Shift + `AltGr`.
 fn layer_key(level: usize) -> &'static str {
     match level {
         0 => "input-layer-base",

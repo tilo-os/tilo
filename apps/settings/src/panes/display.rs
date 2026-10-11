@@ -4115,8 +4115,8 @@ mod tests {
             .build_device_arrangement_card()
             .expect("discovered peer has a real canvas");
         let mut names = Vec::new();
-        let page = crate::widgets::cards(vec![card]);
-        accessible_names(page.as_ref(), &mut names);
+        let arrangement = crate::widgets::cards(vec![card]);
+        accessible_names(arrangement.as_ref(), &mut names);
         assert!(
             names
                 .iter()

@@ -13008,6 +13008,10 @@ impl ShellOverlayHost {
 
     /// Run one editable navigation or window shortcut. `false` when
     /// `action` is not one of them.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one dispatch over every navigation shortcut"
+    )]
     fn run_navigation_shortcut(
         &mut self,
         action: settings_store::hardware::ShortcutAction,

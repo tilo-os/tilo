@@ -3480,6 +3480,10 @@ impl ForeignFrameStore {
     /// The toplevel and its subsurfaces are flattened onto one canvas at the
     /// densest one's density, each resampled to where its logical position
     /// and size put it, and the window is cut out of that.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one snapshot assembled from every layer of the surface"
+    )]
     pub fn snapshot(&self, id: SurfaceId) -> Option<FrameSnapshot> {
         let children = self.children_of(id);
         let guard = self
@@ -6212,7 +6216,7 @@ mod tests {
 
     /// An opaque `w`x`h` frame of one colour.
     fn solid_frame(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
-        [rgb[0], rgb[1], rgb[2], 255].repeat(usize::try_from(w * h).expect("fits"))
+        [rgb[0], rgb[1], rgb[2], 255].repeat(usize::try_from(w.saturating_mul(h)).expect("fits"))
     }
 
     fn scaled(buffer_scale: i32) -> SurfaceScale {
