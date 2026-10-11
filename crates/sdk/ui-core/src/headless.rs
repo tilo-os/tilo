@@ -9282,9 +9282,6 @@ mod tests {
         fn name(&self) -> &str {
             self.name
         }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
-        }
     }
 
     #[test]
@@ -9491,9 +9488,6 @@ mod tests {
         }
         fn name(&self) -> &str {
             "Entrance"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 

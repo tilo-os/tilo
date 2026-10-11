@@ -39,10 +39,6 @@ impl Widget for LocalEffectProbe {
         "local-effect-probe"
     }
 
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
-    }
-
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[EFFECT_TYPE]
     }

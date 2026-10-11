@@ -1472,7 +1472,11 @@ pub trait Widget {
         Vec::new()
     }
 
-    fn get_rect(&self) -> vello::kurbo::Rect;
+    /// The rectangle this widget occupies. The default, for widgets that
+    /// keep no geometry, is empty.
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        vello::kurbo::Rect::ZERO
+    }
 
     /// Absolute logical clip applied to ordinary children during painting and
     /// pointer routing. Inspectors and enclosing scroll regions must respect
@@ -3308,10 +3312,6 @@ mod tests {
         fn name(&self) -> &'static str {
             "CollabProbe"
         }
-
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
-        }
     }
 
     #[test]
@@ -3379,9 +3379,6 @@ mod tests {
                 }
                 fn name(&self) -> &str {
                     "Observed"
-                }
-                fn get_rect(&self) -> vello::kurbo::Rect {
-                    vello::kurbo::Rect::ZERO
                 }
             }
             use automerge::transaction::Transactable;
@@ -3613,9 +3610,6 @@ pub(crate) mod control_result_probe {
         }
         fn name(&self) -> &'static str {
             "ControlResultProbe"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["test.control-result.run"]

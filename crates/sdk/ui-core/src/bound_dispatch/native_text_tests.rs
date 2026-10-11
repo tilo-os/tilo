@@ -48,9 +48,6 @@ impl Widget for TextOwner {
     ) -> NodeId {
         tree.new_leaf(taffy::Style::default()).unwrap()
     }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
-    }
     fn name(&self) -> &str {
         "Text owner"
     }

@@ -136,9 +136,6 @@ impl Widget for PtyRoot {
     fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
         panic!("hidden PTY progress must not paint");
     }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
-    }
     fn name(&self) -> &'static str {
         "native-pty"
     }

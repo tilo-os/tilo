@@ -25,9 +25,6 @@ impl Widget for DummyApp {
     fn name(&self) -> &'static str {
         "DummyApp"
     }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
-    }
 }
 
 impl AppWidget for DummyApp {

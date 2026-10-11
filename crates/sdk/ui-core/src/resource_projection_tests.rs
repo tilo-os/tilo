@@ -157,9 +157,6 @@ impl Widget for SemanticCountingPublisher {
     fn name(&self) -> &'static str {
         "counting-publisher"
     }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
-    }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.counts[1].set(self.counts[1].get() + 1);
         Some(
@@ -352,9 +349,6 @@ impl Widget for InventoryOnlyPublisher {
     fn name(&self) -> &'static str {
         "counting-publisher"
     }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
-    }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.counts[1].set(self.counts[1].get() + 1);
         Some(
@@ -409,9 +403,6 @@ impl Widget for FastInventoryPublisher {
     }
     fn name(&self) -> &'static str {
         "counting-publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.counts[1].set(self.counts[1].get() + 1);

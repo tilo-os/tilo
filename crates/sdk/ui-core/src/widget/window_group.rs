@@ -3194,9 +3194,6 @@ mod tests {
         fn name(&self) -> &'static str {
             "Starting"
         }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
-        }
         fn presented(&self) -> bool {
             self.presented
         }
@@ -3236,9 +3233,6 @@ mod tests {
         }
         fn name(&self) -> &'static str {
             "Restructuring"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
         fn take_structure_dirty(&mut self) -> bool {
             self.drained.set(self.drained.get() + 1);
@@ -3469,9 +3463,6 @@ mod tests {
         }
         fn name(&self) -> &'static str {
             "Latching"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
         fn presented(&self) -> bool {
             self.asked.set(self.asked.get().saturating_add(1));

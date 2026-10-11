@@ -46,9 +46,6 @@ impl Widget for TwoKids {
     fn name(&self) -> &'static str {
         "two-kids"
     }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
-    }
 }
 
 /// A shared `want_open` cell flips the modal's state in `sync`, modelling
@@ -109,9 +106,6 @@ impl Widget for ModalHost {
     }
     fn name(&self) -> &'static str {
         "modal-host"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 

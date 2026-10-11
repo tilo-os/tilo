@@ -71,9 +71,6 @@ impl Widget for Owner {
     fn name(&self) -> &str {
         "Acknowledgment owner"
     }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
-    }
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         self.sibling
             .as_mut()

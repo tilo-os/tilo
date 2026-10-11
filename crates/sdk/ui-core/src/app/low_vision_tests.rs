@@ -178,9 +178,6 @@ impl Widget for AppearanceRoot {
     fn name(&self) -> &'static str {
         "AppearanceRoot"
     }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
-    }
 }
 
 fn intent(

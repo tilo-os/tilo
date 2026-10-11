@@ -37,9 +37,6 @@ impl Widget for TestContent {
     fn name(&self) -> &'static str {
         "TestContent"
     }
-    fn get_rect(&self) -> Rect {
-        Rect::ZERO
-    }
 }
 
 /// Counts the events it was forwarded; 200×`height` so it lands inside the

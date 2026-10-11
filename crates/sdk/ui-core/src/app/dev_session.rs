@@ -313,10 +313,6 @@ impl crate::widget::Widget for DevCaretField {
         "DevCaretField"
     }
 
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
-    }
-
     fn is_focusable(&self) -> bool {
         true
     }

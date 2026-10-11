@@ -793,9 +793,6 @@ impl Widget for AnonymousFocusProbe {
         nodes.insert(node, self as *mut dyn Widget);
         node
     }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
-    }
     fn is_focusable(&self) -> bool {
         true
     }
@@ -875,9 +872,6 @@ mod tests {
         }
         fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {
             panic!("unsettled geometry must not be applied")
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
         }
     }
 

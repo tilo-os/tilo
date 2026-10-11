@@ -430,9 +430,6 @@ impl Widget for CounterCard {
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.replaced)
     }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
-    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
     }

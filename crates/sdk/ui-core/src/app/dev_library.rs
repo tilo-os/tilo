@@ -487,10 +487,6 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
         fn name(&self) -> &str {
             "reloaded"
         }
-
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
-        }
     }
 
     impl crate::widget::AppWidget for ReloadedProbe {
