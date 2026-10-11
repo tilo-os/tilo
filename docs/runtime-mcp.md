@@ -71,6 +71,10 @@ native host uses `CollaborationManager::for_native_record` and must supply the
 authenticated native document owner; `new()` and `for_record()` retain their
 legacy transport contract.
 
+The [joined development launch proposal](architecture/development-source-launches.md)
+defines the separate owner consent needed for a native launch into a joined
+room. It is a design for review, not an available grant or launch option.
+
 The standalone runtime keeps its workspace's files in the profile and shows
 them in `$HOME/Tilo/<workspace>` (`~/Tilo/Home` for a new profile), an ordinary
 folder any program can use. Changes cross both ways within about two seconds:
