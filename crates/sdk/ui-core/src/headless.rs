@@ -11751,13 +11751,7 @@ mod tests {
             dyn crate::record::capability::RecordScoped
         );
 
-        crate::testing::inert_widget_methods!(
-            leaf_layout,
-            apply_layout,
-            draw,
-            get_rect,
-            name = "RecordRootProbe"
-        );
+        crate::testing::inert_widget_methods!(leaf_layout, name = "RecordRootProbe");
     }
 
     impl crate::record::capability::RecordScoped for RecordRootProbe {
