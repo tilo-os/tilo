@@ -423,13 +423,84 @@ fn undo_targets(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Vec<Versio
         .collect()
 }
 
+/// What [`StepIndex`] keeps of a change: what telling its steps apart needs
+/// (its author, time, run, invoker, gesture and change kind). The rest of
+/// its entry (what it did, the action it ran, its resource) stays in the
+/// document and is read again for the steps an undo or redo takes
+/// ([`StepIndex::full`]): an index of a long history holds a few dozen bytes
+/// per change, not the whole entry.
+struct Step {
+    hash: ChangeHash,
+    /// Shared by every change of the same author.
+    actor: std::rc::Rc<str>,
+    time_ms: i64,
+    /// Of its entry, when it has one.
+    entry: Option<Box<StepEntry>>,
+    /// The raw message of a change without an entry.
+    message: Option<Box<str>>,
+}
+
+struct StepEntry {
+    group: Option<tilo_actions::ActionGroup>,
+    invoker: Option<tilo_actions::ActionInvoker>,
+    gesture: Option<tilo_actions::ActionId>,
+    kind: Option<tilo_actions::ActionKind>,
+    change: tilo_actions::ChangeKind,
+}
+
+impl Step {
+    fn of(version: Version, actor: std::rc::Rc<str>) -> Self {
+        let entry = version.context.map(|context| {
+            Box::new(StepEntry {
+                group: context.group,
+                invoker: context.invoker,
+                gesture: context.gesture,
+                kind: context.kind,
+                change: context.change,
+            })
+        });
+        Self {
+            hash: version.hash,
+            actor,
+            time_ms: version.time_ms,
+            message: version
+                .message
+                .filter(|_| entry.is_none())
+                .map(String::into_boxed_str),
+            entry,
+        }
+    }
+
+    /// The change as a version holding what the index keeps of it.
+    fn version(&self) -> Version {
+        Version {
+            hash: self.hash,
+            actor: self.actor.to_string(),
+            time_ms: self.time_ms,
+            context: self
+                .entry
+                .as_deref()
+                .map(|entry| tilo_actions::ActionContext {
+                    group: entry.group.clone(),
+                    invoker: entry.invoker.clone(),
+                    gesture: entry.gesture,
+                    kind: entry.kind,
+                    change: entry.change,
+                    ..tilo_actions::ActionContext::default()
+                }),
+            message: self.message.as_deref().map(str::to_owned),
+        }
+    }
+}
+
 /// A document's history read once and kept up to date: its changes in
 /// causal order and what each one was to the steps of its author. A
 /// change's kind never changes, so it is read once; new changes are read
 /// as they arrive.
 #[derive(Default)]
 pub struct StepIndex {
-    versions: Vec<Version>,
+    steps: Vec<Step>,
+    actors: HashSet<std::rc::Rc<str>>,
     positions: std::collections::HashMap<ChangeHash, usize>,
     kinds: std::collections::HashMap<ChangeHash, Kind>,
     heads: Vec<ChangeHash>,
@@ -449,15 +520,41 @@ impl StepIndex {
                 continue;
             }
             let version = tilo_resource::history::version_of(document, meta);
-            self.positions.insert(version.hash, self.versions.len());
-            self.versions.push(version);
+            let actor = if let Some(actor) = self.actors.get(version.actor.as_str()) {
+                std::rc::Rc::clone(actor)
+            } else {
+                let actor: std::rc::Rc<str> = version.actor.as_str().into();
+                self.actors.insert(std::rc::Rc::clone(&actor));
+                actor
+            };
+            self.positions.insert(version.hash, self.steps.len());
+            self.steps.push(Step::of(version, actor));
         }
         self.heads = heads;
     }
 
-    /// Every change, oldest first.
-    pub fn versions(&self) -> &[Version] {
-        &self.versions
+    /// How many changes the index holds.
+    pub fn len(&self) -> usize {
+        self.steps.len()
+    }
+
+    /// Whether the index holds no change.
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+
+    /// The hash of the change at `position` in causal order.
+    pub fn hash(&self, position: usize) -> Option<ChangeHash> {
+        self.steps.get(position).map(|step| step.hash)
+    }
+
+    /// The change at `position` with everything its entry records, read
+    /// again from `doc`.
+    pub fn full(&self, doc: &AutoCommit, position: usize) -> Option<Version> {
+        let hash = self.steps.get(position)?.hash;
+        let document = doc.committed_document();
+        let meta = document.get_change_meta_by_hash(&hash)?;
+        Some(tilo_resource::history::version_of(document, &meta))
     }
 
     /// Where a change sits in causal order.
@@ -465,10 +562,7 @@ impl StepIndex {
         self.positions.get(hash).copied()
     }
 
-    fn kind(&mut self, doc: &AutoCommit, index: usize) -> Kind {
-        let Some(version) = self.versions.get(index) else {
-            return Kind::Bookkeeping;
-        };
+    fn kind(&mut self, doc: &AutoCommit, version: &Version) -> Kind {
         if let Some(kind) = self.kinds.get(&version.hash) {
             return kind.clone();
         }
@@ -494,15 +588,15 @@ impl StepIndex {
         let mut superseded: HashSet<String> = HashSet::new();
         let mut steps: Vec<Vec<Version>> = Vec::new();
         let mut gesture = None;
-        for index in (0..self.versions.len()).rev() {
-            let Some(version) = self.versions.get(index) else {
+        for index in (0..self.steps.len()).rev() {
+            let Some(version) = self.steps.get(index).map(Step::version) else {
                 continue;
             };
-            if !owns(version) {
+            if !owns(&version) {
                 continue;
             }
             let hash = version.hash.to_string();
-            match self.kind(doc, index) {
+            match self.kind(doc, &version) {
                 Kind::Undo(_) | Kind::Bookkeeping => continue,
                 // Taken back again once what it brought back is undone.
                 Kind::Redo(brought_back)
@@ -516,26 +610,26 @@ impl StepIndex {
                 Kind::Edit if superseded.contains(&hash) => continue,
                 Kind::Edit => {}
             }
-            let Some(version) = self.versions.get(index) else {
-                continue;
-            };
             if undone.contains(&hash) {
                 gesture = None;
                 continue;
             }
-            let of = step_of(version);
+            let of = step_of(&version);
+            let Some(full) = self.full(doc, index) else {
+                continue;
+            };
             if of.is_some()
                 && of == gesture
                 && let Some(step) = steps.last_mut()
             {
-                step.push(version.clone());
+                step.push(full);
                 continue;
             }
             if steps.len() >= limit {
                 break;
             }
             gesture = of;
-            steps.push(vec![version.clone()]);
+            steps.push(vec![full]);
         }
         steps
     }
@@ -553,23 +647,23 @@ impl StepIndex {
         let undone = undone(doc);
         let mut superseded: HashSet<String> = HashSet::new();
         let mut targets = Vec::new();
-        for index in (0..self.versions.len()).rev() {
+        for index in (0..self.steps.len()).rev() {
             if targets.len() >= limit {
                 break;
             }
-            let Some(version) = self.versions.get(index) else {
+            let Some(version) = self.steps.get(index).map(Step::version) else {
                 continue;
             };
-            if !owns(version) {
+            if !owns(&version) {
                 continue;
             }
             let hash = version.hash.to_string();
-            match self.kind(doc, index) {
+            match self.kind(doc, &version) {
                 Kind::Undo(took_back) => {
                     if took_back.iter().any(|change| undone.contains(change))
-                        && let Some(version) = self.versions.get(index)
+                        && let Some(version) = self.full(doc, index)
                     {
-                        targets.push(version.clone());
+                        targets.push(version);
                     }
                 }
                 Kind::Redo(brought_back) => superseded.extend(brought_back),
@@ -582,8 +676,6 @@ impl StepIndex {
     }
 }
 
-/// The steps in effect that `owns` claims, newest first, at most `limit`,
-/// one gesture each (see [`StepIndex::steps`]).
 pub fn steps_in_effect(
     doc: &AutoCommit,
     owns: &dyn Fn(&Version) -> bool,

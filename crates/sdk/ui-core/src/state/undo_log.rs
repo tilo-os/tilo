@@ -200,7 +200,7 @@ impl UndoLog {
             origin_len: 0,
         };
         log.index.borrow_mut().refresh(doc);
-        log.origin_len = log.index.borrow().versions().len();
+        log.origin_len = log.index.borrow().len();
         log.open_next();
         log
     }
@@ -237,7 +237,7 @@ impl UndoLog {
         // What arrived is its authors' steps, not this window's open one.
         let mut index = self.index.borrow_mut();
         index.refresh(doc);
-        self.origin_len = index.versions().len();
+        self.origin_len = index.len();
         drop(index);
         self.open_next();
     }
@@ -313,12 +313,8 @@ impl UndoLog {
         // over (the open step, an unrecorded raw write) are nobody's step.
         let mut index = self.index.borrow_mut();
         index.refresh(doc);
-        let open = index
-            .versions()
-            .get(self.origin_len..)
-            .unwrap_or_default()
-            .iter()
-            .map(|version| version.hash)
+        let open = (self.origin_len..index.len())
+            .filter_map(|position| index.hash(position))
             .filter(|hash| !self.presented.contains_key(hash))
             .collect();
         Reach {
@@ -739,7 +735,7 @@ impl UndoLog {
                 back.iter()
                     .filter_map(|hash| {
                         let hash: ChangeHash = hash.parse().ok()?;
-                        index.versions().get(index.position(&hash)?).cloned()
+                        index.full(doc, index.position(&hash)?)
                     })
                     .collect()
             })
@@ -800,31 +796,27 @@ impl UndoLog {
             .collect();
         // Newest first from the change standing for the redo: the redo move
         // that brought the original back (a settle may have followed it).
-        let candidates: Vec<Version> = {
+        let candidates: Vec<ChangeHash> = {
             let mut index = self.index.borrow_mut();
             index.refresh(doc);
             let from = index.position(&standing.hash)?;
-            index
-                .versions()
-                .get(..=from)?
-                .iter()
+            (0..=from)
                 .rev()
-                .cloned()
+                .filter_map(|position| index.hash(position))
                 .collect()
         };
-        let moved = candidates.into_iter().find_map(|version| {
+        let moved = candidates.into_iter().find_map(|hash| {
             let document = doc.committed_document();
-            let meta = document.get_change_meta_by_hash(&version.hash)?;
-            let marks = document
-                .diff(&meta.deps, &[version.hash])
-                .iter()
-                .any(|patch| {
-                    patch.path.is_empty()
-                        && matches!(&patch.action,
+            let meta = document.get_change_meta_by_hash(&hash)?;
+            let marks = document.diff(&meta.deps, &[hash]).iter().any(|patch| {
+                patch.path.is_empty()
+                    && matches!(&patch.action,
                             automerge::PatchAction::PutMap { key, .. }
                             | automerge::PatchAction::DeleteMap { key } if keys.contains(key))
-                });
-            marks.then_some(version)
+            });
+            // The index keeps only what finds steps; the redo's entry is
+            // read whole.
+            marks.then(|| tilo_resource::history::version_of(document, &meta))
         })?;
         let context = moved.context.as_ref()?;
         if moves_history(context) != Some(&HistoryOp::Redo) {
@@ -994,13 +986,7 @@ impl UndoLog {
         let mut index = self.index.borrow_mut();
         index.refresh(doc);
         let position = index.position(hash)?;
-        index
-            .versions()
-            .get(position)?
-            .context
-            .as_ref()?
-            .action
-            .clone()
+        index.full(doc, position)?.context?.action
     }
 
     /// Take back the step `author` would undo (see
