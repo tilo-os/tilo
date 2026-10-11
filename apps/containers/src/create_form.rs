@@ -83,14 +83,6 @@ impl ui::widget::Decorator for DraftInput {
         &mut self.text
     }
 
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-
     /// The field answers for its node, so input the host routes by node
     /// (keys, accessibility actions) reaches the control's splices.
     fn build_layout(

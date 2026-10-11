@@ -693,7 +693,7 @@ impl Widget for ChordChart {
             .collect();
         Some(root)
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         keys: &[u64],

@@ -6,6 +6,10 @@
 //! - `--bench [SCENARIO:]FRAMES` renders a screenshot scenario (the sample
 //!   library's Home by default) `FRAMES` times headlessly and reports the
 //!   per-frame CPU cost of sync, layout and draw.
+//! - `--probe-spotify-engine VALUE` (the value is ignored) runs native Spotify
+//!   playback's self-check without an account, network or audio device. In a
+//!   release build that code is in `libtilo_spotify_engine.so`, so the check
+//!   proves Music loads its engine library and runs it.
 
 use ui::framework::Command;
 
@@ -19,7 +23,23 @@ pub const COMMANDS: &[Command] = &[
         option: "--bench",
         run: bench,
     },
+    Command {
+        option: "--probe-spotify-engine",
+        run: probe_spotify_engine,
+    },
 ];
+
+#[cfg(feature = "spotify-native")]
+fn probe_spotify_engine(_: &str) -> Result<(), String> {
+    let report = crate::audio::spotify_audio::self_check()?;
+    println!("music --probe-spotify-engine: {report}");
+    Ok(())
+}
+
+#[cfg(not(feature = "spotify-native"))]
+fn probe_spotify_engine(_: &str) -> Result<(), String> {
+    Err("native Spotify playback needs the `spotify-native` feature".to_string())
+}
 
 fn probe(query: &str) -> Result<(), String> {
     let query = if query.trim().is_empty() {

@@ -897,6 +897,7 @@ impl Widget for Slider {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
@@ -1244,6 +1245,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Increment,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
@@ -1317,6 +1319,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::Increment,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -1324,6 +1327,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::Decrement,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -1333,6 +1337,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::SetValue("80%".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -1342,6 +1347,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::SetValue("0.2".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -1358,6 +1364,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut s,
                 &Action::Increment,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -1462,6 +1469,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut slider,
                 &crate::a11y::Action::SetValue("80%".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

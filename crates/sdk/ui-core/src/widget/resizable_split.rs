@@ -481,6 +481,7 @@ impl Widget for SplitHandle {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &crate::widget::ModelPath,
     ) -> bool {
@@ -1008,6 +1009,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &crate::widget::ModelPath,
     ) -> bool {
@@ -1560,6 +1562,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         assert!(s.perform_action(
             &crate::a11y::Action::Decrement,
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));

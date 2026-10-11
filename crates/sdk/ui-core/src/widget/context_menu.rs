@@ -1832,6 +1832,7 @@ impl crate::widget::Decorator for MenuButton {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
@@ -1843,7 +1844,7 @@ impl crate::widget::Decorator for MenuButton {
             }
             return true;
         }
-        Widget::perform_action(&mut self.button, action, state, root)
+        Widget::perform_action(&mut self.button, action, &[], state, root)
     }
 
     fn draw_overlay(
@@ -1876,13 +1877,6 @@ impl crate::widget::Decorator for MenuButton {
 
     // A host reaches its menu button in a tree it does not own (a shell
     // header) to refresh the rows or open it from a stage hook.
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
 
     fn modal_capture(&self) -> Option<Rect> {
         self.menu.modal_capture()

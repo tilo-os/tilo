@@ -3698,8 +3698,13 @@ impl Widget for ChatApp {
                         if self.rename.is_none() {
                             return false;
                         }
-                        if !ui::Widget::perform_action(&mut self.rename_input, action, state, path)
-                        {
+                        if !ui::Widget::perform_action(
+                            &mut self.rename_input,
+                            action,
+                            &[],
+                            state,
+                            path,
+                        ) {
                             return false;
                         }
                     }
@@ -3998,6 +4003,7 @@ impl ChatApp {
     /// still requests a clean relayout).
     pub(crate) fn request_relayout(&mut self) {
         self.relayout = true;
+        self.canonical_dirty = true;
     }
 }
 

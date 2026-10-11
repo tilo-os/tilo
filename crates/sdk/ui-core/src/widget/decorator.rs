@@ -34,8 +34,8 @@
 //! and visits every node exactly once. The only methods that describe the
 //! decorator rather than the inner widget are the identity ones:
 //! `concrete_type_name` names the decorator's type and
-//! [`as_any`](Widget::as_any) and [`as_any_mut`](Widget::as_any_mut) are
-//! `None` unless overridden.
+//! [`as_any`](Widget::as_any) and [`as_any_mut`](Widget::as_any_mut)
+//! downcast to the decorator itself unless overridden.
 //!
 //! A boxed [`Element`](super::Element) is wrapped with `type Inner = dyn
 //! Widget;` and accessors returning `&(dyn Widget + 'static)`.
@@ -48,8 +48,7 @@
 //!   `take_control_invocation`) includes the inner widget's answer:
 //!   `let mut all = mine; all.extend(self.inner().resources(doc)); all`.
 //! * **Override the host's entry point.** Some [`Widget`] defaults are
-//!   derived from another method (`perform_action_at` calls
-//!   `perform_action`, `tooltip_target_at` calls `tooltip`,
+//!   derived from another method (`tooltip_target_at` calls `tooltip`,
 //!   `collect_damage` calls `needs_redraw`). Here each forwards to the inner
 //!   widget's own method, so an override of the derived-from method alone is
 //!   not what the host calls: override the entry point the host uses.
@@ -126,7 +125,7 @@ fn stand_in(
 
 /// A widget that extends another by overriding a few [`Widget`] methods and
 /// forwarding the rest. See the [module docs](self).
-pub trait Decorator {
+pub trait Decorator: Sized + 'static {
     /// The widget this one extends.
     type Inner: Widget + ?Sized;
 
@@ -320,11 +319,11 @@ pub trait Decorator {
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
-        None
+        Some(self)
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        None
+        Some(self)
     }
 
     fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
@@ -459,21 +458,12 @@ pub trait Decorator {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        self.inner_mut().perform_action(action, state, path)
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.inner_mut()
-            .perform_action_at(action, key_path, state, path)
+            .perform_action(action, key_path, state, path)
     }
 
     fn perform_semantic_action(
@@ -643,6 +633,14 @@ pub trait Decorator {
         self.inner_mut().take_structure_dirty()
     }
 
+    /// A decorator's structure flag is its own [`Decorator::take_structure_dirty`]
+    /// (which may add flags of its own), so by default it says
+    /// [`super::StructureChange::Rebuild`]; one that adds no flags forwards
+    /// its inner widget's change by overriding this.
+    fn take_structure_change(&mut self) -> super::StructureChange {
+        super::StructureChange::of(Decorator::take_structure_dirty(self))
+    }
+
     fn has_pending_visual_work(&self) -> bool {
         self.inner().has_pending_visual_work()
     }
@@ -761,7 +759,7 @@ pub trait Decorator {
 
 /// Every decorator is a widget: each method is the decorator's own, which
 /// forwards to the inner widget unless the decorator overrides it.
-impl<T: Decorator + 'static> Widget for T {
+impl<T: Decorator> Widget for T {
     #[doc(hidden)]
     fn concrete_type_name(&self) -> &'static str {
         Decorator::concrete_type_name(self)
@@ -1090,20 +1088,11 @@ impl<T: Decorator + 'static> Widget for T {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        Decorator::perform_action(self, action, state, path)
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        Decorator::perform_action_at(self, action, key_path, state, path)
+        Decorator::perform_action(self, action, key_path, state, path)
     }
 
     fn perform_semantic_action(
@@ -1269,6 +1258,10 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn take_structure_dirty(&mut self) -> bool {
         Decorator::take_structure_dirty(self)
+    }
+
+    fn take_structure_change(&mut self) -> super::StructureChange {
+        Decorator::take_structure_change(self)
     }
 
     fn has_pending_visual_work(&self) -> bool {

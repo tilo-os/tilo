@@ -383,9 +383,58 @@ What was behind it:
   and the editor and the title damage it where it is and was.
 
 Headings, quotes, list and checklist items and rules now damage their row of
-the editor too. A key still rebuilds the tree when it adds or removes a header
-line or a tag, and still repaints the whole editor in a note with a code block
-or a table.
+the editor too.
+
+### Code blocks, tables, tags and page renames repaint what changed
+
+The same test drives a code block (in a note of four lines of prose and a
+two-line run), a table, tags and renames (same window, same three themes, same
+pixel comparison). Largest frame per change, of the 1,152,000 px app (most
+include the save bubble, ≈ 25,000 px):
+
+| Change | Before | After |
+|---|---:|---:|
+| A key in a code run's first line | 183,252 (the editor) | ≈ 59,300 (the line, the bubble) |
+| A key in a later code line | 213,898 (the editor) | ≈ 58,500 |
+| A key in prose in a note holding code | 213,898 (the editor) | ≈ 48,600 (as in any note) |
+| A key in a table cell | 1,152,000 (a rebuilt tree) | ≈ 57,500 (the cell, its editor, the bubble) |
+| A second tag joining the header's row | 1,152,000 (a rebuilt tree) | ≈ 92,200 (the header, the bubble) |
+| The first tag (the header grows, the page moves) | 1,152,000 (a rebuilt tree) | ≈ 817,800 (the page panel) |
+| A key in the page tree's rename field | 229,577 (the tree's column) | ≈ 12,300 (the field) |
+| Naming the note in its title (Enter) | 315,041 (the title, the tree's column) | ≈ 94,200 (the title, the row, the caret's line, the bubble) |
+| Committing the rename | 318,105 (the tree's column, the title) | ≈ 101,400 (the row, the title, the caret's line, the bubble) |
+
+What was behind it:
+
+- The block editor kept per-block parts only while *no* block was code or a
+  table, so one code block anywhere made every key repaint the editor. A code
+  run's ground (drawn by its first block) is now a part of its own; each code
+  line damages its line. A table is a frame part, one part per cell (each
+  row's card when the cells stack), the focused cell's editor and the controls.
+  Formula runs still repaint the editor.
+- A key in a table cell set the editor's *structure* dirty, rebuilding the
+  window's tree per key. The table's line measures the table from its text, so
+  the key now asks for a relayout.
+- A header that rebuilt its widgets (a tag, a caption line) rebuilt the
+  window's tree, and a rebuilt tree repainted the window. A widget can now say
+  its structural change is described (`StructureChange::Described`): its own
+  damage covers what its new children change. The window still rebuilds the
+  tree, but keeps the frame's damage, adding every widget box that came, went
+  or moved, matched by identity across the rebuild. Any other reason to
+  rebuild in that frame (`LayoutRuntime::request_rebuild`, a
+  `StructureChange::Rebuild`, a history or viewport recomposition) repaints
+  the window as before; a decorator or container forwards `Described` only by
+  overriding `take_structure_change`.
+- The page tree (`TreeView`) had no damage of its own: anything in it repainted
+  its column. A settled tree now records one part per visible row and one for
+  the rename field; motion, a drag, an open menu, delegated rows and navigation
+  tiles still repaint the tree. Each scene it keeps opens and closes its own
+  layers: splitting the body's clip layer across two appended scenes rendered
+  stray pixels at a row's corner on Metal.
+
+Still open: Enter or Backspace that adds or removes a block rebuilds the tree
+and repaints the window; a native window repaints whole while a blurred
+floating surface (the save bubble) shows.
 
 ## Verified shared-list CPU workload
 

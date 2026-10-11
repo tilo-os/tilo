@@ -1187,6 +1187,7 @@ impl Widget for FooterKey {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _: &mut crate::widget::Edits<'_>,
         _: &ModelPath,
     ) -> bool {
@@ -1205,7 +1206,7 @@ impl Widget for FooterKey {
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        target == self.action_target && self.perform_action(action, state, path)
+        target == self.action_target && self.perform_action(action, &[], state, path)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -2582,7 +2583,7 @@ fn activate_focused(
             .accessibility()
             .is_some_and(|node| node.role == crate::a11y::Role::Button);
         return (button || !buttons_only)
-            && widget.perform_action(&crate::a11y::Action::Activate, state, path);
+            && widget.perform_action(&crate::a11y::Action::Activate, &[], state, path);
     }
     widget
         .children_mut()

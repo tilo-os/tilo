@@ -1428,7 +1428,8 @@ impl ui::widget::Decorator for SnippetsApp {
                     core.body_editor.set_focused(true);
                     Some(true)
                 } else {
-                    let accepted = Widget::perform_action(&mut core.body_editor, action, doc, obj);
+                    let accepted =
+                        Widget::perform_action(&mut core.body_editor, action, &[], doc, obj);
                     core.flush_body_edit(doc);
                     Some(accepted)
                 }
@@ -1472,10 +1473,6 @@ impl ui::widget::Decorator for SnippetsApp {
             drop(core);
             Widget::text_review(&self.shell)
         }
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
     }
 
     fn name(&self) -> &'static str {

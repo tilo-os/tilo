@@ -3336,6 +3336,7 @@ mod tests {
             return Widget::perform_action(
                 widget,
                 action,
+                &[],
                 &mut crate::widget::Edits::lend(doc),
                 &ROOT,
             );

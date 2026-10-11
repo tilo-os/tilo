@@ -829,7 +829,7 @@ impl Widget for SankeyChart {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],

@@ -36,11 +36,11 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
     fn decorator_forwards_every_widget_method() {
         let widget = block_methods(include_str!("mod.rs"), "pub trait Widget {");
         let source = include_str!("decorator.rs");
-        let mut decorator = block_methods(source, "pub trait Decorator {");
+        let mut decorator = block_methods(source, "pub trait Decorator: Sized + 'static {");
         for accessor in ["inner", "inner_mut"] {
             assert!(decorator.remove(accessor), "Decorator::{accessor} missing");
         }
-        let blanket = block_methods(source, "impl<T: Decorator + 'static> Widget for T {");
+        let blanket = block_methods(source, "impl<T: Decorator> Widget for T {");
         assert!(
             widget.len() > 20,
             "parsed only {} Widget methods",

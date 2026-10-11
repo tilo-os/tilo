@@ -942,7 +942,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             else {
                 return Some(false);
             };
-            return Some(field.input.perform_action(action, state, path));
+            return Some(field.input.perform_action(action, &[], state, path));
         }
         None
     }
