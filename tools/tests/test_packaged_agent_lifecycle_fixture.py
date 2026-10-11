@@ -4610,13 +4610,30 @@ class PresentedEditorTargetTests(unittest.TestCase):
                          "provider.release_detached_task_turn(5)",
                          "provider.release_detached_task_turn(6)",
                          'task.get("applied_revision") == revision',
-                         '"Direction saved"', '"Direction applied"',
+                         "wait_direction_receipt_accessibility(",
+                         'socket, access, exact_task, saved, process, output, size',
+                         '"Direction applied"',
                          'task.get("status") == "done"', "provider.overflow_count() != 0"):
             self.assertIn(required, source)
+        receipt_status = inspect.getsource(PROOF.direction_receipt_accessibility)
+        for required in ('task.get("task_id") == receipt["task_id"]',
+                         'task.get("run_epoch") == receipt["run_epoch"]',
+                         'task.get("after_revision") == receipt["after_revision"]',
+                         'applied > receipt["after_revision"]',
+                         'applied == receipt["after_revision"]',
+                         '"Direction applied" if observation["owner_applied"] else "Direction saved"',
+                         'contradictory == 0', 'status["unknown_count"] == 0'):
+            self.assertIn(required, receipt_status)
+        receipt_wait = inspect.getsource(PROOF.wait_direction_receipt_accessibility)
+        self.assertIn('direction_receipt_accessibility(access, owner(), receipt,', receipt_wait)
         bootstrap = inspect.getsource(PROOF.bootstrap)
         self.assertLess(bootstrap.index("native_person_permission_downgrades("),
                         bootstrap.index("native_detached_queue_and_steer("))
-        self.assertIn('detached_task_evidence.get("provider_request_count") == 6', bootstrap)
+        self.assertIn('detached_task_submission_proven(detached_task_evidence)', bootstrap)
+        final_gate = inspect.getsource(PROOF.detached_task_submission_proven)
+        self.assertIn('evidence.get("provider_request_count") == 6', final_gate)
+        self.assertIn('"steer_visible_owner_receipt"', final_gate)
+        self.assertIn('"steer_visible_applied"', final_gate)
         control = inspect.getsource(PROOF.physical_detached_task_control)
         self.assertEqual(control.count('"op": "click_at"'), 1)
         for forbidden in ("DoAction", "SetText", "invoke(", '"op": "type"'):
@@ -8210,6 +8227,91 @@ class OwnedRimeSchemaTests(unittest.TestCase):
             self.assertFalse(observed["rime_selected_schema_observed"])
             self.assertFalse(observed["rime_schema_exists"])
             self.assertFalse(any(PROOF.owned_rime_schema_observation({}).values()))
+
+
+class DirectionReceiptObservationTests(unittest.TestCase):
+    def test_final_gate_accepts_truthful_early_applied_only_with_every_witness(self):
+        evidence = dict.fromkeys((
+            "ordinary_detached_seat", "same_private_editor", "physical_queue_submission",
+            "queue_owner_receipt", "queue_visible_accepted", "agent_consumed_queue",
+            "physical_steer_submission", "steer_owner_receipt", "steer_visible_owner_receipt",
+            "steer_visible_applied", "agent_consumed_direction", "same_managed_process",
+            "task_completed"), True)
+        evidence.update(steer_visible_saved=False, provider_request_count=6,
+                        provider_overflow_count=0)
+        self.assertTrue(PROOF.detached_task_submission_proven(evidence))
+        for witness in tuple(key for key, value in evidence.items() if value is True):
+            with self.subTest(missing=witness):
+                missing = dict(evidence)
+                del missing[witness]
+                self.assertFalse(PROOF.detached_task_submission_proven(missing))
+        self.assertFalse(PROOF.detached_task_submission_proven(None))
+
+    def test_status_requires_the_matching_exact_owner_frontier(self):
+        receipt = {"task_id": "private-task", "run_epoch": 7, "after_revision": 5}
+        for applied, labels, accepted in (
+                (4, ["Direction saved"], True),
+                (5, ["Direction applied"], True),
+                (4, ["Direction applied"], False),
+                (5, ["Direction saved"], False),
+                (5, [], False),
+                (4, ["Direction saved", "Direction applied"], False),
+                (4, ["Direction saved", "Status unknown: private title"], False),
+                (4, ["Direction saved", "Direction saved"], False)):
+            tree = {f"/node-{index}": repr(label) for index, label in enumerate(labels)}
+            client = SimpleNamespace(named=lambda _tree, label: [
+                path for path, name in zip(tree, labels) if name == label])
+            observation = {}
+            with self.subTest(applied=applied, labels=labels), \
+                    patch.object(PROOF.atspi, "atspi_address", return_value="owned"), \
+                    patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                    patch.object(PROOF, "accessible_subtree", return_value=tree), \
+                    patch.object(PROOF, "decoded_accessible_names", return_value=dict(zip(tree, labels))):
+                self.assertEqual(PROOF.direction_receipt_accessibility(
+                    {"bus": "owned", "window": "/window"},
+                    {**receipt, "applied_revision": applied}, receipt,
+                    observation=observation), accepted)
+            self.assertTrue(observation["tree_observable"])
+            self.assertNotIn("private-task", json.dumps(observation))
+            self.assertNotIn("private title", json.dumps(observation))
+
+    def test_changed_owner_receipt_is_rejected_before_reading_at(self):
+        receipt = {"task_id": "task", "run_epoch": 7, "after_revision": 5}
+        for change in ({"task_id": "other"}, {"run_epoch": 8},
+                       {"after_revision": 6}, {"applied_revision": 6}):
+            with self.subTest(change=change), \
+                    patch.object(PROOF, "task_phase_accessibility") as status:
+                with self.assertRaisesRegex(RuntimeError, "exact owner receipt"):
+                    PROOF.direction_receipt_accessibility(
+                        {}, {**receipt, "applied_revision": 4, **change}, receipt,
+                        observation={})
+                status.assert_not_called()
+
+    def test_failure_keeps_closed_observation_snapshot_and_original_error(self):
+        for snapshot_fails in (False, True):
+            error = PROOF.ProofTimeout("original wait failure")
+            receipt = {"task_id": "secret", "run_epoch": 7, "after_revision": 5}
+            with self.subTest(snapshot_fails=snapshot_fails), \
+                    tempfile.TemporaryDirectory() as directory:
+                output = pathlib.Path(directory)
+                def wait(_label, predicate, _process):
+                    self.assertFalse(predicate())
+                    raise error
+                with patch.object(PROOF, "wait_for", side_effect=wait), \
+                        patch.object(PROOF, "call", side_effect=(
+                            RuntimeError("snapshot failed") if snapshot_fails else None),
+                            return_value={}) as capture, \
+                        patch.object(PROOF, "require_ok"):
+                    with self.assertRaises(PROOF.ProofTimeout) as raised:
+                        PROOF.wait_direction_receipt_accessibility(
+                            "owned-socket", {}, lambda: None, receipt, None, output, "800x600")
+                self.assertIs(raised.exception, error)
+                observation = json.loads((output / "detached-direction-saved-observation.json").read_text())
+                self.assertFalse(observation["task_observable"])
+                self.assertEqual(observation["snapshot_captured"], not snapshot_fails)
+                self.assertNotIn("secret", json.dumps(observation))
+                capture.assert_called_once_with("owned-socket", {
+                    "op": "snapshot", "path": str(output / "detached-direction-saved-failure-800x600.png")})
 
 
 if __name__ == "__main__":

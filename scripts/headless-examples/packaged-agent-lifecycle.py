@@ -1233,8 +1233,13 @@ def accessibility_control_enabled(access, control):
     return bool(int(words.group(1)) & AT_SPI_ENABLED_STATE_BIT)
 
 
-def task_phase_accessibility(access, label):
+def task_phase_accessibility(access, label, *, observation=None):
     """Observe one exact public status label in the mounted Chat window."""
+    if observation is not None:
+        observation.clear()
+        observation.update(tree_observable=False, expected_count=None,
+                           saved_count=None, applied_count=None, unknown_count=None,
+                           private_content_recorded=False)
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
     try:
         tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
@@ -1247,7 +1252,72 @@ def task_phase_accessibility(access, label):
         # wait retries a fresh walk under its original deadline; absence is
         # never evidence that the requested task phase has been observed.
         return False
-    return len(client.named(tree, label)) == 1
+    count = len(client.named(tree, label))
+    if observation is not None:
+        names = list(decoded_accessible_names(tree).values())
+        observation.update(
+            tree_observable=True, expected_count=count,
+            saved_count=names.count("Direction saved"),
+            applied_count=names.count("Direction applied"),
+            unknown_count=sum(name == "Status unknown" or name.startswith("Status unknown: ")
+                              or name == "Direction sent; waiting for Task Center to confirm the outcome"
+                              for name in names),
+        )
+    return count == 1
+
+
+def direction_receipt_accessibility(access, task, receipt, *, observation):
+    """Require the exact status corresponding to this owner-confirmed revision."""
+    observation.clear()
+    observation.update(task_observable=isinstance(task, dict), same_task=None,
+                       same_run=None, revision_matches=None, owner_applied=None,
+                       tree_observable=False, expected_count=None, saved_count=None,
+                       applied_count=None, unknown_count=None,
+                       private_content_recorded=False)
+    if not isinstance(task, dict):
+        return False
+    observation.update(same_task=task.get("task_id") == receipt["task_id"],
+                       same_run=task.get("run_epoch") == receipt["run_epoch"],
+                       revision_matches=task.get("after_revision") == receipt["after_revision"])
+    applied = task.get("applied_revision")
+    if not all(observation[key] for key in ("same_task", "same_run", "revision_matches")) \
+            or type(applied) is not int or applied > receipt["after_revision"]:
+        raise RuntimeError("the detached direction status changed its exact owner receipt")
+    observation["owner_applied"] = applied == receipt["after_revision"]
+    label = "Direction applied" if observation["owner_applied"] else "Direction saved"
+    status = {}
+    try:
+        matched = task_phase_accessibility(access, label, observation=status)
+    finally:
+        observation.update(status)
+    contradictory = status["saved_count"] if observation["owner_applied"] else status["applied_count"]
+    return matched and contradictory == 0 and status["unknown_count"] == 0
+
+
+def wait_direction_receipt_accessibility(socket, access, owner, receipt, process, output, size):
+    """Keep a failed exact-owner status wait's closed AT sample and owned scene."""
+    observation = {}
+    try:
+        wait_for("actual detached owner-correlated direction label", lambda:
+            direction_receipt_accessibility(access, owner(), receipt,
+                                            observation=observation), process)
+        return dict(observation)
+    except (RuntimeError, OSError, atspi.GateError):
+        observation["snapshot_captured"] = False
+        try:
+            require_ok(call(socket, {"op": "snapshot", "path": str(
+                output / f"detached-direction-saved-failure-{size}.png"
+            )}))
+            observation["snapshot_captured"] = True
+        except (RuntimeError, OSError, atspi.GateError):
+            pass
+        try:
+            (output / "detached-direction-saved-observation.json").write_text(
+                json.dumps(observation, indent=2) + "\n"
+            )
+        except OSError:
+            pass
+        raise
 
 
 def _finite_rect(value, label):
@@ -8926,8 +8996,8 @@ def native_detached_queue_and_steer(socket, room, provider, output, size, proces
     revision = saved["after_revision"]
     wait_for("receipt-backed detached Steer draft clear", lambda:
         private_editor_value_matches(access, ""), process)
-    wait_for("actual detached Direction saved label", lambda:
-        task_phase_accessibility(access, "Direction saved"), process)
+    direction_status = wait_direction_receipt_accessibility(
+        socket, access, exact_task, saved, process, output, size)
     provider.release_detached_task_turn(5)
     applied = wait_for("actual Agent consumes detached direction", lambda:
         (task if (task := exact_task()) and task.get("run_epoch") == epoch
@@ -8952,12 +9022,24 @@ def native_detached_queue_and_steer(socket, room, provider, output, size, proces
                 "physical_queue_submission": True, "queue_owner_receipt": True,
                 "queue_visible_accepted": True, "agent_consumed_queue": True,
                 "physical_steer_submission": True, "steer_owner_receipt": True,
-                "steer_visible_saved": True, "steer_visible_applied": True,
+                "steer_visible_saved": not direction_status["owner_applied"],
+                "steer_visible_owner_receipt": True, "steer_visible_applied": True,
                 "agent_consumed_direction": True, "same_managed_process": True,
                 "provider_request_count": 6, "provider_overflow_count": 0,
                 "task_completed": True, "private_content_recorded": False}
     (output / "detached-task-submission.json").write_text(json.dumps(evidence, indent=2) + "\n")
     return evidence
+
+
+def detached_task_submission_proven(evidence):
+    """Require every physical, owner-receipt and Agent-consumption witness."""
+    return evidence is not None and all(evidence.get(field) is True for field in (
+        "ordinary_detached_seat", "same_private_editor", "physical_queue_submission",
+        "queue_owner_receipt", "queue_visible_accepted", "agent_consumed_queue",
+        "physical_steer_submission", "steer_owner_receipt", "steer_visible_owner_receipt",
+        "steer_visible_applied", "agent_consumed_direction", "same_managed_process",
+        "task_completed")) and evidence.get("provider_request_count") == 6 \
+        and evidence.get("provider_overflow_count") == 0
 
 
 def offered_store_chat(socket, room, record=""):
@@ -9545,15 +9627,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             and permission_evidence.get("task_selection_restored") is True
             and permission_evidence.get("provider_request_count") == 4
             and permission_evidence.get("provider_overflow_count") == 0
-            and detached_task_evidence is not None
-            and all(detached_task_evidence.get(field) is True for field in (
-                "ordinary_detached_seat", "same_private_editor", "physical_queue_submission",
-                "queue_owner_receipt", "queue_visible_accepted", "agent_consumed_queue",
-                "physical_steer_submission", "steer_owner_receipt", "steer_visible_saved",
-                "steer_visible_applied", "agent_consumed_direction", "same_managed_process",
-                "task_completed"))
-            and detached_task_evidence.get("provider_request_count") == 6
-            and detached_task_evidence.get("provider_overflow_count") == 0
+            and detached_task_submission_proven(detached_task_evidence)
         )
         (output / "bootstrap.json").write_text(json.dumps({
             "stage": "native-bootstrap-only" if native else "legacy-bootstrap-only",
