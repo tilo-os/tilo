@@ -861,13 +861,19 @@ impl OpValueOption {
         } else {
             let conflict = self.is_visible();
             let expose = !deleted && self.is_deleted();
+            // TILO(peer-change-check): ops come in id order, so a value that
+            // follows only deleted ones was the element's value before the
+            // batch as well; a text patch replaces it with itself, as `put_seq`
+            // does in a list, where upstream left nothing to replace
+            // (vendor/automerge/TILO-PATCH.md).
+            let replaced = expose.then(|| value.clone());
             *self = Self(Some(OpValue {
                 value,
                 id,
                 conflict,
                 deleted,
                 expose,
-                replaced: None,
+                replaced,
             }));
         }
     }
@@ -1149,36 +1155,48 @@ impl BatchApply {
         }
     }
 
-    fn insert_new_actors(&mut self, doc: &mut Automerge) {
+    /// The actors this inserts, which the document did not have.
+    fn insert_new_actors(&mut self, doc: &mut Automerge) -> Vec<ActorId> {
+        let mut new = Vec::new();
         for c in self.changes.iter().filter(|c| c.seq() == 1) {
+            if doc.ops().lookup_actor(c.actor_id()).is_none() {
+                new.push(c.actor_id().clone());
+            }
             doc.put_actor_ref(c.actor_id());
         }
+        new
     }
 
-    fn import_ops(&mut self, doc: &mut Automerge) {
+    // TILO(peer-change-check): the ops are built and checked before anything
+    // is written; the history only once the batch has passed.
+    fn import_history(&mut self, doc: &mut Automerge) {
         for c in &self.changes {
-            doc.import_ops_to(c, &mut self.ops).unwrap();
             doc.update_history(c);
         }
         doc.remove_unused_actors(true);
     }
 
-    pub(crate) fn apply(
-        &mut self,
-        doc: &mut Automerge,
-        log: &mut PatchLog,
-    ) -> Result<(), PatchLogMismatch> {
-        self.insert_new_actors(doc);
-
-        log.migrate_actors(&doc.ops().actors)?;
-
-        self.import_ops(doc);
+    pub(crate) fn apply(&mut self, doc: &mut Automerge, log: &mut PatchLog) -> Result<(), Refusal> {
+        let new_actors = self.insert_new_actors(doc);
 
         // TILO(map-apply-skip): the objects this batch makes, looked up before
         // the document's own, rather than a copy of every object's info.
         let mut obj_info = ObjIndex::default();
 
-        self.order_ops_for_doc(&mut obj_info);
+        // TILO(peer-change-check): a batch that fails the check leaves the
+        // document as it found it.
+        if let Err(refused) = self.import_and_check(doc, &mut obj_info) {
+            for actor in &new_actors {
+                if let Some(index) = doc.ops().lookup_actor(actor) {
+                    doc.remove_actor(index);
+                }
+            }
+            return Err(Refusal::Refused(refused));
+        }
+
+        log.migrate_actors(&doc.ops().actors)?;
+
+        self.import_history(doc);
 
         let mut succ = vec![];
 
@@ -1317,7 +1335,7 @@ impl BatchApply {
         doc.ops().len() - start
     }
 
-    pub(crate) fn order_ops_for_doc(&mut self, obj_info: &mut ObjIndex) {
+    pub(crate) fn order_ops_for_doc(&mut self) {
         self.ops.sort_by(|a, b| {
             a.bld.obj.cmp(&b.bld.obj).then_with(|| {
                 match a.elemid_or_key().partial_cmp(&b.elemid_or_key()) {
@@ -1335,9 +1353,6 @@ impl BatchApply {
                     .or_default()
                     .push((o.id(), o.get_increment_value()));
             }
-            if let Some(info) = o.obj_info() {
-                obj_info.insert(o.id(), info)
-            }
             if Some(o.bld.obj) != last_obj {
                 if let Some(obj) = last_obj {
                     self.obj_spans.push(ObjSpan {
@@ -1354,6 +1369,284 @@ impl BatchApply {
             self.obj_spans.push(ObjSpan { obj, span });
         }
     }
+}
+
+// TILO(peer-change-check): a change is applied only if the apply can place
+// every op it carries and the document it leaves saves and loads again
+// (vendor/automerge/TILO-PATCH.md). Automerge itself only ever makes such
+// changes; a peer can send any other. Upstream panics on some (an insert after
+// an element the sequence never held, an op in an unknown object, a reference
+// to an unknown actor) and silently drops ops of, or mis-records, others (an
+// update of an unknown element, a pred in another key, ids below the
+// change's dependencies), leaving a document whose next save no longer loads.
+// The check runs on the batch's ops before anything is written, so a refused
+// batch leaves the document untouched, and it holds only for what the walks
+// and the save rely on, so a change Automerge makes passes it unchanged.
+
+/// Why a batch was not applied.
+pub(crate) enum Refusal {
+    Log(PatchLogMismatch),
+    /// `change` (an index into the batch) fails the check.
+    Refused(Refused),
+}
+
+impl From<PatchLogMismatch> for Refusal {
+    fn from(e: PatchLogMismatch) -> Self {
+        Self::Log(e)
+    }
+}
+
+pub(crate) struct Refused {
+    change: usize,
+    error: AutomergeError,
+}
+
+impl BatchApply {
+    fn refuse(&self, change: usize, reason: &'static str) -> Refused {
+        let hash = self.changes.get(change).map(Change::hash);
+        Refused {
+            change,
+            error: AutomergeError::InvalidChange {
+                hash: hash.unwrap_or(ChangeHash([0; 32])),
+                reason,
+            },
+        }
+    }
+
+    /// The change in the batch that carries the op `id`.
+    fn change_of(&self, doc: &Automerge, id: OpId) -> usize {
+        let carries = |c: &Change| {
+            doc.ops().lookup_actor(c.actor_id()) == Some(id.actor())
+                && c.start_op().get() <= id.counter()
+                && id.counter() <= c.max_op()
+        };
+        self.changes.iter().position(carries).unwrap_or(0)
+    }
+
+    /// Build the batch's ops into `self.ops`, its objects into `obj_info`, and
+    /// order them for the walks, refusing the first change that cannot be
+    /// applied.
+    fn import_and_check(
+        &mut self,
+        doc: &mut Automerge,
+        obj_info: &mut ObjIndex,
+    ) -> Result<(), Refused> {
+        self.check_changes(doc)?;
+        let mut spans = Vec::with_capacity(self.changes.len());
+        for (i, c) in self.changes.iter().enumerate() {
+            let start = self.ops.len();
+            doc.import_ops_to(c, &mut self.ops)
+                .map_err(|error| Refused { change: i, error })?;
+            spans.push(start..self.ops.len());
+        }
+        for o in &self.ops {
+            if let Some(info) = o.obj_info() {
+                obj_info.insert(o.id(), info)
+            }
+        }
+        let mut batch_ops: Option<HashMap<OpId, usize>> = None;
+        for (i, span) in spans.into_iter().enumerate() {
+            for op in &self.ops[span] {
+                if let Err(reason) = self.check_op(doc.ops(), obj_info, op, &mut batch_ops) {
+                    return Err(self.refuse(i, reason));
+                }
+            }
+        }
+        self.order_ops_for_doc();
+        for os in &self.obj_spans {
+            let sequence = obj_info
+                .object_type(&os.obj)
+                .or_else(|| doc.ops().obj_info.object_type(&os.obj))
+                .is_some_and(|t| t.is_sequence());
+            let ops = &self.ops[os.span.clone()];
+            if let (true, Err(id)) = (sequence, check_sequence_span(doc.ops(), os.obj, ops)) {
+                let change = self.change_of(doc, id);
+                return Err(self.refuse(change, "names an element its object does not hold"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Each change follows its actor's previous change, which is among its
+    /// ancestors (every change Automerge makes depends on it directly), and
+    /// numbers its ops after every op of its dependencies, where a saved
+    /// document, which stores no start op, takes them to begin.
+    fn check_changes(&self, doc: &Automerge) -> Result<(), Refused> {
+        let mut last: HashMap<&ActorId, (u64, ChangeHash)> = HashMap::new();
+        // The batch's changes so far: where each is, and its highest op.
+        let mut earlier: HashMap<ChangeHash, (usize, u64)> = HashMap::new();
+        for (i, c) in self.changes.iter().enumerate() {
+            let previous = last.get(c.actor_id()).copied().or_else(|| {
+                let actor = doc.ops().lookup_actor(c.actor_id())?;
+                let seq = doc.change_graph.seq_for_actor(actor);
+                if seq == 0 {
+                    return None;
+                }
+                let hash = doc.change_graph.get_hash_for_actor_seq(actor, seq).ok()?;
+                Some((seq, hash))
+            });
+            let follows = match previous {
+                Some((seq, hash)) => {
+                    c.seq() == seq.saturating_add(1)
+                        && self.descends(doc, &earlier, i, (hash, seq))
+                }
+                None => c.seq() == 1,
+            };
+            if !follows {
+                return Err(self.refuse(i, "does not follow its actor's previous change"));
+            }
+            let mut deps_max = 0;
+            for dep in c.deps() {
+                let dep_max = (earlier.get(dep).map(|&(_, max_op)| max_op))
+                    .or_else(|| doc.change_graph.max_op_for_hash(dep));
+                deps_max = deps_max.max(dep_max.unwrap_or(u64::MAX));
+            }
+            if c.start_op().get() <= deps_max {
+                return Err(self.refuse(i, "numbers its ops below ops it follows"));
+            }
+            // A change without ops has none to begin anywhere else.
+            if c.is_empty() && c.max_op() != deps_max {
+                return Err(self.refuse(i, "numbers no ops apart from those it follows"));
+            }
+            last.insert(c.actor_id(), (c.seq(), c.hash()));
+            earlier.insert(c.hash(), (i, c.max_op()));
+        }
+        Ok(())
+    }
+
+    /// Change `i` of the batch has `ancestor`, its actor's change `seq`,
+    /// among its ancestors; `earlier` holds the batch's changes before it.
+    fn descends(
+        &self,
+        doc: &Automerge,
+        earlier: &HashMap<ChangeHash, (usize, u64)>,
+        i: usize,
+        (ancestor, seq): (ChangeHash, u64),
+    ) -> bool {
+        let deps = self.changes[i].deps();
+        if deps.contains(&ancestor) {
+            return true;
+        }
+        let mut seen = HashSet::new();
+        let mut stack = deps.to_vec();
+        let mut in_doc = Vec::new();
+        while let Some(hash) = stack.pop() {
+            if hash == ancestor {
+                return true;
+            }
+            if !seen.insert(hash) {
+                continue;
+            }
+            match earlier.get(&hash) {
+                Some(&(j, _)) => stack.extend_from_slice(self.changes[j].deps()),
+                None => in_doc.push(hash),
+            }
+        }
+        // An ancestor in the document is one the clock of the document's
+        // changes among them covers.
+        let actor = self.changes[i].actor_id();
+        let Some(actor) = doc.ops().lookup_actor(actor) else {
+            return false;
+        };
+        doc.change_graph
+            .seq_clock_for_heads(&in_doc)
+            .get_for_actor(&actor)
+            .is_some_and(|covered| u64::from(covered.get()) >= seq)
+    }
+
+    /// The op is in an object the document or the batch has, keyed as that
+    /// object is keyed; it names only ops older than itself; it overwrites
+    /// only ops in its own object and key or element; and a delete overwrites
+    /// something.
+    fn check_op(
+        &self,
+        doc: &OpSet,
+        obj_info: &ObjIndex,
+        op: &ChangeOp,
+        batch_ops: &mut Option<HashMap<OpId, usize>>,
+    ) -> Result<(), &'static str> {
+        let id = op.id();
+        let obj = op.bld.obj;
+        let older = |other: OpId| other.counter() < id.counter();
+        let obj_type = obj_info
+            .object_type(&obj)
+            .or_else(|| doc.obj_info.object_type(&obj))
+            .ok_or("is in an object the document does not hold")?;
+        if !obj.is_root() && !older(obj.0) {
+            return Err("is in an object made after it");
+        }
+        if op.insert() && !obj_type.is_sequence() {
+            return Err("inserts into a map");
+        }
+        match op.key() {
+            KeyRef::Map(_) if obj_type.is_sequence() => return Err("has a map key in a sequence"),
+            KeyRef::Seq(_) if !obj_type.is_sequence() => {
+                return Err("has a sequence element in a map")
+            }
+            KeyRef::Seq(e) if !e.is_head() && !older(e.0) => {
+                return Err("names an element inserted after it")
+            }
+            _ => {}
+        }
+        if op.action() == Action::Delete && (op.insert() || op.pred().is_empty()) {
+            return Err("deletes nothing");
+        }
+        for &pred in op.pred() {
+            if !older(pred) {
+                return Err("overwrites an op made after it");
+            }
+            let same_place = match doc.op_place(pred) {
+                Some((pred_obj, key, _)) => pred_obj == obj && key == op.elemid_or_key(),
+                None => {
+                    let index = batch_ops.get_or_insert_with(|| {
+                        self.ops.iter().enumerate().map(|(i, o)| (o.id(), i)).collect()
+                    });
+                    index.get(&pred).and_then(|&i| self.ops.get(i)).is_some_and(|p| {
+                        p.bld.obj == obj && p.elemid_or_key() == op.elemid_or_key()
+                    })
+                }
+            };
+            if !same_place {
+                return Err("overwrites an op outside its key or element");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// TILO(peer-change-check): `Untangler::new` places an op on an element it
+/// neither inserts nor updates right after its insert in the batch only when
+/// the walk meets that element's insert op in the document; the op that
+/// names any other element is never placed. `Err` is the first such op.
+fn check_sequence_span(doc: &OpSet, obj: ObjId, ops: &[ChangeOp]) -> Result<(), OpId> {
+    let mut inserted: HashSet<ElemId> = HashSet::new();
+    let mut last_e = None;
+    for op in ops {
+        let KeyRef::Seq(e) = op.key() else {
+            return Err(op.id());
+        };
+        let placed_in_batch = if op.insert() {
+            e.is_head() || inserted.contains(e)
+        } else {
+            last_e == Some(*e)
+        };
+        if !placed_in_batch && !is_element(doc, obj, *e) {
+            return Err(op.id());
+        }
+        if op.insert() {
+            inserted.insert(ElemId(op.id()));
+            last_e = Some(ElemId(op.id()));
+        }
+    }
+    Ok(())
+}
+
+/// The document holds `e` as an element of `obj`.
+fn is_element(doc: &OpSet, obj: ObjId, e: ElemId) -> bool {
+    !e.is_head()
+        && doc
+            .op_place(e.0)
+            .is_some_and(|(o, _, insert)| insert && o == obj)
 }
 
 #[derive(Debug, Clone)]
@@ -1391,7 +1684,9 @@ impl Automerge {
         changes: I,
         log: &mut PatchLog,
     ) -> Result<(), AutomergeError> {
-        let mut seen: HashSet<ChangeHash> = self.queue.iter().map(Change::hash).collect();
+        // TILO(peer-change-check): the queue as it was, to restore.
+        let queued: Vec<ChangeHash> = self.queue.iter().map(Change::hash).collect();
+        let mut seen: HashSet<ChangeHash> = queued.iter().copied().collect();
         let mut actor_seqs: HashMap<ActorId, HashSet<u64>> = HashMap::new();
         let mut actor_author: HashSet<ActorId> = HashSet::new();
 
@@ -1442,8 +1737,34 @@ impl Automerge {
         }
 
         self.queue.extend(incoming);
-        let changes = self.queue.pop_topo_sorted_ready(&self.change_graph);
-        Ok(BatchApply::new(changes).apply(self, log)?)
+        let mut changes = self.queue.pop_topo_sorted_ready(&self.change_graph);
+        // TILO(peer-change-check): a refused change is never applied. If it,
+        // or a change that depends on it, came with this call, nothing is
+        // applied and the queue is as it was; one that waited in the queue
+        // from an earlier call is dropped with its dependents, so that it
+        // cannot hold back the changes that arrive after it.
+        loop {
+            let mut batch = BatchApply::new(changes);
+            let refused = match batch.apply(self, log) {
+                Ok(()) => return Ok(()),
+                Err(Refusal::Log(e)) => return Err(e.into()),
+                Err(Refusal::Refused(refused)) => refused,
+            };
+            let mut ready = batch.changes;
+            let mut dropped = HashSet::new();
+            for (i, c) in ready.iter().enumerate() {
+                if i == refused.change || c.deps().iter().any(|d| dropped.contains(d)) {
+                    dropped.insert(c.hash());
+                }
+            }
+            let waited: HashSet<&ChangeHash> = queued.iter().collect();
+            if dropped.iter().any(|hash| !waited.contains(hash)) {
+                self.queue.restore(&queued, ready);
+                return Err(refused.error);
+            }
+            ready.retain(|c| !dropped.contains(&c.hash()));
+            changes = ready;
+        }
     }
 
     fn import_ops_to(
@@ -1457,10 +1778,17 @@ impl Automerge {
     }
 
     fn import_ops(&mut self, change: &Change) -> Result<Vec<ChangeOp>, AutomergeError> {
+        // TILO(peer-change-check): a change may name an actor the document
+        // does not have.
         let actors: Vec<_> = change
             .actors()
-            .map(|a| self.ops.lookup_actor(a).unwrap())
-            .collect();
+            .map(|a| {
+                self.ops.lookup_actor(a).ok_or(AutomergeError::InvalidChange {
+                    hash: change.hash(),
+                    reason: "names an actor the document does not have",
+                })
+            })
+            .collect::<Result<_, _>>()?;
 
         change
             .iter_ops()

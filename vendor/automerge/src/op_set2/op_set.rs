@@ -1316,6 +1316,32 @@ impl OpSet {
         (range.start <= start && start <= pos).then_some(start)
     }
 
+    // TILO(peer-change-check): what checking an incoming change needs to know
+    // of an op it names (vendor/automerge/TILO-PATCH.md).
+
+    /// The object of the op `id`, the map key or sequence element it is in,
+    /// and whether it inserts that element, if the document holds it.
+    pub(crate) fn op_place(&self, id: OpId) -> Option<(ObjId, KeyRef<'_>, bool)> {
+        let pos = self.get_op_id_pos(id)?;
+        let range = pos..pos + 1;
+        let obj = ObjIdIter::new_range(
+            self.cols.obj_actor.iter_range(range.clone()),
+            self.cols.obj_ctr.iter_range(range.clone()),
+        )
+        .next()?;
+        let insert = InsertIter::new(self.cols.insert.values().iter_range(range.clone())).next()?;
+        if insert {
+            return Some((obj, KeyRef::Seq(types::ElemId(id)), true));
+        }
+        let key = KeyIter::new(
+            self.cols.key_str.iter_range(range.clone()),
+            self.cols.key_actor.iter_range(range.clone()),
+            self.cols.key_ctr.iter_range(range),
+        )
+        .next()?;
+        Some((obj, key, false))
+    }
+
     /// The visible width of the sequence elements in `range`, as the
     /// sequence's patches count it: one per element of a list, the width of
     /// the element's text in a text.

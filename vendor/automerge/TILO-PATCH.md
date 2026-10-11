@@ -155,3 +155,73 @@ for nearly every op (they hold only ops still waiting for a successor or an
 increment). Skipping the SipHash when the map is empty saved 8–10 % of
 loading a large document; the maps' contents and the result are unchanged.
 Covered by the same test.
+
+# Tilo patch: check a peer's change before applying any of it
+
+Automerge only ever makes changes the apply can place, but a peer can send
+any change that parses. `BatchApply::apply` (`src/op_set2/change/batch.rs`)
+trusted every one, and wrote each change into the history before walking
+its ops. Hand-built single-op changes therefore either panicked the apply
+(an insert after an element the sequence never held, an update of an
+unknown element next to another op on that sequence, an op in an object the
+document does not have, a sequence key in a map, an op naming an actor the
+document has never seen, a gap in an actor's sequence numbers), or were
+taken without an error while their op was dropped or recorded where the
+saved document cannot hold it (an update of an unknown element on its own,
+a map key in a list, a delete that overwrites nothing, a predecessor in
+another key, element or object, ops numbered at or below their
+dependencies'). The document then saved, but the save no longer loaded
+("missing ops", "mismatching heads", or a panic in the loader).
+
+The apply now builds and orders the batch's ops first and checks them,
+writing nothing until the check passes:
+
+- each change is its actor's next one, has the actor's previous change
+  among its ancestors (every change Automerge makes depends on it
+  directly), and numbers its ops after every op of its direct dependencies,
+  which is where a saved document, storing no start op, takes them to
+  begin; a change without ops numbers exactly up to them;
+- each op is in an object the document or the batch holds, keyed as that
+  object is keyed, does not insert into a map, names only ops with lower
+  counters than its own, overwrites only ops in its own object and key or
+  element (a delete overwrites at least one), and, in a list or text,
+  names an element the walk will meet: HEAD, an insert earlier in the
+  batch's ordering, or an insert op of that object in the document
+  (`check_sequence_span` follows `Untangler::new`'s own classification).
+
+A batch that fails returns `AutomergeError::InvalidChange` naming the
+change, and leaves the document byte for byte as it was: the actors the
+batch would have added are removed again and the patch log is not touched.
+If the refused change, or one depending on it, came with this call, the
+queue is put back as it was; a refused change that waited in the queue for
+a dependency from an earlier call is dropped, with what depends on it, and
+the rest of the batch is applied, so that it cannot hold back the changes
+arriving after it. Changes Automerge makes pass the check unchanged, so the
+apply's documents, patches and errors for them are byte for byte upstream's.
+The internal assertions and `unwrap`s along the walk (`Untangler::finish`,
+`untangle_inner`, `update_history`, the object lookup) now hold by the
+check rather than by trust, which also covers builds that abort on panic,
+where catching an unwind would not help.
+
+One more apply path read peer data it never recorded: when a text element
+holds a value that a batch deletes and a second, later value it does not
+(a peer can add one without overwriting the first), `OpValueOption::set`
+flagged the later value as exposed without recording the value it
+replaces, and the text patch panicked on the missing value, whether or not
+anyone read patches. The later value was already the element's value
+before the batch (values come in id order), so it now records itself; the
+patch replaces the character with itself, as a list's `put_seq` does.
+
+The marked spots are `TILO(peer-change-check)` in `batch.rs`, `error.rs`,
+`change_queue.rs`, `change_graph.rs` and `src/op_set2/op_set.rs`. Pinned
+by `crates/doc/tilo-automerge/tests/crafted_changes.rs` (each class above
+refused with the document unchanged and still loading; the forged value
+and the honest delete applied in either order, with patches that replay to
+the text; a refused change taking its delivery with it; a refused queued
+change holding nothing back; and randomly mutated valid changes, which the
+fork never panics on and either takes exactly as crates.io `automerge`
+0.12.0 does, into a document that saves, loads and replays, or refuses
+where upstream panics or leaves a document that does not). `map_apply.rs`
+and `sequence_apply.rs` hold their forged cross-key and cross-element
+changes apart from the histories they compare and check the same of them.
+Upstream `main` applies the same way; the patch is upstreamable.
