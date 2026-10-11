@@ -105,3 +105,48 @@ installation, credentials, runtime endpoints, caches, rendering, focus and
 component publication handles are device-local. The fixture navigates each
 view independently and does not claim that every app's selection or cursor
 state automatically roams, or that an app lacking replication is complete.
+
+## Same-person native continuity regressions
+
+The same fixture has two additional, isolated modes. Both enroll a second
+throwaway device through the production joined-device installer. It receives
+its own device key and a root-signed member certificate, a public identity
+record and the existing fleet metadata; it receives no human root secret or
+device-admission capability. The installed certificate paths stay intact.
+Each device still explicitly consumes its own signed room invitation. Matching
+person identities do not replace room admission or grant remote input.
+
+Use the same component build and owned remote execution above, with a new
+output directory and either `--automatic-opening-proof` or `--reconnect-proof`
+instead of `--state-proof`. Retrieve the bounded `journey.json` and screenshots
+from that directory. Automatic opening never invokes Applications Open on the
+second device: it requires a presented local primary Chat frame after the first
+device opens Chat. Reconnect explicitly opens both apps, first proves concurrent
+native state and resource-reference convergence, then pauses only this fixture's
+exact governor process. Both apps must successfully edit the existing channel
+while that process is observably stopped. After resuming it, both must read both
+messages exactly once, with their certified author and original channel.
+The governor is always resumed before cleanup; no revocation or new grant is
+issued during this partition. This tests governor unavailability, rather than
+physical network isolation of every peer or host worker.
+
+The first real same-person run exposed a production enrollment defect:
+`provision_joined_device` wrote the default device certificate but omitted the
+identity-specific certificate required by join authorization. Its production
+persistence regression now asserts that both paths contain the same verified
+certificate, retaining the no-root and no-admission assertions. With that fix,
+both native devices joined and both explicitly opened apps converged on the
+same channels, concurrent messages, authors and resource-reference access, and
+presented fresh local frames.
+
+Automatic opening remains **unqualified**: the second device's real observation
+has no frames and no admitted window groups. The first device's topology
+namespace requests report `the governor is unavailable: Offline`; the governed
+host does not serve the existing desktop namespace command. Reconnect also
+remains **unqualified**: both offline edits completed, but the first post-resume
+`read-messages` invocation did not reach a terminal result. The fixture fails
+these assertions, retains the preceding semantic evidence and hashes, and keeps
+all final continuity qualification fields false. It never opens the second app
+manually to rescue the automatic-opening case or treats a pending action as
+completed recovery. Screen arrangement, cross-device input and physical-device
+continuity are not qualified by either fixture mode.
