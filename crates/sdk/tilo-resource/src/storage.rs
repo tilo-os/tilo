@@ -533,6 +533,8 @@ pub static SET_OPS: ModelOps = ModelOps {
         checked
     },
     get_at: |_, value, path| path.is_empty().then_some(value),
+    label: crate::table::no_label,
+    nested_collections: crate::table::no_nested,
     op_coalesces: |_, _, _, _| None,
     op_continuable: |_, _, _| None,
     op_describe: |_, _, _| None,

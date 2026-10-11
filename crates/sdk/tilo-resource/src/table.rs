@@ -60,6 +60,8 @@ pub struct ModelOps {
     pub(crate) collect_text: fn(&ModelTable, &dyn Any, &mut Vec<String>),
     pub(crate) check: fn(&ModelTable, &dyn Any) -> Result<(), Refusal>,
     pub(crate) get_at: for<'a> fn(&ModelTable, &'a dyn Any, &[Segment]) -> Option<&'a dyn Any>,
+    pub(crate) label: fn(&ModelTable, &dyn Any) -> Option<String>,
+    pub(crate) nested_collections: fn(&ModelTable, &dyn Any) -> Vec<ItemCollection>,
     pub(crate) op_coalesces:
         fn(&ModelTable, &[Segment], &serde_json::Value, &serde_json::Value) -> Option<bool>,
     pub(crate) op_continuable: fn(&ModelTable, &[Segment], &serde_json::Value) -> Option<bool>,
@@ -346,6 +348,8 @@ impl<T: Model> TableOf<T> {
         collect_text: collect_text_of::<T>,
         check: if T::CHECKS { check_of::<T> } else { no_check },
         get_at: get_at_of::<T>,
+        label: label_of::<T>,
+        nested_collections: nested_collections_of::<T>,
         op_coalesces: if T::OPS {
             op_coalesces_of::<T>
         } else {
@@ -521,6 +525,26 @@ fn no_check(_: &ModelTable, _: &dyn Any) -> Result<(), Refusal> {
     Ok(())
 }
 
+fn label_of<T: Model>(_: &ModelTable, value: &dyn Any) -> Option<String> {
+    value.downcast_ref::<T>()?.label()
+}
+
+fn nested_collections_of<T: Model>(_: &ModelTable, value: &dyn Any) -> Vec<ItemCollection> {
+    value
+        .downcast_ref::<T>()
+        .map_or_else(Vec::new, Model::nested_collections)
+}
+
+/// No label, no collections inside: what a value of a type with neither
+/// answers.
+pub(crate) fn no_label(_: &ModelTable, _: &dyn Any) -> Option<String> {
+    None
+}
+
+pub(crate) fn no_nested(_: &ModelTable, _: &dyn Any) -> Vec<ItemCollection> {
+    Vec::new()
+}
+
 fn get_at_of<'a, T: Model>(
     _: &ModelTable,
     value: &'a dyn Any,
@@ -670,6 +694,8 @@ static ATOM_STRING_OPS: ModelOps = ModelOps {
     collect_text: atom_collect_text,
     check: no_check,
     get_at: atom_get_at,
+    label: no_label,
+    nested_collections: no_nested,
     op_coalesces: no_coalesces,
     op_continuable: no_continuable,
     op_describe: no_describe,
@@ -856,6 +882,12 @@ pub static RECORD_OPS: ModelOps = ModelOps {
         None => Ok(()),
     },
     get_at: |table, value, path| get_at(table.record()?, value, path),
+    label: |table, value| label(table.record()?, value),
+    nested_collections: |table, value| {
+        table
+            .record()
+            .map_or_else(Vec::new, |record| item_collections(record, value))
+    },
     op_coalesces: |table, path, previous, next| op_coalesces(table.record()?, path, previous, next),
     op_continuable: |table, path, op| op_continuable(table.record()?, path, op),
     op_describe: |table, path, op| op_describe(table.record()?, path, op),
@@ -1899,6 +1931,11 @@ pub static OPTION_OPS: ModelOps = ModelOps {
         let option = table.option()?;
         (option.inner.ops.get_at)(option.inner, (option.get)(value)?, path)
     },
+    label: |table, value| {
+        let option = table.option()?;
+        (option.inner.ops.label)(option.inner, (option.get)(value)?)
+    },
+    nested_collections: no_nested,
     op_coalesces: |table, path, previous, next| {
         let option = table.option()?;
         (option.inner.ops.op_coalesces)(option.inner, path, previous, next)
@@ -2219,6 +2256,8 @@ pub static UNIT_OPS: ModelOps = ModelOps {
     },
     check: |_, _| Ok(()),
     get_at: |_, value, path| path.is_empty().then_some(value),
+    label: no_label,
+    nested_collections: no_nested,
     op_coalesces: no_coalesces,
     op_continuable: no_continuable,
     op_describe: no_describe,
@@ -2436,6 +2475,8 @@ pub static JSON_OPS: ModelOps = ModelOps {
     collect_text: |_, _, _| {},
     check: |_, _| Ok(()),
     get_at: |_, value, path| path.is_empty().then_some(value),
+    label: no_label,
+    nested_collections: no_nested,
     op_coalesces: no_coalesces,
     op_continuable: no_continuable,
     op_describe: no_describe,
@@ -2675,6 +2716,8 @@ pub static VEC_OPS: ModelOps = ModelOps {
         Ok(())
     },
     get_at: |_, value, path| path.is_empty().then_some(value),
+    label: no_label,
+    nested_collections: no_nested,
     op_coalesces: no_coalesces,
     op_continuable: no_continuable,
     op_describe: no_describe,
@@ -3058,6 +3101,8 @@ pub static MAP_OPS: ModelOps = ModelOps {
         }
         Some(_) => None,
     },
+    label: no_label,
+    nested_collections: no_nested,
     op_coalesces: |table, path, previous, next| {
         let (map, _, rest) = keyed(table, path)?;
         (map.item.ops.op_coalesces)(map.item, rest, previous, next)

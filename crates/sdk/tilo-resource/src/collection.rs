@@ -938,34 +938,104 @@ impl<T> Collection<T> {
 
 impl<T: Model> crate::items::ItemSource for Collection<T> {
     fn item_collection(&self, field: &'static str) -> crate::items::ItemCollection {
-        crate::items::collection_of(field, self.entries(crate::items::ITEM_PAGE))
+        listed_items(T::TABLE, self, field)
     }
     fn item_presence(&self) -> usize {
         usize::from(!self.items.is_empty())
     }
     fn label_of_item(&self, id: &Id) -> Option<String> {
-        let item = self.get(id)?;
-        Some(crate::__private::item_label(id, item))
+        let entries: &dyn Entries = self;
+        let item = entries.item_at(entries.find(id)?)?;
+        Some(label_of(T::TABLE, id, item))
     }
     fn item_texts(&self, field: &'static str, found: &mut Vec<crate::items::ItemText>) {
-        crate::items::texts_of(field, self.entries(usize::MAX), found);
+        item_texts(T::TABLE, self, field, found);
     }
     fn nested_items(&self, field: &'static str, out: &mut Vec<crate::items::ItemCollection>) {
-        crate::items::nested_of(field, self.entries(crate::items::ITEM_PAGE), out);
+        nested_items(T::TABLE, self, field, out);
     }
 }
 
-impl<T> Collection<T> {
-    /// Each item with its id, in order.
-    fn entries(&self, limit: usize) -> Vec<(Id, &T)> {
-        let mut out = Vec::with_capacity(self.items.len().min(limit));
-        for entry in &self.items {
-            if out.len() == limit {
-                break;
-            }
-            out.push((entry.id.clone(), &entry.item));
+/// The label an item is offered under: its `#[model(label)]`, else its
+/// first text, else its id.
+fn label_of(item: &ModelTable, id: &Id, value: &dyn Any) -> String {
+    if let Some(label) = (item.ops.label)(item, value)
+        && !label.is_empty()
+    {
+        return label;
+    }
+    let mut text = Vec::new();
+    (item.ops.collect_text)(item, value, &mut text);
+    crate::__private::first_line_of(text).unwrap_or_else(|| id.to_string())
+}
+
+/// [`ItemSource::item_collection`](crate::items::ItemSource::item_collection)
+/// of `entries`, items of the type `item`.
+fn listed_items(
+    item: &ModelTable,
+    entries: &dyn Entries,
+    field: &'static str,
+) -> crate::items::ItemCollection {
+    let mut labelled = false;
+    let mut listed = Vec::new();
+    for at in 0..entries.count().min(crate::items::ITEM_PAGE) {
+        let (Some(id), Some(value)) = (entries.id_at(at), entries.item_at(at)) else {
+            continue;
+        };
+        if at == 0 {
+            labelled = (item.ops.label)(item, value).is_some();
         }
-        out
+        listed.push((id.clone(), label_of(item, id, value)));
+    }
+    crate::items::ItemCollection {
+        within: Vec::new(),
+        field,
+        labelled,
+        items: listed,
+    }
+}
+
+/// [`ItemSource::item_texts`](crate::items::ItemSource::item_texts) of
+/// `entries`.
+fn item_texts(
+    item: &ModelTable,
+    entries: &dyn Entries,
+    field: &'static str,
+    found: &mut Vec<crate::items::ItemText>,
+) {
+    for at in 0..entries.count() {
+        let (Some(id), Some(value)) = (entries.id_at(at), entries.item_at(at)) else {
+            continue;
+        };
+        if let Some(label) = (item.ops.label)(item, value) {
+            let mut text = Vec::new();
+            (item.ops.collect_text)(item, value, &mut text);
+            found.push(crate::items::ItemText {
+                field,
+                id: id.clone(),
+                label,
+                text: text.join("\n"),
+            });
+        }
+    }
+}
+
+/// [`ItemSource::nested_items`](crate::items::ItemSource::nested_items) of
+/// `entries`.
+fn nested_items(
+    item: &ModelTable,
+    entries: &dyn Entries,
+    field: &'static str,
+    out: &mut Vec<crate::items::ItemCollection>,
+) {
+    for at in 0..entries.count().min(crate::items::ITEM_PAGE) {
+        let (Some(id), Some(value)) = (entries.id_at(at), entries.item_at(at)) else {
+            continue;
+        };
+        for mut inner in (item.ops.nested_collections)(item, value) {
+            inner.within.insert(0, (field, id.clone()));
+            out.push(inner);
+        }
     }
 }
 
@@ -1539,6 +1609,8 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
         }
         Some(_) => None,
     },
+    label: crate::table::no_label,
+    nested_collections: crate::table::no_nested,
     op_coalesces: |table, path, previous, next| match path.split_first() {
         Some((Segment::Item(_), rest)) if table.has_ops => {
             let item = table.collection()?.item;
