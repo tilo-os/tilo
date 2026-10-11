@@ -2051,6 +2051,17 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
                 "a fresh toast survives an immediate frame"
             );
 
+            // The animation clock does not advance the real record writer.
+            // Await the production durability boundary before asking whether
+            // the whole host, including its save-status feedback, is idle.
+            app.app
+                .flush()
+                .expect("the actual delete reaches durable record storage");
+            assert!(
+                toast(&app).is_some(),
+                "durable storage completion does not dismiss a fresh notice"
+            );
+
             let expired = deadline + Duration::from_millis(50);
             ui::time::testing::with_monotonic_time(expired, || {
                 assert!(
