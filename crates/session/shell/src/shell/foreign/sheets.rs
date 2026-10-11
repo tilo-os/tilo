@@ -9,9 +9,9 @@
 //! swallows pointer input aimed anywhere outside a sheet; the topmost
 //! mapped sheet owns the tile's keyboard focus either way.
 //!
-//! Geometry lives in the root's *frame* coordinates (the buffer pixels the
-//! tile image is drawn from), the same space subsurface children use, so
-//! paint, hit-testing and the control socket's rects all agree.
+//! Geometry lives in the root's *image* coordinates (the pixels the tile
+//! image is drawn from), so paint and the control socket's rects agree;
+//! input arrives surface-local and logical and is carried into it.
 
 use vello::kurbo::Rect;
 
@@ -196,17 +196,30 @@ impl ForeignFrameStore {
             .collect()
     }
 
-    /// Resolve a point in `root`'s frame to the surface that receives it.
+    /// Resolve a point on `root`'s surface (surface-local logical pixels)
+    /// to the surface that receives it.
     pub fn route_point(&self, root: SurfaceId, x: f64, y: f64) -> PointRoute {
         let sheets = self.sheets_over(root);
+        // Sheets sit in the root's image pixels, each drawn pixel for pixel
+        // from its own image; their surfaces are reached back through it.
+        let at = if sheets.is_empty() {
+            (x, y)
+        } else {
+            self.layout(root)
+                .map_or((x, y), |layout| layout.to_image((x, y)))
+        };
         for link in sheets.iter().rev() {
             let Some(rect) = self.sheet_rect_in_root(root, link.surface) else {
                 continue;
             };
-            if !rect.contains(vello::kurbo::Point::new(x, y)) || !self.is_mapped(link.surface) {
+            if !rect.contains(vello::kurbo::Point::new(at.0, at.1)) || !self.is_mapped(link.surface)
+            {
                 continue;
             }
-            let (local_x, local_y) = (x - rect.x0, y - rect.y0);
+            let offset = (at.0 - rect.x0, at.1 - rect.y0);
+            let (local_x, local_y) = self
+                .layout(link.surface)
+                .map_or(offset, |layout| layout.to_surface(offset));
             return self.child_at(link.surface, local_x, local_y).map_or(
                 PointRoute::Surface {
                     surface: link.surface,
@@ -311,6 +324,35 @@ mod tests {
                 y: 10.0
             }
         );
+    }
+
+    /// Input arrives in logical pixels; at 2x the sheet is found at twice
+    /// the offset in the image and reached in its own logical pixels.
+    #[test]
+    fn a_sheet_is_reached_in_logical_pixels_at_scale_two() {
+        let store = ForeignFrameStore::default();
+        let two = super::super::SurfaceScale {
+            buffer_scale: 2,
+            ..Default::default()
+        };
+        frame(&store, 1, 1600, 1200);
+        store.note_surface_scale(1, two);
+        frame(&store, 2, 400, 200);
+        store.note_surface_scale(2, two);
+        assert!(store.attach_sheet(2, 1, true));
+        assert_eq!(
+            store.sheet_rect_in_root(1, 2),
+            Some(Rect::new(600.0, 500.0, 1000.0, 700.0))
+        );
+        assert_eq!(
+            store.route_point(1, 310.0, 260.0),
+            PointRoute::Surface {
+                surface: 2,
+                x: 10.0,
+                y: 10.0
+            }
+        );
+        assert_eq!(store.route_point(1, 290.0, 260.0), PointRoute::Blocked);
     }
 
     #[test]

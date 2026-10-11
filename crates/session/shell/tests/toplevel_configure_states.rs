@@ -252,10 +252,45 @@ fn committed_window_geometry_crops_the_tile_to_the_window() {
     assert_eq!((frame.width, frame.height), (100, 80));
     let tile = Rect::new(300.0, 100.0, 400.0, 180.0);
     assert_eq!(
-        store.surface_origin(id, tile),
+        store.surface_origin(id, tile, (300.0, 100.0)),
         (280.0, 80.0),
         "input must address the window where it is drawn: surface-local \
          (20, 20) at the tile's corner",
+    );
+    store.forget(id);
+}
+
+/// At 2x the declared geometry is still logical: the tile shows twice as
+/// many buffer pixels, and input takes off the logical offset, not the
+/// buffer-pixel one.
+#[test]
+fn committed_buffer_scale_puts_the_window_and_input_in_logical_pixels() {
+    let mut h = Harness::new();
+    let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
+    let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
+    h.pump();
+
+    let (surface, xdg, id) = h.open(&compositor, &wm_base, "org.example.HiDpi");
+    let store = shell::compositor::foreign::store();
+    store.publish_rgba(id, &vec![0; 480 * 480 * 4], 480, 480);
+
+    surface.set_buffer_scale(2);
+    xdg.set_window_geometry(10, 20, 200, 200);
+    surface.commit();
+    h.pump();
+    drop(h);
+
+    assert_eq!(
+        store.frame_size(id),
+        Some((400, 400)),
+        "200x200 logical at 2x, cut out from (20, 40) in the buffer",
+    );
+    let tile = Rect::new(300.0, 100.0, 500.0, 300.0);
+    assert_eq!(store.surface_point(id, tile, (300.0, 100.0)), (10.0, 20.0));
+    assert_eq!(
+        store.surface_origin(id, tile, (350.0, 150.0)),
+        (290.0, 80.0),
+        "the window's corner is surface-local (10, 20), whatever the scale",
     );
     store.forget(id);
 }

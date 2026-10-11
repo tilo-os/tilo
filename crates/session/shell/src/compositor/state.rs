@@ -1094,6 +1094,52 @@ pub struct State {
     capture_protection_sync: CaptureProtectionSync,
 }
 
+/// `surface`'s topmost ancestor through subsurface parents: the surface
+/// itself unless it is a subsurface. A subsurface is drawn as part of that
+/// surface, so it renders at that surface's scale.
+fn subsurface_tree_root(surface: &WlSurface) -> WlSurface {
+    foreign_root(surface).unwrap_or_else(|| surface.clone())
+}
+
+/// How the buffer `states` last committed lies on its surface: the buffer
+/// scale and the `wp_viewport` rectangles.
+pub(crate) fn committed_surface_scale(
+    states: &wl_compositor::SurfaceData,
+) -> crate::compositor::foreign::SurfaceScale {
+    let buffer_scale = states
+        .cached_state
+        .get::<wl_compositor::SurfaceAttributes>()
+        .current()
+        .buffer_scale;
+    let mut viewport = states
+        .cached_state
+        .get::<smithay::wayland::viewporter::ViewportCachedState>();
+    let viewport = viewport.current();
+    crate::compositor::foreign::SurfaceScale {
+        buffer_scale,
+        source: viewport
+            .src
+            .map(|source| (source.loc.x, source.loc.y, source.size.w, source.size.h)),
+        destination: viewport.dst.map(|size| (size.w, size.h)),
+    }
+}
+
+/// Tell `surface` and every subsurface under it to render at `scale`.
+fn prefer_scale_for_tree(surface: &WlSurface, scale: f64) {
+    use smithay::wayland::compositor::{TraversalAction, with_surface_tree_downward};
+    with_surface_tree_downward(
+        surface,
+        (),
+        |_, _, ()| TraversalAction::DoChildren(()),
+        |_, states, ()| {
+            fractional_scale::with_fractional_scale(states, |fs| {
+                fs.set_preferred_scale(scale);
+            });
+        },
+        |_, _, ()| true,
+    );
+}
+
 pub(crate) fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
     use smithay::wayland::compositor::get_parent;
 
@@ -2240,6 +2286,15 @@ impl State {
         )
     }
 
+    /// The scale of the output under the pointer, which a client's cursor
+    /// surface is drawn at.
+    fn pointer_output_scale(&self) -> f64 {
+        self.seat.get_pointer().map_or(self.scale, |pointer| {
+            let location = pointer.current_location();
+            self.scale_for_origin((location.x, location.y))
+        })
+    }
+
     /// The preferred scale for one client surface: its output's scale, or the session-wide value if not yet placed.
     pub fn surface_scale(&self, surface_id: u64) -> f64 {
         self.surface_scales
@@ -2263,11 +2318,8 @@ impl State {
             let Some(surface) = self.client_input.surface(*surface_id).cloned() else {
                 continue;
             };
-            wl_compositor::with_states(&surface, |states| {
-                fractional_scale::with_fractional_scale(states, |fs| {
-                    fs.set_preferred_scale(scale);
-                });
-            });
+            // Its subsurfaces are drawn with it, so they render at its scale.
+            prefer_scale_for_tree(&surface, scale);
         }
         // Surfaces no longer placed lose their cached scale, so a re-placed one is recomputed, not resurrected at its last value.
         let live: HashSet<u64> = placements.iter().map(|(id, _)| *id).collect();
@@ -3055,24 +3107,11 @@ impl State {
             else {
                 return Some(None);
             };
-            let buffer_scale = states
-                .cached_state
-                .get::<wl_compositor::SurfaceAttributes>()
-                .current()
-                .buffer_scale;
-            let logical_size = states
-                .cached_state
-                .get::<smithay::wayland::viewporter::ViewportCachedState>()
-                .current()
-                .dst
-                .map(|size| (size.w, size.h));
             Some(Some(crate::compositor::foreign::WindowGeometry {
                 x: declared.loc.x,
                 y: declared.loc.y,
                 width: declared.size.w,
                 height: declared.size.h,
-                logical_size,
-                buffer_scale,
             }))
         });
         // Only toplevels: an entry made for any other surface would never be forgotten.
@@ -3879,7 +3918,7 @@ impl RemoteInputSink for State {
                             .and_then(|wl_surface| {
                                 self.remote_input_firewall.view().rect(surface).map(|rect| {
                                     let origin = crate::compositor::foreign::store()
-                                        .surface_origin(surface, rect);
+                                        .surface_origin(surface, rect, (x, y));
                                     (wl_surface, origin.into())
                                 })
                             });
@@ -4140,7 +4179,8 @@ impl State {
             .cloned()
             .and_then(|wl_surface| {
                 self.remote_input_firewall.view().rect(surface).map(|rect| {
-                    let origin = crate::compositor::foreign::store().surface_origin(surface, rect);
+                    let origin =
+                        crate::compositor::foreign::store().surface_origin(surface, rect, (x, y));
                     (wl_surface, origin.into())
                 })
             });
@@ -4207,14 +4247,16 @@ impl State {
 
     fn capture_committed_foreign_pixels(&mut self, surface: &WlSurface, surface_id: u64) {
         let foreign_root = foreign_root(surface);
-        self.note_presentation_commit(
-            surface,
-            surface_id,
-            self.should_capture_foreign_surface(surface_id) || foreign_root.is_some(),
-        );
-        if let Some(root) = foreign_root {
-            self.refresh_foreign_subsurface_tree(&root);
+        let captured = self.should_capture_foreign_surface(surface_id) || foreign_root.is_some();
+        self.note_presentation_commit(surface, surface_id, captured);
+        if captured {
+            // Where its pixels go depends on their density, root or subsurface.
+            let scale = wl_compositor::with_states(surface, committed_surface_scale);
+            crate::compositor::foreign::store().note_surface_scale(surface_id, scale);
         }
+        // A subsurface's position is the parent's state, applied with the
+        // parent's commit, so the root re-reads its tree as well.
+        self.refresh_foreign_subsurface_tree(&foreign_root.unwrap_or_else(|| surface.clone()));
         if !self.is_floating_toplevel(surface_id) {
             Self::note_foreign_window_geometry(surface, surface_id);
         }
@@ -4772,6 +4814,15 @@ impl CompositorHandler for State {
         });
     }
 
+    fn new_subsurface(&mut self, surface: &WlSurface, parent: &WlSurface) {
+        // Rendered as part of its root, at the root's scale — told now rather
+        // than after a first frame at the wrong one.
+        let scale = self.surface_scale(crate::compositor::state::surface_id(
+            &subsurface_tree_root(parent),
+        ));
+        prefer_scale_for_tree(surface, scale);
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         // HiDPI: push this surface's preferred `wp_fractional_scale` — the
         // scale of the *output it is on*, not one session-wide number,
@@ -4781,15 +4832,21 @@ impl CompositorHandler for State {
         // index. Using the bare Wayland object id worked only for the first
         // client and made a second client's surface fall back to the
         // session-wide scale after moving between monitors.
+        //
+        // A subsurface is never placed itself: it is drawn as part of its
+        // root, so it takes the root's scale. The session-wide fallback would
+        // have a browser render its page at 1x inside a 2x window.
         let surface_id = crate::compositor::state::surface_id(surface);
-        let scale = self.surface_scale(surface_id);
+        let scale = self.surface_scale(crate::compositor::state::surface_id(
+            &subsurface_tree_root(surface),
+        ));
         wl_compositor::with_states(surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);
             });
         });
-        let session_scale = self.scale;
-        self.client_cursor.surface_committed(surface, session_scale);
+        let cursor_scale = self.pointer_output_scale();
+        self.client_cursor.surface_committed(surface, cursor_scale);
         self.release_closing_frame_callbacks(surface, surface_id);
         if crate::compositor::toplevel_icon::sync(surface, surface_id) {
             tab_binding::note_tab_artwork_changed(&mut self.workspace_tree.write());
@@ -6501,7 +6558,7 @@ impl SeatHandler for State {
         if self.personal_pointer_hold {
             return;
         }
-        let scale = self.scale;
+        let scale = self.pointer_output_scale();
         self.client_cursor.set(image, scale);
     }
 }
@@ -6580,7 +6637,10 @@ impl FractionalScaleHandler for State {
         // same connection-qualified key as `commit` and `update_surface_scales`
         // so a second client cannot inherit the first client's cached output
         // scale when both happen to allocate the same wl_surface id.
-        let scale = self.surface_scale(crate::compositor::state::surface_id(&surface));
+        // A subsurface takes its root's scale; see `commit`.
+        let scale = self.surface_scale(crate::compositor::state::surface_id(
+            &subsurface_tree_root(&surface),
+        ));
         wl_compositor::with_states(&surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);

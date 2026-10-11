@@ -31,7 +31,7 @@ use smithay::reexports::wayland_server::Display;
 
 use wayland_client::{
     Connection, Dispatch, QueueHandle, delegate_noop,
-    protocol::{wl_compositor, wl_registry, wl_surface},
+    protocol::{wl_compositor, wl_registry, wl_subcompositor, wl_subsurface, wl_surface},
 };
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
@@ -44,6 +44,7 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 #[derive(Default)]
 struct ClientAppState {
     compositor: Option<wl_compositor::WlCompositor>,
+    subcompositor: Option<wl_subcompositor::WlSubcompositor>,
     fractional_manager: Option<WpFractionalScaleManagerV1>,
     viewporter: Option<WpViewporter>,
     /// Last `preferred_scale` value the compositor sent, in `1/120` units.
@@ -74,6 +75,11 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
                         (),
                     ));
                 }
+                "wl_subcompositor" => {
+                    state.subcompositor = Some(
+                        registry.bind::<wl_subcompositor::WlSubcompositor, _, _>(name, 1, qh, ()),
+                    );
+                }
                 "wp_fractional_scale_manager_v1" => {
                     state.fractional_manager =
                         Some(registry.bind::<WpFractionalScaleManagerV1, _, _>(
@@ -95,6 +101,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
 
 delegate_noop!(ClientAppState: ignore wl_compositor::WlCompositor);
 delegate_noop!(ClientAppState: ignore wl_surface::WlSurface);
+delegate_noop!(ClientAppState: ignore wl_subcompositor::WlSubcompositor);
+delegate_noop!(ClientAppState: ignore wl_subsurface::WlSubsurface);
 delegate_noop!(ClientAppState: ignore WpFractionalScaleManagerV1);
 delegate_noop!(ClientAppState: ignore WpViewporter);
 
@@ -256,4 +264,91 @@ fn fractional_scale_globals_are_advertised_and_follow_the_display_scale() {
             "surface did not receive the fractional 1.5× preferred scale (180/120)"
         );
     }
+}
+
+/// A subsurface is drawn as part of its window, so it is asked to render at
+/// the window's scale — not the session-wide fallback of a surface nobody
+/// placed. A browser told 1x for the subsurface it draws its page into, in a
+/// 2x window, fills only the window's top-left quarter.
+#[test]
+fn a_subsurface_is_asked_for_its_windows_scale() {
+    let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop event loop");
+    let mut display: Display<State> = Display::new().expect("wayland display");
+    let mut server_state = State::new(event_loop.handle(), display.handle());
+    server_state.scale = 1.0;
+
+    let (client_side, server_side) = UnixStream::pair().expect("socket pair");
+    let _client = display
+        .handle()
+        .insert_client(server_side, Arc::new(ClientState::default()))
+        .expect("insert client");
+    let conn = Connection::from_socket(client_side).expect("client from socket");
+    let mut event_queue: wayland_client::EventQueue<ClientAppState> = conn.new_event_queue();
+    let qh = event_queue.handle();
+    let _registry = conn.display().get_registry(&qh, ());
+    let mut app = ClientAppState::default();
+    pump(
+        &conn,
+        &mut event_queue,
+        &mut app,
+        &mut display,
+        &mut server_state,
+        |a| a.compositor.is_some() && a.subcompositor.is_some() && a.fractional_manager.is_some(),
+        "registry walk",
+    );
+    let compositor = app.compositor.clone().expect("wl_compositor bound");
+    let subcompositor = app.subcompositor.clone().expect("wl_subcompositor bound");
+    let manager = app.fractional_manager.clone().expect("manager bound");
+
+    // The window, placed on a 2x output.
+    let window = compositor.create_surface(&qh, ());
+    window.commit();
+    pump(
+        &conn,
+        &mut event_queue,
+        &mut app,
+        &mut display,
+        &mut server_state,
+        |_| true,
+        "window surface",
+    );
+    let window_id = *server_state
+        .surface_handles
+        .keys()
+        .next()
+        .expect("the window's surface reached the compositor");
+    server_state.surface_scales.insert(window_id, 2.0);
+
+    // The page, drawn into a subsurface of it.
+    let page = compositor.create_surface(&qh, ());
+    let _subsurface = subcompositor.get_subsurface(&page, &window, &qh, ());
+    let _fractional = manager.get_fractional_scale(&page, &qh, ());
+    page.commit();
+    window.commit();
+    pump(
+        &conn,
+        &mut event_queue,
+        &mut app,
+        &mut display,
+        &mut server_state,
+        |a| a.preferred_scale_120.is_some(),
+        "subsurface preferred_scale event",
+    );
+    // Let any later event (a commit's re-statement) arrive too.
+    for _ in 0..3 {
+        pump(
+            &conn,
+            &mut event_queue,
+            &mut app,
+            &mut display,
+            &mut server_state,
+            |_| true,
+            "settle",
+        );
+    }
+    assert_eq!(
+        app.preferred_scale_120,
+        Some(240),
+        "the subsurface must render at its window's 2x, not the session-wide 1x"
+    );
 }
