@@ -70,6 +70,14 @@ impl DeviceDisplaySnapshot {
     /// Fails if the private runtime directory is unavailable or writing fails.
     pub fn save(&self) -> std::io::Result<()> {
         let path = snapshot_path().ok_or_else(|| std::io::Error::other("runtime unavailable"))?;
+        // The clock's sample must not re-author unchanged runtime observations.
+        // Loading still validates the live PID/start-time lease; missing,
+        // corrupt, changed or stale-publisher state takes the atomic path.
+        if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file())
+            && Self::load_at(&path).as_ref() == Some(self)
+        {
+            return Ok(());
+        }
         let bytes = serde_json::to_vec(self).map_err(std::io::Error::other)?;
         tilo_files::native::atomic::write_creating_parent(&path, &bytes)
     }
