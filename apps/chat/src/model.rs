@@ -695,12 +695,13 @@ pub fn toggle_reaction(reactions: &mut Vec<Reaction>, emoji: &str, user: &str) -
     }
 }
 
-/// Format an epoch-seconds timestamp as a 24-hour `HH:MM` clock.
+/// An epoch-seconds timestamp's time of day, as the person reads clocks.
 pub fn clock(ts: i64) -> String {
     let secs_in_day = ts.rem_euclid(86_400);
-    let h = secs_in_day / 3600;
-    let m = (secs_in_day % 3600) / 60;
-    format!("{h:02}:{m:02}")
+    ui::clock::hour_minute(
+        ui::num::u32_of_i64(secs_in_day / 3600),
+        ui::num::u32_of_i64(secs_in_day % 3600 / 60),
+    )
 }
 
 /// Human relative label for a message timestamp relative to `now` —
