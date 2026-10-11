@@ -77,6 +77,12 @@ impl Gate {
         self.read_unmounted.set(true);
     }
 
+    /// Whether something outside the row's widgets reads its readers'
+    /// results ([`Self::read_while_unmounted`]).
+    pub(crate) fn reads_unmounted(&self) -> bool {
+        self.read_unmounted.get()
+    }
+
     pub(crate) fn set_mounted(&self, mounted: bool) {
         self.mounted.set(mounted);
     }
