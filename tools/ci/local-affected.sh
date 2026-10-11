@@ -47,7 +47,12 @@ base=$(git merge-base "$base" HEAD)
 echo "==> select (base $base)"
 plan=$(mktemp)
 python3 tools/ci/affected_packages.py --base "$base" --shards 2 --allow-security-skip >"$plan" || exit 1
-eval "$(python3 tools/ci/nextest_filters.py)"
+# The filters come as KEY=value lines (the $GITHUB_ENV format CI appends them
+# in); the values are nextest filtersets, not shell words, so export them as
+# data rather than eval-ing them.
+while IFS= read -r line; do
+  [ -n "$line" ] && export "${line%%=*}=${line#*=}"
+done < <(python3 tools/ci/nextest_filters.py)
 if [ "$(git rev-parse --abbrev-ref HEAD)" != HEAD ] && ! git merge-base --is-ancestor origin/main HEAD; then
   echo "warning: origin/main is not an ancestor of HEAD; CI tests the merge onto main, so rebase first" >&2
 fi
