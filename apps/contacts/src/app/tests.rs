@@ -2080,8 +2080,11 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
                 let idle = app.harness_mut().frame_schedule();
                 assert!(
                     !idle.needs_animation_frame && idle.next_wake_deadline.is_none(),
-                    "with the toast gone the loop can settle back to idle; requesters {:?}",
-                    app.harness_mut().frame_requesters()
+                    "with the toast gone the loop can settle back to idle; schedule {:?}; requesters {:?}; contact animation {}, deadline {:?}",
+                    idle,
+                    app.harness_mut().frame_requesters(),
+                    app.needs_animation_frame(),
+                    app.next_wake_deadline()
                 );
             });
         });
