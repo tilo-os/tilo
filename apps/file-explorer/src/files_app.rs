@@ -8974,8 +8974,9 @@ impl Widget for FileExplorerWidget {
                     .ok()
                     .and_then(|reply| (!reply.is_pending(*token)).then(Instant::now))
             });
-        Some(self.next_metadata_refresh.min(self.nearby_send.next_poll()))
+        Some(self.next_metadata_refresh)
             .into_iter()
+            .chain(self.nearby_send.next_poll())
             .chain(document_open_reply)
             .chain(self.local_clipboard.next_wake())
             .chain(self.nav.next_wake_deadline())
