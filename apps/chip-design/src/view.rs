@@ -11,12 +11,7 @@ use crate::model::{AttentionCache, MAX_REPORT_BYTES, MAX_REPORTS, StorageReport,
 use crate::resource::{ChipProject, ProjectState, import};
 use crate::verification::{CheckStatus, ReceiptStatus, VerificationReceipt, VerificationRecord};
 
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "chip-title",
-)
-.with_system_locale();
+ui::embedded_catalog!(static CATALOG, "chip-title", ["en-US"]);
 
 fn tr(key: &str) -> String {
     I18nManager::lookup_plain(key)
