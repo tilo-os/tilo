@@ -52,6 +52,32 @@ pub use tilo_relay_client::coedit::{RetentionKind, retention_metadata, retention
 use crate::client::RelayClient;
 use crate::transport::Envelope;
 
+/// The shortest gap between two moves of one pointer slot on the wire to or
+/// from a relay: 20 Hz. Receivers glide a peer's pointer over the gap between
+/// two samples (`ui::presence::POINTER_EASE_MAX` caps the glide at 100 ms), so
+/// 20 Hz moves as smoothly as the 30 Hz producers publish at. The relay
+/// forwards a pointer slot to each connection at most this often, and a
+/// client writes one at most this often, so a move the relay would only
+/// coalesce away never costs a packet.
+pub const POINTER_GAP: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The coalescing slot of a co-edit presence body: latest-state presence (a
+/// pointer, a caret) has one, events do not. Only the two `NeighbourMsg`
+/// variants that can have one are decoded, to tell which; the body itself is
+/// sent and forwarded as it came.
+#[must_use]
+pub fn presence_slot(body: &[u8]) -> Option<tilo_peer_state::PresenceSlot> {
+    if !body
+        .first()
+        .is_some_and(|tag| tilo_peer_state::NeighbourMsg::SLOTTED_PRESENCE_TAGS.contains(tag))
+    {
+        return None;
+    }
+    postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(body)
+        .ok()?
+        .presence_slot()
+}
+
 /// A co-edit session bound to one workspace on one host connection.
 ///
 /// Construct it from an already-connected [`RelayClient`] via

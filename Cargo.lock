@@ -17825,6 +17825,7 @@ name = "tilo-relay-session"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "collab-types",
  "ed25519-dalek 3.0.0",
  "getrandom 0.3.4",
  "getrandom 0.4.3",

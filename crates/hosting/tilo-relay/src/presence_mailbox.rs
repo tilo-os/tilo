@@ -13,8 +13,14 @@
 //! - **Pointers at most every [`MOTION_GAP`] (20 Hz) per slot.** Receivers
 //!   glide a peer's pointer over the gap between two samples
 //!   (`ui::presence::POINTER_EASE_MAX` caps it at 100 ms), so 20 Hz moves as
-//!   smoothly as the 30 Hz the shell publishes, for a third fewer frames. The
-//!   first move after a pause goes out within [`BATCH_WINDOW`].
+//!   smoothly as the 30 Hz the shell publishes, for a third fewer frames. A
+//!   move goes as soon as its pace allows, without waiting [`BATCH_WINDOW`]
+//!   for company; whatever is pending rides with it. Current clients already
+//!   write each pointer slot at most this often (the session writer's pointer
+//!   pacing in `tilo_relay_session::client`), so this pace only bites on
+//!   older clients and on jitter. The gap is counted from when the previous
+//!   move was due, not from when the writer got to it, so a late write does
+//!   not hold every later move of a paced client longer.
 //! - **Carets, selections and typing on every change**, after at most
 //!   [`BATCH_WINDOW`] (5 ms), which is what lets a keystroke's `Typing` and
 //!   `Caret` travel as one frame.
@@ -53,8 +59,10 @@ use tilo_peer_state::PresenceSlot;
 use tokio::sync::Notify;
 use tokio::time::Instant;
 
-/// The shortest gap between two moves of one pointer slot to one connection.
-pub const MOTION_GAP: Duration = Duration::from_millis(50);
+/// The shortest gap between two moves of one pointer slot to one connection:
+/// the pointer gap clients pace their own writes to
+/// ([`crate::coedit::POINTER_GAP`]), so the two cannot drift apart.
+pub const MOTION_GAP: Duration = crate::coedit::POINTER_GAP;
 /// How long presence waits for more to travel in the same frame.
 pub const BATCH_WINDOW: Duration = Duration::from_millis(5);
 /// The shortest gap after which a pointer slot may ride along with
@@ -140,12 +148,15 @@ fn due_at(
     } else {
         BATCH_WINDOW
     };
-    let batched = later(pending.since, window);
     if !pending.motion {
-        return batched;
+        return later(pending.since, window);
     }
-    sent.get(key)
-        .map_or(batched, |sent| batched.max(later(*sent, MOTION_GAP)))
+    // A pointer goes as soon as its pace allows: it does not wait the batch
+    // window for company, which would add to every move of a client that
+    // already sends at this pace. What is pending rides with it.
+    sent.get(key).map_or(pending.since, |sent| {
+        pending.since.max(later(*sent, MOTION_GAP))
+    })
 }
 
 /// Whether `pending` presence in slot `key` may go now with something else:
@@ -306,7 +317,12 @@ impl PresenceMailbox {
         for key in keys {
             if let Some(pending) = state.slotted.remove(&key) {
                 if pending.motion {
-                    state.sent.insert(key, now);
+                    // Pace on the schedule, not on when the writer got to
+                    // it: a write that is late does not push every later
+                    // move of a client that already sends at this pace
+                    // later too. One that goes early restarts the pace.
+                    let scheduled = due_at(&state.sent, &key, &pending).min(now);
+                    state.sent.insert(key, scheduled);
                 }
                 due.push((
                     pending.seq,
@@ -427,6 +443,31 @@ mod tests {
     }
 
     #[test]
+    fn a_late_write_does_not_hold_the_next_move_of_a_paced_client() {
+        let mailbox = PresenceMailbox::default();
+        let t0 = Instant::now();
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 1"), t0, false);
+        assert_eq!(
+            mailbox.next_due(),
+            Some(t0),
+            "a pointer waits for no company"
+        );
+        assert_eq!(texts(&mailbox.take(t0, false)), ["move 1"]);
+        // A client paced to the gap: the next move arrives a gap later, is
+        // due as it arrives, and the writer gets to it 10 ms late.
+        let t1 = t0 + MOTION_GAP;
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 2"), t1, false);
+        assert_eq!(mailbox.next_due(), Some(t1));
+        let late = t1 + Duration::from_millis(10);
+        assert_eq!(texts(&mailbox.take(late, false)), ["move 2"]);
+        // The third move, again a gap later, is due as soon as it arrives:
+        // the late write is not added to its wait.
+        let t2 = t1 + MOTION_GAP;
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 3"), t2, false);
+        assert_eq!(mailbox.next_due(), Some(t2));
+    }
+
+    #[test]
     fn unslotted_presence_keeps_its_order_and_brings_what_came_before() {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
@@ -512,7 +553,8 @@ mod tests {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
         mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move"), t0, true);
-        assert_eq!(mailbox.next_due(), Some(t0 + BATCH_WINDOW));
+        // Neither for a delta nor for the batch window: it is due at once.
+        assert_eq!(mailbox.next_due(), Some(t0));
     }
 
     #[test]
