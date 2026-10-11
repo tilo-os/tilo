@@ -13,9 +13,9 @@ cargo build -p shell --bin tilo-runtime-mcp --no-default-features
 ```
 
 In an installed layout, app startup attaches to a runtime host beside the app,
-then on `PATH`. Inside the Tilo desktop (`XDG_CURRENT_DESKTOP=tilo`, which the
-Tilo login exports) that is only the session's `tilo-runtime-mcp`, so an app
-never attaches to a second authority beside it. Elsewhere — stock macOS or a
+then on `PATH`. Inside the Tilo desktop (`XDG_CURRENT_DESKTOP` names `tilo`
+among its colon-separated entries; the Tilo login exports `tilo:GNOME`) that is
+only `tilo-runtime-mcp`, so an app never prefers the standalone host there. Elsewhere — stock macOS or a
 foreign Linux desktop — the standalone `tilo-runtime` comes first, then
 `tilo-runtime-mcp`. Packages built by `scripts/browser/package.py` carry
 `tilo-runtime`. In a source checkout on a foreign desktop, build the host once:
@@ -85,6 +85,54 @@ Point the assistant at the existing host with `--connect` and the same profile:
 The first ordinary app may start the daemon before the assistant connects. A
 `--connect` client can also start it when no app is running. Stdio EOF ends only
 that proxy connection.
+
+A profile named with `--profile` or `TILO_RUNTIME_PROFILE`, or `--standalone`,
+always selects this standalone runtime.
+
+### Inside a Tilo session
+
+Inside a Tilo login, `--connect` with no profile relays to the desktop itself:
+the session's **agent door** at `$XDG_RUNTIME_DIR/tilo-session/agent.sock`.
+It never starts a standalone daemon there — a second, empty authority beside
+the desktop would answer every question about it wrongly. When the door is
+missing (first login not complete, or a compositor too old to serve it) the
+client fails and says so; `--standalone` runs a separate runtime anyway.
+
+```sh
+claude mcp add tilo -- tilo-runtime-mcp --connect
+```
+
+The door serves this login's own processes only: same account, same user and
+mount namespaces. A sandboxed app is refused and uses its own collaboration
+connection. A process inside an app the session launched — the terminal an
+agent runs in — is admitted to ask, and that app is named in the question.
+
+Nothing a client sends after its `initialize` is read until the person
+answers, in trusted chrome: "Claude Code (node, pid N) in
+org.alacritty.Alacritty — Work in “Home” as the agent claude-code". The same
+decision is the `permission-prompts` provider's `allow-once@…`,
+`allow-session@…`, `allow-always@…` and `deny@…` actions, so the owner can
+also answer remotely; those take optional `agent` (an existing agent member,
+or a new one by that name) and `preset` parameters. A refusal reaches the
+client as a JSON-RPC error on its `initialize`, and the connection closes.
+
+Admitting a client makes it an agent member of the workspace in front of the
+person, through the same membership Settings → Agents shows and removes. Its
+connection is then served the MCP tools as `Caller::local_agent(agent)` in that
+workspace's room, in an execution of its own: every query and invocation
+passes the broker's ordinary gate and is attributed to `agent:<id>`. An agent
+holds no role, so it reaches only what the person grants it there (Settings →
+Agents → Review access); removing it ends both its catalogue and its authority
+at once. There are no pixel (`computer`) tools on the door.
+
+"This session" and "Always" remember that this client — the executable the
+kernel names, under the client name it gives — is that agent, and let it in
+without asking wherever that agent is still a member. "Always" is kept in
+`$XDG_STATE_HOME/tilo/agent-door-bindings.json` (0600), never in the
+replicated workspace document, and only a workspace owner may give it. Any
+process of the same account can claim the same name, so a remembered client is
+a convenience against repeated prompts, not a credential: what it can do is
+still exactly the agent's grants.
 
 
 

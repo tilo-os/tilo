@@ -13,6 +13,8 @@ pub mod activation;
 #[cfg(target_os = "linux")]
 pub(crate) mod admin_control;
 #[cfg(target_os = "linux")]
+pub(crate) mod agent_door;
+#[cfg(target_os = "linux")]
 pub mod agent_seats;
 #[cfg(target_os = "linux")]
 mod audio_capture;

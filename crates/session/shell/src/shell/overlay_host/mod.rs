@@ -6169,12 +6169,10 @@ impl ShellOverlayHost {
         };
 
         // A retired native/portal request cannot leave a stale grant sheet.
-        chrome_handle.borrow_mut().pending_grants.retain(|pending| {
-            pending
-                .reply
-                .as_ref()
-                .is_none_or(|reply| !reply.is_closed())
-        });
+        chrome_handle
+            .borrow_mut()
+            .pending_grants
+            .retain(|pending| !pending.is_retired());
 
         // The widget and semantic actions answer the same exact pending request.
         let choice = self
@@ -6204,7 +6202,7 @@ impl ShellOverlayHost {
             let st = chrome_handle.borrow();
             if let Some(pending) = st.pending_grants.front() {
                 self.permission_prompt_id = Some(pending.id);
-                let label = capability_label(&pending.capability);
+                let label = prompt_label(&pending.request);
                 let is_owner = is_active_workspace_owner(&st);
                 self.permission_prompt = Some(PermissionPrompt::new(
                     pending.app_id.clone(),
@@ -20553,6 +20551,16 @@ pub(crate) fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::P
 
 /// Human-readable label for the inline permission prompt from a
 /// [`Capability`] payload.
+/// What a pending prompt asks, as the person reads it.
+pub(crate) fn prompt_label(request: &crate::shell::chrome_state::PromptRequest) -> String {
+    match request {
+        crate::shell::chrome_state::PromptRequest::Capability(capability) => {
+            capability_label(capability)
+        }
+        crate::shell::chrome_state::PromptRequest::AgentAdmission(admission) => admission.label(),
+    }
+}
+
 pub(crate) fn capability_label(cap: &Capability) -> String {
     match cap {
         Capability::Filesystem { path, mode, .. } => {

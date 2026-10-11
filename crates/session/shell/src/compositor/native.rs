@@ -8500,6 +8500,15 @@ pub fn run() {
     let mut admin_control_due = (backend_kind == BackendKind::Drm || headless_owner_control)
         .then(|| identity_store.path().parent().map(Path::to_path_buf))
         .flatten();
+    // The session's agent door, bound beside it once first login is
+    // complete: the real seat's always, a development compositor's only
+    // where its developer named one.
+    let mut agent_door_due = crate::compositor::agent_door::door_path(
+        backend_kind == BackendKind::Drm,
+        crate::compositor::dev_env::DEV_ENV_OVERRIDES,
+        std::env::var_os(crate::compositor::agent_door::AGENT_DOOR_ENV),
+        std::env::var_os("XDG_RUNTIME_DIR"),
+    );
     let onboarding_identity_dir = if should_activate_first_use(
         identity_missing,
         progress_pending,
@@ -8951,6 +8960,13 @@ pub fn run() {
         UnlinkOnDrop,
         Option<calloop::RegistrationToken>,
     )> = None;
+    // Bound by the loop once first login is complete; see `agent_door`.
+    let mut agent_door: Option<(
+        crate::compositor::agent_door::Door,
+        UnlinkOnDrop,
+        Option<calloop::RegistrationToken>,
+    )> = None;
+    let mut agent_door_consent: Option<crate::shell::agent_admission::AgentDoorConsent> = None;
     let mut test_control_conns: Vec<TestControlConn> = Vec::new();
     // A control client is itself an event source. Each accepted stream gets
     // its own wake (see `TestControlConn::watch`), because a connection is
@@ -12031,6 +12047,31 @@ pub fn run() {
                 }
             }
         }
+        if !onboarding_active && let Some(path) = agent_door_due.take() {
+            match crate::compositor::agent_door::bind(&path) {
+                Ok(listener) => {
+                    tracing::info!(path = %path.display(), "agent door: listening");
+                    let wake = control_listener_wake(&listener, &event_loop.handle());
+                    let (requests, consent) = crate::shell::agent_admission::channel(
+                        crate::shell::agent_admission::default_always_path(),
+                        Some(Arc::clone(&session_wake)),
+                    );
+                    agent_door = Some((
+                        crate::compositor::agent_door::Door::new(
+                            listener,
+                            requests,
+                            Arc::clone(&session_wake),
+                        ),
+                        UnlinkOnDrop(path),
+                        wake,
+                    ));
+                    agent_door_consent = Some(consent);
+                }
+                Err(reason) => {
+                    tracing::info!(%reason, "agent door: not served in this session");
+                }
+            }
+        }
         let started = if std::mem::take(&mut local_broker_due) {
             Some(None)
         } else {
@@ -13040,6 +13081,12 @@ pub fn run() {
                 }
             }
         }
+        if let Some((door, _, _)) = agent_door.as_ref() {
+            let broker = collab_broker
+                .as_ref()
+                .and_then(crate::shell::collab_broker::BrokerHandle::app_action_broker);
+            door.accept(broker.as_ref());
+        }
         for conn in &mut test_control_conns {
             let injected = pump_test_control_conn(
                 conn,
@@ -13086,6 +13133,11 @@ pub fn run() {
             }
             !conn.closed
         });
+        // The person's answers to agent door clients, whether clicked or
+        // given through a semantic action above.
+        if let Some(consent) = agent_door_consent.as_mut() {
+            consent.pump(&frame_builder.chrome_handle());
+        }
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
 
@@ -13379,6 +13431,7 @@ pub fn run() {
         test_control_listener_wake,
         agent_control_listener_wake,
         admin_control.as_mut().and_then(|(_, _, wake)| wake.take()),
+        agent_door.as_mut().and_then(|(_, _, wake)| wake.take()),
     ]
     .into_iter()
     .flatten()
@@ -13388,6 +13441,8 @@ pub fn run() {
     drop(test_control_listener);
     drop(agent_control_listener);
     drop(admin_control);
+    drop(agent_door);
+    drop(agent_door_consent);
     // Explicitly drop service guards in dependency order so the next session
     // cannot observe stale endpoints while backend teardown finishes.
     drop(test_control_unlink);

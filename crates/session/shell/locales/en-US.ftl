@@ -777,6 +777,21 @@ capability-host-shell = Open this device's own shell, outside every sandbox
 capability-network-hosts = Network access to { $hosts }
 capability-network = Network access
 
+# The session's agent door: a client in this login (an AI agent in a
+# terminal) asks to work in a workspace as an agent member.
+agent-door-client = { $client } ({ $program }, pid { $pid })
+agent-door-client-in-app = { $who } in { $app }
+agent-door-admission = Work in “{ $workspace }” as the agent { $agent }
+agent-door-param-agent = The agent to admit it as: an existing agent member, or a new one by this name. Defaults to the name the prompt proposes.
+agent-door-param-preset = A new agent's preset: Observer, Contributor, Operator, or Custom. Presets never grant access to a surface by themselves.
+agent-door-preset-invalid = Choose Observer, Contributor, Operator, or Custom.
+agent-door-agent-invalid = An agent needs a name of up to 128 characters.
+agent-door-workspace-gone = The workspace this client asked to work in is gone.
+agent-door-not-administrator = You do not administer this workspace, so { $agent } was not added.
+agent-door-no-workspace = There is no workspace here to work in.
+agent-door-withdrawn = The request was withdrawn before anyone answered it.
+agent-door-declined = The person at this desktop declined this connection.
+
 # The shortcut-guide pill in the display corner
 help-pill = Help  F1 · Super+?
 

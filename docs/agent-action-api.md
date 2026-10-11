@@ -52,6 +52,17 @@ by a token:
 - **Every invocation passes the same capability gate** as the palette, as the
   person at this session.
 
+### An agent in a terminal uses the agent door, not this socket
+
+An AI agent running in a terminal inside the person's own session (Claude
+Code in Alacritty, say) is a descendant of an app this session launched, so
+this socket refuses it — rightly: it would carry the admin's whole authority,
+unattributed. It connects to the session's **agent door** instead
+(`$XDG_RUNTIME_DIR/tilo-session/agent.sock`), through
+`tilo-runtime-mcp --connect`, and acts as an agent member the person admits:
+attributed, limited to what the workspace grants that agent, and revoked with
+its membership. See [`runtime-mcp.md`](runtime-mcp.md#inside-a-tilo-session).
+
 ### Unlocking the owner's session remotely
 
 Use the owner's existing unconfined login and the owner socket. Discover the
@@ -534,6 +545,8 @@ refuses it again at run time.
 |---|---|
 | Command + response shapes | `crates/session/shell/src/compositor/test_control.rs` |
 | Device admin's control socket | `crates/session/shell/src/compositor/admin_control.rs` |
+| Session agent door (peer check, serving) | `crates/session/shell/src/compositor/agent_door.rs`, client route and MCP gate in `crates/runtime/tilo-runtime/src/session_door.rs` |
+| Agent door consent | `crates/session/shell/src/shell/agent_admission.rs` |
 | CLI (`tilo-control`) | `crates/session/control-cli` |
 | Launcher coverage proof | `crates/session/shell/src/shell/overlay_host/launcher_action_coverage_tests.rs` |
 | Live enumerate / resolve | `crates/session/shell/src/compositor/native.rs` |

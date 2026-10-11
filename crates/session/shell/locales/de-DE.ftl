@@ -780,6 +780,21 @@ capability-host-shell = Die eigene Shell dieses Geräts öffnen, außerhalb jede
 capability-network-hosts = Netzwerkzugriff auf { $hosts }
 capability-network = Netzwerkzugriff
 
+# The session's agent door: a client in this login (an AI agent in a
+# terminal) asks to work in a workspace as an agent member.
+agent-door-client = { $client } ({ $program }, PID { $pid })
+agent-door-client-in-app = { $who } in { $app }
+agent-door-admission = In „{ $workspace }“ als Agent { $agent } arbeiten
+agent-door-param-agent = Der Agent, als der er zugelassen wird: ein vorhandenes Agent-Mitglied oder ein neues mit diesem Namen. Standard ist der vorgeschlagene Name.
+agent-door-param-preset = Die Vorlage eines neuen Agenten: Observer, Contributor, Operator oder Custom. Vorlagen geben für sich allein keinen Zugriff auf eine Oberfläche.
+agent-door-preset-invalid = Wähle Observer, Contributor, Operator oder Custom.
+agent-door-agent-invalid = Ein Agent braucht einen Namen mit höchstens 128 Zeichen.
+agent-door-workspace-gone = Der Arbeitsbereich, in dem dieser Client arbeiten wollte, existiert nicht mehr.
+agent-door-not-administrator = Du verwaltest diesen Arbeitsbereich nicht, daher wurde { $agent } nicht hinzugefügt.
+agent-door-no-workspace = Hier gibt es keinen Arbeitsbereich zum Arbeiten.
+agent-door-withdrawn = Die Anfrage wurde zurückgezogen, bevor jemand sie beantwortet hat.
+agent-door-declined = Die Person an diesem Desktop hat diese Verbindung abgelehnt.
+
 # Die Hilfe-Pille in der Bildschirmecke
 help-pill = Hilfe  F1 · Super+?
 

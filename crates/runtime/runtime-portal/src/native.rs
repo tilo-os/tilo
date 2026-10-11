@@ -190,7 +190,21 @@ mod unix {
     /// to a second authority beside it; elsewhere the standalone host comes
     /// first.
     fn host_names() -> &'static [&'static str] {
-        if env::var_os("XDG_CURRENT_DESKTOP").as_deref() == Some(OsStr::new(TILO_DESKTOP)) {
+        host_names_for(env::var_os("XDG_CURRENT_DESKTOP").as_deref())
+    }
+
+    /// [`host_names`] for one `XDG_CURRENT_DESKTOP` value. The value is a
+    /// colon list, and a Tilo login exports `tilo:GNOME`: Tilo is one of its
+    /// entries, matched as the compositor's own `is_tilo_login` matches it.
+    fn host_names_for(current_desktop: Option<&OsStr>) -> &'static [&'static str] {
+        let tilo = current_desktop
+            .and_then(OsStr::to_str)
+            .is_some_and(|value| {
+                value
+                    .split(':')
+                    .any(|part| part.eq_ignore_ascii_case(TILO_DESKTOP))
+            });
+        if tilo {
             &["tilo-runtime-mcp"]
         } else {
             &["tilo-runtime", "tilo-runtime-mcp"]
@@ -266,5 +280,28 @@ mod unix {
                 .join("crates/runtime/tilo-runtime/Cargo.toml")
                 .is_file())
         .then(|| target.to_path_buf())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_tilo_login_attaches_only_to_the_sessions_host() {
+            for desktop in ["tilo", "tilo:GNOME", "GNOME:tilo"] {
+                assert_eq!(
+                    host_names_for(Some(OsStr::new(desktop))),
+                    ["tilo-runtime-mcp"],
+                    "{desktop}"
+                );
+            }
+            for desktop in [Some("GNOME"), Some("tilox"), None] {
+                assert_eq!(
+                    host_names_for(desktop.map(OsStr::new)),
+                    ["tilo-runtime", "tilo-runtime-mcp"],
+                    "{desktop:?}"
+                );
+            }
+        }
     }
 }
