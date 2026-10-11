@@ -143,6 +143,31 @@ refresh it after any source, manifest, lockfile or target-inventory change. The
 prescribed `AGENTS.md` invocation fails before starting Python when the validated
 export variable is unset or empty. Missing JSON fails rather than invoking Cargo.
 
+For a clean committed worktree, the explicit CI export workflow provides this
+supported path without local Cargo:
+
+```sh
+source_sha=$(git rev-parse HEAD)
+fgj actions workflow run dev-source-metadata.yml -R tilo/tilo \
+  --ref main -f source_sha="$source_sha"
+# After the export run succeeds, replace RUN_NUMBER with that exact run:
+fgj actions run artifacts RUN_NUMBER -R tilo/tilo \
+  --download "current-source-metadata-$source_sha" --output /tmp/source-metadata.zip
+python3 -m zipfile -e /tmp/source-metadata.zip /tmp/source-metadata-export
+python3 tools/ci/current_source_metadata.py validate --root . \
+  --input /tmp/source-metadata-export/current-source-metadata.json \
+  --output target/ci/current-source-metadata.json
+export TILO_CURRENT_WORKTREE_METADATA="$PWD/target/ci/current-source-metadata.json"
+```
+
+The bundle records the producing commit, tree and hashes of all tracked Cargo
+manifests, the lockfile and Cargo configuration. Validation rejects dirty or
+uncommitted source, mismatched source or manifests, incomplete workspace package
+inventories, external paths and absent targets. It preserves every dependency
+record, including optional, build and target-specific dependencies, and remaps
+package IDs and paths to the validated caller worktree. Keep the bundle beside
+its validated export. Refresh after a source change.
+
 A Cargo drop-in may execute `metadata` locally because it is a noncompiling
 subcommand. Verify where it runs instead of assuming a remote export. Until a
 verified export is available, leave the affected plan to the normal CI selector. The regression
