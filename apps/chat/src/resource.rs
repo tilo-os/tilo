@@ -377,10 +377,6 @@ impl ResourceApp for ChatShell {
         SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     /// The first-run workspace for `starter`, the demo conversation for
     /// every other scenario, both read by the capture's own person.
     fn fixture(fixture: &mut ui::framework::Fixture<Chat>) {
