@@ -146,7 +146,7 @@ fn window_count(desktop: &Desktop) -> usize {
     desktop.windows().len()
 }
 
-fn scenario(desktop: &Desktop) {
+fn scenario(desktop: &Desktop, max_idle_cpu: f64) {
     // Restored: the tree the compositor was started on is what it shows.
     let restored = desktop.windows();
     let titles: Vec<&str> = restored
@@ -261,6 +261,18 @@ fn scenario(desktop: &Desktop) {
     // The clients' windows are still there and the desktop still answers.
     sweep_edges(desktop);
     assert_eq!(painted_clients(desktop).len(), 2);
+
+    // Left alone, the desktop is idle. A widget that reports a wake deadline
+    // nothing can satisfy makes the loop pump every app on every pass: the
+    // Files app did, while its nearby-transfer snapshot went unanswered.
+    desktop.pause(Duration::from_secs(1));
+    let share = desktop.idle_cpu_share(Duration::from_secs(2));
+    assert!(
+        share < max_idle_cpu,
+        "an untouched desktop used {:.0}% of a core; it is spinning on a wake deadline that \
+         never clears",
+        share * 100.0
+    );
 }
 
 /// A shorter pointer pass: the corners, the edges and the top bar.
@@ -281,8 +293,8 @@ fn sweep_edges(desktop: &Desktop) {
     }
 }
 
-fn run(desktop: &Desktop) {
-    scenario(desktop);
+fn run(desktop: &Desktop, max_idle_cpu: f64) {
+    scenario(desktop, max_idle_cpu);
     let (beats, worst) = desktop.heartbeat_summary();
     eprintln!(
         "[desktop-smoke] {beats} heartbeats acknowledged; the slowest wake took {worst:?} \
@@ -298,12 +310,13 @@ fn run(desktop: &Desktop) {
 #[test]
 fn desktop_smoke_keeps_the_main_loop_turning() {
     let desktop = Desktop::start(SCREEN, &smoke_tree());
-    run(&desktop);
+    run(&desktop, 0.25);
 }
 
 #[test]
 fn desktop_smoke_under_cpu_and_memory_pressure() {
     let desktop = Desktop::start(SCREEN, &smoke_tree());
     let _pressure = Pressure::for_this_machine();
-    run(&desktop);
+    // Starved of CPU the loop uses less, never more, than when quiet.
+    run(&desktop, 0.25);
 }

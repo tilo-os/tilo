@@ -178,13 +178,15 @@ impl NearbySendState {
         self.queue(NearbyTransferCommand::Retry { handle }, Pending::Retry);
     }
 
+    /// Whether a background snapshot request is still waiting for its reply.
+    fn snapshot_in_flight(&self) -> bool {
+        self.pending
+            .values()
+            .any(|pending| matches!(pending, Pending::Snapshot { open_picker: false }))
+    }
+
     pub fn poll_if_due(&mut self, now: Instant) {
-        if now < self.next_poll
-            || self
-                .pending
-                .values()
-                .any(|pending| matches!(pending, Pending::Snapshot { open_picker: false }))
-        {
+        if now < self.next_poll || self.snapshot_in_flight() {
             return;
         }
         self.next_poll = now + POLL_INTERVAL;
@@ -201,8 +203,13 @@ impl NearbySendState {
         }
     }
 
-    pub fn next_poll(&self) -> Instant {
-        self.next_poll
+    /// When the next snapshot poll can happen, or `None` while one is awaiting
+    /// its reply. `poll_if_due` does nothing in that case, so a deadline in the
+    /// past would be one nothing can ever satisfy: the host would wake for it
+    /// on every pass, forever, whenever the broker is slow or absent. The reply
+    /// is an event of its own and wakes the app.
+    pub fn next_poll(&self) -> Option<Instant> {
+        (!self.snapshot_in_flight()).then_some(self.next_poll)
     }
 
     pub fn targets(&self) -> &[NearbyTransferTarget] {
@@ -423,6 +430,33 @@ impl NearbySendState {
 mod tests {
     use super::*;
     use ui::collaboration::{NearbyTransferDirection, NearbyTransferPhase, NearbyTransferReply};
+
+    #[test]
+    fn an_unanswered_snapshot_leaves_no_wake_deadline_behind() {
+        let mut state = NearbySendState::default();
+        let start = ui::time::now();
+        state.poll_if_due(start);
+        assert!(
+            state.take_requests().iter().any(|request| matches!(
+                request,
+                CollabRequest::NearbyTransferCommand {
+                    command: NearbyTransferCommand::Snapshot,
+                    ..
+                }
+            )),
+            "the first poll asks for a snapshot"
+        );
+        // The reply never comes. Long after the interval, polling is still
+        // blocked on it, so no deadline may ask the host to wake for a poll.
+        let later = start + POLL_INTERVAL * 3;
+        state.poll_if_due(later);
+        assert!(state.take_requests().is_empty());
+        assert_eq!(
+            state.next_poll(),
+            None,
+            "a poll blocked on a reply is not a deadline"
+        );
+    }
 
     #[test]
     fn airdrop_availability_is_typed_and_failure_withdraws_the_action() {

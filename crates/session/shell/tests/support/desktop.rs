@@ -484,6 +484,30 @@ impl Desktop {
             .unwrap_or_default()
     }
 
+    /// CPU the compositor process used, in milliseconds, per `/proc`.
+    fn compositor_cpu_ms(&self) -> u64 {
+        let pid = self.child.lock().map_or(0, |child| child.id());
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        let ticks: u64 = stat
+            .rsplit_once(')')
+            .map(|(_, rest)| rest.split_whitespace().skip(11).take(2))
+            .into_iter()
+            .flatten()
+            .filter_map(|field| field.parse::<u64>().ok())
+            .sum();
+        // The kernel's clock tick is 100 Hz on every platform the suite runs on.
+        ticks.saturating_mul(10)
+    }
+
+    /// The share of one core the compositor used over `window` of doing nothing.
+    #[track_caller]
+    pub fn idle_cpu_share(&self, window: Duration) -> f64 {
+        let before = self.compositor_cpu_ms();
+        self.pause(window);
+        let used = self.compositor_cpu_ms().saturating_sub(before);
+        f64::from(u32::try_from(used).unwrap_or(u32::MAX)) / (window.as_secs_f64() * 1000.0)
+    }
+
     /// Main-loop iterations that ran long while working, with stacks.
     pub fn jank(&self) -> Vec<String> {
         self.watch
@@ -528,6 +552,10 @@ impl Desktop {
 impl Drop for Desktop {
     fn drop(&mut self) {
         self.watch.stop.store(true, Ordering::Relaxed);
+        // For investigations: keep everything the compositor said.
+        if let Some(path) = std::env::var_os("TILO_SMOKE_COMPOSITOR_LOG") {
+            let _ = std::fs::write(path, self.recent_log(usize::MAX));
+        }
         if std::thread::panicking() {
             let _ = writeln!(
                 std::io::stderr().lock(),
@@ -616,6 +644,14 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                             return;
                         }
                         answer = serde_json::from_str::<Answer>(&line);
+                        if let Ok(Answer::Stalled { threads, .. }) = &answer
+                            && let Ok(mut jank) = watch.jank.lock()
+                        {
+                            let main = threads.first().map_or("", |t| t.backtrace.as_str());
+                            let top: Vec<&str> =
+                                main.lines().filter(|l| !l.contains(" at ")).take(14).collect();
+                            jank.push(format!("  ... still busy {waited:?} in:\n{}", top.join("\n")));
+                        }
                         let still_working = matches!(
                             &answer,
                             Ok(Answer::Stalled { main_thread_cpu_ms, budget_ms, .. })

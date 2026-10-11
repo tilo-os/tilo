@@ -142,10 +142,8 @@ impl super::App {
             || !self.actions.bound_invocations.is_empty()
             || !self.actions.local_invocations.is_empty()
             || !self.actions.pending_application_launches.is_empty();
-        let deadline_due = self
-            .root_widget
-            .next_wake_deadline()
-            .is_some_and(|deadline| deadline <= crate::time::now());
+        let next_deadline = self.root_widget.next_wake_deadline();
+        let deadline_due = next_deadline.is_some_and(|deadline| deadline <= crate::time::now());
         let mut force_sync = always_refresh
             || inbound
             || authority_changed
@@ -193,7 +191,11 @@ impl super::App {
         }
         if let Some(started) = started {
             crate::diag!(
-                "[hosted-pump] us={} updated={} synced={} published={} inbound={inbound} wakes={wakes:?} authority={authority_changed} in_flight={in_flight} deadline={deadline_due} invocations={invocations} record={record}",
+                "[hosted-pump] app={} late_us={:?} us={} updated={} synced={} published={} inbound={inbound} wakes={wakes:?} authority={authority_changed} in_flight={in_flight} deadline={deadline_due} invocations={invocations} record={record}",
+                self.publication_app_id(),
+                next_deadline.map(|deadline| crate::time::now()
+                    .saturating_duration_since(deadline)
+                    .as_micros()),
                 started.elapsed().as_micros(),
                 report.updated,
                 report.synced,

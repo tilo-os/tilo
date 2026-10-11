@@ -454,7 +454,11 @@ fn frames_of(backtrace: &Backtrace) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let skip = lines
         .iter()
-        .rposition(|line| line.contains("__restore_rt") || line.contains("sigreturn"))
+        .rposition(|line| {
+            line.contains("__restore_rt")
+                || line.contains("sigreturn")
+                || line.contains(": <unknown>")
+        })
         .map_or(0, |index| index.saturating_add(1));
     // A frame is `  N: symbol` possibly followed by an `at file:line` line;
     // start at the first whole frame after the trampoline.
