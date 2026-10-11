@@ -1746,6 +1746,8 @@ jobs:
         id: windows-compat-sysext
         if: needs.plan.outputs.hardware-profile == 'generic' && env.TILO_WITH_WINDOWS == '1'
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        env:
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1763,6 +1765,11 @@ jobs:
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+          secret-envs: |
+            browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: steps.windows-compat-sysext.outcome == 'success'
@@ -2153,6 +2160,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
           PROFILE: ${{ needs.plan.outputs.hardware-profile }}
           DEV_DIGEST: ${{ steps.dev-image.outputs.digest }}
+          BUILD_DIGEST: ${{ steps.rechunk.outputs.digest || steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
         run: |
           set -euo pipefail
           if [[ $PROFILE == generic ]]; then flavour="production-$ARCH"; else flavour="board-$PROFILE"; fi
@@ -2162,7 +2170,9 @@ jobs:
               --json "$report" --quiet
           else
             rm -rf /var/tmp/tilo-image-layout
-            skopeo copy "oci-archive:/var/tmp/tilo-image.tar" "oci:/var/tmp/tilo-image-layout"
+            first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
+            first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" "$BUILD_DIGEST")"
+            skopeo copy "oci-archive:/var/tmp/tilo-image.tar:$first_ref" "oci:/var/tmp/tilo-image-layout"
             python3 tools/perf/image_size.py --oci-layout /var/tmp/tilo-image-layout --arch "$ARCH" \
               --json "$report" --quiet
             rm -rf /var/tmp/tilo-image-layout
