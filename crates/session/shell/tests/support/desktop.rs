@@ -593,7 +593,7 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                 }) = &answer
                     && *main_thread_cpu_ms >= budget_ms / 4
                 {
-                    let main = threads.first().map(|t| t.backtrace.as_str()).unwrap_or("");
+                    let main = threads.first().map_or("", |t| t.backtrace.as_str());
                     let top: Vec<&str> = main.lines().filter(|l| !l.contains(" at ")).take(14).collect();
                     if let Ok(mut jank) = watch.jank.lock() {
                         jank.push(format!(
@@ -707,19 +707,16 @@ fn wait_until_announced(
     let mut found = HashMap::new();
     while found.len() < 3 {
         let remaining = tilo_test_env::hang_bound().saturating_sub(started.elapsed());
-        match rx.recv_timeout(remaining) {
-            Ok((key, value)) => {
-                found.insert(key, value);
-            }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!(
-                    "the compositor did not start: announced only {found:?} after {:?}\n{}",
-                    started.elapsed(),
-                    log.lock().map(|l| l.join("\n")).unwrap_or_default()
-                );
-            }
+        if let Ok((key, value)) = rx.recv_timeout(remaining) {
+            found.insert(key, value);
+        } else {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "the compositor did not start: announced only {found:?} after {:?}\n{}",
+                started.elapsed(),
+                log.lock().map(|l| l.join("\n")).unwrap_or_default()
+            );
         }
     }
     found

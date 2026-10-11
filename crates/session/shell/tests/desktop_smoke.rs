@@ -17,7 +17,7 @@
 //! The second test runs it again under CPU and memory pressure, where timing
 //! bugs surface far more often.
 //!
-//! What it deliberately does not cover: an XWayland client (it needs the
+//! What it deliberately does not cover: an `XWayland` client (it needs the
 //! host-desktop session and its satellite), real GPU output and real input
 //! devices.
 
@@ -98,20 +98,15 @@ fn centre(rect: [f64; 4]) -> (f64, f64) {
 /// midpoints of the four edges, which a lattice does not land on.
 fn sweep(desktop: &Desktop) {
     let (w, h) = (f64::from(SCREEN.0), f64::from(SCREEN.1));
-    let step = 56.0;
-    let mut y = 0.0;
-    let mut leftwards = false;
-    while y < h {
-        let mut x = if leftwards { w - 1.0 } else { 0.0 };
-        loop {
-            desktop.pointer_move(x.clamp(0.0, w - 1.0), y.clamp(0.0, h - 1.0));
-            x += if leftwards { -step } else { step };
-            if !(0.0..w).contains(&x) {
-                break;
-            }
+    let columns: Vec<f64> = (0..SCREEN.0).step_by(56).map(f64::from).collect();
+    for (row, y) in (0..SCREEN.1).step_by(56).map(f64::from).enumerate() {
+        let mut xs = columns.clone();
+        if row % 2 == 1 {
+            xs.reverse();
         }
-        leftwards = !leftwards;
-        y += step;
+        for x in xs {
+            desktop.pointer_move(x.clamp(0.0, w - 1.0), y.clamp(0.0, h - 1.0));
+        }
     }
     for (x, y) in [
         (0.0, 0.0),
