@@ -7883,6 +7883,7 @@ fn install_session_peer_sync(
         .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
             let active = tree_handle.read().desktop.active;
             match req {
+                PeerSyncRequest::PrepareInvitation => Ok(bridge_net.prepare_invitation()),
                 PeerSyncRequest::IssueInvite => bridge_net
                     .issue_invite(active, INVITE_EXPIRY_SECONDS)
                     .map(crate::shell::overlay_host::PeerSyncResponse::Message),

@@ -108,6 +108,8 @@ pub mod share_link;
 #[cfg(feature = "filesystem")]
 pub mod share_management;
 #[cfg(feature = "filesystem")]
+pub mod share_refresh;
+#[cfg(feature = "filesystem")]
 pub mod share_session;
 #[cfg(feature = "filesystem")]
 pub mod smart;
@@ -208,11 +210,12 @@ pub use record_materializer::{
 };
 #[cfg(feature = "filesystem")]
 pub use record_protocol::{
-    MAX_RECORD_PROTOCOL_FRAME_BYTES, RECORD_PROTOCOL_VERSION, RecordMutationSink,
-    RecordMutationSinkError, RecordProtocol, RecordProtocolClient, RecordProtocolClientError,
-    RecordProtocolCredentialV1, RecordProtocolError, RecordProtocolOperationV1,
-    RecordProtocolRequestV1, RecordProtocolResponseV1, RecordProtocolSessionV1,
-    RecordProtocolSnapshotV1, TILO_FS_RECORD_ALPN,
+    MAX_RECORD_CHANGE_AWAITS, MAX_RECORD_PROTOCOL_FRAME_BYTES, RECORD_AWAIT_CHANGE_LIMIT,
+    RECORD_PROTOCOL_VERSION, RecordMutationSink, RecordMutationSinkError, RecordProtocol,
+    RecordProtocolClient, RecordProtocolClientError, RecordProtocolCredentialV1,
+    RecordProtocolError, RecordProtocolOperationV1, RecordProtocolRequestV1,
+    RecordProtocolResponseV1, RecordProtocolSessionV1, RecordProtocolSnapshotV1,
+    RecordProtocolStream, TILO_FS_RECORD_ALPN,
 };
 #[cfg(feature = "filesystem")]
 pub use record_publisher::{

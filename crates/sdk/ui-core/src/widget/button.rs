@@ -1655,11 +1655,23 @@ impl Widget for Button {
                         if self.is_pressed {
                             self.pressed_into_focus |= !self.is_focused;
                             *ctx.focus_target = Some(ctx.node_id);
+                            crate::pointer_replay::record_press(&self.id, self.hit_rect());
                         }
 
                         if !self.is_pressed {
+                            crate::pointer_replay::end_press();
                             self.activate();
                         }
+                    } else if !pressed
+                        && crate::pointer_replay::press_continues(&self.id, self.hit_rect())
+                    {
+                        // This button replaced the one that took the press
+                        // (a rebuild while the button was held) and sits
+                        // where it was: the release completes that click.
+                        // One that moved, or another control, does not.
+                        *ctx.handled = true;
+                        crate::pointer_replay::end_press();
+                        self.activate();
                     }
                 } else if self.is_pressed {
                     self.is_pressed = false;

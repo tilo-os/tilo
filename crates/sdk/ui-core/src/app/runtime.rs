@@ -89,6 +89,9 @@ pub(super) struct InputRuntime {
     pub(super) tab_order_continues_in_host: bool,
     /// The pointer buttons held down, one bit each; see `input_publication`.
     pub(super) pointer_buttons: u32,
+    /// Where the pointer last moved, replayed before a press or release
+    /// that follows a rebuild under a still pointer.
+    pub(super) pointer_replay: crate::pointer_replay::PointerReplay,
     /// Last primary-surface pointer in logical pixels. Mouse button events do
     /// not carry coordinates, so the marker gesture reuses the preceding
     /// platform `CursorMoved` just like retained controls do.
@@ -122,6 +125,7 @@ impl InputRuntime {
             pen: crate::pen::PenInput::default(),
             tab_order_continues_in_host: false,
             pointer_buttons: 0,
+            pointer_replay: crate::pointer_replay::PointerReplay::default(),
             #[cfg(feature = "native")]
             agent_marker_cursor: None,
             #[cfg(feature = "native")]
