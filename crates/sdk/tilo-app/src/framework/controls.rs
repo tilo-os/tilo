@@ -123,7 +123,7 @@ type Arguments<I> =
 /// is made here, so a resource type adds only the thin typed entry points of
 /// [`Actions`].
 #[derive(Clone)]
-struct ActionTable {
+pub(crate) struct ActionTable {
     /// The app whose resource this is, for the keys of its actions.
     app: &'static str,
     /// The resource's kind.
@@ -150,7 +150,7 @@ impl ActionTable {
     }
 
     /// Follow the canonical publication of this same hosted resource.
-    fn update(&self, published: tilo_actions::Resource) {
+    pub(crate) fn update(&self, published: tilo_actions::Resource) {
         let mut current = self.resource.borrow_mut();
         // A handle belongs to one root; a replacement gets its own handle.
         if current.id == published.id && current.kind == published.kind {
@@ -372,6 +372,12 @@ impl<R: Resource> Actions<R> {
     /// Follow the canonical publication of this same hosted resource.
     pub(crate) fn update(&self, published: tilo_actions::Resource) {
         self.table.update(published);
+    }
+
+    /// The table these actions bind from, which follows the publication
+    /// whatever the resource's type.
+    pub(crate) fn table(&self) -> ActionTable {
+        self.table.clone()
     }
 
     /// The binding of `action` for a control with input `I`, or `None` while

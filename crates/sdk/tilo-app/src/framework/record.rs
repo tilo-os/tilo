@@ -14,15 +14,15 @@
 //! recorded in the record's own history: a person record's document history,
 //! the settings document's log of who changed which setting.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
-    Action as _, ActionError, ActionInvoker, ActionKind, ActionNeed, EncodedAction, OperationKind,
+    ActionError, ActionInvoker, ActionKind, ActionNeed, EncodedAction, OperationKind,
 };
-use tilo_resource::{Doc, Fields, Reader, Resource};
-use ui_core::storage::{ChangeOrigin, Settings, SettingsRevision, SettingsSchema};
+use tilo_resource::{Fields, Resource};
+use ui_core::storage::SettingsSchema;
 
 use super::controls::Actions;
 use super::dispatch::Dispatcher;
@@ -135,7 +135,7 @@ impl<P: Resource> Held<P> {
 
 /// `resource`'s document actions, and those of its children, carried out on
 /// the record `record`; nothing else it publishes is answered here.
-fn route(
+pub(crate) fn route(
     mut resource: tilo_actions::Resource,
     record: &str,
     editable: bool,
@@ -177,6 +177,10 @@ pub(crate) fn route_spec(spec: tilo_actions::ActionSpec, record: &str) -> tilo_a
 /// it.
 pub(crate) trait RecordDoor {
     fn id(&self) -> &str;
+    /// Whether this app changes the record; it is read here otherwise.
+    fn editable(&self) -> bool;
+    /// Increases whenever what the record holds changed, read now.
+    fn revision(&self) -> u64;
     fn publish(&self) -> tilo_actions::Resource;
     fn apply_encoded(&self, action: &EncodedAction, invoker: &ActionInvoker) -> Result<(), String>;
 }
@@ -184,6 +188,15 @@ pub(crate) trait RecordDoor {
 impl<P: Resource> RecordDoor for Held<P> {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn editable(&self) -> bool {
+        self.editable
+    }
+
+    fn revision(&self) -> u64 {
+        self.sync();
+        self.live.revision()
     }
 
     fn publish(&self) -> tilo_actions::Resource {
@@ -250,8 +263,14 @@ pub(crate) mod sealed {
 
     /// How a record is held for the window's views.
     pub trait Hold<P: Resource> {
+        /// The record as a view part over it edits it through its type.
         fn held(&self, storage: Storage<'_>) -> Option<Rc<super::Held<P>>>;
+        /// The record as the door publishes and changes it.
+        fn door(&self, storage: Storage<'_>) -> Option<Door>;
     }
+
+    /// A held record as the door publishes and changes it.
+    pub struct Door(pub(crate) Rc<dyn super::RecordDoor>);
 
     /// The window's storage, as a record is held in it.
     pub struct Storage<'a>(pub(crate) &'a super::ViewStorage);
@@ -295,193 +314,6 @@ impl<'a> Records<'a> {
     }
 }
 
-/// How a section's stored value is written into a document.
-type WriteDoc = dyn Fn(&mut Doc) -> Result<(), String>;
-/// How the value a document holds is stored, as an origin changed it.
-type StoreDoc = dyn Fn(&Doc, &ChangeOrigin) -> Result<(), String>;
-
-/// A settings section's value as the records keeping it read and write it,
-/// with the section's type erased: the only typed steps are these closures,
-/// built once per section by [`SectionValue::of`].
-pub(crate) struct SectionValue {
-    pub(crate) kind: &'static str,
-    /// The settings document's version: when it moves, the stored value may
-    /// have.
-    revision: Box<dyn Fn() -> SettingsRevision>,
-    /// Make `doc` a document of the section's model.
-    initialize: fn(&mut Doc) -> Result<(), String>,
-    /// Write the stored value into `doc`'s fields.
-    write: Box<WriteDoc>,
-    /// Store the value `doc`'s fields hold, as `origin` did.
-    store: Box<StoreDoc>,
-    /// Whether `doc`'s fields hold the stored value.
-    holds_stored: Box<dyn Fn(&Doc) -> bool>,
-}
-
-impl SectionValue {
-    pub(crate) fn of<T>(settings: Settings<T>) -> Rc<Self>
-    where
-        T: Resource<State = T> + SettingsSchema + Fields,
-    {
-        let (writing, storing, comparing) = (settings.clone(), settings.clone(), settings.clone());
-        Rc::new(Self {
-            kind: T::KIND,
-            revision: Box::new(move || settings.revision()),
-            initialize: |doc| T::initialize(doc).map_err(|error| error.to_string()),
-            write: Box::new(move |doc| {
-                writing
-                    .get()
-                    .write_fields(doc, &tilo_resource::__private::ROOT)
-                    .map_err(|error| error.to_string())
-            }),
-            store: Box::new(move |doc, origin| {
-                let value = T::read_fields(doc, &tilo_resource::__private::ROOT)
-                    .map_err(|error| error.to_string())?;
-                storing
-                    .set_by(&value, Some(origin))
-                    .map_err(|error| error.to_string())
-            }),
-            holds_stored: Box::new(move |doc| {
-                T::read_fields(doc, &tilo_resource::__private::ROOT).is_ok_and(|held| {
-                    tilo_resource::Model::to_json(&held)
-                        == tilo_resource::Model::to_json(&comparing.get())
-                })
-            }),
-        })
-    }
-
-    pub(crate) fn revision(&self) -> SettingsRevision {
-        (self.revision)()
-    }
-
-    /// Make `doc` a document of the section holding its stored value.
-    pub(crate) fn fill(&self, doc: &mut Doc) -> Result<(), String> {
-        (self.initialize)(doc)?;
-        (self.write)(doc)
-    }
-
-    pub(crate) fn write(&self, doc: &mut Doc) -> Result<(), String> {
-        (self.write)(doc)
-    }
-
-    /// Store what `doc` holds as the action `action` by `by` changed it.
-    pub(crate) fn store(&self, doc: &Doc, action: &str, by: &str) -> Result<(), String> {
-        let origin = ChangeOrigin::action(format!("{}/{action}", self.kind)).by(by.to_owned());
-        (self.store)(doc, &origin)
-    }
-
-    pub(crate) fn holds_stored(&self, doc: &Doc) -> bool {
-        (self.holds_stored)(doc)
-    }
-}
-
-/// The document a settings section is kept in as a record of the window's
-/// own, following the settings document.
-struct SectionDoc {
-    value: Rc<SectionValue>,
-    doc: RefCell<Doc>,
-    /// The settings document's version the record last followed.
-    seen: Cell<SettingsRevision>,
-}
-
-impl SectionDoc {
-    fn new(value: Rc<SectionValue>) -> Result<Self, String> {
-        let mut doc = Doc::new();
-        value.fill(&mut doc)?;
-        doc.commit();
-        Ok(Self {
-            seen: Cell::new(value.revision()),
-            value,
-            doc: RefCell::new(doc),
-        })
-    }
-
-    /// Take in what was stored elsewhere (another window, the Settings app,
-    /// another device): the stored value is the truth.
-    fn follow(&self) -> std::cell::RefMut<'_, Doc> {
-        let mut doc = self.doc.borrow_mut();
-        let revision = self.value.revision();
-        if revision != self.seen.get() {
-            self.seen.set(revision);
-            if self.value.write(&mut doc).is_ok() {
-                doc.commit();
-            } else {
-                doc.rollback();
-            }
-        }
-        doc
-    }
-
-    /// Apply an action with `run`, then store the result as the action `id`
-    /// by `invoker`; nothing stays of a refused one.
-    fn apply(
-        &self,
-        run: &mut dyn FnMut(&mut Doc) -> Result<(), ActionError>,
-        id: &str,
-        invoker: &ActionInvoker,
-    ) -> Result<(), ActionError> {
-        let mut doc = self.doc.borrow_mut();
-        let changed = run(&mut doc).and_then(|()| {
-            self.value
-                .store(&doc, id, &invoker.actor)
-                .map_err(ActionError::Refused)
-        });
-        match changed {
-            Ok(()) => {
-                doc.commit();
-                self.seen.set(self.value.revision());
-                Ok(())
-            }
-            Err(error) => {
-                doc.rollback();
-                Err(error)
-            }
-        }
-    }
-}
-
-/// The settings section `T` held as a record: kept as the resource model in
-/// a document of its own, each change applied there, checked, and stored in
-/// the settings document with who made it.
-pub(crate) fn section<T>(settings: Settings<T>, editable: bool) -> Result<Held<T>, String>
-where
-    T: Resource<State = T> + SettingsSchema + Fields,
-{
-    let kept = Rc::new(SectionDoc::new(SectionValue::of(settings))?);
-    let live = Live::new(Reader::<T>::read(&kept.doc.borrow()).map_err(|error| error.to_string())?);
-    let following = Rc::clone(&kept);
-    let sync = move |live: &Live<T>| {
-        if let Err(error) = live.sync(&following.follow()) {
-            tracing::warn!(%error, kind = T::KIND, "settings section unreadable");
-        }
-    };
-    let apply = move |action: &T::Action, invoker: &ActionInvoker| {
-        kept.apply(&mut |doc| action.apply(doc), &action_id(action), invoker)
-    };
-    Ok(Held::new(
-        format!("settings:{}", T::KIND),
-        T::LABEL.to_owned(),
-        editable,
-        live,
-        sync,
-        apply,
-    ))
-}
-
-/// The public id of the action `action` is, as its encoded form names it.
-pub(crate) fn action_id<A: Serialize>(action: &A) -> String {
-    serde_json::to_value(action)
-        .ok()
-        .and_then(|value| {
-            let operation = value.get("op").unwrap_or(&value);
-            operation
-                .get("action")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| "action".to_owned())
-}
-
 impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// A part of the view over another record than the app's own — the
     /// person's own record ([`RecordEnv::person`](super::RecordEnv::person)), a settings section
@@ -502,7 +334,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             self.dispatch.app_id(),
             &self.storage,
             self.alive.clone(),
-            Rc::clone(&held),
+            Rc::clone(&held) as Rc<dyn RecordDoor>,
         );
         let mut cx = ViewCx::<P> {
             env: super::env::RecordEnv {
@@ -547,19 +379,27 @@ fn record_actions<P: Resource>(
     app: &'static str,
     storage: &ViewStorage,
     alive: std::rc::Weak<()>,
-    held: Rc<Held<P>>,
+    door: Rc<dyn RecordDoor>,
 ) -> Actions<P> {
-    let actions = Actions::new(app, Rc::new(held.publish())).routed_to(held.id(), held.editable());
-    let following = actions.clone();
-    let followed = Cell::new(held.live().revision());
+    let actions = Actions::new(app, Rc::new(door.publish())).routed_to(door.id(), door.editable());
+    follow_publication(storage, alive, door, actions.table());
+    actions
+}
+
+/// Keep `table` current with `door`'s publication while `alive` lives.
+fn follow_publication(
+    storage: &ViewStorage,
+    alive: std::rc::Weak<()>,
+    door: Rc<dyn RecordDoor>,
+    table: super::controls::ActionTable,
+) {
+    let followed = Cell::new(door.revision());
     storage.follow_with(alive, move || {
-        held.sync();
-        let revision = held.live().revision();
+        let revision = door.revision();
         if followed.replace(revision) != revision {
-            following.update(held.publish());
+            table.update(door.publish());
         }
     });
-    actions
 }
 
 impl<R: Resource> SurfaceCx<R> {
@@ -570,12 +410,12 @@ impl<R: Resource> SurfaceCx<R> {
     /// live rows ([`Actions::operation`]). `None` where the record cannot be
     /// held.
     pub fn record_actions<P: Resource>(&self, record: &impl OtherRecord<P>) -> Option<Actions<P>> {
-        let held = record.held(sealed::Storage(&self.storage))?;
+        let door = record.door(sealed::Storage(&self.storage))?.0;
         Some(record_actions(
             self.dispatch.app_id(),
             &self.storage,
             self.alive.clone(),
-            held,
+            door,
         ))
     }
 }
