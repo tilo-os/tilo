@@ -915,6 +915,7 @@ mod tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                fresh_binding: None,
                 wait_ms: None,
             },
         )

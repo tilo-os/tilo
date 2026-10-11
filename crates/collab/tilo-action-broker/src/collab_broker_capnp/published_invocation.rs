@@ -51,6 +51,20 @@ enum InspectionPrincipal {
 }
 
 impl OriginalInvocationData {
+    fn current_local_caller(
+        &self,
+        state: &CapnpBrokerState,
+        route: &CrdtRoute,
+        admitted: &AdmittedJoinIdentity,
+    ) -> Result<AdmittedJoinIdentity, String> {
+        if route.cluster_id != self.route.cluster_id {
+            return Err("original local caller room changed".into());
+        }
+        state
+            .revalidate_admission(route, admitted)
+            .map_err(|error| error.to_string())
+    }
+
     pub(super) fn is_addressed_message(&self) -> bool {
         self.route.app_id == "so.tilo.chat"
             && self.route.record_id.is_empty()
@@ -256,15 +270,12 @@ impl OriginalInvocationData {
                     .ok_or("original person certificate unavailable")?
             }
             InvocationCaller::Local { route, admitted } => {
-                if route != &self.route {
-                    return Err("original local caller route changed".into());
-                }
+                let admitted = self.current_local_caller(state, route, admitted)?;
                 if admitted.agent_id.is_some() {
                     return Err("this action requires an authenticated person".into());
                 }
                 admitted
                     .certificate
-                    .clone()
                     .ok_or("original person certificate unavailable")?
             }
         };
@@ -452,12 +463,7 @@ impl OriginalInvocationData {
                 }
             }
             InvocationCaller::Local { route, admitted } => {
-                if route != &self.route {
-                    return Err("original local caller route changed".into());
-                }
-                let admitted = state
-                    .revalidate_admission(route, admitted)
-                    .map_err(|error| error.to_string())?;
+                let admitted = self.current_local_caller(state, route, admitted)?;
                 if let Some(agent) = admitted.agent_id {
                     InspectionPrincipal::Agent(agent)
                 } else {
@@ -968,6 +974,347 @@ impl OriginalInvocation {
         self.check_custody()?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod source_route_tests {
+    use super::*;
+    use crate::collab_broker_capnp::{BrokerChannels, FanoutState, PeerPublisher};
+    use crate::peer_actions::{CertificateAuthority, OwnerPolicyClock, PolicyOrigin, PolicyTime};
+    use crate::services::HostServices;
+    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use collab_types::{CapOverride, Role, Scope, Subject, Verb};
+    use ed25519_dalek::SigningKey;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    struct CurrentCertificateAuthority {
+        origin: PolicyOrigin,
+        accepts: AtomicBool,
+    }
+
+    impl CertificateAuthority for CurrentCertificateAuthority {
+        fn policy_time(&self) -> Result<Option<PolicyTime>, String> {
+            self.origin
+                .capture()
+                .map(Some)
+                .map_err(|error| error.to_string())
+        }
+
+        fn authorize(
+            &self,
+            _room: uuid::Uuid,
+            _certificate: &tilo_user_identity::DeviceCert,
+        ) -> Result<(), String> {
+            self.accepts
+                .load(Ordering::Acquire)
+                .then_some(())
+                .ok_or_else(|| "fixture certificate revoked".into())
+        }
+    }
+
+    struct Fixture {
+        state: Arc<CapnpBrokerState>,
+        membership: crate::test_support::WorkspaceTreeHandle,
+        authority: Arc<CurrentCertificateAuthority>,
+        source: CrdtRoute,
+        target: CrdtRoute,
+        admitted: AdmittedJoinIdentity,
+        time: PolicyTime,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let user_signer = SigningKey::from_bytes(&[91; 32]);
+            let device = SigningKey::from_bytes(&[92; 32]);
+            let principal =
+                super::super::principal_id_for_root(user_signer.verifying_key().to_bytes());
+            let mut workspace = Workspace::new(WorkspaceId(91), "Cross-app original");
+            workspace.set_owner(principal);
+            let room = workspace.room.to_string();
+            let source = CrdtRoute::record("so.tilo.chat", &room, "chat");
+            let target = CrdtRoute::record("so.tilo.desktop", &room, "");
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
+            let mut admitted = super::super::admit_verified_join(
+                &tree,
+                &source,
+                super::super::VerifiedJoinIdentity {
+                    user_public_key: user_signer.verifying_key().to_bytes(),
+                    device_public_key: device.verifying_key().to_bytes(),
+                    capped: false,
+                },
+            )
+            .expect("workspace owner is admitted");
+            let mut certificate = tilo_user_identity::DeviceCert {
+                user_public_key: user_signer.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "cross-app fixture".into(),
+                capabilities: tilo_user_identity::DeviceCapabilities::primary(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_device_cert(&mut certificate, &user_signer).unwrap();
+            admitted.certificate = Some(certificate);
+            let membership = tree.shared();
+            let (clock, _control) = OwnerPolicyClock::for_test(2_000_000_000);
+            let authority = Arc::new(CurrentCertificateAuthority {
+                origin: clock.new_origin(),
+                accepts: AtomicBool::new(true),
+            });
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge) = CapnpBrokerState::new_configured(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(membership.authority()),
+                None,
+                None,
+                HostServices {
+                    native_certificates: Some(authority.clone()),
+                    ..Default::default()
+                },
+            );
+            let time = authority.origin.capture().unwrap();
+            Self {
+                state,
+                membership,
+                authority,
+                source,
+                target,
+                admitted,
+                time,
+            }
+        }
+
+        fn original(
+            &self,
+            source: CrdtRoute,
+            admitted: AdmittedJoinIdentity,
+        ) -> Arc<OriginalInvocationData> {
+            let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(91));
+            OriginalInvocationData::capture(
+                PublishedInvocationRequest {
+                    wire_id: 91,
+                    invocation,
+                    address: tilo_actions::ActionAddress::new("desktop:tasks", "queue"),
+                    argument: Some(format!("{}{{}}", tilo_actions::ARGUMENTS_JSON_PREFIX)),
+                    actor: "app:so.tilo.chat".into(),
+                    participant: None,
+                },
+                self.target.clone(),
+                &PublishedAction {
+                    semantic_identity: None,
+                    resource: "desktop:tasks".into(),
+                    action: "queue".into(),
+                    resource_kind: "workspace-task".into(),
+                    resource_label: "Tasks".into(),
+                    action_label: "Queue".into(),
+                    description: None,
+                    operation_kind: tilo_actions::OperationKind::Document,
+                    params: Vec::new(),
+                    contract: tilo_actions::ActionContract {
+                        permission: tilo_actions::PermissionRequirement::Write,
+                        ..Default::default()
+                    },
+                    view: None,
+                    input: PublishedInput::None,
+                },
+                None,
+                None,
+                Some(InvocationCaller::Local {
+                    route: source,
+                    admitted: Box::new(admitted),
+                }),
+                Some(self.time.clone()),
+                None,
+            )
+            .unwrap()
+        }
+
+        fn envelope(original: &OriginalInvocationData) -> super::super::InvocationEnvelope {
+            super::super::InvocationEnvelope {
+                id: original.request.wire_id,
+                invocation: original.request.invocation,
+                resource: original.request.address.resource.clone(),
+                action: original.request.address.action.clone(),
+                argument: original.request.argument.clone(),
+                actor: original.request.actor.clone(),
+                context: None,
+            }
+        }
+
+        fn admitted_agent(&self) -> (AdmittedJoinIdentity, String) {
+            let capability =
+                self.membership.write().workspaces[0].grant_capability(CapOverride::membership(
+                    Subject::agent("tide"),
+                    self.target.cluster_id.clone(),
+                    Verb::Write,
+                ));
+            let mut agent = self.admitted.clone();
+            super::super::admit_agent_delegation(
+                &self.membership.read(),
+                &self.source,
+                &mut agent,
+                "tide",
+            )
+            .unwrap();
+            (agent, capability)
+        }
+    }
+
+    #[test]
+    fn current_person_custody_allows_a_revalidated_same_room_cross_app_target() {
+        let fixture = Fixture::new();
+        let original = fixture.original(fixture.source.clone(), fixture.admitted.clone());
+        let envelope = Fixture::envelope(&original);
+        assert_eq!(
+            original
+                .owner_person_certificate(&fixture.state, &fixture.target.cluster_id, &envelope)
+                .unwrap()
+                .device_public_key,
+            fixture
+                .admitted
+                .certificate
+                .as_ref()
+                .unwrap()
+                .device_public_key
+        );
+        fixture.authority.accepts.store(false, Ordering::Release);
+        assert!(
+            original
+                .owner_person_certificate(&fixture.state, &fixture.target.cluster_id, &envelope)
+                .is_err(),
+            "revoked source admission cannot retain cross-app owner custody"
+        );
+        drop(fixture);
+    }
+
+    #[test]
+    fn current_person_custody_refuses_wrong_room_agent_and_target_policy() {
+        let fixture = Fixture::new();
+        let wrong_room =
+            CrdtRoute::record("so.tilo.chat", uuid::Uuid::new_v4().to_string(), "chat");
+        let original = fixture.original(wrong_room, fixture.admitted.clone());
+        assert!(
+            original
+                .owner_person_certificate(
+                    &fixture.state,
+                    &fixture.target.cluster_id,
+                    &Fixture::envelope(&original),
+                )
+                .is_err()
+        );
+        let (agent, _capability) = fixture.admitted_agent();
+        let original = fixture.original(fixture.source.clone(), agent);
+        assert!(
+            original
+                .owner_person_certificate(
+                    &fixture.state,
+                    &fixture.target.cluster_id,
+                    &Fixture::envelope(&original),
+                )
+                .is_err()
+        );
+
+        fixture.membership.write().workspaces[0].grant_capability(
+            CapOverride::restrict_role_in_app(Role::Owner, "so.tilo.desktop", Verb::Read),
+        );
+        let original = fixture.original(fixture.source.clone(), fixture.admitted.clone());
+        assert!(
+            original
+                .owner_person_certificate(
+                    &fixture.state,
+                    &fixture.target.cluster_id,
+                    &Fixture::envelope(&original),
+                )
+                .is_err()
+        );
+        drop(fixture);
+    }
+
+    #[test]
+    fn participant_inspection_revalidates_cross_app_people_and_agents() {
+        let fixture = Fixture::new();
+        let person = fixture.original(fixture.source.clone(), fixture.admitted.clone());
+        let person_envelope = Fixture::envelope(&person);
+        person
+            .revalidate_participant_inspection(
+                &fixture.state,
+                &fixture.target.cluster_id,
+                &person_envelope,
+            )
+            .unwrap();
+
+        let (agent_identity, capability) = fixture.admitted_agent();
+        let agent = fixture.original(fixture.source.clone(), agent_identity);
+        let agent_envelope = Fixture::envelope(&agent);
+        assert!(
+            agent
+                .revalidate_participant_inspection(
+                    &fixture.state,
+                    &fixture.target.cluster_id,
+                    &agent_envelope,
+                )
+                .is_err(),
+            "Agent membership alone does not grant the target action"
+        );
+        fixture.membership.write().workspaces[0].grant_capability(CapOverride::grant(
+            Subject::agent("tide"),
+            Scope::Action {
+                app: "so.tilo.desktop".into(),
+                resource: "desktop:tasks".into(),
+                action: "queue".into(),
+            },
+            Verb::Write,
+        ));
+        agent
+            .revalidate_participant_inspection(
+                &fixture.state,
+                &fixture.target.cluster_id,
+                &agent_envelope,
+            )
+            .unwrap();
+        fixture.membership.write().workspaces[0].revoke_capability(&capability);
+        assert!(
+            agent
+                .revalidate_participant_inspection(
+                    &fixture.state,
+                    &fixture.target.cluster_id,
+                    &agent_envelope,
+                )
+                .is_err(),
+            "expired Agent membership cannot retain inspection custody"
+        );
+
+        let mut changed = person_envelope;
+        changed.action = "another-action".into();
+        assert!(
+            person
+                .revalidate_participant_inspection(
+                    &fixture.state,
+                    &fixture.target.cluster_id,
+                    &changed,
+                )
+                .is_err(),
+            "a changed envelope cannot borrow cross-app inspection custody"
+        );
+        fixture.authority.accepts.store(false, Ordering::Release);
+        assert!(
+            person
+                .revalidate_participant_inspection(
+                    &fixture.state,
+                    &fixture.target.cluster_id,
+                    &Fixture::envelope(&person),
+                )
+                .is_err(),
+            "revoked source admission cannot retain inspection custody"
+        );
+        drop(fixture);
     }
 }
 impl CapnpBrokerState {
