@@ -8,26 +8,9 @@
 //! strings choose it; a message missing from a translation falls back to
 //! `en-US`.
 
-use ui::i18n::{ArgValue, EmbeddedCatalog};
+use ui::i18n::ArgValue;
 
-const CATALOGS: &[(&str, &str)] = &[
-    ("en-US", include_str!("../../locales/en-US.ftl")),
-    ("de-DE", include_str!("../../locales/de-DE.ftl")),
-];
-
-/// Loaded per thread on first use; a host's manager is joined, never replaced.
-/// The probe is a key every catalogue revision defines.
-static CATALOG: EmbeddedCatalog = catalog();
-
-const fn catalog() -> EmbeddedCatalog {
-    let catalog =
-        EmbeddedCatalog::new("en-US", CATALOGS, "continuity-continue").with_system_locale();
-    // Unit tests assert source copy throughout the shell; keep them
-    // deterministic on any developer or CI host locale.
-    #[cfg(test)]
-    let catalog = catalog.with_pinned_locale("en-US");
-    catalog
-}
+ui::embedded_catalog!(static CATALOG, "continuity-continue", ["en-US", "de-DE"]);
 
 /// Load the shell's catalogue and the toolkit's widget labels on this
 /// thread, in the desktop's language. Startup calls it once; every lookup
@@ -72,6 +55,11 @@ pub fn apply_configured_locale() {
 mod tests {
     use super::*;
     use tilo_copy_lint::catalog;
+
+    const CATALOGS: &[(&str, &str)] = &[
+        ("en-US", include_str!("../../locales/en-US.ftl")),
+        ("de-DE", include_str!("../../locales/de-DE.ftl")),
+    ];
 
     #[test]
     fn every_key_the_shell_uses_resolves_to_a_real_string() {

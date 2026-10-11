@@ -5,32 +5,11 @@
 //! embedded, so a `--shots` render and a unit test resolve exactly what the
 //! login screen does.
 
-use ui::i18n::EmbeddedCatalog;
-
-/// Loaded per thread on first use; a host's manager is joined, never replaced.
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[
-        ("en-US", include_str!("../locales/en-US.ftl")),
-        ("de-DE", include_str!("../locales/de-DE.ftl")),
-    ],
-    "greeter-sign-in",
-)
-.with_system_locale();
+ui::embedded_catalog!(pub fn, "greeter-sign-in", ["en-US", "de-DE"]);
 
 /// Load the catalogue on this thread if it is not loaded yet.
 pub fn ensure() {
     CATALOG.ensure();
-}
-
-/// Resolve a sign-in screen string.
-pub fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-
-/// Resolve a sign-in screen string with named values.
-pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
 }
 
 /// Every key the greeter shows, in every shipped language.
