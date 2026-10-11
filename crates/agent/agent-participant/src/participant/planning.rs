@@ -113,8 +113,15 @@ impl Planning {
         let (jobs, asked) = mpsc::channel::<Job>();
         let (made, plans) = mpsc::channel();
         let (read_asks, reads) = mpsc::channel();
+        // Named as the agent's own thread: a model call is logged under the
+        // name of the thread that makes it (`TILO_AGENT_USAGE_LOG`), and
+        // its usage belongs to the agent.
+        let name = std::thread::current()
+            .name()
+            .unwrap_or("agent-plan")
+            .to_owned();
         std::thread::Builder::new()
-            .name("agent-plan".into())
+            .name(name)
             .spawn(move || {
                 while let Ok(job) = asked.recv() {
                     let mut loop_reads = LoopReads {

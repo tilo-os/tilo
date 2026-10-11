@@ -2066,6 +2066,7 @@ impl PlanModel for OpenAiModel {
             serde_json::json!({ "role": "system", "content": PLANNER_INSTRUCTIONS }),
             serde_json::json!({ "role": "user", "content": stable + &rest }),
         ];
+        let mut reminded = false;
         for turn in 0..MOST_DISCOVERY_TURNS {
             let body = self.target.shape(serde_json::json!({
                 "model": self.model,
@@ -2076,6 +2077,17 @@ impl PlanModel for OpenAiModel {
             let key = openai::turn_key(&run, turn, &body);
             let answer = self.post(&body, &key, deadline)?;
             let reply = openai::read_turn(&answer)?;
+            // A model that wrote (or said nothing) instead of calling a tool,
+            // as a local one may though a call is required, is reminded once.
+            if reply.calls.is_empty() && !reminded {
+                reminded = true;
+                messages.push(reply.message);
+                messages.push(serde_json::json!({
+                    "role": "user",
+                    "content": "Answer by calling one of the tools.",
+                }));
+                continue;
+            }
             if reply.calls.is_empty() {
                 return Err(format!(
                     "the model neither discovered operations nor planned: {}",

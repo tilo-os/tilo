@@ -1246,8 +1246,9 @@ pub(crate) fn insert_image_spec(state: &tilo_document::RichTextState) -> ActionS
             let image = ImageInput::of(hash.to_string(), &bytes);
             if !image.is_picture() {
                 return refused(format!(
-                    "content `{hash}` is {}, not a picture: insert the image an export produced",
-                    image.mime
+                    "content `{hash}` is {}, not a picture: insert the PNG a Canvas export \
+                     produced, not a document's export",
+                    content_kind(&image.mime, &bytes)
                 ));
             }
             let after = args.text("after").filter(|after| !after.trim().is_empty());
@@ -3134,5 +3135,21 @@ mod tests {
         let (mut state, _) = seeded("Aé🦀\n");
         dispatch(&mut state.doc, &continue_paragraph_action("z"));
         assert_eq!(body_blocks(&state.doc)[0].text, "Aé🦀z");
+    }
+}
+
+/// What content that is not a picture is, for a refusal a model can act on.
+fn content_kind(mime: &str, bytes: &[u8]) -> String {
+    if !mime.is_empty() {
+        return mime.to_owned();
+    }
+    if bytes.starts_with(b"PK") {
+        "a ZIP package (a DOCX, XLSX or ODF export)".into()
+    } else if bytes.starts_with(b"%PDF") {
+        "a PDF".into()
+    } else if std::str::from_utf8(bytes).is_ok() {
+        "text".into()
+    } else {
+        "of an unknown kind".into()
     }
 }
