@@ -78,6 +78,36 @@ class SelectorTests(unittest.TestCase):
         self.assertTrue(any("-p tilo-web-desktop" in row["test_packages"]
                             for row in plan["matrix"]["include"]))
 
+    def test_the_desktop_gate_runs_whenever_a_change_reaches_the_desktop(self):
+        gate = ci_select.path_suites.ReaderScope((), "it", "binary(it) and test(desktop_smoke::)")
+        saved = ci_select.DESKTOP_GATE
+        self.addCleanup(setattr, ci_select, "DESKTOP_GATE", saved)
+        # "leaf" stands in for the shell: the end of the dependency chain.
+        ci_select.DESKTOP_GATE = {"leaf": gate}
+        with self.subTest(phase="a foundation change reaching it without testing it still runs the smoke"):
+            plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
+            self.assertIn("leaf", plan["selected"])
+            self.assertNotIn("leaf", plan["tested"])
+            self.assertEqual(plan["scoped_tests"], {"leaf": "--test it -E 'binary(it) and test(desktop_smoke::)'"})
+            rows = [json.loads(row["scoped_tests"]) for row in plan["matrix"]["include"] if row["scoped_tests"]]
+            self.assertEqual(rows, [[{"package": "leaf", "test": "it", "filter": gate.filter}]])
+        with self.subTest(phase="a change to it tests all of it, and the smoke is part of that"):
+            plan = ci_select.make_plan(self.metadata, self.root, ["leaf/src/main.rs"], 2)
+            self.assertIn("leaf", plan["tested"])
+            self.assertEqual(plan["scoped_tests"], {})
+        with self.subTest(phase="a change that cannot reach it does not run it"):
+            plan = ci_select.make_plan(self.metadata, self.root, ["qdoc/src/lib.rs"], 2)
+            self.assertNotIn("leaf", plan["selected"])
+            self.assertEqual(plan["scoped_tests"], {})
+        with self.subTest(phase="a reading scope on the same target is joined, not replaced"):
+            manifest = ci_select.path_suites.parse(
+                '[[cargo]]\npackage = "leaf"\ninputs = ["os/x.json"]\nreaders = ["leaf/tests/audit.rs"]\n'
+                'scope = { inputs = ["os/x.json"], test = "it", filter = "test(/^audit::/)" }\n')
+            plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs", "os/x.json"], 2,
+                                       suite_manifest=manifest)
+            self.assertEqual(plan["scoped_tests"], {
+                "leaf": "--test it -E '(test(/^audit::/)) or (binary(it) and test(desktop_smoke::))'"})
+
     def test_a_recheck_keeps_only_what_the_base_changes_reach(self):
         with self.subTest(phase="the plan narrows to packages the base's own changes reach"):
             self.setUp()
