@@ -16283,6 +16283,7 @@ dependencies = [
  "tilo-user-identity",
  "tokio",
  "tokio-rustls",
+ "tracing",
  "url",
  "web-time",
  "workspace-hack",

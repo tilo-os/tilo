@@ -226,6 +226,10 @@ async fn admit(
     let mut requests: HashMap<ChannelId, BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>> =
         HashMap::new();
     let mut delivery = 1_u64;
+    // When each frame was last published: a new frame goes out at once, one
+    // a member still has not acknowledged again only after RESEND.
+    let mut sent_at: HashMap<[u8; 32], std::time::Instant> = HashMap::new();
+    const RESEND: std::time::Duration = std::time::Duration::from_secs(2);
     while let Some(first) = session.recv().await {
         // Everything already waiting is taken together: a channel many
         // members ask for at once (a record just made) is reconciled once
@@ -276,7 +280,10 @@ async fn admit(
             }
         }
         let mut channels = channels.lock().unwrap();
+        // `TILO_STEWARD_LOG`: each reconcile's size and duration on stderr.
+        let log = std::env::var_os("TILO_STEWARD_LOG").is_some();
         for channel in asked {
+            let started = std::time::Instant::now();
             let pending = requests.entry(channel).or_default();
             let already = channels.steward(channel).members();
             let allowed: BTreeSet<Ed25519PublicKey> = pending
@@ -286,9 +293,32 @@ async fn admit(
                 .chain([Ed25519PublicKey::from_bytes(own)])
                 .collect();
             let steward = channels.steward(channel);
-            steward.reconcile(&allowed, pending, &vault()).unwrap();
+            let outcome = steward.reconcile(&allowed, pending, &vault()).unwrap();
+            if log {
+                eprintln!(
+                    "steward: {} channel {} pending {} admitted {} removed {} in {:?}",
+                    tilo_clock::unix_now_ms(),
+                    hex::encode(channel.0).chars().take(8).collect::<String>(),
+                    pending.len(),
+                    outcome.admitted.len(),
+                    outcome.removed.len(),
+                    started.elapsed()
+                );
+            }
+            // Publishing reaches the whole room, so a frame several members
+            // still lack is sent once, as the relay's own stewardship does
+            // (`tilo_relay::rooms::stewardship`): once per lagging member,
+            // a burst of admissions grows with the square of the room.
+            let mut sent = std::collections::BTreeSet::new();
             for outgoing in steward.outbox() {
                 for frame in outgoing.frames {
+                    let digest = frame.digest().unwrap();
+                    if !sent.insert(digest)
+                        || sent_at.get(&digest).is_some_and(|at| at.elapsed() < RESEND)
+                    {
+                        continue;
+                    }
+                    sent_at.insert(digest, std::time::Instant::now());
                     delivery = delivery.checked_add(1).unwrap();
                     publish(
                         &session,

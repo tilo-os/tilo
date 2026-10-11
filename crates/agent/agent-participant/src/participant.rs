@@ -672,7 +672,7 @@ impl AgentParticipant {
             }
             return false;
         }
-        self.keys_wait = None;
+        self.end_keys_wait();
         if let StepAction::Continue(rest) = &step.action {
             // The rest is planned with the request as it was given beside
             // it, so what the model left out of the rest is still asked.
@@ -744,7 +744,7 @@ impl AgentParticipant {
             self.starting = Some((id, text));
             return;
         }
-        self.keys_wait = None;
+        self.end_keys_wait();
         self.previous_touched = std::mem::take(&mut self.task_touched);
         self.plan(id, &text, None);
     }
@@ -904,15 +904,23 @@ impl AgentParticipant {
         if waiting && finishing.since.elapsed() < COMMIT_WAIT {
             return true;
         }
+        if waiting {
+            tracing::warn!("agent: a task is reported before the host acknowledged its changes");
+        }
+        tracing::debug!(after = ?finishing.since.elapsed(), "agent: a task's changes are durable");
         if let Some(finishing) = self.finishing.take() {
             self.control.finish(&finishing.id, finishing.outcome);
         }
         false
     }
 
-    /// Whether a record of the room the agent may work on has arrived sealed
-    /// and opens once the agent holds its channel keys: until then the room
-    /// is only half seen.
+    /// The wait for keys is over (they arrived, or it gave up).
+    fn end_keys_wait(&mut self) {
+        if let Some(since) = self.keys_wait.take() {
+            tracing::debug!(after = ?since.elapsed(), "agent: keys waited for");
+        }
+    }
+
     /// Whether a plan may still wait for keys: [`KEYS_WAIT`] from the first
     /// time it did.
     fn may_wait_for_keys(&mut self) -> bool {
@@ -920,6 +928,7 @@ impl AgentParticipant {
         if since.elapsed() < KEYS_WAIT {
             return true;
         }
+        tracing::debug!(after = ?since.elapsed(), "agent: waited for keys");
         tracing::warn!("agent: a record's keys did not arrive; planning without them");
         false
     }
@@ -978,6 +987,9 @@ impl AgentParticipant {
         })
     }
 
+    /// Whether a record of the room the agent may work on has arrived sealed
+    /// and opens once the agent holds its channel keys: until then the room
+    /// is only half seen.
     fn keys_pending_for(&self, task: &str) -> bool {
         self.peer.status().routes.iter().any(|(route, status)| {
             status.awaiting_keys > 0
@@ -1490,6 +1502,7 @@ impl AgentParticipant {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Option<ActionOutput>, String> {
+        tracing::trace!(app = %route.app_id, action = %address.action, ?arguments, "agent: invoke");
         let may_confirm = self.identity.delegation.scope.may_confirm;
         self.invoke_as(route, address, arguments, may_confirm)
             .map_err(|refusal| match refusal {

@@ -42,6 +42,11 @@ use crate::document::{ContentCipher, DocumentRoute};
 /// First and longest wait before a waiting member asks again.
 const REQUEST_FIRST_MS: u64 = 2_000;
 const REQUEST_LONGEST_MS: u64 = 120_000;
+/// The least time between two acknowledgements of one channel. A burst of
+/// governance frames (many devices admitted together) is acknowledged once
+/// for its newest frame, which covers the ones before it; one per frame
+/// from every member grows with the square of the room.
+const ACK_INTERVAL_MS: u64 = 500;
 /// Frames kept for a channel no route of this page has opened yet.
 const MAX_UNOPENED_FRAMES: usize = 256;
 /// Channels whose frames are kept before a route opens them.
@@ -127,6 +132,10 @@ struct Route {
     next_request_ms: u64,
     request_delay_ms: u64,
     installed_epoch: Option<u64>,
+    /// When this device last acknowledged the channel's frames, and whether
+    /// frames it applied since wait for the next acknowledgement.
+    acked_at_ms: u64,
+    ack_pending: bool,
 }
 
 /// A member's state as [`Channels::export`] hands it to the durable store.
@@ -434,6 +443,8 @@ impl Channels {
                 next_request_ms: now_ms,
                 request_delay_ms: REQUEST_FIRST_MS,
                 installed_epoch: None,
+                acked_at_ms: 0,
+                ack_pending: false,
             },
         );
         self.settle(channel, now_ms, &mut changes);
@@ -526,6 +537,10 @@ impl Channels {
         let channels: Vec<ChannelId> = self.routes.keys().copied().collect();
         for channel in channels {
             self.request_if_due(channel, now_ms, &mut changes);
+            let device = self.device;
+            if let Some(route) = self.routes.get_mut(&channel) {
+                Self::ack_if_due(route, channel, device, now_ms, &mut changes);
+            }
         }
         changes
     }
@@ -593,23 +608,20 @@ impl Channels {
         let Some(member) = route.member.as_ref() else {
             return;
         };
+        tracing::debug!(
+            device = %hex::encode(&self.device.0[..4]),
+            channel = %channel.0.simple(),
+            ?events,
+            ready = matches!(member.access(), Access::Ready { .. }),
+            "channel: governance applied"
+        );
         let moved = events
             .iter()
             .any(|event| !matches!(event, MemberEvent::Duplicate | MemberEvent::Buffered));
         if moved {
             self.dirty = true;
         }
-        if moved && !member.journal().frames().is_empty() {
-            changes.outgoing.push(Outgoing::Ack {
-                workspace_id: route.workspace_id,
-                room: route.document.cluster_id.clone(),
-                ack: MlsGovernanceAckV1::unsigned(
-                    channel,
-                    self.device,
-                    member.journal().head_digest(),
-                ),
-            });
-        }
+        let wants_ack = moved && !member.journal().frames().is_empty();
         // Ask again with a fresh key package: the request sent before was
         // answered with a Welcome this device cannot open, or by an
         // admission the steward has since replaced.
@@ -625,6 +637,35 @@ impl Channels {
             changes.keys.push((route.document.clone(), keys));
         }
         self.request_if_due(channel, now_ms, changes);
+        let device = self.device;
+        if let Some(route) = self.routes.get_mut(&channel) {
+            route.ack_pending |= wants_ack;
+            Self::ack_if_due(route, channel, device, now_ms, changes);
+        }
+    }
+
+    /// Acknowledge the newest applied frame, at most once per
+    /// [`ACK_INTERVAL_MS`].
+    fn ack_if_due(
+        route: &mut Route,
+        channel: ChannelId,
+        device: Ed25519PublicKey,
+        now_ms: u64,
+        changes: &mut Changes,
+    ) {
+        if !route.ack_pending || now_ms < route.acked_at_ms.saturating_add(ACK_INTERVAL_MS) {
+            return;
+        }
+        let Some(member) = route.member.as_ref() else {
+            return;
+        };
+        route.ack_pending = false;
+        route.acked_at_ms = now_ms;
+        changes.outgoing.push(Outgoing::Ack {
+            workspace_id: route.workspace_id,
+            room: route.document.cluster_id.clone(),
+            ack: MlsGovernanceAckV1::unsigned(channel, device, member.journal().head_digest()),
+        });
     }
 
     fn request_if_due(&mut self, channel: ChannelId, now_ms: u64, changes: &mut Changes) {
@@ -652,6 +693,12 @@ impl Channels {
             .request_delay_ms
             .saturating_mul(2)
             .min(REQUEST_LONGEST_MS);
+        tracing::debug!(
+            device = %hex::encode(&self.device.0[..4]),
+            channel = %channel.0.simple(),
+            next_ms = route.request_delay_ms,
+            "channel: access requested"
+        );
         changes.outgoing.push(Outgoing::Request {
             workspace_id: route.workspace_id,
             room: route.document.cluster_id.clone(),

@@ -24,6 +24,12 @@ use tilo_peer_state::NeighbourMsg;
 /// Channels one room keeps a steward for.
 const MAX_CHANNELS: usize = 4096;
 
+/// How long a published frame waits before it is published again for a
+/// member that has not acknowledged it. A new frame goes out at once; every
+/// change re-sending the whole unacknowledged tail made a burst of
+/// admissions grow with the square of the room.
+const RESEND_MS: u64 = 2_000;
+
 /// The stewards of one governed room's channels.
 pub(super) struct Stewardship {
     room: String,
@@ -34,6 +40,8 @@ pub(super) struct Stewardship {
     /// Each device's newest request per channel, kept until it is a member.
     requests: HashMap<ChannelId, BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>>,
     delivery: u64,
+    /// When each frame (by digest) was last published, in unix ms.
+    sent_at: HashMap<[u8; 32], u64>,
 }
 
 impl Stewardship {
@@ -53,6 +61,7 @@ impl Stewardship {
             stewards: HashMap::new(),
             requests: HashMap::new(),
             delivery: 0,
+            sent_at: HashMap::new(),
         }
     }
 
@@ -205,11 +214,21 @@ impl Stewardship {
         }
         let mut seen = BTreeSet::new();
         let mut messages = Vec::new();
+        let now = tilo_clock::unix_now_ms();
+        // A frame unacknowledged for ten minutes is simply sent again.
+        self.sent_at
+            .retain(|_, at| now.saturating_sub(*at) < RESEND_MS.saturating_mul(300));
         for frame in frames {
             let Ok(digest) = frame.digest() else { continue };
-            if !seen.insert(digest) {
+            if !seen.insert(digest)
+                || self
+                    .sent_at
+                    .get(&digest)
+                    .is_some_and(|at| now.saturating_sub(*at) < RESEND_MS)
+            {
                 continue;
             }
+            self.sent_at.insert(digest, now);
             self.delivery = self.delivery.saturating_add(1);
             messages.push(NeighbourMsg::MlsGovernance {
                 room: self.room.clone(),
