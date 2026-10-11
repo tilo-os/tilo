@@ -138,6 +138,19 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
         damage.iter().map(Rect::area).sum::<f64>() < 1200.0 * 900.0 / 2.0,
         "ordinary stable paragraph input must not damage the whole app: {damage:?}"
     );
+    if !advance_timestamp {
+        // One typed character repaints the edited line and nothing else: the
+        // caret is inside it.
+        let line = Rect::new(300.0, 270.0, 1200.0, 340.0);
+        assert!(
+            damage.iter().all(|rect| rect.intersect(line) == *rect),
+            "typing damages only the edited line: {damage:?}"
+        );
+        assert!(
+            damage.iter().map(Rect::area).sum::<f64>() <= 900.0 * 24.0,
+            "typing damages one line, not its section: {damage:?}"
+        );
+    }
     assert_sparse_pixels(&before, driver.scene(), &damage, background);
     close_driver(&mut driver);
 }
@@ -160,10 +173,22 @@ fn assert_sparse_pixels(before: &Scene, after: &Scene, damage: &[Rect], backgrou
         old_pixels, expected,
         "ordinary input must change visible note paint"
     );
-    assert_eq!(
-        retained.readback_current(),
-        expected,
-        "all retained app pixels match the full GPU oracle"
+    // Independent GPU recordings differ by a one-unit rounding result at a
+    // handful of edges, including where nothing was damaged; anything more is
+    // a stale or missing region.
+    let retained_pixels = retained.readback_current();
+    assert_eq!(retained_pixels.len(), expected.len());
+    let differing: Vec<u8> = retained_pixels
+        .iter()
+        .zip(&expected)
+        .filter(|(a, b)| a != b)
+        .map(|(a, b)| a.abs_diff(*b))
+        .collect();
+    assert!(
+        differing.len() <= 16 && differing.iter().all(|delta| *delta <= 1),
+        "retained app pixels match the full GPU oracle: {} bytes differ, max delta {:?}",
+        differing.len(),
+        differing.iter().max()
     );
 }
 
