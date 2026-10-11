@@ -159,32 +159,54 @@ pub struct StripBlit {
 /// A frame as layers a presenter retains between frames.
 #[derive(Clone)]
 pub struct FrameCache {
-    /// Width of the workspace layer in scene pixels: wider than the screen
-    /// when a strip is drawn in canvas coordinates and its content is wider
-    /// than its viewport.
+    /// Width of the widest strip's canvas in scene pixels: wider than the
+    /// screen when a strip's content is wider than its viewport.
     pub width: u32,
-    /// Where each panned strip reads the workspace layer. A strip at rest
-    /// reads it in place and is not listed.
+    /// Where each strip of [`FrameLayers::strips`] is shown, and how far it
+    /// is panned, in the same order.
     pub strips: Vec<StripBlit>,
     pub layers: FrameLayers,
 }
 
-/// The desktop's sections as layers, bottom to top. Drawing them over each
-/// other in order (source over), the workspace read at each strip's pan,
-/// gives the frame's scene, so a presenter can rasterize each into its own
-/// retained buffer and composite the buffers: a strip's pan then moves the
-/// workspace layer over a backdrop and chrome that stay put, without drawing
-/// any of them again.
+/// The desktop's sections as layers, bottom to top, in scene pixels.
+/// Drawing them over each other in order (source over) gives the frame's
+/// scene ([`crate::shell::render::strip_layers::compose`]), so a presenter
+/// can rasterize each into its own retained buffer and composite the
+/// buffers: a strip's pan then moves that strip's pixels over a backdrop and
+/// chrome that stay put, without drawing any of them again.
 #[derive(Clone)]
 pub struct FrameLayers {
     /// The wallpaper and anything drawn behind every window.
     pub backdrop: Scene,
-    /// Strips, their floating surfaces and the docked wheel, in canvas
-    /// coordinates when [`FrameCache::strips`] pans them.
+    /// What of the workspace no strip carries, in place, below the strips.
     pub workspace: Scene,
+    /// Each strip on screen, top to bottom, drawn on its own in canvas
+    /// coordinates with the surfaces floating over it: shown inside its
+    /// [`FrameCache::strips`] destination, read at its pan. Strips whose
+    /// drawings meet (each draws its shadows past its row) each draw over
+    /// the other there, as on screen.
+    pub strips: Vec<Scene>,
+    /// The docked wheel, drawn on its own above the strips.
+    pub wheel: Option<WheelSprite>,
     /// Everything above: notices over the desktop, the top bar, quick
     /// settings and every overlay above them.
     pub chrome: Scene,
+}
+
+/// The docked wheel as a layer of its own size, above the strips. It rides
+/// the top strip, over the strips below it: drawn apart, a pan moves it
+/// without drawing it or the strips under it again.
+#[derive(Clone)]
+pub struct WheelSprite {
+    /// The wheel with the top-left corner of everything it paints at the
+    /// origin, in scene pixels.
+    pub scene: Scene,
+    pub width: u32,
+    pub height: u32,
+    /// Where that corner is on screen this frame, in scene pixels: off
+    /// screen to the left once the strip it rides has panned it away.
+    pub x: i32,
+    pub y: i32,
 }
 
 /// Widest workspace layer, in scene pixels. Past this the strips keep their
@@ -272,7 +294,26 @@ struct StripPlan {
     /// The strips are drawn in canvas coordinates.
     unbake: bool,
     width: u32,
+    /// Every strip with a row on screen, top to bottom, as the host draws
+    /// them apart ([`crate::shell::overlay_host::PannedSections::strips`]).
     strips: Vec<StripBlit>,
+    /// The strip each of `strips` shows.
+    ids: Vec<crate::shell::state::StripId>,
+    /// The logical desktop → scene pixels, on the one display the scene is.
+    to_scene: Affine,
+}
+
+impl StripPlan {
+    /// Strips keep their pans in the scene this frame.
+    fn baked(width: u32) -> Self {
+        Self {
+            unbake: false,
+            width,
+            strips: Vec::new(),
+            ids: Vec::new(),
+            to_scene: Affine::IDENTITY,
+        }
+    }
 }
 
 impl FramePaint {
@@ -310,12 +351,20 @@ impl FramePaint {
                 FrameLayers {
                     backdrop,
                     workspace,
+                    strips,
+                    wheel,
                     chrome,
                 },
         }) = cache
         {
             pins.add_scene(backdrop);
             pins.add_scene(workspace);
+            for strip in strips {
+                pins.add_scene(strip);
+            }
+            if let Some(wheel) = wheel {
+                pins.add_scene(&wheel.scene);
+            }
             pins.add_scene(chrome);
         }
         pins
@@ -2037,7 +2086,7 @@ impl FrameBuilder {
             && !global_filter
             && match self.layer_policy {
                 LayerPolicy::Always => true,
-                LayerPolicy::WhilePanning => panning && self.lone_unmagnified_output(),
+                LayerPolicy::WhilePanning => panning && self.lone_output(),
             })
         .then(|| self.strip_plan())
         .flatten();
@@ -2134,9 +2183,30 @@ impl FrameBuilder {
                 .map(crate::shell::hdr_surface::HdrLayerRecording::finish)
                 .unwrap_or_default(),
         );
-        if unbake && (!backdrop_surfaces.is_empty() || !hdr_layers.is_empty()) {
-            // Material sampling needs the original screen-space sections.
-            // Discard this provisional retained draw and produce those sections.
+        let panned = std::mem::take(&mut sections.panned);
+        // A strip that reads what is below it (a blend mode) cannot be
+        // composited on its own.
+        let pieces = plan
+            .as_ref()
+            .filter(|_| unbake)
+            .and_then(|plan| Self::panned_pieces(plan, panned))
+            .filter(|(strips, wheel)| {
+                strips.iter().all(separable_layer)
+                    && wheel
+                        .as_ref()
+                        .is_none_or(|wheel| separable_layer(&wheel.scene))
+            });
+        if unbake
+            && (!backdrop_surfaces.is_empty()
+                || !hdr_layers.is_empty()
+                || fullscreen_on_top.is_some()
+                || pieces.is_none())
+        {
+            // Material sampling needs the original screen-space sections, a
+            // fullscreen client may be scanned out of the screen-space
+            // scene, and strips the host could not draw apart as planned
+            // cannot be shown panned. Discard this provisional retained draw
+            // and produce those sections.
             let capacity = self.retained_layer_width.take();
             let frame = self.paint_with_damage();
             self.retained_layer_width = capacity;
@@ -2187,7 +2257,8 @@ impl FrameBuilder {
             ]
             .into_iter()
             .all(separable_layer);
-        let cache = plan.filter(|_| separable).map(|plan| {
+        // Strips drawn apart are in no section: the frame is its layers.
+        let layered = plan.zip(pieces).map(|(plan, (strip_scenes, wheel))| {
             let mut chrome = Scene::new();
             chrome.append(&sections.workspace_overlays, None);
             chrome.append(&sections.topbar, None);
@@ -2198,25 +2269,81 @@ impl FrameBuilder {
                 strips: plan.strips,
                 layers: FrameLayers {
                     backdrop: self.to_scene(sections.backdrop.clone()),
-                    workspace: self.to_scene(sections.workspace.clone()),
+                    // Empty stays empty: magnified, it would gain the
+                    // display's clip and read as drawn, and the presenter
+                    // would then move no strip pixel.
+                    workspace: if sections.workspace.encoding().is_empty() {
+                        Scene::new()
+                    } else {
+                        self.to_scene(sections.workspace.clone())
+                    },
+                    strips: strip_scenes,
+                    wheel,
                     chrome: self.to_scene(chrome),
                 },
             }
         });
         let backdrop =
             self.backdrop_to_scene(backdrop_surfaces, |layer| sections.below_layer(layer));
+        // A layered frame's scene is the one a full render of it draws,
+        // composed from the layers exactly as the presenter composites them.
+        // No filter is on (filters keep the strips in screen space) and no
+        // fullscreen client is up.
+        let (scene, scanout, cache) = if let Some(cache) = layered {
+            (
+                crate::shell::render::strip_layers::compose(&cache),
+                None,
+                separable.then_some(cache),
+            )
+        } else {
+            let (scene, scanout) =
+                self.screen_space_scene(&sections, fullscreen_on_top, global_filter);
+            (scene, scanout, None)
+        };
 
+        self.last_produced_sections = Some(ProducedSections {
+            foreign_images,
+            backdrop: sections.backdrop,
+            topbar: sections.topbar,
+            workspace: sections.workspace,
+            workspace_overlays: sections.workspace_overlays,
+            strips,
+            topbar_bounds: sections.topbar_bounds,
+            quick_settings: sections.quick_settings,
+            above_quick_settings: sections.above_quick_settings,
+            quick_settings_bounds: sections.quick_settings_bounds,
+            parts,
+            global_filter: pointer_filter,
+            tint,
+            revision,
+        });
+        FramePaint {
+            scene,
+            revision,
+            previous_revision,
+            damage_regions,
+            hdr_layers,
+            backdrop,
+            cache,
+            scanout,
+        }
+    }
+
+    /// The frame's scene from its sections, in scene pixels, with the
+    /// filters over the whole desktop; and the fullscreen client a display
+    /// may scan out instead, when it is still on top of all of that.
+    fn screen_space_scene(
+        &self,
+        sections: &crate::shell::overlay_host::ShellSceneSections,
+        fullscreen_on_top: Option<crate::shell::scanout_candidate::DrawnOnTop>,
+        global_filter: bool,
+    ) -> (
+        Scene,
+        Option<crate::shell::scanout_candidate::ScanoutCandidate>,
+    ) {
         let mut scene = Scene::new();
         scene.append(&sections.backdrop, None);
-        match &strips {
-            Some(strips) => crate::shell::render::strip_layers::append_panned(
-                &mut scene,
-                &sections.workspace,
-                strips,
-                self.scene_size,
-            ),
-            None => scene.append(&sections.workspace, None),
-        }
+        scene.append(&sections.workspace, None);
         scene.append(&sections.workspace_overlays, None);
         // OS chrome owns this layer. Its normal controls stay inside the
         // reserved top-bar band, while anchored surfaces such as the center
@@ -2257,33 +2384,7 @@ impl FrameBuilder {
             .filter(|_| !global_filter && scene.encoding().draw_tags.len() == draws_below_filters);
         let scene = self.to_scene(scene);
         let scanout = fullscreen_on_top.and_then(|drawn| self.scanout_candidate(drawn, &scene));
-
-        self.last_produced_sections = Some(ProducedSections {
-            foreign_images,
-            backdrop: sections.backdrop,
-            topbar: sections.topbar,
-            workspace: sections.workspace,
-            workspace_overlays: sections.workspace_overlays,
-            strips,
-            topbar_bounds: sections.topbar_bounds,
-            quick_settings: sections.quick_settings,
-            above_quick_settings: sections.above_quick_settings,
-            quick_settings_bounds: sections.quick_settings_bounds,
-            parts,
-            global_filter: pointer_filter,
-            tint,
-            revision,
-        });
-        FramePaint {
-            scene,
-            revision,
-            previous_revision,
-            damage_regions,
-            hdr_layers,
-            backdrop,
-            cache,
-            scanout,
-        }
+        (scene, scanout)
     }
 
     /// The candidate for direct scanout when `drawn`, the fullscreen client
@@ -2434,8 +2535,8 @@ impl FrameBuilder {
     /// Tell the producer what its presenter asks of strip pans: whole-pixel
     /// pans (`pixel_aligned`, a CPU presenter), and frames as layers while
     /// a strip pans (`composites_layers`, the DRM GPU presenter). Layers are
-    /// drawn only where the scene is the logical desktop unmagnified; there
-    /// the pans land on whole pixels too, so a pan moves strip pixels
+    /// drawn only where the scene is one display, at any scale; there the
+    /// pans land on whole device pixels too, so a pan moves strip pixels
     /// without resampling them.
     pub fn set_strip_pan_presenter(&mut self, pixel_aligned: bool, composites_layers: bool) {
         self.strip_pan_presenter = StripPanPresenter {
@@ -2454,23 +2555,43 @@ impl FrameBuilder {
     }
 
     /// Whole-pixel pans where the presenter reuses strip pixels as they are.
+    ///
+    /// A presenter compositing layers gets pans that are whole device pixels
+    /// *and* whole layout pixels: the drawn pan is the gesture's rounded to
+    /// the smallest number of layout pixels that is a whole number of device
+    /// pixels ([`pan_step`]): one at 100 % and 200 % (one and two device
+    /// pixels), two at 150 % (three device pixels), four at 125 %. A pan then
+    /// moves the strip by whole device pixels, which a copy reproduces
+    /// exactly. Whole layout pixels keep the panned strips exactly what the
+    /// desktop drawn without layers shows: chrome that lands on whole layout
+    /// pixels (the docked wheel's cached drawing, app icons) would otherwise
+    /// sit a fraction of a pixel apart in the two, and twitch when a pan
+    /// ends. Layout and input see the same drawn pan, so what is under the
+    /// pointer is what is drawn there. A CPU presenter keeps whole layout
+    /// pixels.
     fn align_strip_pans(&mut self) {
         let StripPanPresenter {
             pixel_aligned,
             composites_layers,
         } = self.strip_pan_presenter;
-        let layered = composites_layers && self.lone_unmagnified_output();
-        self.host
-            .set_pixel_aligned_strip_pan(pixel_aligned || layered);
+        let layered_step = self
+            .lone_output_transform()
+            .filter(|_| composites_layers && self.lone_output())
+            .and_then(|to_scene| {
+                let [scale_x, ..] = to_scene.as_coeffs();
+                pan_step(scale_x)
+            });
+        let quantum = layered_step.or_else(|| pixel_aligned.then_some(1.0));
+        self.host.set_strip_pan_quantum(quantum);
     }
 
-    /// One display showing the logical desktop unmagnified: the scene a
-    /// layer-compositing presenter renders as a whole. Several displays each
-    /// render their own view of the scene, so they keep it.
-    fn lone_unmagnified_output(&self) -> bool {
+    /// One display: the scene a layer-compositing presenter renders as a
+    /// whole. Several displays each render their own view of the scene, so
+    /// they keep it.
+    fn lone_output(&self) -> bool {
         self.outputs
             .as_ref()
-            .is_none_or(|outputs| outputs.len() == 1 && output_scene::is_identity(outputs))
+            .is_none_or(|outputs| outputs.len() == 1)
     }
 
     /// Which frames this producer's presenter gets as layers.
@@ -2516,18 +2637,34 @@ impl FrameBuilder {
                 || self.visual_accessibility.cursor_crosshair)
     }
 
+    /// The logical desktop → scene pixels when the scene is one display's
+    /// view of it (or the logical desktop itself, unmagnified); `None` on
+    /// several displays, each of which draws the desktop at its own place
+    /// and scale.
+    fn lone_output_transform(&self) -> Option<Affine> {
+        match self.outputs.as_deref() {
+            None => Some(Affine::IDENTITY),
+            Some(outputs) if output_scene::is_identity(outputs) => Some(Affine::IDENTITY),
+            Some([output]) => Some(output.to_scene()),
+            Some(_) => None,
+        }
+    }
+
     /// How the strips are drawn for a presenter that composites layers, in
     /// scene pixels, or `None` when the desktop cannot be drawn as layers:
     /// on several displays each draws it at its own place and scale.
+    ///
+    /// Every strip with a row on screen is drawn on its own
+    /// ([`crate::shell::overlay_host::PannedSections`]) and shown inside its
+    /// pan rect rounded out to whole scene pixels; strips whose rects meet
+    /// each draw over the other there. On a scaled display the pans are
+    /// whole device pixels ([`Self::align_strip_pans`]), so a pan moves a
+    /// strip's pixels by whole pixels.
     fn strip_plan(&self) -> Option<StripPlan> {
-        if self
-            .outputs
-            .as_ref()
-            .is_some_and(|outputs| !output_scene::is_identity(outputs))
-        {
-            return None;
-        }
+        use crate::shell::state::StripId;
+        let to_scene = self.lone_output_transform()?;
         let screen_w = scene_px(self.scene_size.0).max(1);
+        let screen_h = scene_px(self.scene_size.1).max(1);
         // A presenter that keeps the strips as they are on screen
         // ([`LayerPolicy::WhilePanning`]) keeps no canvas texture, so the
         // canvas may be as wide as the strip.
@@ -2538,73 +2675,136 @@ impl FrameBuilder {
         if screen_w > max_width {
             return None;
         }
+        // Scene pixels per layout pixel along a pan.
+        let [scale_x, ..] = to_scene.as_coeffs();
+        let mut rows: Vec<(f64, u64, f64, f64)> = self
+            .host
+            .strip_scroll_offsets()
+            .into_iter()
+            .filter_map(|(id, scroll, max_scroll)| {
+                let rect = self.host.strip_row_rect(StripId(id))?;
+                Some((rect.y0, id, scroll, max_scroll))
+            })
+            .collect();
+        // The order the host draws them apart in.
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         let mut plan = StripPlan {
             unbake: true,
             width: screen_w,
             strips: Vec::new(),
+            ids: Vec::new(),
+            to_scene,
         };
-        for (id, scroll, max_scroll) in self.host.strip_scroll_offsets() {
-            let Some(rect) = self.host.strip_row_rect(crate::shell::state::StripId(id)) else {
-                continue;
+        for (_, id, scroll, max_scroll) in rows {
+            let strip = StripId(id);
+            let (Some(rect), Some(pans)) = (
+                self.host.strip_row_rect(strip),
+                self.host.strip_pan_rect(strip),
+            ) else {
+                return Some(StripPlan::baked(screen_w));
             };
-            let dest_x = scene_px(rect.x0);
-            let dest_w = scene_px(rect.width()).max(1);
-            let pad = self.host.strip_canvas_pad(crate::shell::state::StripId(id));
-            let right = dest_x
-                .saturating_add(dest_w)
-                .saturating_add(scene_px((max_scroll + 2.0 * pad).ceil()));
+            let pad = self.host.strip_canvas_pad(strip);
+            let canvas = Rect::new(rect.x0, rect.y0, rect.x1 + max_scroll + 2.0 * pad, rect.y1);
+            let right = scene_px(to_scene.transform_rect_bbox(canvas).x1.ceil());
             if right > max_width {
                 // Too wide for the presenter: the pans stay in the scene.
-                return Some(StripPlan {
-                    unbake: false,
-                    width: screen_w,
-                    strips: Vec::new(),
-                });
+                return Some(StripPlan::baked(screen_w));
             }
             plan.width = plan.width.max(right);
-            // Fractional pans keep their exact screen-space drawing.
-            if scroll.fract() != 0.0 {
-                return Some(StripPlan {
-                    unbake: false,
-                    width: screen_w,
-                    strips: Vec::new(),
-                });
+            // A strip outside its canvas (a rubber band past the pad) is
+            // drawn where it is on screen, unpanned.
+            let shift = if ui::widget::pan_within_canvas(scroll, max_scroll, pad) {
+                (scroll + pad) * scale_x
+            } else {
+                0.0
+            };
+            // A pan between scene pixels keeps its exact screen-space
+            // drawing.
+            if !nearly_whole(shift) {
+                return Some(StripPlan::baked(screen_w));
             }
-            if ui::widget::pan_within_canvas(scroll, max_scroll, pad) {
-                let pans = self
-                    .host
-                    .strip_pan_rect(crate::shell::state::StripId(id))
-                    .unwrap_or(rect);
-                let dest_y = scene_px(pans.y0);
-                let dest_y1 = scene_px(pans.y1);
-                plan.strips.push(StripBlit {
-                    dest_x,
-                    dest_y,
-                    dest_w,
-                    dest_h: dest_y1.saturating_sub(dest_y).max(1),
-                    scroll_x: scene_px(scroll + pad),
-                });
-            }
-        }
-        // Each pixel of the screen reads the canvas at one strip's pan.
-        // Where two strips' destinations meet (the docked wheel rides the
-        // active strip, and its rect reaches into the strip below), each
-        // would draw the other's windows at its own pan: those pans stay in
-        // the scene.
-        let overlapping = plan.strips.iter().enumerate().any(|(index, a)| {
-            plan.strips
-                .iter()
-                .skip(index.saturating_add(1))
-                .any(|b| strip_blits_overlap(a, b))
-        });
-        if overlapping {
-            return Some(StripPlan {
-                unbake: false,
-                width: screen_w,
-                strips: Vec::new(),
+            let dest = to_scene.transform_rect_bbox(pans);
+            let x0 = scene_px(dest.x0.floor()).min(screen_w);
+            let y0 = scene_px(dest.y0.floor()).min(screen_h);
+            let x1 = scene_px(dest.x1.ceil()).min(screen_w);
+            let y1 = scene_px(dest.y1.ceil()).min(screen_h);
+            plan.strips.push(StripBlit {
+                dest_x: x0,
+                dest_y: y0,
+                dest_w: x1.saturating_sub(x0).max(1),
+                dest_h: y1.saturating_sub(y0).max(1),
+                scroll_x: scene_px(shift.round()),
             });
+            plan.ids.push(strip);
         }
         Some(plan)
+    }
+
+    /// The strips and the docked wheel the host drew apart for `plan`, in
+    /// scene pixels; `None` when they do not match it, or a strip's floating
+    /// surfaces drew (on screen they are drawn above the wheel): the frame
+    /// is then drawn in screen space.
+    fn panned_pieces(
+        plan: &StripPlan,
+        panned: crate::shell::overlay_host::PannedSections,
+    ) -> Option<(Vec<Scene>, Option<WheelSprite>)> {
+        let crate::shell::overlay_host::PannedSections {
+            strips,
+            wheel,
+            floating_drawn,
+        } = panned;
+        if floating_drawn
+            || strips.len() != plan.ids.len()
+            || strips
+                .iter()
+                .zip(&plan.ids)
+                .any(|((drawn, _), planned)| drawn != planned)
+        {
+            return None;
+        }
+        let scenes = strips
+            .into_iter()
+            .map(|(_, scene)| magnified(scene, plan.to_scene))
+            .collect();
+        let wheel = match wheel {
+            Some(wheel) => Some(Self::wheel_sprite(plan, &wheel)?),
+            None => None,
+        };
+        Some((scenes, wheel))
+    }
+
+    /// The docked wheel as a sprite: everything it paints, rounded out to
+    /// whole scene pixels, placed where the pan of the strip it rides shows
+    /// it.
+    fn wheel_sprite(
+        plan: &StripPlan,
+        wheel: &crate::shell::overlay_host::PannedWheel,
+    ) -> Option<WheelSprite> {
+        let scroll_x = match wheel.rides {
+            Some(strip) => {
+                let index = plan.ids.iter().position(|id| *id == strip)?;
+                plan.strips.get(index)?.scroll_x
+            }
+            None => 0,
+        };
+        let bounds = plan.to_scene.transform_rect_bbox(wheel.bounds);
+        let (x0, y0) = (bounds.x0.floor(), bounds.y0.floor());
+        let (x1, y1) = (bounds.x1.ceil(), bounds.y1.ceil());
+        let mut scene = Scene::new();
+        scene.append(
+            &wheel.scene,
+            Some(
+                plan.to_scene
+                    .then_translate(vello::kurbo::Vec2::new(-x0, -y0)),
+            ),
+        );
+        Some(WheelSprite {
+            scene,
+            width: scene_px(x1 - x0).max(1),
+            height: scene_px(y1 - y0).max(1),
+            x: scene_i32(x0 - f64::from(scroll_x))?,
+            y: scene_i32(y0)?,
+        })
     }
 
     #[cfg(test)]
@@ -8152,14 +8352,53 @@ fn without_contained_regions(regions: &[FineDamageRect]) -> Vec<FineDamageRect> 
         .collect()
 }
 
-/// Whether the destinations of `a` and `b` share a pixel.
-fn strip_blits_overlap(a: &StripBlit, b: &StripBlit) -> bool {
-    let span = |start: u32, length: u32| (start, start.saturating_add(length));
-    let (ax0, ax1) = span(a.dest_x, a.dest_w);
-    let (ay0, ay1) = span(a.dest_y, a.dest_h);
-    let (bx0, bx1) = span(b.dest_x, b.dest_w);
-    let (by0, by1) = span(b.dest_y, b.dest_h);
-    ax0 < bx1 && bx0 < ax1 && ay0 < by1 && by0 < ay1
+/// A whole scene coordinate, possibly negative (off screen to the left or
+/// above), rounded to the nearest pixel; `None` when not finite.
+fn scene_i32(value: f64) -> Option<i32> {
+    if !value.is_finite() {
+        return None;
+    }
+    let value = value
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX));
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the value is rounded, finite and clamped to i32"
+    )]
+    let whole = value as i32;
+    Some(whole)
+}
+
+/// `scene`, drawn in logical coordinates, magnified by `to_scene` into
+/// scene pixels without clipping it to the display: a strip's canvas runs
+/// past the display's right edge, and the pan brings that part in.
+fn magnified(scene: Scene, to_scene: Affine) -> Scene {
+    if to_scene == Affine::IDENTITY {
+        return scene;
+    }
+    let mut magnified = Scene::new();
+    magnified.append(&scene, Some(to_scene));
+    magnified
+}
+
+/// The smallest whole number of layout pixels that is a whole number of
+/// device pixels at `scale` device pixels per layout pixel: 1 at 100 %,
+/// 200 % and 300 %, 2 at 150 %, 3 at 133 %, 4 at 125 % and 175 %. `None`
+/// past eight layout pixels (110 %): strips there keep exact pans and are
+/// not drawn as layers.
+fn pan_step(scale: f64) -> Option<f64> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    (1_u8..=8).map(f64::from).find(|&step| {
+        let device = step * scale;
+        (device - device.round()).abs() < 1e-6
+    })
+}
+
+/// `value` is within a thousandth of a whole number.
+fn nearly_whole(value: f64) -> bool {
+    value.is_finite() && (value - value.round()).abs() < 1e-3
 }
 
 /// A non-negative scene coordinate as whole pixels, rounded down.

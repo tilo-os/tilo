@@ -708,7 +708,8 @@ pub struct ShellOverlayHost {
     /// the content for the rest of the process lifetime, so the pointer
     /// remains valid as long as `&mut self` does.
     group_row_ptrs: HashMap<StripId, *mut GroupRow>,
-    pixel_aligned_strip_pan: bool,
+    /// The step strip pans are drawn on ([`Self::set_strip_pan_quantum`]).
+    strip_pan_quantum: Option<f64>,
     /// Workspace id the current `content` was built for.
     /// [`Self::resync_workspace_content`] rebuilds when this disagrees
     /// with `tree.active`. `None` means unbuilt/test stub: the
@@ -962,6 +963,39 @@ pub struct ShellSceneSections {
     pub quick_settings: Scene,
     pub above_quick_settings: Scene,
     pub quick_settings_bounds: Option<Rect>,
+    /// What is drawn apart from `workspace` while the strips are drawn in
+    /// canvas coordinates; empty otherwise.
+    pub panned: PannedSections,
+}
+
+/// The parts of the workspace a presenter pans on their own, drawn apart
+/// while the strips are drawn in canvas coordinates
+/// ([`ui::retained_present::unbake_scroll`]). Each strip draws over its own
+/// destination, so two strips whose drawings meet (each draws its shadows
+/// past its row) can pan apart; the docked wheel, which rides the top strip
+/// over the strips below it, is drawn on its own above them.
+#[derive(Default)]
+pub struct PannedSections {
+    /// Every strip with a row on screen, top to bottom, each drawn on its
+    /// own in canvas coordinates, with the surfaces floating over it.
+    pub strips: Vec<(StripId, Scene)>,
+    /// The docked wheel, drawn on its own.
+    pub wheel: Option<PannedWheel>,
+    /// A strip's floating surfaces drew something. On screen they are drawn
+    /// above the docked wheel, which the panned strips cannot express.
+    pub floating_drawn: bool,
+}
+
+/// The docked wheel drawn on its own while the strips are drawn in canvas
+/// coordinates.
+pub struct PannedWheel {
+    /// The wheel, at its canvas position when it rides a strip.
+    pub scene: Scene,
+    /// Everything `scene` can paint, in its coordinates.
+    pub bounds: Rect,
+    /// The strip whose pan carries the wheel; `None` when it stays where it
+    /// is (summoned, or a promoted group drawn unpanned).
+    pub rides: Option<StripId>,
 }
 
 /// Backdrop layers ([`ui::backdrop::layer_scene`]) of the sections
@@ -1772,6 +1806,7 @@ impl ShellOverlayHost {
             quick_settings: Scene::new(),
             above_quick_settings: Scene::new(),
             quick_settings_bounds: None,
+            panned: PannedSections::default(),
         });
         sections.register_backdrop_layers();
         sections.track_damage_parts();
@@ -1782,6 +1817,7 @@ impl ShellOverlayHost {
             workspace_overlays,
             quick_settings,
             above_quick_settings,
+            panned: panned_slot,
             ..
         } = &mut *sections;
         let contextual_tour = self
@@ -1794,6 +1830,19 @@ impl ShellOverlayHost {
         }
 
         let flags = self.overlay_flags();
+        let unbaked = ui::retained_present::unbake_scroll();
+        // Strips drawn in canvas coordinates are each drawn on their own:
+        // the column skips them and they are drawn below, top to bottom.
+        let apart = if unbaked {
+            self.rows_on_screen()
+        } else {
+            Vec::new()
+        };
+        for &(_, row) in &apart {
+            // SAFETY: same contract as every other `group_row_ptrs`
+            // accessor; `&mut self` makes the access exclusive.
+            unsafe { (&mut *row).set_drawn_apart(true) };
+        }
         let topbar_bounds = self.draw_workspace_sections(
             backdrop,
             topbar,
@@ -1803,7 +1852,22 @@ impl ShellOverlayHost {
             theme,
             presence,
         );
-        if ui::retained_present::unbake_scroll() {
+        let mut panned = PannedSections::default();
+        for &(strip, row) in &apart {
+            let mut scene = Scene::new();
+            // A blurred surface drawn into a strip is recorded as drawn into
+            // the workspace, so the frame producer sees it.
+            ui::backdrop::layer_scene(&scene, backdrop_layer::WORKSPACE);
+            // SAFETY: as above.
+            unsafe {
+                let row = &mut *row;
+                row.draw_apart(&mut scene, text_renderer, theme, presence);
+                row.set_drawn_apart(false);
+            }
+            panned.strips.push((strip, scene));
+        }
+        ui::backdrop::layer_scene(workspace, backdrop_layer::WORKSPACE);
+        if unbaked {
             self.draw_real_peers(
                 workspace_overlays,
                 transform,
@@ -1811,7 +1875,7 @@ impl ShellOverlayHost {
                 theme,
                 presence,
             );
-            self.draw_docked_wheel(workspace, transform, text_renderer, theme, presence);
+            panned.wheel = self.draw_panned_wheel(transform, text_renderer, theme, presence);
             self.draw_desktop_notices(
                 workspace_overlays,
                 transform,
@@ -1822,25 +1886,36 @@ impl ShellOverlayHost {
         } else {
             self.draw_desktop_extras(workspace, transform, text_renderer, theme, presence);
         }
-        let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
-        for row in rows {
+        let rows: Vec<_> = self
+            .group_row_ptrs
+            .iter()
+            .map(|(&id, &row)| (id, row))
+            .collect();
+        for (strip, row) in rows {
             // A strip drawn in canvas coordinates is panned by the presenter;
             // surfaces floating over its windows move with it.
             // SAFETY: identical sequential traversal to `Widget::draw` above.
             let shift = unsafe { (&*row).canvas_shift() };
             let row_transform = transform.pre_translate(vello::kurbo::Vec2::new(shift, 0.0));
+            let scene = match panned.strips.iter_mut().find(|(id, _)| *id == strip) {
+                Some((_, scene)) => scene,
+                None => &mut *workspace,
+            };
+            let before = scene.encoding().draw_tags.len();
             // SAFETY: identical sequential traversal to `Widget::draw` above.
             unsafe {
                 ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
                     &mut *row,
-                    workspace,
+                    scene,
                     row_transform,
                     text_renderer,
                     theme,
                     presence,
                 );
             }
+            panned.floating_drawn |= unbaked && scene.encoding().draw_tags.len() != before;
         }
+        *panned_slot = panned;
         let overview_scene = if ui::retained_present::unbake_scroll() {
             &mut *workspace_overlays
         } else {
@@ -2390,7 +2465,7 @@ impl ShellOverlayHost {
             palette_was_visible: false,
             palette_transition: ui::Transition::closed(),
             group_row_ptrs: HashMap::new(),
-            pixel_aligned_strip_pan: false,
+            strip_pan_quantum: None,
             content_built_for_ws: None,
             content_built_empty: None,
             workspace_content_layout_dirty: false,
@@ -9043,27 +9118,71 @@ impl ShellOverlayHost {
     }
 
     /// Where on screen `strip` pans when it is drawn in canvas coordinates:
-    /// its row with the shadows drawn past it, as tall as the docked wheel
-    /// when the wheel rides this strip.
+    /// its row with the shadows drawn past it. The docked wheel riding it is
+    /// drawn apart ([`PannedWheel`]).
     pub fn strip_pan_rect(&self, strip: StripId) -> Option<vello::kurbo::Rect> {
-        let mut rect = GroupRow::drawn_bounds(self.strip_row_rect(strip)?);
-        if self.docked_strip() == Some(strip)
-            && !self.docked_wheel_pinned()
-            && !self.overlay_flags().overview
-            && let Some(wheel) = self.sidebar.as_ref().map(|sidebar| sidebar.get_rect())
-            && wheel.area() > 0.0
-        {
-            rect.y0 = rect.y0.min(wheel.y0);
-            rect.y1 = rect.y1.max(wheel.y1);
-        }
-        Some(rect)
+        Some(GroupRow::drawn_bounds(self.strip_row_rect(strip)?))
     }
 
-    /// Use whole-pixel strip positions only when the presenter requests them.
-    pub fn set_pixel_aligned_strip_pan(&mut self, enabled: bool) {
-        if self.pixel_aligned_strip_pan != enabled {
-            self.pixel_aligned_strip_pan = enabled;
+    /// The step the presenter needs strip pans drawn on, in layout pixels
+    /// (`1 / scale` for whole device pixels), or `None` for exact pans
+    /// ([`GroupRow::set_scroll_quantum`]).
+    pub fn set_strip_pan_quantum(&mut self, quantum: Option<f64>) {
+        self.strip_pan_quantum = quantum;
+    }
+
+    /// The strips with a row on screen, top to bottom.
+    fn rows_on_screen(&self) -> Vec<(StripId, *mut GroupRow)> {
+        let mut rows: Vec<(f64, StripId, *mut GroupRow)> = self
+            .group_row_ptrs
+            .iter()
+            .filter_map(|(&strip, &row)| Some((self.strip_row_rect(strip)?.y0, strip, row)))
+            .collect();
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.0.cmp(&b.1.0)));
+        rows.into_iter()
+            .map(|(_, strip, row)| (strip, row))
+            .collect()
+    }
+
+    /// The docked wheel drawn on its own while the strips are drawn in
+    /// canvas coordinates, with what it can paint: its footprint and the rim
+    /// shadow past its right edge (the disc clips its paint group to that),
+    /// at the canvas position of the strip it rides. The presenter rounds
+    /// the bounds out to whole pixels.
+    fn draw_panned_wheel(
+        &mut self,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Option<PannedWheel> {
+        let rect = self.sidebar.as_ref().map(|sidebar| sidebar.get_rect())?;
+        if self.overlay_flags().overview || rect.area() <= 0.0 {
+            return None;
         }
+        let rides = if self.docked_wheel_pinned() {
+            None
+        } else {
+            self.docked_strip()
+        };
+        let shift = if rides.is_some() {
+            self.docked_strip_canvas_shift()
+        } else {
+            0.0
+        };
+        let mut scene = Scene::new();
+        self.draw_docked_wheel(&mut scene, transform, text_renderer, theme, presence);
+        let painted = Rect::new(
+            rect.x0 + shift,
+            rect.y0,
+            rect.x1 + shift + tilo_desktop::sidebar_wheel_disc::RIM_SHADOW_REACH,
+            rect.y1,
+        );
+        Some(PannedWheel {
+            scene,
+            bounds: transform.transform_rect_bbox(painted),
+            rides,
+        })
     }
 
     /// Every strip's horizontal pan, keyed by strip id, paired with its
@@ -18169,7 +18288,7 @@ impl Widget for ShellOverlayHost {
             // &mut self → unaliased mutable access.
             unsafe {
                 let row = &mut *ptr;
-                row.set_pixel_aligned_scroll(self.pixel_aligned_strip_pan);
+                row.set_scroll_quantum(self.strip_pan_quantum);
                 row.set_leading_inset(wheel_w);
                 row.set_output_spans(&settled_spans);
                 // App-owned call/navigation surfaces cross into this same

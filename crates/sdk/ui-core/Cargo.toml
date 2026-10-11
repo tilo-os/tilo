@@ -322,7 +322,6 @@ tilo-host = { path = "../tilo-host", features = ["test-support"] }
 # of a `UnixStream::pair()` and drive `CollaborationManager` against it.
 # Same pin runtime-collab tests use.
 capnp.workspace = true
-tokio-util.workspace = true
 # The settings capability the shell hands an app, served by the fake broker.
 runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-host"] }
 
