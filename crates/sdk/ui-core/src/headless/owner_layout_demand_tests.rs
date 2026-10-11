@@ -41,8 +41,6 @@ impl Widget for Intrinsic {
             origin.y + f64::from(layout.size.height),
         ));
     }
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
     fn get_rect(&self) -> Rect {
         self.0.rect.get()
     }

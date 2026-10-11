@@ -154,16 +154,6 @@ impl Widget for SemanticCountingPublisher {
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "counting-publisher"
     }
@@ -359,16 +349,6 @@ impl Widget for InventoryOnlyPublisher {
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "counting-publisher"
     }
@@ -426,16 +406,6 @@ impl Widget for FastInventoryPublisher {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
     }
     fn name(&self) -> &'static str {
         "counting-publisher"

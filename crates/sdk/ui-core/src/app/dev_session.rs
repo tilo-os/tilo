@@ -309,24 +309,6 @@ impl crate::widget::Widget for DevCaretField {
         node
     }
 
-    fn apply_layout(
-        &mut self,
-        _taffy: &taffy::TaffyTree<()>,
-        _node: taffy::NodeId,
-        _origin: vello::kurbo::Point,
-    ) {
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut vello::Scene,
-        _transform: vello::kurbo::Affine,
-        _text_renderer: &mut crate::text_render::TextRenderer,
-        _theme: &crate::Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
-    }
-
     fn name(&self) -> &str {
         "DevCaretField"
     }

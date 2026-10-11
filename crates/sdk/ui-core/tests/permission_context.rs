@@ -184,22 +184,6 @@ impl tilo_ui::widget::Widget for NoOpWidget {
     ) -> taffy::NodeId {
         unimplemented!()
     }
-    fn apply_layout(
-        &mut self,
-        _t: &taffy::TaffyTree<()>,
-        _n: taffy::NodeId,
-        _o: vello::kurbo::Point,
-    ) {
-    }
-    fn draw(
-        &mut self,
-        _s: &mut vello::Scene,
-        _tr: vello::kurbo::Affine,
-        _txt: &mut tilo_ui::text_render::TextRenderer,
-        _th: &tilo_ui::theme::Theme,
-        _presence: &tilo_ui::presence::PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "noop"
     }
@@ -237,22 +221,6 @@ impl tilo_ui::widget::Widget for GatedButton {
         _m: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui::widget::Widget>,
     ) -> taffy::NodeId {
         unimplemented!()
-    }
-    fn apply_layout(
-        &mut self,
-        _t: &taffy::TaffyTree<()>,
-        _n: taffy::NodeId,
-        _o: vello::kurbo::Point,
-    ) {
-    }
-    fn draw(
-        &mut self,
-        _s: &mut vello::Scene,
-        _tr: vello::kurbo::Affine,
-        _txt: &mut tilo_ui::text_render::TextRenderer,
-        _th: &tilo_ui::theme::Theme,
-        _presence: &tilo_ui::presence::PresenceCtx,
-    ) {
     }
     fn handle_event(
         &mut self,

@@ -20,9 +20,6 @@ impl Widget for DeclaredDirectory {
     ) -> NodeId {
         t.new_leaf(taffy::Style::default()).unwrap()
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
     fn name(&self) -> &'static str {
         "declared-directory"
     }
@@ -631,9 +628,6 @@ impl Widget for ExtendedDirectory {
         _: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         t.new_leaf(taffy::Style::default()).unwrap()
-    }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
     fn name(&self) -> &'static str {
         "extended-directory"

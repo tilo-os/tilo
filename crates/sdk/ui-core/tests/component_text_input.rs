@@ -550,15 +550,6 @@ impl Widget for WithdrawableResource {
     fn get_rect(&self) -> tilo_ui::kurbo::Rect {
         tilo_ui::kurbo::Rect::ZERO
     }
-    fn draw(
-        &mut self,
-        _: &mut tilo_ui::vello::Scene,
-        _: tilo_ui::kurbo::Affine,
-        _: &mut tilo_ui::TextRenderer,
-        _: &tilo_ui::Theme,
-        _: &tilo_ui::presence::PresenceCtx,
-    ) {
-    }
     fn build_layout(
         &mut self,
         tree: &mut tilo_ui::taffy::TaffyTree<()>,
@@ -568,13 +559,6 @@ impl Widget for WithdrawableResource {
         let node = tree.new_leaf(tilo_ui::taffy::Style::default()).unwrap();
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
-    }
-    fn apply_layout(
-        &mut self,
-        _: &tilo_ui::taffy::TaffyTree<()>,
-        _: tilo_ui::taffy::NodeId,
-        _: tilo_ui::kurbo::Point,
-    ) {
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[tilo_ui::widget::resource_actions::OPERATION_TYPE]

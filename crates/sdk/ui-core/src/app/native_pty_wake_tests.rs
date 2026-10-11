@@ -133,7 +133,6 @@ impl Widget for PtyRoot {
     ) -> NodeId {
         taffy.new_leaf(taffy::Style::default()).unwrap()
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
     fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
         panic!("hidden PTY progress must not paint");
     }

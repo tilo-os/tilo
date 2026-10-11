@@ -142,9 +142,6 @@ impl Widget for Rows {
         self.rect = Rect::from_origin_size(origin, Size::ZERO);
     }
 
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
-
     fn name(&self) -> &'static str {
         "Rows"
     }

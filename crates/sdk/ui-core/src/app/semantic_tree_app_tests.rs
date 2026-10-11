@@ -418,16 +418,6 @@ impl Widget for CounterCard {
         let kid = self.button.build_layout(taffy, theme, node_map);
         taffy.widget_node(taffy::Style::default(), &[kid], node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.button]
     }

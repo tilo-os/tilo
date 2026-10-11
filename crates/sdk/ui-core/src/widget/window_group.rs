@@ -3191,16 +3191,6 @@ mod tests {
         ) -> NodeId {
             taffy.leaf_node(taffy::Style::default())
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _tr: &mut TextRenderer,
-            _th: &crate::theme::Theme,
-            _p: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Starting"
         }
@@ -3243,16 +3233,6 @@ mod tests {
             _m: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             taffy.leaf_node(taffy::Style::default())
-        }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _tr: &mut TextRenderer,
-            _th: &crate::theme::Theme,
-            _p: &PresenceCtx,
-        ) {
         }
         fn name(&self) -> &'static str {
             "Restructuring"
@@ -3486,16 +3466,6 @@ mod tests {
             _m: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             taffy.leaf_node(taffy::Style::default())
-        }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _tr: &mut TextRenderer,
-            _th: &crate::theme::Theme,
-            _p: &PresenceCtx,
-        ) {
         }
         fn name(&self) -> &'static str {
             "Latching"

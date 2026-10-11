@@ -172,16 +172,6 @@ impl Widget for AppearanceRoot {
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _tr: &mut TextRenderer,
-        _theme: &Theme,
-        _p: &crate::presence::PresenceCtx,
-    ) {
-    }
     fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
         Some(self.intent.clone())
     }
