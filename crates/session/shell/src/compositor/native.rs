@@ -8105,6 +8105,27 @@ fn idle_policy_for_backend(
     }
 }
 
+/// Derive the idle policy from the session's settings and hand it to the idle
+/// state machine and the power service, so a write to the settings store
+/// changes what the running session does. The profile is the one the power
+/// service last read, not a fresh ask: `powerprofilesctl` is a process start
+/// the frame thread would wait on.
+fn reapply_power_policy(
+    session: &mut SessionManager,
+    power_bridge: &tilo_power_mgmt::PowerBridge,
+    headless: bool,
+) -> tilo_power_mgmt::PowerPolicy {
+    let policy = idle_policy_for_backend(
+        tilo_power_mgmt::config::load_policy_for_profile(power_bridge.active_profile().as_deref()),
+        headless,
+    );
+    session.set_blank_timeout(policy.idle_blank);
+    session.set_lock_timeout(policy.idle_lock);
+    session.set_suspend_timeout(policy.idle_suspend);
+    power_bridge.update_policy(policy);
+    policy
+}
+
 #[cfg(test)]
 mod idle_policy_tests {
     use super::idle_policy_for_backend;
@@ -8132,6 +8153,127 @@ mod idle_policy_tests {
             (None, None, None)
         );
         assert_eq!(headless.lid_close_action, configured.lid_close_action);
+    }
+}
+
+#[cfg(test)]
+mod live_power_settings_tests {
+    use super::reapply_power_policy;
+    use crate::compositor::backend::drm::input_config::SettingsChange;
+    use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::search::action_api::{ActionArgs, ArgValue};
+    use crate::shell::search::providers::SystemSettingsProvider;
+    use crate::shell::search::{ResourceKind, SearchContext, SearchProvider as _, SearchResult};
+    use automerge::{AutoCommit, ROOT};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// The system-settings row `id`, as the palette and the control socket
+    /// list it.
+    fn row(chrome: &crate::shell::chrome_state::Chrome, id: &str) -> SearchResult {
+        let state = chrome.borrow();
+        SystemSettingsProvider::new()
+            .query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &AutoCommit::new(),
+                doc_root: &ROOT,
+            })
+            .into_iter()
+            .find(|row| row.id == id)
+            .unwrap_or_else(|| panic!("{id} is not offered"))
+    }
+
+    /// A write through the settings store reaches the running session: the
+    /// compositor learns of it from the live document, derives the idle
+    /// policy from that same document and the idle state machine stops
+    /// locking. Reading the `settings.json` copy instead lost this race,
+    /// because the session's source publishes a change before it has
+    /// rewritten the copy.
+    #[test]
+    #[serial_test::serial]
+    fn lock_after_never_stops_auto_lock_in_the_running_session() {
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let paths = settings_store::SessionPaths::configured().unwrap();
+        let session_settings = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
+        settings_store::install_source(Some(session_settings.host_view().unwrap()));
+        let live = settings_store::live::LiveSettings::start(|| {});
+        let mut follower = settings_store::live::SectionFollower::new(&live);
+        let bridge = tilo_power_mgmt::PowerBridge::new();
+        let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+        let t0 = Instant::now();
+        let fresh = || {
+            SessionManager::new(
+                IdleConfig::from_env_values(Some("0"), Some("300"), Some("0")),
+                t0,
+            )
+        };
+
+        // Phase `the_default_locks_after_five_minutes`.
+        {
+            let mut session = fresh();
+            reapply_power_policy(&mut session, &bridge, false);
+            assert!(
+                session
+                    .tick(t0 + Duration::from_secs(6 * 60))
+                    .contains(&SessionTransition::Locked)
+            );
+        }
+
+        // Phase `a_value_the_pane_does_not_offer_is_refused_before_anything_is_stored`.
+        {
+            let lock_after = row(&chrome, "power.lock-after.set");
+            assert!(
+                ActionArgs::bind(
+                    &lock_after.params,
+                    [("minutes".to_owned(), ArgValue::Integer(7))]
+                )
+                .is_err()
+            );
+            assert_eq!(settings_store::power::LOCK_MINUTES.get(), 5);
+        }
+
+        // Phase `setting_it_to_never_through_the_action_is_applied_live`.
+        {
+            let mut running = fresh();
+            let before = live.generation();
+            let lock_after = row(&chrome, "power.lock-after.set");
+            let args = ActionArgs::bind(
+                &lock_after.params,
+                [("minutes".to_owned(), ArgValue::Integer(0))],
+            )
+            .unwrap();
+            let mut doc = AutoCommit::new();
+            let mut edits = ui::widget::Edits::lend(&mut doc);
+            let invoke = lock_after.on_invoke.as_ref().expect("a typed receipt");
+            invoke(&mut edits, &ROOT, &chrome, &args).expect("the setting is stored");
+
+            let snapshot = live.wait_for_change(before, tilo_test_env::hang_bound());
+            assert_eq!(snapshot.section("power")["lock_minutes"], 0);
+            assert!(
+                SettingsChange::from(follower.changed_sections(&live)).power(),
+                "the write names the power section"
+            );
+            // What the compositor does on that edge.
+            reapply_power_policy(&mut running, &bridge, false);
+            assert!(
+                !running
+                    .tick(t0 + Duration::from_secs(24 * 60 * 60))
+                    .contains(&SessionTransition::Locked),
+                "never means the session does not lock on its own"
+            );
+            assert!(!running.is_locked());
+            assert_eq!(
+                running.request_lock(Instant::now()),
+                vec![SessionTransition::Locked],
+                "locking by hand still works"
+            );
+        }
+        settings_store::install_source(None);
     }
 }
 
@@ -10724,19 +10866,7 @@ pub fn run() {
             }
             input_steps.step("settings-appearance");
             if settings_change.power() {
-                // The profile the power service last read, not a fresh ask:
-                // `powerprofilesctl` is a process start this thread would wait on.
-                let policy = idle_policy_for_backend(
-                    tilo_power_mgmt::config::load_policy_for_profile(
-                        power_bridge.active_profile().as_deref(),
-                    ),
-                    headless,
-                );
-                power_policy = policy;
-                session.set_blank_timeout(policy.idle_blank);
-                session.set_lock_timeout(policy.idle_lock);
-                session.set_suspend_timeout(policy.idle_suspend);
-                power_bridge.update_policy(policy);
+                power_policy = reapply_power_policy(&mut session, &power_bridge, headless);
             }
             input_steps.step("settings-power");
             if settings_change.keyboard() {

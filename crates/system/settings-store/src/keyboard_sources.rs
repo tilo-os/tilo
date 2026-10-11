@@ -270,6 +270,49 @@ fn xorg_keyboard_sources(text: &str) -> Vec<String> {
     sources_from_names(&value("XkbLayout"), &value("XkbVariant"))
 }
 
+/// The active input source: `layout` or `layout:variant`, under the historic
+/// key older Settings builds and the compositor agree on.
+pub const LAYOUT: crate::Key<String> =
+    crate::Key::new(crate::hardware::INPUT_SECTION, "keyboard_layout", || {
+        "us".into()
+    });
+
+/// The ordered input sources the person switches between.
+pub const LAYOUTS: crate::Key<Vec<String>> =
+    crate::Key::new(crate::hardware::INPUT_SECTION, "keyboard_layouts", || {
+        vec!["us".into()]
+    });
+
+/// The shared sources with `wanted` active: a source already in the list is
+/// switched to; a new one joins the list first, under the same limits
+/// Settings applies ([`RichInputConfig::can_add_source`]).
+///
+/// # Errors
+///
+/// `wanted` is not an XKB layout (`layout` or `layout:variant`) or an
+/// input-method engine, or the list has no room for it.
+pub fn plan_active_source(
+    input: &RichInputConfig,
+    wanted: &str,
+) -> Result<RichInputConfig, String> {
+    let source = crate::hardware::InputSource::parse(wanted)
+        .ok_or_else(|| format!("{wanted:?} is not a keyboard layout (layout or layout:variant)"))?;
+    let id = source.id();
+    let mut next = effective(input, ALL);
+    if !next.keyboard_layouts.contains(&id) {
+        if !next.can_add_source(&id) {
+            return Err(format!(
+                "there is no room for another keyboard layout: {}",
+                next.keyboard_layouts.join(", ")
+            ));
+        }
+        next.keyboard_layouts.push(id.clone());
+    }
+    next.keyboard_layout = id;
+    next.normalise_sources();
+    Ok(next)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,5 +431,22 @@ EndSection
             device_key("keyboard", "", "usb1"),
             device_key("keyboard", "", "usb2")
         );
+    }
+
+    #[test]
+    fn choosing_a_source_switches_to_a_listed_one_and_adds_a_new_one() {
+        let input = RichInputConfig {
+            keyboard_layouts: vec!["us".into(), "de".into()],
+            keyboard_layout: "us".into(),
+            ..RichInputConfig::default()
+        };
+        let switched = plan_active_source(&input, "de").unwrap();
+        assert_eq!(switched.keyboard_layout, "de");
+        assert_eq!(switched.keyboard_layouts, vec!["us", "de"]);
+        let added = plan_active_source(&input, "fr:azerty").unwrap();
+        assert_eq!(added.keyboard_layout, "fr:azerty");
+        assert_eq!(added.keyboard_layouts, vec!["us", "de", "fr:azerty"]);
+        assert!(plan_active_source(&input, "../etc").is_err());
+        assert!(plan_active_source(&input, "").is_err());
     }
 }
