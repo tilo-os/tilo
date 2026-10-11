@@ -2228,6 +2228,7 @@ fn assert_first_frame_from_warmed_rest(
 /// place each encoded stream differs.
 #[cfg(target_os = "linux")]
 fn layers_apart(old: &FrameCache, new: &FrameCache) -> String {
+    use std::fmt::Write as _;
     fn first_apart<T: PartialEq>(a: &[T], b: &[T]) -> Option<usize> {
         a.iter()
             .zip(b)
@@ -2273,13 +2274,14 @@ fn layers_apart(old: &FrameCache, new: &FrameCache) -> String {
             .map(|wheel| (wheel.x, wheel.y, wheel.width, wheel.height)),
     );
     for (index, (a, b)) in old.layers.strips.iter().zip(&new.layers.strips).enumerate() {
-        text.push_str(&format!(
-            "strip {index}: {:?} -> {:?} same {}: {}\n",
+        let _ = writeln!(
+            text,
+            "strip {index}: {:?} -> {:?} same {}: {}",
             old.strips.get(index),
             new.strips.get(index),
             a.encoding_eq(b),
             streams(a, b)
-        ));
+        );
     }
     text
 }
