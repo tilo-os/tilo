@@ -119,7 +119,11 @@ pub trait Effect: Sized + 'static {
     /// The published action of every effect offered on the resource: all
     /// but the `row` ones, which are offered only [bound](Self::bound).
     fn specs() -> Vec<ActionSpec> {
-        offered_specs(Self::declarations(), Self::OPERATION)
+        kept_specs(
+            std::any::TypeId::of::<Self>(),
+            Self::OPERATION,
+            Self::declarations,
+        )
     }
 
     /// This effect with its arguments as one action that takes none: what a
@@ -242,6 +246,46 @@ fn encoder(
 }
 
 /// [`Effect::specs`] of the declarations `decls`.
+/// [`Effect::specs`] of the vocabulary `key`. They depend on its type alone
+/// and are published on every refresh of a view's actions, so each thread
+/// builds them once per generation of app code
+/// ([`reset_type_schemas`](crate::reset_type_schemas)) and hands out copies.
+fn kept_specs(
+    key: std::any::TypeId,
+    operation: &'static str,
+    declarations: fn() -> Vec<EffectDecl>,
+) -> Vec<ActionSpec> {
+    type Kept = (
+        u64,
+        std::collections::HashMap<std::any::TypeId, std::rc::Rc<[ActionSpec]>>,
+    );
+    thread_local! {
+        static KEPT: std::cell::RefCell<Kept> =
+            std::cell::RefCell::new((0, std::collections::HashMap::new()));
+    }
+    let epoch = crate::resource::type_epoch();
+    let found = KEPT.with(|kept| {
+        let kept = kept.borrow();
+        if kept.0 == epoch {
+            kept.1.get(&key).cloned()
+        } else {
+            None
+        }
+    });
+    let specs = found.unwrap_or_else(|| {
+        let built: std::rc::Rc<[ActionSpec]> = offered_specs(declarations(), operation).into();
+        KEPT.with(|kept| {
+            let mut kept = kept.borrow_mut();
+            if kept.0 != epoch {
+                *kept = (epoch, std::collections::HashMap::new());
+            }
+            kept.1.insert(key, std::rc::Rc::clone(&built));
+        });
+        built
+    });
+    specs.to_vec()
+}
+
 fn offered_specs(decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionSpec> {
     decls
         .into_iter()
