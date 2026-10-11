@@ -821,6 +821,17 @@ impl IdentitySource {
             Self::Explicit(principal) => principal.clone(),
         }
     }
+
+    /// [`Self::local_user_for_room`] for callers on the input and frame loop,
+    /// which ask on every key and frame: it never waits for the identity
+    /// directory after the first answer. Whoever records ownership asks
+    /// the exact one.
+    fn local_user_for_room_prompt(&self, room: &crate::shell::state::RoomId) -> String {
+        match self {
+            Self::SessionRegistry => crate::shell::state::local_user_id_for_room_prompt(room),
+            Self::Explicit(principal) => principal.clone(),
+        }
+    }
 }
 
 impl ChromeState {
@@ -1248,6 +1259,7 @@ impl ChromeState {
     }
 
     /// Cheap (~10 ns uncontended on `parking_lot::RwLock`).
+    #[track_caller]
     pub fn tree(&self) -> RwLockReadGuard<'_, WorkspaceTree> {
         self.tree_handle.read()
     }
@@ -1274,7 +1286,7 @@ impl ChromeState {
         &self,
         room: &crate::shell::state::RoomId,
     ) -> crate::shell::state::UserId {
-        self.identity_source.local_user_for_room(room)
+        self.identity_source.local_user_for_room_prompt(room)
     }
 
     /// Hand the workspaces made before this session had an identity to the
@@ -1405,6 +1417,7 @@ impl ChromeState {
     /// The guard drops at the end of the borrow scope, so concurrent
     /// readers (paint, portal lookup, peer-sync export) unblock as soon
     /// as the mutation lands.
+    #[track_caller]
     pub fn tree_mut(&self) -> crate::shell::state::WorkspaceTreeWriteGuard<'_> {
         self.tree_handle.write()
     }

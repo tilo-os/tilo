@@ -650,6 +650,19 @@ pub fn local_user_id_for_room(room: &RoomId) -> UserId {
         .unwrap_or_else(local_user_id)
 }
 
+/// [`local_user_id_for_room`] for the compositor's input and frame loop, which
+/// asks on every key and frame. After the first answer it never waits for the
+/// identity directory: a change another process made shows one refresh later.
+/// Code that records who owns something uses the exact function.
+pub fn local_user_id_for_room_prompt(room: &RoomId) -> UserId {
+    #[cfg(test)]
+    crate::shell::test_support::ambient_start("room identity");
+    crate::identity_registry::selected_principal_id_prompt(&room.to_string())
+        .ok()
+        .flatten()
+        .unwrap_or_else(local_user_id)
+}
+
 /// The name a session goes by before it says who is sitting at it.
 /// Derived from the Iroh peer handle, so it must match the fallback
 /// label [`crate::shell::peer_presence::fold_inbound`] gives an

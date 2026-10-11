@@ -252,6 +252,43 @@ impl DirStamp {
     }
 }
 
+/// What [`IdentityRegistryStore::load_reconciled_prompt`] answers from.
+#[derive(Clone)]
+struct PromptSnapshot {
+    dir: PathBuf,
+    stamp: Option<DirStamp>,
+    registry: std::sync::Arc<IdentityRegistry>,
+}
+
+/// One snapshot per identity directory.
+static PROMPT_SNAPSHOT: std::sync::Mutex<Vec<PromptSnapshot>> = std::sync::Mutex::new(Vec::new());
+/// The directories a background reconcile is running for.
+static PROMPT_REFRESHING: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Counts the registry saves, so a refresh that began before one does not
+/// replace what the writer's next query read.
+static PROMPT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn stop_refreshing(dir: &Path) {
+    if let Ok(mut running) = PROMPT_REFRESHING.lock() {
+        running.retain(|candidate| candidate != dir);
+    }
+}
+
+fn forget_prompt_snapshot(dir: &Path) {
+    PROMPT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    if let Ok(mut slots) = PROMPT_SNAPSHOT.lock() {
+        slots.retain(|held| held.dir != dir);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Reconciles run by this thread, so a test can tell a call that read the
+    /// disk itself from one that was answered from memory.
+    static RECONCILES_ON_THIS_THREAD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Disk owner for the registry.
 #[derive(Clone, Debug)]
 pub struct IdentityRegistryStore {
@@ -328,6 +365,9 @@ impl IdentityRegistryStore {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let written =
             tilo_files::native::atomic::write_with_mode(&self.registry_path, &bytes, 0o600);
+        // A change made here is read back by the writer's next query, not one
+        // refresh later.
+        forget_prompt_snapshot(&self.identity_dir);
         // The identity a workspace selected decides whose fleet admits.
         crate::policy_change::announce();
         written
@@ -357,6 +397,8 @@ impl IdentityRegistryStore {
     /// runtime's active record as its default, and whether that differs from
     /// the saved one. Reads only.
     fn reconcile(&self) -> io::Result<(IdentityRegistry, bool)> {
+        #[cfg(test)]
+        RECONCILES_ON_THIS_THREAD.with(|count| count.set(count.get() + 1));
         let mut registry = self.load()?;
         let mut changed = false;
         for summary in runtime_identity::list_identities(&self.identity_dir)? {
@@ -425,6 +467,87 @@ impl IdentityRegistryStore {
             *cache = Some((self.identity_dir.clone(), stamp, registry.clone()));
         }
         Ok(registry)
+    }
+
+    /// [`Self::load_reconciled_cached`] for a thread that must not wait on the
+    /// disk: the compositor's input and frame loop, which asks which identity
+    /// a room presents on every keystroke and frame.
+    ///
+    /// The registry the last reconcile produced is returned at once. When the
+    /// identity directory has changed since, or changed too recently to be
+    /// trusted ([`DirStamp::settled`]), one background thread reconciles it
+    /// again and the next call sees the result. Reconciling lists and parses
+    /// every identity record, which took hundreds of milliseconds on a busy
+    /// disk and held the loop for all of them. Only the first call, with
+    /// nothing to return yet, reads inline. A registry this process saves is
+    /// read back inline, so a writer never sees its own change late.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the first read fails.
+    pub fn load_reconciled_prompt(&self) -> io::Result<std::sync::Arc<IdentityRegistry>> {
+        let current = DirStamp::of(&self.identity_dir);
+        let held = PROMPT_SNAPSHOT.lock().ok().and_then(|slots| {
+            slots
+                .iter()
+                .find(|held| held.dir == self.identity_dir)
+                .cloned()
+        });
+        if let Some(held) = held {
+            if current != held.stamp || !current.is_some_and(DirStamp::settled) {
+                self.refresh_prompt_snapshot_in_background();
+            }
+            return Ok(held.registry);
+        }
+        let registry = std::sync::Arc::new(self.reconcile()?.0);
+        self.keep_prompt_snapshot(current, &registry);
+        Ok(registry)
+    }
+
+    fn keep_prompt_snapshot(
+        &self,
+        stamp: Option<DirStamp>,
+        registry: &std::sync::Arc<IdentityRegistry>,
+    ) {
+        if let Ok(mut slots) = PROMPT_SNAPSHOT.lock() {
+            slots.retain(|held| held.dir != self.identity_dir);
+            slots.push(PromptSnapshot {
+                dir: self.identity_dir.clone(),
+                stamp,
+                registry: std::sync::Arc::clone(registry),
+            });
+        }
+    }
+
+    /// Reconcile on a worker, one at a time.
+    fn refresh_prompt_snapshot_in_background(&self) {
+        use std::sync::atomic::Ordering;
+        let Ok(mut running) = PROMPT_REFRESHING.lock() else {
+            return;
+        };
+        if running.contains(&self.identity_dir) {
+            return;
+        }
+        running.push(self.identity_dir.clone());
+        drop(running);
+        let store = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("identity-refresh".to_owned())
+            .spawn(move || {
+                // The stamp read first: a write landing during the reconcile
+                // differs from it and is reconciled again.
+                let generation = PROMPT_GENERATION.load(Ordering::Acquire);
+                let stamp = DirStamp::of(&store.identity_dir);
+                if let Ok((registry, _)) = store.reconcile()
+                    && PROMPT_GENERATION.load(Ordering::Acquire) == generation
+                {
+                    store.keep_prompt_snapshot(stamp, &std::sync::Arc::new(registry));
+                }
+                stop_refreshing(&store.identity_dir);
+            });
+        if spawned.is_err() {
+            stop_refreshing(&self.identity_dir);
+        }
     }
 
     /// Import a new identity record and return its profile.
@@ -506,6 +629,22 @@ pub fn selected_identity_path(room: &str) -> io::Result<Option<PathBuf>> {
 pub fn selected_principal_id(room: &str) -> io::Result<Option<String>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;
+    Ok(registry
+        .selected_for_workspace(room)
+        .map(IdentityProfile::principal_id))
+}
+
+/// [`selected_principal_id`] for the compositor's input and frame loop: it
+/// never waits for the disk after the first call
+/// ([`IdentityRegistryStore::load_reconciled_prompt`]).
+///
+/// # Errors
+///
+/// Returns an error if the identity directory cannot be resolved or the first
+/// read fails.
+pub fn selected_principal_id_prompt(room: &str) -> io::Result<Option<String>> {
+    let store = IdentityRegistryStore::from_env()?;
+    let registry = store.load_reconciled_prompt()?;
     Ok(registry
         .selected_for_workspace(room)
         .map(IdentityProfile::principal_id))
@@ -619,6 +758,59 @@ mod tests {
     }
 
     #[test]
+    fn a_changed_identity_directory_is_reconciled_off_the_calling_thread() {
+        let dir = temp_dir("prompt");
+        write_record(&dir.join("alice.json"), &record("Alice", 31));
+        let store = IdentityRegistryStore::at(&dir);
+        let reconciles = || RECONCILES_ON_THIS_THREAD.with(std::cell::Cell::get);
+        let first = store.load_reconciled_prompt().expect("first read");
+        assert_eq!(reconciles(), 1, "the first call has nothing to return yet");
+        assert_eq!(first.identities.len(), 1);
+        // Another process adds an identity: the directory's stamp moves.
+        write_record(&dir.join("bob.json"), &record("Bob", 32));
+        let answered = store.load_reconciled_prompt().expect("stale read");
+        assert_eq!(
+            reconciles(),
+            1,
+            "the loop's thread never reads the disk again"
+        );
+        assert_eq!(answered.identities.len(), 1, "it answers from memory");
+        // The background reconcile lands; a later call sees both.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let now = store.load_reconciled_prompt().expect("read");
+            if now.identities.len() == 2 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the refresh never landed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(reconciles(), 1, "and still not on this thread");
+        // A registry this process saves is read back by its writer at once.
+        let mut registry = (*store.load_reconciled_prompt().expect("read")).clone();
+        let bob = registry
+            .identities
+            .values()
+            .find(|profile| profile.record_path.ends_with("bob.json"))
+            .expect("bob")
+            .id
+            .clone();
+        registry.bind_workspace("room-p", &bob).expect("bind");
+        store.save(&registry).expect("save");
+        let bound = store.load_reconciled_prompt().expect("after save");
+        assert_eq!(
+            bound
+                .selected_for_workspace("room-p")
+                .map(|profile| profile.id.as_str()),
+            Some(bob.as_str())
+        );
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
     fn identity_registry_migrates_selects_and_bounds_legacy_imports() {
         // Phase `migrates_legacy_primary_and_selects_it_by_default`.
         {
@@ -683,7 +875,7 @@ mod tests {
                 .bind_workspace("room-cycle", &alice.id)
                 .expect("bind alice");
 
-            let mut registry = store.load().expect("load");
+            let mut registry = (*store.load_reconciled_prompt().expect("read")).clone();
             let ids: Vec<_> = registry.identities.keys().cloned().collect();
             let current = registry
                 .selected_for_workspace("room-cycle")
