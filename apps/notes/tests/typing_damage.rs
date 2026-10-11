@@ -374,6 +374,27 @@ fn let_the_save_land(app: &mut App, host: &mut Host) {
     panic!("the note's record never finished saving");
 }
 
+/// Let the window come to rest with no input: the save bubble shown for the
+/// last save fades away, so what a test measures next is its own change.
+fn let_it_rest(app: &mut App, host: &mut Host) {
+    let mut quiet = 0;
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        host.presented.clear();
+        host.frame(app);
+        let still = host
+            .presented
+            .iter()
+            .all(|(_, damage)| damage.as_ref().is_ok_and(Vec::is_empty));
+        quiet = if still { quiet + 1 } else { 0 };
+        if quiet >= 8 {
+            host.presented.clear();
+            return;
+        }
+    }
+    panic!("the window never came to rest");
+}
+
 fn character(text: &str) -> Key {
     Key::Character(text.into())
 }
@@ -822,6 +843,10 @@ fn renaming_a_note_damages_its_row_not_the_page_tree() {
             host.frames(app, 3);
             host.key(app, &Key::Named(NamedKey::F2));
             host.frames(app, 3);
+            // A rename keystroke changes no record: nothing but the field
+            // should repaint, so the bubble the title's save showed goes
+            // first.
+            let_it_rest(app, &mut host);
             let mut field: f64 = 0.0;
             // The field opens with the caret after the name.
             for letter in [" ", "v", "2"] {
