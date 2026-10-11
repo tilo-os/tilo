@@ -439,7 +439,8 @@ class Rechunk(unittest.TestCase):
                      "usr/lib/tilo-runtime/2026.10.9-chromium/lib/libcef.so",
                      "usr/share/fonts/dejavu/DejaVuSans.ttf", "usr/share/tilo/catalog.toml",
                      "usr/share/tilo/app-publisher.hex", "usr/lib/tilo/windows-runners/proton/wine",
-                     "usr/lib/tilo/helper", "usr/bin/shell", "usr/bin/tilo-greeter", "usr/bin/bash", "usr/bin/fsck",
+                     "usr/lib/tilo/helper", "usr/bin/shell", "usr/bin/tilo", "usr/bin/tilo-greeter",
+                     "usr/bin/bash", "usr/bin/fsck",
                      "usr/libexec/tilo-ush", "usr/libexec/tilo/session", "usr/libexec/sssd/krb5_child",
                      "boot/EFI/Linux/7.2.8.efi", "etc/hostname"):
             (rootfs / path).write_text(path)
@@ -476,7 +477,7 @@ class Rechunk(unittest.TestCase):
         # The main run keeps the RPMs' files and leaves every tree to its own run.
         self.assertEqual(main, (96, {
             "/sysroot/", f"/{native}/", "/usr/share/fonts/tilo/", "/usr/lib/tilo-runtime/2026.10.9-chromium/",
-            "/boot/EFI/Linux/", "/usr/bin/shell", "/usr/bin/tilo-control", "/usr/bin/tilo-greeter",
+            "/boot/EFI/Linux/", "/usr/bin/shell", "/usr/bin/tilo", "/usr/bin/tilo-control", "/usr/bin/tilo-greeter",
             "/usr/libexec/tilo/", "/usr/libexec/tilo-ush", "/usr/lib/tilo/", "/usr/share/tilo/"}))
         # Proton, inside the tilo tree's /usr/lib/tilo, is its own.
         self.assertEqual(windows[0], 16)
