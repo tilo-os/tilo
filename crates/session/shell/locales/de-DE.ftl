@@ -2529,3 +2529,11 @@ device-fabric-error-input-decline-save-failed = Die Eingabesteuerung wurde wider
 device-fabric-error-input-sequence-exhausted = Die Eingabesequenz ist ausgeschöpft. Fordere eine neue Steuerungsberechtigung an.
 
 device-fabric-error-input-cleanup-pending = Vorherige Eingaben werden noch freigegeben. Versuche es erneut.
+
+activity-morning-choose = Für den Morgen auswählen
+activity-morning-remove = Morgenquelle entfernen
+activity-morning-empty = Morgenquellen: Ressource unter Erkunden → Details auswählen. Bis zu acht Quellen; keine automatische Verbindung.
+activity-morning-description = Ausgewählte Morgenquellen · bestehende Ressourcen dieses Arbeitsbereichs. Keine externe Aktualisierung.
+activity-morning-unavailable = Quelle in diesem Arbeitsbereich nicht verfügbar · keine aktuellen Nachweise
+activity-morning-source = { $source } · letzte aufgezeichnete Aktivität: { $time } · externe Aktualität unbekannt
+activity-morning-open = Morgenquelle öffnen
