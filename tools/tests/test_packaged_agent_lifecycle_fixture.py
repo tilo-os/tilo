@@ -417,6 +417,83 @@ class CoherentAgentCatalogueTests(unittest.TestCase):
 
 class PermissionSnapshotTests(unittest.TestCase):
     @staticmethod
+    def directory_row(identifier, *, complete=False):
+        return {"provider": "live-app-actions", "id": identifier,
+                **{key: ("PRIVATE-CANARY" if complete else None) for key in (
+                    "application", "room", "record", "resource", "operation")},
+                "semantic_identity": None}
+
+    def test_existing_catalogue_ids_discriminate_read_without_extra_calls_or_private_output(self):
+        directory = "\u001f".join(("directory", "+7", "PRIVATE-REVISION", "so.tilo.chat",
+                                 "read", "PRIVATE-RESOURCE", "open-agent-conversation"))
+        legacy = "\u001f".join(("so.tilo.chat", "read", "PRIVATE-CLUSTER", "PRIVATE-RECORD",
+                              "PRIVATE-RESOURCE", "open-agent-conversation"))
+        rows = [self.directory_row(directory), self.directory_row(directory, complete=True),
+                self.directory_row(directory.replace("so.tilo.chat", "so.tilo.other")),
+                self.directory_row(directory.replace("\u001fread\u001f", "\u001fwrite\u001f")),
+                self.directory_row(legacy)]
+        observation = {}
+        with patch.object(PROOF, "call", return_value=self.page(rows)) as observe:
+            self.assertEqual(PROOF.permission_offer_pair(
+                "socket", "room", "record", observation=observation), (None, None))
+            self.assertEqual(observe.call_count, 1)
+        self.assertTrue(observation["catalogue_ids_observable"])
+        self.assertEqual(observation["directory_read_ids"], 3)
+        self.assertEqual(observation["directory_chat_open_ids"], 2)
+        self.assertEqual(observation["directory_read_hierarchy_complete"], 1)
+        self.assertEqual(observation["directory_read_hierarchy_null"], 2)
+        self.assertEqual(observation["legacy_read_ids"], 1)
+        self.assertEqual(observation["legacy_chat_open_ids"], 1)
+        self.assertNotIn("PRIVATE", json.dumps(observation))
+        self.assertNotIn("\u001f", json.dumps(observation))
+
+    def test_malformed_live_catalogue_ids_are_unobservable_not_inferred_reads(self):
+        good = ["directory", "7", "revision", "so.tilo.chat", "read", "resource", "open-agent-conversation"]
+        malformed = [good[:-1], good + ["extra"], [*good[:1], "-1", *good[2:]],
+                     [*good[:1], str(2**64), *good[2:]], [*good[:1], "７", *good[2:]],
+                     [*good[:2], "", *good[3:]], [*good[:4], "Read", *good[5:]],
+                     [*good[:5], "", good[6]], [*good[:6], ""]]
+        for parts in malformed:
+            with self.subTest(parts=parts):
+                observation = {}
+                PROOF.observe_permission_catalogue_ids([self.directory_row("\u001f".join(parts))], observation)
+                self.assertFalse(observation["catalogue_ids_observable"])
+                self.assertEqual(observation["catalogue_id_unobservable"], 1)
+                self.assertEqual(observation.get("directory_read_ids", 0), 0)
+        observation = {}
+        PROOF.observe_permission_catalogue_ids([
+            {"provider": "other", "id": "PRIVATE-OPAQUE"},
+            self.directory_row("\u001f".join(("service", "", "revision", "so.tilo.chat",
+                                            "read", "resource", "open-agent-conversation")))], observation)
+        self.assertTrue(observation["catalogue_ids_observable"])
+        self.assertEqual(observation.get("directory_read_ids", 0), 0)
+        self.assertEqual(observation.get("legacy_read_ids", 0), 0)
+        observation = {}
+        PROOF.observe_permission_catalogue_ids([
+            self.directory_row("\u001f".join(["directory", "0" * 5000 + "7", *good[2:]]))], observation)
+        self.assertTrue(observation["catalogue_ids_observable"])
+        self.assertEqual(observation["directory_read_ids"], 1)
+
+    def test_catalogue_id_diagnostics_persist_only_closed_counts_and_observability(self):
+        identifier = "\u001f".join(("directory", "7", "PRIVATE-REVISION", "so.tilo.chat",
+                                  "read", "PRIVATE-RESOURCE", "open-agent-conversation"))
+        with tempfile.TemporaryDirectory() as directory:
+            state = PROOF.permission_phase_observation(pathlib.Path(directory), "chat", 100)
+            with PROOF.permission_phase_sample(state) as sample:
+                PROOF.observe_permission_catalogue_ids([
+                    self.directory_row(identifier), self.directory_row("PRIVATE-MALFORMED")], sample)
+            serialized = state["path"].read_text()
+            public = json.loads(serialized)
+        self.assertFalse(public["private_content_recorded"])
+        self.assertFalse(public["samples"][0]["catalogue_ids_observable"])
+        self.assertEqual(public["samples"][0]["directory_chat_open_ids"], 1)
+        self.assertEqual(public["totals"]["catalogue_id_unobservable"], 1)
+        self.assertNotIn("PRIVATE", serialized)
+        self.assertNotIn("open-agent-conversation", serialized)
+        self.assertNotIn("so.tilo.chat", serialized)
+        self.assertNotIn("\\u001f", serialized)
+
+    @staticmethod
     def page(rows, *, revision="authority", total=None, cursor=None, **extra):
         return {"answer": {"actions": rows, "count": len(rows),
                            "total": len(rows) if total is None else total,
@@ -3001,6 +3078,33 @@ class PresentedEditorTargetTests(unittest.TestCase):
         receipt = source.index('"return-editor-continuity.json"')
         strict = source.index("if attached != before_return_editor:", receipt)
         refusal = source.index('"Return changed private editor content, caret, selection or keyboard focus"', strict)
+        self.assertLess(receipt, strict)
+        self.assertLess(strict, refusal)
+
+    def test_pointer_float_editor_continuity_is_boolean_only_before_unchanged_assertion(self):
+        before = {"draft_matches": True, "caret": 987654, "selection": [987653, 987654],
+                  "accessibility_focused": True, "private_content": "PRIVATE-CANARY"}
+        detached = {**before, "caret": 987653, "accessibility_focused": False}
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            PROOF.write_pointer_float_editor_continuity(output, before, detached)
+            serialized = (output / "pointer-float-editor-continuity.json").read_text()
+            observed = json.loads(serialized)
+        self.assertEqual(observed, {**PROOF.closed_editor_continuity(before, detached),
+                                    "private_content_recorded": False})
+        self.assertTrue(all(type(value) is bool for value in observed.values()))
+        self.assertFalse(observed["caret_equal"])
+        self.assertFalse(observed["accessibility_focus_equal"])
+        self.assertNotIn("PRIVATE", serialized)
+        self.assertNotIn("98765", serialized)
+        with patch.object(pathlib.Path, "write_text", side_effect=OSError("PRIVATE-CANARY")):
+            PROOF.write_pointer_float_editor_continuity(pathlib.Path("unused"), before, detached)
+        source = inspect.getsource(PROOF.native_float_return)
+        observation = source.index("detached = private_editor_observation(access, draft)")
+        receipt = source.index("write_pointer_float_editor_continuity(output, before, detached)", observation)
+        strict = source.index("if detached != before:", receipt)
+        refusal = source.index('"Float changed private editor content, caret, selection or keyboard focus"', strict)
+        self.assertLess(observation, receipt)
         self.assertLess(receipt, strict)
         self.assertLess(strict, refusal)
 

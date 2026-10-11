@@ -61,6 +61,9 @@ PERMISSION_OBSERVATION_COUNTS = (
     "read_candidates", "read_exact_matches", "read_semantic_matches", "read_provider_matches",
     "read_operation_global", "read_same_app_room", "read_same_app_room_semantic",
     "queue_other_controls", "queue_enabled_controls", "queue_action_controls",
+    "directory_read_ids", "directory_chat_open_ids", "directory_read_hierarchy_complete",
+    "directory_read_hierarchy_null", "legacy_read_ids", "legacy_chat_open_ids",
+    "catalogue_id_unobservable",
 )
 PERMISSION_OBSERVATION_FIELDS = PERMISSION_OBSERVATION_COUNTS + (
     "assignment_unexpired_start", "assignment_unexpired_after_catalogue", "assignment_unexpired_after_at",
@@ -70,6 +73,7 @@ PERMISSION_OBSERVATION_FIELDS = PERMISSION_OBSERVATION_COUNTS + (
     "read_unique_semantic_record_matches",
     "at_unknown_object", "at_unknown_interface", "at_known_stale_transport",
     "at_other_transport_failure",
+    "catalogue_ids_observable",
 )
 PERMISSION_WINDOW_COUNTS = (
     "heading_count", "notice_count", "retained_count", "send_message_count",
@@ -1636,6 +1640,16 @@ def closed_editor_continuity(before, after):
     }
 
 
+def write_pointer_float_editor_continuity(output, before, detached):
+    """Observe the existing strict comparison without exporting private editor state."""
+    public = {**closed_editor_continuity(before, detached), "private_content_recorded": False}
+    try:
+        (output / "pointer-float-editor-continuity.json").write_text(json.dumps(public, indent=2) + "\n")
+    except OSError:
+        # Diagnostic I/O cannot replace the unchanged acceptance or refusal.
+        pass
+
+
 def _private_editor_observation(access, expected):
     """Compare a test-owned draft locally; export neither its value nor hash."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
@@ -3168,6 +3182,7 @@ def native_float_return(socket, room, record, output, size, process):
         raise
     access = wait_for("detached Tide editor", lambda: agent_conversation_accessibility("Tide", detached=True), process)
     detached = private_editor_observation(access, draft)
+    write_pointer_float_editor_continuity(output, before, detached)
     if detached != before:
         raise RuntimeError("Float changed private editor content, caret, selection or keyboard focus")
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"after-float-{size}.png")}))
@@ -4927,12 +4942,60 @@ def native_chat_semantic_publication(socket, room):
     return [{key: row.get(key) for key in fields} for row in rows]
 
 
+def observe_permission_catalogue_ids(rows, observation):
+    """Discriminate existing live IDs using the production capability_target grammar."""
+    if observation is None:
+        return
+    observation["catalogue_ids_observable"] = True
+    permissions = {"none", "read", "comment", "write", "invite", "admin"}
+    hierarchy = ("application", "room", "record", "resource", "operation")
+    for row in rows:
+        if row.get("provider") != "live-app-actions":
+            continue
+        identifier = row.get("id")
+        parts = identifier.split("\u001f") if isinstance(identifier, str) else []
+        kind = parts[0] if parts else None
+        valid = False
+        if kind in ("directory", "service"):
+            if len(parts) == 7:
+                _, owner, revision, app, permission, resource, action = parts
+                valid = bool(revision and app and resource and action) and permission in permissions
+                if kind == "directory":
+                    # Rust u64::from_str accepts ASCII digits and an optional leading '+'.
+                    digits = owner.removeprefix("+").lstrip("0") or "0"
+                    valid = (valid and re.fullmatch(r"\+?[0-9]+", owner) is not None
+                             and len(digits) <= 20 and int(digits) <= 2**64 - 1)
+        elif len(parts) == 6:
+            app, permission, _cluster, _record, resource, action = parts
+            valid = permission in permissions
+        if not valid:
+            observation["catalogue_ids_observable"] = False
+            permission_count(observation, "catalogue_id_unobservable")
+            continue
+        if permission != "read" or kind == "service":
+            continue
+        prefix = "directory" if kind == "directory" else "legacy"
+        permission_count(observation, f"{prefix}_read_ids")
+        if app == "so.tilo.chat" and action == "open-agent-conversation":
+            permission_count(observation, f"{prefix}_chat_open_ids")
+        if kind == "directory":
+            values = [row.get(field) for field in hierarchy]
+            if all(isinstance(value, str) and value for value in values):
+                permission_count(observation, "directory_read_hierarchy_complete")
+            elif all(value is None for value in values) and all(field in row for field in hierarchy):
+                permission_count(observation, "directory_read_hierarchy_null")
+            else:
+                observation["catalogue_ids_observable"] = False
+                permission_count(observation, "catalogue_id_unobservable")
+
+
 def permission_offer_pair(socket, room, record, *, observation=None, require_message_read=False):
     """Observe Message and Queue from the same settled authority revision."""
     rows = (permission_actions_snapshot(socket) if observation is None else
             permission_actions_snapshot(socket, observation=observation))
     if rows is None:
         return None
+    observe_permission_catalogue_ids(rows, observation)
     messages = [row for row in rows if row.get("application") == "so.tilo.chat"
                 and row.get("room") == room and row.get("record") == record
                 and row.get("semantic_identity") == {"kind": "chat.agent", "key": "chat.person:tide"}
