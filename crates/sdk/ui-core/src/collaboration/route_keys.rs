@@ -194,6 +194,10 @@ impl RouteKeys {
         };
         match sealed {
             Ok((metadata, ciphertext)) => Sealed::Ready(ciphertext, Some(metadata)),
+            // The epoch's key has not reached this device (yet), or a commit
+            // is being processed: waiting fixes it, so the edit is held and
+            // sent once keys arrive rather than failing the whole channel.
+            Err(channel_crypto::Error::MissingContentKey(_)) => Sealed::Hold,
             Err(error) => Sealed::Refused(format!("content encryption failed: {error}")),
         }
     }

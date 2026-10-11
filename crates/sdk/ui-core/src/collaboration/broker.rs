@@ -5186,10 +5186,10 @@ async fn try_send_frame(
         match prepare_document_payload(&route.encryption, artifact, cleartext) {
             PreparedFrame::Ready(payload, metadata) => (payload, metadata),
             PreparedFrame::Held => return FrameSend::Held,
-            PreparedFrame::Failed => {
+            PreparedFrame::Failed(reason) => {
                 return FrameSend::Failed(state.publication_failed(
                     "document encryption",
-                    "payload unavailable",
+                    reason,
                     true,
                 ));
             }
@@ -5332,8 +5332,7 @@ fn prepare_document_payload(
     cleartext: Vec<u8>,
 ) -> PreparedFrame {
     let Ok(mut keys) = encryption.lock() else {
-        tracing::warn!("collab: route key state lock poisoned; dropping mutation");
-        return PreparedFrame::Failed;
+        return PreparedFrame::Failed("route key state lock poisoned".into());
     };
     let retention = document_frame_retention(&cleartext);
     match keys.seal(artifact, retention, cleartext.clone()) {
@@ -5344,21 +5343,19 @@ fn prepare_document_payload(
             if keys.hold_outbound(cleartext) {
                 PreparedFrame::Held
             } else {
-                tracing::warn!("collab: too many edits waiting for channel access; dropping");
-                PreparedFrame::Failed
+                PreparedFrame::Failed("too many edits waiting for channel access".into())
             }
         }
-        super::route_keys::Sealed::Refused(reason) => {
-            tracing::warn!(%reason, "collab: dropping mutation");
-            PreparedFrame::Failed
-        }
+        super::route_keys::Sealed::Refused(reason) => PreparedFrame::Failed(reason),
     }
 }
 
 enum PreparedFrame {
     Ready(Vec<u8>, Option<collab_types::EncryptionMetadata>),
     Held,
-    Failed,
+    /// Why the frame can neither be sent nor held. Carried into the logged
+    /// failure: the reason is what tells an operator what to fix.
+    Failed(String),
 }
 
 /// How one frame's send ended.
@@ -8525,6 +8522,47 @@ mod tests {
         assert_eq!(second.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
         assert_eq!(captures.lock().unwrap().signed_ops.len(), 2);
         assert!(manager.is_connected());
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    /// A burst of edits many times the outbound queue must be absorbed by
+    /// backpressure: the app is told `Busy` and retries, the channel stays
+    /// up, and every edit reaches the broker exactly once, in order.
+    #[test]
+    fn a_flood_of_edits_is_backpressured_not_fatal() {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, thread) = stand_up_fake_broker(broker);
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
+        let total = SDK_COMMAND_QUEUE * 3;
+        let mut busy = 0usize;
+        for n in 0..total {
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                match manager.try_send(CollabRequest::document_incremental(
+                    format!("edit-{n}").into_bytes(),
+                )) {
+                    Ok(()) => break,
+                    Err(crate::collaboration::CollabSendError::Busy) => {
+                        busy += 1;
+                        assert!(Instant::now() < deadline, "backpressure never cleared");
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(other) => panic!("edit {n} was refused for good: {other}"),
+                }
+            }
+        }
+        let barrier = manager.begin_document_publication_barrier().unwrap();
+        assert_eq!(barrier.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
+        assert!(manager.is_connected(), "a burst must not disable collaboration (busy {busy}x)");
+        assert_eq!(captures.lock().unwrap().signed_ops.len(), total);
+        assert!(manager.send(CollabRequest::document_incremental(b"after".to_vec())));
         drop(manager);
         thread.join().unwrap();
     }
