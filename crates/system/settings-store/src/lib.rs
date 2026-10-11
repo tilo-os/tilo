@@ -51,6 +51,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+pub mod accessibility;
 pub mod app_scope;
 pub mod appearance;
 pub mod continuity;
@@ -74,7 +75,6 @@ pub mod notification_policy;
 pub mod person_displays;
 pub mod personal_dictionary;
 pub mod roaming_provenance;
-pub mod screen_reader;
 mod section_digest;
 mod session;
 mod source;

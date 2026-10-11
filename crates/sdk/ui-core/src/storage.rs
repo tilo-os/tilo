@@ -150,6 +150,11 @@ pub trait SettingsSchema: Serialize + DeserializeOwned + Default + 'static {
     const SCOPE: Scope;
 }
 
+/// The person's assists, shared with the compositor and the shell.
+impl SettingsSchema for settings_store::accessibility::AccessibilitySettings {
+    const SCOPE: Scope = Scope::Shared(settings_store::accessibility::SECTION);
+}
+
 /// Which settings document a host gives its apps.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum SettingsDocument {
