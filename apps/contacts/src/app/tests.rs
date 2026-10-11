@@ -2029,10 +2029,21 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
             assert!(toast(&app).is_some(), "deleting a contact raises a toast");
 
             let deadline = app
+                .shell
+                .children()
+                .last()
+                .expect("the showing notice is the shell's final owned child")
+                .next_wake_deadline()
+                .expect("the production notice exposes its expiry deadline");
+            let host_deadline = app
                 .harness_mut()
                 .frame_schedule()
                 .next_wake_deadline
                 .expect("the real host schedules the notice's dismissal without input");
+            assert!(
+                host_deadline <= deadline,
+                "the host must wake no later than its owned notice's expiry"
+            );
             assert!(deadline > shown, "a fresh notice has its full lifetime");
             app.harness_mut().relayout();
             assert!(
