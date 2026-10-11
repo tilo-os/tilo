@@ -1763,7 +1763,6 @@ net-profiles-error = Can't read saved networks: { $error }
 net-sims-error = Can't read SIM cards: { $error }
 upd-status-error = Can't check for updates: { $error }
 upd-rollback-error = Can't read the previous system image: { $error }
-time-clock-error = Can't read the clock: { $error }
 time-status-error = Can't read time settings: { $error }
 time-zones-error = Can't list time zones: { $error }
 time-zone-unread = Current time zone unknown

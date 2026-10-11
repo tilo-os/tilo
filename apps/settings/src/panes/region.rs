@@ -25,9 +25,8 @@ use crate::i18n::t;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{caption, card, rows};
-use tilo_locale::{
-    Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle, TimeStyle,
-};
+use tilo_locale::{Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle};
+use ui::clock::TimeStyle;
 
 fn date_label(style: DateStyle) -> String {
     t(match style {
