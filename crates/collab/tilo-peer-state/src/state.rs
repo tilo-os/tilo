@@ -27,6 +27,8 @@ pub use bounded::{
 #[cfg(test)]
 pub(crate) mod json_resource_tests;
 use backend::{LegacyNative, PeerCore, PeerDocument};
+mod agent_members;
+pub use agent_members::GovernedAgent;
 mod local_admission;
 mod local_outbox;
 mod owner_membership;
@@ -313,17 +315,12 @@ impl StatePeer {
     ///
     /// Returns an error if `key` is not the governance writer, the certificate is invalid,
     /// revoked or conflicts with a recorded one, or governance cannot be updated.
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "public API: callers hand over the certificate"
-    )]
     pub fn admit_certificate(
         &mut self,
         cert: DeviceCert,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        use automerge::ReadDoc;
         if key.verifying_key().to_bytes() != self.core.authority.device_public_key {
             return Err("governance writer is not pinned authority".into());
         }
@@ -340,20 +337,12 @@ impl StatePeer {
         {
             return Err("certificate conflict".into());
         }
-        let mut doc = self
+        let doc = self
             .core
             .room_doc
             .clone()
             .ok_or("room governance missing")?;
-        let identity = GovernedIdentity {
-            device_cert: cert.clone(),
-            revocations: vec![],
-            admission: None,
-            admissions: vec![],
-            workspace_delegations: vec![],
-        };
         let id = hex::encode(cert.device_public_key);
-        let encoded = serde_json::to_vec(&identity).map_err(err)?;
         if room::governance_of(Some(&doc))
             .identities
             .get(&id)
@@ -362,6 +351,28 @@ impl StatePeer {
         {
             return Ok(false);
         }
+        let identity = GovernedIdentity {
+            device_cert: cert,
+            revocations: vec![],
+            admission: None,
+            admissions: vec![],
+            workspace_delegations: vec![],
+            agent: None,
+        };
+        self.put_identity(doc, &identity, key, now)
+    }
+    /// Write `identity`'s governed row and roster name into `doc`, this
+    /// room's governance, as the pinned authority `key`, and take the change
+    /// in as every member will.
+    fn put_identity(
+        &mut self,
+        mut doc: CachedDocument,
+        identity: &GovernedIdentity,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let id = hex::encode(identity.device_cert.device_public_key);
+        let encoded = serde_json::to_vec(identity).map_err(err)?;
         let identities = doc
             .get(ROOT, "peer_identities_v1")
             .map_err(err)?
@@ -377,7 +388,7 @@ impl StatePeer {
         ));
         doc.put(&identities, &id, automerge::ScalarValue::Bytes(encoded))
             .map_err(err)?;
-        doc.put(&names, &id, cert.device_label.as_str())
+        doc.put(&names, &id, identity.device_cert.device_label.as_str())
             .map_err(err)?;
         doc.commit();
         room::media::refresh_authorization(
@@ -802,6 +813,10 @@ impl StatePeer {
         let mut member_user_roots = Vec::new();
         for bytes in policy.identities.values() {
             let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+            // An agent outside its delegation reads and writes nothing.
+            if identity.agent_acting(&self.core.room, now_ns(now)).is_err() {
+                continue;
+            }
             let cert = identity.device_cert;
             if tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).is_err()
                 || self.core.revocations.is_revoked(&cert.device_public_key)
@@ -3366,6 +3381,10 @@ pub(crate) struct GovernedIdentity {
     pub(crate) admissions: Vec<RedemptionReceipt>,
     #[serde(default)]
     pub(crate) workspace_delegations: Vec<crate::join::WorkspaceDelegation>,
+    /// Set when the device is a delegated agent of its person
+    /// ([`agent_members`]). Absent from every other identity's bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) agent: Option<agent_members::GovernedAgentRow>,
 }
 impl GovernedIdentity {
     pub(crate) fn has_admission(&self) -> bool {
@@ -3500,6 +3519,7 @@ pub fn seed_room(
             admission: None,
             admissions: vec![],
             workspace_delegations: vec![],
+            agent: None,
         };
         doc.put(
             &identities,
