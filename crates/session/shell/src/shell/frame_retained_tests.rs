@@ -2143,9 +2143,10 @@ fn warm_at_rest(
 }
 
 /// Pan the strip a step and back and let it come to rest, as a session's
-/// desktop has once it panned: the windows' layout springs in this fixture
-/// advance only while the strip scrolls, so before a first pan the strips'
-/// drawing still changes in the pan's first frame whatever the layers hold.
+/// desktop has once it panned. Before its first pan this fixture's strip
+/// draws a window otherwise in the pan's first frame than at rest (one
+/// transform of the strip's encoding moves), whatever the layers hold;
+/// after a pan and a rest it does not.
 #[cfg(target_os = "linux")]
 fn settle_by_panning_once(frame: &mut FrameBuilder) {
     frame.host_mut().update_active_strip_pan(0.0, true);
@@ -2155,10 +2156,24 @@ fn settle_by_panning_once(frame: &mut FrameBuilder) {
         let _ = frame.paint_with_damage();
     }
     frame.host_mut().end_active_strip_pan(Instant::now());
-    for _ in 0..12 {
+    // The pan's end animates; rest is two frames in a row that change
+    // nothing, with nothing animating.
+    let mut quiet = 0;
+    for _ in 0..400 {
         frame.relayout();
-        let _ = frame.paint_with_damage();
+        let painted = frame.paint_with_damage();
+        let unchanged = painted.damage_regions.as_ref().is_some_and(Vec::is_empty);
+        quiet = if unchanged && !frame.needs_animation_frame() {
+            quiet + 1
+        } else {
+            0
+        };
+        if quiet >= 2 {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    panic!("the desktop did not come to rest after a pan");
 }
 
 /// The first frame of a pan from a rest whose layers were warmed (as
