@@ -28,6 +28,10 @@ read_cpu_metric() {
   fi
 }
 cpu_stat_before=$(read_cpu_metric cpu.stat)
+pressure_before=()
+for resource in cpu memory io; do
+  pressure_before+=("$(read_cpu_metric "$resource.pressure")")
+done
 
 status=0
 if command -v /usr/bin/time >/dev/null 2>&1; then
@@ -48,6 +52,12 @@ done
 printf 'cgroup_cpu_stat_before=%s\n' "$cpu_stat_before" >> "$timing"
 cpu_stat_after=$(read_cpu_metric cpu.stat)
 printf 'cgroup_cpu_stat_after=%s\n' "$cpu_stat_after" >> "$timing"
+index=0
+for resource in cpu memory io; do
+  printf 'cgroup_%s_pressure_before=%s\n' "$resource" "${pressure_before[$index]}" >> "$timing"
+  printf 'cgroup_%s_pressure_after=%s\n' "$resource" "$(read_cpu_metric "$resource.pressure")" >> "$timing"
+  index=$((index + 1))
+done
 
 # The container's peak memory so far, success or not: the headroom job
 # parallelism is tuned against.

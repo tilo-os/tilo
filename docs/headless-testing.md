@@ -561,6 +561,28 @@ counts only voluntary switches, one per wakeup. Both gates in
 together with a CPU bound that catches a thread spinning without blocking
 (TIL-749, TIL-752).
 
+## Idle memory
+
+An idle desktop should hold little memory. `idle_memory::` in the shell's `it`
+target starts the production binary headless with a signed-in, empty desktop,
+watched so frames rasterise, waits past the trim that returns startup's freed
+heap (`heap_trim::STARTUP_SETTLED`), and fails when the compositor's anonymous
+RSS is above `IDLE_ANON_BUDGET_MIB`.
+
+```bash
+cargo test --locked -p shell --test it idle_memory:: -- --nocapture
+```
+
+It prints two breakdowns. The compositor's own, `raw '{"op":"process_memory"}'`
+on the control socket, sums `mincore` over `/proc/self/maps` per kind of
+mapping (`heap_main`, `heap_arenas`, `thread_stacks`, `anon_other`,
+`gpu_memfd` for lavapipe's device memory, `fonts`, `binary`, `libraries`, …),
+with glibc's in-use and free bytes and the threads by name. It is the one that
+works on Tilo's kernel, which has no smaps (`CONFIG_PROC_PAGE_MONITOR=n`), so
+vm-acceptance R01 records the same report (`memory.shell_parts_mib.*`). The
+test then reads `/proc/<pid>/smaps` beside it for RSS, PSS and private dirty
+pages per mapping, which CI's kernel has.
+
 ## Where to look in source
 
 | What | Where |

@@ -230,9 +230,17 @@ fn props_obj(doc: &AutoCommit, c: &SheetContainers) -> Option<ObjId> {
 
 /// All document properties (`name → value`) as a sorted map.
 pub fn doc_props(doc: &AutoCommit, c: &SheetContainers) -> BTreeMap<String, String> {
-    props_obj(doc, c).map_or_else(BTreeMap::new, |props| {
-        crate::model::string_entries(doc, &props)
-    })
+    let mut out = BTreeMap::new();
+    if let Some(props) = props_obj(doc, c) {
+        for k in doc.keys(&props) {
+            if let Ok(Some((v, _))) = doc.get(&props, &k)
+                && let Some(s) = v.as_str()
+            {
+                out.insert(k, s.to_string());
+            }
+        }
+    }
+    out
 }
 
 pub fn doc_prop(doc: &AutoCommit, c: &SheetContainers, name: &str) -> Option<String> {

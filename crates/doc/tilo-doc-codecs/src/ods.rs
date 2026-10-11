@@ -7,7 +7,7 @@
 use crate::format::{CodecError, Confidence};
 use crate::sheet_common::{
     ParsedSheet, ParsedWorkbook, SheetPackage, SheetProvider, attr_local, end_local_name,
-    local_name, parse_doc_props,
+    local_name,
 };
 use crate::xml_escape::escape_attr_quotes;
 use quick_xml::events::Event;
@@ -76,15 +76,7 @@ impl OdsCodec {
             ..ParsedWorkbook::default()
         };
         if let Some(meta) = pkg.get("meta.xml") {
-            parsed.properties = parse_doc_props(
-                meta,
-                &[
-                    (b"title", "title"),
-                    (b"creator", "author"),
-                    (b"creation-date", "created"),
-                    (b"date", "modified"),
-                ],
-            );
+            parsed.properties = parse_meta(meta);
         }
         // Preserve styles + other unmodeled parts so `table:style-name` refs resolve; content.xml is regenerated on export.
         for (name, bytes) in &pkg.parts {
@@ -389,6 +381,50 @@ fn resolve_cell(cell: &OdsCell) -> Option<CellInput> {
         formula: cell.formula.clone(),
         style: cell.style.clone(),
     })
+}
+
+fn parse_meta(xml: &[u8]) -> BTreeMap<String, String> {
+    let mut props = BTreeMap::new();
+    let Ok(s) = std::str::from_utf8(xml) else {
+        return props;
+    };
+    let mut reader = Reader::from_str(s);
+    let mut cur: Option<&'static str> = None;
+    let mut buf = String::new();
+    while let Ok(ev) = reader.read_event() {
+        match ev {
+            Event::Start(e) => {
+                cur = match local_name(&e) {
+                    b"title" => Some("title"),
+                    b"creator" => Some("author"),
+                    b"creation-date" => Some("created"),
+                    b"date" => Some("modified"),
+                    _ => None,
+                };
+                buf.clear();
+            }
+            Event::Text(t) => {
+                if cur.is_some()
+                    && let Ok(txt) = t.xml10_content()
+                {
+                    buf.push_str(&txt);
+                }
+            }
+            Event::GeneralRef(r) if cur.is_some() => {
+                buf.extend(crate::resolve_general_ref(&r));
+            }
+            Event::End(_) => {
+                if let Some(key) = cur.take()
+                    && !buf.is_empty()
+                {
+                    props.insert(key.to_string(), buf.clone());
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    props
 }
 
 const CONTENT_NS: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" xmlns:calcext="urn:org:documentfoundation:names:experimental:calc:xmlns:calcext:1.0""#;

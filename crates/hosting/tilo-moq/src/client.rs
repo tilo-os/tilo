@@ -765,24 +765,39 @@ async fn receive_datagrams(
     }
 }
 
+async fn receive_group(
+    track: &mut moq_net::track::Subscriber,
+) -> Result<Option<(moq_net::group::Consumer, Instant)>, moq_net::Error> {
+    Ok(track
+        .recv_group()
+        .await?
+        .map(|group| (group, crate::later(Instant::now(), RECEIVE_AGE))))
+}
+
 async fn receive_groups(
     shared: &Shared,
     name: &str,
     mut track: moq_net::track::Subscriber,
     last: &Mutex<Option<Delivered>>,
 ) {
-    let mut next = track.recv_group().await;
-    while let Ok(Some(mut group)) = next {
-        let expires_at = crate::later(Instant::now(), RECEIVE_AGE);
+    let mut next = receive_group(&mut track).await;
+    while let Ok(Some((mut group, expires_at))) = next {
+        let mut pending = None;
         let mut count: u64 = 0;
         loop {
-            // Frames already buffered in this group come first: they are
-            // older than the next group's and still inside their budget, and
-            // switching groups would discard them unread.
+            // A newer QUIC stream can arrive before this group's tail. Retain
+            // one successor until this group finishes or reaches its deadline;
+            // its deadline starts on arrival, not when we start reading it.
             tokio::select! {
                 biased;
                 value = group.read_frame() => {
-                    let Ok(Some(frame)) = value else { next = track.recv_group().await; break; };
+                    let Ok(Some(frame)) = value else {
+                        next = match pending.take() {
+                            Some(queued) => queued,
+                            None => receive_group(&mut track).await,
+                        };
+                        break;
+                    };
                     if shared.check().is_err() { return; }
                     count = count.saturating_add(1);
                     let Ok(object) = VoiceObject::decode(&frame.payload) else { return; };
@@ -796,8 +811,14 @@ async fn receive_groups(
                     }
                     if !deliver(shared, name, group.sequence, true, object, last) { return; }
                 }
-                fresh = track.recv_group() => { next = fresh; break; }
-                () = tokio::time::sleep_until(expires_at.into()) => { next = track.recv_group().await; break; }
+                fresh = receive_group(&mut track), if pending.is_none() => { pending = Some(fresh); }
+                () = tokio::time::sleep_until(expires_at.into()) => {
+                    next = match pending.take() {
+                        Some(queued) => queued,
+                        None => receive_group(&mut track).await,
+                    };
+                    break;
+                }
             }
         }
     }
