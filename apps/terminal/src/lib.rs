@@ -415,7 +415,7 @@ pub fn mounted_terminal(widget: &mut dyn ui::widget::Widget) -> Option<&mut Term
 
 /// The terminal's application definition: the one every host mounts.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<TerminalShell>()
+    ui::built_in_definition!(TerminalShell)
 }
 
 /// Without a hosted process-service transport nothing opens here.

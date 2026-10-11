@@ -54,5 +54,5 @@ pub use resource::DiffmergeShell;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<DiffmergeShell>()
+    ui::built_in_definition!(DiffmergeShell)
 }

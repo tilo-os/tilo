@@ -46,6 +46,7 @@ pub mod model;
 mod outbox;
 pub mod resource;
 mod sidebar;
+mod tasks;
 mod timeline_interaction;
 mod timeline_viewport;
 pub mod timezone;
@@ -61,5 +62,5 @@ pub use resource::CalendarShell;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<CalendarShell>()
+    ui::built_in_definition!(CalendarShell)
 }

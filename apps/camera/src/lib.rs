@@ -60,5 +60,5 @@ pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog =
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<CameraShell>()
+    ui::built_in_definition!(CameraShell)
 }

@@ -51,7 +51,7 @@ pub use resource::{LOCALES, SnippetsShell, SnippetsView};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<SnippetsShell>()
+    ui::built_in_definition!(SnippetsShell)
 }
 
 /// The catalogs, loaded on first use on each thread: a host's manager gets

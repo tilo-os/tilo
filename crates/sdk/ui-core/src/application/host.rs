@@ -127,9 +127,10 @@ impl NativeProcessHost {
 #[derive(Default)]
 struct NativeProcessEnvironment {
     package_id: Option<String>,
-    /// The hex content hash of the package's `surface.toml`, as the
-    /// launcher hands it over.
-    surface: Option<String>,
+    /// The app's `surface.toml` whoever started it named
+    /// ([`crate::app_surface::SURFACE_FILE_ENV`]), and its hex hash.
+    surface: Option<PathBuf>,
+    surface_hash: Option<String>,
     quick_app_id: Option<String>,
     workspace_id: Option<String>,
     quick_workspace_id: Option<String>,
@@ -171,7 +172,8 @@ impl NativeProcessEnvironment {
         }
         Self {
             package_id: string("TILO_PACKAGE_ID"),
-            surface: string("TILO_SURFACE"),
+            surface: path(crate::app_surface::SURFACE_FILE_ENV),
+            surface_hash: string(crate::app_surface::SURFACE_HASH_ENV),
             quick_app_id: string("QUICK_APP_ID"),
             workspace_id: string("TILO_WORKSPACE_ID"),
             quick_workspace_id: string("QUICK_CLUSTER_ID"),
@@ -202,12 +204,18 @@ impl NativeProcessEnvironment {
         if package_id != app_id {
             return Err(LaunchError::BindingMismatch);
         }
-        if let Some(hash) = self
-            .surface
-            .as_deref()
-            .and_then(crate::app_surface::parse_hash)
-        {
-            crate::app_surface::register_launched(app_id, hash);
+        if let Some(file) = &self.surface {
+            let named = |error: String| {
+                LaunchError::Operation(format!("surface {}: {error}", file.display()))
+            };
+            let bytes = std::fs::read(file).map_err(|error| named(error.to_string()))?;
+            let hash = self.surface_hash.as_deref().ok_or_else(|| {
+                named(format!(
+                    "named without {}",
+                    crate::app_surface::SURFACE_HASH_ENV
+                ))
+            })?;
+            crate::app_surface::register_named(app_id, &bytes, hash).map_err(named)?;
         }
         let profile_root = self.persistent_profile_root()?;
         let device_id = persistent_device_id(&profile_root)?;

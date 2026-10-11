@@ -61,7 +61,7 @@ pub mod source;
 
 /// The app as every host mounts it: the reader over its markup resource.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<PdfViewerShell>()
+    ui::built_in_definition!(PdfViewerShell)
 }
 
 pub use markup::PdfMarkup;

@@ -73,7 +73,7 @@ pub mod local_view;
 /// web desktop, an agent's participant host, a desktop test) instantiates.
 #[must_use]
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<NotesShell>()
+    ui::built_in_definition!(NotesShell)
 }
 
 mod columns;

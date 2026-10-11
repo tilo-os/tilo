@@ -4320,9 +4320,10 @@ impl CargoPlan {
     ///
     /// Returns an error when Cargo cannot start or exits unsuccessfully.
     pub fn execute(&self) -> Result<()> {
-        let status = ProcessCommand::new(&self.program)
-            .args(&self.args)
-            .current_dir(&self.app_dir)
+        let mut command = ProcessCommand::new(&self.program);
+        command.args(&self.args).current_dir(&self.app_dir);
+        attach_surface_env(&mut command, &self.app_dir);
+        let status = command
             .status()
             .with_context(|| format!("starting {}", self.program.to_string_lossy()))?;
         if !status.success() {
@@ -5150,7 +5151,9 @@ impl ScenarioSuitePlan {
                 .prefix("tilo-scenario-")
                 .tempdir()
                 .with_context(|| format!("creating isolated state for scenario {:?}", case.name))?;
-            let status = ProcessCommand::new(program)
+            let mut command = ProcessCommand::new(program);
+            attach_surface_env(&mut command, &self.app_dir);
+            let status = command
                 .args(&case.args)
                 .current_dir(&self.app_dir)
                 .env("XDG_DATA_HOME", state.path().join("data"))
@@ -6969,7 +6972,22 @@ fn dev_session_dir(app_dir: &Path) -> PathBuf {
 /// The environment of an app `dev` starts: its dev session, its runtime host,
 /// and inside a Tilo session the shell's file chooser. Returns this process's
 /// end of the chooser connection, to keep until the app has started.
+/// Name the app's committed `surface.toml` to the app, by path and hash, as
+/// its launcher names the one its package ships: the app reads it from there.
+fn attach_surface_env(command: &mut ProcessCommand, app_dir: &Path) {
+    let file = app_dir.join(surface::FILE);
+    let Ok(bytes) = std::fs::read(&file) else {
+        return;
+    };
+    let file = file.canonicalize().unwrap_or(file);
+    command.env("TILO_SURFACE", &file).env(
+        "TILO_SURFACE_HASH",
+        blake3::hash(&bytes).to_hex().to_string(),
+    );
+}
+
 fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) -> Option<DevChooser> {
+    attach_surface_env(command, app_dir);
     let dir = dev_session_dir(app_dir);
     if let Err(error) = std::fs::create_dir_all(&dir) {
         eprintln!(

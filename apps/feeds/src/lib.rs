@@ -54,7 +54,7 @@ pub use model::{Article, Feed, FeedKind, Filter, Folder, Library};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<FeedsShell>()
+    ui::built_in_definition!(FeedsShell)
 }
 
 pub use resource::{FeedsEffect, FeedsShell};

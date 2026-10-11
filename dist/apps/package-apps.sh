@@ -166,6 +166,13 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     staged_manifest="$out/work/manifest-$name.toml"
     mkdir -p "$payload/bin"
     install -pm 0755 "$built" "$payload/bin/$binary"
+    # The app's public surface ships at the payload root, as `tilo-app package`
+    # stages it: the launcher names that file to the app, which reads it from
+    # there, and relays fetch it from the registry by the hash its ops name.
+    surface="$repo_root/$(dirname "$manifest")/surface.toml"
+    if [[ -f $surface ]]; then
+        install -pm 0644 "$surface" "$payload/surface.toml"
+    fi
     sed "s|^\(identity  *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$pubkey\"|" \
         "$repo_root/$manifest" > "$staged_manifest"
     python3 "$repo_root/tools/apps/dev_app_versions.py" --manifest "$staged_manifest" --version "$version"

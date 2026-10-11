@@ -131,7 +131,7 @@ pub fn camera_import_photo(
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<PhotosShell>()
+    ui::built_in_definition!(PhotosShell)
 }
 
 pub use model::PhotoLibrary;

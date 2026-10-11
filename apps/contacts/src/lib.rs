@@ -43,5 +43,5 @@ pub use resource::{Contacts, ContactsShell};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<ContactsShell>()
+    ui::built_in_definition!(ContactsShell)
 }

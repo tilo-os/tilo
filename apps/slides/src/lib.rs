@@ -62,7 +62,7 @@ pub use app::{PresentSurface, SlidesApp};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<SlidesShell>()
+    ui::built_in_definition!(SlidesShell)
 }
 
 pub use deck::Deck;

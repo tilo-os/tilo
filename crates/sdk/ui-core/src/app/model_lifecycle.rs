@@ -297,6 +297,13 @@ impl super::App {
             &self.state.root,
         );
         let settled = crate::widget::settle_mark(&self.state.doc) != before;
+        // The record's durability changed and the root synced with it: a
+        // frame presents it. Nothing about the tree changed, so it is not a
+        // rebuild (which would repaint the whole window for a save bubble).
+        // Taken before replaced widgets are looked for, which would read it
+        // as a structure change.
+        let mut save_status =
+            crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
         // Settlement can have replaced widgets (a surface closing its own
         // dialog): forget their nodes before dispatch, which may open a
         // confirmation that captures where focus returns.
@@ -305,10 +312,9 @@ impl super::App {
         if settled || submitted {
             self.root_widget.sync(&self.state.doc, &self.state.root);
         }
-        // The record's durability changed and the root synced with it: a
-        // frame presents it. Nothing about the tree changed, so it is not a
-        // rebuild (which would repaint the whole window for a save bubble).
-        if crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut()) {
+        save_status |=
+            crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
+        if save_status {
             self.layout.layout_dirty = true;
         }
         self.invalidate_widget_resource_cache();

@@ -71,7 +71,7 @@ pub use resource::CodeEditorShell;
 /// (the shell's Editor tabs, a desktop test) instantiates.
 #[must_use]
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<CodeEditorShell>()
+    ui::built_in_definition!(CodeEditorShell)
 }
 
 /// The record a launch naming `path` opens: the project of that folder, or

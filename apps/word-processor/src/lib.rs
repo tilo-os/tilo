@@ -83,7 +83,7 @@ pub(crate) fn initialized_state() -> ui::State {
 /// The word processor as every host mounts it: the framework app over the
 /// document's rich-text record.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<framework::WordProcessorApp>()
+    ui::built_in_definition!(framework::WordProcessorApp)
 }
 
 pub use word_processor::WordProcessor;

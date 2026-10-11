@@ -67,3 +67,33 @@ calendar-calendar-tasks = Changed the tasks
 calendar-calendar-notes = Edited notes
 calendar-calendar-uploads = Recorded how an upload to a calendar server went
 calendar-calendar-deletes = Recorded how a delete on a calendar server went
+
+## The Tasks screen
+
+calendar-tasks-title = Tasks
+calendar-tasks-new = New task
+calendar-tasks-entry = Add a task
+calendar-tasks-entry-name = New task title
+calendar-tasks-empty-inbox = Inbox is empty
+calendar-tasks-empty-today = Nothing due today
+calendar-tasks-empty-upcoming = Nothing coming up
+calendar-tasks-empty-completed = No completed tasks
+calendar-tasks-empty-project = No tasks in { $list }
+calendar-tasks-empty-completed-hint = Tasks you check off appear here.
+calendar-tasks-empty-hint = Type a task in the field above and press Enter.
+calendar-tasks-priority-none = No priority
+calendar-tasks-priority-low = Low priority
+calendar-tasks-priority-medium = Medium priority
+calendar-tasks-priority-high = High priority
+calendar-tasks-added = Added { $title }
+calendar-tasks-list = Task list
+calendar-tasks-add-to = Add a task to { $list }
+calendar-tasks-row-due = { $title }, due { $due }
+calendar-tasks-row-priority = { $title }, { $priority }
+calendar-tasks-row-subtask = { $title }, subtask
+calendar-tasks-empty-description = { $title }. { $message }
+calendar-view-name = { $view } view
+calendar-tasks-inbox = Inbox
+calendar-tasks-today = Today
+calendar-tasks-upcoming = Upcoming
+calendar-tasks-completed = Completed

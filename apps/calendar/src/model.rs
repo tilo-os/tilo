@@ -20,13 +20,15 @@ use ui::tokens::colors::PresenceHue;
 
 pub type Id = Uuid;
 
-/// The four top-level screens. `Agenda` is the flat "upcoming" list.
+/// The five top-level screens. `Agenda` is the flat "upcoming" list of
+/// events; `Tasks` lists the sidebar's selected task list in full.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum View {
     Month,
     Week,
     Day,
     Agenda,
+    Tasks,
 }
 
 impl View {
@@ -36,13 +38,28 @@ impl View {
             View::Week => "Week",
             View::Day => "Day",
             View::Agenda => "Agenda",
+            View::Tasks => "Tasks",
         }
     }
-    pub const ALL: [View; 4] = [View::Month, View::Week, View::Day, View::Agenda];
+    /// The visible label; `label` remains the stable action identifier.
+    pub(crate) fn display_label(self) -> String {
+        if self == Self::Tasks {
+            crate::resource::t("calendar-tasks-title")
+        } else {
+            self.label().to_owned()
+        }
+    }
+    pub const ALL: [View; 5] = [
+        View::Month,
+        View::Week,
+        View::Day,
+        View::Agenda,
+        View::Tasks,
+    ];
 }
 
 /// Which "smart list" or project the sidebar has chosen. Drives the
-/// task list the sidebar shows.
+/// Tasks screen and the sidebar list.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ListSel {
     Inbox,
@@ -905,6 +922,19 @@ impl Calendar {
             .collect();
         out.sort_by(|a, b| Task::list_order(a, b));
         out
+    }
+
+    /// The name a smart list or project is shown under.
+    pub fn list_title(&self, sel: &ListSel) -> String {
+        match sel {
+            ListSel::Inbox => "Inbox".into(),
+            ListSel::Today => "Today".into(),
+            ListSel::Upcoming => "Upcoming".into(),
+            ListSel::Completed => "Completed".into(),
+            ListSel::Project(id) => self
+                .project(*id)
+                .map_or_else(|| "Project".into(), |project| project.name.clone()),
+        }
     }
 
     pub fn subtasks_of(&self, parent: Id) -> Vec<&Task> {

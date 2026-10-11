@@ -36,11 +36,34 @@ case ":${TILO_THIN_BIN_CRATES:-}:" in
         # Packed relative relocations (DT_RELR, glibc >= 2.36) store the PIE's
         # ~20k R_X86_64_RELATIVE entries as a bitmap instead of 24 bytes each;
         # for Settings that is ~490 KB of .rela.dyn per tapp.
+        #
+        # Identical code folding: generic code instantiated for different
+        # types is often byte-identical, and so are its unwind entries. LLVM
+        # writes an address-significance table, so lld's safe mode folds
+        # exactly what Rust allows: functions and constants (unnamed_addr),
+        # never a `static`, whose address Rust keeps unique. lld links x86_64
+        # Linux by default; elsewhere the wrapper asks for it when installed,
+        # and links as before without it.
+        folding=()
+        target=""
+        previous=""
+        for argument in "$@"; do
+            [ "$previous" = "--target" ] && target="$argument"
+            previous="$argument"
+        done
+        case "${target:-$(uname -m)-$(uname -s)}" in
+            x86_64*[Ll]inux*) folding=(-C llvm-args=--addrsig -C link-arg=-Wl,--icf=safe) ;;
+            *[Ll]inux*)
+                if command -v ld.lld >/dev/null 2>&1; then
+                    folding=(-C llvm-args=--addrsig -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=safe)
+                fi
+                ;;
+        esac
         exec "$compiler" "$@" -C prefer-dynamic -C opt-level=z -C codegen-units=1 \
             -C llvm-args=--enable-merge-functions \
             -C llvm-args=--enable-machine-outliner=always \
             -C link-arg=-Wl,-z,pack-relative-relocs \
-            "${link_map[@]}"
+            "${folding[@]}" "${link_map[@]}"
         ;;
 esac
 
