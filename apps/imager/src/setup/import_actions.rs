@@ -680,7 +680,6 @@ imager-import-action-prepare-review = FR review
             ],
         )
         .unwrap();
-        super::super::strings::ensure();
         let projection = ImportProjection {
             phase: ImportStatusPhase::Ready,
             status_is_error: false,
