@@ -366,7 +366,10 @@ This gives three deployments without three protocols:
   write, so an app's `Left` never overtakes its last pointer. A move the host
   would only have coalesced away no longer costs an upstream packet or the
   acknowledgement it draws. The writer paces whatever session it serves,
-  whoever the author is; the frames are unchanged.
+  whoever the author is; the frames are unchanged. The host counts its own
+  gap from when the previous move was due rather than from when its writer
+  got to it, so moves that already arrive a gap apart are forwarded as they
+  arrive and a late write never adds to the next move's wait.
 - Remote actions (v1): versioned JSON `RemoteActionFrame`s (`tilo_actions::remote`).
   A caller follows an invocation with one waiting request at a time —
   `wait_ms` on `Invoke`, or on `Observe` with the `seen` update — which the

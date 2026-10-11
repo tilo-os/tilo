@@ -17,7 +17,9 @@
 //!   first move after a pause goes out within [`BATCH_WINDOW`]. Current
 //!   clients already write each pointer slot at most this often (the session
 //!   writer's pointer pacing in `tilo_relay_session::client`), so this pace
-//!   only bites on older clients and on jitter.
+//!   only bites on older clients and on jitter. The gap is counted from when
+//!   the previous move was due, not from when the writer got to it, so a
+//!   late write does not hold every later move of a paced client longer.
 //! - **Carets, selections and typing on every change**, after at most
 //!   [`BATCH_WINDOW`] (5 ms), which is what lets a keystroke's `Typing` and
 //!   `Caret` travel as one frame.
@@ -311,7 +313,12 @@ impl PresenceMailbox {
         for key in keys {
             if let Some(pending) = state.slotted.remove(&key) {
                 if pending.motion {
-                    state.sent.insert(key, now);
+                    // Pace on the schedule, not on when the writer got to
+                    // it: a write that is late does not push every later
+                    // move of a client that already sends at this pace
+                    // later too. One that goes early restarts the pace.
+                    let scheduled = due_at(&state.sent, &key, &pending).min(now);
+                    state.sent.insert(key, scheduled);
                 }
                 due.push((
                     pending.seq,
@@ -429,6 +436,26 @@ mod tests {
             Some("move 29"),
             "the latest position always arrives"
         );
+    }
+
+    #[test]
+    fn a_late_write_does_not_hold_the_next_move_of_a_paced_client() {
+        let mailbox = PresenceMailbox::default();
+        let t0 = Instant::now();
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 1"), t0, false);
+        assert_eq!(texts(&mailbox.take(t0 + BATCH_WINDOW, false)), ["move 1"]);
+        // A client paced to the gap: the next move arrives a gap later, falls
+        // due a gap after the first, and the writer gets to it 10 ms late.
+        let t1 = t0 + MOTION_GAP;
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 2"), t1, false);
+        assert_eq!(mailbox.next_due(), Some(t1 + BATCH_WINDOW));
+        let late = t1 + BATCH_WINDOW + Duration::from_millis(10);
+        assert_eq!(texts(&mailbox.take(late, false)), ["move 2"]);
+        // The third move, again a gap later, is due as soon as it arrives:
+        // the late write is not added to its wait.
+        let t2 = t1 + MOTION_GAP;
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 3"), t2, false);
+        assert_eq!(mailbox.next_due(), Some(t2 + BATCH_WINDOW));
     }
 
     #[test]
