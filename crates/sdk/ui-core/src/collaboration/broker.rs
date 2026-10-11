@@ -2687,35 +2687,6 @@ impl CollaborationManager {
         )
     }
 
-    /// Connect using a one-shot handoff supplied by the platform host.
-    ///
-    /// This shared SDK seam is for host bootstrap, not app identity selection.
-    /// It reuses certified joining and waits for the existing primary-route
-    /// acknowledgement. The route given to the factory is the exact Hello
-    /// route. Failure consumes the connector and never falls back to Env/Fd,
-    /// local keys or a harness signer. Reconnecting needs a fresh host handoff.
-    ///
-    /// # Errors
-    /// Returns the host/identity/transport error or primary-route refusal.
-    pub async fn for_route_host(
-        connector: HostSessionConnector,
-        app_id: String,
-        cluster_id: Uuid,
-        record: Option<String>,
-        handle: Option<String>,
-    ) -> Result<Self, runtime_portal::NotAvailable> {
-        tokio::task::spawn_blocking(move || {
-            Self::connect_route_host_blocking(connector, app_id, cluster_id, record, handle)
-        })
-        .await
-        .map_err(|error| {
-            runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::other(format!(
-                "host collaboration bootstrap worker failed: {error}"
-            )))
-        })?
-        .map(Self::from_connected)
-    }
-
     /// Synchronous form for deterministic unit harnesses. Production callers
     /// only receive the async entry point above, so identity and
     /// primary-route deadlines do not stall the application's owner/frame
@@ -2728,18 +2699,6 @@ impl CollaborationManager {
         record: Option<String>,
         handle: Option<String>,
     ) -> Result<Self, runtime_portal::NotAvailable> {
-        Self::connect_route_host_blocking(connector, app_id, cluster_id, record, handle)
-            .map(Self::from_connected)
-    }
-
-    /// Synchronous implementation run inside the background bootstrap task.
-    fn connect_route_host_blocking(
-        connector: HostSessionConnector,
-        app_id: impl Into<String>,
-        cluster_id: Uuid,
-        record: Option<String>,
-        handle: Option<String>,
-    ) -> Result<ConnectedBroker, runtime_portal::NotAvailable> {
         let app_id = app_id.into();
         let route = RouteSpec {
             app_id: app_id.clone(),
@@ -2755,6 +2714,7 @@ impl CollaborationManager {
             None,
             "person",
         )
+        .map(Self::from_connected)
     }
 
     pub(crate) fn switch_native_record(
@@ -6804,7 +6764,6 @@ mod tests {
     use std::rc::Rc;
 
     use capnp::capability::Promise;
-
     #[cfg(unix)]
     use tokio::net::UnixStream as TokioUnixStream;
     #[cfg(unix)]
@@ -8352,8 +8311,9 @@ mod tests {
                     let tokio_stream =
                         TokioUnixStream::from_std(server_side).expect("wrap server side");
                     let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
-                    let _ = runtime_portal::serve_connected_io(tokio_stream, broker_client.client)
-                        .await;
+                    let rpc =
+                        runtime_portal::serve_connected_io(tokio_stream, broker_client.client);
+                    let _ = rpc.await;
                 });
             })
             .unwrap();

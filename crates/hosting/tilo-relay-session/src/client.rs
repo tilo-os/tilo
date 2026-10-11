@@ -478,37 +478,6 @@ impl RelayClient {
         .await
     }
 
-    /// Resolve content from a relay whose certified user root differs from
-    /// this client. The caller pins its derived relay service `NodeId`; the
-    /// challenge still proves the server holds its certified device key.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClientError`] when dialing, framing, or authenticated
-    /// discovery fails.
-    pub async fn discover_content_endpoint_to_pinned_host(
-        endpoint: &Endpoint,
-        relay_addr: EndpointAddr,
-        workspace_id: u64,
-        expected_server_user: [u8; 32],
-        expected_server_device: [u8; 32],
-        own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
-        revocations: RevocationList,
-    ) -> Result<EndpointAddr, ClientError> {
-        Ok(Self::discover_content_peer_with_server_trust(
-            endpoint,
-            relay_addr,
-            workspace_id,
-            Some((expected_server_user, expected_server_device)),
-            own_cert,
-            own_sk,
-            revocations,
-        )
-        .await?
-        .endpoint)
-    }
-
     async fn discover_content_peer_with_server_trust(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,

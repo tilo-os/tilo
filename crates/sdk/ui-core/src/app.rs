@@ -2546,6 +2546,10 @@ impl App {
         // ran against, so without this they draw blank until the next event.
         self.root_widget.sync(&self.state.doc, &self.state.root);
         self.needs_sync = false;
+        // This rebuild's frame presents a durability the sync just took up;
+        // it is not another structure change.
+        let _ =
+            crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
         if self.root_widget.take_structure_dirty() {
             // Fresh sync can replace delegates. Rebuild before any map access.
             self.layout.structure_dirty = true;

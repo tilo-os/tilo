@@ -44,7 +44,6 @@ pub struct ModelPane<M: PaneModel> {
     composed: ui::widget::Composed,
     composition_dirty: bool,
     catalog_revision: u64,
-    structure_dirty: bool,
     composition_paint_dirty: bool,
     drawn_rect: Rect,
 }
@@ -56,7 +55,6 @@ impl<M: PaneModel> ModelPane<M> {
             composed: ui::widget::Composed::default(),
             composition_dirty: true,
             catalog_revision: ui::i18n::I18nManager::revision(),
-            structure_dirty: false,
             composition_paint_dirty: true,
             drawn_rect: Rect::ZERO,
         }
@@ -74,7 +72,7 @@ impl<M: PaneModel> Widget for ModelPane<M> {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if self.model.borrow_mut().poll() {
             self.composition_dirty = true;
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         self.composed.sync(state, root);
     }
@@ -131,12 +129,6 @@ impl<M: PaneModel> Widget for ModelPane<M> {
 
     fn name(&self) -> &'static str {
         self.model.borrow().name()
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self.composed.take_structure_dirty();
-        own || child
     }
 
     fn needs_animation_frame(&self) -> bool {

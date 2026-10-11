@@ -332,21 +332,6 @@ impl RenderThreadHandle {
     }
 }
 
-/// Channel capacities are documented at the module level.
-///
-/// # Errors
-///
-/// Returns an error if the OS refuses to spawn the `ui-render` thread (e.g.
-/// the process is out of resources for new threads).
-pub fn spawn_render_thread(
-    render_cx: RenderContext,
-    surface: RenderSurface<'static>,
-    renderer: Renderer,
-    wake: Arc<dyn Fn() + Send + Sync>,
-) -> Result<RenderThreadHandle, String> {
-    spawn_render_thread_for_window(render_cx, surface, renderer, wake, None)
-}
-
 /// Same worker with the native window retained for standard Wayland feedback.
 #[allow(
     clippy::too_many_lines,

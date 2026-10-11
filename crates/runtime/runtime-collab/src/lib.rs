@@ -3896,7 +3896,6 @@ mod resolved_invocation_tests {
     use super::*;
 
     use capnp::capability::Promise;
-
     use std::cell::{Cell, RefCell};
 
     #[derive(Debug, PartialEq, Eq)]
@@ -4505,7 +4504,6 @@ mod reliable_invocation_tests {
     use super::*;
 
     use capnp::capability::Promise;
-
     use std::cell::{Cell, RefCell};
 
     const HOST: [u8; 16] = [2; 16];

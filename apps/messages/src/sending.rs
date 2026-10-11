@@ -13,6 +13,7 @@ pub(crate) struct Sending {
     client: Option<MessagingClient>,
     pub(crate) draft: LocalState<String>,
     pub(crate) operation: LocalState<String>,
+    generation: LocalState<u64>,
 }
 impl Sending {
     pub(crate) fn new(client: Option<MessagingClient>, principal: Option<&str>) -> Self {
@@ -20,12 +21,14 @@ impl Sending {
             client: client.filter(|c| principal == Some(c.principal())),
             draft: LocalState::new(String::new()),
             operation: LocalState::new(uuid::Uuid::new_v4().to_string()),
+            generation: LocalState::new(0),
         }
     }
     pub(crate) fn client(&self) -> Option<MessagingClient> {
         self.client.clone()
     }
     pub(crate) fn clear(&self) {
+        self.generation.set(self.generation.get().saturating_add(1));
         self.draft.set(String::new());
         self.operation.set(uuid::Uuid::new_v4().to_string());
     }
@@ -92,6 +95,8 @@ impl Sending {
         let history = history.clone();
         let draft = self.draft.clone();
         let draft_operation = self.operation.clone();
+        let generation = self.generation.clone();
+        let admitted = generation.get();
         let request = SendRequest {
             route,
             operation,
@@ -104,7 +109,7 @@ impl Sending {
         },move |(),result,_|{
             match result {
                 Ok((receipt,page))=>{
-                    if crate::history::current_route(&sources,&selection.get(),&choice).as_ref()==Ok(&sent_route) {
+                    if generation.get() == admitted && crate::history::current_route(&sources,&selection.get(),&choice).as_ref()==Ok(&sent_route) {
                         if let Some(page)=page {history.publish(page);}
                         if draft_operation.get()==sent_operation && draft.get()==sent_text {
                             draft.set(String::new());draft_operation.set(uuid::Uuid::new_v4().to_string());
@@ -115,7 +120,7 @@ impl Sending {
                 }})))
                 },
                 Err(error)=>{
-                    if matches!(error,tilo_messaging::SendError::Revoked|tilo_messaging::SendError::Unavailable){history.clear();}
+                    if generation.get() == admitted && matches!(error,tilo_messaging::SendError::Revoked|tilo_messaging::SendError::Unavailable){history.clear();}
                     let key=match error {
                         tilo_messaging::SendError::Revoked=>"messages-contact-missing",
                         tilo_messaging::SendError::Unavailable=>"messages-transport-unavailable",

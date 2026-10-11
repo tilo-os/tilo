@@ -17,9 +17,6 @@ use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
 use ui::tilo_resource;
 use ui::widget::{AppModel, ModelPath, ShortcutRecorder, Toggle, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
@@ -151,7 +148,6 @@ pub struct ShortcutPane {
     /// The last chord refused, and why.
     refused: LocalState<Option<ui::framework::Refused>>,
     refusal_shown: Option<String>,
-    structure_dirty: bool,
     composed: ui::widget::Composed,
 }
 
@@ -174,7 +170,6 @@ impl ShortcutPane {
             controls,
             chords,
             refusal_shown: None,
-            structure_dirty: false,
             composed: ui::widget::Composed::default(),
         };
         pane.show();
@@ -269,12 +264,13 @@ impl Widget for ShortcutPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         let document = self.cx.storage().settings_document();
         let revision = document.revision();
+        let mut changed = false;
         if revision != self.seen {
             self.seen = revision;
             let config = ShortcutConfig::from_section(document.section(SHORTCUTS_SECTION));
             if config != self.config {
                 self.config = config;
-                self.structure_dirty = true;
+                changed = true;
             }
         }
         // A refused chord is not kept: the recorder shows the stored one
@@ -286,10 +282,11 @@ impl Widget for ShortcutPane {
             .map(|refused| refused.reason);
         if refusal != self.refusal_shown {
             self.refusal_shown = refusal;
-            self.structure_dirty = true;
+            changed = true;
         }
-        if self.structure_dirty {
+        if changed {
             self.show();
+            self.composed.invalidate();
         }
         if self.controls.refresh() {
             self.vim_mode.set(self.controls.get().vim_mode);
@@ -308,40 +305,9 @@ impl Widget for ShortcutPane {
         self.composed.replace(c);
         crate::panes::pane_node(taffy, child, node_map, self)
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.composed.apply_layout(taffy, node, origin);
-    }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = self.composed.element_mut() {
-            c.draw(scene, transform, text, theme, presence);
-        }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.composed.handle_event(event, ctx);
-    }
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.children()
-    }
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed.children_mut()
-    }
+    ui::forward_to_composed!(composed);
     fn name(&self) -> &'static str {
         "ShortcutPane"
-    }
-    fn get_rect(&self) -> Rect {
-        self.composed.rect()
-    }
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self.composed.take_structure_dirty();
-        own || child
     }
 }
 

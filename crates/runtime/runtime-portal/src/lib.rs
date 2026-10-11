@@ -241,9 +241,10 @@ impl CapnpClient {
 }
 
 #[cfg(feature = "rpc")]
-/// Answer the peer on a connected stream with `bootstrap`: the server half of
-/// [`CapnpClient::from_connected_io`]. The returned system resolves when the
-/// connection closes; drive it on a tokio `LocalSet`.
+/// Serve `bootstrap` as the root capability to the peer on an owned,
+/// already-connected transport; the server-side counterpart of
+/// [`CapnpClient::from_connected_io`]. The returned system is the connection's
+/// driver: await or `spawn_local` it, and it resolves when the peer hangs up.
 pub fn serve_connected_io<S>(
     stream: S,
     bootstrap: capnp::capability::Client,
@@ -255,9 +256,6 @@ where
 }
 
 #[cfg(feature = "rpc")]
-/// The two-party RPC system over `stream`. Both directions are buffered:
-/// the write queue flushes after every message, so a message's header and
-/// segments leave in one write.
 fn rpc_system<S>(
     stream: S,
     side: rpc_twoparty_capnp::Side,
@@ -266,14 +264,16 @@ fn rpc_system<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
 {
+    // Buffered: a message is a segment table plus segments, which would
+    // otherwise be one syscall each. The protocol flushes after every message.
     let (read_half, write_half) = tokio::io::split(stream);
-    let network = twoparty::VatNetwork::new(
-        futures_util::io::BufReader::new(read_half.compat()),
-        futures_util::io::BufWriter::new(write_half.compat_write()),
+    let network = Box::new(twoparty::VatNetwork::new(
+        tokio::io::BufReader::new(read_half).compat(),
+        tokio::io::BufWriter::new(write_half).compat_write(),
         side,
         capnp::message::ReaderOptions::default(),
-    );
-    RpcSystem::new(Box::new(network), bootstrap)
+    ));
+    RpcSystem::new(network, bootstrap)
 }
 
 #[cfg(feature = "rpc")]

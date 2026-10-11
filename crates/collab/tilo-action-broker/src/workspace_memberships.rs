@@ -1,6 +1,7 @@
 //! Governed agent membership through the ordinary durable invocation surface.
 //! Public arguments select only a closed command; caller custody and signing
 //! authority remain host-owned.
+use super::room_service::{ServiceOutcome, refused};
 use super::{
     Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
     PublishedSurface,
@@ -199,78 +200,42 @@ impl CapnpBrokerState {
         service: Arc<dyn crate::services::WorkspaceMemberships>,
     ) -> Result<(), String> {
         let peer = self.next_service_peer_id();
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        self.invocation_subscribers
-            .lock()
-            .map_err(|_| "invocation subscribers unavailable")?
-            .insert(peer, sender);
-        self.stable_invocation_subscribers
-            .lock()
-            .map_err(|_| "stable invocation registry unavailable")?
-            .insert(peer);
-        self.surfaces
-            .lock()
-            .map_err(|_| "membership surfaces unavailable")?
-            .insert(
-                peer,
-                PublishedSurface {
-                    peer_id: peer,
-                    app_id: APP.into(),
-                    route: CrdtRoute::record(APP, &room, RECORD),
-                    live: true,
-                    actions,
-                },
-            );
+        let surface = PublishedSurface {
+            peer_id: peer,
+            app_id: APP.into(),
+            route: CrdtRoute::record(APP, &room, RECORD),
+            live: true,
+            actions,
+        };
         self.workspace_membership_peers
             .lock()
             .map_err(|_| "membership service registry unavailable")?
             .insert(room.clone(), peer);
-        self.publish_changed_action_catalogue();
-        let state = self.clone();
-        tokio::task::spawn_local(async move {
-            while let Some(envelope) = receiver.recv().await {
-                let result = state
-                    .execute_workspace_membership(peer, &room, &envelope, service.as_ref())
-                    .await;
-                let update = match result {
-                    Ok(value) => tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: envelope.invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(value),
-                            resources: Vec::new(),
-                        },
-                    },
-                    Err(error) => tilo_actions::InvocationUpdate::Failed {
-                        invocation: envelope.invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "workspace_membership_refused".into(),
-                            message: error,
-                            retryable: false,
-                            details: None,
-                        },
-                    },
-                };
-                if let Err(error) = state
-                    .apply_invocation_update(peer, envelope.id, update, None)
-                    .await
-                {
-                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                        failure.get_or_insert(error.to_string());
+        let serve_room = room.clone();
+        self.serve_room(
+            surface,
+            move |state, envelope| {
+                let (service, room) = (service.clone(), serve_room.clone());
+                async move {
+                    match state
+                        .execute_workspace_membership(peer, &room, &envelope, service.as_ref())
+                        .await
+                    {
+                        Ok(value) => ServiceOutcome::Succeeded(value),
+                        Err(error) => refused("workspace_membership_refused", error),
                     }
-                    break;
                 }
-            }
-            let removed = state
-                .surfaces
-                .lock()
-                .is_ok_and(|mut surfaces| surfaces.remove(&peer).is_some());
-            if removed {
-                state.publish_changed_action_catalogue();
-            }
-            if let Ok(mut peers) = state.workspace_membership_peers.lock() {
-                peers.remove(&room);
-            }
-        });
+            },
+            move |state, removed| {
+                if removed {
+                    state.publish_changed_action_catalogue();
+                }
+                if let Ok(mut peers) = state.workspace_membership_peers.lock() {
+                    peers.remove(&room);
+                }
+            },
+        )?;
+        self.publish_changed_action_catalogue();
         Ok(())
     }
 
