@@ -16,7 +16,11 @@ use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::peniko::Color;
 
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
 use super::{Backend, BackendEvent, Output, OutputId, combined_geometry, layout};
+use crate::shell::present::{DisplayTiming, OwedRetirement, Presenter};
 
 // Match the existing host-window fallback for blank scenes in both render paths.
 const FALLBACK_BG: Color = Color::from_rgb8(0x1A, 0x1B, 0x26);
@@ -40,6 +44,17 @@ pub const HEADLESS_OUTPUTS_ENV: &str = "TILO_HEADLESS_OUTPUTS";
 /// until the control socket's `watch` attaches a viewer; `snapshot`
 /// renders on demand either way.
 pub const HEADLESS_WATCH_ENV: &str = "TILO_HEADLESS_WATCH";
+
+/// Env-var that gives the headless session a render thread and a simulated
+/// display: its value is the panel's refresh rate in hertz (`60`, `59.94`).
+///
+/// Frames then render on the real GPU into an offscreen target, wait for the
+/// previous flip to retire and queue their own, which retires on the next
+/// vblank of a fixed grid, the way the DRM presenter behaves on a panel. With
+/// it set the loop is paced and measured as on hardware (`KEY-LATENCY`,
+/// `FRAME-PACING`), minus the panel: `scripts/perf/headless_key_latency.py`
+/// uses it. Unset, headless presents synchronously and only when watched.
+pub const HEADLESS_VBLANK_HZ_ENV: &str = "TILO_HEADLESS_VBLANK_HZ";
 
 /// Named output arrangements, shared by headless sessions, `shots
 /// --outputs` and the integration tests, so a layout bug reproduces with a
@@ -316,6 +331,8 @@ pub struct HeadlessBackend {
     /// default, and rasterizing is most of a frame's cost on the software
     /// renderers hosted machines have.
     watched: bool,
+    /// The simulated panel's frame interval ([`HEADLESS_VBLANK_HZ_ENV`]).
+    vblank_interval: Option<Duration>,
 }
 
 impl HeadlessBackend {
@@ -374,6 +391,9 @@ impl HeadlessBackend {
             completed_frame: None,
             emitted_first_redraw: false,
             watched: std::env::var(HEADLESS_WATCH_ENV).is_ok_and(|value| value.trim() == "1"),
+            vblank_interval: std::env::var(HEADLESS_VBLANK_HZ_ENV)
+                .ok()
+                .and_then(|raw| super::super::pacing::parse_refresh_override(Some(&raw))),
         })
     }
 
@@ -454,7 +474,27 @@ pub fn resolve_initial_outputs() -> Result<Vec<Output>, String> {
 
 impl Backend for HeadlessBackend {
     fn supports_retained_scene_damage(&self) -> bool {
-        self.watched
+        self.watched || self.vblank_interval.is_some()
+    }
+
+    fn refresh_interval(&self) -> Option<Duration> {
+        self.vblank_interval
+    }
+
+    fn take_presenter(&mut self) -> Option<Box<dyn Presenter>> {
+        let interval = self.vblank_interval?;
+        let (width, height) = self.frame_size();
+        let renderer = OffscreenRenderer::try_new(width, height).ok()?;
+        Some(Box::new(SimulatedVblankPresenter {
+            renderer,
+            interval,
+            epoch: Instant::now(),
+            owed: VecDeque::new(),
+            ready: Vec::new(),
+            rendered_revision: None,
+            queued_last: false,
+            last_render: Duration::ZERO,
+        }))
     }
 
     fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
@@ -556,6 +596,166 @@ impl Backend for HeadlessBackend {
 
     fn outputs(&self) -> &[Output] {
         &self.outputs
+    }
+}
+
+/// A flip the simulated panel has been asked for.
+struct QueuedFlip {
+    queued_at: Instant,
+    vblank: Instant,
+}
+
+/// Renders on the real GPU and shows frames on a simulated vblank grid.
+///
+/// It behaves as the DRM presenter does on one output: a frame renders while
+/// the previous flip waits for its vblank, its own flip is queued once that one
+/// retired (a CRTC takes one flip at a time), and a queued flip retires on the
+/// first vblank after it was queued. The render waits for the GPU but copies
+/// nothing back.
+struct SimulatedVblankPresenter {
+    renderer: OffscreenRenderer,
+    interval: Duration,
+    /// Any vblank of the grid; the rest follow at whole intervals.
+    epoch: Instant,
+    owed: VecDeque<QueuedFlip>,
+    /// Flips that retired while a later frame waited to queue its own.
+    ready: Vec<OwedRetirement>,
+    /// The revision the offscreen target holds, for damage-limited renders.
+    rendered_revision: Option<u64>,
+    /// The frame just presented queued a flip.
+    queued_last: bool,
+    /// How long the last frame took to render, GPU wait included.
+    last_render: Duration,
+}
+
+impl SimulatedVblankPresenter {
+    /// The first vblank strictly after `at`.
+    fn vblank_after(&self, at: Instant) -> Instant {
+        let since = at.saturating_duration_since(self.epoch).as_nanos();
+        let interval = self.interval.as_nanos().max(1);
+        let ticks = since.checked_div(interval).unwrap_or(0).saturating_add(1);
+        let nanos = interval.saturating_mul(ticks);
+        self.epoch
+            + Duration::new(
+                u64::try_from(nanos / 1_000_000_000).unwrap_or(u64::MAX),
+                u32::try_from(nanos % 1_000_000_000).unwrap_or(0),
+            )
+    }
+
+    fn retirement(flip: &QueuedFlip) -> OwedRetirement {
+        OwedRetirement {
+            physical: None,
+            display: DisplayTiming {
+                vblank_paced: true,
+                vblank: Some(flip.vblank),
+                flip_queued_at: Some(flip.queued_at),
+            },
+        }
+    }
+
+    /// Sleep to `until` unless it has passed.
+    fn wait_until(until: Instant) {
+        let now = Instant::now();
+        if until > now {
+            std::thread::sleep(until - now);
+        }
+    }
+
+    fn render(&mut self, frame: &crate::compositor::frame::FramePaint) -> bool {
+        let damage = (frame.revision != 0
+            && frame.backdrop.is_none()
+            && self.rendered_revision.is_some()
+            && self.rendered_revision == frame.previous_revision)
+            .then_some(frame.damage_regions.as_ref())
+            .flatten();
+        if let Some(regions) = damage {
+            if regions.is_empty() {
+                self.rendered_revision = Some(frame.revision);
+                return false;
+            }
+            let rects: Vec<vello::kurbo::Rect> = regions
+                .iter()
+                .map(|r| {
+                    vello::kurbo::Rect::new(
+                        f64::from(r.x),
+                        f64::from(r.y),
+                        f64::from(r.x.saturating_add(r.width)),
+                        f64::from(r.y.saturating_add(r.height)),
+                    )
+                })
+                .collect();
+            self.renderer
+                .render_damage_regions_gpu_wait(&frame.scene, FALLBACK_BG, &rects);
+        } else {
+            self.renderer.set_backdrop(frame.backdrop.clone());
+            self.renderer.render_gpu_wait(&frame.scene, FALLBACK_BG);
+            self.renderer.set_backdrop(None);
+        }
+        self.rendered_revision = (frame.revision != 0).then_some(frame.revision);
+        true
+    }
+}
+
+impl Presenter for SimulatedVblankPresenter {
+    fn present(&mut self, scene: &Scene, _output: OutputId) {
+        self.renderer.render_gpu_wait(scene, FALLBACK_BG);
+    }
+
+    fn present_frame(&mut self, frame: &crate::compositor::frame::FramePaint, _: OutputId) {
+        self.queued_last = false;
+        let started = Instant::now();
+        let rendered = self.render(frame);
+        self.last_render = started.elapsed();
+        if !rendered {
+            return;
+        }
+        self.queued_last = true;
+        // Queued once the previous flip retired.
+        if let Some(previous) = self.owed.pop_front() {
+            Self::wait_until(previous.vblank);
+            self.ready.push(Self::retirement(&previous));
+        }
+        let queued_at = Instant::now();
+        let vblank = self.vblank_after(queued_at);
+        self.owed.push_back(QueuedFlip { queued_at, vblank });
+    }
+
+    fn display_timing(&self) -> DisplayTiming {
+        DisplayTiming::default()
+    }
+
+    fn frame_detail(&mut self) -> Option<String> {
+        Some(format!("gpu_us={}", self.last_render.as_micros()))
+    }
+
+    fn overlaps_presentation(&self) -> bool {
+        true
+    }
+
+    fn owes_retirement(&self) -> bool {
+        self.queued_last
+    }
+
+    fn owed_retirement_due(&self) -> Option<Instant> {
+        self.owed.front().map(|flip| flip.vblank)
+    }
+
+    fn retire_owed(&mut self, wait: Duration) -> Vec<OwedRetirement> {
+        if self.ready.is_empty()
+            && let Some(front) = self.owed.front()
+        {
+            let limit = Instant::now() + wait;
+            if front.vblank <= limit {
+                Self::wait_until(front.vblank);
+            }
+        }
+        let now = Instant::now();
+        while self.owed.front().is_some_and(|flip| flip.vblank <= now) {
+            if let Some(flip) = self.owed.pop_front() {
+                self.ready.push(Self::retirement(&flip));
+            }
+        }
+        std::mem::take(&mut self.ready)
     }
 }
 
