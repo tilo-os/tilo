@@ -34,6 +34,8 @@ pub mod agent_transport;
 pub mod local_socket;
 pub mod pending_connection;
 pub mod process_binding;
+#[cfg(unix)]
+pub mod registration_gate;
 pub mod service_socket;
 pub mod tools;
 

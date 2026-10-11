@@ -193,6 +193,53 @@ fn a_first_write_in_a_declared_kind_creates_the_record_durably() {
 }
 
 #[test]
+fn stale_original_writer_is_refused_after_restart_but_owner_history_continues() {
+    let profile = profile();
+    let owner = open(&profile, creation(true, false));
+    let actor = automerge::ActorId::from(b"original-sdk-writer".as_slice());
+    let mut document = automerge::AutoCommit::new().with_actor(actor.clone());
+    let mut stale = document.clone();
+    let first = write(&profile, &mut document, "first");
+    commit(&owner, &first, Some(KIND)).unwrap();
+    let second = write(&profile, &mut document, "second");
+    commit(&owner, &second, None).unwrap();
+    drop(owner);
+
+    let owner = open(&profile, creation(true, false));
+    let stored = std::fs::read(profile.dir.path().join(ROOM_OWNER)).unwrap();
+    let retry = write(&profile, &mut stale, "from a stale cache");
+    let error = commit(&owner, &retry, None).unwrap_err();
+    assert!(error.contains("duplicate seq 1"), "{error}");
+    assert_eq!(text(&owner).as_deref(), Some("second"));
+    assert_eq!(
+        std::fs::read(profile.dir.path().join(ROOM_OWNER)).unwrap(),
+        stored,
+        "a refused stale writer cannot replace committed history"
+    );
+
+    // Restore the committed graph with the same original writer, not another actor.
+    // This private fixture read does not stand in for an admitted SDK read service.
+    let bytes = owner.document(APP, RECORD).unwrap();
+    let mut restored = automerge::AutoCommit::load(&bytes)
+        .unwrap()
+        .with_actor(actor.clone());
+    let before = restored.get_heads();
+    let third = write(&profile, &mut restored, "third");
+    let changes = restored.get_changes(&before);
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].actor_id(), &actor);
+    assert_eq!(changes[0].seq(), 3);
+    commit(&owner, &third, None)
+        .unwrap()
+        .validate_for(&third)
+        .unwrap();
+    drop(owner);
+
+    let reopened = open(&profile, creation(true, false));
+    assert_eq!(text(&reopened).as_deref(), Some("third"));
+}
+
+#[test]
 fn a_missing_record_in_an_undeclared_or_unnamed_kind_is_refused() {
     let profile = profile();
     let owner = open(&profile, creation(true, false));
@@ -530,3 +577,6 @@ fn without_a_current_key_the_owner_admits_no_sealed_write() {
     );
     assert_eq!(text(&owner), None);
 }
+
+#[path = "owner_document_tests.rs"]
+mod document_reads;

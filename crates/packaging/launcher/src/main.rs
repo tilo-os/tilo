@@ -9,8 +9,7 @@
     )
 )]
 
-use std::io::Read;
-use std::os::fd::{FromRawFd, RawFd};
+use std::os::fd::RawFd;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -21,14 +20,7 @@ use launcher::registration_gate::LAUNCH_REGISTRATION_FD_ENV;
 use launcher::run::{IdentitySource, LaunchMode, RunOptions, launch_manifest, run_manifest};
 
 fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
-    if fd < 3 {
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
-    }
-    // SAFETY: the compositor transfers ownership of this inherited descriptor
-    // specifically through `LAUNCH_REGISTRATION_FD_ENV`.
-    let mut gate = unsafe { std::fs::File::from_raw_fd(fd) };
-    let mut release = [0_u8; 1];
-    gate.read_exact(&mut release)
+    runtime_portal::registration_gate::wait_fd(fd)
 }
 
 #[allow(

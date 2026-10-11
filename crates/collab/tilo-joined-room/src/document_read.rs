@@ -4,14 +4,17 @@
 //! or saved for a reader. A new or changed document restores the room's
 //! durable bytes into a [`tilo_peer_state::BoundedStatePeer`] under explicit
 //! limits, rechecks the reader's current membership and document Read
-//! permission there, and refuses a document that is encrypted, causally
-//! incomplete or larger than the caller can hold. A reader that already
+//! permission there. The plaintext API refuses encrypted documents; history
+//! reads require an opener for already-held channel keys. Both refuse causally
+//! incomplete documents or captures larger than the caller can hold. A reader that already
 //! holds the admitted revision is answered from those heads, without
 //! restoring the room again.
 use crate::NativeCommittedView;
 use std::time::SystemTime;
 use tilo_peer_state::{BoundedStatePeer, PeerDocumentReadError, PeerLimits};
 use tilo_user_identity::RevocationList;
+
+type HistoryOpener<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>;
 
 #[cfg(test)]
 thread_local! {
@@ -44,16 +47,6 @@ pub enum DocumentRead {
     Captured(CommittedDocument),
 }
 
-fn revision_of(heads: &[automerge::ChangeHash]) -> [u8; 32] {
-    let mut heads = heads.iter().map(|head| head.0).collect::<Vec<_>>();
-    heads.sort_unstable();
-    let mut hasher = blake3::Hasher::new_derive_key("tilo committed document revision v1");
-    for head in heads {
-        hasher.update(&head);
-    }
-    *hasher.finalize().as_bytes()
-}
-
 impl NativeCommittedView {
     /// Read `app`'s `record` for the device `reader`.
     ///
@@ -69,6 +62,37 @@ impl NativeCommittedView {
         maximum: usize,
         now: SystemTime,
     ) -> Result<DocumentRead, String> {
+        self.read_document_inner(reader, (app, record), known_revision, maximum, now, None)
+    }
+
+    /// Read the same admitted record, opening its retained encrypted history
+    /// through the owner's already-held channel keys when necessary.
+    ///
+    /// # Errors
+    /// Refuses current Read denial, invalid or incomplete sealed provenance,
+    /// unavailable held epochs, conflicting writers or an exceeded byte bound.
+    pub fn read_document_with_history(
+        &self,
+        reader: [u8; 32],
+        route: (&str, &str),
+        known_revision: Option<[u8; 32]>,
+        maximum: usize,
+        now: SystemTime,
+        open: &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>,
+    ) -> Result<DocumentRead, String> {
+        self.read_document_inner(reader, route, known_revision, maximum, now, Some(open))
+    }
+
+    fn read_document_inner(
+        &self,
+        reader: [u8; 32],
+        route: (&str, &str),
+        known_revision: Option<[u8; 32]>,
+        maximum: usize,
+        now: SystemTime,
+        open: Option<HistoryOpener<'_>>,
+    ) -> Result<DocumentRead, String> {
+        let (app, record) = route;
         // Idle apps re-read the revision they already hold. Answer that from
         // the admitted heads. Restoring the room is only for a document this
         // caller does not yet have, or for a route those heads cannot vouch
@@ -76,7 +100,7 @@ impl NativeCommittedView {
         if let Some(known) = known_revision
             && let Some(heads) = self.peer.plaintext_complete_heads(app, record)
         {
-            let revision = revision_of(&heads);
+            let revision = tilo_peer_state::committed_document_revision(&heads);
             if revision == known {
                 self.peer.check_document_read(reader, app, record, now)?;
                 return Ok(DocumentRead::Unchanged(revision));
@@ -96,23 +120,30 @@ impl NativeCommittedView {
         )
         .map_err(|error| error.to_string())?;
         let read = restored.read();
-        let document =
+        let denied = |error| match error {
+            PeerDocumentReadError::Denied => "the reader may not read that document".into(),
+            PeerDocumentReadError::Missing => {
+                format!("the room does not hold {app} record {record:?}")
+            }
+            other => other.to_string(),
+        };
+        let mut closed = |_: &collab_types::SignedOp| Err("history keys unavailable".into());
+        let open = if let Some(open) = open {
+            open
+        } else {
+            // The original plaintext-only API retains its encrypted refusal.
             read.document_read(reader, app, record, now)
-                .map_err(|error| match error {
-                    PeerDocumentReadError::Denied => "the reader may not read that document".into(),
-                    PeerDocumentReadError::Missing => {
-                        format!("the room does not hold {app} record {record:?}")
-                    }
-                    other => other.to_string(),
-                })?;
-        let revision = revision_of(document.heads());
+                .map_err(denied)?;
+            &mut closed
+        };
+        let document = read
+            .capture_document(reader, (app, record), now, maximum, open)
+            .map_err(denied)?;
+        let revision = document.revision();
         if known_revision == Some(revision) {
             return Ok(DocumentRead::Unchanged(revision));
         }
-        let bytes = document.document().clone().save();
-        if bytes.len() > maximum {
-            return Err("the document is larger than the reader can hold".into());
-        }
+        let bytes = document.into_bytes();
         Ok(DocumentRead::Captured(CommittedDocument {
             revision,
             bytes,

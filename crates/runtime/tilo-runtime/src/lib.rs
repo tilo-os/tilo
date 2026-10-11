@@ -145,6 +145,13 @@ pub trait RuntimeServices: Sized {
     /// Returns handshake, descriptor or process-spawn errors.
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child>;
 
+    /// The existing launcher registry used by independent native exec startup.
+    fn native_launcher_services(
+        &self,
+    ) -> Option<std::sync::Arc<dyn tilo_action_broker::services::LauncherServices>> {
+        None
+    }
+
     /// Where MCP answers read the content apps stored; `None` for a host
     /// without a content service.
     fn media(&self) -> Option<std::sync::Arc<dyn MediaReader>> {

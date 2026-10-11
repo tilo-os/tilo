@@ -914,18 +914,22 @@ impl ApplicationDefinition {
     /// The launch target of an instance with no saved record: a new record
     /// of its own, or the room's record (created on first use) for an app
     /// that [keeps one](Self::keeps_room_record).
-    pub fn unsaved_target(&self, records: &RecordStore) -> LaunchTarget {
+    ///
+    /// # Errors
+    /// Preserves an existing record's ownership, identity or storage failure.
+    /// Only a missing primary record permits a new reservation.
+    pub fn unsaved_target(&self, records: &RecordStore) -> Result<LaunchTarget, RecordOpenError> {
         if !self.keeps_room_record() {
-            return LaunchTarget::New;
+            return Ok(LaunchTarget::New);
         }
         let checkout = RecordCheckout::package_primary(self.record_kind.clone());
-        if records.try_open_record(&checkout).is_ok() {
-            LaunchTarget::Record {
+        match records.try_open_record(&checkout) {
+            Ok(_) => Ok(LaunchTarget::Record {
                 checkout,
                 reveal: None,
-            }
-        } else {
-            LaunchTarget::PrimaryNew
+            }),
+            Err(RecordOpenError::MissingRecord) => Ok(LaunchTarget::PrimaryNew),
+            Err(error) => Err(error),
         }
     }
 

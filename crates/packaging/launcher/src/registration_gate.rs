@@ -19,7 +19,7 @@ use std::process::Command;
 /// The environment variable naming the inherited descriptor the launcher
 /// waits on. Internal to a host and the launcher it starts; the launcher
 /// removes it before anything it runs could inherit it.
-pub const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
+pub use runtime_portal::registration_gate::ENV as LAUNCH_REGISTRATION_FD_ENV;
 
 /// The host's end of a launch's registration gate.
 ///

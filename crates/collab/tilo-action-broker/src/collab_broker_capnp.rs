@@ -12080,6 +12080,29 @@ struct LaunchRefusal {
     answerable: bool,
 }
 
+#[cfg(target_os = "linux")]
+fn require_executing_binding(
+    services: &HostServices,
+    pid: u32,
+    handoff: &CollabLaunchHandoff,
+    peer: &str,
+) -> Result<(), LaunchRefusal> {
+    if !handoff.executing_peer
+        && services.launcher.as_ref().is_some_and(|service| {
+            service.requires_executing_peer(pid, &handoff.app_id, &handoff.workspace_id)
+        })
+    {
+        return Err(LaunchRefusal {
+            error: capnp::Error::failed(
+                "independent launch requires its original executing-peer binding".into(),
+            ),
+            peer: peer.to_owned(),
+            answerable: true,
+        });
+    }
+    Ok(())
+}
+
 async fn authenticate_launcher_handoff(
     stream: &mut tokio::net::UnixStream,
     services: &HostServices,
@@ -12136,6 +12159,8 @@ async fn authenticate_launcher_handoff(
             answerable: !handoff.executing_peer,
         })?
         .flatten();
+    #[cfg(target_os = "linux")]
+    require_executing_binding(services, pid, &handoff, &peer)?;
     if let Some(launch) = launch {
         #[cfg(target_os = "linux")]
         let media_process = if handoff.executing_peer {

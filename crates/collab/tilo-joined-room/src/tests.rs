@@ -1777,3 +1777,86 @@ fn legacy_int_array_owner_file_still_loads() {
     );
     assert_eq!(state(&reread), after);
 }
+
+#[test]
+fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owner() {
+    let joined = enrolled();
+    let reader = member().verifying_key().to_bytes();
+    let (keys, _) = rotated_channel();
+    commit_sealed(&joined, &keys);
+    let before = std::fs::read(&joined.path).unwrap();
+    let mut decryptions = 0;
+    let mut opener = |op: &collab_types::SignedOp| {
+        decryptions += 1;
+        let ciphertext = collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
+        keys.open_content(
+            op.artifact,
+            &op.encryption.ok_or("not sealed")?,
+            &ciphertext,
+        )
+        .map(|bytes| bytes.to_vec())
+        .map_err(|error| error.to_string())
+    };
+    let captured = joined
+        .owner
+        .with_current(joined.room, |view| {
+            assert!(
+                view.read_document(reader, APP, "", None, 1024 * 1024, joined.now)
+                    .is_err(),
+                "the plaintext-only door must retain its encrypted refusal"
+            );
+            assert!(
+                view.read_document_with_history(
+                    [0x77; 32],
+                    (APP, ""),
+                    None,
+                    1024 * 1024,
+                    joined.now,
+                    &mut opener
+                )
+                .is_err(),
+                "a stranger cannot open history"
+            );
+            view.read_document_with_history(
+                reader,
+                (APP, ""),
+                None,
+                1024 * 1024,
+                joined.now,
+                &mut opener,
+            )
+        })
+        .unwrap();
+    let DocumentRead::Captured(captured) = captured else {
+        panic!("a first encrypted read captures history");
+    };
+    assert_eq!(
+        decryptions, 1,
+        "only the admitted member's read opens the write"
+    );
+    let doc = AutoCommit::load(&captured.bytes).unwrap();
+    assert_eq!(
+        doc.get(ROOT, "topic")
+            .unwrap()
+            .unwrap()
+            .0
+            .into_string()
+            .unwrap(),
+        SECRET
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+    let path = joined.path.clone();
+    let room = joined.room;
+    let now = joined.now;
+    drop(joined.owner);
+    let reopened = open_file(&path).unwrap();
+    assert!(matches!(reopened.with_current(room, |view| {
+        view.read_document_with_history(reader, (APP, ""), Some(captured.revision),
+            1024 * 1024, now, &mut |op| {
+                keys.open_content(op.artifact, &op.encryption.ok_or("not sealed")?,
+                    &collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?)
+                    .map(|bytes| bytes.to_vec()).map_err(|error| error.to_string())
+            })
+    }).unwrap(), DocumentRead::Unchanged(revision) if revision == captured.revision));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}

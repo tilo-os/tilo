@@ -27,6 +27,10 @@ use tilo_action_broker::{
 use tilo_installed_apps::InstalledApp;
 
 #[cfg(target_os = "linux")]
+mod creation;
+#[cfg(target_os = "linux")]
+mod independent;
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -45,6 +49,10 @@ pub struct Apps {
     #[cfg(target_os = "linux")]
     launcher_candidates: Vec<PathBuf>,
     launched: Arc<Launched>,
+    #[cfg(target_os = "linux")]
+    independent: independent::IndependentLaunches,
+    #[cfg(target_os = "linux")]
+    development: bool,
     /// Who may capture from which device, in `state/device-grants` of the
     /// profile; opened on the first macOS launch.
     #[cfg(target_os = "macos")]
@@ -64,6 +72,19 @@ impl Apps {
             home.as_deref().map_or_else(PathBuf::new, data_home),
             launcher_candidates(),
         )
+    }
+
+    pub(crate) fn from_env_in_mode(profile: &Path, room: &str, development: bool) -> Self {
+        let apps = Self::from_env(profile, room);
+        #[cfg(target_os = "linux")]
+        {
+            apps.with_development_mode(development)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = development;
+            apps
+        }
     }
 
     /// Explicit stores and places, for tests.
@@ -89,9 +110,20 @@ impl Apps {
             #[cfg(target_os = "linux")]
             launcher_candidates,
             launched: Arc::default(),
+            #[cfg(target_os = "linux")]
+            independent: independent::IndependentLaunches::default(),
+            #[cfg(target_os = "linux")]
+            development: false,
             #[cfg(target_os = "macos")]
             device_grants: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Only the host's explicit development startup selects this policy.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_development_mode(mut self, development: bool) -> Self {
+        self.development = development;
+        self
     }
 
     /// This profile's device grants.
@@ -197,7 +229,9 @@ impl Apps {
             blobs: self.root.join(BLOB_SOCKET),
         };
         #[cfg(target_os = "linux")]
-        let mut launch = linux::launch(self, &app, &sockets)?;
+        let original = self.original_launch(&app)?;
+        #[cfg(target_os = "linux")]
+        let mut launch = linux::launch(self, &app, &sockets, &original)?;
         #[cfg(target_os = "macos")]
         let mut launch = macos::launch(self, &app, &sockets)?;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -205,7 +239,14 @@ impl Apps {
             let _ = (&app, &sockets);
             return Err("refusing to launch: no app sandbox on this platform".into());
         };
-        if !self.launched.record(launch.pid, &app.package_id, room) {
+        #[cfg(target_os = "linux")]
+        let creation = original.creation;
+        #[cfg(not(target_os = "linux"))]
+        let creation = None;
+        if !self
+            .launched
+            .record(launch.pid, &app.package_id, room, creation)
+        {
             launch.kill();
             return Err(format!(
                 "refusing to keep {app_id} running: its process could not be identified"
@@ -223,6 +264,26 @@ impl Apps {
 }
 
 impl LauncherServices for Apps {
+    #[cfg(target_os = "linux")]
+    fn authenticated_launch(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<tilo_action_broker::services::AuthenticatedApplicationLaunch>, String> {
+        if self.launched.attest(pid, app, room) {
+            return Ok(Some(
+                tilo_action_broker::services::AuthenticatedApplicationLaunch {
+                    creation: self.launched.creation(pid, app, room),
+                    continuation_instance: None,
+                    development_source: None,
+                    execution_custody: None,
+                },
+            ));
+        }
+        Ok(self.independent.authenticated(pid, app, room))
+    }
+
     fn applications(&self) -> Vec<LaunchableApplication> {
         let mut apps = self.installed();
         apps.retain(|app| app.has_gui);
@@ -251,8 +312,51 @@ impl LauncherServices for Apps {
     }
 
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
-        self.launched.attest(pid, app, room)
+        if self.launched.attest(pid, app, room) {
+            return true;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            self.independent.attested(pid, app, room)
+        }
+        #[cfg(not(target_os = "linux"))]
+        false
     }
+    fn application_creation_evidence(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<tilo_action_broker::services::ApplicationCreationEvidence>, String> {
+        if self.launched.attest(pid, app, room) {
+            return Ok(self.launched.creation(pid, app, room));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Ok(self.independent.creation(pid, app, room))
+        }
+        #[cfg(not(target_os = "linux"))]
+        Ok(None)
+    }
+    #[cfg(target_os = "linux")]
+    fn register_independent_launch(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+        executable: &Path,
+    ) -> Result<(), String> {
+        if uuid::Uuid::parse_str(room).is_err() || room != self.room {
+            return Err("native registration requires this runtime's exact workspace".into());
+        }
+        let source = self.launch_source(app, executable)?;
+        self.register_independent(pid, pid, (app, room), source)
+    }
+    #[cfg(target_os = "linux")]
+    fn requires_executing_peer(&self, pid: u32, app: &str, room: &str) -> bool {
+        !self.launched.attest(pid, app, room)
+    }
+
     #[cfg(target_os = "linux")]
     fn attest_executing_process(
         &self,
@@ -267,6 +371,7 @@ impl LauncherServices for Apps {
         self.launched.attest(launcher_pid, app, room)
             && peer.belongs_to(launcher_pid, start)
             && self.launched.attest(launcher_pid, app, room)
+            || self.independent.executing(launcher_pid, peer, (app, room))
     }
 }
 
@@ -344,12 +449,19 @@ struct LaunchRecord {
     start_time: u64,
     app: String,
     room: String,
+    creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
 }
 
 impl Launched {
     /// Record `pid` as `app` in `room`; `false` when its start time cannot
     /// be read.
-    fn record(&self, pid: u32, app: &str, room: &str) -> bool {
+    fn record(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+        creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
+    ) -> bool {
         let Some(start_time) = process_start_time(pid) else {
             return false;
         };
@@ -362,6 +474,7 @@ impl Launched {
                     start_time,
                     app: app.to_owned(),
                     room: room.to_owned(),
+                    creation,
                 },
             );
         true
@@ -377,6 +490,26 @@ impl Launched {
         let (recorded, same) = (record.start_time, record.app == app && record.room == room);
         drop(launches);
         same && process_start_time(pid) == Some(recorded)
+    }
+
+    /// Original declarations belong to this live launch, never to a later
+    /// package replacement or a process that reused the same pid.
+    fn creation(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Option<tilo_action_broker::services::ApplicationCreationEvidence> {
+        let start = process_start_time(pid)?;
+        let launches = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = launches.get(&pid)?;
+        let creation = (record.start_time == start && record.app == app && record.room == room)
+            .then(|| record.creation.clone())
+            .flatten();
+        drop(launches);
+        (process_start_time(pid) == Some(start))
+            .then_some(creation)
+            .flatten()
     }
 
     /// Forget `pid`, once its process has been reaped.
@@ -463,3 +596,13 @@ fn launcher_candidates() -> Vec<PathBuf> {
 #[cfg(test)]
 #[path = "apps_tests.rs"]
 mod tests;
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn launched_app_fixture(profile_root: &Path, room: &str) -> Arc<Apps> {
+    tests::launched_app_fixture(profile_root, room)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn independent_source_fixture(base: &Path, app: &str, kind: &str) -> PathBuf {
+    tests::independent_source_fixture(base, app, kind)
+}

@@ -62,6 +62,7 @@ fn start(name: &str, fd: RawFd) -> Result<Hub, NotAvailable> {
     let upstream = {
         let mut socket = upstream;
         if name == "collab" && std::env::var(crate::process_binding::ENV).as_deref() == Ok("1") {
+            crate::registration_gate::wait_inherited()?;
             crate::process_binding::complete(&mut socket)?;
         }
         socket

@@ -617,23 +617,23 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// resource of the provider's whose kind or label it is (`canvas.artwork`,
     /// `Canvas`), or, shaped like a handle another connection issued, what
     /// to name instead. `None` when it is neither.
-    async fn named_resource(&self, target: &RemoteActionTarget) -> Option<Result<String, String>> {
+    async fn named_resource(&self, target: &RemoteActionTarget) -> Result<Option<String>, String> {
         let name = &target.address.resource;
         if name.is_empty()
             || name.len() > RESOURCE_NAME_BYTES
             || tilo_actions::remote::workspace_provider_room(&target.provider).is_some()
         {
-            return None;
+            return Ok(None);
         }
-        let rows = self.top_resources(&target.provider).await.ok()?;
+        let rows = self.top_resources(&target.provider).await?;
         match page::resource_named(name, &rows) {
-            Some(Ok(id)) if id == *name => None,
-            Some(found) => Some(found),
-            None if page::looks_like_handle(name) => Some(Err(format!(
+            Some(Ok(id)) if id == *name => Ok(None),
+            Some(found) => found.map(Some),
+            None if page::looks_like_handle(name) => Err(format!(
                 "{name} is no handle of this connection (handles last one connection); name the resource by its kind or label instead: {}",
                 resource_list(&rows)
-            ))),
-            None => None,
+            )),
+            None => Ok(None),
         }
     }
     /// The resource id a query's `parent_resource` means: `name` when
@@ -694,7 +694,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// Why `target` is not offered, in terms the caller can act on: the
     /// actions its resource has, or the resources there are. Only what the
     /// caller's own directory lists is named.
-    async fn not_offered(&self, target: &RemoteActionTarget) -> String {
+    async fn not_offered(&self, target: &RemoteActionTarget) -> Result<String, String> {
         let address = &target.address;
         let listed = self
             .ask(CatalogueQuery {
@@ -703,9 +703,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 max_results: 128,
                 ..CatalogueQuery::default()
             })
-            .await
-            .map(|page| page.rows)
-            .unwrap_or_default();
+            .await?
+            .rows;
         let actions = listed
             .iter()
             .filter(|row| row.resource.id == address.resource)
@@ -724,21 +723,18 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 |row| format!("{} ({handle})", row.resource.label),
             );
         if !actions.is_empty() {
-            return format!(
+            return Ok(format!(
                 "{named} has no action {}; its actions: {}",
                 address.action,
                 actions.join(", ")
-            );
+            ));
         }
-        let rows = self
-            .top_resources(&target.provider)
-            .await
-            .unwrap_or_default();
-        format!(
+        let rows = self.top_resources(&target.provider).await?;
+        Ok(format!(
             "no resource {named} offers {} here; name one of: {}",
             address.action,
             resource_list(&rows)
-        )
+        ))
     }
     /// `page` compact, describing only its first `described` rows. An app
     /// instance's resource ids are opaque and long, and named by handles;
@@ -1608,9 +1604,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     .await?;
                 if page.rows.is_empty()
                     && !page.stale_cursor
-                    && let Some(named) = self.named_resource(&target).await
+                    && let Some(named) = self.named_resource(&target).await?
                 {
-                    target.address.resource = named?;
+                    target.address.resource = named;
                     page = self.ask(CatalogueQuery::resolve(&target, revision)).await?;
                 }
                 if page.stale_cursor {
@@ -1618,7 +1614,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 }
                 match page.rows.first() {
                     Some(row) => Ok(json!({"row":self.resolved(row, &target.provider)})),
-                    None => Err(self.not_offered(&target).await),
+                    None => Err(self.not_offered(&target).await?),
                 }
             }
             "tilo_invoke" => self.invoke(parse(args)?).await,
@@ -1816,16 +1812,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 if let Ok(peer) = target.provider.parse::<u64>() {
                     self.addressed(Some(peer), None, false).await?;
                 }
-                let Some(named) = self.named_resource(&target).await else {
-                    return Err(self.not_offered(&target).await);
+                let Some(named) = self.named_resource(&target).await? else {
+                    return Err(self.not_offered(&target).await?);
                 };
-                target.address.resource = named?;
+                target.address.resource = named;
                 match self
                     .run_with_handles(target.clone(), a.arguments, invocation, a.revision, wait)
                     .await
                 {
                     Err(error) if error.contains(&not_offered) => {
-                        return Err(self.not_offered(&target).await);
+                        return Err(self.not_offered(&target).await?);
                     }
                     ran => ran?,
                 }

@@ -139,6 +139,47 @@ fn current_capture(fixture: &Fixture) -> crate::CommittedDocument {
 }
 
 #[test]
+fn first_creation_capture_is_nonempty_loadable_and_respects_its_byte_bound() {
+    use automerge::ReadDoc as _;
+    let fixture = fixture();
+    let captured = created_capture(&fixture);
+    assert!(
+        !captured.bytes.is_empty(),
+        "the actual first-created record must satisfy the broker's nonempty capture contract"
+    );
+    let document = automerge::AutoCommit::load(&captured.bytes).unwrap();
+    assert_eq!(
+        document.keys(automerge::ROOT).count(),
+        0,
+        "apps still start empty"
+    );
+    let maximum = captured.bytes.len().saturating_sub(1);
+    let before = std::fs::read(fixture.directory.path().join("owner.json")).unwrap();
+    fixture
+        .owner
+        .with_current(crate::RoomId::parse(testing::ROOM).unwrap(), |view| {
+            let result = view.read_document(
+                fixture.certificate.device_public_key,
+                "so.tilo.chat",
+                "",
+                None,
+                maximum,
+                fixture.now,
+            );
+            assert!(
+                matches!(result, Err(ref error) if error.contains("Capacity")),
+                "a too-small capture must be refused"
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        std::fs::read(fixture.directory.path().join("owner.json")).unwrap(),
+        before
+    );
+}
+
+#[test]
 fn creator_initialization_is_durable_and_compare_and_swaps_original_revision() {
     use automerge::{ReadDoc as _, transaction::Transactable as _};
     let fixture = fixture();

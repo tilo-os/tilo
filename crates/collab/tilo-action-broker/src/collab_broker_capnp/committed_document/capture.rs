@@ -134,6 +134,102 @@ mod tests {
             &self.0
         }
     }
+
+    #[test]
+    fn actual_empty_record_passes_the_broker_capture_and_creation_wire_codec() {
+        use automerge::ReadDoc as _;
+        use runtime_collab::committed_document::{
+            CreationChunk, CreationReceipt, CreationWorkspace, Reply,
+        };
+        use tilo_peer_state::{BoundedStatePeer, PeerLimits, SeedDocument, SeedState, StatePeer};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
+        let person = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[22; 32]);
+        let mut certificate = DeviceCert {
+            user_public_key: person.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Empty record fixture".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &person).unwrap();
+        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let roster = vec![certificate.clone()];
+        let now = std::time::SystemTime::now();
+        let mut source = StatePeer::new(
+            room,
+            certificate.clone(),
+            roster.clone(),
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        source
+            .install_seed(
+                SeedState {
+                    room_changes: tilo_peer_state::seed_room(room, &certificate, &roster).unwrap(),
+                    documents: vec![SeedDocument {
+                        app_id: "test.app".into(),
+                        record_id: String::new(),
+                        kind: "test.record".into(),
+                        bytes: automerge::AutoCommit::new().save(),
+                    }],
+                },
+                &device,
+                now,
+            )
+            .unwrap();
+        let bounded = BoundedStatePeer::restore(
+            &source.durable().unwrap(),
+            room,
+            &certificate,
+            &roster,
+            &RevocationList::new(),
+            now,
+            &PeerLimits::default(),
+        )
+        .unwrap();
+        let record = bounded
+            .read()
+            .capture_document(
+                certificate.device_public_key,
+                ("test.app", ""),
+                now,
+                64 * 1024,
+                &mut |_| Err("empty plaintext record has no epoch opener".into()),
+            )
+            .unwrap();
+        let reservation = Arc::new(Budget::default()).reserve().unwrap();
+        let mut stream = Capture::new(
+            Box::new(Bytes(record.into_bytes())),
+            reservation,
+            1,
+            [3; 32],
+        )
+        .unwrap();
+        let reply = Reply::Created {
+            receipt: CreationReceipt {
+                token: [7; 16],
+                workspace: CreationWorkspace {
+                    id: room.into(),
+                    name: "Empty fixture room".into(),
+                },
+            },
+            chunk: CreationChunk::from_reply(stream.chunk(0, [0; 16]).unwrap()).unwrap(),
+        };
+        assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
+        let Reply::Created { chunk, .. } = reply else {
+            panic!("actual creation chunk")
+        };
+        let document = automerge::AutoCommit::load(&chunk.bytes).unwrap();
+        assert_eq!(
+            document.keys(automerge::ROOT).count(),
+            0,
+            "capturing never seeds app content"
+        );
+    }
     #[test]
     fn committed_capture_reserves_before_work_and_releases_on_drop() {
         let budget = Arc::new(Budget::default());

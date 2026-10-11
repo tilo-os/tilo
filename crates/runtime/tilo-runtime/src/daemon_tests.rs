@@ -514,6 +514,7 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
                     },
                     None,
                     &search,
+                    None,
                 )
                 .unwrap();
             }
@@ -567,6 +568,7 @@ fn native_socket_serves_parallel_requests() {
                 },
                 None,
                 &search,
+                None,
             )
         })
     };

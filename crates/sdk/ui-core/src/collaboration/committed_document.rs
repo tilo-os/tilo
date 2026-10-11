@@ -210,7 +210,7 @@ impl Reads {
     fn refresh_requested(&self, key: &str) -> bool {
         self.2.lock().is_ok_and(|mut requests| requests.remove(key))
     }
-    fn legacy(&self, key: &str) -> Result<(), String> {
+    pub(super) fn legacy(&self, key: &str) -> Result<(), String> {
         self.0
             .lock()
             .map_err(|_| "document reads poisoned")?

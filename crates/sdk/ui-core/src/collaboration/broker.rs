@@ -1537,6 +1537,9 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
 /// overload is detected by a subscription task on the shovel thread.
 #[derive(Clone)]
 struct BridgeState {
+    /// The native component constructor owns and applies committed captures.
+    /// The documented untyped SDK client retains its sealed collaboration flow.
+    native_documents: bool,
     document_reads: committed_document::Reads,
     healthy: Arc<AtomicBool>,
     publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
@@ -1686,6 +1689,7 @@ impl BridgeState {
             owner: owner_wake.clone(),
         };
         Self {
+            native_documents: true,
             document_reads: committed_document::Reads::default(),
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
@@ -2209,6 +2213,7 @@ impl HostSessionConnector {
 /// endpoint, used by tests and headless diagnostics without environment races.
 enum SdkConnectSource {
     Env,
+    LegacyEnv,
     Fd(RawFd),
     Host(HostSessionConnector, RouteSpec),
 }
@@ -2219,7 +2224,7 @@ impl SdkConnectSource {
             SdkConnectSource::Host(_, _) => Err(runtime_portal::NotAvailable::ConnectionFailed(
                 std::io::Error::other("host session requires worker-side identity admission"),
             )),
-            SdkConnectSource::Env => runtime_collab::try_connect(),
+            SdkConnectSource::Env | SdkConnectSource::LegacyEnv => runtime_collab::try_connect(),
             SdkConnectSource::Fd(fd) => {
                 use capnp_rpc::rpc_twoparty_capnp;
                 let unix = runtime_portal::UnixCapnpClient::from_connected_fd(
@@ -3114,6 +3119,14 @@ impl CollaborationManager {
     }
 
     pub(super) fn new_scoped(record: Option<String>, record_kind: Option<String>) -> Self {
+        Self::new_scoped_mode(record, record_kind, false)
+    }
+
+    pub(super) fn new_native_scoped(record: Option<String>, record_kind: Option<String>) -> Self {
+        Self::new_scoped_mode(record, record_kind, true)
+    }
+
+    fn new_scoped_mode(record: Option<String>, record_kind: Option<String>, native: bool) -> Self {
         // Without an inherited service there is nothing to reach; say so
         // without starting a worker.
         if runtime_portal::service_fd("collab").is_none() {
@@ -3121,8 +3134,13 @@ impl CollaborationManager {
         }
         let (app_id, cluster_id) = auto_hello_env();
         super::channel_settings::install(&app_id);
+        let source = if native {
+            SdkConnectSource::Env
+        } else {
+            SdkConnectSource::LegacyEnv
+        };
         Self::connect_in_background(
-            SdkConnectSource::Env,
+            source,
             SdkIdentitySource::Inherited(cluster_id),
             RouteSpec {
                 app_id,
@@ -3316,7 +3334,8 @@ impl CollaborationManager {
     ) -> Result<(BrokerTransport, mpsc::Receiver<InitStatus>), runtime_portal::NotAvailable> {
         let (outbound_tx, outbound_rx) = tokio_mpsc::channel::<QueuedSdkCommand>(SDK_COMMAND_QUEUE);
         let (inbound_tx, inbound_rx) = tokio_mpsc::channel::<QueuedCollabEvent>(SDK_EVENT_QUEUE);
-        let state = BridgeState::new();
+        let mut state = BridgeState::new();
+        state.native_documents = !matches!(source, SdkConnectSource::LegacyEnv);
         let inbound = InboundBridge::new(inbound_tx, state.clone());
         let (media_tx, media_rx) = native_media::channel(inbound.clone());
         let (action_directory_tx, action_directory_rx) =
@@ -4219,19 +4238,26 @@ async fn ensure_sdk_route(
         // agent cannot start deciding against stale local fallback data.
         spawn_action_catalogue_stream(&channel, inbound_tx).await?;
     }
-    let committed = committed_document::install(
-        &channel,
-        spec,
-        inbound_tx,
-        committed_document::NativeReadJoin {
-            client: client.clone(),
-            presentation: identity_bytes.to_vec(),
-            participant_handle: participant_handle.unwrap_or("").into(),
-            participant_kind: participant_kind.into(),
-            record_kind: record_kind.into(),
-        },
-    )
-    .await?;
+    let committed = if inbound_tx.state.native_documents {
+        committed_document::install(
+            &channel,
+            spec,
+            inbound_tx,
+            committed_document::NativeReadJoin {
+                client: client.clone(),
+                presentation: identity_bytes.to_vec(),
+                participant_handle: participant_handle.unwrap_or("").into(),
+                participant_kind: participant_kind.into(),
+                record_kind: record_kind.into(),
+            },
+        )
+        .await?
+    } else {
+        // Consumer selection does not change broker admission, record access,
+        // launcher custody or owner commit checks. Native owners never use it.
+        inbound_tx.state.document_reads.legacy(&channel_id)?;
+        false
+    };
     if committed {
         // This reply contains only the original host-retained launch instance;
         // a record label or app environment never becomes private authority.

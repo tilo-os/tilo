@@ -21,8 +21,9 @@ mod backend;
 mod bounded;
 pub use bounded::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, PeerDeliveryPolicy,
-    PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError, PeerLimits, PeerMediaCall,
-    PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess,
+    PeerDeliveryPolicyError, PeerDocumentCapture, PeerDocumentRead, PeerDocumentReadError,
+    PeerLimits, PeerMediaCall, PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations,
+    PeerRoomAccess, committed_document_revision,
 };
 #[cfg(test)]
 pub(crate) mod json_resource_tests;
@@ -39,6 +40,7 @@ mod native_publication;
 pub use native_publication::NativePublicationCut;
 mod resources;
 mod sealed_compaction;
+mod sealed_history;
 pub use media_governance::VerifiedSecurityMetadataOnly;
 pub use sealed_compaction::SealCheckpoint;
 
@@ -2008,6 +2010,10 @@ impl StatePeer {
                 // Every check on the sealed envelope, its author's signature over
                 // the ciphertext included, passed above: only now is it opened,
                 // and the plaintext takes the normal admission path below.
+                // Keep the same signed ciphertext provenance as a keyless
+                // replica. Bounds are checked before opening, and this candidate
+                // is installed only after the plaintext is fully admitted.
+                Self::retain_sealed(&mut candidate, (*envelope).clone())?;
                 let plaintext = open(&envelope)?;
                 candidate.encryption_required = true;
                 DocumentMutation::decode(&plaintext).map_err(err)?
@@ -2227,6 +2233,26 @@ impl StatePeer {
     ) -> Result<AdmissionReport, AdmissionError> {
         let admitted =
             DocumentAdmission::from_op(&self.core.room, &route.app, &route.record, &envelope)?;
+        Self::retain_sealed(&mut candidate, envelope)?;
+        let primary = if self.core.admission_v5 {
+            self.core.exact_admissions.insert(&admitted)?;
+            InputDisposition::Accepted(admitted)
+        } else {
+            InputDisposition::MetadataOnly
+        };
+        candidate.channel = validated;
+        candidate.encryption_required = true;
+        self.core.documents.insert(route, candidate);
+        Ok(AdmissionReport::new(
+            primary,
+            ReceiveOutcome {
+                changed: true,
+                metadata_changed: true,
+                ..Default::default()
+            },
+        ))
+    }
+    fn retain_sealed(candidate: &mut Document, envelope: SignedOp) -> Result<(), AdmissionError> {
         let history = if envelope.op_class == OpClass::Compaction {
             sealed_compaction::supersede(
                 &candidate.sealed,
@@ -2238,84 +2264,25 @@ impl StatePeer {
             history.push(envelope);
             history
         };
-        let held: usize = history.iter().map(|op| op.payload.len()).sum();
+        let held = history.iter().try_fold(0usize, |held, op| {
+            held.checked_add(op.payload.len())
+                .ok_or("sealed history byte count overflow")
+        })?;
         if history.len() > MAX_SEALED_OPS || held > MAX_SEALED_BYTES {
             return Err(
                 "sealed record history is full; a key holder must compact it (StatePeer::compact_sealed_history)"
                     .into(),
             );
         }
-        let primary = if self.core.admission_v5 {
-            self.core.exact_admissions.insert(&admitted)?;
-            InputDisposition::Accepted(admitted)
-        } else {
-            InputDisposition::MetadataOnly
-        };
-        candidate.channel = validated;
-        candidate.encryption_required = true;
         candidate.sealed = history;
-        self.core.documents.insert(route, candidate);
-        Ok(AdmissionReport::new(
-            primary,
-            ReceiveOutcome {
-                changed: true,
-                metadata_changed: true,
-                ..Default::default()
-            },
-        ))
+        Ok(())
     }
     /// Reinstall `route`'s stored sealed history, checking every write as it
     /// was admitted: sealed for this exact route, signed by its author, with
     /// exact admission evidence and within the record's watermark and bounds.
     /// A compaction is only ever first and covers none of the later writes.
     fn restore_sealed(&mut self, route: &Route, ops: Vec<SignedOp>) -> Result<(), String> {
-        let held: usize = ops.iter().map(|op| op.payload.len()).sum();
-        if ops.is_empty() || ops.len() > MAX_SEALED_OPS || held > MAX_SEALED_BYTES {
-            return Err("sealed record history outside its bounds".into());
-        }
-        let document = self
-            .core
-            .documents
-            .get(route)
-            .ok_or("sealed history for a record this state does not hold")?;
-        if !document.encryption_required || !document.sealed.is_empty() {
-            return Err("sealed history for a record that is not encrypted".into());
-        }
-        for op in &ops {
-            collab_types::verify_op(op).map_err(err)?;
-            let payload = collab_types::validate_whole_document_payload_route(
-                &route.app,
-                &self.core.room,
-                &route.record,
-                op,
-            )
-            .map_err(err)?;
-            if !matches!(
-                payload,
-                collab_types::WholeDocumentPayload::Encrypted { .. }
-            ) {
-                return Err("sealed history holds a cleartext write".into());
-            }
-            let admitted =
-                DocumentAdmission::from_op(&self.core.room, &route.app, &route.record, op)
-                    .map_err(err)?;
-            if self.core.exact_admissions.get(&admitted.key) != Some(&admitted.operation_id) {
-                return Err("sealed history lacks exact admission evidence".into());
-            }
-            if document
-                .channel
-                .last_seq_per_author
-                .get(&op.author)
-                .is_none_or(|floor| *floor < op.seq)
-            {
-                return Err("sealed history is ahead of the record's watermark".into());
-            }
-        }
-        sealed_compaction::check_stored(&ops, &document.channel.last_seq_per_author)?;
-        if let Some(document) = self.core.documents.get_mut(route) {
-            document.sealed = ops;
-        }
-        Ok(())
+        sealed_history::restore(&mut self.core, route, ops)
     }
     pub fn room_message(&self) -> NeighbourMsg {
         let changes = self

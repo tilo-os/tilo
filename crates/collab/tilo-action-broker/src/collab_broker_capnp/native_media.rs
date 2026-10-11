@@ -68,14 +68,18 @@ pub(super) struct LocalAppConnection {
     pub(super) app_id: String,
     pub(super) workspace_id: String,
     pub(super) creation: Option<crate::services::ApplicationCreationEvidence>,
+    pub(super) development_source: Option<crate::services::DevelopmentSource>,
     pub(super) continuation_instance: Option<u64>,
     process: PeerProcess,
+    #[cfg(target_os = "linux")]
+    execution_custody: Option<crate::services::ExecutionCustody>,
     connected: AtomicBool,
 }
 
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
 pub(super) struct PeerProcess {
+    pid: u32,
     task: Arc<std::os::fd::OwnedFd>,
     launcher: Option<Arc<std::os::fd::OwnedFd>>,
 }
@@ -108,6 +112,7 @@ impl PeerProcess {
             return None;
         }
         let process = Self {
+            pid: u32::try_from(stream.peer_cred().ok()?.pid()?).ok()?,
             task: Arc::new(owned),
             launcher: None,
         };
@@ -119,6 +124,7 @@ impl PeerProcess {
         peer: runtime_portal::process_binding::ExecutingPeer,
     ) -> Option<Self> {
         let process = Self {
+            pid: peer.pid(),
             task: Arc::new(peer.into_pidfd()),
             launcher: Some(self.task),
         };
@@ -197,7 +203,10 @@ impl LocalAppConnection {
                 app_id,
                 workspace_id,
                 creation: launch.creation,
+                development_source: launch.development_source,
                 continuation_instance: launch.continuation_instance,
+                #[cfg(target_os = "linux")]
+                execution_custody: launch.execution_custody,
                 process,
                 connected: AtomicBool::new(true),
             })
@@ -213,7 +222,14 @@ impl LocalAppConnection {
         })
     }
     pub(super) fn current(&self) -> bool {
-        self.connected.load(Ordering::Acquire) && self.process.alive()
+        let live = self.connected.load(Ordering::Acquire) && self.process.alive();
+        #[cfg(target_os = "linux")]
+        let live = live
+            && self
+                .execution_custody
+                .as_ref()
+                .is_none_or(|check| (check.0)(self.process.pid));
+        live
     }
     pub(super) fn stop(&self) {
         self.connected.store(false, Ordering::Release);
@@ -275,6 +291,7 @@ fn watch_death(
         .as_ref()
         .map(|task| {
             tokio::io::unix::AsyncFd::new(PeerProcess {
+                pid: process.pid,
                 task: Arc::clone(task),
                 launcher: None,
             })

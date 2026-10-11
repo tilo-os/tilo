@@ -332,7 +332,9 @@ pub(crate) fn authenticated_window_launch(
             return Some(
                 tilo_action_broker::services::AuthenticatedApplicationLaunch {
                     creation: launch.identity.application_creation.clone(),
+                    development_source: None,
                     continuation_instance: launch.continuation_instance,
+                    execution_custody: None,
                 },
             );
         }
@@ -358,7 +360,9 @@ fn take_in_process_window_launch(
     Some(
         tilo_action_broker::services::AuthenticatedApplicationLaunch {
             creation: launch.identity.application_creation,
+            development_source: None,
             continuation_instance: launch.continuation_instance,
+            execution_custody: None,
         },
     )
 }

@@ -15,6 +15,7 @@ pub struct NativeDocumentReadContext {
     certificate: tilo_user_identity::DeviceCert,
     record_kind: Option<String>,
     creation: Option<crate::services::ApplicationCreationEvidence>,
+    development_source: Option<crate::services::DevelopmentSource>,
     revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
 }
 
@@ -41,11 +42,14 @@ impl NativeDocumentReadContext {
     pub fn application_creation(&self) -> Option<&crate::services::ApplicationCreationEvidence> {
         self.creation.as_ref()
     }
+    pub fn development_source(&self) -> Option<&crate::services::DevelopmentSource> {
+        self.development_source.as_ref()
+    }
     fn prepare_application(
         &self,
         service: &dyn NativeDocumentReads,
     ) -> Result<Option<CreationWorkspace>, String> {
-        if self.application_creation().is_some() {
+        if self.application_creation().is_some() || self.development_source().is_some() {
             let created = service.prepare_application(self)?;
             self.revalidate()?;
             return Ok(created);
@@ -248,6 +252,10 @@ impl CapnpChannelHandle {
             .as_ref()
             .filter(|_| admitted.agent_id.is_none())
             .and_then(|local| local.creation.clone());
+        let development_source = local
+            .as_ref()
+            .filter(|_| admitted.agent_id.is_none())
+            .and_then(|local| local.development_source.clone());
         let state = Arc::downgrade(&self.state);
         let checked_route = route.clone();
         let revalidate = Arc::new(move || {
@@ -281,6 +289,7 @@ impl CapnpChannelHandle {
             certificate,
             record_kind: self.record_kind.clone(),
             creation,
+            development_source,
             revalidate,
         };
         context.revalidate()?;

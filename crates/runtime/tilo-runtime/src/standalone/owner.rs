@@ -13,6 +13,9 @@
 //! owner opens each sealed write only after the sealed envelope passed every
 //! check, and admits the plaintext it verified.
 
+#[path = "owner_documents.rs"]
+mod documents;
+
 use super::workspace::ProfileWorkspace;
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};

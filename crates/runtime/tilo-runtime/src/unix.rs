@@ -148,7 +148,7 @@ impl ServiceConnections {
 /// Own the connected sockets until spawn/exec finishes. Preparation is shared
 /// by the manifest launcher and independently attached native apps.
 pub(crate) struct Connections {
-    _services: ServiceConnections,
+    services: ServiceConnections,
 }
 impl Connections {
     /// # Errors
@@ -159,19 +159,43 @@ impl Connections {
         room: &str,
         sockets: &ServiceSockets<'_>,
     ) -> io::Result<Self> {
-        let services = ServiceConnections::connect(app_id, room, sockets)?;
-        let fds = services.fds();
+        Self::prepare_mode(command, app_id, room, sockets, false)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepare_registered(
+        command: &mut Command,
+        app_id: &str,
+        room: &str,
+        sockets: &ServiceSockets<'_>,
+    ) -> io::Result<Self> {
+        Self::prepare_mode(command, app_id, room, sockets, true)
+    }
+
+    fn prepare_mode(
+        command: &mut Command,
+        app_id: &str,
+        room: &str,
+        sockets: &ServiceSockets<'_>,
+        registered: bool,
+    ) -> io::Result<Self> {
+        let connections = Self {
+            services: ServiceConnections::connect(app_id, room, sockets)?,
+        };
+        let fds = connections.services.fds();
         command
             .env_remove("TILO_SVC_BLOBS_FD")
-            // Independently attached connections use their existing RPC route,
-            // not the manifest launcher's executing-task challenge protocol.
+            .env_remove(launcher::registration_gate::LAUNCH_REGISTRATION_FD_ENV)
             .env_remove(launcher::services::COLLAB_EXECUTING_PEER_ENV)
             // This prepares a fresh transfer, including managed spawn where
             // the future child PID is not yet known. Never carry an ancestor's
             // automatic-exec ownership or command-resume marker into it.
             .env_remove("TILO_RUNTIME_CONNECTION_OWNER_PID")
             .env_remove("TILO_RUNTIME_RESUME_LIVE")
-            .envs(services.env(app_id, room));
+            .envs(connections.services.env(app_id, room));
+        if registered {
+            command.env(launcher::services::COLLAB_EXECUTING_PEER_ENV, "1");
+        }
         // SAFETY: only async-signal-safe fcntl calls run between fork and exec.
         // Both sockets remain owned here until spawn completes. Other descriptors
         // retain CLOEXEC, including endpoints belonging to previously launched apps.
@@ -186,9 +210,12 @@ impl Connections {
                 Ok(())
             });
         }
-        Ok(Self {
-            _services: services,
-        })
+        Ok(connections)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn authenticate(&mut self, app_id: &str, room: &str) -> io::Result<()> {
+        launcher::services::write_collab_executing_handoff(&mut self.services.collab, app_id, room)
     }
 }
 
@@ -203,6 +230,35 @@ pub fn launch(
 ) -> io::Result<Child> {
     let _connections = Connections::prepare(&mut command, app_id, room, sockets)?;
     command.spawn()
+}
+
+/// Spawn only an executable matching its original signed source, then release
+/// the existing registration gate and kernel-bound inherited connection.
+#[cfg(target_os = "linux")]
+pub(crate) fn launch_registered(
+    mut command: Command,
+    app_id: &str,
+    room: &str,
+    sockets: &ServiceSockets<'_>,
+    apps: &crate::apps::Apps,
+) -> io::Result<Child> {
+    let source = apps
+        .launch_source(app_id, Path::new(command.get_program()))
+        .map_err(io::Error::other)?;
+    let mut connections = Connections::prepare_registered(&mut command, app_id, room, sockets)?;
+    let gate = launcher::registration_gate::install(&mut command)?;
+    let mut child = command.spawn()?;
+    let admitted = apps
+        .register_independent(std::process::id(), child.id(), (app_id, room), source)
+        .map_err(io::Error::other)
+        .and_then(|()| connections.authenticate(app_id, room))
+        .and_then(|()| gate.release());
+    if let Err(error) = admitted {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    Ok(child)
 }
 
 /// Open or create a private file, refusing symlinks and shared files.

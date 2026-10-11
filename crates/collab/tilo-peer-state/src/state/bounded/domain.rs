@@ -3,7 +3,9 @@ mod access;
 pub use access::PeerRoomAccess;
 mod admissions;
 mod document;
-pub use document::{PeerDocumentRead, PeerDocumentReadError};
+pub use document::{
+    PeerDocumentCapture, PeerDocumentRead, PeerDocumentReadError, committed_document_revision,
+};
 mod media;
 pub use media::PeerMediaCall;
 mod delivery_policy;

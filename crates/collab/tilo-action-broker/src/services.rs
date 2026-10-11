@@ -425,7 +425,30 @@ impl ObservedApplicationLaunch {
 #[derive(Clone, Debug)]
 pub struct AuthenticatedApplicationLaunch {
     pub creation: Option<ApplicationCreationEvidence>,
+    /// Original executable custody in an explicitly started development host.
+    /// This is not signed-package evidence or a production permission grant.
+    pub development_source: Option<DevelopmentSource>,
     pub continuation_instance: Option<u64>,
+    #[cfg(target_os = "linux")]
+    pub execution_custody: Option<ExecutionCustody>,
+}
+
+/// Host-retained source of an uninstalled build. Never decoded from app traffic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevelopmentSource {
+    pub executable_hash: [u8; 32],
+}
+
+/// Host-retained executable identity, rechecked on each admitted operation.
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+pub struct ExecutionCustody(pub Arc<dyn Fn(u32) -> bool + Send + Sync>);
+
+#[cfg(target_os = "linux")]
+impl std::fmt::Debug for ExecutionCustody {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ExecutionCustody")
+    }
 }
 
 pub trait LauncherServices: Send + Sync {
@@ -508,8 +531,36 @@ pub trait LauncherServices: Send + Sync {
         }
         Ok(Some(AuthenticatedApplicationLaunch {
             creation: self.application_creation_evidence(pid, app, room)?,
+            development_source: None,
             continuation_instance: None,
+            #[cfg(target_os = "linux")]
+            execution_custody: None,
         }))
+    }
+
+    /// Retain original signed source facts before an independent exec connects.
+    /// `pid` comes from the host's kernel-authenticated private control socket;
+    /// source paths and app labels are claims until verified against the original package.
+    /// # Errors
+    /// Refuses missing signed source, changed executables or unavailable registration.
+    #[cfg(target_os = "linux")]
+    fn register_independent_launch(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+        executable: &std::path::Path,
+    ) -> Result<(), String> {
+        let _ = (pid, app, room, executable);
+        Err("this host cannot register original independent launch source".into())
+    }
+
+    /// Whether this retained launch must bind the actual executing task before RPC.
+    /// Independent inherited descriptors cannot downgrade to creator-only custody.
+    #[cfg(target_os = "linux")]
+    fn requires_executing_peer(&self, pid: u32, app: &str, room: &str) -> bool {
+        let _ = (pid, app, room);
+        false
     }
 
     /// Admit kernel-attested executing custody only beneath this exact launch.

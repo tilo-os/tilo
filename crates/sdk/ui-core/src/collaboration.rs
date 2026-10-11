@@ -1244,11 +1244,29 @@ impl CollaborationManager {
     /// don't get handed each other's state. A process with several records
     /// open holds several managers; `tilo_ui::App` swaps its manager on checkout
     /// change.
+    /// This retains the sealed peer collaboration flow. Native component hosts
+    /// use mandatory committed reads; custom hosts use [`Self::for_native_record`].
     pub fn for_record(checkout: &crate::record::RecordCheckout) -> Self {
         Self::new_scoped(
             Some(checkout.id.as_str().to_string()),
             Some(checkout.kind.as_str().to_string()),
         )
+    }
+
+    /// Connect a custom native document owner to the system's committed record.
+    ///
+    /// Generated component applications use their host's native construction
+    /// path automatically. Use this constructor when integrating a custom
+    /// owner that applies committed captures before publishing edits. It never
+    /// substitutes a peer snapshot or local defaults for required native reads.
+    /// [`Self::for_record`] retains the existing sealed SDK collaboration flow.
+    pub fn for_native_record(checkout: &crate::record::RecordCheckout) -> Self {
+        let mut manager = Self::new_native_scoped(
+            Some(checkout.id.as_str().to_string()),
+            Some(checkout.kind.as_str().to_string()),
+        );
+        manager.require_document_authorization();
+        manager
     }
 
     pub(crate) fn require_document_authorization(&mut self) {
@@ -1349,6 +1367,11 @@ impl CollaborationManager {
     #[cfg(not(feature = "broker-transport"))]
     fn new_scoped(_record: Option<String>, _record_kind: Option<String>) -> Self {
         Self::disabled()
+    }
+
+    #[cfg(not(feature = "broker-transport"))]
+    fn new_native_scoped(record: Option<String>, record_kind: Option<String>) -> Self {
+        Self::new_scoped(record, record_kind)
     }
 
     /// True when connected to a live broker — used by the

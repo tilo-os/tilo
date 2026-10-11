@@ -22,7 +22,6 @@ impl BoundedExactAdmissions {
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&AdmissionKey, &[u8; 32])> {
         self.index.0.iter()
     }
-    #[cfg(test)]
     pub(crate) fn get(&self, key: &AdmissionKey) -> Option<&[u8; 32]> {
         self.index.0.get(key)
     }

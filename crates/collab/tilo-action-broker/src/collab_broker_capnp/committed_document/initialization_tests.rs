@@ -79,6 +79,7 @@ fn fixture() -> (Initialization, Arc<Service>, Arc<AtomicBool>) {
     let context = NativeDocumentReadContext {
         route: crate::collab_broker::CrdtRoute::record("so.tilo.chat", workspace().id, ""),
         certificate,
+        development_source: None,
         record_kind: Some("chat.workspace".into()),
         creation: Some(crate::services::ApplicationCreationEvidence {
             package_hash: "a1".repeat(32),

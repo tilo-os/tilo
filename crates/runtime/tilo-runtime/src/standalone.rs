@@ -16,6 +16,7 @@
 //! collaboration history.
 
 mod channels;
+mod committed_documents;
 mod execution;
 mod files;
 mod joined;
@@ -39,7 +40,6 @@ use tilo_action_broker::{
     collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
     collab_core::BrokerChannels,
     collab_history::CollabHistoryStore,
-    collab_outbound::PeerPublisher,
     services::{HostServices, LauncherServices, LegacyWorkspaceProjection, WorkspaceAuthority},
 };
 use tilo_actions::remote::{
@@ -51,6 +51,7 @@ use tilo_identity_host::{
     broker::{IdentityBrokerHandle, WorkspaceMembership},
     provisioning::IdentityStorage,
 };
+#[cfg(test)]
 use tilo_peer_state::owner_commit::OwnerCommitService;
 use workspace::{ProfileGrants, ProfileWorkspace};
 
@@ -64,6 +65,7 @@ pub struct Standalone {
     // replacement of the runtime that supplied its policy time.
     policy_origin: tilo_action_broker::peer_actions::PolicyOrigin,
     broker: BrokerHandle,
+    apps: Arc<apps::Apps>,
     joined: Arc<Joined>,
     _channels: channels::Channels,
     _identity: IdentityBrokerHandle,
@@ -99,7 +101,7 @@ impl Standalone {
         stage("saving the workspace");
         workspace.adopt(&actor)?;
         let workspace = Arc::new(workspace);
-        let apps = Arc::new(apps::Apps::from_env(root, &room_id));
+        let apps = Arc::new(apps::Apps::from_env_in_mode(root, &room_id, dev));
         serve_device_grants(root, &apps);
         let channels = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
@@ -111,7 +113,7 @@ impl Standalone {
             (Arc::clone(&channels), Arc::clone(&fanout)),
         )?;
         stage("opening the room owner");
-        let owner = room_owner(
+        let owner = room_owner_services(
             root,
             &room_id,
             &workspace,
@@ -132,16 +134,13 @@ impl Standalone {
         )?;
         stage("starting the collaboration broker");
         let (policy_origin, policy_time) = execution_policy_clock()?;
-        let owners = Arc::new(Owners {
-            own: owner,
-            joined: Arc::clone(&joined),
-        });
         let broker = tilo_action_broker::collab_broker::spawn_with_services(
             root.join(COLLAB_SOCKET),
             Some(rooms as Arc<dyn WorkspaceAuthority>),
-            PeerPublisher::with_optional_owner_commit(None, owners),
+            owner.publisher(&joined),
             None,
             HostServices {
+                committed_documents: committed_documents::host_service(owner.documents, &joined),
                 native_certificates: Some(Arc::new(Certificates {
                     room: room_id.clone(),
                     device,
@@ -153,7 +152,7 @@ impl Standalone {
                 app_action_access: Some(apps.access_resolver()),
                 app_action_grants: Some(Arc::new(ProfileGrants {
                     workspace: Arc::clone(&workspace),
-                    apps,
+                    apps: Arc::clone(&apps),
                 })),
                 legacy_workspace: Some(Arc::clone(&workspace) as Arc<dyn LegacyWorkspaceProjection>),
                 record_content: Some(joined::record_content(&joined, &root.join(BLOB_SOCKET))),
@@ -176,6 +175,7 @@ impl Standalone {
         Ok(Self {
             policy_origin,
             broker,
+            apps,
             joined,
             _channels: channel_keys,
             _identity: identity_broker,
@@ -269,7 +269,24 @@ impl RuntimeServices for Standalone {
         }))
     }
 
+    fn native_launcher_services(&self) -> Option<Arc<dyn LauncherServices>> {
+        Some(Arc::clone(&self.apps) as Arc<dyn LauncherServices>)
+    }
+
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
+        #[cfg(target_os = "linux")]
+        return unix::launch_registered(
+            command,
+            app_id,
+            &self.room,
+            &unix::ServiceSockets {
+                collab: self.broker.capnp_socket(),
+                identity: &self.identity_socket,
+                blobs: &self.blob_socket,
+            },
+            &self.apps,
+        );
+        #[cfg(not(target_os = "linux"))]
         unix::launch(
             command,
             app_id,
@@ -655,18 +672,21 @@ fn workspace_files(
 /// The durable owner of the profile's room: this host's own, governed with
 /// the device key, or for a profile adopted from the desktop session one
 /// that refuses every commit.
-fn room_owner(
+fn room_owner_services(
     profile: &Path,
     room: &str,
     workspace: &Arc<ProfileWorkspace>,
     apps: &Arc<apps::Apps>,
     dev: bool,
     keys: tilo_action_broker::channel_encryption::ChannelKeyProvider,
-) -> io::Result<Arc<dyn OwnerCommitService>> {
+) -> io::Result<committed_documents::RoomOwnerServices> {
     if !workspace.governs() {
-        return Ok(Arc::new(AdoptedRoom {
-            room: room.to_owned(),
-        }));
+        return Ok(committed_documents::RoomOwnerServices {
+            commits: Arc::new(AdoptedRoom {
+                room: room.to_owned(),
+            }),
+            documents: None,
+        });
     }
     let apps = Arc::clone(apps);
     let creation = RecordCreation {
@@ -675,7 +695,23 @@ fn room_owner(
     };
     let device = tilo_identity_host::broker::trusted_current_device(room)?;
     let owner = RoomOwner::open(profile, room, device, creation, Arc::clone(workspace), keys)?;
-    Ok(Arc::new(owner))
+    let owner = Arc::new(owner);
+    Ok(committed_documents::RoomOwnerServices {
+        commits: owner.clone(),
+        documents: Some(owner),
+    })
+}
+
+#[cfg(test)]
+fn room_owner(
+    profile: &Path,
+    room: &str,
+    workspace: &Arc<ProfileWorkspace>,
+    apps: &Arc<apps::Apps>,
+    dev: bool,
+    keys: tilo_action_broker::channel_encryption::ChannelKeyProvider,
+) -> io::Result<Arc<dyn OwnerCommitService>> {
+    room_owner_services(profile, room, workspace, apps, dev, keys).map(|owner| owner.commits)
 }
 
 /// The joined rooms and this device's channel keys for them and for the
@@ -732,3 +768,13 @@ fn joined_rooms(
 #[cfg(test)]
 #[path = "standalone_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn isolated_test_root(test: &str) -> Option<PathBuf> {
+    tests::isolated_root(test)
+}
+
+#[cfg(test)]
+pub(crate) fn test_owner_path(root: &Path) -> PathBuf {
+    root.join(owner::ROOM_OWNER)
+}

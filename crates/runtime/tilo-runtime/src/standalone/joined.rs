@@ -30,6 +30,9 @@ use tilo_peer_state::{
 use tilo_relay_session::{Inbound, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
 use tokio::sync::Notify;
 
+#[path = "joined_documents.rs"]
+mod documents;
+
 #[path = "joined_content.rs"]
 mod content;
 pub(super) use content::record_content;

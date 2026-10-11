@@ -69,6 +69,7 @@ pub(in crate::state) fn restore(
         wire,
         exact,
         version,
+        sealed,
     } = decoded;
     let stored_room = wire.base.room;
     let stored_authority = wire.base.authority;
@@ -248,6 +249,10 @@ pub(in crate::state) fn restore(
                 return Err(invalid(BoundedPeerInvalid::ExactFloor));
             }
         }
+    }
+    for (route, ops) in sealed {
+        super::super::sealed_history::restore(&mut core, &route, ops)
+            .map_err(|_| invalid(BoundedPeerInvalid::Sealed))?;
     }
     let media = super::media::cache(&core, media_policy, limits)?;
     Ok(BoundedStatePeer::from_core(core, media, *limits))

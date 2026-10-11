@@ -24,6 +24,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "linux")]
+mod launch_registration;
+
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
 #[derive(Debug, PartialEq, Eq)]
@@ -736,6 +739,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
         joiner: session.joiner(),
         search,
         media: session.media(),
+        launcher: session.native_launcher_services(),
     };
     endpoint.accept(&listener)
 }
@@ -750,6 +754,7 @@ struct Endpoint<H> {
     search: Arc<tilo_os_search::OsSearch>,
     /// Where answers read the content actions produced.
     media: Option<Arc<dyn crate::MediaReader>>,
+    launcher: Option<Arc<dyn tilo_action_broker::services::LauncherServices>>,
 }
 
 impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
@@ -768,6 +773,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
             let joiner = self.joiner.clone();
             let search = Arc::clone(&self.search);
             let media = self.media.clone();
+            let launcher = self.launcher.clone();
             let active = Arc::clone(&active);
             active.fetch_add(1, Ordering::Relaxed);
             let slot = ConnectionSlot(active);
@@ -782,9 +788,14 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                             return;
                         }
                     };
-                    if let Err(error) =
-                        serve_connection(stream, &server, &status, joiner.as_ref(), &search)
-                    {
+                    if let Err(error) = serve_connection(
+                        stream,
+                        &server,
+                        &status,
+                        joiner.as_ref(),
+                        &search,
+                        launcher.as_ref(),
+                    ) {
                         tracing::debug!(%error, "native runtime client disconnected");
                     }
                     // The connection was one agent run: what it still holds
@@ -811,12 +822,17 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync + 'static>
     status: &Status,
     joiner: Option<&crate::Joiner>,
     search: &tilo_os_search::OsSearch,
+    launcher: Option<&Arc<dyn tilo_action_broker::services::LauncherServices>>,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     // Every connection thread waits on the one app runtime rather than
     // building a runtime per connection.
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
+    #[cfg(target_os = "linux")]
+    let caller = launch_registration::Caller::from_socket(&stream);
+    #[cfg(not(target_os = "linux"))]
+    let _ = launcher;
     let input = spawn_reader(stream.try_clone()?)?;
     let status = serde_json::to_value(status).map_err(io::Error::other)?;
     let answer = |value: Value| {
@@ -825,6 +841,14 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync + 'static>
             Some("status") if value == json!({"native":"status"}) => {
                 let status = status.clone();
                 Box::pin(async move { Ok(Some(status)) })
+            }
+            #[cfg(target_os = "linux")]
+            Some("register-launch") => {
+                let reply = caller.as_ref().map_or_else(
+                    || json!({"error": "native registration lacks current kernel caller custody"}),
+                    |caller| caller.answer(launcher, &value),
+                );
+                Box::pin(async move { Ok(Some(reply)) })
             }
             Some("activate") => {
                 Box::pin(async move { Ok(Some(answer_activate(server, &value).await)) })
@@ -1004,16 +1028,32 @@ pub fn run_app(
     {
         command.env("TILO_PARTICIPATION", "author");
     }
-    let connections = unix::Connections::prepare(
-        &mut command,
+    #[cfg(target_os = "linux")]
+    launch_registration::register(
+        profile,
         app_id,
         room.unwrap_or(&status.room),
-        &unix::ServiceSockets {
-            collab: &profile.join(COLLAB_SOCKET),
-            identity: &profile.join(IDENTITY_SOCKET),
-            blobs: &profile.join(BLOB_SOCKET),
-        },
+        Path::new(executable),
     )?;
+    let sockets = unix::ServiceSockets {
+        collab: &profile.join(COLLAB_SOCKET),
+        identity: &profile.join(IDENTITY_SOCKET),
+        blobs: &profile.join(BLOB_SOCKET),
+    };
+    #[cfg(target_os = "linux")]
+    let connections = {
+        let mut connections = unix::Connections::prepare_registered(
+            &mut command,
+            app_id,
+            room.unwrap_or(&status.room),
+            &sockets,
+        )?;
+        connections.authenticate(app_id, room.unwrap_or(&status.room))?;
+        connections
+    };
+    #[cfg(not(target_os = "linux"))]
+    let connections =
+        unix::Connections::prepare(&mut command, app_id, room.unwrap_or(&status.room), &sockets)?;
     command
         .env("TILO_RUNTIME_CONNECTION_OWNER_PID", owner)
         .env("TILO_RUNTIME_PROFILE", profile);
@@ -1111,3 +1151,7 @@ fn default_launch_guard(
 #[cfg(test)]
 #[path = "daemon_tests.rs"]
 mod tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "daemon/independent_tests.rs"]
+mod independent_tests;
