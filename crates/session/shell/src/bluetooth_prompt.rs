@@ -60,7 +60,6 @@ pub struct PairingPromptView {
     /// Which of the dialog's buttons were clicked since `sync` last looked:
     /// view state, never written to a document.
     clicked: Rc<Clicked>,
-    structure_dirty: bool,
     composed: ui::widget::Composed,
 }
 
@@ -71,7 +70,6 @@ impl PairingPromptView {
             entry: Arc::new(Mutex::new(String::new())),
             answer: None,
             clicked: Rc::default(),
-            structure_dirty: false,
             composed: ui::widget::Composed::default(),
         }
     }
@@ -93,7 +91,7 @@ impl PairingPromptView {
                 .clear();
         }
         self.request = request;
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     /// Take the user's answer, if they have given one.
@@ -495,9 +493,7 @@ impl Widget for PairingPromptView {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self.composed.take_structure_dirty();
-        own || child
+        self.composed.take_structure_dirty()
     }
 }
 
