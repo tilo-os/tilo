@@ -11890,21 +11890,19 @@ impl ShellOverlayHost {
         }) else {
             return;
         };
-        let result = match history_target_address(target) {
-            HistoryTargetAddress::File(path) => {
-                crate::shell::launcher::launch_document_in_workspace(
-                    app_id,
-                    &workspace,
-                    Some(&path),
-                )
-            }
-            HistoryTargetAddress::Uri(uri) => {
-                crate::shell::launcher::launch_uri_in_workspace(app_id, &workspace, &uri)
-            }
-            HistoryTargetAddress::App => {
-                crate::shell::launcher::launch_in_workspace(app_id, &workspace)
-            }
+        // Queued: this runs on the compositor thread, and a launch's file
+        // work belongs on the preflight worker.
+        let (document, uri) = match history_target_address(target) {
+            HistoryTargetAddress::File(path) => (Some(path), None),
+            HistoryTargetAddress::Uri(uri) => (None, Some(uri)),
+            HistoryTargetAddress::App => (None, None),
         };
+        let result = crate::shell::launcher::queue_package_open(
+            app_id.to_owned(),
+            &workspace,
+            document,
+            uri,
+        );
         if let Err(error) = result {
             // A previous document/app launch can have staged a one-shot
             // placement for this package. This history action did not claim

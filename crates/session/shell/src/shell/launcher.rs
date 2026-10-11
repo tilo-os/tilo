@@ -2591,6 +2591,55 @@ pub fn launch_terminal_command(argv: &[String], room: RoomId) -> Result<Installe
     execute_installed_with_context(app, room, context)
 }
 
+/// [`launch_terminal_command`] for the compositor thread: the argv is
+/// validated here, and everything that touches the registry or the disk runs
+/// on a preflight worker. A refusal after that point arrives as a launch
+/// event.
+///
+/// # Errors
+///
+/// Returns an error when `argv` is empty or too large for the launch context,
+/// or when the preflight worker cannot be started.
+pub(crate) fn queue_terminal_command(argv: &[String], room: RoomId) -> Result<(), LaunchError> {
+    let context = terminal_command_context(argv);
+    if argv.is_empty() || context.len() > 4 * 1024 {
+        return Err(LaunchError::HostAppRefused {
+            desktop_id: argv.first().cloned().unwrap_or_default(),
+            detail: "the command does not fit a terminal launch".to_string(),
+        });
+    }
+    spawn_reporting(
+        std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
+        super::launch_readiness::inherit(move || {
+            let outcome = installed_apps().and_then(|apps| {
+                let app = apps
+                    .into_iter()
+                    .find(|a| a.package_id == TERMINAL_PACKAGE_ID)
+                    .ok_or_else(|| LaunchError::NotInstalled {
+                        package_id: TERMINAL_PACKAGE_ID.to_string(),
+                    })?;
+                execute_installed_with_context(app, room, context)
+            });
+            if let Err(error) = outcome {
+                super::launch_readiness::fail_current(error.user_message());
+                push_event(LaunchEvent {
+                    package_id: TERMINAL_PACKAGE_ID.to_string(),
+                    display_name: display_name_for_package_id(TERMINAL_PACKAGE_ID),
+                    managed_agent_id: None,
+                    managed_workspace_id: None,
+                    kind: LaunchEventKind::SpawnFailed {
+                        detail: error.user_message(),
+                    },
+                });
+            }
+        }),
+    )
+    .map_err(|error| LaunchError::AgentLaunchWorkerUnavailable {
+        detail: error.to_string(),
+    })?;
+    Ok(())
+}
+
 #[derive(Clone)]
 struct MediaHandoffLaunch {
     title: String,
@@ -2913,7 +2962,7 @@ pub fn queue_launch_target_in_workspace(
 ) -> Result<(), LaunchError> {
     let room = workspace.room;
     let workspace = workspace.clone();
-    queue_prepared_launch(app, room, move || Ok(workspace), uri)
+    queue_prepared_launch(app, room, move || Ok(workspace), QueuedOpen::uri(uri))
 }
 
 /// A retained host notification resolves its verified package on the same
@@ -2923,6 +2972,24 @@ pub(crate) fn queue_package_target_in_workspace(
     package_id: String,
     workspace: &Workspace,
     uri: String,
+) -> Result<(), LaunchError> {
+    queue_package_open(package_id, workspace, None, Some(uri))
+}
+
+/// Open `document` or `uri` (or just the app) in the package `package_id`
+/// into `workspace`, resolving the package on the preflight worker. For
+/// callers on the compositor thread that hold an app id and not an
+/// [`InstalledApp`]; a refusal arrives as a launch event.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::AgentLaunchWorkerUnavailable`] when the preflight
+/// worker cannot be started.
+pub(crate) fn queue_package_open(
+    package_id: String,
+    workspace: &Workspace,
+    document: Option<PathBuf>,
+    uri: Option<String>,
 ) -> Result<(), LaunchError> {
     let workspace = workspace.clone();
     spawn_reporting(
@@ -2948,8 +3015,8 @@ pub(crate) fn queue_package_target_in_workspace(
                 execute_installed(
                     app,
                     workspace.room,
-                    None,
-                    Some(&uri),
+                    document.as_deref(),
+                    uri.as_deref(),
                     None,
                     None,
                     Some(capabilities),
@@ -3055,7 +3122,7 @@ pub(crate) fn queue_native_authoring_launch(
             };
             prepare().map_err(|detail| LaunchError::IdentityUnavailable { detail })
         },
-        None,
+        QueuedOpen::default(),
     )
 }
 
@@ -3080,7 +3147,7 @@ pub(crate) fn queue_observed_native_launch(
             prepare_observed_native_launch(&tree, room, &package, &original)
                 .map_err(|detail| LaunchError::IdentityUnavailable { detail })
         },
-        None,
+        QueuedOpen::default(),
     )
 }
 
@@ -3213,27 +3280,69 @@ fn native_launch_workspace(
         .ok_or_else(|| "native app launch room disappeared".into())
 }
 
+/// What a queued launch asks its app to open, and what to undo if the
+/// launch is refused before the process starts.
+#[derive(Default)]
+struct QueuedOpen {
+    document: Option<PathBuf>,
+    uri: Option<String>,
+    /// Runs on the preflight worker when the launch is refused, so state the
+    /// caller recorded optimistically (an "opening" note) does not outlive it.
+    refused: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl QueuedOpen {
+    fn uri(uri: Option<String>) -> Self {
+        Self {
+            uri,
+            ..Self::default()
+        }
+    }
+}
+
 fn queue_prepared_launch(
     app: InstalledApp,
     room: RoomId,
     prepare: impl FnOnce() -> Result<Workspace, LaunchError> + Send + 'static,
-    uri: Option<String>,
+    open: QueuedOpen,
+) -> Result<(), LaunchError> {
+    queue_prepared_capabilities(
+        app,
+        room,
+        move || prepare().map(|workspace| workspace.capabilities),
+        open,
+    )
+}
+
+/// The preflight worker behind every queued launch: it resolves the room's
+/// capabilities, then stages them (a synced file), the identity, the trusted
+/// projection and the sandbox authority, and spawns the launcher, all off the
+/// compositor thread.
+fn queue_prepared_capabilities(
+    app: InstalledApp,
+    room: RoomId,
+    prepare: impl FnOnce() -> Result<Vec<CapOverride>, LaunchError> + Send + 'static,
+    open: QueuedOpen,
 ) -> Result<(), LaunchError> {
     let package_id = app.package_id.clone();
     let display_name = app.display_name.clone();
     spawn_reporting(
         std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
         super::launch_readiness::inherit(move || {
-            let outcome = prepare().and_then(|workspace| {
-                let app_capabilities = workspace
-                    .capabilities
+            let QueuedOpen {
+                document,
+                uri,
+                refused,
+            } = open;
+            let outcome = prepare().and_then(|capabilities| {
+                let app_capabilities = capabilities
                     .into_iter()
                     .filter(|capability| capability.subject == Subject::app(&package_id))
                     .collect();
                 execute_installed(
                     app,
                     room,
-                    None,
+                    document.as_deref(),
                     uri.as_deref(),
                     None,
                     None,
@@ -3241,6 +3350,9 @@ fn queue_prepared_launch(
                 )
             });
             if let Err(error) = outcome {
+                if let Some(refused) = refused {
+                    refused();
+                }
                 super::launch_readiness::fail_current(error.user_message());
                 push_event(LaunchEvent {
                     package_id,
@@ -3258,6 +3370,59 @@ fn queue_prepared_launch(
         detail: error.to_string(),
     })?;
     Ok(())
+}
+
+/// [`launch_document_in_workspace`] for the compositor thread: the launch's
+/// file work (the synced capability file, the identity registry, the
+/// authority binding) runs on a preflight worker, so a click that opens a
+/// document never waits on the disk. The workspace's capabilities are still
+/// published first, so a read grant added for this document reaches the
+/// sandbox. A refusal arrives as a launch event, after `refused` has run on
+/// the worker.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::AgentLaunchWorkerUnavailable`] when the preflight
+/// worker cannot be started; later failures arrive as launch events.
+pub(crate) fn queue_document_in_workspace(
+    app: InstalledApp,
+    workspace: &Workspace,
+    document: PathBuf,
+    refused: impl FnOnce() + Send + 'static,
+) -> Result<(), LaunchError> {
+    set_workspace_capabilities(workspace.capabilities.clone());
+    let capabilities = workspace.capabilities.clone();
+    queue_prepared_capabilities(
+        app,
+        workspace.room,
+        move || Ok(capabilities),
+        QueuedOpen {
+            document: Some(document),
+            uri: None,
+            refused: Some(Box::new(refused)),
+        },
+    )
+}
+
+/// [`launch_uri_in_room`] for the compositor thread; see
+/// [`queue_document_in_workspace`].
+///
+/// # Errors
+///
+/// As [`queue_document_in_workspace`].
+pub(crate) fn queue_uri_in_room(
+    app: InstalledApp,
+    room: RoomId,
+    capabilities: Vec<CapOverride>,
+    uri: String,
+) -> Result<(), LaunchError> {
+    set_workspace_capabilities(capabilities.clone());
+    queue_prepared_capabilities(
+        app,
+        room,
+        move || Ok(capabilities),
+        QueuedOpen::uri(Some(uri)),
+    )
 }
 
 /// [`launch_in_workspace`], additionally asking the app to open
@@ -6227,6 +6392,70 @@ mod tests {
 
     fn fs_grant(app: &str, path: &str, verb: Verb) -> CapOverride {
         CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
+    }
+
+    /// A launch asked for on the compositor thread must not do its
+    /// preflight there: the capability file is synced, the identity registry
+    /// and authority binding are files too, and a click waits on none of them.
+    /// The preflight here blocks until released, so running it on the caller
+    /// would hang the call past the budget. A refusal (no display is
+    /// published) must still unwind the caller's state on the worker and
+    /// reach the session as a launch event.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn queued_open_runs_its_preflight_off_the_calling_thread() {
+        const BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
+        const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+        set_wayland_socket_path(None);
+        let _ = drain_events();
+        let caller = std::thread::current().id();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (refusal, refused) = std::sync::mpsc::channel::<std::thread::ThreadId>();
+
+        let asked = Instant::now();
+        queue_prepared_capabilities(
+            test_app("so.tilo.queued-open"),
+            RoomId::new(),
+            move || {
+                let _ = released.recv_timeout(HANG_BOUND);
+                Ok(Vec::new())
+            },
+            QueuedOpen {
+                document: Some(PathBuf::from("/var/workspace/books/novel.epub")),
+                uri: None,
+                refused: Some(Box::new(move || {
+                    let _ = refusal.send(std::thread::current().id());
+                })),
+            },
+        )
+        .expect("the preflight worker starts");
+        let waited = asked.elapsed();
+        assert!(
+            waited < BUDGET,
+            "queueing a launch took {waited:?}: its preflight ran on the calling thread"
+        );
+        assert!(
+            refused.try_recv().is_err(),
+            "the launch was refused before its preflight finished"
+        );
+
+        release.send(()).expect("the preflight is waiting");
+        let worker = refused
+            .recv_timeout(HANG_BOUND)
+            .expect("a refused launch runs its unwind");
+        assert_ne!(worker, caller, "the unwind ran on the calling thread");
+        let deadline = Instant::now() + HANG_BOUND;
+        loop {
+            let failed = drain_events().into_iter().any(|event| {
+                event.package_id == "so.tilo.queued-open"
+                    && matches!(event.kind, LaunchEventKind::SpawnFailed { .. })
+            });
+            if failed {
+                break;
+            }
+            assert!(Instant::now() < deadline, "no SpawnFailed event arrived");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]

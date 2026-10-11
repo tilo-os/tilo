@@ -426,7 +426,8 @@ fn launch_resolved(
             .as_deref()
             .and_then(crate::shell::state::RoomId::parse)
             .ok_or(LaunchError::NoWorkspace)?;
-        launcher::launch_terminal_command(&argv, room)?;
+        // Queued: the caller can be the compositor thread.
+        launcher::queue_terminal_command(&argv, room)?;
         return Ok(app);
     }
     let document = match open {
