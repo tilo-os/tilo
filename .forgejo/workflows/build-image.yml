@@ -2988,6 +2988,8 @@ jobs:
           # The call card starts the workspace's call through Chat's own
           # action: Chat opens already in the call, not on a Call button.
           ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh card "Start a call" Chat --expect "Leave call"'
+          # The Tasks card opens Calendar through its own read-only view action.
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh card Tasks Calendar --expect "Task list"'
           # Browser renders a page through its Chromium engine runtime: Browser
           # opens through the app palette's action, the page comes from a
           # server in the guest, the address arrives on the real keyboard, and
