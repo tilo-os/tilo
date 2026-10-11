@@ -745,14 +745,9 @@ mod component_adapter {
                 return false;
             }
             let permissions = binding.permissions.borrow().clone();
-            root.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                &permissions,
-            );
+            presence.with_permissions(permissions, || {
+                root.draw(scene, transform, text_renderer, theme, presence);
+            });
             let _ = crate::widget::layout::lay_out_detached(root, live, theme, text_renderer);
             if let Some(offset) = offset {
                 let _ = root.apply_primary_vertical_scroll(
@@ -1087,17 +1082,11 @@ mod component_adapter {
             if self.component.behaviour.capture_protected {
                 crate::secret_paint::note_secret_painted();
             }
-            // TileHost's clipped/animated steady-state paint uses ordinary draw.
-            // Canonical roots must still receive their permission-aware hook.
+            // The component's own authority, not whatever its container holds.
             let permissions = binding.permissions.borrow().clone();
-            root.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                &permissions,
-            );
+            presence.with_permissions(permissions, || {
+                root.draw(scene, transform, text_renderer, theme, presence);
+            });
         }
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             let binding = self.component.callback_binding();
@@ -1728,35 +1717,6 @@ mod component_adapter {
                 return false;
             };
             root.layout_needs_measure()
-        }
-        fn draw_with_presence(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-            _permissions: &crate::permissions::PermissionContext,
-        ) {
-            if self.component.behaviour.capture_protected {
-                crate::secret_paint::note_secret_painted();
-            }
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            let permissions = binding.permissions.borrow().clone();
-            root.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                &permissions,
-            );
         }
         fn draw_overlay(
             &mut self,

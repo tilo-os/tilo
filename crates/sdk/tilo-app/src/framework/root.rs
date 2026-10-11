@@ -1310,22 +1310,6 @@ impl Decorator for ResourceRoot {
 
     // The host paints through this entry point: the ground, then the view
     // with the presence and permissions the host handed over.
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui_core::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.content.get_rect()) {
-            return;
-        }
-        self.paint_ground(scene, transform, theme, presence);
-        self.content
-            .draw_with_presence(scene, transform, text, theme, presence, permissions);
-    }
 
     fn needs_redraw(&self) -> bool {
         self.native_presentation.needs_redraw() || self.content.needs_redraw()
