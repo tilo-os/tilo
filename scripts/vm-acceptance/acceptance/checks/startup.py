@@ -477,7 +477,7 @@ def warm_opens(ctx, res):
             stem, _, mark = name.partition(".")
             ctx.record(f"app.open.{stem}_ms.{short}" + (f".{mark}" if mark else ""), "ms", values, app=app,
                        what="one segment of the warm open (acceptance/checks/startup.py open_segments)")
-        budget = app_startup.budget_ms(app, kind)
+        budget = app_startup.warm_open_budget_ms(app, kind)
         summary[app] = {"open_ms": opens, "startup_ms": starts, "budget_ms": budget,
                         "median_ms": {name: median(values) for name, values in series.items()},
                         "opens": results}
