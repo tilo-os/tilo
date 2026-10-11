@@ -13,6 +13,7 @@
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
+use ui::num::usize_of_f64;
 
 use ui::TextRenderer;
 use ui::vello::kurbo::{Affine, Point, Rect};
@@ -306,7 +307,7 @@ impl Eye<'_> {
                         at.x, at.y, art.width, art.height
                     ));
                 }
-                Some((index(cell.x), index(cell.y)))
+                Some((usize_of_f64(cell.x), usize_of_f64(cell.y)))
             }
             None => None,
         };
@@ -341,15 +342,6 @@ impl Eye<'_> {
         }
         .traced(to_cells.inverse()))
     }
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "checked to lie inside the picture before the cast"
-)]
-fn index(value: f64) -> usize {
-    value.floor().max(0.0) as usize
 }
 
 /// The slow query's resolved geometry, retaining its selection options.

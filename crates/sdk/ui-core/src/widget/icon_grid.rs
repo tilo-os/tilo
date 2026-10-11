@@ -9,6 +9,7 @@
 //! selection with [`set_selection`](IconGrid::set_selection) and react to
 //! `on_item_click(index, ctrl, shift)`.
 
+use crate::num::{f32_of_f64, usize_of_f64};
 use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
@@ -158,7 +159,7 @@ impl IconGrid {
             return 1;
         }
         // width + gap, because the last cell needs no trailing gap.
-        floor_to_usize(((width + self.gap) / stride).floor()).max(1)
+        usize_of_f64(((width + self.gap) / stride).floor()).max(1)
     }
 
     fn content_height(&self, columns: usize) -> f64 {
@@ -200,8 +201,8 @@ impl IconGrid {
         if rel_x < 0.0 || rel_y < 0.0 {
             return None;
         }
-        let col = floor_to_usize(rel_x / stride_x);
-        let row = floor_to_usize(rel_y / stride_y);
+        let col = usize_of_f64(rel_x / stride_x);
+        let row = usize_of_f64(rel_y / stride_y);
         if col >= self.columns {
             return None;
         }
@@ -237,32 +238,6 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
 /// an `as` cast, so it's lossless for any realistic grid size.
 fn count_to_f64(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
-/// Narrows a layout dimension to `f32` for taffy. Grid width/height here
-/// are always screen-space pixel sizes, many orders of magnitude below
-/// `f32::MAX`, so the truncation the lint warns about can't actually
-/// occur.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "grid layout sizes never approach f32::MAX"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
-}
-
-/// Floors a non-negative layout measurement (column/row index or count)
-/// to `usize`. Grid dimensions here are always tiny (a handful of
-/// columns, at most a few hundred rows), nowhere near `usize::MAX`, and
-/// the `.max(0.0)` clamp rules out the sign-loss case the lint also warns
-/// about.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "grid column/row counts are always tiny and non-negative"
-)]
-fn floor_to_usize(v: f64) -> usize {
-    v.max(0.0) as usize
 }
 
 impl Widget for IconGrid {
@@ -311,8 +286,8 @@ impl Widget for IconGrid {
         self.columns = columns;
         let height = self.content_height(columns);
         taffy::Size {
-            width: to_f32(width),
-            height: to_f32(height),
+            width: f32_of_f64(width),
+            height: f32_of_f64(height),
         }
     }
 

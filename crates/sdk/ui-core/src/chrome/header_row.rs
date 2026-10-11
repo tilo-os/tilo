@@ -27,6 +27,7 @@
 //! let body = face.body();
 //! ```
 
+use crate::num::f32_of_f64;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 
@@ -383,7 +384,7 @@ pub(crate) fn paint_title_in(
     let pill_room = pill.map_or(0.0, |(_, (w, _))| w + related);
     let style = title_style(theme);
     let room = (band.width() - pill_room).max(0.0);
-    let shown = text.elide_to_width_style(title, to_f32(room), &style);
+    let shown = text.elide_to_width_style(title, f32_of_f64(room), &style);
     let (w, line_h) = text.measure_style(&shown, None, &style);
     let y = crate::text_metrics::centered_text_top(band.y0, band.height(), f64::from(line_h));
     text.draw_style(
@@ -428,14 +429,6 @@ pub(crate) fn paint_title_in(
         None,
         &style,
     );
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "on-screen layout extents fit f32 exactly at every UI scale"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
 }
 
 /// Paint the window's History control in `rect`: the History glyph as a

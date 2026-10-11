@@ -5,6 +5,7 @@
 //! Within-group reorder still lives in `TabBar` / `WindowGroup`.
 
 use crate::animation::{Curve, Transition};
+use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
@@ -3369,7 +3370,7 @@ impl Widget for GroupRow {
                         && self.fullscreen_idx() == Some(i)
                     {
                         style.margin.left =
-                            LengthPercentageAuto::length(f64_to_f32(self.pan_of_lane(lane).inset));
+                            LengthPercentageAuto::length(f32_of_f64(self.pan_of_lane(lane).inset));
                     }
                 } else {
                     style.display = Display::None;
@@ -3472,14 +3473,14 @@ impl Widget for GroupRow {
                 let style = Style {
                     position: Position::Absolute,
                     inset: taffy::Rect {
-                        left: LengthPercentageAuto::length(f64_to_f32(viewport.x0 - row.x0)),
+                        left: LengthPercentageAuto::length(f32_of_f64(viewport.x0 - row.x0)),
                         right: LengthPercentageAuto::auto(),
-                        top: LengthPercentageAuto::length(f64_to_f32(viewport.y0 - row.y0)),
+                        top: LengthPercentageAuto::length(f32_of_f64(viewport.y0 - row.y0)),
                         bottom: LengthPercentageAuto::auto(),
                     },
                     size: Size {
-                        width: Dimension::length(f64_to_f32(viewport.width())),
-                        height: Dimension::length(f64_to_f32(viewport.height())),
+                        width: Dimension::length(f32_of_f64(viewport.width())),
+                        height: Dimension::length(f32_of_f64(viewport.height())),
                     },
                     ..run_style(Display::Flex)
                 };
@@ -4820,15 +4821,6 @@ impl GroupRow {
         }
         self.transfer_tab(src_idx, dst_idx, tab_id, tab_index)
     }
-}
-
-/// Logical-pixel geometry into taffy's `f32` lengths.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "bounded logical-pixel desktop geometry; f32 precision is sufficient for layout"
-)]
-fn f64_to_f32(v: f64) -> f32 {
-    v as f32
 }
 
 /// `base` shifted right by `dx` px. Wrapped so the one

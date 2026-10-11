@@ -1,3 +1,4 @@
+use crate::num::f32_of_f64;
 use cosmic_text::fontdb::Weight;
 use cosmic_text::{
     Align, Attrs, Buffer, Family, FontFeatures as CosmicFontFeatures, FontSystem, Metrics, Shaping,
@@ -1381,14 +1382,6 @@ fn float_range(start: f64, end: f64) -> std::ops::Range<f32> {
     start as f32..end as f32
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "validated finite flow-region coordinates are ordinary logical pixels"
-)]
-fn flow_pixel(value: f64) -> f32 {
-    value as f32
-}
-
 fn intersect_spans(
     left: &[std::ops::Range<f32>],
     right: &[std::ops::Range<f32>],
@@ -1451,11 +1444,11 @@ impl PolygonTextLayout {
         }
         let max_width = constraints
             .max_width
-            .unwrap_or_else(|| flow_pixel(self.region.bounds.x1))
+            .unwrap_or_else(|| f32_of_f64(self.region.bounds.x1))
             .max(0.0);
         let max_height = constraints
             .max_height
-            .unwrap_or_else(|| flow_pixel(self.region.bounds.y1))
+            .unwrap_or_else(|| f32_of_f64(self.region.bounds.y1))
             .max(0.0);
         let line_height = style.line_height_px().max(1.0);
         let mut opportunities = BTreeMap::new();
@@ -1474,8 +1467,8 @@ impl PolygonTextLayout {
 
         let mut layout = FlowLayout::default();
         let mut source = 0_usize;
-        let mut y = flow_pixel(self.region.bounds.y0.max(0.0));
-        let bottom = max_height.min(flow_pixel(self.region.bounds.y1));
+        let mut y = f32_of_f64(self.region.bounds.y0.max(0.0));
+        let bottom = max_height.min(f32_of_f64(self.region.bounds.y1));
         while source < text.len() && y + line_height <= bottom + f32::EPSILON {
             let spans = self.region.spans_for_band(y, line_height, max_width);
             let mut forced_next_line = false;

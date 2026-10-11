@@ -238,8 +238,8 @@ pub(super) fn lay_out_host_with_theme(
         .new_with_children(
             Style {
                 size: Size {
-                    width: Dimension::length(f64_to_f32_lossy(vw)),
-                    height: Dimension::length(f64_to_f32_lossy(vh)),
+                    width: Dimension::length(ui::num::f32_of_f64(vw)),
+                    height: Dimension::length(ui::num::f32_of_f64(vh)),
                 },
                 ..Default::default()
             },
@@ -252,8 +252,8 @@ pub(super) fn lay_out_host_with_theme(
         .compute_layout_with_measure(
             viewport,
             Size {
-                width: AvailableSpace::Definite(f64_to_f32_lossy(vw)),
-                height: AvailableSpace::Definite(f64_to_f32_lossy(vh)),
+                width: AvailableSpace::Definite(ui::num::f32_of_f64(vw)),
+                height: AvailableSpace::Definite(ui::num::f32_of_f64(vh)),
             },
             |known, avail, node_id, _, _| {
                 if let Some(&ptr) = measure_map.get(&node_id) {

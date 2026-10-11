@@ -3,6 +3,7 @@
 //! Enter invokes the selected entry's `on_select` with the CRDT handle and
 //! root path directly — there is no message layer.
 
+use crate::num::f32_of_f64;
 use crate::search::ListIndex;
 use crate::widget::ModelPath;
 use automerge::ObjId;
@@ -380,19 +381,6 @@ fn elide_middle(tr: &mut TextRenderer, text: &str, style: &TextStyle, max_w: f64
         }
     }
     "\u{2026}".to_string()
-}
-
-/// Narrows a layout/measurement value to `f32` for vello/taffy. Every call
-/// site is a pixel size or offset inside this card (row widths, card
-/// dimensions), always many orders of magnitude below `f32::MAX`, so the
-/// truncation the lint warns about can't actually occur here.
-#[inline]
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space pixel values in this widget never approach f32::MAX"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
 }
 
 /// Shared by `draw` and the layout tests so they can't disagree.
@@ -1875,7 +1863,8 @@ impl CommandPalette {
         let avail = (text_right - text_x).max(0.0);
 
         if let Some(desc) = &entry.description {
-            let label = text_renderer.elide_to_width_style(&entry.label, px(avail), &label_style);
+            let label =
+                text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
             let sub = elide_middle(text_renderer, desc, &desc_style, avail);
             let (_, label_height) = text_renderer.measure_style(&label, None, &label_style);
             let (_, desc_height) = text_renderer.measure_style(&sub, None, &desc_style);
@@ -1899,7 +1888,8 @@ impl CommandPalette {
                 &desc_style,
             );
         } else {
-            let label = text_renderer.elide_to_width_style(&entry.label, px(avail), &label_style);
+            let label =
+                text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
             let (_, height) = text_renderer.measure_style(&label, None, &label_style);
             let ly = row.y0 + (row.height() - f64::from(height)) / 2.0;
             text_renderer.draw_style(
@@ -1946,8 +1936,11 @@ impl CommandPalette {
         );
         let title_style = theme.text(TextRole::Caption);
         let title = self.empty_results_title();
-        let title =
-            text_renderer.elide_to_width_style(&title, px(self.rect.width() - 48.0), &title_style);
+        let title = text_renderer.elide_to_width_style(
+            &title,
+            f32_of_f64(self.rect.width() - 48.0),
+            &title_style,
+        );
         let (tw, title_height) = text_renderer.measure_style(&title, None, &title_style);
         text_renderer.draw_style(
             scene,
@@ -2097,8 +2090,8 @@ impl Widget for CommandPalette {
         let (width, height) = self.desired_size();
         let style = Style {
             size: Size {
-                width: Dimension::length(px(width)),
-                height: Dimension::length(px(height)),
+                width: Dimension::length(f32_of_f64(width)),
+                height: Dimension::length(f32_of_f64(height)),
             },
             ..Default::default()
         };

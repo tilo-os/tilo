@@ -22,6 +22,7 @@
 //! rail: each segment shows its icon, and its label (with the
 //! [`Segment::with_hint`] shortcut) is its tooltip; the label is its
 //! accessible name.
+use crate::num::f32_of_f64;
 use crate::widget::binding::{BoxedBinding, Pulled};
 use crate::widget::toolbar::Orientation;
 use crate::widget::{AppModel, ModelPath};
@@ -218,14 +219,6 @@ impl SegmentedTouch {
 /// `f64` represents exactly) avoids the precision loss a direct cast risks.
 fn usize_to_f64(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "logical pixel counts far below f32 precision"
-)]
-fn px_f32(value: f64) -> f32 {
-    value as f32
 }
 
 /// One choice of a [`ToggleGroup`] or a [`SegmentedFace`].
@@ -1625,7 +1618,7 @@ impl ToggleGroup {
                 Some(short) if full_w > room + 0.5 => short,
                 _ => item.label,
             };
-            let shown = text_renderer.elide_to_width_style(label, px_f32(room + 0.5), style);
+            let shown = text_renderer.elide_to_width_style(label, f32_of_f64(room + 0.5), style);
             let (tw, th) = text_renderer.measure_style(&shown, None, style);
             // Tabs set their labels from the leading edge; segments centre.
             let text_x = if tabs {
@@ -2010,8 +2003,8 @@ impl Widget for ToggleGroup {
             let n = usize_to_f64(self.segments.len().max(1));
             let node = taffy.leaf_node(Style {
                 size: Size {
-                    width: Dimension::length(px_f32(side)),
-                    height: Dimension::length(px_f32(side * n + gap * (n - 1.0))),
+                    width: Dimension::length(f32_of_f64(side)),
+                    height: Dimension::length(f32_of_f64(side * n + gap * (n - 1.0))),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
@@ -2033,7 +2026,7 @@ impl Widget for ToggleGroup {
                 height: if self.chosen.is_some() {
                     Dimension::auto()
                 } else {
-                    Dimension::length(px_f32(height))
+                    Dimension::length(f32_of_f64(height))
                 },
             },
             max_size: Size {
@@ -2063,11 +2056,13 @@ impl Widget for ToggleGroup {
             let (side, gap) = self.stacked;
             let n = usize_to_f64(self.segments.len().max(1));
             return Size {
-                width: known.width.unwrap_or(px_f32(side)),
-                height: known.height.unwrap_or(px_f32(side * n + gap * (n - 1.0))),
+                width: known.width.unwrap_or(f32_of_f64(side)),
+                height: known
+                    .height
+                    .unwrap_or(f32_of_f64(side * n + gap * (n - 1.0))),
             };
         }
-        let intrinsic = px_f32(
+        let intrinsic = f32_of_f64(
             self.metrics
                 .intrinsic_width(&self.segments, self.style, text),
         );
@@ -2087,7 +2082,7 @@ impl Widget for ToggleGroup {
             self.rows = rows;
             return Size {
                 width,
-                height: px_f32(self.strip_height() + self.caption_height),
+                height: f32_of_f64(self.strip_height() + self.caption_height),
             };
         }
         if !self.fill {
@@ -2097,7 +2092,7 @@ impl Widget for ToggleGroup {
             width: known.width.unwrap_or(intrinsic),
             height: known
                 .height
-                .unwrap_or(px_f32(self.strip_height() + self.caption_height)),
+                .unwrap_or(f32_of_f64(self.strip_height() + self.caption_height)),
         }
     }
 
@@ -2115,7 +2110,7 @@ impl Widget for ToggleGroup {
             return false;
         }
         if self.measured_width.is_none() {
-            self.measured_width = Some(px_f32(self.metrics.intrinsic_width(
+            self.measured_width = Some(f32_of_f64(self.metrics.intrinsic_width(
                 &self.segments,
                 self.style,
                 text,
@@ -2195,7 +2190,7 @@ impl Widget for ToggleGroup {
             let style = theme.text(TextRole::Caption);
             let shown = text_renderer.elide_to_width_style(
                 caption,
-                px_f32(self.outer.width().max(1.0)),
+                f32_of_f64(self.outer.width().max(1.0)),
                 &style,
             );
             let at = Affine::translate((self.outer.x0, self.outer.y0));
