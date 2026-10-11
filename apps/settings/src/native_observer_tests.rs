@@ -268,7 +268,7 @@ fn dispatch_preview_event(h: &mut Framed<SettingsApp>, event: &WindowEvent) {
 fn keyboard_map_observes_foreground_physical_keys_while_search_keeps_editing() {
     let config = crate::prefs::test_env::ScratchConfig::new();
     let mut h = wide(&config);
-    select(&mut h, Category::MouseKeyboard);
+    select(&mut h, Category::Keyboard);
     Framed::harness_mut(&mut h).click_named(SEARCH).unwrap();
     let compiled = crate::keyboard_preview::compilation_count();
     let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
@@ -303,7 +303,7 @@ fn keyboard_map_observes_foreground_physical_keys_while_search_keeps_editing() {
     dispatch_preview_key(&mut h, ElementState::Pressed);
     select(&mut h, Category::About);
     assert_eq!(keyboard_map_pressed(&*h, key), None);
-    select(&mut h, Category::MouseKeyboard);
+    select(&mut h, Category::Keyboard);
     assert_eq!(keyboard_map_pressed(&*h, key), Some(false));
 }
 
@@ -355,7 +355,8 @@ fn focused_seat_configuration_survives_page_recomposition_without_off_page_key_c
     };
     let original = snapshot("z");
     h.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(original)));
-    select(&mut h, Category::MouseKeyboard);
+    crate::panes::mouse_keyboard::show_live_map(h.input());
+    select(&mut h, Category::Keyboard);
     assert_eq!(keyboard_map_symbols(&*h, key).unwrap()[0].text, "z");
     let value = keyboard_map_value(&*h).unwrap();
     assert!(value.contains("AD06: z"));
@@ -370,7 +371,7 @@ fn focused_seat_configuration_survives_page_recomposition_without_off_page_key_c
         key,
         state: ElementState::Pressed,
     });
-    select(&mut h, Category::MouseKeyboard);
+    select(&mut h, Category::Keyboard);
     assert_eq!(keyboard_map_symbols(&*h, key).unwrap()[0].text, "Z");
     assert!(keyboard_map_value(&*h).unwrap().contains("AD06: Z"));
     assert_eq!(
@@ -411,7 +412,7 @@ fn narrow_keyboard_inspection_has_touch_sized_selector_and_live_readable_details
     }
     let config = crate::prefs::test_env::ScratchConfig::new();
     let mut h = hosted(&config, 600.0, 1800.0);
-    select(&mut h, Category::MouseKeyboard);
+    select(&mut h, Category::Keyboard);
     let (selector, _) = find(&*h, "input.map.inspect-key").unwrap();
     let minimum = f64::from(ui::Theme::dark().tokens.metrics.min_pointer_target);
     assert!(selector.width() >= minimum && selector.height() >= minimum);
@@ -464,7 +465,8 @@ fn narrow_keyboard_inspection_has_touch_sized_selector_and_live_readable_details
 fn keyboard_map_read_matches_actual_focused_native_symbols_and_revokes_on_blur() {
     let config = crate::prefs::test_env::ScratchConfig::new();
     let mut h = wide(&config);
-    select(&mut h, Category::MouseKeyboard);
+    crate::panes::mouse_keyboard::show_live_map(h.input());
+    select(&mut h, Category::Keyboard);
     let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyQ);
     h.observe_physical_input(ui::widget::PhysicalInput::Focused(true));
     h.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(

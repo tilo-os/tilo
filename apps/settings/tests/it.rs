@@ -105,5 +105,8 @@ mod composition_balance;
 #[path = "alignment_review.rs"]
 mod alignment_review;
 
+#[path = "pane_geometry.rs"]
+mod pane_geometry;
+
 #[path = "published_surface.rs"]
 mod published_surface;

@@ -29,7 +29,7 @@ use ui::framework::ActionControl;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
 use ui::i18n::ArgValue;
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
+use ui::widget::{Button, Row, Widget};
 
 /// Read the enrolled disks or replace one disk's whole unlock-network list.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -138,8 +138,8 @@ impl UnlockAuthority for DetachedAuthority {
 
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, StatusTone, caption, card, card_with_action, error_caption, rows, semantic_status_pill,
-    setting_row, value_row,
+    Item, SettingsSection, StatusTone, card, card_with_action, error_caption, note, row, rows,
+    semantic_status_pill, setting_row, setting_row_described, value_row,
 };
 
 /// The sibling-unlock client; polkit's `org.tilo.disk-unlock.manage` names it.
@@ -583,43 +583,42 @@ impl DiskUnlockModel {
             ),
             DiskUnlockEffect::RefreshDiskUnlock,
         ));
-        let mut body: Vec<El> = vec![Box::new(
-            Text::new(&t("settings-disk-unlock-intro")).with_role(ui::TextRole::Caption),
-        )];
+        let mut body: Vec<Item> = vec![note(&t("settings-disk-unlock-intro"))];
         match &self.volumes {
-            None => body.push(caption(&t("settings-disk-unlock-loading"))),
-            Some(Err(error)) => body.push(error_caption(&t_args(
+            None => body.push(note(&t("settings-disk-unlock-loading"))),
+            Some(Err(error)) => body.push(row(error_caption(&t_args(
                 "settings-disk-unlock-read-error",
                 &[("error", error.as_str().into())],
-            ))),
+            )))),
             Some(Ok(volumes)) if volumes.is_empty() => {
-                body.push(caption(&t("settings-disk-unlock-none")));
+                body.push(note(&t("settings-disk-unlock-none")));
             }
             Some(Ok(_)) => {}
         }
         if self.change_rx.is_some() {
-            body.push(caption(&t("settings-disk-unlock-changing")));
+            body.push(note(&t("settings-disk-unlock-changing")));
         }
         match &self.outcome {
-            Some(Ok(message)) => body.push(caption(message)),
-            Some(Err(message)) => body.push(error_caption(&t_args(
+            Some(Ok(message)) => body.push(note(message)),
+            Some(Err(message)) => body.push(row(error_caption(&t_args(
                 "settings-disk-unlock-change-error",
                 &[("error", message.as_str().into())],
-            ))),
+            )))),
             None => {}
         }
-        let mut items: Vec<El> = vec![card_with_action(
+        let mut items: Vec<SettingsSection> = vec![card_with_action(
             &t("settings-disk-unlock-title"),
             refresh,
             rows(body),
         )];
         for volume in self.shown_volumes() {
-            items.push(self.volume_card(volume));
+            items.extend(self.volume_cards(volume));
         }
         crate::widgets::cards(items)
     }
 
-    fn volume_card(&self, volume: &UnlockVolume) -> El {
+    /// One volume: how its secrets are kept, then the networks it may unlock over.
+    fn volume_cards(&self, volume: &UnlockVolume) -> [SettingsSection; 2] {
         let (pill, tone, explanation) = match volume.sealing {
             Sealing::Tpm2 => (
                 t("settings-disk-unlock-sealed"),
@@ -632,12 +631,12 @@ impl DiskUnlockModel {
                 t("settings-disk-unlock-cleartext-body"),
             ),
         };
-        let mut body: Vec<El> = vec![
-            setting_row(
+        let secrets = vec![
+            setting_row_described(
                 &t("settings-disk-unlock-secrets"),
+                &explanation,
                 semantic_status_pill(&pill, tone),
             ),
-            Box::new(Text::new(&explanation).with_role(ui::TextRole::Caption)),
             value_row(
                 &t("settings-disk-unlock-siblings"),
                 &if volume.siblings.is_empty() {
@@ -646,30 +645,32 @@ impl DiskUnlockModel {
                     volume.siblings.join(", ")
                 },
             ),
-            Box::new(Text::new(&t("settings-disk-unlock-networks")).with_role(ui::TextRole::Body)),
-            caption(&t(match volume.sealing {
-                Sealing::Tpm2 => "settings-disk-unlock-networks-sealed",
-                Sealing::Cleartext => "settings-disk-unlock-networks-cleartext",
-            })),
         ];
+        let mut body: Vec<Item> = vec![note(&t(match volume.sealing {
+            Sealing::Tpm2 => "settings-disk-unlock-networks-sealed",
+            Sealing::Cleartext => "settings-disk-unlock-networks-cleartext",
+        }))];
         if let Err(error) = &self.saved_wifi {
-            body.push(error_caption(&t_args(
+            body.push(row(error_caption(&t_args(
                 "settings-disk-unlock-wifi-error",
                 &[("error", error.as_str().into())],
-            )));
+            ))));
         }
         let offered = candidates(volume, self.saved_wifi());
         if offered.is_empty() {
-            body.push(caption(&t("settings-disk-unlock-no-wifi")));
+            body.push(note(&t("settings-disk-unlock-no-wifi")));
         }
         let busy = self.change_rx.is_some();
         for network in offered {
             body.push(self.network_row(volume, &network, busy));
         }
-        card(&volume.short_name(), rows(body))
+        [
+            card(&volume.short_name(), rows(secrets)),
+            card(&t("settings-disk-unlock-networks"), rows(body)),
+        ]
     }
 
-    fn network_row(&self, volume: &UnlockVolume, network: &str, busy: bool) -> El {
+    fn network_row(&self, volume: &UnlockVolume, network: &str, busy: bool) -> Item {
         let chosen = volume.networks.iter().any(|name| name == network);
         let saved = self.saved_wifi().iter().any(|name| name == network);
         let key = format!(
@@ -682,11 +683,11 @@ impl DiskUnlockModel {
         } else {
             "settings-disk-unlock-use"
         });
-        let mut row = Row::new()
-            .push(Box::new(Text::new(network).with_role(ui::TextRole::Body)))
-            .push(Box::new(Spacer::new()));
+        let mut control = Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center);
         if chosen {
-            row = row.push(semantic_status_pill(
+            control = control.push(semantic_status_pill(
                 &t("settings-disk-unlock-chosen"),
                 StatusTone::Info,
             ));
@@ -701,19 +702,12 @@ impl DiskUnlockModel {
             Some(binding) => button.bind_action(binding).with_enabled(!busy),
             None => button.unavailable(),
         };
-        row = row.push(Box::new(button));
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(row));
+        let control = Box::new(control.push(Box::new(button)));
         if chosen && !saved && self.saved_wifi.is_ok() {
-            column = column.push(Box::new(
-                Text::new(&t("settings-disk-unlock-unsaved"))
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
-            ));
+            setting_row_described(network, &t("settings-disk-unlock-unsaved"), control)
+        } else {
+            setting_row(network, control)
         }
-        Box::new(column)
     }
 }
 

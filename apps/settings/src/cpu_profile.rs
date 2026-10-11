@@ -64,7 +64,7 @@ fn measure(
     );
     {
         let layout = app.harness().last_relayout();
-        if category == Category::MouseKeyboard && operation == "pointer-hover" && sample >= 2 {
+        if category == Category::Keyboard && operation == "pointer-hover" && sample >= 2 {
             assert_eq!(
                 layout.marked_leaves, 0,
                 "the collapsed keyboard inspection is an empty container, not a changing intrinsic-size leaf"
@@ -109,7 +109,7 @@ fn mounted_settings_cpu_interactions_observe_canonical_panes_and_shared_controls
         for category in [
             Category::Appearance,
             Category::Network,
-            Category::MouseKeyboard,
+            Category::Keyboard,
             Category::Displays,
         ] {
             let bounds = app

@@ -18,7 +18,7 @@ use account_custody::{Authorization, Custodian, CustodyError, LoopbackCancel, OA
 use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind};
 
 use crate::accounts::AccountKind;
-use crate::widgets::{El, caption, card, field_row, rows};
+use crate::widgets::{Item, SettingsSection, card, field_row, note, row, rows};
 
 /// Opens a URL in the person's browser.
 pub trait BrowserOpener: Send + Sync {
@@ -611,7 +611,7 @@ impl SignInFlow {
 
     /// The flow's card.
     /// The sign-in card; `bind` gives each button its effect.
-    pub fn card(&self, bind: &dyn Fn(Button, super::AccountsEffect) -> Button) -> El {
+    pub fn card(&self, bind: &dyn Fn(Button, super::AccountsEffect) -> Button) -> SettingsSection {
         let title = format!(
             "{} {}",
             if self.existing_id.is_some() {
@@ -625,11 +625,11 @@ impl SignInFlow {
             },
             self.kind.label()
         );
-        let mut fields: Vec<El> = Vec::new();
+        let mut fields: Vec<Item> = Vec::new();
         let unavailable = unavailable_reason(self.kind, &self.custodian);
         let waiting = self.busy();
         if let Some(reason) = &unavailable {
-            fields.push(caption(reason));
+            fields.push(note(reason));
         } else if !waiting {
             match &self.stage {
                 Stage::PastedCode { .. } => fields.push(field_row(
@@ -656,10 +656,10 @@ impl SignInFlow {
             }
         }
         if let Some(message) = &self.message {
-            fields.push(caption(message));
+            fields.push(note(message));
         }
         if self.kind.best_effort() && unavailable.is_none() {
-            fields.push(caption(
+            fields.push(note(
                 "Best effort: Apple offers no public iCloud Drive API, so Tilo uses the one \
                  iCloud.com uses. It can change without notice. Your Apple ID password is used \
                  only to sign in and is never stored.",
@@ -683,11 +683,11 @@ impl SignInFlow {
                 super::AccountsEffect::CancelAccountForm,
             )))
             .push(Box::new(Spacer::new()));
-        fields.push(Box::new(buttons));
+        fields.push(row(Box::new(buttons)));
         card(&title, rows(fields))
     }
 
-    fn form_fields(&self, fields: &mut Vec<El>) {
+    fn form_fields(&self, fields: &mut Vec<Item>) {
         fields.push(field_row(
             "Display name",
             Box::new(
@@ -710,7 +710,7 @@ impl SignInFlow {
                             .with_placeholder("https://cloud.example.com"),
                     ),
                 ));
-                fields.push(caption(
+                fields.push(note(
                     "Continue opens your Nextcloud's sign-in page in the browser. After you \
                      approve, Nextcloud issues an app password for this device only; you can \
                      revoke it there under Security at any time.",
@@ -741,7 +741,7 @@ impl SignInFlow {
             }
             _ => {
                 if let Some(cloud) = self.kind.oauth_cloud() {
-                    fields.push(caption(&format!(
+                    fields.push(note(&format!(
                         "Continue opens {}'s sign-in page in your browser. Tilo never sees your \
                          password; it keeps a revocable access grant for your files, sealed on \
                          this device.",

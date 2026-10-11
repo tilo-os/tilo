@@ -17,7 +17,7 @@ use crate::i18n::{t, t_args};
 use crate::panes::model::{PaneModel, Replies, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{El, caption, card, card_with_action, rows, value_row};
+use crate::widgets::{SettingsSection, card, card_with_action, note, rows, value_row};
 
 fn category_label(category: StorageCategory) -> String {
     t(match category {
@@ -254,7 +254,7 @@ impl StorageModel {
         ])
     }
 
-    fn overview_card(&self) -> El {
+    fn overview_card(&self) -> SettingsSection {
         let totals = self.snapshot.totals();
         card(
             &t("settings-storage-use"),
@@ -288,7 +288,7 @@ impl StorageModel {
         )
     }
 
-    fn synced_card(&self) -> El {
+    fn synced_card(&self) -> SettingsSection {
         if let Some(snapshot) = &self.sync_snapshot {
             let local: u64 = snapshot.workspaces.iter().map(|w| w.local_bytes).sum();
             let remote: u64 = snapshot
@@ -316,7 +316,7 @@ impl StorageModel {
                 ),
             ];
             if let Some(message) = &self.sync_message {
-                sync_rows.push(caption(message));
+                sync_rows.push(note(message));
             }
             sync_rows.extend(
                 snapshot
@@ -342,7 +342,7 @@ impl StorageModel {
                     rows(sync_rows),
                 )
             } else {
-                sync_rows.push(caption(&t(if self.sync_busy {
+                sync_rows.push(note(&t(if self.sync_busy {
                     "settings-storage-reclaiming"
                 } else if snapshot.online {
                     "settings-storage-nothing-reclaimable"
@@ -355,14 +355,14 @@ impl StorageModel {
             let fallback = t("settings-storage-accounting-unavailable");
             card(
                 &t("settings-storage-synced-card"),
-                rows(vec![caption(
+                rows(vec![note(
                     self.sync_message.as_deref().unwrap_or(&fallback),
                 )]),
             )
         }
     }
 
-    fn apps_card(&self) -> El {
+    fn apps_card(&self) -> SettingsSection {
         let mut largest = self.snapshot.entries.clone();
         largest.sort_by_key(|e| std::cmp::Reverse(e.bytes));
         let largest_rows = largest
@@ -384,14 +384,14 @@ impl StorageModel {
         card(
             &t("settings-storage-largest"),
             if self.snapshot.entries.is_empty() {
-                rows(vec![caption(&t("settings-storage-no-apps"))])
+                rows(vec![note(&t("settings-storage-no-apps"))])
             } else {
                 rows(largest_rows)
             },
         )
     }
 
-    fn cleanup_card(&self) -> El {
+    fn cleanup_card(&self) -> SettingsSection {
         match &self.cleanup {
             Some(preview) if !preview.items.is_empty() => {
                 let remove = t_args(
@@ -402,7 +402,7 @@ impl StorageModel {
                     Button::new("storage.clean", &remove),
                     StorageEffect::CleanUpCaches,
                 ));
-                let mut preview_rows = vec![caption(&t("settings-storage-cleanup-caption"))];
+                let mut preview_rows = vec![note(&t("settings-storage-cleanup-caption"))];
                 let cache_item = t("settings-storage-cache-item");
                 preview_rows.extend(preview.items.iter().take(8).map(|i| {
                     value_row(
@@ -421,12 +421,12 @@ impl StorageModel {
             }
             _ => card(
                 &t("settings-storage-cleanup"),
-                rows(vec![caption(&t("settings-storage-cleanup-empty"))]),
+                rows(vec![note(&t("settings-storage-cleanup-empty"))]),
             ),
         }
     }
 
-    fn tools_card(&self) -> El {
+    fn tools_card(&self) -> SettingsSection {
         let open_disks = t("settings-storage-open-disks");
         let open_backups = t("settings-storage-open-backups");
         card(
@@ -448,7 +448,7 @@ impl StorageModel {
                         StorageEffect::OpenBackups,
                     )),
                 ),
-                caption(&t("settings-storage-tools-caption")),
+                note(&t("settings-storage-tools-caption")),
             ]),
         )
     }

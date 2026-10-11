@@ -26,7 +26,7 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::t;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{caption, card, rows, setting_row};
+use crate::widgets::{Item, SettingsSection, card, note, rows, setting_row};
 
 /// The shell's desktop navigation preferences, as the person's settings
 /// hold them.
@@ -193,7 +193,7 @@ impl ShortcutPane {
         }
     }
 
-    fn entry_row(&self, entry: &ShortcutEntry) -> Box<dyn Widget> {
+    fn entry_row(&self, entry: &ShortcutEntry) -> Item {
         let label = t(&entry.label_key);
         let recorder = entry
             .action
@@ -226,11 +226,16 @@ impl ShortcutPane {
 
     fn composition(&self) -> Box<dyn Widget> {
         let entries = catalogue(&self.config);
-        let mut cards: Vec<Box<dyn Widget>> = ShortcutCategory::ALL
+        let mut cards: Vec<SettingsSection> = ShortcutCategory::ALL
             .into_iter()
             .map(|category| {
-                let mut body: Vec<Box<dyn Widget>> = Vec::new();
+                let mut body: Vec<Item> = Vec::new();
                 if category == ShortcutCategory::Navigation {
+                    // The refusal opens the section so it is seen next to the
+                    // switch that caused it, not after a long list of rows.
+                    if let Some(reason) = &self.refusal_shown {
+                        body.push(note(reason));
+                    }
                     body.push(setting_row(
                         &t("settings-shortcuts-vim"),
                         Box::new(self.cx.bind(
@@ -238,9 +243,6 @@ impl ShortcutPane {
                             effect(ShortcutEffect::SET_VIM_MODE),
                         )),
                     ));
-                    if let Some(reason) = &self.refusal_shown {
-                        body.push(caption(reason));
-                    }
                 }
                 body.extend(
                     entries
@@ -252,13 +254,13 @@ impl ShortcutPane {
             })
             .collect();
         if !self.config.actions.is_empty() {
-            let mut actions: Vec<Box<dyn Widget>> = self
+            let mut actions: Vec<Item> = self
                 .config
                 .actions
                 .iter()
                 .map(|bound| crate::widgets::value_row(&bound.label, &chord_label(&bound.chord)))
                 .collect();
-            actions.push(caption(&t("settings-shortcuts-actions-caption")));
+            actions.push(note(&t("settings-shortcuts-actions-caption")));
             cards.push(card(&t("settings-shortcuts-actions"), rows(actions)));
         }
         crate::widgets::cards(cards)
