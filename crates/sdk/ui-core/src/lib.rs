@@ -179,6 +179,9 @@ mod host_appearance;
 mod host_chrome;
 pub mod host_data;
 pub mod owner_wake;
+/// The app's own vello pipelines, kept across launches in its cache directory.
+#[cfg(feature = "native")]
+pub(crate) mod pipeline_cache;
 /// The session's read-only vello pipeline cache every app starts from.
 pub mod pipeline_seed;
 #[cfg(all(windows, feature = "native"))]

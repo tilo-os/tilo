@@ -80,6 +80,9 @@ pub struct HostPaths {
     pub home: Option<PathBuf>,
     /// The per-user configuration directory.
     pub config_home: Option<PathBuf>,
+    /// This process's own cache directory (`XDG_CACHE_HOME`). In a sandbox it
+    /// is the app's private, persistent `.cache`, which no other app reads.
+    pub cache_home: Option<PathBuf>,
     /// The session's read-only pipeline cache directory
     /// (`TILO_PIPELINE_SEED_DIR`), bound in by the launcher.
     pub pipeline_seed: Option<PathBuf>,
@@ -92,6 +95,14 @@ impl HostPaths {
         self.config_home
             .clone()
             .or_else(|| self.home.as_ref().map(|home| home.join(".config")))
+    }
+
+    /// This process's cache directory: [`Self::cache_home`], else `.cache`
+    /// under [`Self::home`].
+    pub fn cache_dir(&self) -> Option<PathBuf> {
+        self.cache_home
+            .clone()
+            .or_else(|| self.home.as_ref().map(|home| home.join(".cache")))
     }
 }
 
@@ -251,6 +262,25 @@ mod tests {
             ..HostPaths::default()
         };
         assert_eq!(paths.config_dir(), Some(PathBuf::from("/cfg")));
+    }
+
+    #[test]
+    fn cache_dir_falls_back_to_home() {
+        let paths = HostPaths {
+            home: Some("/home/ada".into()),
+            ..HostPaths::default()
+        };
+        assert_eq!(paths.cache_dir(), Some(PathBuf::from("/home/ada/.cache")));
+        let paths = HostPaths {
+            home: Some("/home/ada".into()),
+            cache_home: Some("/run/tilo/app/.cache".into()),
+            ..HostPaths::default()
+        };
+        assert_eq!(
+            paths.cache_dir(),
+            Some(PathBuf::from("/run/tilo/app/.cache"))
+        );
+        assert_eq!(HostPaths::default().cache_dir(), None);
     }
 
     #[test]
