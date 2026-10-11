@@ -358,6 +358,14 @@ pub struct NotesApp {
     status_painted: Option<Rect>,
     /// Where the last drawn frame painted it.
     status_drawn: Option<Rect>,
+    /// A scroll of the note this draw left to a copy the host makes of what
+    /// stays on screen (`ui::scroll_copy`), offered when the host collects
+    /// damage.
+    main_scroll_copy: Option<crate::main_panel::ScrollCopy>,
+    /// Where the save status floats over the note, this frame and the last,
+    /// with its shadow: a copy of the note's scroll repaints it over what
+    /// moved under it.
+    status_over_main: Vec<Rect>,
     /// Inputs of the last canonical projection: document heads, pending
     /// operations, selected page and tag filter. `sync` re-projects the
     /// whole page tree only when one of them moved instead of every frame.
@@ -607,6 +615,8 @@ impl NotesApp {
             paint_damage: ui::widget::paint_damage::PaintDamage::default(),
             status_painted: None,
             status_drawn: None,
+            main_scroll_copy: None,
+            status_over_main: Vec::new(),
             canonical_synced: None,
             projection_adopted: false,
             dispatcher: None,
@@ -773,8 +783,13 @@ impl NotesApp {
             return None;
         }
         let [main, shell, page_tree, status, toasts] = scenes;
+        // A scroll of the note the host may copy damages only what the copy
+        // leaves; the copy is offered when the host collects damage.
         let mut main_damage = Vec::new();
-        self.main.collect_damage(&mut main_damage);
+        match &self.main_scroll_copy {
+            Some(copy) => main_damage.clone_from(&copy.damage),
+            None => self.main.collect_damage(&mut main_damage),
+        }
         // A settled shell reports its controls (a hovered button), not
         // itself.
         let mut shell_damage = Vec::new();
@@ -2582,6 +2597,14 @@ impl Widget for NotesApp {
         self.transfer_toasts
             .draw(scene, transform, text_renderer, theme, presence);
         let toasts_scene = std::mem::take(scene);
+        self.main_scroll_copy = self.main.scroll_copy();
+        let reach = ui::widget::floating_surface::shadow_reach(theme);
+        self.status_over_main = [self.status_drawn, self.status_painted]
+            .into_iter()
+            .flatten()
+            .map(|rect| rect.inflate(reach, reach).intersect(self.main.get_rect()))
+            .filter(|rect| !rect.is_zero_area())
+            .collect();
         let frame = self.paint_frame(
             transform,
             theme,
@@ -2799,6 +2822,17 @@ impl Widget for NotesApp {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        // The note's scroll, copied by a host that keeps its last frame; a
+        // host that does not copy repaints the body.
+        if let Some(copy) = &self.main_scroll_copy {
+            if copy.offer(&self.main) {
+                // The save status floats over the note: it is repainted
+                // over what moved under it, and where the copy took it.
+                regions.extend(self.status_over_main.iter().copied());
+            } else {
+                regions.push(copy.body());
+            }
+        }
         if self.needs_redraw() || self.paint_damage.is_recorded() {
             self.paint_damage.collect(self.rect, regions);
         }
@@ -2816,6 +2850,7 @@ impl Widget for NotesApp {
             self.status_drawn = self.status_painted;
         }
         self.paint_damage.mark_drawn();
+        self.main_scroll_copy = None;
         self.self_dirty = false;
         self.shell.mark_drawn();
         self.sidebar.mark_drawn();

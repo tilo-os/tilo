@@ -3391,6 +3391,17 @@ impl BlockEditor {
         painted
     }
 
+    /// Where the drag handle the pointer's block shows was painted, if any:
+    /// it follows the pointer, not the text, so a host that copies a scroll
+    /// of the text repaints it where it is and where it was.
+    pub fn hover_handle(&self) -> Option<Rect> {
+        if self.block_drag.is_some() {
+            return None;
+        }
+        self.hovered_block()
+            .and_then(|index| self.block_drag_handle_rect(index))
+    }
+
     fn hovered_block(&self) -> Option<usize> {
         (0..self.blocks.len()).find_map(|index| {
             let line = self.block_paint_rect(index)?;
