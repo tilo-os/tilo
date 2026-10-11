@@ -979,6 +979,12 @@ fn persist_device_fabric(
     let bytes = fabric
         .encode_checkpoint()
         .map_err(|error| format!("encode checkpoint: {error}"))?;
+    write_device_fabric_checkpoint(path, &bytes)
+}
+
+/// Replace the fabric checkpoint with `bytes`, keeping the last readable one
+/// as its backup. Every write is synced, so this waits for the disk.
+fn write_device_fabric_checkpoint(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("create {}: {error}", parent.display()))?;
@@ -986,11 +992,11 @@ fn persist_device_fabric(
     let prior = std::fs::read(path)
         .ok()
         .filter(|prior| crate::shell::device_fabric::DeviceFabric::decode_checkpoint(prior).is_ok())
-        .unwrap_or_else(|| bytes.clone());
+        .unwrap_or_else(|| bytes.to_vec());
     let backup = device_fabric_backup_path(path);
     tilo_files::native::atomic::write_with_mode(&backup, &prior, 0o600)
         .map_err(|error| format!("write {}: {error}", backup.display()))?;
-    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
         .map_err(|error| format!("write {}: {error}", path.display()))
 }
 
@@ -5031,12 +5037,27 @@ impl ShellNetwork {
         path.with_file_name("personal-display-observations.json")
     }
 
+    /// Persist `fabric` without waiting for the disk. Called with the fabric
+    /// locked by the compositor's loop, on every change a peer or this device
+    /// makes and on each presence heartbeat; the checkpoint, its backup and the
+    /// sidecar are three synced writes, which on a busy disk held the loop for
+    /// hundreds of milliseconds and the fabric lock with it. The bytes are
+    /// encoded here, while `fabric` is held, and written by the state writer,
+    /// newest per file; session exit flushes it.
     fn persist_device_fabric(
         &self,
         path: &Path,
         fabric: &crate::shell::device_fabric::DeviceFabric,
     ) -> Result<(), String> {
-        persist_device_fabric(path, fabric)?;
+        let bytes = fabric
+            .encode_checkpoint()
+            .map_err(|error| format!("encode checkpoint: {error}"))?;
+        let owned = path.to_path_buf();
+        crate::shell::durable_writer::global().submit(path.to_path_buf(), move || {
+            if let Err(error) = write_device_fabric_checkpoint(&owned, &bytes) {
+                tracing::warn!(%error, "device fabric persistence failed");
+            }
+        });
         self.persist_display_observations(path, fabric)
     }
 
@@ -5046,7 +5067,13 @@ impl ShellNetwork {
         fabric: &crate::shell::device_fabric::DeviceFabric,
     ) -> Result<(), String> {
         if let Some(user) = self.personal_continuity_user {
-            display_observations::save(&Self::display_observations_path(path), fabric, user)?;
+            let bytes = display_observations::encode(fabric, user)?;
+            let sidecar = Self::display_observations_path(path);
+            crate::shell::durable_writer::global().submit(sidecar.clone(), move || {
+                if let Err(error) = display_observations::write(&sidecar, &bytes) {
+                    tracing::warn!(%error, "display observation persistence failed");
+                }
+            });
         }
         Ok(())
     }
@@ -9838,6 +9865,46 @@ mod tests {
     }
 
     #[test]
+    fn persisting_the_fabric_never_waits_for_the_disk_on_the_calling_thread() {
+        // The compositor's loop persists the fabric on every change and each
+        // presence heartbeat, with the fabric locked. The checkpoint, its backup
+        // and the display sidecar are synced writes; they run on the state
+        // writer. Park that writer, and the call must still return with
+        // nothing on disk yet.
+        let user = ed25519_dalek::SigningKey::from_bytes(&[0xE5; 32])
+            .verifying_key()
+            .to_bytes();
+        let (mut net, _commands) = personal_continuity_network_for_test(user);
+        let dir = tempfile::tempdir().unwrap();
+        let checkpoint_path = dir.path().join("personal-device-fabric.postcard");
+        net.device_fabric_path = Some(checkpoint_path.clone());
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let (started, running) = std::sync::mpsc::channel::<()>();
+        crate::shell::durable_writer::global().submit(
+            dir.path().join("parked-writer-blocker"),
+            move || {
+                started.send(()).unwrap();
+                let _ = parked.recv();
+            },
+        );
+        running.recv().unwrap();
+        net.persist_device_fabric(&checkpoint_path, &net.device_fabric.lock().unwrap())
+            .unwrap();
+        assert!(
+            !checkpoint_path.exists(),
+            "the checkpoint was written on the calling thread"
+        );
+        assert!(
+            !ShellNetwork::display_observations_path(&checkpoint_path).exists(),
+            "the display sidecar was written on the calling thread"
+        );
+        release.send(()).unwrap();
+        crate::shell::persist::wait_for_saves();
+        assert!(checkpoint_path.is_file(), "the writer never wrote it");
+        assert!(device_fabric_backup_path(&checkpoint_path).is_file());
+    }
+
+    #[test]
     fn offline_display_cache_preserves_facts_without_live_route_authority() {
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xE1; 32]);
         let user = root.verifying_key().to_bytes();
@@ -9861,6 +9928,7 @@ mod tests {
             .unwrap();
         net.persist_device_fabric(&checkpoint_path, &net.device_fabric.lock().unwrap())
             .unwrap();
+        crate::shell::persist::wait_for_saves();
         *net.device_fabric.lock().unwrap() = load_device_fabric(&checkpoint_path);
         net.restore_display_observations();
         let devices = net.person_display_devices(&local);
@@ -9884,6 +9952,7 @@ mod tests {
         assert_eq!(net.person_display_devices(&local)[0].outputs.len(), 1);
         net.forget_device_fabric(&owner);
         assert!(net.person_display_devices(&local).is_empty());
+        crate::shell::persist::wait_for_saves();
         let store: serde_json::Value = serde_json::from_slice(
             &std::fs::read(ShellNetwork::display_observations_path(&checkpoint_path)).unwrap(),
         )
