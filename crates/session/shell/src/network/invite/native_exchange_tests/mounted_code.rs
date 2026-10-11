@@ -31,6 +31,17 @@ async fn native_mounted_code_has_acknowledged_private_continuity() {
     .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_mounted_code_refresh_survives_a_blocked_ui_caller() {
+    trace_publication_hops();
+    Box::pin(super::actual_exchange(
+        false,
+        true,
+        Some(Journey::BlockedUiRefresh),
+    ))
+    .await;
+}
+
 fn trace_publication_hops() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("warn,tilo_joined_room::session::cursor=debug,tilo_joined_room::testing::governor=debug,tilo_relay::native_publication=debug")
@@ -42,6 +53,7 @@ pub(super) enum Journey {
     Document,
     PrivateAdmission,
     BlockedRead,
+    BlockedUiRefresh,
     ReadRecovery,
     AcknowledgementRecovery,
 }
@@ -53,6 +65,79 @@ pub(super) struct Context<'a> {
     pub publisher: &'a Arc<tilo_relay::RelayCoeditSession>,
     pub server: iroh::EndpointAddr,
     pub endpoint: &'a iroh::Endpoint,
+}
+
+/// The actual owner services authenticated refreshes independently of UI frames.
+/// Completion errors are retained and surfaced by the journey, never discarded.
+struct RefreshConsumer {
+    outcomes: tokio::sync::mpsc::Receiver<Result<(), String>>,
+    received: Arc<std::sync::atomic::AtomicBool>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl RefreshConsumer {
+    fn start(
+        mut requests: tokio::sync::mpsc::Receiver<tilo_relay::peer::sync_refresh::Request>,
+        authority: ActualAuthority,
+        publisher: Arc<tilo_relay::RelayCoeditSession>,
+    ) -> Self {
+        let (completed, outcomes) = tokio::sync::mpsc::channel(32);
+        let received = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = received.clone();
+        let task = tokio::spawn(async move {
+            while let Some(request) = requests.recv().await {
+                observed.store(true, std::sync::atomic::Ordering::Release);
+                let result = super::refresh::refresh_shared_on_request(&authority, request).await;
+                if result.is_ok() {
+                    publish(&authority, &publisher);
+                }
+                let failed = result.is_err();
+                if completed.send(result).await.is_err() || failed {
+                    break;
+                }
+            }
+        });
+        Self {
+            outcomes,
+            received,
+            task: Some(task),
+        }
+    }
+
+    async fn block_ui_after_request(&self) {
+        tilo_test_env::within(
+            "a real authenticated checkpoint refresh to reach its owner",
+            async {
+                while !self.received.load(std::sync::atomic::Ordering::Acquire) {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            },
+        )
+        .await;
+        // Only the UI caller is occupied. The original three-second refresh
+        // gate and the native network workers retain their production clocks.
+        std::thread::sleep(std::time::Duration::from_millis(3200));
+    }
+
+    async fn close(mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            if let Err(error) = task.await {
+                assert!(error.is_cancelled(), "refresh owner task failed: {error}");
+            }
+        }
+        while let Ok(result) = self.outcomes.try_recv() {
+            result.expect("the actual refresh owner must not lose a failed completion");
+        }
+    }
+}
+
+impl Drop for RefreshConsumer {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+    }
 }
 
 struct Device {
@@ -229,16 +314,21 @@ pub(super) async fn run(
         )
         .await,
     ];
-    let (mailbox, mut refreshes) = tilo_relay::peer::sync_refresh::Mailbox::bounded();
+    let (mailbox, requests) = tilo_relay::peer::sync_refresh::Mailbox::bounded();
     let topic = tilo_relay::room_workspace_id(tilo_joined_room::testing::ROOM).unwrap();
     context
         .relay
         .install_sync_refresh(topic, mailbox)
         .await
         .unwrap();
+    let mut refreshes =
+        RefreshConsumer::start(requests, authority.clone(), context.publisher.clone());
     publish(&authority, context.publisher);
     for app in &mut mounted {
         app.invoke("open", None);
+    }
+    if matches!(context.journey, Journey::BlockedUiRefresh) {
+        refreshes.block_ui_after_request().await;
     }
     drive(
         &context,
@@ -251,7 +341,10 @@ pub(super) async fn run(
     )
     .await;
     inspect_while_ui_caller_is_blocked(&context, &authority);
-    if matches!(context.journey, Journey::BlockedRead) {
+    if matches!(
+        context.journey,
+        Journey::BlockedRead | Journey::BlockedUiRefresh
+    ) {
         blocked_read::run(&first, &mut mounted[0]).await;
     } else if matches!(context.journey, Journey::ReadRecovery) {
         read_recovery::run(&first, &mut mounted[0]).await;
@@ -269,6 +362,7 @@ pub(super) async fn run(
         .iter_mut()
         .map(|app| app.code.app.controlled_private_continuity_route_for_test())
         .collect::<Vec<_>>();
+    refreshes.close().await;
     for app in mounted {
         app.close().await;
     }
@@ -297,7 +391,7 @@ async fn edit_and_converge(
     context: &Context<'_>,
     authority: &ActualAuthority,
     source: &NativeWorkspaceOwner,
-    refreshes: &mut tokio::sync::mpsc::Receiver<tilo_relay::peer::sync_refresh::Request>,
+    refreshes: &mut RefreshConsumer,
     mounted: &mut [Mounted],
 ) {
     report_owner_phases("before edit", mounted);
@@ -457,7 +551,7 @@ async fn drive(
     context: &Context<'_>,
     authority: &ActualAuthority,
     source: &NativeWorkspaceOwner,
-    refreshes: &mut tokio::sync::mpsc::Receiver<tilo_relay::peer::sync_refresh::Request>,
+    refreshes: &mut RefreshConsumer,
     mounted: &mut [Mounted],
     body: &str,
     audits: usize,
@@ -488,9 +582,8 @@ async fn drive(
                 break;
             }
             tokio::select! {
-                Some(request) = refreshes.recv() => {
-                    super::refresh::refresh_shared_on_request(authority, request).await.unwrap();
-                    publish(authority, context.publisher);
+                result = refreshes.outcomes.recv() => {
+                    result.expect("the actual refresh owner must remain live").unwrap();
                 }
                 Some(tilo_relay::Inbound::Delta { author, data }) = context.publisher.recv() => {
                     let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();

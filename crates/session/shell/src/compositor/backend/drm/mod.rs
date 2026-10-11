@@ -1657,9 +1657,13 @@ fn paint_scanouts(
     frame: ScanoutFrame<'_>,
     phase_window: Option<&mut PhaseWindow>,
 ) -> PaintScanoutSample {
-    let had_renderer = paint.is_some();
     let sample = paint_scanouts_with(scanouts, outputs, paint, cpu, pointer, frame, phase_window);
-    if !had_renderer && paint.is_some() {
+    // The presenter usually builds the renderer before its first frame (`prepare`), so this
+    // asks the renderer rather than whether this call built it.
+    if paint
+        .as_mut()
+        .is_some_and(paint::VelloDrmBridge::take_first_frame)
+    {
         // A new renderer has compiled its pipelines and drawn its first frame. The driver's
         // compile scratch is free now, but glibc would keep it (TIL-705).
         crate::shell::heap_trim::request();
