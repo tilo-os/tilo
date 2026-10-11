@@ -1589,6 +1589,8 @@ mod document_imports;
 mod peer_action_broker;
 #[path = "policy_context.rs"]
 mod policy_context;
+#[path = "room_service.rs"]
+mod room_service;
 #[path = "workspace_collaboration.rs"]
 mod workspace_collaboration;
 
