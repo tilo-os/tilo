@@ -1270,38 +1270,66 @@ fn last_ident(ty: &Type) -> Option<(String, Option<&Type>)> {
 /// The declared type of a parameter of Rust type `ty`, and whether it is
 /// optional. An app's own type is what its schema says it is written as
 /// when `schema` (the type implements `JsonSchema`), else an object.
-fn param_type(ty: &Type, schema: bool) -> (Tokens, bool) {
+/// The parameter type of `ty` when its name says it, and whether it is
+/// optional; `None` for a type whose schema says it.
+fn known_param_type(ty: &Type) -> (Option<Tokens>, bool) {
     let krate = krate();
     let pt = quote!(#krate::__private::ParamType);
     let (name, inner) = last_ident(ty).unwrap_or_default();
     match name.as_str() {
         "Option" => inner.map_or_else(
-            || (quote!(#pt::Object), true),
-            |inner| (param_type(inner, schema).0, true),
+            || (Some(quote!(#pt::Object)), true),
+            |inner| (known_param_type(inner).0, true),
         ),
-        "String" | "Id" | "Uuid" | "Atom" => (quote!(#pt::Text), false),
-        "f32" | "f64" => (quote!(#pt::Number), false),
+        "String" | "Id" | "Uuid" | "Atom" => (Some(quote!(#pt::Text)), false),
+        "f32" | "f64" => (Some(quote!(#pt::Number)), false),
         "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "usize" | "isize" => {
-            (quote!(#pt::Integer), false)
+            (Some(quote!(#pt::Integer)), false)
         }
-        "bool" => (quote!(#pt::Boolean), false),
-        "Vec" => (quote!(#pt::Array), false),
+        "bool" => (Some(quote!(#pt::Boolean)), false),
+        "Vec" => (Some(quote!(#pt::Array)), false),
+        _ => (None, false),
+    }
+}
+
+/// The type whose schema says the parameter type of `ty`: the present value
+/// of an `Option`, else `ty`.
+fn schema_param_type(ty: &Type) -> &Type {
+    match last_ident(ty) {
+        Some((name, Some(inner))) if name == "Option" => schema_param_type(inner),
+        _ => ty,
+    }
+}
+
+fn param_type(ty: &Type, schema: bool) -> (Tokens, bool) {
+    let krate = krate();
+    let (known, optional) = known_param_type(ty);
+    if let Some(known) = known {
+        return (known, optional);
+    }
+    if let Some((name, Some(inner))) = last_ident(ty)
+        && name == "Option"
+    {
+        return (param_type(inner, schema).0, true);
+    }
+    if schema {
+        (
+            quote!(#krate::__private::param_type_of(
+                &<#ty as #krate::JsonSchema>::json_schema()
+            )),
+            false,
+        )
+    } else {
         // An effect's field need not describe its JSON form: its schema when
         // it does (an alias of a described type), an object when not.
-        _ if !schema => (
+        (
             quote!({
                 #[allow(unused_imports, reason = "one of the two applies")]
                 use #krate::__private::{DescribedParam as _, UndescribedParam as _};
                 (&#krate::__private::ParamOf::<#ty>::new()).param_type()
             }),
             false,
-        ),
-        _ => (
-            quote!(#krate::__private::param_type_of(
-                &<#ty as #krate::JsonSchema>::json_schema()
-            )),
-            false,
-        ),
+        )
     }
 }
 

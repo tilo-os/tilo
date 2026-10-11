@@ -279,25 +279,128 @@ pub mod __private {
         pub destructive: bool,
         pub answering: bool,
         pub collects: Option<&'static str>,
+        /// The parameter the content it collects arrives as.
+        pub content: Option<&'static str>,
         pub item_field: Option<&'static str>,
         pub writes: &'static [&'static str],
         pub shape: crate::Shape,
-        pub params: fn() -> Vec<ActionParam>,
+        pub params: &'static [ParamDecl],
     }
 
-    /// The declaration of the verb `verb`, built by `build`: one function
-    /// per record type, not a builder chain per verb.
+    /// What `#[resource]` declares of one parameter of a verb: static data,
+    /// made into the published parameter by one function for every verb.
+    #[derive(Clone, Copy)]
+    pub struct ParamDecl {
+        pub name: &'static str,
+        pub ty: ParamTypeOf,
+        pub description: &'static str,
+        /// The schema of the parameter's type.
+        pub schema: fn() -> serde_json::Value,
+        pub optional: bool,
+        pub place: PlaceIn,
+        pub example: Option<fn() -> serde_json::Value>,
+        /// Its type's fields are the verb's parameters, each its own.
+        pub flat: bool,
+    }
+
+    /// A declared parameter's type.
+    #[derive(Clone, Copy)]
+    pub enum ParamTypeOf {
+        /// Known from the Rust type.
+        Known(ParamType),
+        /// Read off the schema of the (present) value's type.
+        Schema(fn() -> serde_json::Value),
+    }
+
+    /// The published parameters of `params`.
+    #[must_use]
+    pub fn params_of(params: &[ParamDecl]) -> Vec<ActionParam> {
+        let mut out = Vec::with_capacity(params.len());
+        for param in params {
+            if param.flat {
+                out.extend(flat_params(&(param.schema)()));
+                continue;
+            }
+            let ty = match param.ty {
+                ParamTypeOf::Known(ty) => ty,
+                ParamTypeOf::Schema(schema) => param_type_of(&schema()),
+            };
+            out.push(declared_param(
+                param.name,
+                ty,
+                param.description,
+                param.schema,
+                param.optional,
+                param.place,
+                param.example,
+            ));
+        }
+        out
+    }
+
+    /// The declaration of the verb `verb`, built by `build`.
     pub fn declare<R: crate::Resource>(
         verb: VerbDecl,
         build: fn(&ActionArgs, i64) -> Result<R::Action, String>,
     ) -> crate::ActionDecl<R> {
-        let mut decl = crate::ActionDecl::new(verb.id, verb.label, (verb.params)(), build)
-            .of_kind(verb.kind)
-            .writing(crate::footprint::declared(
-                verb.shape,
-                verb.item_field,
-                verb.writes,
-            ));
+        let builds: crate::vocabulary::Builds =
+            std::sync::Arc::new(move |args, now_ms| match build(args, now_ms) {
+                Ok(action) => Ok(crate::Built::of::<R>(action)),
+                Err(reason) => Err(reason),
+            });
+        crate::ActionDecl::declared(verb_declaration(crate::vocabulary::<R>(), verb, builds))
+    }
+
+    /// The declaration of the verb `verb` of the record `R`, whose action
+    /// is its operation `O` decoded from the arguments: one build for
+    /// every verb of the record.
+    pub fn declare_verb<R, O>(verb: VerbDecl) -> crate::ActionDecl<R>
+    where
+        R: crate::Resource<Action = crate::Stamped<O>>,
+        O: serde::de::DeserializeOwned,
+    {
+        let (id, content) = (verb.id, verb.content);
+        let builds: crate::vocabulary::Builds = std::sync::Arc::new(move |args, now_ms| {
+            let arguments = verb_arguments(args, content);
+            match build_stamped::<O>(id, &arguments, now_ms) {
+                Ok(action) => Ok(crate::Built::of::<R>(action)),
+                Err(reason) => Err(reason),
+            }
+        });
+        crate::ActionDecl::declared(verb_declaration(crate::vocabulary::<R>(), verb, builds))
+    }
+
+    /// The arguments of a verb invoked with `args`, the content it collects
+    /// (if any) under its parameter `content`.
+    fn verb_arguments(
+        args: &ActionArgs,
+        content: Option<&'static str>,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut arguments = args.to_json();
+        if let Some(content) = content
+            && let Some(hash) = arguments.remove(PROMPTED_PARAM)
+        {
+            arguments.insert(String::from(content), hash);
+        }
+        arguments
+    }
+
+    /// The declaration of `verb` of the resource `vocabulary`, built by
+    /// `build`.
+    fn verb_declaration(
+        vocabulary: &crate::Vocabulary,
+        verb: VerbDecl,
+        build: crate::vocabulary::Builds,
+    ) -> crate::Declaration {
+        let mut decl = crate::Declaration::new(
+            vocabulary,
+            verb.id,
+            verb.label.to_owned(),
+            params_of(verb.params),
+            build,
+        );
+        decl.kind = verb.kind;
+        decl.writes = crate::footprint::declared(verb.shape, verb.item_field, verb.writes);
         // What the description says beyond its first line, the label.
         let description = verb
             .description
@@ -306,19 +409,17 @@ pub mod __private {
                 rest.trim_start_matches('.').trim_start()
             });
         if !description.is_empty() {
-            decl = decl.describe(description);
+            decl.description = Some(description.to_owned());
         }
-        if let Some(field) = verb.field {
-            decl = decl.below_field(field);
-        }
-        if verb.destructive {
-            decl = decl.destructive();
-        }
+        decl.field = verb.field;
+        decl.destructive = verb.destructive;
         if verb.answering {
-            decl = decl.answering();
+            decl.result = Some(tilo_actions::ResultSpec::Json {
+                schema: serde_json::json!({"type": "object"}),
+            });
         }
         if let Some(prompt) = verb.collects {
-            decl = decl.collecting_content(prompt);
+            decl.content = Some(prompt.to_owned());
         }
         decl
     }

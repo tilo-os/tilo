@@ -74,47 +74,56 @@ impl<R: Model, T> Path<R, T> {
     /// collection item); `None` when absent or stored as a scalar.
     #[must_use]
     pub fn object(&self, doc: &crate::Doc) -> Option<automerge::ObjId> {
-        use crate::Shape;
-        use automerge::ReadDoc;
-        fn child(doc: &crate::Doc, obj: &automerge::ObjId, key: &str) -> Option<automerge::ObjId> {
-            match doc.get(obj, key).ok()?? {
-                (automerge::Value::Object(_), id) => Some(id),
-                (automerge::Value::Scalar(_), _) => None,
-            }
-        }
-        let mut obj = automerge::ROOT;
-        let mut shape = R::SHAPE;
-        for segment in &self.segments {
-            match (shape, segment) {
-                (Shape::Record(fields), Segment::Field(key)) => {
-                    shape = fields
-                        .iter()
-                        .find(|field| field.key == key)
-                        .map_or(Shape::Value, |field| field.shape);
-                    obj = child(doc, &obj, key)?;
-                }
-                (Shape::Collection(item), Segment::Item(id)) => {
-                    let entry = child(doc, &obj, id.as_str())?;
-                    obj = child(doc, &entry, crate::collection::VALUE)?;
-                    shape = *item;
-                }
-                (Shape::Keyed(item), Segment::Item(id)) => {
-                    obj = child(doc, &obj, id.as_str())?;
-                    shape = *item;
-                }
-                (_, Segment::Field(key) | Segment::Key(key)) => {
-                    obj = child(doc, &obj, key)?;
-                    shape = Shape::Value;
-                }
-                (_, Segment::Item(id)) => {
-                    obj = child(doc, &obj, id.as_str())?;
-                    shape = Shape::Value;
-                }
-                (_, Segment::Cell { .. }) => return None,
-            }
-        }
-        Some(obj)
+        object_at(R::SHAPE, &self.segments, doc)
     }
+}
+
+/// [`Path::object`] of the path `segments` into a record stored as `shape`.
+fn object_at(
+    shape: crate::Shape,
+    segments: &[Segment],
+    doc: &crate::Doc,
+) -> Option<automerge::ObjId> {
+    use crate::Shape;
+    use automerge::ReadDoc;
+    fn child(doc: &crate::Doc, obj: &automerge::ObjId, key: &str) -> Option<automerge::ObjId> {
+        match doc.get(obj, key).ok()?? {
+            (automerge::Value::Object(_), id) => Some(id),
+            (automerge::Value::Scalar(_), _) => None,
+        }
+    }
+    let mut obj = automerge::ROOT;
+    let mut shape = shape;
+    for segment in segments {
+        match (shape, segment) {
+            (Shape::Record(fields), Segment::Field(key)) => {
+                shape = fields
+                    .iter()
+                    .find(|field| field.key == key)
+                    .map_or(Shape::Value, |field| field.shape);
+                obj = child(doc, &obj, key)?;
+            }
+            (Shape::Collection(item), Segment::Item(id)) => {
+                let entry = child(doc, &obj, id.as_str())?;
+                obj = child(doc, &entry, crate::collection::VALUE)?;
+                shape = *item;
+            }
+            (Shape::Keyed(item), Segment::Item(id)) => {
+                obj = child(doc, &obj, id.as_str())?;
+                shape = *item;
+            }
+            (_, Segment::Field(key) | Segment::Key(key)) => {
+                obj = child(doc, &obj, key)?;
+                shape = Shape::Value;
+            }
+            (_, Segment::Item(id)) => {
+                obj = child(doc, &obj, id.as_str())?;
+                shape = Shape::Value;
+            }
+            (_, Segment::Cell { .. }) => return None,
+        }
+    }
+    Some(obj)
 }
 
 impl<R, T> Path<R, T> {
@@ -140,11 +149,9 @@ impl<R, T> Path<R, T> {
     /// One step further down, to a value of type `U`.
     #[doc(hidden)]
     #[must_use]
+    #[inline]
     pub fn child<U>(&self, segment: Segment) -> Path<R, U> {
-        let mut segments = Vec::with_capacity(self.segments.len().saturating_add(1));
-        segments.extend(self.segments.iter().cloned());
-        segments.push(segment);
-        Path::from_segments(segments)
+        Path::from_segments(extended(&self.segments, segment))
     }
 
     /// The same location seen as another type: the inner value of a `Box`,
@@ -193,6 +200,7 @@ impl<R, T> Path<R, T> {
 
     /// The edit `op` at this path.
     #[must_use]
+    #[inline]
     pub fn edit(&self, op: EditOp) -> Edit<R> {
         Edit {
             path: self.segments.clone(),
@@ -200,6 +208,14 @@ impl<R, T> Path<R, T> {
             marker: PhantomData,
         }
     }
+}
+
+/// `segments` and one step more.
+fn extended(segments: &[Segment], segment: Segment) -> Vec<Segment> {
+    let mut extended = Vec::with_capacity(segments.len().saturating_add(1));
+    extended.extend_from_slice(segments);
+    extended.push(segment);
+    extended
 }
 
 impl<R, T> Clone for Path<R, T> {
@@ -210,15 +226,19 @@ impl<R, T> Clone for Path<R, T> {
 
 impl<R, T> std::fmt::Debug for Path<R, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Path(")?;
-        for (index, segment) in self.segments.iter().enumerate() {
-            if index > 0 {
-                f.write_str(" › ")?;
-            }
-            write!(f, "{segment}")?;
-        }
-        f.write_str(")")
+        fmt_segments(&self.segments, f)
     }
+}
+
+fn fmt_segments(segments: &[Segment], f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str("Path(")?;
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            f.write_str(" › ")?;
+        }
+        write!(f, "{segment}")?;
+    }
+    f.write_str(")")
 }
 
 impl<R, T> PartialEq for Path<R, T> {

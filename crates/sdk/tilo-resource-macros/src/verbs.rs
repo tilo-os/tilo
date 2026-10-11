@@ -7,9 +7,7 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Attribute, Expr, ExprLit, FnArg, ImplItem, ItemImpl, Lit, Meta, Pat, Token, Type};
 
-use crate::{
-    CRATE, doc_lines, humanize, is_action_cx, krate, last_ident, owned_type, param_type, snake_case,
-};
+use crate::{CRATE, doc_lines, humanize, is_action_cx, krate, last_ident, owned_type, snake_case};
 
 pub(crate) struct ResourceOptions {
     kind: String,
@@ -532,6 +530,50 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
     })
 }
 
+/// What a verb declares of `param`, as a constant [`ParamDecl`].
+fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
+    let name = &param.public;
+    let ty = &param.ty;
+    let description = &param.description;
+    let flat = param.role == Role::Flatten;
+    let (known, optional) = crate::known_param_type(ty);
+    let param_ty = known.map_or_else(
+        || {
+            let schema_ty = crate::schema_param_type(ty);
+            quote!(#krate::__private::ParamTypeOf::Schema(
+                <#schema_ty as #krate::JsonSchema>::json_schema
+            ))
+        },
+        |known| quote!(#krate::__private::ParamTypeOf::Known(#known)),
+    );
+    let example = param.example.as_ref().map_or_else(
+        || quote!(::core::option::Option::None),
+        |example| {
+            quote!(::core::option::Option::Some(
+                (|| #krate::__private::serde_json::json!(#example))
+                    as fn() -> #krate::__private::serde_json::Value
+            ))
+        },
+    );
+    let place = match (&param.place_in, param.role == Role::Place) {
+        (Some(field), _) => quote!(#krate::__private::PlaceIn::Field(#field)),
+        (None, true) => quote!(#krate::__private::PlaceIn::Record),
+        (None, false) => quote!(#krate::__private::PlaceIn::Nowhere),
+    };
+    quote! {
+        #krate::__private::ParamDecl {
+            name: #name,
+            ty: #param_ty,
+            description: #description,
+            schema: <#ty as #krate::JsonSchema>::json_schema,
+            optional: #optional,
+            place: #place,
+            example: #example,
+            flat: #flat,
+        }
+    }
+}
+
 /// The parameter struct of one verb, its schema, conversions and paths.
 #[allow(
     clippy::too_many_lines,
@@ -572,6 +614,7 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
             pub #ident: #ty
         }
     });
+    let param_decls = verb.params.iter().map(|param| param_decl(param, &krate));
     let schemas = verb.params.iter().map(|param| {
         let ty = &param.ty;
         let public = &param.public;
@@ -708,6 +751,10 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
         }
 
         impl #name {
+            /// What the verb declares of its parameters.
+            #[doc(hidden)]
+            pub const __PARAMS: &'static [#krate::__private::ParamDecl] = &[#(#param_decls),*];
+
             /// The parameters in their JSON form, an object of arguments.
             #[inline(never)]
             fn from_args(
@@ -1108,42 +1155,6 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             });
         }
 
-        let params = verb.params.iter().map(|param| {
-            let name = &param.public;
-            let ty = &param.ty;
-            let description = &param.description;
-            if param.role == Role::Flatten {
-                return quote!(#krate::__private::flat_params(
-                    &<#ty as #krate::JsonSchema>::json_schema()
-                ));
-            }
-            let (param_ty, optional) = param_type(ty, true);
-            let example = param.example.as_ref().map_or_else(
-                || quote!(::core::option::Option::None),
-                |example| {
-                    quote!(::core::option::Option::Some(
-                        (|| #krate::__private::serde_json::json!(#example))
-                            as fn() -> #krate::__private::serde_json::Value
-                    ))
-                },
-            );
-            let place = match (&param.place_in, param.role == Role::Place) {
-                (Some(field), _) => quote!(#krate::__private::PlaceIn::Field(#field)),
-                (None, true) => quote!(#krate::__private::PlaceIn::Record),
-                (None, false) => quote!(#krate::__private::PlaceIn::Nowhere),
-            };
-            quote! {
-                ::std::vec![#krate::__private::declared_param(
-                    #name,
-                    #param_ty,
-                    #description,
-                    <#ty as #krate::JsonSchema>::json_schema,
-                    #optional,
-                    #place,
-                    #example,
-                )]
-            }
-        });
         let destructive = verb.options.destructive;
         let answering = verb.options.answers;
         // Run where the verb is built from its arguments (the origin), never
@@ -1171,7 +1182,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 })
             },
         };
-        let (collects, prompted) =
+        let (collects, prompted, content) =
             match verb.params.iter().find(|param| param.role == Role::Content) {
                 Some(param) => {
                     let description = &param.description;
@@ -1185,9 +1196,14 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                                 arguments.insert(::std::string::String::from(#public), hash);
                             }
                         },
+                        quote!(::core::option::Option::Some(#public)),
                     )
                 }
-                None => (quote!(::core::option::Option::None), quote!()),
+                None => (
+                    quote!(::core::option::Option::None),
+                    quote!(),
+                    quote!(::core::option::Option::None),
+                ),
             };
         let description = &verb.description;
         let field = verb.options.field.as_deref().map_or_else(
@@ -1199,34 +1215,38 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 quote!(::core::option::Option::Some(#field))
             },
         );
-        decls.push(quote! {
-            #krate::__private::declare::<#self_ty>(
-                #krate::__private::VerbDecl {
-                    id: #id,
-                    label: #label_text,
-                    description: #description,
-                    kind: #krate::ActionKind::#action_kind,
-                    field: #field,
-                    destructive: #destructive,
-                    answering: #answering,
-                    collects: #collects,
-                    item_field: #item_field,
-                    writes: &[#(#declared_writes),*],
-                    shape: <#self_ty as #krate::Model>::SHAPE,
-                    params: || {
-                        let mut params: ::std::vec::Vec<#krate::__private::ActionParam> =
-                            ::std::vec::Vec::new();
-                        #(params.extend(#params);)*
-                        params
-                    },
-                },
-                |args, now_ms| {
+        let verb_decl = quote! {
+            #krate::__private::VerbDecl {
+                id: #id,
+                label: #label_text,
+                description: #description,
+                kind: #krate::ActionKind::#action_kind,
+                field: #field,
+                destructive: #destructive,
+                answering: #answering,
+                collects: #collects,
+                content: #content,
+                item_field: #item_field,
+                writes: &[#(#declared_writes),*],
+                shape: <#self_ty as #krate::Model>::SHAPE,
+                params: #params_mod::#variant::__PARAMS,
+            }
+        };
+        // Without a `prepare` hook, every verb of the record is built by one
+        // function: its arguments decoded as a recorded action is.
+        decls.push(if prepare.is_some() {
+            quote! {
+                #krate::__private::declare::<#self_ty>(#verb_decl, |args, now_ms| {
                     let mut arguments = args.to_json();
                     let _ = &mut arguments;
                     #prompted
                     #build_body
-                },
-            )
+                })
+            }
+        } else {
+            quote! {
+                #krate::__private::declare_verb::<#self_ty, #action_enum>(#verb_decl)
+            }
         });
     }
 
