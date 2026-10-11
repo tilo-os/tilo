@@ -327,6 +327,12 @@ thirty open/close cycles leave only the wallpaper resident at the size it
 started with, and told images went the atlas comes down within a few passes
 while an expired request waits the long way again.
 
+- `ImageCache::evict_superseded`: once an image does not fit and the atlas is
+  at its maximum, residents the current pass has not drawn go at once instead
+  of after two passes. A client frame over half the atlas's side (a 4K buffer
+  rendered at twice the output's density) cannot sit beside the frame it
+  replaces, and the new frame was omitted: the tile drew its backdrop only.
+
 ## `vendor/vello/src/wgpu_engine.rs`: cleared pools and freed downloads are destroyed
 
 wgpu's WebGPU backend does not destroy a buffer when it is dropped; the GPU
