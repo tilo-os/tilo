@@ -664,6 +664,101 @@ p99_tolerance = 2.0
 min_delta = 1000.0
 source = "KPI document: Frame time p99 at 4K/144 Hz; the CPU share of a pan frame (lavapipe runner; reported only)"
 
+# A pan's first frame from rest (strip_pan_bench `start` and `restart`: the
+# first pan's and a second pan's, two samples per case). The presenter warms
+# its layers once the desktop rests, so a first frame copies and composites
+# like any pan frame instead of rasterising the backdrop, strips and chrome
+# whole (25.6 M px, 376-572 ms on this runner before). The max is enforced
+# below two whole layers: in the bench's fixture the strips' drawing still
+# changes in its very first pan (the strips' layer, about 8.3 M px, is then
+# rasterised again), and a frame that rasterises every layer fails at once.
+# Frame time is reported like the pan frames'.
+
+[kpi."render.shell.pan_start_pixels.4k"]
+unit = "pixels"
+max = 12000000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels the first frame of a 4K six-window pan from rest rasterises"
+
+[kpi."render.shell.pan_start_us.4k"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-window pan from rest (lavapipe; reported only)"
+
+[kpi."render.shell.pan_start_pixels.4k_s150"]
+unit = "pixels"
+max = 12000000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels the first frame of a 4K six-window pan at 150 % from rest rasterises"
+
+[kpi."render.shell.pan_start_us.4k_s150"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-window pan at 150 % from rest (lavapipe; reported only)"
+
+[kpi."render.shell.pan_start_pixels.4k_s200"]
+unit = "pixels"
+max = 12000000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels the first frame of a 4K six-window pan at 200 % from rest rasterises"
+
+[kpi."render.shell.pan_start_us.4k_s200"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-window pan at 200 % from rest (lavapipe; reported only)"
+
+[kpi."render.shell.pan_start_pixels.4k_strips2"]
+unit = "pixels"
+max = 12000000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels the first frame of a 4K pan of two strips from rest rasterises"
+
+[kpi."render.shell.pan_start_us.4k_strips2"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, the first frame of a 4K pan of two strips from rest (lavapipe; reported only)"
+
+[kpi."render.shell.pan_start_pixels.4k_s200_strips2"]
+unit = "pixels"
+max = 12000000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels the first frame of a 4K pan of two strips at 200 % from rest rasterises"
+
+[kpi."render.shell.pan_start_us.4k_s200_strips2"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, the first frame of a 4K pan of two strips at 200 % from rest (lavapipe; reported only)"
+
 [kpi."render.shell.strip_move_us.4k"]
 unit = "us"
 p99 = 16700.0

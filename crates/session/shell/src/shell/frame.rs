@@ -384,6 +384,16 @@ impl FramePaint {
         }
     }
 
+    /// Layers drawn while the desktop rests
+    /// ([`FrameBuilder::layers_at_rest`]), for a presenter to retain
+    /// ([`crate::shell::present::PresentPipe::warm`]): nothing to present.
+    pub fn layers_at_rest(cache: FrameCache) -> Self {
+        Self {
+            cache: Some(cache),
+            ..Self::full(Scene::new())
+        }
+    }
+
     /// [`Self::scanout`], while `scene` is still the scene it was found on
     /// top of.
     pub fn scanout_candidate(&self) -> Option<&crate::shell::scanout_candidate::ScanoutCandidate> {
@@ -760,6 +770,12 @@ pub struct FrameBuilder {
     layer_policy: LayerPolicy,
     /// What [`LayerPolicy::WhilePanning`] tells a pan by.
     strip_motion: StripMotion,
+    /// The frame being drawn is the desktop as layers whatever the policy
+    /// ([`Self::layers_at_rest`]), not a frame.
+    drawing_layers_at_rest: bool,
+    /// A frame changed the desktop since the presenter's layers were last
+    /// drawn ([`Self::layers_stale`]).
+    layers_stale: bool,
     /// What the presenter asks of strip pans
     /// ([`Self::set_strip_pan_presenter`]): whole-pixel pans, and layers.
     strip_pan_presenter: StripPanPresenter,
@@ -1039,6 +1055,8 @@ impl FrameBuilder {
             retained_layer_width: None,
             layer_policy: LayerPolicy::default(),
             strip_motion: StripMotion::default(),
+            drawing_layers_at_rest: false,
+            layers_stale: false,
             strip_pan_presenter: StripPanPresenter::default(),
             painted_hdr_layers: Vec::new(),
             painted_backdrop: None,
@@ -2053,13 +2071,16 @@ impl FrameBuilder {
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
-        let panning = self.strip_motion.note(
-            self.host
-                .strip_scroll_offsets()
-                .into_iter()
-                .map(|(id, scroll, _)| (id, scroll))
-                .collect(),
-        );
+        // Layers drawn at rest are no frame: they leave the pans' motion as
+        // the frames noted it.
+        let panning = self.drawing_layers_at_rest
+            || self.strip_motion.note(
+                self.host
+                    .strip_scroll_offsets()
+                    .into_iter()
+                    .map(|(id, scroll, _)| (id, scroll))
+                    .collect(),
+            );
         let plan = (layered
             && !global_filter
             && match self.layer_policy {
@@ -2279,6 +2300,15 @@ impl FrameBuilder {
             (scene, scanout, None)
         };
 
+        let after_layers = self
+            .last_produced_sections
+            .as_ref()
+            .is_some_and(|previous| {
+                previous
+                    .strips
+                    .as_ref()
+                    .is_some_and(|strips| !strips.is_empty())
+            });
         self.last_produced_sections = Some(ProducedSections {
             foreign_images,
             backdrop: sections.backdrop,
@@ -2295,7 +2325,7 @@ impl FrameBuilder {
             tint,
             revision,
         });
-        FramePaint {
+        let mut frame = FramePaint {
             scene,
             revision,
             previous_revision,
@@ -2304,7 +2334,81 @@ impl FrameBuilder {
             backdrop,
             cache,
             scanout,
+        };
+        self.keep_layers_in_step(&mut frame, after_layers);
+        frame
+    }
+
+    /// Keep a presenter that composites strip pans from retained layers but
+    /// gets frames at rest in screen space ([`LayerPolicy::WhilePanning`])
+    /// in step with the frames. The first frame drawn in screen space after
+    /// a pan (`after_layers`) also carries the desktop as layers: the
+    /// presenter composites it from the layers it holds, which still show
+    /// the desktop (nothing changed: nothing is rasterised), instead of
+    /// rendering the whole output again. Any other frame that changes the
+    /// desktop leaves the layers stale until they are drawn at rest
+    /// ([`Self::layers_stale`], [`Self::layers_at_rest`]).
+    fn keep_layers_in_step(&mut self, frame: &mut FramePaint, after_layers: bool) {
+        if self.drawing_layers_at_rest || self.layer_policy != LayerPolicy::WhilePanning {
+            return;
         }
+        if frame.cache.is_none() && after_layers {
+            frame.cache = self.draw_layers_at_rest();
+        }
+        if frame.cache.is_some() {
+            self.layers_stale = false;
+        } else if !frame.damage_regions.as_ref().is_some_and(Vec::is_empty) {
+            // Only a desktop that can be drawn as layers has any to warm.
+            self.layers_stale = self.lone_output();
+        }
+    }
+
+    /// A frame changed the desktop since the layers a presenter composites
+    /// strip pans from were last drawn for it: [`Self::layers_at_rest`]
+    /// once the desktop rests brings them up to date.
+    pub fn layers_stale(&self) -> bool {
+        self.layers_stale
+    }
+
+    /// The desktop as layers, drawn now, for a presenter that composites
+    /// strip pans from retained layers and gets frames at rest in screen
+    /// space ([`LayerPolicy::WhilePanning`]). It warms its layers from them
+    /// while the desktop rests ([`crate::shell::present::PresentPipe::warm`]),
+    /// so the next pan's first frame only copies and composites. This is no
+    /// frame: the damage relation between frames, their revisions and the
+    /// pans' motion stay as the frames left them. `None` when the desktop is
+    /// not drawn as layers: on several displays, under a filter over the
+    /// whole desktop, with a strip panned between pixels or materials up.
+    ///
+    /// The desktop is drawn as layers twice. The first canvas draw after
+    /// frames drawn in screen space fills the widgets' canvas caches, and a
+    /// widget replayed from its cache encodes otherwise than one drawn
+    /// afresh; the second draw is what the frames of a pan then draw, so
+    /// the presenter's layers compare equal to the pan's first frame.
+    pub fn layers_at_rest(&mut self) -> Option<FrameCache> {
+        self.layers_stale = false;
+        self.draw_layers_at_rest()?;
+        self.draw_layers_at_rest()
+    }
+
+    /// One draw of [`Self::layers_at_rest`].
+    fn draw_layers_at_rest(&mut self) -> Option<FrameCache> {
+        if self.drawing_layers_at_rest
+            || self.layer_policy != LayerPolicy::WhilePanning
+            || self.retained_layer_width.is_none()
+            || !self.lone_output()
+            || self.global_filter()
+        {
+            return None;
+        }
+        let sections = self.last_produced_sections.take();
+        let revision = self.next_scene_revision;
+        self.drawing_layers_at_rest = true;
+        let drawn = self.paint_with_damage();
+        self.drawing_layers_at_rest = false;
+        self.next_scene_revision = revision;
+        self.last_produced_sections = sections;
+        drawn.cache
     }
 
     /// The frame's scene from its sections, in scene pixels, with the
