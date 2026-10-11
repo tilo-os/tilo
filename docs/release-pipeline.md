@@ -268,6 +268,13 @@ without waiting for the nightly run.
 This runs the same image, reproducibility, and VM gates as a safe integration
 rehearsal while the production signing key is unavailable.
 
+A dispatch builds `main`'s head and takes only an app collection published
+for that head's app inputs. Release / apps publishes it about 40 minutes after
+the commit lands, by which time `main` has usually moved on. So dispatch while
+the Release / apps run for the head is queued or running: the
+`await-app-collection` job waits for that run, and `plan` then reads the
+collection it published.
+
 A tag publication allocates both `imager-linux-x86_64` and
 `imager-linux-aarch64`; a manual or nightly `main` publication uses
 `runner-large` and `runner-large-arm64`. Each native lane independently rebuilds, reseals,
