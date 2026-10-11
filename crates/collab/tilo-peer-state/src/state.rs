@@ -353,8 +353,8 @@ type SurfaceOf = dyn Fn(&str) -> Option<[u8; 32]> + Send + Sync;
 /// The kind a record document's identity names (`tilo:record.kind`).
 /// The record as this peer holds it, when it has units beside itself to
 /// tell a change's writes apart by.
-fn held_units(doc: &crate::cached_document::CachedDocument) -> Option<automerge::Automerge> {
-    collab_types::units::has_units(&**doc).then(|| AutoCommit::clone(doc).document().clone())
+fn held_units(doc: &crate::cached_document::CachedDocument) -> Option<AutoCommit> {
+    collab_types::units::has_units(&**doc).then(|| AutoCommit::clone(doc))
 }
 
 /// The surface a record document's identity names (`tilo:record.surface`).
@@ -1616,7 +1616,7 @@ impl StatePeer {
                 record,
             },
             kind.as_deref(),
-            held.as_ref(),
+            held,
             pinned,
             &self.surfaces,
             &|node, kind| member.allows(node, kind, authorization_time),

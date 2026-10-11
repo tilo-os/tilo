@@ -10,8 +10,9 @@
 //! the change's claim; a receiver refuses a change that wrote a unit its
 //! claim leaves out.
 
-use automerge::{Automerge, Change, ObjType, Prop, ROOT, ReadDoc, Value};
+use automerge::{AutoCommit, Change, ObjType, Prop, ROOT, ReadDoc, Value};
 use tilo_actions::PathStep;
+use tilo_automerge::ApplyIncoming;
 
 use crate::claim::UnitPath;
 
@@ -30,7 +31,7 @@ pub fn has_units(doc: &impl ReadDoc) -> bool {
 }
 
 /// The unit patterns `doc` keeps, split into keys (`*` for any item).
-fn patterns(doc: &Automerge) -> Vec<Vec<String>> {
+fn patterns(doc: &AutoCommit) -> Vec<Vec<String>> {
     let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(ROOT, UNIT_INDEX) else {
         return Vec::new();
     };
@@ -88,17 +89,27 @@ fn key_of(prop: &Prop) -> String {
 /// # Errors
 /// A change that does not apply to `before`.
 pub fn written_units(
-    before: &Automerge,
+    before: &AutoCommit,
     change: &Change,
 ) -> Result<Vec<UnitPath>, automerge::AutomergeError> {
-    let mut after = before.clone();
-    after.apply_changes([change.clone()])?;
-    let patterns = patterns(&after);
+    applying(&mut before.clone(), change)
+}
+
+/// Apply `change` to `doc` and return the units it wrote: the diff of `doc`
+/// between its heads before and after, read in place.
+fn applying(
+    doc: &mut AutoCommit,
+    change: &Change,
+) -> Result<Vec<UnitPath>, automerge::AutomergeError> {
+    let before = doc.get_heads();
+    doc.apply_incoming([change.clone()])?;
+    let patterns = patterns(doc);
     if patterns.is_empty() {
         return Ok(vec![Vec::new()]);
     }
     let mut units: Vec<UnitPath> = Vec::new();
-    for patch in after.diff(&before.get_heads(), &after.get_heads()) {
+    let after = doc.get_heads();
+    for patch in doc.diff(&before, &after) {
         use automerge::PatchAction;
         let mut keys: Vec<String> = patch.path.iter().map(|(_, prop)| key_of(prop)).collect();
         match &patch.action {
@@ -118,20 +129,19 @@ pub fn written_units(
     Ok(units)
 }
 
-/// The units each of `changes` writes, applied in order to `before`, by
-/// change hash. A change that does not apply is left out: it is refused
-/// for that before its units matter.
+/// The units each of `changes` writes, applied in order to `held`, the
+/// receiver's own copy of the record, by change hash. A change that does
+/// not apply is left out: it is refused for that before its units matter.
 #[must_use]
 pub fn units_by_change(
-    before: &Automerge,
+    held: AutoCommit,
     changes: &[Change],
 ) -> std::collections::BTreeMap<[u8; 32], Vec<UnitPath>> {
-    let mut current = before.clone();
+    let mut current = held;
     let mut units = std::collections::BTreeMap::new();
     for change in changes {
-        if let Ok(written) = written_units(&current, change) {
+        if let Ok(written) = applying(&mut current, change) {
             units.insert(change.hash().0, written);
-            let _ = current.apply_changes([change.clone()]);
         }
     }
     units
@@ -155,7 +165,7 @@ mod tests {
         doc.put(&value, "text", "first").unwrap();
         doc.put(ROOT, "body", "hello").unwrap();
         doc.commit();
-        let before = doc.document().clone();
+        let before = doc.clone();
 
         doc.put(&value, "text", "edited").unwrap();
         let comment = doc.commit().unwrap();
@@ -172,7 +182,7 @@ mod tests {
             ]]
         );
         let mut at_comment = before;
-        at_comment.apply_changes([change(comment)]).unwrap();
+        at_comment.apply_incoming([change(comment)]).unwrap();
         assert_eq!(
             written_units(&at_comment, &change(body)).unwrap(),
             vec![Vec::<PathStep>::new()]

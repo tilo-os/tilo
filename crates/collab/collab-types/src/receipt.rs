@@ -370,7 +370,7 @@ pub fn decide_op(
     op: &crate::op::SignedOp,
     record: &Record<'_>,
     kind: Option<&str>,
-    held: Option<&automerge::Automerge>,
+    held: Option<automerge::AutoCommit>,
     surfaces: &Surfaces,
     allows: &dyn Fn(&TreePath, ActionKind) -> bool,
 ) -> Result<Receipt, ReceiptRefusal> {
@@ -388,7 +388,7 @@ pub fn decide_op_pinned(
     op: &crate::op::SignedOp,
     record: &Record<'_>,
     kind: Option<&str>,
-    held: Option<&automerge::Automerge>,
+    held: Option<automerge::AutoCommit>,
     pinned: Option<[u8; 32]>,
     surfaces: &Surfaces,
     allows: &dyn Fn(&TreePath, ActionKind) -> bool,
