@@ -1283,6 +1283,17 @@ source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted fra
 # 9.50 MB, max within 0.5 % of p50), so their ceilings sit about 15 % above:
 # a delta resent whole or a presence storm fails at once. CPU and latency
 # share the runner and get the fs gate's wider tolerances.
+#
+# Baseline change, 2026-10-11: the nightly runs the relay on two CPUs
+# (`relay_load --relay-cpus 2`, record meta `relay_cpus = "2"`), the priced
+# 2-vCPU VM's shape, where it had run on all of the runner's (four runtime
+# workers, meta `relay_cpus = "all"` or absent). A scratch profile on the same
+# commit (Perf / scheduled 97584) measured 13.9 s CPU per collaborator-hour at
+# four workers and 12.4 s at two CPUs, fan-out p99 75.9 ms and 138.1 ms: fewer
+# idle workers woken to steal work, more queueing. The first two-CPU run
+# (Perf / scheduled on main, kpis=hosting, accept=all) starts the new
+# baseline, so neither series is compared with the other; the ceilings below
+# hold for both.
 
 [kpi."hosting.relay.cpu_s_per_collab_hour.n100"]
 unit = "s"
