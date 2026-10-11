@@ -1610,13 +1610,12 @@ mod tests {
                     });
                 }
                 let mut scene = Scene::new();
-                root.draw_with_presence(
+                root.draw(
                     &mut scene,
                     Affine::IDENTITY,
                     &mut TextRenderer::new(),
                     &Theme::dark(),
                     &PresenceCtx::default(),
-                    &crate::permissions::PermissionContext::permissive(),
                 );
                 assert!(
                     scene

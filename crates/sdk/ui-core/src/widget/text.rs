@@ -974,7 +974,7 @@ impl Widget for Text {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
         self.observe_theme(theme);
         self.observe_i18n_revision();
@@ -1057,6 +1057,7 @@ impl Widget for Text {
             &self.cached,
             Some(transform.pre_translate(vello::kurbo::Vec2::new(dx, dy))),
         );
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn name(&self) -> &'static str {

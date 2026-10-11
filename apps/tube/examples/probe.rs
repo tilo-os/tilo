@@ -41,7 +41,6 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -1336,7 +1335,6 @@ fn run_bench_scroll(
     let run_pass = |force_compute: bool| -> ScrollBenchPass {
         let theme = Theme::dark();
         let presence = PresenceCtx::empty();
-        let permission = PermissionContext::permissive();
         let mut tr = TextRenderer::new();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -1395,14 +1393,7 @@ fn run_bench_scroll(
         widget.apply_layout(&taffy, child, Point::ORIGIN);
         {
             let mut scene = Scene::new();
-            widget.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            widget.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             widget.mark_drawn();
         }
 
@@ -1468,14 +1459,7 @@ fn run_bench_scroll(
                 f64::from(w),
                 f64::from(h),
             ));
-            widget.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            widget.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             presence.pop_viewport(prev);
             widget.mark_drawn();
             draw.push(t.elapsed().as_micros());
