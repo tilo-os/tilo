@@ -15,6 +15,7 @@ automerge.workspace = true
 # Untrusted automerge bytes are decoded in isolated workers first.
 tilo-automerge-isolate.workspace = true
 serde.workspace = true
+serde_bytes.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["alloc", "use-std"] }
 uuid.workspace = true

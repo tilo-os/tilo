@@ -111,7 +111,7 @@ pub struct DirectoryUpdate {
     /// Ed25519 signature over
     /// `blake3(DIR_DELTA_PREIMAGE_TAG || postcard(view))` where
     /// `view` is the update without the signature.
-    #[serde(with = "crate::cert::serde_bytes_64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 
