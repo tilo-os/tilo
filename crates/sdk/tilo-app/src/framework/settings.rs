@@ -243,7 +243,7 @@ impl ViewStorage {
         if let Some(open) = self.sections.borrow().get(T::KIND) {
             return Some(Rc::clone(open));
         }
-        self.open_section(SectionKind::of(settings.clone()))
+        self.open_section(SectionKind::of(settings))
     }
 
     /// [`Self::section`] of the section `kind` describes.

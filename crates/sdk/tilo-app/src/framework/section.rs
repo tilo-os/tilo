@@ -14,17 +14,15 @@ use std::rc::Rc;
 use tilo_actions::{Action, ActionContext, ActionError, ActionInvoker, ChangeKind, EncodedAction};
 use tilo_resource::{Doc, Fields, Reader, Resource};
 use ui_core::record::person::PersonRecord as StoredRecord;
-use ui_core::storage::{ChangeOrigin, Settings, SettingsRevision, SettingsSchema};
+use ui_core::storage::{
+    ChangeOrigin, Settings, SettingsDocument, SettingsRevision, SettingsSchema,
+};
 
 use super::live::Live;
 use super::record::{Held, RecordDoor};
 
-/// How a section's stored value is written into a document.
-type WriteDoc = dyn Fn(&mut Doc) -> Result<(), String>;
-/// How the value a document holds is stored, as an origin changed it.
-type StoreDoc = dyn Fn(&Doc, &ChangeOrigin) -> Result<(), String>;
-
-/// What a section's record does with the section's type.
+/// What a section's record does with the section's type: plain functions,
+/// one set per section type, over the section's settings ([`Self::settings`]).
 pub(crate) struct SectionKind {
     pub(crate) kind: &'static str,
     pub(crate) label: &'static str,
@@ -32,17 +30,17 @@ pub(crate) struct SectionKind {
     pub(crate) device_local: bool,
     /// The type id the section's actions are encoded under.
     action_type: &'static str,
-    /// The settings document's version: when it moves, the stored value may
-    /// have.
-    revision: Box<dyn Fn() -> SettingsRevision>,
+    /// The app whose settings the section is, and the document they live in.
+    app_id: String,
+    document: SettingsDocument,
     /// Make `doc` a document of the section's model.
     initialize: fn(&mut Doc) -> Result<(), String>,
     /// Write the stored value into `doc`'s fields.
-    write: Box<WriteDoc>,
+    write: fn(&Self, &mut Doc) -> Result<(), String>,
     /// Store the value `doc`'s fields hold, as `origin` did.
-    store: Box<StoreDoc>,
+    store: fn(&Self, &Doc, &ChangeOrigin) -> Result<(), String>,
     /// Whether `doc`'s fields hold the stored value.
-    holds_stored: Box<dyn Fn(&Doc) -> bool>,
+    holds_stored: fn(&Self, &Doc) -> bool,
     /// The section `doc` holds, published under `id` and `label`.
     publish: fn(&Doc, &str, &str) -> Result<tilo_actions::Resource, String>,
     /// The section's action an encoded one is.
@@ -50,37 +48,37 @@ pub(crate) struct SectionKind {
 }
 
 impl SectionKind {
-    pub(crate) fn of<T>(settings: Settings<T>) -> Rc<Self>
+    pub(crate) fn of<T>(settings: &Settings<T>) -> Rc<Self>
     where
         T: Resource<State = T> + SettingsSchema + Fields,
     {
-        let (writing, storing, comparing) = (settings.clone(), settings.clone(), settings.clone());
         Rc::new(Self {
             kind: T::KIND,
             label: T::LABEL,
             device_local: matches!(T::SCOPE, ui_core::storage::Scope::DeviceLocal),
             action_type: T::ACTION_TYPE,
-            revision: Box::new(move || settings.revision()),
+            app_id: settings.app_id().to_owned(),
+            document: settings.document().clone(),
             initialize: |doc| T::initialize(doc).map_err(|error| error.to_string()),
-            write: Box::new(move |doc| {
-                writing
+            write: |kind, doc| {
+                kind.settings::<T>()
                     .get()
                     .write_fields(doc, &tilo_resource::__private::ROOT)
                     .map_err(|error| error.to_string())
-            }),
-            store: Box::new(move |doc, origin| {
+            },
+            store: |kind, doc, origin| {
                 let value = T::read_fields(doc, &tilo_resource::__private::ROOT)
                     .map_err(|error| error.to_string())?;
-                storing
+                kind.settings::<T>()
                     .set_by(&value, Some(origin))
                     .map_err(|error| error.to_string())
-            }),
-            holds_stored: Box::new(move |doc| {
+            },
+            holds_stored: |kind, doc| {
                 T::read_fields(doc, &tilo_resource::__private::ROOT).is_ok_and(|held| {
                     tilo_resource::Model::to_json(&held)
-                        == tilo_resource::Model::to_json(&comparing.get())
+                        == tilo_resource::Model::to_json(&kind.settings::<T>().get())
                 })
-            }),
+            },
             publish: |doc, id, label| {
                 let state = T::read(doc).map_err(|error| error.to_string())?;
                 Ok(tilo_resource::publish::<T>(id, label, &state))
@@ -93,20 +91,33 @@ impl SectionKind {
         })
     }
 
+    /// The section's settings as `T`, the type this kind was made of.
+    fn settings<T: SettingsSchema>(&self) -> Settings<T> {
+        Settings::for_app(&self.app_id).in_document(self.document.clone())
+    }
+
     fn revision(&self) -> SettingsRevision {
-        (self.revision)()
+        self.document.revision()
     }
 
     /// Make `doc` a document of the section holding its stored value.
     pub(crate) fn fill(&self, doc: &mut Doc) -> Result<(), String> {
         (self.initialize)(doc)?;
-        (self.write)(doc)
+        (self.write)(self, doc)
+    }
+
+    fn write(&self, doc: &mut Doc) -> Result<(), String> {
+        (self.write)(self, doc)
+    }
+
+    fn holds_stored(&self, doc: &Doc) -> bool {
+        (self.holds_stored)(self, doc)
     }
 
     /// Store what `doc` holds as the action `action` by `by` changed it.
     fn store(&self, doc: &Doc, action: &str, by: &str) -> Result<(), String> {
         let origin = ChangeOrigin::action(format!("{}/{action}", self.kind)).by(by.to_owned());
-        (self.store)(doc, &origin)
+        (self.store)(self, doc, &origin)
     }
 }
 
@@ -210,7 +221,7 @@ impl SectionDoor {
                 } else {
                     seen.set(revision);
                     let mut doc = doc.borrow_mut();
-                    if (self.kind.write)(&mut doc).is_ok() {
+                    if self.kind.write(&mut doc).is_ok() {
                         doc.commit();
                     } else {
                         doc.rollback();
@@ -228,9 +239,9 @@ impl SectionDoor {
                 if seen.get() != Some(revision) {
                     seen.set(Some(revision));
                     let holds = record
-                        .read(|doc| (self.kind.holds_stored)(doc))
+                        .read(|doc| self.kind.holds_stored(doc))
                         .unwrap_or(false);
-                    if !holds && let Err(error) = record.edit(false, |doc| (self.kind.write)(doc)) {
+                    if !holds && let Err(error) = record.edit(false, |doc| self.kind.write(doc)) {
                         tracing::warn!(kind = self.kind.kind, %error, "settings record did not follow the section");
                     }
                 }

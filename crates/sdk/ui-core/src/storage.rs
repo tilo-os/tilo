@@ -325,6 +325,12 @@ impl<T: SettingsSchema> Settings<T> {
         &self.document
     }
 
+    /// The app whose settings these are (empty for a shared section).
+    #[must_use]
+    pub fn app_id(&self) -> &str {
+        &self.app_id
+    }
+
     /// The stored keys of this scope's object for the app.
     fn stored(&self) -> Map<String, Value> {
         stored_in(&self.document, &self.app_id, T::SCOPE)

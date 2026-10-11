@@ -439,19 +439,42 @@ pub struct DocumentVersion {
     pub name: String,
 }
 
-/// Run an effect's job on the app runtime. Every effect's future is boxed
-/// into this one task type, so the runtime's task machinery is compiled once
-/// rather than once per effect.
-fn spawn_job(
-    job: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
-) -> ui_core::rt::JoinHandle<()> {
-    ui_core::rt::app().spawn(job)
+/// An effect's future, its output boxed.
+type BoxedFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Box<dyn Any + Send>> + Send>>;
+
+/// An effect's blocking work, its output boxed.
+type BoxedWork = Box<dyn FnOnce(Progress) -> Box<dyn Any + Send> + Send>;
+
+/// Run an effect's future on the app runtime, polled under its custody, and
+/// deliver what it finished with. Every effect's future runs through this
+/// one function and task type.
+fn spawn_future(progress: Progress, future: BoxedFuture) -> ui_core::rt::JoinHandle<()> {
+    ui_core::rt::app().spawn(async move {
+        let mut future = future;
+        let value = std::future::poll_fn(|cx| {
+            match progress.with_effect(|| Ok(future.as_mut().poll(cx))) {
+                Ok(std::task::Poll::Ready(value)) => std::task::Poll::Ready(Ok(value)),
+                Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
+                Err(error) => std::task::Poll::Ready(Err(error)),
+            }
+        })
+        .await;
+        match value {
+            Ok(value) => progress.finish(value),
+            Err(error) => progress.fail(error),
+        }
+    })
 }
 
-/// Run an effect's blocking job on the app runtime's blocking threads, as one
-/// task type for every effect ([`spawn_job`]).
-fn spawn_blocking_job(job: Box<dyn FnOnce() + Send>) -> ui_core::rt::JoinHandle<()> {
-    ui_core::rt::app().spawn_blocking(job)
+/// Run an effect's blocking work on the app runtime's blocking threads,
+/// under its custody, and deliver what it finished with ([`spawn_future`]).
+fn spawn_work(progress: Progress, work: BoxedWork) -> ui_core::rt::JoinHandle<()> {
+    ui_core::rt::app().spawn_blocking(move || {
+        match progress.with_effect(|| Ok(work(progress.clone()))) {
+            Ok(value) => progress.finish(value),
+            Err(error) => progress.fail(error),
+        }
+    })
 }
 
 impl<R: Resource, H: 'static> EffectCx<R, H> {
@@ -636,21 +659,10 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     {
         let (progress, _) = self.track(Some(Self::then(then)));
         let future = work(progress.clone());
-        let task = spawn_job(Box::pin(async move {
-            let mut future = std::pin::pin!(future);
-            let value = std::future::poll_fn(|cx| {
-                match progress.with_effect(|| Ok(future.as_mut().poll(cx))) {
-                    Ok(std::task::Poll::Ready(value)) => std::task::Poll::Ready(Ok(value)),
-                    Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
-                    Err(error) => std::task::Poll::Ready(Err(error)),
-                }
-            })
-            .await;
-            match value {
-                Ok(value) => progress.finish(Box::new(value)),
-                Err(error) => progress.fail(error),
-            }
-        }));
+        let task = spawn_future(
+            progress,
+            Box::pin(async move { Box::new(future.await) as Box<dyn Any + Send> }),
+        );
         if let Some(started) = self.started.as_mut() {
             started.core.task = Some(task);
         }
@@ -669,12 +681,10 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         T: Send + 'static,
     {
         let (progress, _) = self.track(Some(Self::then(then)));
-        let task = spawn_blocking_job(Box::new(move || {
-            match progress.with_effect(|| Ok(work(progress.clone()))) {
-                Ok(value) => progress.finish(Box::new(value)),
-                Err(error) => progress.fail(error),
-            }
-        }));
+        let task = spawn_work(
+            progress,
+            Box::new(move |progress| Box::new(work(progress)) as Box<dyn Any + Send>),
+        );
         if let Some(started) = self.started.as_mut() {
             started.core.task = Some(task);
         }
