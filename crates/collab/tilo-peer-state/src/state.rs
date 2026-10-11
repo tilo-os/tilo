@@ -89,7 +89,7 @@ impl MemberAuthority {
             standing = standing.on_foreign_device();
         }
         if let Some(agent) = self.agent {
-            standing = standing.bounded_by(agent.subject, agent.grants);
+            standing = standing.with_bound(agent);
         }
         standing
     }
@@ -101,10 +101,7 @@ impl MemberAuthority {
             .policy
             .person_on_device(&self.person, self.foreign, foreign_bound);
         match &self.agent {
-            Some(agent) => authority.bounded_by(
-                tilo_action_policy::Party::new(vec![agent.subject.clone()], &self.policy.grants)
-                    .with_grants(&agent.grants),
-            ),
+            Some(agent) => authority.bounded_by(agent.party(&self.policy.grants)),
             None => authority,
         }
     }

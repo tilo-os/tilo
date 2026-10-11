@@ -270,6 +270,19 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
     )
 }
 
+/// The delegation a delegated agent `agent` of `person` carries in `room`:
+/// the Editor preset. The agent acts with its person's grants bounded by it,
+/// so it changes what its person may change, never more than an Editor, and
+/// never the room's governance.
+#[must_use]
+pub fn agent_delegation(room: &str, agent: &str, person: &str) -> crate::Bound {
+    crate::Bound::delegation(
+        Subject::Agent(agent.to_owned()),
+        &role_preset(Role::Editor, room),
+        person,
+    )
+}
+
 /// What an agent admitted to a room may do there: the room-level grants it
 /// receives. Never a human workspace role.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

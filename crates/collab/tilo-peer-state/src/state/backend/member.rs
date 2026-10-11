@@ -6,7 +6,7 @@ use super::{
 use crate::room::key_hex::KeyHex;
 use crate::state::bounded::{BoundedPeerError, BoundedPeerInvalid, PeerLimits};
 use std::collections::BTreeMap;
-use tilo_action_policy::{Authority, Bound, Grant, Party, RoomPolicy, Subject};
+use tilo_action_policy::{Authority, Bound, Grant, RoomPolicy, Subject};
 mod policy;
 
 #[derive(Debug)]
@@ -120,7 +120,7 @@ fn current<'peer, S: Storage, P: Policy>(
     // A delegated agent acts with its person's authority bounded by its
     // delegation, which never governs the room.
     let agent = identity.agent.as_ref().map(|agent| {
-        crate::state::agent_members::agent_bound(
+        tilo_action_policy::roles::agent_delegation(
             &peer.room,
             &agent.delegation.agent_id,
             person.as_str(),
@@ -231,9 +231,7 @@ impl PeerMember<'_> {
     ) -> Authority<'a> {
         let authority = policy.person_on_device(self.person.as_str(), self.foreign, foreign_bound);
         match &self.agent {
-            Some(bound) => authority.bounded_by(
-                Party::new(vec![bound.subject.clone()], &policy.grants).with_grants(&bound.grants),
-            ),
+            Some(bound) => authority.bounded_by(bound.party(&policy.grants)),
             None => authority,
         }
     }
