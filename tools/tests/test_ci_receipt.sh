@@ -109,4 +109,24 @@ PATH="$work/wrapper:$PATH" \
 git -C "$work/writer-b" fetch -q origin +refs/notes/tilo-check-ci:refs/notes/tilo-check-ci
 [[ $(git -C "$work/writer-b" notes --ref=tilo-check-ci show "$new_sha") == *'run=48'* ]]
 
+# The main aggregate records from a depth-one sparse checkout. Notes have
+# their own history: recording must neither require nor fetch source ancestry,
+# and must preserve an existing receipt for a commit absent from this checkout.
+git clone -q --depth=1 --no-tags --no-checkout "file://$work/origin.git" "$work/shallow"
+git -C "$work/shallow" checkout -q main
+[[ $(git -C "$work/shallow" rev-parse --is-shallow-repository) == true ]]
+[[ $(git -C "$work/shallow" rev-list --count HEAD) == 1 ]]
+if git -C "$work/shallow" cat-file -e "$sha^{commit}" 2>/dev/null; then
+  echo 'shallow receipt fixture unexpectedly has the previous commit' >&2
+  exit 1
+fi
+(cd "$work/shallow" && "$tool" record "$new_sha" 49 success success success origin >/dev/null)
+[[ $(git -C "$work/shallow" rev-parse --is-shallow-repository) == true ]]
+[[ $(git -C "$work/shallow" rev-list --count HEAD) == 1 ]]
+[[ $(git -C "$work/shallow" notes --ref=tilo-check-ci show "$sha") == *'run=46'* ]]
+git -C "$work/writer-b" fetch -q origin +refs/notes/tilo-check-ci:refs/notes/tilo-check-ci
+[[ $(git -C "$work/writer-b" notes --ref=tilo-check-ci show "$new_sha") == \
+  "select=success security=success affected=success run=49 sha=$new_sha" ]]
+(cd "$work/writer-b" && "$tool" verify "$new_sha" origin)
+
 echo 'CI receipt record/verify contract OK'
