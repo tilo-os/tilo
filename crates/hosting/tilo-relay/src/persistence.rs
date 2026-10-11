@@ -1190,6 +1190,16 @@ mod tests {
             .unwrap_or(0)
     }
 
+    async fn store_root(owner: &Persistence) -> std::path::PathBuf {
+        receipt(
+            owner
+                .read(1, |state| Ok(state.store.root().to_path_buf()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
     #[tokio::test(start_paused = true)]
     async fn an_idle_owner_does_not_tick_without_replays_to_reclaim() {
         let dir = tempfile::tempdir().unwrap();
@@ -1198,11 +1208,11 @@ mod tests {
             AdmissionBudgets::isolated(isolated_test_workers()),
         );
         // Startup reclamation is done once a first job has run.
-        receipt(owner.read(1, |_| Ok(())).unwrap()).await.unwrap();
-        let before = idle_turns_of(dir.path());
+        let root = store_root(&owner).await;
+        let before = idle_turns_of(&root);
         tokio::time::sleep(RECLAIM_INTERVAL * 25).await;
         assert_eq!(
-            idle_turns_of(dir.path()) - before,
+            idle_turns_of(&root) - before,
             0,
             "an owner with nothing to reclaim must sleep until work arrives"
         );
@@ -1223,6 +1233,7 @@ mod tests {
             dir.path(),
             AdmissionBudgets::isolated(isolated_test_workers()),
         );
+        let root = store_root(&owner).await;
         let ticket = ReplayTicket::reserve([2; 32], None).unwrap();
         let authority = ticket.authority.clone();
         receipt(
@@ -1238,10 +1249,10 @@ mod tests {
         // The session lets go of its ticket; nothing tells the owner, so
         // only its idle turns can reclaim the entry.
         drop(ticket);
-        let before = idle_turns_of(dir.path());
+        let before = idle_turns_of(&root);
         tokio::time::sleep(RECLAIM_INTERVAL * 25).await;
         assert!(
-            idle_turns_of(dir.path()) > before,
+            idle_turns_of(&root) > before,
             "an owner with a replay entry keeps its idle turns"
         );
         let reclaimed = receipt(owner.read(1, |state| Ok(state.replays.is_empty())).unwrap())
