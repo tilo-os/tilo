@@ -8,33 +8,17 @@ x86_64 = 65536
 [apps."so.tilo.diffmerge"]
 aarch64 = 65536
 
-[apps."so.tilo.hex-editor"]
-aarch64 = 65536
-
 [apps."so.tilo.logs"]
 aarch64 = 65536
 
 [apps."so.tilo.maps"]
 aarch64 = 65536
 
-[apps."so.tilo.monitor"]
-x86_64 = 65536
-
-[apps."so.tilo.messages"]
-aarch64 = 65536
-
 [apps."so.tilo.print-centre"]
 aarch64 = 65536
 
-[apps."so.tilo.sheets"]
-aarch64 = 65536
-x86_64 = 65536
-
 [apps."so.tilo.snippets"]
 x86_64 = 65536
-
-[apps."so.tilo.speed-test"]
-aarch64 = 65536
 
 [apps."so.tilo.windows"]
 aarch64 = 65536
