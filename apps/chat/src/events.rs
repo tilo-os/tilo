@@ -2202,6 +2202,77 @@ mod tests {
             .any(|(_, hit, ..)| hit.semantic_id() == target)
     }
 
+    fn actionable_accessibility_keys(app: &ChatApp) -> std::collections::BTreeMap<String, u64> {
+        ui::Widget::accessibility(app)
+            .expect("Chat accessibility tree")
+            .children
+            .into_iter()
+            .filter_map(|node| Some((node.action_target?, node.key?)))
+            .collect()
+    }
+
+    fn semantic_hit_index(app: &ChatApp, target: &str) -> Option<usize> {
+        app.semantic_hits()
+            .iter()
+            .position(|(_, hit, ..)| hit.semantic_id() == target)
+    }
+
+    #[test]
+    fn chat_actionable_accessibility_ids_follow_semantics_across_dynamic_inventory() {
+        let (mut app, _doc, host) = agent_task_control_app();
+        render_frame(&mut app, 1280.0, 800.0);
+        let float = Hit::AgentWindow.semantic_id();
+        let queue = Hit::AgentIntent(AgentComposerIntent::Queue).semantic_id();
+        let send = Hit::Send.semantic_id();
+        let before = actionable_accessibility_keys(&app);
+        let queue_index = semantic_hit_index(&app, &queue).expect("Queue control");
+        let send_index = semantic_hit_index(&app, &send).expect("Send control");
+        assert!(
+            queue_index < send_index,
+            "the retiring control precedes a surviving control"
+        );
+        for target in [&float, &queue, &send] {
+            assert_eq!(
+                before.get(target),
+                Some(&ui::a11y::hash_key(target)),
+                "an actionable Chat node is keyed by semantic identity"
+            );
+        }
+
+        app.left_flap.close();
+        render_frame(&mut app, 1280.0, 800.0);
+        let reordered = actionable_accessibility_keys(&app);
+        for target in [&float, &queue, &send] {
+            assert_eq!(
+                reordered.get(target),
+                before.get(target),
+                "surviving controls retain their accessibility identity"
+            );
+        }
+
+        let retired_queue_key = before[&queue];
+        host.revoke_task_controls();
+        let tasks = app.direct_agent_tasks().expect("owner-backed task context");
+        tasks.borrow_mut().refresh();
+        app.poll_agent_tasks();
+        render_frame(&mut app, 1280.0, 800.0);
+        let retired = actionable_accessibility_keys(&app);
+        assert!(!retired.contains_key(&queue));
+        assert_eq!(semantic_hit_index(&app, &queue), None);
+        assert!(
+            semantic_hit_index(&app, &send).expect("surviving Send control") < send_index,
+            "the surviving control really moved to a different ordinal"
+        );
+        assert!(
+            retired
+                .iter()
+                .all(|(target, key)| { *key != retired_queue_key || target == &queue }),
+            "a retired node ID must not retarget another Chat action"
+        );
+        assert_eq!(retired.get(&float), before.get(&float));
+        assert_eq!(retired.get(&send), before.get(&send));
+    }
+
     type MessageQuery = (Option<String>, String, Option<String>);
     type DeferredTaskRead = (
         InvokeRequest,

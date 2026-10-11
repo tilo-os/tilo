@@ -1892,6 +1892,25 @@ def current_owned_conversation_accessibility(owner):
     return current
 
 
+def refreshed_owned_private_editor(owner, draft, expected):
+    """Reacquire one retired semantic tree without changing its private state."""
+    identity = chat_process_identity(owner)
+    current = agent_conversation_accessibility(
+        owner["agent"], detached=owner["detached"], stale_only=True,
+        composer_name=owner.get("composer_name", "Message composer"),
+    )
+    if current is None:
+        return None
+    if any(current.get(field) != owner.get(field)
+           for field in ("process", "bus", "window", "composer", "agent", "detached")) \
+            or chat_process_identity(current) != identity:
+        raise RuntimeError("refreshed private editor changed its exact Chat custody")
+    observed = private_editor_observation(current, draft)
+    if not same_private_editor_state(observed, expected):
+        raise RuntimeError("refreshed private editor changed its draft, caret or selection")
+    return current
+
+
 def closed_native_custody_observation(socket, primary=None, child=None):
     """Observe raw custody without exporting identities or deciding readiness."""
     sample = {"observable": False}
@@ -8600,7 +8619,83 @@ def physical_detached_task_control(socket, owner, child, composer, label, role, 
         current_detached_task_target(socket, owner, child, composer, label, role), process)
     center = target["global_center"]
     require_ok(call(socket, {"op": "click_at", "x": center["x"], "y": center["y"]}))
-    return frame, access
+    return frame, access, target
+
+
+def detached_queue_click_observation(
+        socket, access, child, target, instruction, provider, new_task_count):
+    """Record only closed state after the one physical Queue click."""
+    sample = {
+        "observable": False,
+        "same_native_surface": False,
+        "frame_nonregressing": False,
+        "ordinary_input_route": False,
+        "same_editor_custody": False,
+        "draft_retained": False,
+        "draft_cleared": False,
+        "target_rect_positive": False,
+        "target_center_in_content": False,
+        "queue_tab_count": 0,
+        "queue_button_count": 0,
+        "queue_enabled_count": 0,
+        "queue_action_count": 0,
+        "new_task_count": min(max(new_task_count, 0), 64),
+        "provider": provider.detached_task_phase_diagnostic(),
+        "private_content_recorded": False,
+    }
+    try:
+        frame = current_same_floating_presentation(
+            call(socket, {"op": "foreign_frames"}), child
+        )
+        if frame is None:
+            return sample
+        sample["same_native_surface"] = True
+        sample["frame_nonregressing"] = frame["frame_seq"] >= child["frame_seq"]
+        sample["ordinary_input_route"] = frame.get("input_route") is None \
+            and frame.get("input_source_surface_id") is None
+        current = agent_conversation_accessibility(
+            access["agent"], detached=True, stale_only=True,
+            composer_name="Task instruction composer",
+        )
+        if current is None:
+            return sample
+        sample["same_editor_custody"] = all(
+            current.get(field) == access.get(field)
+            for field in ("process", "bus", "window", "composer", "agent", "detached")
+        )
+        if not sample["same_editor_custody"]:
+            return sample
+        sample["draft_retained"] = private_editor_value_matches(current, instruction)
+        sample["draft_cleared"] = private_editor_value_matches(current, "")
+        rect = target.get("client_rect", {})
+        center = target.get("global_center", {})
+        sample["target_rect_positive"] = all(
+            type(rect.get(field)) in (int, float) and math.isfinite(rect[field])
+            for field in ("x", "y", "w", "h")
+        ) and rect["w"] > 2 and rect["h"] > 2
+        geometry = presented_content_geometry(frame)
+        content = geometry["content"]
+        sample["target_center_in_content"] = all(
+            type(center.get(field)) in (int, float) and math.isfinite(center[field])
+            for field in ("x", "y")
+        ) and content["x"] <= center["x"] < content["x"] + content["w"] \
+            and content["y"] <= center["y"] < content["y"] + content["h"]
+        client = atspi.AtspiClient(atspi.atspi_address(), current["bus"])
+        tree = accessible_subtree(client, current["window"], atspi.APP_TREE_NODE_LIMIT)
+        paths = client.named(tree, "Queue task")
+        roles = {path: client.role(path) for path in paths}
+        tabs = [path for path, role in roles.items() if role == AT_SPI_ROLE_TAB]
+        buttons = [path for path, role in roles.items() if role == AT_SPI_ROLE_BUTTON]
+        sample["queue_tab_count"] = min(len(tabs), 64)
+        sample["queue_button_count"] = min(len(buttons), 64)
+        for path in tabs + buttons:
+            sample["queue_enabled_count"] += int(accessibility_control_enabled(current, path))
+            actions = client.call(path, "org.a11y.atspi.Action.GetActions", check=False)
+            sample["queue_action_count"] += int("'click'" in actions)
+        sample["observable"] = True
+    except (RuntimeError, KeyError, TypeError, atspi.GateError):
+        pass
+    return sample
 
 
 def native_detached_queue_and_steer(socket, room, provider, output, size, process):
@@ -8629,6 +8724,8 @@ def native_detached_queue_and_steer(socket, room, provider, output, size, proces
     require_ok(call(socket, {"op": "type", "text": instruction}))
     wait_for("final private instruction", lambda: private_editor_value_matches(owner, instruction), process)
     before = private_editor_observation(owner, instruction)
+    owner = wait_for("fresh exact Float control after private edit", lambda:
+        refreshed_owned_private_editor(owner, instruction, before), process)
     activate_agent_conversation_control(owner, "Float", expected_name="Float conversation")
     child = wait_for("final detached native pixels", lambda:
         presented_floating_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat"), process)
@@ -8639,6 +8736,7 @@ def native_detached_queue_and_steer(socket, room, provider, output, size, proces
     child = wait_for_floating_keyboard_seat(socket, child, output, process)
     task_id = None
     epoch = None
+    task_observation = {"new_task_count": 0}
 
     def exact_task():
         nonlocal task_id
@@ -8647,6 +8745,7 @@ def native_detached_queue_and_steer(socket, room, provider, output, size, proces
             raise RuntimeError("detached task owner projection became incomplete")
         rows = [row for field in ("tasks", "pending") for row in projection[field]
                 if row["task_id"] not in original_ids]
+        task_observation["new_task_count"] = min(len(rows), 64)
         if len(rows) > 1:
             raise RuntimeError("detached Queue admitted more than one new owner task")
         if not rows:
@@ -8679,16 +8778,32 @@ def native_detached_queue_and_steer(socket, room, provider, output, size, proces
     provider.arm_detached_task_phase(owner_admission)
     # AT-SPI's stable wire roles PageTab=37 and PushButton=43 disambiguate
     # the Queue intent tab and the identically named Queue Send button.
-    child, access = physical_detached_task_control(
+    child, access, _intent_target = physical_detached_task_control(
         socket, access, child, "Message composer", "Queue task", 37, process)
     access = wait_for("detached Queue instruction editor", lambda:
         agent_conversation_accessibility("Tide", detached=True,
                                         composer_name="Task instruction composer"), process)
     if not private_editor_value_matches(access, instruction):
         raise RuntimeError("Queue intent changed its retained private instruction")
-    child, access = physical_detached_task_control(
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"before-detached-queue-send-{size}.png"
+    )}))
+    child, access, queue_target = physical_detached_task_control(
         socket, access, child, "Task instruction composer", "Queue task", 43, process)
-    queued = wait_for("detached Queue's exact durable owner task", exact_task, process)
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"after-detached-queue-send-{size}.png"
+    )}))
+    try:
+        queued = wait_for("detached Queue's exact durable owner task", exact_task, process)
+    except ProofTimeout:
+        observation = detached_queue_click_observation(
+            socket, access, child, queue_target, instruction, provider,
+            task_observation["new_task_count"],
+        )
+        (output / "detached-queue-click-observation.json").write_text(
+            json.dumps(observation, indent=2) + "\n"
+        )
+        raise
     wait_for("receipt-backed detached Queue draft clear", lambda:
         private_editor_value_matches(access, ""), process)
     wait_for("detached task's actual fifth model request", lambda:
@@ -8705,7 +8820,7 @@ def native_detached_queue_and_steer(socket, room, provider, output, size, proces
     wait_for("actual detached accepted task label", lambda:
         task_phase_accessibility(access, "Planning: " + instruction), process)
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"detached-queue-accepted-{size}.png")}))
-    child, access = physical_detached_task_control(
+    child, access, _steer_target = physical_detached_task_control(
         socket, access, child, "Task instruction composer", "Steer current task", 37, process)
     access = wait_for("detached task direction editor", lambda:
         agent_conversation_accessibility("Tide", detached=True,
@@ -8714,7 +8829,7 @@ def native_detached_queue_and_steer(socket, room, provider, output, size, proces
     require_chat_keyboard_focus_after_click(socket, output, detached=True)
     require_ok(call(socket, {"op": "type", "text": direction}))
     wait_for("detached private direction", lambda: private_editor_value_matches(access, direction), process)
-    child, access = physical_detached_task_control(
+    child, access, _save_target = physical_detached_task_control(
         socket, access, child, "Task direction composer", "Save direction", 43, process)
     saved = wait_for("detached Steer's exact owner receipt", lambda:
         (task if (task := exact_task()) and task.get("run_epoch") == epoch

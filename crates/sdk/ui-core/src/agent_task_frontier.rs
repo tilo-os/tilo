@@ -738,7 +738,6 @@ impl AgentTaskFrontiers {
         instruction: &str,
         title: Option<&str>,
     ) -> Result<InvocationId, String> {
-        self.poll();
         if instruction.trim().is_empty() {
             return Err("task instruction is blank".into());
         }
@@ -751,6 +750,10 @@ impl AgentTaskFrontiers {
         if !self.can_queue() {
             return Err("the current caller is not offered task queueing".into());
         }
+        // The enabled Queue control is the caller's exact, already-observed
+        // offer. Starting a periodic refresh here would clear that offer
+        // before dispatch; the owner and broker still recheck authority for
+        // the invocation below.
         let invocation = InvocationId::new();
         let mut argument = serde_json::Map::from_iter([
             ("instruction".into(), serde_json::json!(instruction)),
@@ -766,8 +769,12 @@ impl AgentTaskFrontiers {
             InvokeArgument::Json(argument),
             None,
         );
+        let settled = !matches!(call.get(), RemoteCall::Pending);
         self.queue = Some(QueueCall { invocation, call });
         self.queue_state = AgentQueueState::Submitting;
+        if settled {
+            self.poll_queue();
+        }
         Ok(invocation)
     }
 
@@ -2993,6 +3000,113 @@ mod tests {
         assert_eq!(stop.target.address.resource, "desktop:task:one");
         assert_eq!(argument_json(&stop.argument).unwrap()["run_epoch"], 7);
         assert_eq!(argument_json(&stop.argument).unwrap()["after_revision"], 4);
+    }
+
+    #[test]
+    fn queue_at_due_refresh_uses_the_exact_existing_offer_once() {
+        use crate::collaboration::CollabRequest;
+        use tilo_actions::remote::RemoteActionMessage;
+
+        let clock = crate::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let host = Arc::new(FrontierHost::new(
+            vec![current_task("one", "Review release", "agent-a", 4, 4)],
+            [],
+        ));
+        let mut model = model(host, "room", "agent-a");
+        assert!(model.can_queue());
+        let deadline = model
+            .next_refresh_deadline()
+            .expect("the existing exact offer has a periodic refresh deadline");
+        model.remote = RemoteActions::session();
+        clock.advance(
+            deadline
+                .saturating_duration_since(clock.background().now())
+                .saturating_add(Duration::from_millis(1)),
+        );
+
+        model
+            .queue("Prepare the release notes in full", None)
+            .expect("the enabled Queue action uses its existing exact offer");
+
+        let mutations = model
+            .take_collab_requests()
+            .into_iter()
+            .filter_map(|request| match request {
+                CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Invoke(request),
+                } if request.target.address.action == QUEUE_TASK_ACTION => Some(request),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(mutations.len(), 1);
+        let request = &mutations[0];
+        assert_eq!(
+            request.target,
+            task_collection_target("room", QUEUE_TASK_ACTION)
+        );
+        assert_eq!(
+            argument_json(&request.argument).unwrap(),
+            &serde_json::Map::from_iter([
+                ("agent".into(), serde_json::json!("agent-a")),
+                (
+                    "instruction".into(),
+                    serde_json::json!("Prepare the release notes in full"),
+                ),
+                ("route".into(), serde_json::json!("model")),
+            ])
+        );
+    }
+
+    #[test]
+    fn rejected_queue_fails_once_without_resubmitting() {
+        use crate::collaboration::{CollabEvent, CollabRequest};
+        use tilo_actions::remote::RemoteActionMessage;
+
+        let host = Arc::new(FrontierHost::new(
+            vec![current_task("one", "Review release", "agent-a", 4, 4)],
+            [],
+        ));
+        let mut model = model(host, "room", "agent-a");
+        model.remote = RemoteActions::session();
+        let invocation = model
+            .queue("Prepare the release notes in full", None)
+            .expect("the exact visible Queue offer admits one SDK request");
+        assert!(model.queue("Do not submit twice", None).is_err());
+        let queue_requests = |requests: Vec<CollabRequest>| {
+            requests
+                .into_iter()
+                .filter(|request| {
+                    matches!(
+                        request,
+                        CollabRequest::RemoteAction {
+                            message: RemoteActionMessage::Invoke(request),
+                        } if request.target.address.action == QUEUE_TASK_ACTION
+                    )
+                })
+                .count()
+        };
+        assert_eq!(queue_requests(model.take_collab_requests()), 1);
+
+        model.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Rejected {
+                    error: ActionHostError::NotPermitted,
+                },
+            }),
+        });
+
+        assert_eq!(model.queue_state(), &AgentQueueState::Failed);
+        assert!(model.queue.is_none());
+        assert_eq!(queue_requests(model.take_collab_requests()), 0);
+        model.invalidated = true;
+        assert!(
+            model
+                .queue("Do not use an invalidated offer", None)
+                .is_err()
+        );
+        assert_eq!(queue_requests(model.take_collab_requests()), 0);
     }
 
     #[test]

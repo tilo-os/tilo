@@ -4622,6 +4622,67 @@ class PresentedEditorTargetTests(unittest.TestCase):
         for forbidden in ("DoAction", "SetText", "invoke(", '"op": "type"'):
             self.assertNotIn(forbidden, control)
 
+    def test_final_float_reacquires_only_the_same_private_editor_state(self):
+        owner = {"bus": "owned", "process": 7, "window": "/window",
+                 "composer": "/composer", "agent": "Tide", "detached": False,
+                 "composer_name": "Message composer"}
+        baseline = {"draft_matches": True, "caret": 4, "selection": [2, 4]}
+        with patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
+                patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                patch.object(PROOF, "private_editor_observation", return_value=baseline):
+            self.assertIs(PROOF.refreshed_owned_private_editor(
+                owner, "PRIVATE", baseline
+            ), owner)
+        with patch.object(PROOF, "agent_conversation_accessibility",
+                          return_value={**owner, "composer": "/replacement"}), \
+                patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                self.assertRaisesRegex(RuntimeError, "exact Chat custody"):
+            PROOF.refreshed_owned_private_editor(owner, "PRIVATE", baseline)
+        changed = {**baseline, "selection": [0, 4]}
+        with patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
+                patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
+                patch.object(PROOF, "private_editor_observation", return_value=changed), \
+                self.assertRaisesRegex(RuntimeError, "draft, caret or selection"):
+            PROOF.refreshed_owned_private_editor(owner, "PRIVATE", baseline)
+
+    def test_detached_queue_click_observation_is_closed_and_content_free(self):
+        access = {"bus": "owned", "process": 7, "window": "/window",
+                  "composer": "/composer", "agent": "Tide", "detached": True}
+        child = {"surface_id": 9, "floating_id": "fixture", "frame_seq": 3}
+        frame = {**child, "frame_seq": 4, "input_route": None,
+                 "input_source_surface_id": None}
+        target = {"client_rect": {"x": 2, "y": 3, "w": 40, "h": 20},
+                  "global_center": {"x": 30, "y": 40}}
+        client = unittest.mock.Mock()
+        client.named.return_value = ["/tab", "/button"]
+        client.role.side_effect = [PROOF.AT_SPI_ROLE_TAB, PROOF.AT_SPI_ROLE_BUTTON]
+        client.call.return_value = "([('click', '', '')],)"
+        provider = unittest.mock.Mock()
+        provider.detached_task_phase_diagnostic.return_value = {"request_count": 4}
+        geometry = {"content": {"x": 0, "y": 0, "w": 100, "h": 100}}
+        with patch.object(PROOF, "current_same_floating_presentation", return_value=frame), \
+                patch.object(PROOF, "call", return_value={}), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "private_editor_value_matches", side_effect=[True, False]), \
+                patch.object(PROOF, "presented_content_geometry", return_value=geometry), \
+                patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(PROOF, "accessible_subtree", return_value={}), \
+                patch.object(PROOF, "accessibility_control_enabled", return_value=True):
+            observed = PROOF.detached_queue_click_observation(
+                "socket", access, child, target, "PRIVATE", provider, 1
+            )
+        self.assertTrue(observed["observable"])
+        self.assertTrue(observed["same_editor_custody"])
+        self.assertTrue(observed["draft_retained"])
+        self.assertFalse(observed["draft_cleared"])
+        self.assertEqual(observed["queue_tab_count"], 1)
+        self.assertEqual(observed["queue_button_count"], 1)
+        self.assertEqual(observed["queue_enabled_count"], 2)
+        self.assertEqual(observed["queue_action_count"], 2)
+        self.assertEqual(observed["new_task_count"], 1)
+        self.assertNotIn("PRIVATE", json.dumps(observed))
+
     def test_task_mode_editor_contract_is_exact_not_any_editable_text(self):
         for mode in ("Message composer", "Task instruction composer", "Task direction composer"):
             owner = {"bus": "private-bus", "composer": "/editor", "composer_name": mode}

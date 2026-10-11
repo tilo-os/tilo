@@ -6462,12 +6462,7 @@ impl Widget for ChatApp {
                     .with_name(name)
                     .with_state(state)
                     .with_bounds(rect)
-                    .with_action_target(semantic_id.clone());
-                node = if matches!(hit, Hit::CategoryToggle(_)) {
-                    node.with_hashed_key(semantic_id)
-                } else {
-                    node.with_key(index as u64)
-                };
+                    .with_action_target(semantic_id);
                 if let Some((_, value, (anchor, focus))) = input {
                     node = node.with_value(&value).with_text_selection(anchor, focus);
                 }
