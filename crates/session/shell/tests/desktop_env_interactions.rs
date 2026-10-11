@@ -185,17 +185,8 @@ fn reveal_tab_chips(host: &mut ShellOverlayHost, layout: &Layout, strip_id: Stri
     // The curve is created by the layout pass that first sees the new hover
     // target, so it has to exist before it can be held.
     let _layout = lay_out_host(host);
-    let intended = host
-        .group_at_for_tests(strip_id, 0)
-        .expect("hovered group")
-        .bar_mut_for_tests()
-        .hold_hover_intent_at(std::time::Duration::from_millis(201));
-    assert!(
-        intended,
-        "hovering the pill armed no intent dwell, so there is nothing to reveal",
-    );
-    // Once the intent clock has elapsed, the next layout starts the reveal
-    // curve. Hold that separate curve to its end before placing the chip rects.
+    // The next layout starts the reveal curve. Hold that curve to its end
+    // before placing the chip rects.
     let layout = lay_out_host(host);
     let mut held = false;
     if let Some(row) = host.group_row_mut_for_tests(strip_id) {
