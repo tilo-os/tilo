@@ -2551,6 +2551,9 @@ activity-morning-unavailable = Source unavailable in this workspace · no curren
 activity-morning-source = { $source } · last recorded workspace activity: { $time } · external freshness unknown
 activity-morning-open = Open morning source
 
+# Canonical first-use action admission; never includes private identity material.
+onboarding-semantic-unavailable = This setup action is no longer available at this step.
+onboarding-semantic-failed = Setup could not complete this action. The desktop remains protected.
 activity-morning-payload-unavailable = Provider summary unavailable. Open the source to inspect or refresh it.
 
 activity-morning-refresh = Refresh source
