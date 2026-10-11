@@ -2127,18 +2127,80 @@ fn warm_at_rest(
     target: &mut crate::shell::render::paint::RetainedGpuTarget,
     keep_going: &dyn Fn() -> bool,
     label: &str,
-) -> u64 {
+) -> (u64, FrameCache) {
     let layers = frame
         .layers_at_rest()
         .unwrap_or_else(|| panic!("{label}: the desktop at rest is drawn as layers"));
-    target
+    let pixels = target
         .warm_layers(
             &layers,
             Instant::now() + tilo_test_env::hang_bound(),
             keep_going,
         )
         .unwrap_or_else(|error| panic!("{label}: warm: {error}"))
-        .unwrap_or_else(|| panic!("{label}: the target presents these layers"))
+        .unwrap_or_else(|| panic!("{label}: the target presents these layers"));
+    (pixels, layers)
+}
+
+/// Where two drawings of the desktop as layers differ, for a failure
+/// message: each layer, and per strip where its blit is and the first
+/// place each encoded stream differs.
+#[cfg(target_os = "linux")]
+fn layers_apart(old: &FrameCache, new: &FrameCache) -> String {
+    fn first_apart<T: PartialEq>(a: &[T], b: &[T]) -> Option<usize> {
+        a.iter()
+            .zip(b)
+            .position(|(a, b)| a != b)
+            .or_else(|| (a.len() != b.len()).then(|| a.len().min(b.len())))
+    }
+    fn streams(a: &Scene, b: &Scene) -> String {
+        let (a, b) = (a.encoding(), b.encoding());
+        format!(
+            "path_tags {:?}/{}/{} path_data {:?} draw_tags {:?} draw_data {:?} transforms {:?} \
+             ({:?} vs {:?}) styles {}/{} n_paths {}/{} patches {}/{}",
+            first_apart(&a.path_tags, &b.path_tags),
+            a.path_tags.len(),
+            b.path_tags.len(),
+            first_apart(&a.path_data, &b.path_data),
+            first_apart(&a.draw_tags, &b.draw_tags),
+            first_apart(&a.draw_data, &b.draw_data),
+            first_apart(&a.transforms, &b.transforms),
+            first_apart(&a.transforms, &b.transforms).and_then(|at| a.transforms.get(at)),
+            first_apart(&a.transforms, &b.transforms).and_then(|at| b.transforms.get(at)),
+            a.styles.len(),
+            b.styles.len(),
+            a.n_paths,
+            b.n_paths,
+            a.resources.patches.len(),
+            b.resources.patches.len(),
+        )
+    }
+    let mut text = format!(
+        "width {}/{} backdrop same {} chrome same {} workspace same {} wheel {:?}/{:?}\n",
+        old.width,
+        new.width,
+        old.layers.backdrop.encoding_eq(&new.layers.backdrop),
+        old.layers.chrome.encoding_eq(&new.layers.chrome),
+        old.layers.workspace.encoding_eq(&new.layers.workspace),
+        old.layers
+            .wheel
+            .as_ref()
+            .map(|wheel| (wheel.x, wheel.y, wheel.width, wheel.height)),
+        new.layers
+            .wheel
+            .as_ref()
+            .map(|wheel| (wheel.x, wheel.y, wheel.width, wheel.height)),
+    );
+    for (index, (a, b)) in old.layers.strips.iter().zip(&new.layers.strips).enumerate() {
+        text.push_str(&format!(
+            "strip {index}: {:?} -> {:?} same {}: {}\n",
+            old.strips.get(index),
+            new.strips.get(index),
+            a.encoding_eq(b),
+            streams(a, b)
+        ));
+    }
+    text
 }
 
 /// A strip pan from a desktop at rest whose layers the presenter warmed
@@ -2191,7 +2253,7 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
                 budget.set(left.saturating_sub(1));
                 left > 0
             };
-            let warmed = warm_at_rest(&mut frame, &mut layered, &keep_going, &name);
+            let (warmed, warm_layers) = warm_at_rest(&mut frame, &mut layered, &keep_going, &name);
             assert!(!frame.layers_stale(), "{name}: the layers caught up");
             if stopped {
                 assert!(
@@ -2204,7 +2266,7 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
                     "{name}: a first warm rasterises every layer ({warmed} px)"
                 );
                 assert_eq!(
-                    warm_at_rest(&mut frame, &mut layered, &|| true, &name),
+                    warm_at_rest(&mut frame, &mut layered, &|| true, &name).0,
                     0,
                     "{name}: layers already warm are left alone"
                 );
@@ -2234,7 +2296,13 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
                     assert!(
                         raster < output / 4,
                         "{label}: the first frame from a warmed rest rasterises only what the \
-                         pan uncovered, not the layers ({raster} px of {output})"
+                         pan uncovered, not the layers ({raster} px of {output}); the layers \
+                         warmed and the pan's differ in\n{}",
+                        painted
+                            .cache
+                            .as_ref()
+                            .map(|cache| layers_apart(&warm_layers, cache))
+                            .unwrap_or_default()
                     );
                 }
                 assert_shows_a_full_render(&layered, &mut dense, &painted, &label);
