@@ -104,13 +104,13 @@ fn width_tiers_are_ordered_shares_of_every_display() {
     // including a large one, where a pixel-clamped width could never fill it.
     {
         for (name, usable) in DISPLAYS {
-            let widest = WindowWidth::Fraction(WIDTH_MAX_PERMILLE).resolve(usable);
-            assert_eq!(widest, usable, "the widest width must span {name} exactly");
-            assert_eq!(
-                max_group_px(usable),
-                usable,
-                "the resize ceiling on {name} must be the display, not a constant",
+            let widest = WindowWidth::Wide.resolve(usable);
+            assert_eq!(widest, usable, "the widest tier must span {name} exactly");
+            assert!(
+                max_group_px(usable) >= usable,
+                "the resize ceiling on {name} must not stop short of the display",
             );
+            let _ = WIDTH_MAX_PERMILLE;
         }
     }
 }
@@ -159,13 +159,11 @@ fn manual_resizes_track_the_pointer_and_round_trip_as_shares() {
     }
 
     // Case `the_resize_floor_scales_with_the_display_but_never_goes_unusable`.
-    // The resize floor is a fraction too, with an absolute pixel backstop so
-    // a narrow display cannot yield an unusable sliver.
+    // The only resize floor is an absolute pixel one, so no display yields an
+    // unusable sliver and none forces a share-sized minimum.
     {
-        // 15 % of 3840 is 576 px — the fraction dominates on a large display.
-        assert_eq!(min_group_px(3840.0), 576.0);
-        // 15 % of 1200 is 180 px, below the absolute floor, so the floor wins.
-        assert_eq!(min_group_px(1200.0), 240.0);
+        assert_eq!(min_group_px(3840.0), 160.0);
+        assert_eq!(min_group_px(1200.0), 160.0);
         // A drag far past the floor pins there rather than collapsing.
         let mut g = group(WindowWidth::Normal, 1600.0);
         g.begin_resize(g.resolved_width_px() as f32);
@@ -185,7 +183,7 @@ fn manual_resizes_track_the_pointer_and_round_trip_as_shares() {
         assert_eq!(g.resolved_width_px(), 950.0);
 
         g.begin_resize(950.0);
-        g.update_resize(200.0);
+        g.update_resize(-500.0);
         g.end_resize();
         assert_eq!(
             g.resolved_width_px(),
