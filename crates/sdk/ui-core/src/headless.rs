@@ -2738,6 +2738,10 @@ impl FrameHarness {
         use crate::widget::layout::{
             CompositionFocus, composition_geometry, settle_widget_composition,
         };
+        // A pointer at rest sees no event when a relayout moves a control
+        // under it; compare the geometry to replay it, as the live host does.
+        let resting_geometry = (self.pointer_replay.is_resting() && self.layout_built)
+            .then(|| crate::pointer_replay::widget_geometry(self.root.as_ref()));
         self.swap_requested_component();
         let viewport_changed = self.last_layout_viewport != Some(self.viewport);
         self.presence_redraw = false;
@@ -3073,8 +3077,14 @@ impl FrameHarness {
         })?;
         self.last_layout_viewport = Some(self.viewport);
         self.last_relayout = stats;
-        if stats.rebuilt || viewport_changed {
-            // Fresh or resized controls have not seen where the pointer is.
+        if stats.rebuilt
+            || viewport_changed
+            || resting_geometry.is_some_and(|before| {
+                before != crate::pointer_replay::widget_geometry(self.root.as_ref())
+            })
+        {
+            // Fresh, resized or moved controls have not seen where the
+            // pointer is.
             self.pointer_replay.mark_unsettled();
         }
         self.relayout_frames = self.relayout_frames.saturating_add(1);
