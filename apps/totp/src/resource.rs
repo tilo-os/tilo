@@ -191,6 +191,10 @@ impl ResourceApp for TotpShell {
         ..ui::application::ComponentBehaviour::DEFAULT
     };
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::i18n::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Totp>) -> Element {
         // The header's actions are for a vault with accounts in it: with none,
         // the empty state asks for the first one and the header stays quiet.
