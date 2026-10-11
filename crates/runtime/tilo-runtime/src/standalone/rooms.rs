@@ -77,6 +77,18 @@ pub(super) struct Owners {
 }
 
 impl OwnerCommitService for Owners {
+    fn commit_with_document_lease(
+        &self,
+        request: OwnerCommitRequest,
+        lease: Arc<tilo_peer_state::owner_commit::DocumentCommitLease>,
+    ) -> CommitFuture {
+        if self.joined.requires_room(&request.room) {
+            self.joined.commit_with_document_lease(request, lease)
+        } else {
+            self.own.commit_with_document_lease(request, lease)
+        }
+    }
+
     fn requires_room(&self, room: &str) -> bool {
         self.own.requires_room(room) || self.joined.requires_room(room)
     }

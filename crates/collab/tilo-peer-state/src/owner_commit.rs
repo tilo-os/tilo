@@ -1,6 +1,8 @@
 //! Host-local durable handoff. This is not a neighbour message or a wire capability.
 //! A receipt binds the exact signed mutation/receipt basis, never queue admission.
+mod document_lease;
 mod policy_basis;
+pub use document_lease::{DocumentAccess, DocumentCommitLease, DocumentCommitTurn, DocumentIntent};
 pub use policy_basis::{PrivatePolicyBasis, canonical_owner, governance_revision};
 
 use serde::{Deserialize, Serialize};
@@ -281,6 +283,17 @@ pub trait OwnerCommitService: Send + Sync {
         true
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture;
+    /// A host-local document handoff with an additional temporary execution
+    /// restriction. Never discard the restriction at an unsupported owner.
+    /// It is not part of the replicated signed operation or its receipt.
+    fn commit_with_document_lease(
+        &self,
+        request: OwnerCommitRequest,
+        lease: std::sync::Arc<DocumentCommitLease>,
+    ) -> CommitFuture {
+        let _ = (request, lease);
+        Box::pin(async { Err("owner does not enforce host-local document leases".into()) })
+    }
     /// Commit a certified member's own terminal audit at the actual governor.
     /// The authenticated caller is retained by the broker, never decoded from
     /// the receipt. Implementations must recheck current member and signing custody.

@@ -30,7 +30,8 @@ use tilo_desktop_model::RoomId;
 use tilo_peer_state::{
     SeedState, StatePeer,
     owner_commit::{
-        CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
+        CommitFuture, CommitOperation, DocumentCommitLease, DocumentCommitTurn, OwnerCommitReceipt,
+        OwnerCommitRequest, OwnerCommitService,
     },
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -161,6 +162,7 @@ impl RoomOwner {
         &self,
         request: OwnerCommitRequest,
         record_kind: Option<&str>,
+        lease: Option<&DocumentCommitLease>,
     ) -> Result<OwnerCommitReceipt, String> {
         let binding = request.binding()?;
         if request.room != self.room {
@@ -170,12 +172,25 @@ impl RoomOwner {
             .committed
             .lock()
             .map_err(|_| "runtime room owner lock poisoned")?;
+        let turn = lease.map(|lease| lease.enter(&request)).transpose()?;
+        if turn.is_some()
+            && let CommitOperation::Document { app, record, .. } = &request.operation
+            && committed.peer.document(app, record).is_none()
+        {
+            return Err("development document lease requires an existing record".into());
+        }
         match request.operation {
             CommitOperation::Document {
                 app,
                 record,
                 envelope,
-            } => self.commit_document(&mut committed, &app, &record, *envelope, record_kind)?,
+            } => self.commit_document(
+                &mut committed,
+                (&app, &record),
+                *envelope,
+                record_kind,
+                turn.as_ref(),
+            )?,
             CommitOperation::EffectReceipt {
                 invocation,
                 redacted,
@@ -195,6 +210,7 @@ impl RoomOwner {
                 return Err("the runtime room owner commits documents and effect receipts".into());
             }
         }
+        drop(turn);
         Ok(OwnerCommitReceipt {
             binding,
             generation: committed.generation,
@@ -205,11 +221,12 @@ impl RoomOwner {
     fn commit_document(
         &self,
         committed: &mut Committed,
-        app: &str,
-        record: &str,
+        target: (&str, &str),
         envelope: collab_types::SignedOp,
         record_kind: Option<&str>,
+        turn: Option<&DocumentCommitTurn<'_>>,
     ) -> Result<(), String> {
+        let (app, record) = target;
         let now = SystemTime::now();
         if envelope.author.as_bytes() != &self.governor.device_public_key {
             return Err("runtime document signer differs from this device".into());
@@ -250,6 +267,9 @@ impl RoomOwner {
                 .checked_add(1)
                 .ok_or("runtime room generation exhausted")?,
         };
+        if let Some(turn) = turn {
+            turn.check()?;
+        }
         save(&self.path, &self.governor, &next).map_err(|e| e.to_string())?;
         *committed = next;
         Ok(())
@@ -293,9 +313,23 @@ impl OwnerCommitService for RoomOwner {
         request: OwnerCommitRequest,
         record_kind: Option<String>,
     ) -> CommitFuture {
-        Box::pin(std::future::ready(
-            self.commit_now(request, record_kind.as_deref()),
-        ))
+        Box::pin(std::future::ready(self.commit_now(
+            request,
+            record_kind.as_deref(),
+            None,
+        )))
+    }
+
+    fn commit_with_document_lease(
+        &self,
+        request: OwnerCommitRequest,
+        lease: Arc<DocumentCommitLease>,
+    ) -> CommitFuture {
+        Box::pin(std::future::ready(self.commit_now(
+            request,
+            None,
+            Some(&lease),
+        )))
     }
 
     fn health(&self) -> Result<(), String> {

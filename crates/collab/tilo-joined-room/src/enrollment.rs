@@ -448,10 +448,38 @@ impl NativeWorkspaceOwner {
             -> Result<tilo_peer_state::owner_commit::OwnerCommitRequest, String>,
         now: SystemTime,
     ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+        self.commit_document_turn(room, prepare, now, None)
+    }
+
+    /// Commit with an additional host-local lease. Current native policy and
+    /// certificate checks still apply; no missing record may be bootstrapped.
+    /// # Errors
+    /// Refuses unsupported scope or a stale lease at durable publication.
+    pub fn commit_document_with_lease(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        now: SystemTime,
+        lease: &tilo_peer_state::owner_commit::DocumentCommitLease,
+    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+        let room = RoomId::parse(&request.room).ok_or("invalid native document room")?;
+        self.commit_document_turn(room, |_| Ok(request), now, Some(lease))
+    }
+
+    fn commit_document_turn(
+        &self,
+        room: RoomId,
+        prepare: impl FnOnce(
+            &crate::NativeCommittedView,
+        )
+            -> Result<tilo_peer_state::owner_commit::OwnerCommitRequest, String>,
+        now: SystemTime,
+        lease: Option<&tilo_peer_state::owner_commit::DocumentCommitLease>,
+    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
         use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt};
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         let request = prepare(&candidate)?;
+        let turn = lease.map(|lease| lease.enter(&request)).transpose()?;
         if RoomId::parse(&request.room) != Some(room) {
             return Err("prepared native document room differs from selected room".into());
         }
@@ -465,6 +493,9 @@ impl NativeWorkspaceOwner {
         else {
             return Err("unsupported native owner commit family".into());
         };
+        if turn.is_some() && candidate.peer.document(&app, &record).is_none() {
+            return Err("development document lease requires an existing record".into());
+        }
         let device = candidate.device().device_public_key;
         if envelope.author.as_bytes() != &device {
             return Err("native local publication signer differs from selected device".into());
@@ -502,7 +533,11 @@ impl NativeWorkspaceOwner {
             generation: candidate.generation(),
             aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
         };
+        if let Some(turn) = turn.as_ref() {
+            turn.check()?;
+        }
         self.publish_room(room, candidate, None)?;
+        drop(turn);
         Ok(receipt)
     }
 

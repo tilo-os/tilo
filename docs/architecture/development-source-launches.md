@@ -173,6 +173,83 @@ describes polling for task termination. The probes test the repository's actual
 use of those mechanisms; they do not claim every possible kernel supervisor
 cannot observe exec.
 
+### Implemented host-local commit restrictions
+
+`DocumentIntent` requires an exact application, canonical workspace, explicit
+records with Read/Write selection, and a future completion deadline. It has no
+serialization, default duration, wildcard records, implicit Write or conflicting
+duplicate widening. The SDK's empty record id remains a valid application root.
+This is a host consent input, **not authenticated intent or approval by itself**:
+the host still has to derive it from a trusted open/action request and clamp it
+to current owner/certificate authority. `run_app` has no such request yet.
+
+`OwnerCommitService::commit_with_document_lease` is an explicit out-of-band
+handoff. Unsupported owners return an error rather than dropping the lease.
+Both standalone and joined native owners enter the lease under their canonical
+mutation lock, refuse absent records, retain it through durable publication and
+recheck it immediately before publication. Revocation and Write withdrawal are
+ordered with that turn; expiry checks both the wall deadline and a monotonic
+deadline so a clock rollback cannot renew it. The original signed operation,
+receipt binding and replicated-device commit path are unchanged.
+
+Disposable owner tests cover successful existing-record publication/reopen,
+actual child exit, queued revocation, Write withdrawal, expiry, wrong scope,
+non-document requests, absent records, a fence between admission and persistence,
+and the joined owner's actual governed Editor-to-Viewer downgrade. This proves
+the additional owner restriction, not an enabled development grant. The broker
+does not construct or wire these leases, and foreign-room launch admission stays
+closed. Process liveness callbacks alone do not serialize kernel exec/exit with
+the filesystem side effect.
+
+### Smallest Linux activation path
+
+Filesystem confinement can reuse the existing `launcher` bubblewrap build and
+in-sandbox `__sandbox-exec` Landlock shim. Keep `landlock_enforce=true`,
+`landlock_best_effort=false`, complete ABI V5 enforcement, the ordinary seccomp
+profile, strict runtime verification, closed ambient descriptors, and only
+host-selected bind mounts. Do not mount the profile, identity keys, native room
+store or broader home directory. Pass record access through the broker. The shim
+must restrict itself **after** namespace setup and **before** the app exec;
+Landlock is inherited by descendants. The existing explicitly invoked kernel
+read-only-path probe proves full enforcement on the qualified builder.
+An unsupported or partially enforcing host must refuse this launch. No kernel,
+sysctl or host security setting was changed for qualification.
+
+The existing `run_owned_service` still requires an original signed installation;
+do not weaken it to admit a development source. The remaining implementation is
+a separate host-owned development launch using the same sandbox builder with a
+sealed, host-approved executable/configuration and no application-service
+authority. The ordinary development `run_app` path does not provide that boundary.
+
+A disposable direct-parent `PTRACE_TRACEME`/`PTRACE_O_TRACEEXEC` probe observes a
+real same-image shell exec and fences a queued canonical-owner write while the
+replacement image is stopped. It establishes that this kernel can supply exec
+events without granting persistent ptrace access. It does **not** prove a
+complete sandbox supervisor or pre-exec commit ordering: an after-exec event by
+itself still leaves an in-flight owner-write race.
+
+The concrete next integration is an exec-only seccomp `SECCOMP_RET_TRACE` layer
+for both `execve` and `execveat`, installed in the trusted sandbox shim, with an
+already attached host-owned tracer using `PTRACE_O_TRACESECCOMP` and exit-kill.
+The kernel stops the attempt **before** the syscall. Before admitting the
+selected initial image, verify the immutable source/configuration and complete
+the host gate; every subsequent attempt withdraws the lease synchronously before
+resumption or termination. Do not authorize a later exec from pathname pointers
+or a digest match. Retain the normal application ptrace denial. The supervisor
+must follow/deny child/thread transitions, cover the shim-to-app startup chain,
+serialize exec and process-exit fencing with owner turns, and fail closed on
+tracer death or lost observation. Bare `TRACEEXEC`, source stamps and pidfds do
+not meet those activation requirements. This exec-only layer and production
+supervisor are not implemented or qualified here; macOS/Windows need their own
+equivalent or an explicit unsupported result.
+
+These reuse points follow Linux's
+[Landlock inheritance and enforcement](https://www.kernel.org/doc/html/v7.0/userspace-api/landlock.html)
+and [seccomp tracer notification before syscall execution](https://www.kernel.org/doc/html/v7.0/userspace-api/seccomp_filter.html).
+The supported mechanism is concrete, but joined native development remains
+blocked on its production supervisor/gate wiring and causal race tests, rather
+than on a claim that executable identity is already a sufficient fence.
+
 ## Disposable acceptance cases
 
 Use two isolated profiles, disposable identities and an existing governed room;

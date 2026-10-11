@@ -633,6 +633,136 @@ fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
         .unwrap();
 }
 
+#[test]
+fn host_document_lease_preserves_joined_durability_and_refuses_queued_revocation() {
+    use tilo_peer_state::owner_commit::{DocumentAccess, DocumentCommitLease, DocumentIntent};
+    let joined = enrolled();
+    let intent = DocumentIntent::new(
+        APP.into(),
+        joined.room.to_string(),
+        vec![(String::new(), DocumentAccess::Write)],
+        SystemTime::now() + std::time::Duration::from_secs(60),
+    )
+    .unwrap();
+    let lease = DocumentCommitLease::new(intent, Box::new(|| Ok(())));
+    let request = edit_with(
+        &joined.owner,
+        joined.room,
+        joined.now,
+        "guarded joined edit",
+    );
+    joined
+        .owner
+        .commit_document_with_lease(request.clone(), joined.now, &lease)
+        .unwrap()
+        .validate_for(&request)
+        .unwrap();
+    let queued = edit_with(
+        &joined.owner,
+        joined.room,
+        joined.now,
+        "queued after revoke",
+    );
+    lease.revoke();
+    assert!(
+        joined
+            .owner
+            .commit_document_with_lease(queued, joined.now, &lease)
+            .unwrap_err()
+            .contains("revoked")
+    );
+    drop(joined.owner);
+    open_file(&joined.path)
+        .unwrap()
+        .with_current(joined.room, |view| {
+            let document = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+            assert_eq!(
+                document.get(ROOT, "topic").unwrap().unwrap().0.as_str(),
+                Some("guarded joined edit")
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn host_document_lease_does_not_retain_write_after_governed_role_downgrade() {
+    use tilo_peer_state::owner_commit::{DocumentAccess, DocumentCommitLease, DocumentIntent};
+    let joined = enrolled();
+    let queued = edit_with(
+        &joined.owner,
+        joined.room,
+        joined.now,
+        "queued before downgrade",
+    );
+    let lease = DocumentCommitLease::new(
+        DocumentIntent::new(
+            APP.into(),
+            joined.room.to_string(),
+            vec![(String::new(), DocumentAccess::Write)],
+            SystemTime::now() + std::time::Duration::from_secs(60),
+        )
+        .unwrap(),
+        Box::new(|| Ok(())),
+    );
+    let governor_key = SigningKey::from_bytes(&[61; 32]);
+    let (governor, messages) = joined
+        .owner
+        .with_current(joined.room, |view| {
+            let before = view.peer();
+            let mut candidate = before.clone();
+            assert!(candidate.set_member_role(
+                view.device().user_public_key,
+                tilo_peer_state::join::MemberRole::Viewer,
+                &governor_key,
+                joined.now
+            )?);
+            Ok((
+                view.governor().device_public_key,
+                candidate.durable_mutation_messages(
+                    before,
+                    &governor_key,
+                    joined.now,
+                    view.generation().checked_add(1).unwrap(),
+                )?,
+            ))
+        })
+        .unwrap();
+    for message in messages {
+        joined
+            .owner
+            .receive(
+                joined.room,
+                TransportOrigin::RetainedRelayDelta(governor),
+                message,
+                joined.now,
+            )
+            .unwrap();
+    }
+    let before = joined
+        .owner
+        .with_current(joined.room, |view| {
+            Ok(view.peer().document(APP, "").unwrap())
+        })
+        .unwrap();
+    assert!(
+        joined
+            .owner
+            .commit_document_with_lease(queued, joined.now, &lease)
+            .is_err()
+    );
+    let after = joined
+        .owner
+        .with_current(joined.room, |view| {
+            Ok(view.peer().document(APP, "").unwrap())
+        })
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "queued Write cannot change the durable document after actual governed downgrade"
+    );
+}
+
 /// Commit one original edit that the governor has not yet admitted, then give
 /// the route a fresh governor checkpoint that does not cover it, so the next
 /// `reconcile_outgoing` signs a recovery projection at the dense `floor + 1`.

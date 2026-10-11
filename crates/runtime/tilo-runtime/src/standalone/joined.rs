@@ -424,6 +424,23 @@ impl Joined {
 }
 
 impl OwnerCommitService for Joined {
+    fn commit_with_document_lease(
+        &self,
+        request: OwnerCommitRequest,
+        lease: std::sync::Arc<tilo_peer_state::owner_commit::DocumentCommitLease>,
+    ) -> CommitFuture {
+        let room = RoomId::parse(&request.room);
+        let receipt = self
+            .owner
+            .commit_document_with_lease(request, SystemTime::now(), &lease);
+        if receipt.is_ok()
+            && let Some(room) = room
+        {
+            self.wake(room);
+        }
+        Box::pin(std::future::ready(receipt))
+    }
+
     fn requires_room(&self, room: &str) -> bool {
         RoomId::parse(room).is_some_and(|room| self.owner.contains_room(room))
     }
