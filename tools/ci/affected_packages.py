@@ -35,7 +35,7 @@ from ci.workspace_graph import (
     cargo_metadata, changed_files, closure, comparison_merge_base, file_at,
     lockfile_change, owner_for, package_maps, reverse_dependencies, run,
 )
-from ci import runner_labels
+from ci import runner_labels, qualified_native
 from ci import suites as path_suites
 
 
@@ -95,6 +95,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/check_workflow_package_paths.py": "tools/tests/test_workflow_package_paths.py",
     "tools/policy/check_workflow_timeouts.py": "tools/tests/test_workflow_timeouts.py",
     "tools/policy/check_ui_clock_contract.py": "tools/tests/test_ui_clock_contract.py",
+    "tools/policy/check_settings_writes.py": "tools/tests/test_settings_writes.py",
     "tools/policy/check_app_content_store.py": "tools/tests/test_app_content_store.py",
     "tools/policy/check_document_engine_boundary.py": "tools/tests/test_document_engine_boundary.py",
 }
@@ -102,6 +103,23 @@ QUALITY_ONLY_HELPERS = {
 # file in the mandatory repository-policy suite. A file missing from this exact
 # map retains native Rust checks.
 QUALITY_ONLY_CONTROL_INPUTS = {
+    "os/dev/ci-native-podman-store.sh": (
+        "tools/tests/test_ci_native_podman_store.py",
+        "os/tests/disk_image_root_podman_store.sh",
+    ),
+    # These wrappers select/request the existing image workflow; they change
+    # no compiler, app source or packaging inputs. Mandatory policy tests
+    # observe their request gate, paths, architecture selection and delegation.
+    ".forgejo/workflows/os-dev.yml": (
+        "tools/tests/test_os_dev_arches.py",
+        "tools/tests/test_os_release_matrix.py",
+    ),
+    ".forgejo/workflows/os-dev-x86.yml": (
+        "tools/tests/test_os_dev_arches.py",
+    ),
+    ".forgejo/workflows/os-dev-arm.yml": (
+        "tools/tests/test_os_dev_arches.py",
+    ),
     "os/dev/rpm-snapshot-fingerprint.py": (
         "os/tests/test_rpm_snapshot_fingerprint.py",
         "tools/tests/test_rpm_pin_contract.py",
@@ -277,7 +295,22 @@ def builder_mold_asset(name: str, entry: tuple[str, str]) -> bool:
     )
 
 
+def image_tool_asset(name: str, entry: tuple[str, str]) -> bool:
+    """chunkah's release source and vendor tree: only os/Containerfile.rechunk reads them (TIL-747)."""
+    match = re.fullmatch(r"chunkah-(\d+\.\d+\.\d+)(?:-vendor)?\.tar\.gz", name)
+    if not match:
+        return False
+    return entry[1] == (
+        f"https://github.com/coreos/chunkah/releases/download/v{match.group(1)}/{name}"
+    )
+
+
+def no_workspace_asset(name: str, entry: tuple[str, str]) -> bool:
+    return builder_mold_asset(name, entry) or image_tool_asset(name, entry)
+
+
 def builder_only_asset_manifest_change(root: Path, base: str | None, head: str) -> bool:
+    """Whether every changed manifest row is an asset no workspace build reads."""
     merge_base = comparison_merge_base(root, base, head)
     before = manifest_at(root, merge_base)
     after = manifest_at(root, head)
@@ -288,8 +321,8 @@ def builder_only_asset_manifest_change(root: Path, base: str | None, head: str) 
         if before.get(name) != after.get(name)
     }
     return bool(changed_names) and all(
-        (name not in before or builder_mold_asset(name, before[name]))
-        and (name not in after or builder_mold_asset(name, after[name]))
+        (name not in before or no_workspace_asset(name, before[name]))
+        and (name not in after or no_workspace_asset(name, after[name]))
         for name in changed_names
     )
 
@@ -775,7 +808,9 @@ def make_plan(
     check_rows = []
     for arch, runner in runners.items():
         for shard in balance(selected, packages, effective_shards, test_seconds):
-            check_rows.append({**shard, "arch": arch, "runner": runner, "check_runner": runner})
+            placement = {"qualified_runner": "", "qualified_builders": "",
+                         **qualified_native.placement(root, set(shard["packages"].split()[1::2]), arch)}
+            check_rows.append({**shard, "arch": arch, "runner": runner, "check_runner": runner, **placement})
     # Test shards cover the tested packages and scoped readers, split by
     # recorded test time. Packages too heavy to share a job get their own
     # shards, which start first; the rest balance around them.
@@ -800,7 +835,14 @@ def make_plan(
                    "filter": scoped_tests[name].filter} for name in scoped_names]
         # check_runner: a pull request runs its own check.yml against this
         # planner from the merged tree; older branches' check.yml reads it.
-        return {**shard, "arch": arch, "runner": runner, "check_runner": runner,
+        # Older PR workflows still evaluate optional qualification fields.
+        # Empty strings retain their general fallback without missing lookups.
+        placement = {"qualified_runner": "", "qualified_builders": "",
+                     **qualified_native.placement(root, shard_names, arch)}
+        certify = any(Path(packages[name]["manifest_path"]).resolve().parent.parent == root.resolve() / "apps"
+                      and name != "agent" for name in test_names)
+        return {**shard, "arch": arch, "runner": runner, "check_runner": runner, **placement,
+                "certify": certify,
                 "test_packages": " ".join(f"-p {name}" for name in test_names),
                 "scoped_tests": json.dumps(scoped, separators=(",", ":")) if scoped else ""}
 
@@ -937,6 +979,9 @@ def main() -> int:
                         help="re-check of a pull request that was green on this older base commit: "
                              "limit the plan to what the base changed since (--base is the new base)")
     args = parser.parse_args()
+
+    if args.metadata is None and os.environ.get('GITHUB_ACTIONS') != 'true':
+        parser.error('local planning requires verified metadata; use the stable offline_affected_plan.py entrypoint')
 
     root = Path(run("git", "rev-parse", "--show-toplevel", cwd=Path.cwd()))
     metadata = json.loads(args.metadata.read_text()) if args.metadata else cargo_metadata(root)

@@ -11,7 +11,9 @@
 //! opens the browser's record and edits it through the app's own action;
 //! the browser receives the durable change in host order and sees the agent
 //! on the record; the agent sees the browser's cursor; pause, resume and
-//! stop hold, release and end the agent.
+//! stop hold, release and end the agent. Between pumps the agent's loop
+//! sleeps until something changes, and a plan of local steps runs back to
+//! back.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -37,6 +39,11 @@ mod support;
 
 mod common;
 
+// Agents hold each record in a confined app worker (this binary, started
+// again), whose changes are admitted through the Automerge isolate.
+tilo_agent_participant::app_worker!();
+tilo_automerge_isolate::test_worker!();
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -59,9 +66,9 @@ use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig};
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::agents::{
-    AGENTS_PROVIDER, AgentDelegation, AgentScope, AgentStatus, AgentsStatus, MESSAGE_ACTION,
-    PAUSE_ACTION, RESUME_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE,
-    TaskState, agent_resource,
+    AGENTS_PROVIDER, AgentDelegation, AgentScope, AgentStatus, AgentsStatus, CANCEL_TASK_ACTION,
+    MESSAGE_ACTION, PAUSE_ACTION, RESUME_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION,
+    SUPERVISOR_RESOURCE, TaskState, agent_resource,
 };
 use tilo_relay_protocol::live::{LiveFrame, LiveParticipant, LiveRecord, ParticipantKind};
 use tilo_user_identity::{
@@ -71,6 +78,30 @@ use tilo_user_identity::{
 
 use common::catalogue;
 use support::{Device, ROOM, TestHost, enrol, ready, start_peer, wait_for, workspace};
+
+/// Plans the task `gated` as a slow model would: only once its steps arrive
+/// on `release`, noting when the plan was ready. Anything else is planned as
+/// written.
+struct GatedPlanner {
+    release: std::sync::mpsc::Receiver<serde_json::Value>,
+    ready: Arc<std::sync::Mutex<Option<Instant>>>,
+}
+
+impl tilo_agent_participant::Planner for GatedPlanner {
+    fn plan(
+        &mut self,
+        task: &str,
+        context: &tilo_agent_participant::PlanContext,
+    ) -> Result<Vec<tilo_agent_participant::Step>, String> {
+        if task != "gated" {
+            return DirectPlanner.plan(task, context);
+        }
+        let steps = self.release.recv().map_err(|error| error.to_string())?;
+        let planned = DirectPlanner.plan(&steps.to_string(), context);
+        *self.ready.lock().unwrap() = Some(Instant::now());
+        planned
+    }
+}
 
 const SCRATCHPAD: &str = "so.tilo.scratchpad";
 const OTHER_ROOM: &str = "0b7f3c2e-5d41-4a8f-9e36-2c1d7a9b4e50";
@@ -187,6 +218,7 @@ async fn call(
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     }))
     .encode()
     .unwrap();
@@ -275,9 +307,8 @@ async fn receive_until(
     }
 }
 
-fn body(app: &Replica) -> String {
-    app.read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
-        .unwrap()
+fn body(app: &impl common::Body) -> String {
+    app.body()
 }
 
 /// Open a sealed live frame with `peer`'s channel keys.
@@ -365,7 +396,6 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         AgentScope {
             rooms: vec![ROOM.into()],
             apps: vec![SCRATCHPAD.into()],
-            may_confirm: false,
         },
         now,
         now + 3_600_000_000_000,
@@ -408,13 +438,14 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     .unwrap();
 
     // 3. The browser spawns the agent through the host, with a task that
-    // edits the page's record through Scratchpad's own action.
+    // edits the page's record through Scratchpad's own field edit.
+    let (note, arguments) = common::scratchpad_body("Drafted by the agent");
     let task = serde_json::json!([{
         "app": SCRATCHPAD,
         "record": route.record,
         "resource": "scratchpad.note",
-        "action": "edit",
-        "arguments": {"text": "Drafted by the agent"},
+        "action": note.action,
+        "arguments": arguments,
     }])
     .to_string();
     let mut spawn_arguments = serde_json::Map::new();
@@ -430,6 +461,8 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     .await;
     assert_eq!(completed(&spawned)["agentId"], "writer");
     let (identity, control) = spawned_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (release_plan, release) = std::sync::mpsc::channel();
+    let plan_ready = Arc::new(std::sync::Mutex::new(None));
     let mut agent = AgentParticipant::start(
         ParticipantConfig {
             host: host.iroh(),
@@ -439,7 +472,10 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         identity,
         control.clone(),
         catalogue.clone(),
-        Box::new(DirectPlanner),
+        Box::new(GatedPlanner {
+            release,
+            ready: Arc::clone(&plan_ready),
+        }),
     )
     .unwrap();
 
@@ -458,7 +494,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let info = &status_after.agents[0];
     assert_eq!(info.status, AgentStatus::Waiting);
     assert_eq!(info.tasks[0].state, TaskState::Completed);
-    assert_eq!(info.tasks[0].steps[0].action, "edit");
+    assert_eq!(info.tasks[0].steps[0].action, note.action);
     assert_eq!(info.device, hex::encode(agent_cert.device_public_key));
     let carried = AgentDelegation::decode(&hex::decode(&info.delegation).unwrap()).unwrap();
     assert_eq!(carried.verify(&user, tilo_clock::unix_now_ns()), Ok(()));
@@ -604,12 +640,13 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         )
         .await,
     );
+    let (note, arguments) = common::scratchpad_body("Second draft");
     let second = serde_json::json!({
         "app": SCRATCHPAD,
         "record": route.record,
         "resource": "scratchpad.note",
-        "action": "edit",
-        "arguments": {"text": "Second draft"},
+        "action": note.action,
+        "arguments": arguments,
     })
     .to_string();
     completed(
@@ -655,6 +692,234 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         "Second draft",
     )
     .await;
+
+    // 9. Idle, the agent's loop sleeps until something changes: no pump on
+    // an interval, only its presence keep-alive while it shows on a record
+    // (a loop on a 20 ms interval pumped 50 times a second).
+    let idle = agent.run_until(Some(Instant::now() + Duration::from_secs(1)), |_| false);
+    eprintln!("idle for a second: {idle:?}");
+    assert!(
+        idle.pumps <= 10,
+        "an idle agent pumped {} times in a second",
+        idle.pumps
+    );
+
+    // 10. A plan of local steps runs back to back: the loop never waits
+    // between them (a loop on a 20 ms interval took one step per pump).
+    let steps: Vec<serde_json::Value> = (1..=10)
+        .map(|n| {
+            let (note, arguments) = common::scratchpad_body(&format!("Step {n} of ten"));
+            serde_json::json!({
+                "app": SCRATCHPAD,
+                "record": route.record,
+                "resource": "scratchpad.note",
+                "action": note.action,
+                "arguments": arguments,
+            })
+        })
+        .collect();
+    let ten = control
+        .message(&serde_json::Value::Array(steps).to_string())
+        .unwrap();
+    let ended = |id: &str| {
+        control
+            .info()
+            .tasks
+            .into_iter()
+            .find(|task| task.id == id)
+            .filter(|task| !matches!(task.state, TaskState::Queued | TaskState::Running))
+    };
+    let started = Instant::now();
+    let run = agent.run_until(Some(Instant::now() + Duration::from_secs(20)), |_| {
+        ended(&ten).is_some()
+    });
+    let took = started.elapsed();
+    eprintln!("ten local steps: {run:?} in {took:?}");
+    let task = ended(&ten).expect("the ten-step task ended");
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    assert_eq!(task.steps.len(), 10);
+    assert_eq!(
+        run.waits, 0,
+        "the loop waited between local steps: {run:?} in {took:?}"
+    );
+    receive_until(
+        &mut agent,
+        &browser_events,
+        &route,
+        &mut page,
+        agent_cert.device_public_key,
+        "Step 10 of ten",
+    )
+    .await;
+
+    // 11. A plan that takes a while (a model call) is made beside the loop:
+    // the loop goes on pumping meanwhile, and the plan's first step runs as
+    // soon as it is ready.
+    let (note, arguments) = common::scratchpad_body("Planned beside the loop");
+    let planned_steps = serde_json::json!([{
+        "app": SCRATCHPAD,
+        "record": route.record,
+        "resource": "scratchpad.note",
+        "action": note.action,
+        "arguments": arguments,
+    }]);
+    let release_later = release_plan.clone();
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1_500));
+        release_later.send(planned_steps).unwrap();
+    });
+    let gated = control.message("gated").unwrap();
+    let started = Instant::now();
+    agent.pump();
+    agent.pump();
+    let pumped = started.elapsed();
+    eprintln!("two pumps while a 1.5 s plan was being made took {pumped:?}");
+    let mut first_step = None;
+    let run = agent.run_until(Some(Instant::now() + Duration::from_secs(20)), |_| {
+        let task = control
+            .info()
+            .tasks
+            .into_iter()
+            .find(|task| task.id == gated);
+        if first_step.is_none() && task.as_ref().is_some_and(|task| !task.steps.is_empty()) {
+            first_step = Some(Instant::now());
+        }
+        task.is_some_and(|task| !matches!(task.state, TaskState::Queued | TaskState::Running))
+    });
+    releaser.join().unwrap();
+    let task = ended(&gated).expect("the planned task ended");
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    let ready = plan_ready.lock().unwrap().expect("the plan was made");
+    let to_first_step = first_step
+        .expect("the plan's first step ran")
+        .saturating_duration_since(ready);
+    eprintln!("plan ready to its first step done: {to_first_step:?} ({run:?})");
+    assert!(
+        pumped < Duration::from_millis(1_000),
+        "the loop waited for the planner: two pumps took {pumped:?}"
+    );
+    assert!(
+        to_first_step < Duration::from_millis(500),
+        "the plan's first step waited {to_first_step:?} after the plan was ready"
+    );
+    receive_until(
+        &mut agent,
+        &browser_events,
+        &route,
+        &mut page,
+        agent_cert.device_public_key,
+        "Planned beside the loop",
+    )
+    .await;
+
+    // 12. A plan still being made when the agent is paused, its task is
+    // cancelled or the agent is stopped carries out nothing by itself: a
+    // pause holds the late plan until resume, and a cancelled or stopped
+    // task's late plan is dropped. Each step goes through the agent's
+    // action door while the loop pumps.
+    let gated_edit = |text: &str| {
+        let (note, arguments) = common::scratchpad_body(text);
+        serde_json::json!([{
+            "app": SCRATCHPAD,
+            "record": route.record,
+            "resource": "scratchpad.note",
+            "action": note.action,
+            "arguments": arguments,
+        }])
+    };
+    let task_of = |id: &str| {
+        control
+            .info()
+            .tasks
+            .into_iter()
+            .find(|task| task.id == id)
+            .unwrap()
+    };
+    let no_edit = |what: &str| {
+        assert!(
+            !browser_events.drain().iter().any(
+                |event| matches!(event, PeerEvent::Document(document) if document.route == route)
+            ),
+            "{what}"
+        );
+    };
+    for (withdraw, text) in [
+        (PAUSE_ACTION, "Planned while paused"),
+        (CANCEL_TASK_ACTION, "Planned for a cancelled task"),
+        (STOP_ACTION, "Planned for a stopped agent"),
+    ] {
+        let given = call(
+            &browser,
+            host_key,
+            Some(&mut agent),
+            ActionAddress::new(&agent_id, MESSAGE_ACTION),
+            InvokeArgument::Text("gated".into()),
+        )
+        .await;
+        let task = completed(&given)["taskId"].as_str().unwrap().to_owned();
+        wait_for("the planner to take the task", || {
+            agent.pump();
+            let planning = task_of(&task).state == TaskState::Running;
+            async move { planning.then_some(()) }
+        })
+        .await;
+        let argument = if withdraw == CANCEL_TASK_ACTION {
+            InvokeArgument::Text(task.clone())
+        } else {
+            InvokeArgument::None
+        };
+        completed(
+            &call(
+                &browser,
+                host_key,
+                Some(&mut agent),
+                ActionAddress::new(&agent_id, withdraw),
+                argument,
+            )
+            .await,
+        );
+        let sent_at = Instant::now();
+        release_plan.send(gated_edit(text)).unwrap();
+        agent.run_until(Some(Instant::now() + Duration::from_millis(500)), |_| false);
+        assert!(
+            plan_ready
+                .lock()
+                .unwrap()
+                .is_some_and(|ready| ready >= sent_at),
+            "the late plan for {withdraw} was not made"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let late = task_of(&task);
+        assert!(
+            late.steps.is_empty(),
+            "a late plan took a step after {withdraw}: {late:?}"
+        );
+        no_edit(&format!("a late plan edited the record after {withdraw}"));
+        if withdraw == PAUSE_ACTION {
+            assert_eq!(late.state, TaskState::Running, "{late:?}");
+            completed(
+                &call(
+                    &browser,
+                    host_key,
+                    Some(&mut agent),
+                    ActionAddress::new(&agent_id, RESUME_ACTION),
+                    InvokeArgument::None,
+                )
+                .await,
+            );
+            receive_until(
+                &mut agent,
+                &browser_events,
+                &route,
+                &mut page,
+                agent_cert.device_public_key,
+                text,
+            )
+            .await;
+        } else {
+            assert_eq!(late.state, TaskState::Cancelled, "{late:?}");
+        }
+    }
     completed(
         &call(
             &browser,

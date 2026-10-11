@@ -17,8 +17,6 @@ use std::{
 use tilo_actions::ControlInvocation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ControlProducerId(uuid::Uuid, u64);
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControlRequestId(uuid::Uuid, u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlProducerDiscipline {
@@ -82,7 +80,6 @@ struct DomainState {
     incarnation: uuid::Uuid,
     closed: bool,
     initial_installation: bool,
-    next_producer: u64,
     next_request: u64,
     owner: Option<ControlOwner>,
     parent: WeakControlDomain,
@@ -106,7 +103,7 @@ impl ControlOwner {
             },
             Self::Component(binding) => {
                 PendingControlOrigin::Component(crate::bound_dispatch::BoundActionTarget {
-                    physical_text: false,
+                    input: crate::bound_dispatch::Input::Discrete,
                     binding: binding.clone(),
                     address: crate::bound_dispatch::BoundActionAddress {
                         instance_id: binding.instance_id,
@@ -129,9 +126,12 @@ enum DomainEntry {
     Child(WeakControlDomain),
 }
 struct Producer {
-    id: ControlProducerId,
     discipline: ControlProducerDiscipline,
-    pending: VecDeque<(ControlRequestId, ControlInvocation, bool)>,
+    pending: VecDeque<(
+        ControlRequestId,
+        ControlInvocation,
+        crate::bound_dispatch::Input,
+    )>,
 }
 /// A retained producer does not keep its owner, registry or widget alive.
 #[derive(Clone)]
@@ -175,7 +175,6 @@ impl ControlDomain {
             incarnation: id,
             closed: false,
             initial_installation: true,
-            next_producer: 1,
             next_request: 1,
             owner: None,
             parent: WeakControlDomain::default(),
@@ -303,22 +302,9 @@ impl ControlDomain {
         }
         child
     }
-    /// # Panics
-    ///
-    /// Panics if this domain has issued `u64::MAX` producer identities.
-    #[expect(
-        clippy::expect_used,
-        reason = "a per-domain u64 producer counter cannot be exhausted; wrapping would reuse an identity"
-    )]
     pub fn producer(&self, discipline: ControlProducerDiscipline) -> ControlOutbox {
         let mut state = self.0.borrow_mut();
-        let id = ControlProducerId(state.id, state.next_producer);
-        state.next_producer = state
-            .next_producer
-            .checked_add(1)
-            .expect("control producer identity exhausted");
         let producer = Rc::new(RefCell::new(Producer {
-            id,
             discipline,
             pending: VecDeque::new(),
         }));
@@ -399,7 +385,7 @@ impl ControlDomain {
                         {
                             let mut origin = owner.origin(&invocation);
                             if let PendingControlOrigin::Component(target) = &mut origin {
-                                target.physical_text = physical_text;
+                                target.input = physical_text;
                             }
                             output.push(OwnedControl {
                                 origin,
@@ -437,9 +423,6 @@ impl ControlDomain {
     }
 }
 impl ControlOutbox {
-    pub fn producer_id(&self) -> ControlProducerId {
-        self.producer.borrow().id
-    }
     pub fn emit(&self, invocation: ControlInvocation) -> Result<LocalEmission, EmitError> {
         let domain = self.domain.upgrade().ok_or(EmitError::Closed)?;
         if domain.closed() || domain.0.borrow().incarnation != self.owner_incarnation {
@@ -468,7 +451,7 @@ impl ControlOutbox {
         }
         producer
             .pending
-            .push_back((id, invocation, crate::bound_dispatch::physical_text()));
+            .push_back((id, invocation, crate::bound_dispatch::input()));
         Ok(LocalEmission::Queued(id))
     }
     pub fn replace(&self, invocation: ControlInvocation) -> Result<LocalEmission, EmitError> {
@@ -490,7 +473,7 @@ pub(crate) struct ControlHolder {
 }
 enum HolderStorage {
     Legacy {
-        pending: VecDeque<(ControlInvocation, bool)>,
+        pending: VecDeque<(ControlInvocation, crate::bound_dispatch::Input)>,
         emitted: bool,
     },
     Registered(ControlOutbox),
@@ -559,9 +542,8 @@ impl ControlHolder {
         let old = std::mem::replace(&mut self.storage, HolderStorage::Registered(outbox.clone()));
         if let HolderStorage::Legacy { pending, .. } = old {
             for (invocation, physical_text) in pending {
-                let _ = crate::bound_dispatch::with_physical_text(physical_text, || {
-                    outbox.emit(invocation)
-                });
+                let _ =
+                    crate::bound_dispatch::with_input(physical_text, || outbox.emit(invocation));
             }
         }
         Ok(())
@@ -593,7 +575,7 @@ impl ControlHolder {
                         }
                     }
                 }
-                pending.push_back((invocation, crate::bound_dispatch::physical_text()));
+                pending.push_back((invocation, crate::bound_dispatch::input()));
                 Ok(RawControlEmission::LegacyPending)
             }
         }
@@ -602,7 +584,7 @@ impl ControlHolder {
         match &mut self.storage {
             HolderStorage::Legacy { pending, .. } => {
                 pending.pop_front().map(|(invocation, physical_text)| {
-                    crate::bound_dispatch::note_drained_physical_text(physical_text);
+                    crate::bound_dispatch::note_drained_input(physical_text);
                     invocation
                 })
             }
@@ -1030,6 +1012,7 @@ mod tests {
         assert!(domain.drain_live().is_empty());
         assert!(view.children_mut()[0].perform_action(
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));

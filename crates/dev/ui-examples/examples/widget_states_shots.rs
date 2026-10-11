@@ -32,6 +32,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tilo_ui::widget::TaffyTreeExt;
 
 use automerge::AutoCommit;
 use chrono::NaiveDate;
@@ -1973,27 +1974,17 @@ impl Widget for Painted {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(taffy::Style {
-                size: Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::length(self.height as f32),
-                },
-                ..Default::default()
-            })
-            .unwrap_or_else(|_| NodeId::new(0));
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = taffy::Style {
+            size: Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::length(self.height as f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = tilo_ui::widget::layout_rect(taffy, node, origin);
     }
     fn draw(
         &mut self,

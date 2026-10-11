@@ -36,20 +36,9 @@ pub const DEFAULT_MAX_QUEUED: usize = 512;
 pub const DEFAULT_MAX_SETTLED: usize = 2048;
 /// How long a worker holding an open video pipeline waits for more work before
 /// closing it — long enough for a scrub, short enough not to pin a decoder.
-#[cfg_attr(
-    not(feature = "video"),
-    allow(dead_code, reason = "only a worker with a video pipeline retires it")
-)]
 const PIPELINE_IDLE: Duration = Duration::from_secs(20);
 /// How deep into its priority tier a worker with an open pipeline looks for a
 /// job on that same source before taking the head of the queue.
-#[cfg_attr(
-    not(feature = "video"),
-    allow(
-        dead_code,
-        reason = "only a worker with a video pipeline has a preference"
-    )
-)]
 const AFFINITY_SCAN: usize = 32;
 
 /// How urgently a preview is wanted. Workers always take the highest first.
@@ -371,7 +360,7 @@ impl ThumbnailService {
         {
             return Ok(Self::ephemeral(workers));
         }
-        let dir = xdg_paths::cache_dir().map_or_else(
+        let dir = tilo_paths::cache_dir().map_or_else(
             || std::env::temp_dir().join("tilo-thumbnails"),
             |cache| cache.join("tilo").join("thumbnails"),
         );

@@ -26,7 +26,7 @@ use crate::text_selection::{
     prev_char_boundary, word_boundaries,
 };
 use crate::theme::Theme;
-use crate::tokens::TextRole;
+use crate::tokens::{SyntaxPalette, TextRole};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::code_editor::{Highlighter, Span};
@@ -45,6 +45,18 @@ use zeroize::Zeroize;
 #[path = "text_input_preparation.rs"]
 mod preparation;
 use preparation::Preparation;
+
+/// Widths besides the current one whose shaped paragraph a multiline field
+/// keeps: a layout pass measures at most three (min-content, max-content and
+/// the final width).
+const MAX_ALTERNATE_LAYOUTS: usize = 2;
+
+/// A shaped multiline paragraph kept for another width.
+struct AlternateLayout {
+    layout: RichTextLayout,
+    preparation: Option<Preparation>,
+    signature: u64,
+}
 
 #[path = "text_input_reveal.rs"]
 mod reveal;
@@ -281,6 +293,16 @@ pub struct TextInput {
     shaped_preparation: Option<Preparation>,
     /// Renderer epoch invalidates cached glyph geometry when canonical fonts change.
     shaped_layout_epoch: Option<Arc<()>>,
+    /// Syntax palette of the last themed pass (layout build or paint).
+    /// Measurement has no theme and shapes with it, so it builds the very
+    /// paragraph painting will use.
+    layout_syntax: Option<SyntaxPalette>,
+    /// The multiline paragraph at the other widths one layout pass measures
+    /// (Taffy asks for min- and max-content sizes besides the final width),
+    /// most recently used first. Each width keeps its own wrap, so a pass
+    /// that visits all of them splices an edit into each instead of wrapping
+    /// every paragraph again.
+    alternate_layouts: Vec<AlternateLayout>,
     /// Complete authored runs supplied by a shared rich-text widget. They
     /// participate in the same shaping as wrapping, carets and hit-testing.
     rich_spans: Option<Vec<RichSpan>>,
@@ -329,6 +351,9 @@ pub struct TextInput {
     /// Cached by (language, text), so drawing idle fields never starts work.
     spell_cache_key: Option<(String, String)>,
     spell_spans: Vec<(usize, usize)>,
+    /// `spell_spans` were cleared while idle and no longer describe the
+    /// cached text, so the next check cannot splice into them.
+    spell_spans_stale: bool,
     /// Per-user vocabulary layered over every installed language.
     spell_dictionary: Option<spellcheck::Dictionary>,
     /// Ephemeral view of the shared host service, never an app vocabulary store.
@@ -556,6 +581,8 @@ impl TextInput {
             shaped_layout_signature: u64::MAX,
             shaped_preparation: None,
             shaped_layout_epoch: None,
+            layout_syntax: None,
+            alternate_layouts: Vec::new(),
             rich_spans: None,
             scroll_x: 0.0,
             compact_multiline: false,
@@ -583,6 +610,7 @@ impl TextInput {
             spell_language,
             spell_cache_key: None,
             spell_spans: Vec::new(),
+            spell_spans_stale: false,
             spell_dictionary: None,
             personal_spelling: None,
             ignored_spellings: HashSet::new(),
@@ -638,7 +666,7 @@ impl TextInput {
     pub fn set_align(&mut self, align: TextAlign) {
         if self.align != align {
             self.align = align;
-            self.single_layout = None;
+            self.drop_shaped_layouts();
             self.dirty = true;
         }
     }
@@ -799,11 +827,6 @@ impl TextInput {
         self
     }
 
-    pub fn set_spellcheck(&mut self, on: bool) {
-        self.spellcheck = Some(on);
-        self.spell_cache_key = None;
-    }
-
     pub fn spellcheck_enabled(&self) -> bool {
         self.checks_spelling()
     }
@@ -814,10 +837,6 @@ impl TextInput {
     pub fn with_autocorrect(mut self, on: bool) -> Self {
         self.autocorrect = Some(on);
         self
-    }
-
-    pub fn set_autocorrect(&mut self, on: bool) {
-        self.autocorrect = Some(on);
     }
 
     pub fn autocorrect_enabled(&self) -> bool {
@@ -864,10 +883,6 @@ impl TextInput {
             id: id.to_string(),
             label: label.to_string(),
         });
-    }
-
-    pub fn clear_text_actions(&mut self) {
-        self.text_actions.clear();
     }
 
     pub fn take_text_action_request(&mut self) -> Option<TextActionRequest> {
@@ -959,7 +974,13 @@ impl TextInput {
     /// attributed document spans, then insert IME preedit as a display-only
     /// default-colour run. Concatenating the result always reproduces
     /// `layout_display_text()` byte-for-byte.
+    #[cfg(test)]
     fn highlighted_display_spans(&self, theme: &Theme) -> Vec<RichSpan> {
+        self.palette_display_spans(&theme.tokens.syntax)
+    }
+
+    /// [`Self::highlighted_display_spans`] in `syntax`'s colours.
+    fn palette_display_spans(&self, syntax: &SyntaxPalette) -> Vec<RichSpan> {
         let mut colored = Vec::<(usize, usize, [u8; 3])>::new();
         if self.highlighter.is_some() {
             for (line, spans) in self.hl_spans.iter().enumerate() {
@@ -981,7 +1002,7 @@ impl TextInput {
                     {
                         continue;
                     }
-                    let color = theme.tokens.syntax.color(span.kind);
+                    let color = syntax.color(span.kind);
                     colored.push((start, end, [color.r(), color.g(), color.b()]));
                 }
             }
@@ -1080,7 +1101,7 @@ impl TextInput {
             .is_none_or(|old| Self::single_attributes_signature(old) != signature)
         {
             self.single_attributes = Some(attributes);
-            self.single_layout = None;
+            self.drop_shaped_layouts();
             self.model_layout_dirty = true;
         }
     }
@@ -1225,11 +1246,11 @@ impl TextInput {
     /// Keyboard input, paste, accessibility edits, and committed IME text
     /// notify once with the complete new value. IME preedit, cursor movement,
     /// selection changes, [`Self::set_text`], and CRDT synchronization do not.
+    /// It runs beside a bound action ([`Self::on_action`]), in either order of
+    /// registration.
     #[must_use]
     pub fn on_change(mut self, callback: impl FnMut(&str) + 'static) -> Self {
-        if self.action.is_none() {
-            self.on_change = Some(Box::new(callback));
-        }
+        self.on_change = Some(Box::new(callback));
         self.last_notified_text.clone_from(&self.text);
         self
     }
@@ -1239,7 +1260,6 @@ impl TextInput {
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
-        self.on_change = None;
         self
     }
 
@@ -1255,9 +1275,7 @@ impl TextInput {
         } else {
             self.publish_local_state();
         }
-        if self.action.is_none()
-            && let Some(callback) = self.on_change.as_mut()
-        {
+        if let Some(callback) = self.on_change.as_mut() {
             callback(&self.text);
         }
     }
@@ -1947,13 +1965,67 @@ impl TextInput {
         }
     }
 
+    /// Forget every shaped paragraph (the current one and the alternates).
+    fn drop_shaped_layouts(&mut self) {
+        self.single_layout = None;
+        self.alternate_layouts.clear();
+    }
+
+    /// Make the paragraph shaped at `width` current, keeping the one it
+    /// replaces as the most recent alternate. A width no alternate has
+    /// rebuilds from a copy of the current paragraph's shaping, or once
+    /// every alternate slot is taken, from the least recently used one's.
+    fn select_layout_for_width(&mut self, tr: &mut TextRenderer, width: f32) {
+        let Some(current_width) = self
+            .shaped_preparation
+            .as_ref()
+            .map(Preparation::width)
+            .filter(|_| self.single_layout.is_some())
+        else {
+            return;
+        };
+        if current_width.to_bits() == width.to_bits() {
+            return;
+        }
+        if self.holds_secret() {
+            // Never keep a second copy of a revealed secret.
+            self.alternate_layouts.clear();
+            return;
+        }
+        let Some(layout) = self.single_layout.take() else {
+            return;
+        };
+        let current = AlternateLayout {
+            layout,
+            preparation: self.shaped_preparation.take(),
+            signature: self.shaped_layout_signature,
+        };
+        let found = self.alternate_layouts.iter().position(|alternate| {
+            alternate
+                .preparation
+                .as_ref()
+                .is_some_and(|prepared| prepared.width().to_bits() == width.to_bits())
+        });
+        if let Some(index) = found {
+            let alternate = self.alternate_layouts.remove(index);
+            self.single_layout = Some(alternate.layout);
+            self.shaped_preparation = alternate.preparation;
+            self.shaped_layout_signature = alternate.signature;
+        } else if self.alternate_layouts.len() < MAX_ALTERNATE_LAYOUTS {
+            self.single_layout = Some(current.layout.duplicate(&mut tr.font_system));
+        } else {
+            self.single_layout = self.alternate_layouts.pop().map(|oldest| oldest.layout);
+        }
+        self.alternate_layouts.insert(0, current);
+    }
+
     fn refresh_layout_epoch(&mut self, renderer: &TextRenderer) {
         if self
             .shaped_layout_epoch
             .as_ref()
             .is_none_or(|epoch| !Arc::ptr_eq(epoch, renderer.layout_epoch()))
         {
-            self.single_layout = None;
+            self.drop_shaped_layouts();
             self.shaped_layout_epoch = Some(Arc::clone(renderer.layout_epoch()));
         }
     }
@@ -1970,18 +2042,41 @@ impl TextInput {
         style: &TextStyle,
         available_width: f32,
     ) {
+        self.adopt_layout_syntax(theme);
+        self.ensure_palette_layout(tr, &theme.tokens.syntax, style, available_width);
+    }
+
+    /// Remember the theme's syntax palette for theme-less measurement.
+    fn adopt_layout_syntax(&mut self, theme: &Theme) {
+        if self.layout_syntax.as_ref() != Some(&theme.tokens.syntax) {
+            self.layout_syntax = Some(theme.tokens.syntax.clone());
+        }
+    }
+
+    /// [`Self::ensure_shaped_layout`] with highlighted runs in `syntax`'s
+    /// colours. Measurement has no theme; it passes the palette of the last
+    /// themed pass, so measuring and painting share one shaped paragraph and
+    /// a keystroke shapes only the paragraphs it changed.
+    fn ensure_palette_layout(
+        &mut self,
+        tr: &mut TextRenderer,
+        syntax: &SyntaxPalette,
+        style: &TextStyle,
+        available_width: f32,
+    ) {
         self.refresh_layout_epoch(tr);
+        self.select_layout_for_width(tr, available_width);
         if self.single_layout.is_some()
             && self
                 .shaped_preparation
                 .as_ref()
-                .is_some_and(|prepared| prepared.matches(self, style, available_width, theme))
+                .is_some_and(|prepared| prepared.matches(self, style, available_width, syntax))
         {
             return;
         }
         self.refresh_highlight();
         let display = self.layout_display_text();
-        let spans = self.highlighted_display_spans(theme);
+        let spans = self.palette_display_spans(syntax);
         debug_assert_eq!(
             spans
                 .iter()
@@ -1994,15 +2089,34 @@ impl TextInput {
             &spans,
         );
         let browser_emoji = tr.browser_color_emoji_installed();
-        let mut layout = RichTextLayout::shape_styled_reusing_browser(
-            &mut tr.font_system,
-            &spans,
-            style,
-            Some(available_width),
-            self.align,
-            self.single_layout.take(),
-            browser_emoji,
-        );
+        // Unstyled text (no highlighter colours or authored runs) is laid out
+        // paragraph by paragraph, so a keystroke prepares and shapes only the
+        // paragraph it edits.
+        let mut layout = if spans.iter().all(RichSpan::is_unstyled) {
+            RichTextLayout::shape_paragraphs_reusing_browser(
+                &mut tr.font_system,
+                &display,
+                style,
+                Some(available_width),
+                self.align,
+                self.single_layout.take(),
+                browser_emoji,
+                // The width measured just before has this text already.
+                self.alternate_layouts
+                    .first()
+                    .map(|alternate| &alternate.layout),
+            )
+        } else {
+            RichTextLayout::shape_styled_reusing_browser(
+                &mut tr.font_system,
+                &spans,
+                style,
+                Some(available_width),
+                self.align,
+                self.single_layout.take(),
+                browser_emoji,
+            )
+        };
         if self.holds_secret() {
             layout.discard_prepared_inputs();
         }
@@ -2013,7 +2127,7 @@ impl TextInput {
         }
         self.single_layout = Some(layout);
         self.shaped_layout_signature = signature;
-        self.shaped_preparation = Preparation::capture(self, style, available_width, Some(theme));
+        self.shaped_preparation = Preparation::capture(self, style, available_width, Some(syntax));
     }
 
     fn multiline_style(&self, scale: f32) -> TextStyle {
@@ -2277,6 +2391,9 @@ impl TextInput {
     /// Every unmasked multiline input—including attributed source code—uses
     /// the same shaped paragraph for paint, wrapping, carets, selection,
     /// hit-testing, vertical movement and IME composition.
+    ///
+    /// `visible` is the part of the field the host's viewport shows, in the
+    /// field's coordinates; glyph rows wholly outside it are not encoded.
     fn draw_multiline_shaped(
         &mut self,
         scene: &mut Scene,
@@ -2284,6 +2401,7 @@ impl TextInput {
         tr: &mut TextRenderer,
         theme: &Theme,
         shape: &RoundedRect,
+        visible: Rect,
     ) {
         let size = self.effective_font_size();
         let style = self.multiline_style(self.scale_for(theme.text_scale));
@@ -2362,7 +2480,15 @@ impl TextInput {
             } else {
                 theme.text_primary
             };
-            tr.draw_rich(scene, layout, text_transform, color);
+            // A long note is taller than the window: paint only the rows the
+            // field's clip and the viewport let through.
+            tr.draw_rich_in_clip(
+                scene,
+                layout,
+                text_transform,
+                color,
+                transform.transform_rect_bbox(visible),
+            );
         }
 
         self.draw_gutter_line_numbers(
@@ -2752,8 +2878,8 @@ impl TextInput {
         self.model_layout_dirty = false;
     }
 
-    /// Bypasses `draw_with_presence` — only safe on local-mode `TextInputs`
-    /// with no presence path or permission scope.
+    /// Places the input without a layout tree — only safe on local-mode
+    /// `TextInputs` with no presence path or permission scope.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.single_origin.x += rect.x0 - self.rect.x0;
         self.single_origin.y += rect.y0 - self.rect.y0;
@@ -2824,7 +2950,7 @@ impl TextInput {
         if on {
             self.shaped_preparation = None;
             self.hl_text = None;
-            self.single_layout = None;
+            self.drop_shaped_layouts();
             self.set_kind(TextInputKind::Password);
         }
     }
@@ -2933,10 +3059,6 @@ impl TextInput {
         self.gutter = on;
     }
 
-    pub fn has_gutter(&self) -> bool {
-        self.gutter
-    }
-
     #[must_use]
     pub fn with_current_line_highlight(mut self, on: bool) -> Self {
         self.highlight_current_line = on;
@@ -3038,10 +3160,6 @@ impl TextInput {
         self
     }
 
-    pub fn set_enter_submits(&mut self, on: bool) {
-        self.enter_submits = on;
-    }
-
     /// `true` once per submitting `Enter`; clears on read.
     pub fn take_submit(&mut self) -> bool {
         std::mem::take(&mut self.submit_requested)
@@ -3068,8 +3186,8 @@ impl TextInput {
     }
 
     #[must_use]
-    pub fn with_placeholder(mut self, hint: &str) -> Self {
-        self.placeholder = hint.to_string();
+    pub fn with_placeholder(mut self, hint: impl Into<crate::i18n::LabelKey>) -> Self {
+        self.placeholder = hint.into().into();
         self
     }
 
@@ -3127,15 +3245,6 @@ impl TextInput {
     pub fn on_submit(mut self, callback: impl FnMut(&str) + 'static) -> Self {
         self.enter_submits = true;
         self.on_submit = Some(Box::new(callback));
-        self
-    }
-
-    /// Route Enter through an exported resource action with the text as its
-    /// input; see [`Self::on_submit`].
-    #[must_use]
-    pub fn on_submit_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
-        self.enter_submits = true;
-        self.submit_action = Some(ActionEmitter::new(binding));
         self
     }
 
@@ -3645,11 +3754,6 @@ impl TextInput {
         self.set_selection_at(anchor, TextPosition::new(cursor));
     }
 
-    /// Public counterpart to `cursor_from_x`, for `BlockEditor`'s cross-block drag.
-    pub fn byte_at_x(&self, logical_x: f64) -> usize {
-        self.cursor_from_x(logical_x)
-    }
-
     /// A secret refuses Copy and Cut, shown or not, as password fields do
     /// everywhere: its value never leaves the field.
     fn do_copy(&self) {
@@ -3921,6 +4025,15 @@ impl TextInput {
         })
     }
 
+    /// What the last draw painted outside the field's rect: while a
+    /// correction is offered, its chip, which floats above or below the
+    /// field. A host proving its own damage repaints this too when the field
+    /// changes.
+    #[must_use]
+    pub fn overhang(&self) -> Option<Rect> {
+        self.suggestion_chip
+    }
+
     /// Replace the previewed word with its correction (a click on the chip).
     fn accept_suggestion(&mut self) -> bool {
         self.refresh_personal_spelling();
@@ -4006,32 +4119,83 @@ impl TextInput {
         }
         if !self.spell_active {
             self.spell_spans.clear();
+            self.spell_spans_stale = true;
             return;
         }
-        let key = (self.spell_language.clone(), self.text.clone());
-        if self.spell_cache_key.as_ref() == Some(&key) {
+        let Some((language, checked)) = self.spell_cache_key.take() else {
+            self.spell_spans = self.misspelled_in(0..self.text.len());
+            self.spell_spans_stale = false;
+            self.spell_cache_key = Some((self.spell_language.clone(), self.text.clone()));
+            return;
+        };
+        if language == self.spell_language && checked == self.text {
+            self.spell_cache_key = Some((language, checked));
             return;
         }
+        if language == self.spell_language && !self.spell_spans_stale {
+            // Words never cross a line feed: check only the lines the edit
+            // touched and move the marks after them.
+            let edit = crate::text_break::LineEdit::between(&checked, &self.text);
+            let fresh = self.misspelled_in(edit.start..edit.new_end);
+            let (old_len, new_len) = (checked.len(), self.text.len());
+            let previous = std::mem::take(&mut self.spell_spans);
+            self.spell_spans = previous
+                .iter()
+                .copied()
+                .filter(|&(_, end)| end < edit.start)
+                .chain(fresh)
+                .chain(
+                    previous
+                        .iter()
+                        .copied()
+                        .filter(|&(start, _)| start > edit.old_end)
+                        .map(|(start, end)| {
+                            (
+                                start.saturating_add(new_len).saturating_sub(old_len),
+                                end.saturating_add(new_len).saturating_sub(old_len),
+                            )
+                        }),
+                )
+                .collect();
+        } else {
+            self.spell_spans = self.misspelled_in(0..self.text.len());
+        }
+        self.spell_spans_stale = false;
+        let mut checked = checked;
+        checked.clone_from(&self.text);
+        self.spell_cache_key = Some((self.spell_language.clone(), checked));
+    }
 
-        let mut spans = spellcheck::spans_for_language(&self.spell_language, &self.text);
-        let dictionary = self
-            .spell_dictionary
+    /// Misspelled words of `range` (whole lines of the text), in text bytes.
+    fn misspelled_in(&mut self, range: Range<usize>) -> Vec<(usize, usize)> {
+        self.spell_dictionary
             .get_or_insert_with(spellcheck::Dictionary::default);
+        let Some(text) = self.text.get(range.clone()) else {
+            return Vec::new();
+        };
+        let dictionary = self.spell_dictionary.as_ref();
         let personal = self.personal_spelling.as_ref();
-        spans.retain(|&(start, end)| {
-            self.text.get(start..end).is_some_and(|word| {
-                !dictionary.contains(word)
-                    && !personal.is_some_and(|personal| {
-                        personal
-                            .snapshot
-                            .as_ref()
-                            .is_some_and(|snapshot| snapshot.contains(word, &personal.language))
-                    })
-                    && !self.ignored_spellings.contains(&word.to_lowercase())
+        spellcheck::spans_for_language(&self.spell_language, text)
+            .into_iter()
+            .filter(|&(start, end)| {
+                text.get(start..end).is_some_and(|word| {
+                    !dictionary.is_some_and(|dictionary| dictionary.contains(word))
+                        && !personal.is_some_and(|personal| {
+                            personal
+                                .snapshot
+                                .as_ref()
+                                .is_some_and(|snapshot| snapshot.contains(word, &personal.language))
+                        })
+                        && !self.ignored_spellings.contains(&word.to_lowercase())
+                })
             })
-        });
-        self.spell_spans = spans;
-        self.spell_cache_key = Some(key);
+            .map(|(start, end)| {
+                (
+                    start.saturating_add(range.start),
+                    end.saturating_add(range.start),
+                )
+            })
+            .collect()
     }
 
     /// The word currently being formed. Checking is immediate, but its result
@@ -4691,6 +4855,7 @@ impl Widget for TextInput {
     ) -> NodeId {
         self.capture_layout_text_scale(self.scale_for(theme.text_scale));
         self.adopt_field_theme(theme);
+        self.adopt_layout_syntax(theme);
         // Multiline is measured (grows with content, see `measure`). Single-
         // line is the control band of its size (Regular, 32, by default), so
         // a field and a button share a row — until the scaled line no longer
@@ -4733,13 +4898,7 @@ impl Widget for TextInput {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.apply_layout_external(Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        ));
+        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
     /// Single-line keeps its fixed row height from `build_layout` (ZERO
@@ -4787,7 +4946,13 @@ impl Widget for TextInput {
             )]
             let available_width =
                 (f64::from(width) - self.ml_left() - self.ml_pad_x()).max(1.0) as f32;
-            if self.single_layout.is_none()
+            // After any themed pass this is the paragraph painting uses, built
+            // from the previous one, so a keystroke reshapes only the
+            // paragraphs it touched and painting shapes nothing.
+            let syntax = self.layout_syntax.take();
+            if let Some(palette) = &syntax {
+                self.ensure_palette_layout(text_renderer, palette, &style, available_width);
+            } else if self.single_layout.is_none()
                 || !self
                     .shaped_preparation
                     .as_ref()
@@ -4817,6 +4982,7 @@ impl Widget for TextInput {
                 self.shaped_layout_signature = signature;
                 self.shaped_preparation = Preparation::capture(self, &style, available_width, None);
             }
+            self.layout_syntax = syntax;
             self.multiline_shaped = true;
             self.lines.clear();
             self.refresh_multiline_origin();
@@ -4874,14 +5040,28 @@ impl Widget for TextInput {
         if self.multiline {
             if self.masked() {
                 self.multiline_shaped = false;
-                self.single_layout = None;
+                self.drop_shaped_layouts();
                 self.draw_multiline_body(scene, transform, text_renderer, theme, &shape);
             } else {
-                self.draw_multiline_shaped(scene, transform, text_renderer, theme, &shape);
+                // Only vertical extent: a scroller may let content bleed
+                // sideways past its viewport.
+                let visible = presence.viewport.get().map_or(self.rect, |viewport| {
+                    Rect::new(
+                        self.rect.x0,
+                        self.rect.y0.max(viewport.y0),
+                        self.rect.x1,
+                        self.rect
+                            .y1
+                            .min(viewport.y1)
+                            .max(self.rect.y0.max(viewport.y0)),
+                    )
+                });
+                self.draw_multiline_shaped(scene, transform, text_renderer, theme, &shape, visible);
             }
             self.draw_spelling(scene, transform, theme);
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
+            self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
             return;
         }
         self.multiline_shaped = false;
@@ -4903,12 +5083,16 @@ impl Widget for TextInput {
         // because bullet byte offsets intentionally differ from the secret.
         self.apply_span_highlighter(theme);
         let display = self.layout_display_text();
+        #[cfg(test)]
+        let metrics_probe = crate::profiling::frame_probe::span("single_line_metrics");
         let total_w = self.build_single_line_metrics(
             text_renderer,
             &display,
             text_size,
             self.scale_for(theme.text_scale),
         );
+        #[cfg(test)]
+        drop(metrics_probe);
         self.single_origin = Point::new(self.rect.x0 + padding_x, text_y);
 
         let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
@@ -4949,10 +5133,14 @@ impl Widget for TextInput {
         self.draw_single_line_decorations(scene, transform, theme, true);
         self.draw_single_line_selection(scene, transform, theme);
 
+        #[cfg(test)]
+        let glyph_probe = crate::profiling::frame_probe::span("single_line_glyphs");
         self.draw_single_line_text(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             &display,
         );
+        #[cfg(test)]
+        drop(glyph_probe);
 
         self.draw_single_line_decorations(scene, transform, theme, false);
         if self.is_focused && !self.effectively_disabled() {
@@ -4968,9 +5156,14 @@ impl Widget for TextInput {
             self.reveal
                 .draw(scene, transform, text_renderer, theme, presence);
         }
+        #[cfg(test)]
+        let spelling_probe = crate::profiling::frame_probe::span("single_line_spelling");
         self.draw_spelling(scene, transform, theme);
+        #[cfg(test)]
+        drop(spelling_probe);
         self.draw_autocorrection(scene, transform, theme);
         self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
+        self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -5253,6 +5446,10 @@ impl Widget for TextInput {
         })
     }
 
+    fn ime_multiline(&self) -> bool {
+        self.multiline && !self.holds_secret()
+    }
+
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         (!self.holds_secret() && !self.core.has_preedit()).then(|| {
             crate::ime::edit_fingerprint(&self.text, self.core.anchor(), self.core.caret(), key)
@@ -5344,6 +5541,7 @@ impl Widget for TextInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -5425,84 +5623,6 @@ impl Widget for TextInput {
             return None;
         }
         Some((self.core.caret(), self.text.clone()))
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(key) = crate::presence::capability::presence_key(self) {
-            // Peer caret + selection reuse `caret_rect`/`selection_rect`, never a
-            // re-derived approximation. `transform` maps the local rect to the scene.
-
-            // Fading "just typed" highlighter under the caret/selection.
-            let now = crate::time::now();
-            for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
-                let rect = self.selection_rect(theme, range.start, range.end);
-                // `Affine * Point` is a geometric transform over f64 coordinates,
-                // not integer arithmetic that can overflow/wrap.
-                #[allow(
-                    clippy::arithmetic_side_effects,
-                    reason = "Affine*Point transform over f64 screen coordinates, no overflow/wrap semantics"
-                )]
-                let (p0, p1) = (
-                    transform * vello::kurbo::Point::new(rect.x0, rect.y0),
-                    transform * vello::kurbo::Point::new(rect.x1, rect.y1),
-                );
-                presence.draw_peer_typing(
-                    scene,
-                    theme,
-                    &user,
-                    &[(vello::kurbo::Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
-                );
-            }
-            if let Some(list) = presence.carets.get(&key) {
-                for (user, caret) in list {
-                    let name = presence.display_name(user);
-                    presence.draw_peer_caret_labeled(
-                        scene,
-                        theme,
-                        text_renderer,
-                        transform,
-                        user,
-                        &name,
-                        self.caret_rect(theme, *caret),
-                    );
-                }
-            }
-
-            if let Some(list) = presence.selections.get(&key) {
-                for (user, range) in list {
-                    for r in self.selection_rects(theme, range.start, range.end) {
-                        presence.draw_peer_selection(scene, theme, transform, user, r);
-                    }
-                }
-            }
-        }
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let r = self.rect;
-            let overlay = Self::PERMISSION_DENIED_OVERLAY;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                Affine::IDENTITY,
-                overlay,
-                None,
-                &r,
-            );
-        }
     }
 
     /// Paints the open context menu here so it floats above every sibling
@@ -5632,6 +5752,81 @@ impl crate::widget::controls::ActionControls for TextInput {
 }
 
 impl TextInput {
+    /// Peers' typing marks, carets and selections — at the field's own
+    /// caret and selection geometry rather than a generic focus ring — then
+    /// the denied-permission overlay.
+    fn draw_peers_and_gate(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        if let Some(key) = crate::presence::capability::presence_key(self) {
+            // Peer caret + selection reuse `caret_rect`/`selection_rect`, never a
+            // re-derived approximation. `transform` maps the local rect to the scene.
+
+            // Fading "just typed" highlighter under the caret/selection.
+            let now = crate::time::now();
+            for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
+                let rect = self.selection_rect(theme, range.start, range.end);
+                // `Affine * Point` is a geometric transform over f64 coordinates,
+                // not integer arithmetic that can overflow/wrap.
+                #[allow(
+                    clippy::arithmetic_side_effects,
+                    reason = "Affine*Point transform over f64 screen coordinates, no overflow/wrap semantics"
+                )]
+                let (p0, p1) = (
+                    transform * vello::kurbo::Point::new(rect.x0, rect.y0),
+                    transform * vello::kurbo::Point::new(rect.x1, rect.y1),
+                );
+                presence.draw_peer_typing(
+                    scene,
+                    theme,
+                    &user,
+                    &[(vello::kurbo::Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
+                );
+            }
+            if let Some(list) = presence.carets.get(&key) {
+                for (user, caret) in list {
+                    let name = presence.display_name(user);
+                    presence.draw_peer_caret_labeled(
+                        scene,
+                        theme,
+                        text_renderer,
+                        transform,
+                        user,
+                        &name,
+                        self.caret_rect(theme, *caret),
+                    );
+                }
+            }
+
+            if let Some(list) = presence.selections.get(&key) {
+                for (user, range) in list {
+                    for r in self.selection_rects(theme, range.start, range.end) {
+                        presence.draw_peer_selection(scene, theme, transform, user, r);
+                    }
+                }
+            }
+        }
+
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
+            && !presence.permits(&scope)
+        {
+            let r = self.rect;
+            let overlay = Self::PERMISSION_DENIED_OVERLAY;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                Affine::IDENTITY,
+                overlay,
+                None,
+                &r,
+            );
+        }
+    }
+
     /// The binding of the field's own value.
     fn field_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("text_input");
@@ -5716,7 +5911,7 @@ impl TextInput {
         self.char_x_positions
             .resize(self.text.len().saturating_add(1), 0.0);
         if self.masked() {
-            self.single_layout = None;
+            self.drop_shaped_layouts();
             for (byte_idx, _) in grapheme_indices(&self.text) {
                 let (w, _) =
                     self.measure_str(text_renderer, &self.display_prefix(byte_idx), text_size);
@@ -5743,6 +5938,8 @@ impl TextInput {
                 Self::attributed_signature(base ^ Self::single_attributes_signature(a), &a.spans)
             });
             if self.single_layout.is_none() || self.shaped_layout_signature != signature {
+                #[cfg(test)]
+                let _phase = crate::profiling::frame_probe::span("single_line_shape");
                 let browser_emoji = text_renderer.browser_color_emoji_installed();
                 let mut layout = if let Some(attributes) = attributes {
                     RichTextLayout::shape_styled_browser(
@@ -5779,21 +5976,36 @@ impl TextInput {
                 return 0.0;
             };
             let end_byte = self.text_to_layout_byte(self.text.len());
-            let positions: Vec<(usize, f64)> = grapheme_indices(&self.text)
-                .map(|(byte_idx, _)| {
-                    let x = layout.caret_geometry(self.text_to_layout_byte(byte_idx)).0;
-                    (byte_idx, f64::from(x))
+            let bytes: Vec<_> = grapheme_indices(&self.text)
+                .map(|(byte_idx, _)| byte_idx)
+                .chain(std::iter::once(self.text.len()))
+                .collect();
+            // These bytes already come from the grapheme iterator. Re-clamping
+            // each one would segment the full string again for every caret.
+            // Resolve the composition insertion point once as well.
+            let preedit = self.core.preedit_display_range(&self.text);
+            let positions: Vec<_> = bytes
+                .iter()
+                .map(|byte| {
+                    TextPosition::new(if *byte == self.text.len() {
+                        end_byte
+                    } else if let Some(range) = &preedit
+                        && *byte > range.start
+                    {
+                        byte.saturating_add(range.len())
+                    } else {
+                        *byte
+                    })
                 })
                 .collect();
-            let end_x = f64::from(layout.caret_geometry(end_byte).0);
+            #[cfg(test)]
+            let _phase = crate::profiling::frame_probe::span("single_line_caret_batch");
+            let geometries = layout.caret_geometries(&positions);
             let width = layout.width();
-            for (byte_idx, x) in positions {
-                if let Some(slot) = self.char_x_positions.get_mut(byte_idx) {
-                    *slot = x;
+            for (byte, geometry) in bytes.into_iter().zip(geometries) {
+                if let Some(slot) = self.char_x_positions.get_mut(byte) {
+                    *slot = f64::from(geometry.0);
                 }
-            }
-            if let Some(slot) = self.char_x_positions.get_mut(self.text.len()) {
-                *slot = end_x;
             }
             width
         }
@@ -6496,7 +6708,11 @@ impl TextInput {
             .char_indices()
             .next_back()
             .filter(|&(_, boundary)| is_autocorrect_boundary(boundary));
-        if t.chars().all(char::is_control) {
+        if self.multiline && t.contains('\n') && t.chars().all(|c| c == '\n' || !c.is_control()) {
+            let edit = self.core.commit(t);
+            self.apply_insert(&edit);
+            *handled = true;
+        } else if t.chars().all(char::is_control) {
             self.core.clear_preedit();
         } else if let Some((boundary_at, boundary)) = trailing_boundary {
             // A committed word plus its boundary autocorrects like typing.

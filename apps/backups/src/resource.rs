@@ -1,8 +1,8 @@
-//! Backups as a [`tilo_resource::Resource`]: the retention policy is document
-//! state; where this device backs up from and to is a device-local setting;
-//! backing up, verifying and restoring are the surface's [`BackupsEffect`]s,
-//! and the catalog on this device is published as live rows beside the
-//! resource.
+//! Backups as a resource: the retention policy is document state, each
+//! count a field edited at its path; where this device backs up from and to
+//! is a device-local setting; backing up, verifying and restoring are the
+//! surface's [`BackupsEffect`]s, and the catalog on this device is published
+//! as live rows beside the resource.
 
 use std::path::PathBuf;
 
@@ -12,46 +12,21 @@ use ui::framework::{
     SurfaceCx, ViewCx,
 };
 use ui::storage::{Scope, SettingsSchema};
-use ui::tilo_actions::Resource as PublishedResource;
-use ui::tilo_resource::{Doc, ModelError, Resource};
+use ui::tilo_resource::{self, Model, resource};
 use ui::widget::Element;
 
-use crate::actions::{BACKUPS_ACTION_TYPE, BackupsAction, BackupsEffect, publish_policy_document};
+use crate::actions::BackupsEffect;
 use crate::app::BackupsApp;
-use crate::doc::BackupsDoc;
 use crate::model::{Catalog, RetentionPolicy};
 
-/// Retention policy projection from the shared document.
-#[derive(Clone, Debug, Default)]
-pub struct BackupsState {
+/// What the document holds: the retention policy every device follows.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct Backups {
     pub policy: RetentionPolicy,
 }
 
-/// The backups workspace resource.
-pub struct Backups;
-
-impl Resource for Backups {
-    const KIND: &'static str = "backups.workspace";
-    const LABEL: &'static str = "Backups";
-    const ACTION_TYPE: &'static str = BACKUPS_ACTION_TYPE;
-
-    type State = BackupsState;
-    type Action = BackupsAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        crate::actions::register(registry);
-    }
-
-    fn read(doc: &Doc) -> Result<BackupsState, ModelError> {
-        Ok(BackupsState {
-            policy: BackupsDoc::policy(doc, &automerge::ROOT),
-        })
-    }
-
-    fn children(state: &BackupsState) -> Vec<PublishedResource> {
-        vec![publish_policy_document(&state.policy)]
-    }
-}
+#[resource(kind = "backups.workspace", label = "Backups")]
+impl Backups {}
 
 /// The folder this device protects and the location its backups go to.
 /// Absolute paths mean nothing on another device, so they never leave this
@@ -98,6 +73,14 @@ impl ResourceApp for BackupsShell {
     const ICON: Option<&'static str> = Some("backups");
 
     fn view(cx: &mut ViewCx<Backups>) -> Element {
+        // A search hit, or an agent's `open`, shows the snapshot it names.
+        let dispatcher = cx.dispatcher();
+        cx.on_open(
+            move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
+                dispatcher.effect(&opened(anchor)?);
+                Ok(())
+            },
+        );
         cx.surface(BackupsApp::new())
     }
 
@@ -139,7 +122,7 @@ impl ResourceApp for BackupsShell {
 }
 
 impl ResourceSurface<Backups, BackupsEffect> for BackupsApp {
-    fn present(&mut self, state: &std::rc::Rc<BackupsState>) {
+    fn present(&mut self, state: &std::rc::Rc<Backups>) {
         self.present_policy(state.policy);
     }
 
@@ -173,4 +156,18 @@ impl ResourceSurface<Backups, BackupsEffect> for BackupsApp {
     fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         crate::search::snapshot_entries(self.resource_catalog())
     }
+}
+
+/// What showing the search anchor `anchor` is: the snapshot it names.
+///
+/// # Errors
+/// Refuses an anchor that names no snapshot.
+pub(crate) fn opened(anchor: &str) -> Result<BackupsEffect, ui::tilo_resource::Refusal> {
+    anchor
+        .strip_prefix("backups.snapshot:")
+        .filter(|id| !id.is_empty())
+        .map(|id| BackupsEffect::ShowSnapshot {
+            snapshot_id: id.to_owned(),
+        })
+        .ok_or_else(|| ui::tilo_resource::Refusal::new(format!("`{anchor}` is no backup snapshot")))
 }

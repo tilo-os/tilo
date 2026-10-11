@@ -19,6 +19,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use serde_json::{Map, Value, json};
 use tilo_actions::{ActionParam, ParamType};
 
+mod table;
+pub use table::{Body, Bounds, Content, Field, Tagging, TypeSchema, Variant, build};
+
 /// A type whose serde JSON form has a JSON Schema.
 ///
 /// Derive it with `#[derive(JsonSchema)]` next to `Serialize` and
@@ -599,20 +602,49 @@ pub(crate) fn declared_invocation<'a>(
     Some((id, fields))
 }
 
+/// One declared action as a member of a record's action schema.
+fn declared_operation(id: &str, params: &[ActionParam], description: &str) -> Value {
+    let variant = object(vec![
+        ("action", constant(id), true),
+        ("args", args_schema(params), true),
+    ]);
+    describe(variant, description)
+}
+
 /// The replayable action of a `#[resource]` record, as the generic
 /// [`APPLY`](crate::APPLY) takes it: `{"op": {"action": id, "args": {..}},
 /// "at": ms}`, one alternative per declaration.
 pub fn record_action_schema<R: crate::Resource>() -> Value {
-    let operations = R::declarations()
-        .iter()
-        .map(|decl| {
-            let variant = object(vec![
-                ("action", constant(decl.id), true),
-                ("args", args_schema(&decl.params), true),
-            ]);
-            describe(variant, decl.description.as_deref().unwrap_or(&decl.label))
-        })
-        .collect();
+    record_action_schema_of(crate::vocabulary::<R>(), R::seed().is_some())
+}
+
+/// [`record_action_schema`] of the resource `vocabulary`, which `seeds` its
+/// first content or not.
+fn record_action_schema_of(vocabulary: &crate::Vocabulary, seeds: bool) -> Value {
+    let mut operations: Vec<Value> = Vec::new();
+    for decl in vocabulary.declarations().iter() {
+        operations.push(declared_operation(
+            decl.id,
+            &decl.params,
+            decl.description.as_deref().unwrap_or(&decl.label),
+        ));
+    }
+    if vocabulary.edits {
+        // Described in full by the field-edit action itself.
+        operations.push(describe(
+            object(vec![
+                ("action", constant(crate::FIELD_EDIT), true),
+                ("args", json!({"type": "object"}), true),
+            ]),
+            "A field edit, as the field-edit action takes it",
+        ));
+    }
+    if seeds {
+        operations.push(describe(
+            object(vec![("action", constant("seed"), true)]),
+            "Write the record's first content",
+        ));
+    }
     object(vec![
         ("op", one_of(operations), true),
         (
@@ -624,6 +656,86 @@ pub fn record_action_schema<R: crate::Resource>() -> Value {
             false,
         ),
     ])
+}
+
+/// A vocabulary's schema in a line: each alternative of an enum by its name
+/// and its arguments (`Name {a, b?}`; `?` marks an optional one), or by the
+/// value it takes.
+#[must_use]
+pub fn summary(schema: &Value) -> String {
+    let alternatives = schema
+        .get("oneOf")
+        .or_else(|| schema.get("anyOf"))
+        .and_then(Value::as_array)
+        .map_or_else(
+            || vec![schema],
+            |alternatives| alternatives.iter().collect(),
+        );
+    alternatives
+        .into_iter()
+        .filter_map(summarise_alternative)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn summarise_alternative(schema: &Value) -> Option<String> {
+    if let Some(value) = schema.get("const") {
+        return Some(
+            value
+                .as_str()
+                .map_or_else(|| value.to_string(), str::to_owned),
+        );
+    }
+    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+        return Some(
+            values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map_or_else(|| value.to_string(), str::to_owned)
+                })
+                .collect::<Vec<_>>()
+                .join(" | "),
+        );
+    }
+    let properties = schema.get("properties")?.as_object()?;
+    // An externally tagged variant: one property, its name, holding its
+    // arguments.
+    if let [(name, inner)] = properties.iter().collect::<Vec<_>>().as_slice() {
+        let arguments = arguments_of(inner);
+        return Some(if arguments.is_empty() {
+            (*name).clone()
+        } else {
+            format!("{name} {{{arguments}}}")
+        });
+    }
+    Some(format!("{{{}}}", arguments_of(schema)))
+}
+
+fn arguments_of(schema: &Value) -> String {
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|names| names.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| {
+            properties
+                .keys()
+                .map(|name| {
+                    if required.contains(&name.as_str()) {
+                        name.clone()
+                    } else {
+                        format!("{name}?")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

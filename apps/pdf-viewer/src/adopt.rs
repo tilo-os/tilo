@@ -23,6 +23,7 @@
 //! already a record of the opening record is recognised as its own export.
 
 use std::collections::{HashMap, HashSet};
+use ui::tilo_resource;
 
 use tilo_pdf::{AnnotationInfo, AnnotationKind, FieldKind, FormField, PageGeometry};
 
@@ -51,7 +52,16 @@ pub struct Existing {
 }
 
 /// Where a taken-over annotation came from.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    ui::tilo_resource::JsonSchema,
+)]
 pub struct AdoptedEntry {
     /// The record it became: an annotation id, or a reply id for a reply.
     pub id: String,

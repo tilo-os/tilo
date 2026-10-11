@@ -25,7 +25,9 @@ impl PowerProfilesMonitor {
         self.proxy.get_property("ActiveProfile").await
     }
 
-    pub async fn receive_active_profile_changed(&self) -> zbus::proxy::PropertyStream<'_, String> {
+    pub async fn receive_active_profile_changed(
+        &self,
+    ) -> zbus::proxy::PropertyStream<'static, String> {
         self.proxy.receive_property_changed("ActiveProfile").await
     }
 }

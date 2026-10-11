@@ -13,6 +13,7 @@
 //! degenerate case — every change is a tick, nothing snaps — not a separate
 //! mode.
 
+use crate::num::f64_of_usize;
 use crate::time::SystemTime;
 use std::collections::HashMap;
 
@@ -81,15 +82,6 @@ fn wash(surface: Color, alpha: u8) -> Color {
     crate::tokens::colors::Colors::hairline_on(surface, alpha)
 }
 
-/// A tick index or entry count, widened for pixel-space layout math.
-/// Lossless in practice — a history never approaches `u32::MAX` entries —
-/// but `usize -> f64` cannot express that to the compiler, so this goes
-/// through `u32` (exactly representable in `f64`) with a saturating
-/// fallback rather than an `as` cast.
-fn px(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
 /// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
 /// pure `f64` matrix multiply-add with no overflow trap, so it cannot panic
 /// regardless of operand magnitude, but going through `pre_translate`
@@ -108,7 +100,7 @@ fn translated(transform: Affine, offset: (f64, f64)) -> Affine {
     reason = "ratio is clamped to [0,1] and max is a bounded entry count, so the rounded product always fits usize"
 )]
 fn tick_from_ratio(ratio: f64, max: usize) -> usize {
-    (ratio.clamp(0.0, 1.0) * px(max)).round() as usize
+    (ratio.clamp(0.0, 1.0) * f64_of_usize(max)).round() as usize
 }
 
 /// `FnMut` so the host can mutate captured state (e.g. flip a
@@ -426,7 +418,7 @@ impl HistoryScrubber {
         if n <= 1 {
             return track.x1;
         }
-        let t = px(i) / px(n.saturating_sub(1));
+        let t = f64_of_usize(i) / f64_of_usize(n.saturating_sub(1));
         track.x0 + t * track.width()
     }
 
@@ -764,7 +756,7 @@ impl HistoryScrubber {
         let spacing = if n <= 1 {
             track.width()
         } else {
-            track.width() / px(n.saturating_sub(1))
+            track.width() / f64_of_usize(n.saturating_sub(1))
         };
         if spacing < MIN_TICK_SPACING {
             return;
@@ -1245,7 +1237,7 @@ impl Widget for HistoryScrubber {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let h = self.natural_height();
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 #[allow(
@@ -1255,20 +1247,13 @@ impl Widget for HistoryScrubber {
                 height: Dimension::length(h as f32),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if prev != self.rect {
             self.dirty = true;
         }
@@ -1594,13 +1579,14 @@ impl HistoryScrubber {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+    use crate::testing::dispatch;
     use crate::time::Duration;
+    use crate::widget::EntryKind;
     use crate::widget::history::HistoryAuthor;
-    use automerge::AutoCommit;
-    use collab_types::{ArtifactKind, OpClass};
+    use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::Modifiers;
 
     fn entry(id: u8) -> HistoryEntry {
         let mut bytes = [0u8; 16];
@@ -1609,7 +1595,7 @@ mod tests {
         HistoryEntry {
             id: HistoryEntryId(bytes),
             author: HistoryAuthor::new("Alice", 120.0, "deadbeef"),
-            op_class: OpClass::Splice,
+            entry_kind: EntryKind::Text,
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(secs))
@@ -1767,51 +1753,6 @@ mod tests {
         scrubber_with_no_entries_is_a_no_op();
         drag_saturates_at_endpoints();
     }
-
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
-
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn dispatch(s: &mut HistoryScrubber, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
 }
 
 // =====================================================================
@@ -1821,13 +1762,13 @@ mod tests {
 #[cfg(test)]
 mod version_tests {
     use super::*;
+    use crate::testing::dispatch;
     use crate::time::Duration;
+    use crate::widget::EntryKind;
     use crate::widget::history::HistoryAuthor;
-    use automerge::AutoCommit;
-    use collab_types::{ArtifactKind, OpClass};
+    use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::Modifiers;
 
     fn entry(id: u8) -> HistoryEntry {
         let mut bytes = [0u8; 16];
@@ -1837,7 +1778,7 @@ mod version_tests {
         HistoryEntry {
             id: HistoryEntryId(bytes),
             author: HistoryAuthor::new("Alice", 120.0, "deadbeef"),
-            op_class: OpClass::Splice,
+            entry_kind: EntryKind::Text,
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(secs))
@@ -2141,69 +2082,18 @@ mod version_tests {
         s
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_release;
 
     fn key(k: winit::keyboard::Key) -> WindowEvent {
-        // SAFETY: as in the sibling test modules — every pub field of `KeyEvent`
-        // tolerates the all-zero bit pattern, and winit 0.30 keeps
-        // `KeyEventExtra` crate-private so a struct literal is unavailable.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = k;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn dispatch(s: &mut HistoryScrubber, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            k,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     #[test]

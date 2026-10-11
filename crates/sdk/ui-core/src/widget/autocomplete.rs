@@ -22,6 +22,7 @@
 //! The editable path bar in the file manager is the canonical consumer, but
 //! the widget knows nothing about paths.
 
+use crate::num::{f32_of_f64, f64_of_usize};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
@@ -107,27 +108,6 @@ pub enum AutocompleteOutcome {
 pub type Suggester = Box<dyn Fn(&str) -> Vec<Suggestion>>;
 
 const DEFAULT_MAX_VISIBLE: usize = 8;
-
-/// Widens a small UI count (row/suggestion index or count, always far
-/// below `f64`'s exact-integer range) for layout math.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "UI row/suggestion counts are always far below f64's exact-integer range"
-)]
-fn count_f64(n: usize) -> f64 {
-    n as f64
-}
-
-/// Narrows a screen-space `f64` layout value to `f32` for text rendering;
-/// every call site here is a bounded panel/row dimension, well within
-/// `f32` range.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space px value, always well within f32 range"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
-}
 
 /// The geometry of a suggestion list in one theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -381,7 +361,7 @@ impl SuggestionList {
         } else {
             self.visible_count()
         };
-        let height = count_f64(rows) * m.row + 2.0 * m.inset;
+        let height = f64_of_usize(rows) * m.row + 2.0 * m.inset;
         let viewport = self
             .viewport
             .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
@@ -405,7 +385,7 @@ impl SuggestionList {
     /// Row `visible` (0 = the first in view) inside `panel`.
     fn row_in(&self, panel: Rect, visible: usize) -> Rect {
         let m = &self.metrics;
-        let y0 = panel.y0 + m.inset + count_f64(visible) * m.row;
+        let y0 = panel.y0 + m.inset + f64_of_usize(visible) * m.row;
         Rect::new(panel.x0 + m.inset, y0, panel.x1 - m.inset, y0 + m.row)
     }
 
@@ -517,8 +497,11 @@ impl SuggestionList {
             }
             if let Some(status) = &self.status {
                 let style = theme.text(self.role);
-                let shown =
-                    text.elide_to_width_style(status, px((row.x1 - m.pad - x).max(0.0)), &style);
+                let shown = text.elide_to_width_style(
+                    status,
+                    f32_of_f64((row.x1 - m.pad - x).max(0.0)),
+                    &style,
+                );
                 let (_, h) = text.measure_style(&shown, None, &style);
                 text.draw_style(
                     scene,
@@ -594,7 +577,7 @@ impl SuggestionList {
         // The detail column is trailing; the label takes what is left.
         let mut label_x1 = row.x1 - m.pad;
         if let Some(detail) = &s.detail {
-            let room = px(((row.x1 - m.pad) - x).max(0.0) / 2.0);
+            let room = f32_of_f64(((row.x1 - m.pad) - x).max(0.0) / 2.0);
             let shown = text.elide_to_width_style(detail, room, &detail_style);
             let (dw, dh) = text.measure_style(&shown, None, &detail_style);
             let dx = row.x1 - m.pad - f64::from(dw);
@@ -608,7 +591,8 @@ impl SuggestionList {
             );
             label_x1 = dx - 2.0 * m.spacing;
         }
-        let label = text.elide_to_width_style(&s.label, px((label_x1 - x).max(0.0)), &label_style);
+        let label =
+            text.elide_to_width_style(&s.label, f32_of_f64((label_x1 - x).max(0.0)), &label_style);
         let (_, lh) = text.measure_style(&label, None, &label_style);
         text.draw_style(
             scene,
@@ -1033,8 +1017,8 @@ impl Widget for Autocomplete {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // The field's own band: its control size, grown with its line.
-        let height = px(self.input.band_in(theme));
-        let node = taffy.leaf_node(Style {
+        let height = f32_of_f64(self.input.band_in(theme));
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(height),
@@ -1042,19 +1026,12 @@ impl Widget for Autocomplete {
             flex_grow: 1.0,
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.apply_layout_external(Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        ));
+        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
     fn draw(
@@ -1261,37 +1238,6 @@ impl Widget for Autocomplete {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        use crate::a11y::Action;
-        let (state, path) = crate::doc::document(state, path);
-        match action {
-            Action::Focus | Action::Expand => {
-                self.begin_edit();
-                true
-            }
-            Action::Collapse => {
-                self.cancel();
-                true
-            }
-            _ => {
-                let handled = Widget::perform_action(&mut self.input, action, state, path);
-                if handled && matches!(action, Action::SetValue(_)) {
-                    self.input.set_focus(true);
-                    self.outcome = AutocompleteOutcome::None;
-                    self.recompute();
-                    self.open = true;
-                    self.list.set_highlight(None);
-                }
-                handled
-            }
-        }
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
@@ -1299,7 +1245,28 @@ impl Widget for Autocomplete {
         use crate::a11y::{Action, hash_key};
         let own_key = hash_key(&self.test_id().unwrap_or("autocomplete"));
         if key_path.is_empty() || key_path == [own_key] {
-            return self.perform_action(action, state, path);
+            let (state, path) = crate::doc::document(state, path);
+            return match action {
+                Action::Focus | Action::Expand => {
+                    self.begin_edit();
+                    true
+                }
+                Action::Collapse => {
+                    self.cancel();
+                    true
+                }
+                _ => {
+                    let handled = Widget::perform_action(&mut self.input, action, &[], state, path);
+                    if handled && matches!(action, Action::SetValue(_)) {
+                        self.input.set_focus(true);
+                        self.outcome = AutocompleteOutcome::None;
+                        self.recompute();
+                        self.open = true;
+                        self.list.set_highlight(None);
+                    }
+                    handled
+                }
+            };
         }
         if !self.open || !matches!(action, Action::Activate) {
             return false;
@@ -1337,8 +1304,8 @@ impl crate::widget::controls::ActionControls for Autocomplete {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use automerge::AutoCommit;
-    use winit::event::Modifiers;
 
     #[test]
     fn suggestions_open_highlight_accept_or_cancel() {
@@ -1348,6 +1315,7 @@ mod tests {
             let mut state = AutoCommit::new();
             assert!(ac.perform_action(
                 &Action::SetValue("al".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut state),
                 &automerge::ROOT
             ));
@@ -1355,7 +1323,7 @@ mod tests {
             let node = ac.accessibility().unwrap();
             assert_eq!(node.children[1].name.as_deref(), Some("album"));
             let key = hash_key(&("autocomplete-suggestion", "album"));
-            assert!(ac.perform_action_at(
+            assert!(ac.perform_action(
                 &Action::Activate,
                 &[key],
                 &mut crate::widget::Edits::lend(&mut state),
@@ -1367,7 +1335,7 @@ mod tests {
                 AutocompleteOutcome::Accepted("album".into())
             );
             assert!(!ac.is_open());
-            assert!(!ac.perform_action_at(
+            assert!(!ac.perform_action(
                 &Action::Activate,
                 &[key],
                 &mut crate::widget::Edits::lend(&mut state),
@@ -1381,8 +1349,8 @@ mod tests {
             ac.begin_edit();
             // The field starts empty, so both letters insert normally (no select-all
             // to swallow the first one).
-            drive(&mut ac, &char_key("a"));
-            drive(&mut ac, &char_key("l"));
+            dispatch(&mut ac, &char_key("a"));
+            dispatch(&mut ac, &char_key("l"));
             assert_eq!(ac.text(), "al");
             let vals: Vec<&str> = ac.suggestions().iter().map(|s| s.value.as_str()).collect();
             assert_eq!(vals, ["alpha", "album"], "prefix filter applied");
@@ -1393,16 +1361,16 @@ mod tests {
             let mut ac = suggester_paths();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("a"));
-            drive(&mut ac, &char_key("l"));
+            dispatch(&mut ac, &char_key("a"));
+            dispatch(&mut ac, &char_key("l"));
             // No highlight yet → Enter would commit the typed text. Arrow down arms
             // the first suggestion.
             assert!(ac.highlighted().is_none());
-            assert!(drive(&mut ac, &named(NamedKey::ArrowDown)));
+            assert!(dispatch(&mut ac, &named_key(NamedKey::ArrowDown)));
             assert_eq!(ac.highlighted().unwrap().value, "alpha");
-            assert!(drive(&mut ac, &named(NamedKey::ArrowDown)));
+            assert!(dispatch(&mut ac, &named_key(NamedKey::ArrowDown)));
             assert_eq!(ac.highlighted().unwrap().value, "album");
-            assert!(drive(&mut ac, &named(NamedKey::Enter)));
+            assert!(dispatch(&mut ac, &named_key(NamedKey::Enter)));
             assert_eq!(
                 ac.take_outcome(),
                 AutocompleteOutcome::Accepted("album".into())
@@ -1415,9 +1383,9 @@ mod tests {
             let mut ac = suggester_paths();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("b"));
+            dispatch(&mut ac, &char_key("b"));
             assert!(
-                !drive(&mut ac, &named(NamedKey::Enter)),
+                !dispatch(&mut ac, &named_key(NamedKey::Enter)),
                 "Enter goes on to the form's default action"
             );
             assert_eq!(ac.take_outcome(), AutocompleteOutcome::Accepted("b".into()));
@@ -1427,8 +1395,8 @@ mod tests {
             let mut ac = suggester_paths();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("a"));
-            assert!(drive(&mut ac, &named(NamedKey::Escape)));
+            dispatch(&mut ac, &char_key("a"));
+            assert!(dispatch(&mut ac, &named_key(NamedKey::Escape)));
             assert_eq!(ac.take_outcome(), AutocompleteOutcome::Cancelled);
             assert!(!ac.is_open());
         }
@@ -1437,13 +1405,13 @@ mod tests {
             let mut ac = suggester_paths();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("a")); // → "alpha","album"
+            dispatch(&mut ac, &char_key("a")); // → "alpha","album"
             let panel = ac.dropdown_rect().expect("dropdown open");
             // Click the second row ("album").
             let row = ac.row_rect(panel, 1);
             let c = row.center();
-            drive(&mut ac, &mouse_move(c.x, c.y));
-            assert!(drive(&mut ac, &left_press()));
+            dispatch(&mut ac, &cursor_moved(c.x, c.y));
+            assert!(dispatch(&mut ac, &mouse_press()));
             assert_eq!(
                 ac.take_outcome(),
                 AutocompleteOutcome::Accepted("album".into())
@@ -1454,9 +1422,9 @@ mod tests {
             let mut ac = suggester_paths();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("a")); // "alpha","album"
+            dispatch(&mut ac, &char_key("a")); // "alpha","album"
             // Tab fills the field with the first suggestion but does not commit.
-            assert!(drive(&mut ac, &named(NamedKey::Tab)));
+            assert!(dispatch(&mut ac, &named_key(NamedKey::Tab)));
             assert_eq!(ac.text(), "alpha");
             assert_eq!(
                 ac.take_outcome(),
@@ -1469,10 +1437,10 @@ mod tests {
             let mut ac = suggester_paths();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("a"));
+            dispatch(&mut ac, &char_key("a"));
             // Move far away, then press: cancels but is not swallowed.
-            drive(&mut ac, &mouse_move(900.0, 900.0));
-            let consumed = drive(&mut ac, &left_press());
+            dispatch(&mut ac, &cursor_moved(900.0, 900.0));
+            let consumed = dispatch(&mut ac, &mouse_press());
             assert!(!consumed, "the outside click still reaches the host");
             assert_eq!(ac.take_outcome(), AutocompleteOutcome::Cancelled);
         }
@@ -1524,76 +1492,13 @@ mod tests {
         })
     }
 
-    fn char_key(s: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(winit::keyboard::SmolStr::new(s));
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::char_key;
 
-    fn named(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::named_key;
 
-    fn mouse_move(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn drive(ac: &mut Autocomplete, ev: &WindowEvent) -> bool {
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut doc = AutoCommit::new();
-        ac.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
+    use crate::synthetic_input::mouse_press;
 
     #[test]
     fn begin_edit_selection_arms_only_for_preseeded_values() {
@@ -1601,14 +1506,14 @@ mod tests {
             let mut ac = Autocomplete::new();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("a"));
+            dispatch(&mut ac, &char_key("a"));
             assert_eq!(
                 ac.input.selection_range_public(),
                 None,
                 "no selection after first char"
             );
-            drive(&mut ac, &char_key("b"));
-            drive(&mut ac, &char_key("c"));
+            dispatch(&mut ac, &char_key("b"));
+            dispatch(&mut ac, &char_key("c"));
             assert_eq!(ac.text(), "abc", "every letter is kept (not \"bc\")");
         }
 
@@ -1627,7 +1532,7 @@ mod tests {
             let mut ac = suggester_paths();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("a")); // field now holds "a"
+            dispatch(&mut ac, &char_key("a")); // field now holds "a"
             assert_eq!(ac.text(), "a");
             ac.begin_edit();
             assert_eq!(
@@ -1635,7 +1540,7 @@ mod tests {
                 None,
                 "typed text is not re-selected"
             );
-            drive(&mut ac, &char_key("l"));
+            dispatch(&mut ac, &char_key("l"));
             assert_eq!(
                 ac.text(),
                 "al",
@@ -1655,7 +1560,7 @@ mod tests {
                 Some((0, "/home/user".len())),
                 "fresh entry into a pre-seeded field selects the whole value",
             );
-            drive(&mut ac, &char_key("x"));
+            dispatch(&mut ac, &char_key("x"));
             assert_eq!(
                 ac.text(),
                 "x",
@@ -1709,9 +1614,9 @@ mod tests {
             ac.open();
             assert!(ac.is_open());
             assert_eq!(ac.suggestions().len(), 2);
-            drive(&mut ac, &named(NamedKey::ArrowDown));
+            dispatch(&mut ac, &named_key(NamedKey::ArrowDown));
             assert_eq!(ac.highlighted().unwrap().value, "Paris");
-            drive(&mut ac, &named(NamedKey::ArrowDown));
+            dispatch(&mut ac, &named_key(NamedKey::ArrowDown));
             assert_eq!(ac.highlighted().unwrap().value, "Parma");
         }
 

@@ -1,6 +1,7 @@
 use super::*;
 use crate::a11y::contrast_ratio;
 use crate::tokens::TextRole;
+use crate::widget::TaffyTreeExt;
 
 fn app() -> App {
     App::new(State::new(), Box::new(crate::widget::Text::new("t")))
@@ -169,9 +170,7 @@ impl Widget for AppearanceRoot {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
     fn draw(
@@ -352,4 +351,45 @@ fn the_shell_s_window_appearance_dresses_the_theme_and_survives_rebuilds() {
         your_colour: Some(PresenceHue::Violet),
     });
     assert_eq!(a.theme.tokens.colors.surfaces.content, neutral);
+}
+
+#[test]
+fn shell_palette_message_rethemes_the_open_app_without_settings_file_access() {
+    use crate::floating_surface::FloatingSurfaceHostMessage;
+
+    let mut app = app();
+    app.set_theme(Theme::dark());
+    app.set_text_scale(1.5);
+    let appearance = crate::theme::WindowAppearance::default();
+    for theme in [Theme::light(), Theme::high_contrast(), Theme::dark()] {
+        let message = FloatingSurfaceHostMessage::appearance_with_theme(&appearance, &theme);
+        let wire = serde_json::to_vec(&message).unwrap();
+        let received = serde_json::from_slice(&wire).unwrap();
+        assert!(app.apply_floating_host_messages(vec![received]));
+        assert_eq!(app.theme.document, theme.document);
+        assert_eq!(
+            app.text_scale(),
+            1.5,
+            "palette changes preserve text scaling"
+        );
+        app.apply_configured_theme();
+        app.rebuild_theme();
+        assert_eq!(
+            app.theme.document, theme.document,
+            "private settings reloads preserve the host palette"
+        );
+    }
+    let mut wire = serde_json::to_value(FloatingSurfaceHostMessage::appearance_with_theme(
+        &appearance,
+        &Theme::light(),
+    ))
+    .unwrap();
+    wire["theme"]["schema_version"] = serde_json::json!(0);
+    let before = app.theme.clone();
+    let received = serde_json::from_value(wire).unwrap();
+    app.apply_floating_host_messages(vec![received]);
+    assert_eq!(
+        app.theme, before,
+        "an invalid host palette must not replace the live theme"
+    );
 }

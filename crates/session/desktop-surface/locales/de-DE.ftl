@@ -39,6 +39,9 @@ topbar-viewer-entry = { $name } ({ $kind ->
 topbar-collaborators-visible = Bildschirm sichtbar für { $viewers }. Mitwirkende anzeigen
 topbar-capture-privacy = Datenschutzeinstellungen für aktive Aufnahme
 topbar-control = Steuerelement der oberen Leiste
+topbar-network-offline = Offline
+topbar-tray-open = { $app } öffnen
+topbar-tray-menu = Menü für { $app }
 topbar-editor-control = Bearbeitungselement der oberen Leiste
 topbar-editor-remove-clock = Uhr aus der oberen Leiste entfernen
 topbar-editor-remove-system-monitor = Systemmonitor aus der oberen Leiste entfernen
@@ -301,6 +304,7 @@ activity-removed-workspace = ein entfernter Arbeitsbereich
 activity-receipt-completed = Abgeschlossen
 activity-receipt-failed = Fehlgeschlagen
 activity-receipt-cancelled = Abgebrochen
+activity-receipt-ended = { $status }: { $what }
 activity-replay-pending = Die Wiedergabe wartet auf laufende Bearbeitungen
 activity-replay-unavailable = Für diese Prüfpunkte ist keine Wiedergabe des Arbeitsbereichs verfügbar
 activity-replay-empty = Noch keine wiedergebbaren Prüfpunkte
@@ -342,6 +346,33 @@ activity-task-mark-done = Als erledigt markieren
 activity-task-cancel = Aufgabe abbrechen
 activity-task-retry-agent = Agent erneut versuchen
 activity-task-audit-trail = PRÜFPROTOKOLL
+activity-task-audit-noted = { $what }: { $note }
+workspace-create-task = { $manual ->
+    [true] Aufgabe „{ $title }“ zum Selbermachen angelegt
+   *[false] Aufgabe „{ $title }“ angelegt
+}
+workspace-attach-resource = { $resource } an die Aufgabe angehängt
+workspace-set-execution-budget = Laufzeit der Aufgabe festgelegt
+workspace-approve-run = Lauf { $run } freigegeben
+workspace-start-run = Lauf { $run } gestartet
+workspace-add-direction = Anweisung { $revision } gegeben
+workspace-apply-direction = Anweisung { $revision } befolgt
+workspace-finish = { $outcome ->
+    [done] Aufgabe erledigt
+    [waiting] Angehalten, um zu warten
+   *[cancelled] Aufgabe abgebrochen
+}
+workspace-abandon = Lauf aufgegeben
+workspace-retry = Aufgabe erneut eingereiht
+workspace-cancel = Aufgabe abgebrochen
+workspace-report = Fortschritt gemeldet
+workspace-set-status = { $status ->
+    [queued] Aufgabe eingereiht
+    [in-progress] Aufgabe begonnen
+    [waiting] Aufgabe auf Warten gesetzt
+    [done] Aufgabe als erledigt markiert
+   *[cancelled] Aufgabe abgebrochen
+}
 activity-task-unassigned-by = Nicht zugewiesen · angelegt von { $creator }
 activity-task-agent-badge = Agent · { $name }
 activity-task-status-queued = In der Warteschlange
@@ -408,31 +439,45 @@ activity-titles-more = { $first }, { $second } und { $count } weitere
 activity-capability = { $effect ->
         [restrict] eingeschränktes { $verb ->
             [read] Lesen
-            [comment] Kommentieren
-            [write] Schreiben
-            [invite] Einladen
-           *[admin] Verwalten
+           *[write] Schreiben
         }
        *[grant] { $verb ->
             [read] Lesen
-            [comment] Kommentieren
-            [write] Schreiben
-            [invite] Einladen
-           *[admin] Verwalten
+           *[write] Schreiben
         }
     } für { $scope } an { $subject }
 activity-capability-unknown = eine Berechtigung
 activity-capability-this-workspace = diesen Arbeitsbereich
-activity-capability-every-type = jede Ressource vom Typ { $kind }
-activity-capability-one-artifact = ein Artefakt
 activity-capability-one-shared-file = eine geteilte Datei
 activity-capability-network = Netzwerk { $host }
 activity-capability-role = { $role ->
         [owner] Eigentümer
         [editor] Bearbeitende
         [commenter] Kommentierende
-        [viewer] Betrachtende
-       *[denied] gesperrte Mitglieder
+       *[viewer] Betrachtende
+    }
+activity-grant = { $kinds ->
+        [read] Lesen
+        [undoable] Änderungen
+        [outside] Wirkungen nach außen
+        [read-undoable] Lesen und Änderungen
+        [read-outside] Lesen und Wirkungen nach außen
+        [undoable-outside] Änderungen und Wirkungen nach außen
+        [none] nichts
+       *[all] alles
+    } { $answer ->
+        [deny] verweigert
+        [ask] nach Rückfrage
+       *[allow] erlaubt
+    } für { $node } an { $subject }
+activity-grant-task = Aufgabe { $task }
+activity-grant-shortcut = Kurzbefehl { $shortcut }
+activity-grant-foreign-device = Geräte, die nicht die eigenen sind
+activity-member = { $person } als { $role ->
+        [owner] Eigentümer
+        [editor] Bearbeitende
+        [commenter] Kommentierende
+       *[viewer] Betrachtende
     }
 activity-capability-a-person = eine Person
 activity-capability-agent = Agent { $agent }
@@ -539,11 +584,11 @@ workspace-settings-role-assign-placeholder = Rolle und Mitwirkende
 workspace-settings-role-assign-description = Weise einer Person, Anwendung oder einem Agenten eine gespeicherte Rolle mit minimalen Rechten zu.
 workspace-settings-role-assign-named = { $role } zuweisen
 workspace-settings-role-assign-named-placeholder = Identität der mitwirkenden Person
-workspace-settings-app-action-placeholder = App und Aktion
+workspace-settings-app-action-placeholder = App, Ressource und Aktion
 workspace-settings-app-action-grant = Einer App die Aktion einer anderen App erlauben
-workspace-settings-app-action-grant-description = Erlaube einer Anwendung in diesem Arbeitsbereich, eine Aktion zu verwenden, die eine andere Anwendung bereitstellt.
+workspace-settings-app-action-grant-description = Erlaube einer Anwendung in diesem Arbeitsbereich, eine Aktion auf einer Ressource zu verwenden, die eine andere Anwendung bereitstellt.
 workspace-settings-app-action-revoke = Einer App die Aktion einer anderen App entziehen
-workspace-settings-app-action-revoke-description = Nimm in diesem Arbeitsbereich jede Freigabe zurück, mit der eine Anwendung die Aktion einer anderen Anwendung verwenden darf.
+workspace-settings-app-action-revoke-description = Nimm in diesem Arbeitsbereich jede Freigabe zurück, mit der eine Anwendung eine Aktion auf einer Ressource einer anderen Anwendung verwenden darf.
 workspace-settings-ownership-resource = Eigentum an { $workspace }
 workspace-settings-ownership-propose = Eigentumsübertragung vorschlagen
 workspace-settings-ownership-propose-placeholder = Identität der empfangenden Person
@@ -588,7 +633,8 @@ workspace-settings-scope-screencast = Bildschirmaufnahme
 workspace-settings-scope-remote-desktop = Fernsteuerung von Zeiger und Tastatur
 workspace-settings-scope-any-host = ein beliebiger Netzwerkhost
 workspace-settings-scope-host = Netzwerkhost { $host }
-workspace-settings-scope-action = „{ $action }“ in { $app }
+workspace-settings-scope-action = „{ $action }“ auf { $resource } in { $app }
+workspace-settings-scope-action-on-kind = „{ $action }“ auf jeder Ressource vom Typ { $kind } in { $app }
 workspace-settings-scope-resource-type = { $kind ->
     [note] jede Notiz
     [file] jede Datei
@@ -609,7 +655,8 @@ workspace-settings-scope-screencast-object = Bildschirmaufnahme
 workspace-settings-scope-remote-desktop-object = Fernsteuerung von Zeiger und Tastatur
 workspace-settings-scope-any-host-object = Einen beliebigen Netzwerkhost
 workspace-settings-scope-host-object = Netzwerkhost { $host }
-workspace-settings-scope-action-object = „{ $action }“ in { $app }
+workspace-settings-scope-action-object = „{ $action }“ auf { $resource } in { $app }
+workspace-settings-scope-action-on-kind-object = „{ $action }“ auf jeder Ressource vom Typ { $kind } in { $app }
 workspace-settings-scope-resource-type-object = { $kind ->
     [note] Jede Notiz
     [file] Jede Datei
@@ -627,6 +674,17 @@ workspace-settings-allows-edit = { $what } bearbeiten
 workspace-settings-allows-comment = { $what } kommentieren
 workspace-settings-allows-invite = Andere einladen: { $what }
 workspace-settings-allows-view = { $what } ansehen
+workspace-settings-grant-allows = Erlaubt: { $kinds } in { $where }
+workspace-settings-grant-asks = Fragt zuerst: { $kinds } in { $where }
+workspace-settings-grant-denies = Verweigert: { $kinds } in { $where }
+workspace-settings-kind-read = Lesen
+workspace-settings-kind-undoable = Änderungen
+workspace-settings-kind-outside = Wirkungen nach außen
+workspace-settings-subject-foreign-device = Geräte, die nicht die eigenen sind
+workspace-settings-grant-placeholder = Wer, wo und was
+workspace-settings-grant-description = Jemandem, einem Agenten oder einer App eine Antwort für Arten von Aktionen in einem Teil dieses Arbeitsbereichs geben.
+workspace-settings-revoke-placeholder = Welche Berechtigung
+workspace-settings-revoke-description = Eine Berechtigung anhand ihrer Kennung zurücknehmen.
 workspace-settings-expiry-once = Einmal
 workspace-settings-expiry-session = Sitzung
 workspace-settings-expiry-until = Bis
@@ -1009,3 +1067,35 @@ activity-task-review-status = { $status } · Agent: { $agent }
 activity-task-review-frontier = Lauf { $epoch } · Anweisungen { $revision } · vom Agenten angewendet { $applied }
 activity-task-review-direction = { $author }: { $text }
 activity-task-review-missing = Diese Aufgabe ist in diesem Arbeitsbereich nicht mehr verfügbar.
+
+activity-task-approve-run = Ausführung freigeben
+activity-task-run-approved = Genehmigt von { $person } · { $time }
+activity-task-awaiting-acceptance = Warte auf Annahme · Agent möglicherweise offline
+activity-task-run-accepted = Agent hat diesen Lauf angenommen · letzter Bericht { $time }
+activity-task-run-planning = Agent plant diesen Lauf · letzter Bericht { $time }
+activity-task-run-executing = Agent bearbeitet diesen Lauf · letzter Bericht { $time }
+
+topbar-cpu-reading = CPU { $value }
+topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, Temperatur { $temperature }
+
+activity-morning-choose = Für den Morgen auswählen
+activity-morning-remove = Morgenquelle entfernen
+activity-morning-empty = Morgenquellen: Ressource unter Erkunden → Details auswählen. Bis zu acht Quellen; keine automatische Verbindung.
+activity-morning-description = Ausgewählte Morgenquellen · Anbieter-Vorschauen aus autorisierten Ressourcen. Aktualisierung oder Zeitplan ausdrücklich wählen.
+activity-morning-unavailable = Quelle in diesem Arbeitsbereich nicht verfügbar · keine aktuellen Nachweise
+activity-morning-source = { $source } · letzte aufgezeichnete Aktivität: { $time } · externe Aktualität unbekannt
+
+activity-morning-open = Morgenquelle öffnen
+
+activity-morning-payload-unavailable = Anbieter-Zusammenfassung nicht verfügbar. Quelle öffnen, um sie zu prüfen oder zu aktualisieren.
+
+activity-morning-refresh = Quelle aktualisieren
+activity-morning-draft = Geplante Aktualisierung entwerfen…
+activity-morning-draft-description = Öffnet einen Entwurf in Shortcuts. Zeitplan wählen und Berechtigungen vor dem Speichern prüfen; noch ist nichts aktiviert.
+activity-morning-command-unavailable = Quellenaktion nicht verfügbar
+activity-morning-command-pending = Anfrage läuft
+activity-morning-command-accepted = Anfrage angenommen; Ergebnis in Aktionen prüfen
+activity-morning-command-refused = Anfrage abgelehnt
+activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichsaktivität: { $time }
+
+activity-morning-next = Nächste ausgewählte Quelle

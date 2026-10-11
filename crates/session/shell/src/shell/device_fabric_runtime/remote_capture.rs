@@ -49,8 +49,6 @@ impl RemoteCaptureIntegration {
         for received in self.pending_actions.drain(..) {
             if network.personal_route_is_current(&received.route) {
                 runtime.handle_action(&received.envelope, Instant::now());
-            } else {
-                network.revoke_queued_personal_action_authority(&received.envelope);
             }
         }
     }
@@ -100,13 +98,7 @@ impl RemoteCaptureIntegration {
             runtime.teardown_target_app(&app_id, &workspace_id);
         }
 
-        let online = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .filter(|snapshot| snapshot.presence.online)
-            .map(|snapshot| snapshot.owner.clone())
-            .collect::<BTreeSet<_>>();
+        let online = network.online_device_ids();
         for peer in self.online_peers.difference(&online) {
             runtime.teardown_peer(peer);
         }

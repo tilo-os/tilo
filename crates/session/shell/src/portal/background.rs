@@ -73,13 +73,6 @@ pub trait BackgroundService: Send + Sync {
 }
 
 #[derive(Clone)]
-#[cfg_attr(
-    not(target_os = "linux"),
-    expect(
-        dead_code,
-        reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-    )
-)]
 pub struct BackgroundServiceHandle(Arc<dyn BackgroundService>);
 impl BackgroundServiceHandle {
     pub fn new(service: Arc<dyn BackgroundService>) -> Self {
@@ -282,21 +275,7 @@ pub struct BackgroundBackend {
     #[cfg(target_os = "linux")]
     ctx: PortalContext,
     apps: Arc<Mutex<HashMap<String, AppState>>>,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     service: BackgroundServiceHandle,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     lifecycle: PortalLifecycle,
 }
 
@@ -394,14 +373,6 @@ impl BackgroundBackend {
             .map(|(id, entry)| (id.clone(), entry.state))
             .collect();
         before != after
-    }
-
-    /// Remove state when the package is uninstalled. This also forgets portal
-    /// consent; package reinstall must ask again.
-    pub fn remove_app(&self, app_id: &str) -> bool {
-        self.apps
-            .lock()
-            .is_ok_and(|mut apps| apps.remove(app_id).is_some())
     }
 
     pub fn app_state(&self, app_id: &str) -> Option<u32> {
@@ -577,22 +548,25 @@ pub fn spawn_running_monitor(connection: zbus::Connection, backend: BackgroundBa
         .executor()
         .spawn(
             async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_millis(750));
+                // Woken by the launcher registry, not a timer: an idle session
+                // with no launches or exits never runs this task.
+                let mut changes = crate::shell::launcher::subscribe_running_changes();
                 loop {
-                    interval.tick().await;
-                    if !backend.sync_running_apps() {
-                        continue;
+                    if backend.sync_running_apps() {
+                        let Ok(context) = zbus::object_server::SignalEmitter::new(
+                            &task_connection,
+                            super::OBJECT_PATH,
+                        ) else {
+                            break;
+                        };
+                        if BackgroundBackend::running_applications_changed(&context)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
-                    let Ok(context) = zbus::object_server::SignalEmitter::new(
-                        &task_connection,
-                        super::OBJECT_PATH,
-                    ) else {
-                        break;
-                    };
-                    if BackgroundBackend::running_applications_changed(&context)
-                        .await
-                        .is_err()
-                    {
+                    if changes.changed().await.is_err() {
                         break;
                     }
                 }

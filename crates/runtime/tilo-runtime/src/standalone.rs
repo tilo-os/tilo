@@ -125,7 +125,7 @@ impl Standalone {
         });
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
-        let identity_broker = tilo_identity_host::broker::spawn(
+        let identity_broker = identity_service(
             identity_socket.clone(),
             Arc::clone(&rooms) as Arc<dyn WorkspaceMembership>,
             Arc::new(channel_keys.keys.clone()),
@@ -157,6 +157,9 @@ impl Standalone {
                 })),
                 legacy_workspace: Some(Arc::clone(&workspace) as Arc<dyn LegacyWorkspaceProjection>),
                 record_content: Some(joined::record_content(&joined, &root.join(BLOB_SOCKET))),
+                // The service the identity service answers key requests
+                // from: endpoints ask again when it says a channel changed.
+                channel_keys: Some(channel_keys.keys.clone()),
                 ..HostServices::default()
             },
             channels,
@@ -303,8 +306,15 @@ struct AdmittedRuntimeSession {
     policy_time: tilo_action_broker::peer_actions::PolicyTime,
     host: Arc<dyn ActionHost + Send + Sync>,
     admission: Arc<joined::SessionAdmission>,
+    /// The agent the person's device handed this run to.
+    agent: String,
 }
 impl AdmittedRuntimeSession {
+    /// The run's caller as the broker admits it: the agent, for the person.
+    fn acting(&self, caller: &Caller) -> Caller {
+        caller.clone().delegated_to(self.agent.clone())
+    }
+
     fn check(&self, caller: &Caller, joined: &Joined) -> Result<(), ActionHostError> {
         let now = self
             .policy_time
@@ -354,9 +364,12 @@ impl RuntimeActionHost {
                 .admit_mcp_execution(&room, &host.room, &actor)
                 .map_err(io::Error::other)?;
             let caller = admission.caller().clone();
+            // The MCP client is an agent the person's device hands this
+            // session to; the admission stays the person's.
+            let agent = crate::mcp::agent_id(&caller);
             let qualified = host
                 .broker
-                .certified_local_action_host(&caller, admission.presentation())
+                .certified_local_agent_host(&caller, admission.presentation(), &agent)
                 .map_err(io::Error::other)?;
             admission.check(&host.joined).map_err(io::Error::other)?;
             let session_host = RuntimeActionHost {
@@ -367,6 +380,7 @@ impl RuntimeActionHost {
                     policy_time: policy_time.clone(),
                     host: qualified,
                     admission,
+                    agent,
                 })),
             };
             crate::mcp::McpServer::admitted(session_host, caller)
@@ -415,7 +429,10 @@ impl ActionHost for RuntimeActionHost {
             }
             // Existing general catalogue/builtin doors retain the exact
             // authenticated run. They make no SDK original-custody claim.
-            let answer = self.broker.state().action_query(caller, &query);
+            let answer = self
+                .broker
+                .state()
+                .action_query(&session.acting(caller), &query);
             return session.guarded(Arc::clone(&self.joined), caller.clone(), answer);
         }
         if !self.admitted(caller) {
@@ -438,10 +455,10 @@ impl ActionHost for RuntimeActionHost {
             if certified_provider(&request.target.provider) {
                 return session.host.invoke(caller, request);
             }
-            let answer = self
-                .broker
-                .state()
-                .action_invoke(caller, None, None, &request);
+            let answer =
+                self.broker
+                    .state()
+                    .action_invoke(&session.acting(caller), None, None, &request);
             return session.guarded(Arc::clone(&self.joined), caller.clone(), answer);
         }
         if !self.admitted(caller) {
@@ -463,6 +480,21 @@ impl ActionHost for RuntimeActionHost {
         self.broker
             .state()
             .action_observe(&on_this_device(caller), id)
+    }
+
+    /// Routed and authorized exactly as [`Self::observe`]: a caller that may
+    /// not observe an invocation may not wait on it either.
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        if let Some(session) = &self.session {
+            session.check(caller, &self.joined).ok()?;
+            return session.host.next_change(caller, id);
+        }
+        if !self.admitted(caller) {
+            return None;
+        }
+        self.broker
+            .state()
+            .action_next_change_after_now(&on_this_device(caller), id)
     }
 
     fn cancel(
@@ -709,6 +741,22 @@ fn joined_rooms(
     let mut refused = joined::desktop_enrolled(profile)?;
     refused.extend(RoomId::parse(room));
     Joined::open(profile, custody, endpoint, refused, broker)
+}
+
+/// The identity service apps sign with: over `rooms`, handing out route
+/// keys from `keys`, and in the person's own room only for the records of
+/// theirs an app's surface declares.
+fn identity_service(
+    socket: PathBuf,
+    rooms: Arc<dyn WorkspaceMembership>,
+    keys: Arc<dyn tilo_identity_host::broker::ChannelKeySource>,
+) -> io::Result<tilo_identity_host::broker::IdentityBrokerHandle> {
+    tilo_identity_host::broker::spawn(
+        socket,
+        rooms,
+        keys,
+        Arc::new(tilo_action_broker::SurfacePersonRecords),
+    )
 }
 
 #[cfg(test)]

@@ -643,6 +643,22 @@ jobs:
       linux-matrix: ${{ needs.plan.outputs.linux-matrix }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify the reviewed Desktop catalog against exact package bytes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 apps/imager/packaging/desktop-catalog-release.py prepare \
+            --catalog apps/imager/desktop-catalog.json \
+            --review-manifest apps/imager/packaging/desktop-release-manifest.json \
+            --output dist/tilo-desktop-catalog --source "$GITHUB_SHA" --fetch
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: tilo-desktop-catalog
+          path: dist/tilo-desktop-catalog/*
+          if-no-files-found: error
       - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         if: startsWith(github.ref, 'refs/tags/imager-v')
         with:
@@ -676,6 +692,17 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: tilo-desktop-catalog
+          path: desktop-catalog
+      - name: Consume the verified Desktop catalog for this exact source
+        run: >-
+          python3 apps/imager/packaging/desktop-catalog-release.py consume desktop-catalog
+          --source "$GITHUB_SHA" --copy-to apps/imager/desktop-catalog.json
       - name: Materialize checksum-verified AppImage tools
         uses: ./.forgejo/actions/cache-github-assets
         with:
@@ -836,6 +863,18 @@ jobs:
       TILO_WINDOWS_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: tilo-desktop-catalog
+          path: desktop-catalog
+      - name: Consume the verified Desktop catalog for this exact source
+        shell: powershell
+        run: |
+          python apps/imager/packaging/desktop-catalog-release.py consume desktop-catalog --source $env:GITHUB_SHA --copy-to apps/imager/desktop-catalog.json
+          if ($LASTEXITCODE -ne 0) { throw "Desktop catalog receipt verification failed" }
       - name: Check Windows scenario tool overrides
         shell: powershell
         run: |
@@ -951,6 +990,17 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: tilo-desktop-catalog
+          path: desktop-catalog
+      - name: Consume the verified Desktop catalog for this exact source
+        run: >-
+          python3 apps/imager/packaging/desktop-catalog-release.py consume desktop-catalog
+          --source "$GITHUB_SHA" --copy-to apps/imager/desktop-catalog.json
       - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: tilo-installer-catalog

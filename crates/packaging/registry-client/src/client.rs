@@ -7,7 +7,7 @@ use ed25519_dalek::SigningKey;
 use registry_types::application::PublisherApplication;
 use registry_types::{EntryAction, EntryChangeRequest, RegistryEntry, SignedRegistrySnapshot};
 
-/// The registry Tilo OS and Tilo Web install from.
+/// The registry Tilo OS installs from.
 pub const DEFAULT_REGISTRY: &str = "https://apps.tilo.so";
 
 /// The environment variable that names another registry.

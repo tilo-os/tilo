@@ -16,6 +16,7 @@
 //! through [`WindowSource`] and [`WindowThumbnails`].
 
 use std::collections::HashMap;
+use ui::num::f32_of_f64;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -488,11 +489,6 @@ fn fit_count(span: f64, pitch: f64) -> usize {
     ((span / pitch).floor().max(1.0)) as usize
 }
 
-#[expect(clippy::cast_possible_truncation, reason = "screen pixels fit f32")]
-fn f32_of(value: f64) -> f32 {
-    value as f32
-}
-
 /// Cards in rows, centred on the display, with the selected window's page
 /// on screen when there are more windows than fit.
 fn geometry(host: Rect, count: usize, selected: usize, m: Metrics) -> Geometry {
@@ -917,11 +913,6 @@ impl WindowSwitcher {
             .map(|(index, _)| *index)
     }
 
-    /// The panel covers `point`.
-    pub fn panel_contains(&self, point: Point, now: Instant) -> bool {
-        self.is_revealed(now) && self.geometry().panel.contains(point)
-    }
-
     /// Pointer motion: hovering a card selects it, as it does in every
     /// desktop's switcher, so a release commits what the pointer rests on.
     pub fn pointer_moved(&mut self, point: Point, now: Instant) -> SwitcherOutcome {
@@ -1200,7 +1191,7 @@ impl WindowSwitcher {
             };
             let text = text_renderer.elide_to_width_style(
                 &caption,
-                f32_of(geometry.caption.width()),
+                f32_of_f64(geometry.caption.width()),
                 &theme.text(TextRole::Subheading),
             );
             let (w, h) =
@@ -1237,29 +1228,7 @@ impl WindowSwitcher {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let m = self.metrics;
-        let tier = ui::chrome::selection_tier(theme, state);
-        let rr = RoundedRect::from_rect(card, m.card_radius);
-        if tier.fill.components[3] > 0.0 {
-            scene.fill(Fill::NonZero, transform, tier.fill, None, &rr);
-        }
-        if let Some(border) = tier.border {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                border,
-                None,
-                &rr,
-            );
-        }
-        if let Some(glow) = tier.inner_glow {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                glow,
-                None,
-                &RoundedRect::from_rect(card.inset(-1.0), (m.card_radius - 1.0).max(0.0)),
-            );
-        }
+        ui::chrome::selection_tier(theme, state).paint(scene, transform, card, m.card_radius);
         let well = Rect::new(
             card.x0 + m.inset,
             card.y0 + m.inset,
@@ -1286,7 +1255,7 @@ impl WindowSwitcher {
         let title_w = (card.width() - 2.0 * m.inset - lead).max(0.0);
         let title = text_renderer.elide_to_width_style(
             &window.title,
-            f32_of(title_w),
+            f32_of_f64(title_w),
             &theme.text(TextRole::Label),
         );
         let (w, h) = text_renderer.measure_style(&title, None, &theme.text(TextRole::Label));

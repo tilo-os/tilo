@@ -1522,6 +1522,29 @@ fn now_ns() -> anyhow::Result<u64> {
     try_unix_now_ns().context("system clock precedes the Unix epoch")
 }
 
+/// How far before the issuer's clock an enrollment token or device
+/// certificate begins to be valid.
+///
+/// What this side issues is checked on another machine's clock the moment it
+/// arrives, and a not-before in that machine's future is refused. Two
+/// machines' clocks never agree exactly: a guest whose wall clock came from a
+/// one-second RTC at boot, or a fresh install whose time sync has not yet
+/// slewed, trails its issuer by up to a few seconds, and a certificate issued
+/// a millisecond earlier was "not yet valid" on the very device it named.
+/// The issuer decides when validity begins, so it begins slightly in the
+/// past; every verifier keeps its exact not-before check. The allowance is
+/// the one signed peer actions already tolerate
+/// (`ACTION_SIGNATURE_TOLERANCE_NS`). It grants nothing: expiry is unchanged
+/// (a token still lapses a fixed time after it is minted, a personal
+/// certificate has none), revocation is by key, and certificates this side
+/// issues keep their relative order.
+const ISSUANCE_CLOCK_ALLOWANCE_NS: u64 = 60 * 1_000_000_000;
+
+/// The not-before for something issued at `now_ns`.
+fn validity_start_ns(now_ns: u64) -> u64 {
+    now_ns.saturating_sub(ISSUANCE_CLOCK_ALLOWANCE_NS)
+}
+
 fn socket_timeout(seconds: u64) -> Duration {
     Duration::from_secs(seconds.clamp(1, 300))
 }
@@ -2173,8 +2196,9 @@ fn handle_solicitation(
     if selected.is_none() {
         let mut nonce = [0_u8; 16];
         UnwrapErr(SysRng).fill_bytes(&mut nonce);
-        let issued_at_ns = now_ns()?;
-        let expires_at_ns = issued_at_ns.saturating_add(5 * 60 * 1_000_000_000);
+        let now = now_ns()?;
+        let issued_at_ns = validity_start_ns(now);
+        let expires_at_ns = now.saturating_add(5 * 60 * 1_000_000_000);
         let capabilities = match kind {
             EnrollmentKind::HomePeer => DeviceCapabilities::host(),
             EnrollmentKind::PersonalDevice => DeviceCapabilities::member(),
@@ -2311,7 +2335,7 @@ fn approval_projection(
                 .context("local workspace ticket is invalid")?;
             let capability_json = std::fs::read_to_string(options.acl)
                 .with_context(|| format!("read {}", options.acl.display()))?;
-            let capabilities = serde_json::from_str(&capability_json)
+            let capabilities: collab_types::FsAuthority = serde_json::from_str(&capability_json)
                 .context("filesystem capability export is invalid")?;
             let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign_with(
                 ticket.workspace_id(),
@@ -2373,7 +2397,7 @@ fn prepare_approval(
         device_public_key: pending.request.device_public_key,
         device_label: pending.request.label.clone(),
         capabilities: pending.token.capabilities.clone(),
-        issued_at_ns: now_ns()?,
+        issued_at_ns: validity_start_ns(now_ns()?),
         expires_at_ns: None,
         signature: [0; 64],
     };
@@ -2616,7 +2640,7 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
         device_public_key,
         device_label: label.into(),
         capabilities: granted,
-        issued_at_ns: now_ns()?,
+        issued_at_ns: validity_start_ns(now_ns()?),
         expires_at_ns: None,
         signature: [0; 64],
     };
@@ -3642,6 +3666,7 @@ mod tests {
         let server_root = approver_root.path().to_path_buf();
         let server_identities = approver_identities.path().to_path_buf();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let started_ns = now_ns().unwrap();
         let approval = std::thread::spawn(move || {
             approve(&ApprovalOptions {
                 identity_root: &server_root,
@@ -3699,6 +3724,14 @@ mod tests {
         assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
         assert_eq!(cert.capabilities, DeviceCapabilities::member());
         assert!(verify_device_cert(&cert).is_ok());
+        // The new device checks its certificate on its own clock the moment it
+        // arrives, and that clock can trail the approver's. One that reads a
+        // full allowance behind the end of this pairing still accepts it, and
+        // validity begins no further back than the allowance.
+        let finished_ns = now_ns().unwrap();
+        verify_device_cert_at(&cert, finished_ns - ISSUANCE_CLOCK_ALLOWANCE_NS)
+            .expect("a device whose clock trails the approver's accepts its certificate");
+        assert!(cert.issued_at_ns >= started_ns - ISSUANCE_CLOCK_ALLOWANCE_NS);
         assert!(!enrolled_paths.user_privkey.exists());
         let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
             &std::fs::read(tilo_relay::home_peer_registry_path(new_root.path())).unwrap(),

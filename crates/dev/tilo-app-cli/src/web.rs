@@ -30,6 +30,9 @@ pub struct WebBuildRequest {
     /// Kept for the command line: Cargo rebuilds only what changed, so an
     /// edit to the app relinks the bundle without rebuilding the runtime.
     pub app_only: bool,
+    /// Optimized (`--release`): the workspace's `wasm-release` profile and
+    /// `wasm-opt`, the module a page should stream.
+    pub release: bool,
 }
 
 /// A finished web build: the bundle directory and its one module.
@@ -82,7 +85,7 @@ pub fn build_web(start: &Path, request: &WebBuildRequest) -> Result<WebBuild> {
         );
     }
     let started = Instant::now();
-    let outcome = crate::targets::build(&app_dir, &app_bundle(false))?;
+    let outcome = crate::targets::build(&app_dir, &app_bundle(request.release))?;
     let output = match &request.output {
         Some(path) => {
             let output = crate::absolute_from(&app_dir, path);

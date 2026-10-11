@@ -328,7 +328,7 @@ jobs:
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ${{ steps.cargo-cache.outputs.paths }}
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          key: ${{ steps.cargo-cache.outputs.cache-key }}
       - name: Retain only successful cold acceptance
         uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:

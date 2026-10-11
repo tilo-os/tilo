@@ -21,9 +21,13 @@ use syn::visit_mut::VisitMut;
 /// read or parsed.
 pub fn declared_by_app(app_dir: &Path) -> Result<Vec<String>> {
     let metadata = crate::cargo_metadata(app_dir)?;
+    declared_with_metadata(app_dir, &metadata)
+}
+
+pub(crate) fn declared_with_metadata(app_dir: &Path, metadata: &Value) -> Result<Vec<String>> {
     let mut kinds = Kinds::default();
     visit_sources(&app_dir.join("src"), &mut kinds)?;
-    for dependency in local_dependencies(&metadata)? {
+    for dependency in local_dependencies(metadata)? {
         visit_sources(&dependency.join("src"), &mut kinds)?;
     }
     Ok(kinds.0.into_iter().collect())
@@ -156,6 +160,14 @@ fn requires_test(predicate: &syn::Meta) -> bool {
 struct Kinds(BTreeSet<String>);
 
 impl VisitMut for Kinds {
+    /// A module file whose inner `cfg` compiles it only into the crate's
+    /// tests holds no packaged resource, whatever declares the module.
+    fn visit_file_mut(&mut self, file: &mut syn::File) {
+        if !test_only(&file.attrs) {
+            syn::visit_mut::visit_file_mut(self, file);
+        }
+    }
+
     fn visit_item_mod_mut(&mut self, module: &mut syn::ItemMod) {
         if !test_only(&module.attrs) {
             syn::visit_mut::visit_item_mod_mut(self, module);
@@ -226,7 +238,8 @@ mod tests {
             mod tests {
                 impl Resource for Page { const KIND: &'static str = "test.page"; }
             }
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(not(target_arch = "wasm32"))]
             mod native_tests {
                 impl Resource for Fixture { const KIND: &'static str = "test.native"; }
             }
@@ -237,6 +250,15 @@ mod tests {
         std::fs::write(
             app.path().join("src/uppercase.rs"),
             r#"impl Resource for Uppercase { const KIND: &'static str = "uppercase.library"; }"#,
+        )
+        .unwrap();
+        // A test module in a file of its own, as `mod shelf_tests;` declares it.
+        std::fs::write(
+            app.path().join("src/shelf_tests.rs"),
+            r#"
+            #![cfg(all(test, not(target_arch = "wasm32")))]
+            impl Resource for Shelf { const KIND: &'static str = "test.shelf"; }
+            "#,
         )
         .unwrap();
         assert_eq!(
@@ -267,16 +289,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(desktop.resources.kinds, ["music.library"]);
+        // What the app carries is its own kind and every kind its local
+        // dependencies declare in production code, whatever they are now.
+        let metadata = crate::cargo_metadata(&app).unwrap();
+        let mut expected = std::collections::BTreeSet::from(["music.library".to_owned()]);
+        for dependency in super::local_dependencies(&metadata).unwrap() {
+            expected.extend(super::declared_in(&dependency).unwrap());
+        }
+        let declared = super::declared_by_app(&app).unwrap();
         assert_eq!(
-            super::declared_by_app(&app).unwrap(),
-            [
-                "music.library",
-                "tilo.accounts",
-                "tilo.feedback-draft",
-                "tilo.text",
-                "tilo.workbook"
-            ],
-            "the production dependency resources are included; SDK test fixtures are excluded"
+            declared,
+            expected.into_iter().collect::<Vec<_>>(),
+            "the production dependency resources are included"
+        );
+        assert!(
+            declared.iter().any(|kind| kind == "tilo.text"),
+            "a framework record the app links is among them: {declared:?}"
+        );
+        assert!(
+            declared.iter().all(|kind| !kind.starts_with("test.")),
+            "SDK test fixtures are excluded: {declared:?}"
         );
     }
 

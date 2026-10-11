@@ -1,0 +1,35 @@
+[package]
+name = "tilo-nm"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Tilo's one NetworkManager client: connectivity, metering and the primary link, read over D-Bus and followed by signal."
+
+[lib]
+name = "tilo_nm"
+path = "src/lib.rs"
+
+# One NetworkManager reader for the whole OS. The shell's status bar, the
+# filesystem's predictive hydration and os-actions all read the same typed
+# state from here, so "is the network up / metered?" has one answer.
+#
+# Split like `tilo-bluez`: a pure model that maps NetworkManager's numbers and
+# strings with no bus, and a thin async zbus client over it.
+
+[dependencies]
+futures-util.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "sync"] }
+zbus = { workspace = true, features = ["tokio"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "sync", "time"] }
+# A fake NetworkManager served over a socket pair: no bus daemon needed.
+zbus = { workspace = true, features = ["tokio", "p2p"] }
+
+[lints]
+workspace = true

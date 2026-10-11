@@ -28,7 +28,6 @@ fn account_document(root: &str, origin: &str, name: &str) -> Vec<u8> {
 /// Run against an explicitly supplied, compiled web app bundle. Missing tools fail.
 pub async fn run() {
     use super::resource_support::{admit_person, open_admitted_peer};
-    use chat::doc::{ChatDoc, NewMessage};
     use tilo_peer_state::join::MemberRole;
     use tilo_relay::rooms::RemoveMemberRequest;
     let bundle = std::env::args()
@@ -142,35 +141,54 @@ pub async fn run() {
     } else {
         Seed::New
     };
+    let source_author = if encrypted_restart {
+        hex::encode(publisher.cert.user_public_key)
+    } else {
+        "Fixture owner".to_string()
+    };
     let mut source = Replica::open(
         &common::catalogue(),
         "so.tilo.chat",
         &room.room,
-        "Fixture owner",
+        &source_author,
         false,
         seed,
     )
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
-    ChatDoc::create_workspace(&mut doc, "Mounted shared space");
-    let channel = ChatDoc::list_channels(&doc)
-        .into_iter()
-        .find(|channel| channel.kind == chat::model::ChannelKind::Text)
-        .unwrap();
-    let message = ChatDoc::push_message(
+    chat::demo::apply_as(
         &mut doc,
+        &source_author,
+        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
+            name: "Mounted shared space".into(),
+        }),
+    )
+    .unwrap();
+    let workspace = chat::projection::read(&doc)
+        .workspace_rows()
+        .into_iter()
+        .find(|workspace| workspace.name == "Mounted shared space")
+        .unwrap()
+        .id;
+    let channel = chat::projection::read(&doc)
+        .channel_rows()
+        .into_iter()
+        .find(|channel| {
+            channel.workspace == workspace && channel.kind == chat::model::ChannelKind::Text
+        })
+        .unwrap();
+    let message = chat::demo::say(
+        &mut doc,
+        &source_author,
         &channel.id,
-        NewMessage {
-            author: "Fixture owner".into(),
-            text: "Hello é, mounted natively".into(),
-            ..NewMessage::default()
-        },
-    );
+        "Hello é, mounted natively",
+    )
+    .unwrap();
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
-    let reference = serde_json::json!({"id": format!("chat.message:{message}"),
-        "kind": "chat.message", "label": "Fixture selection", "span": {"start": 6, "end": 7, "unit": "Chars"}});
+    let reference = serde_json::json!({"id": chat::projection::item_id("messages", &message),
+        "kind": "chat.workspace.messages", "label": "Fixture selection", "span": {"start": 6, "end": 7, "unit": "Chars"}});
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: room.room.clone(),
@@ -179,8 +197,11 @@ pub async fn run() {
     let provider = record_provider(&route);
     source
         .invoke(
-            &ActionAddress::new(format!("chat.channel:{}", channel.id), "share-resource"),
-            serde_json::json!({"reference": reference, "sourceProvider": provider,
+            &ActionAddress::new(
+                chat::projection::item_id("channels", &channel.id),
+                "share-resource",
+            ),
+            serde_json::json!({"reference": reference, "source_provider": provider,
             "text": "Discuss this mounted resource"})
             .as_object()
             .unwrap(),
@@ -188,7 +209,7 @@ pub async fn run() {
         )
         .unwrap();
     let shared = source
-        .read(|doc| ChatDoc::list_messages(doc, &channel.id))
+        .read(|doc| chat::projection::read(doc).message_rows(&channel.id))
         .unwrap()
         .into_iter()
         .find(|row| row.text == "Discuss this mounted resource")
@@ -230,8 +251,8 @@ pub async fn run() {
     let query = CatalogueQuery {
         provider: Some(provider.clone()),
         view_resource: Some(tilo_actions::remote::ViewResourceQuery {
-            id: format!("chat.message:{message}"),
-            kind: "chat.message".into(),
+            id: chat::projection::item_id("messages", &message),
+            kind: "chat.workspace.messages".into(),
         }),
         ..CatalogueQuery::default()
     };
@@ -257,9 +278,12 @@ pub async fn run() {
         }
     })
     .await;
-    let voice_channel = ChatDoc::list_channels(&doc)
+    let voice_channel = chat::projection::read(&doc)
+        .channel_rows()
         .into_iter()
-        .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
+        .find(|channel| {
+            channel.workspace == workspace && channel.kind == chat::model::ChannelKind::Voice
+        })
         .unwrap();
     if voice_journey {
         use tilo_browser_peer::{PeerEvent, VoiceEvent};
@@ -339,14 +363,16 @@ pub async fn run() {
     let bootstrap = serde_json::json!({
         "origin": hosted.web.origin, "room": room.room,
         "hostDevice": hex::encode(host.cert.device_public_key), "provider": provider,
-        "channel": format!("chat.channel:{}", channel.id),
-        "disconnectRetry": disconnect_retry, "voiceJourney": voice_journey, "encryptedRestart": encrypted_restart,
-        "voiceChannel": voice_channel.id,
+        "channel": chat::projection::item_id("channels", &channel.id),
+        "disconnectRetry": disconnect_retry, "voiceJourney": voice_journey, "encryptedRestart": encrypted_restart, "sourceAuthor": source_author,
+        "sourcePeople": source.read(|doc| chat::projection::read(doc).user_rows().into_iter().map(|person|
+            serde_json::json!({"id":person.id,"name":person.name})).collect::<Vec<_>>()).unwrap(),
+        "voiceChannel": voice_channel.id, "callRow": format!("{}/call", chat::projection::item_id("channels", &voice_channel.id)),
         "secondDevice": {"seed": second_device.key.to_bytes(),
             "root": hex::encode(second_device.cert.user_public_key),
             "accounts": account_document(&hex::encode(second_device.cert.user_public_key), &hosted.web.origin, "Fixture second reader"),
             "certificate": {"cert": second_device.cert, "hostCert": host.cert}},
-        "reference": reference, "shared": format!("chat.message:{}", shared.id),
+        "reference": reference, "shared": chat::projection::item_id("messages", &shared.id),
         "root": reader_identity, "decoy": decoy, "seed": recipient.key.to_bytes(),
         "certificate": {"cert": recipient.cert, "hostCert": host.cert},
         "accounts": account_document(&reader_identity, &hosted.web.origin, "Fixture reader"),
@@ -362,8 +388,11 @@ pub async fn run() {
             if event["stage"] == "browser-offline" {
                 source
                     .invoke(
-                        &ActionAddress::new(format!("chat.channel:{}", channel.id), "post"),
-                        serde_json::json!({"value": "Native fixture while browser disconnected"})
+                        &ActionAddress::new(
+                            chat::projection::item_id("channels", &channel.id),
+                            "post",
+                        ),
+                        serde_json::json!({"text": "Native fixture while browser disconnected"})
                             .as_object()
                             .unwrap(),
                         false,
@@ -406,7 +435,7 @@ pub async fn run() {
                                 .unwrap();
                         }
                         let messages = source
-                            .read(|doc| ChatDoc::list_messages(doc, &channel.id))
+                            .read(|doc| chat::projection::read(doc).message_rows(&channel.id))
                             .unwrap();
                         let queued = messages
                             .iter()
@@ -437,7 +466,9 @@ pub async fn run() {
                     .unwrap();
                 println!("MOUNTED_RESOURCE_STAGE={event}");
             } else if event["stage"] == "revoke" {
-                rooms
+                let started = std::time::Instant::now();
+                println!("MOUNTED_RESOURCE_REVOCATION={{\"state\":\"requested\"}}");
+                let completion = rooms
                     .remove_member(
                         &room.room,
                         &host.cert,
@@ -448,7 +479,16 @@ pub async fn run() {
                     )
                     .await
                     .unwrap();
-                input.write_all(b"{\"revoked\":true}\n").await.unwrap();
+                let acknowledgement = serde_json::json!({
+                    "revoked": true,
+                    "generation": completion.generation,
+                    "elapsedMs": started.elapsed().as_millis(),
+                });
+                println!("MOUNTED_RESOURCE_REVOCATION={acknowledgement}");
+                input
+                    .write_all(format!("{acknowledgement}\n").as_bytes())
+                    .await
+                    .unwrap();
             } else {
                 println!("MOUNTED_RESOURCE_STAGE={event}");
             }

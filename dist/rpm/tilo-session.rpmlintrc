@@ -1,10 +1,24 @@
 # The signed runtime is a private bubblewrap root, not a host library tree.
-# Its stable, unversioned Rust dylib name is consumed only through the
-# bundle's private LD_LIBRARY_PATH; changing it would invalidate the signed
-# app/runtime contract. The bundled glibc necessarily contains its own mktemp
+# Its stable, unversioned Rust dylib names (the runtime and the engine
+# libraries beside it) are consumed only through the bundle's private
+# LD_LIBRARY_PATH; changing them would invalidate the signed app/runtime
+# contract. The bundled glibc necessarily contains its own mktemp
 # compatibility symbol; no Tilo package script or executable calls mktemp.
-addFilter(r"tilo-session-apps.*invalid-soname /usr/lib/tilo-runtime/2026\.07/lib/libruntime_dylib\.so libruntime_dylib\.so")
-addFilter(r"tilo-session-apps.*call-to-mktemp /usr/lib/tilo-runtime/2026\.07/lib/lib64/libc\.so\.6")
+# glibc is in the bundle twice: in the loader set at lib/lib64/, and at lib/
+# since the bundle signs the full ldd closure of its libraries, libc included
+# (os/scripts/collect-runtime-dependencies.py).
+addFilter(r"^tilo-session-apps(?:\.[A-Za-z0-9_]+)?: [EW]: invalid-soname /usr/lib/tilo-runtime/2026\.07(?:\+native\.[0-9a-f]{32})?/lib/(libruntime_dylib|libtilo_[a-z0-9]+_engine)\.so \1\.so$")
+addFilter(r"^tilo-session-apps(?:\.[A-Za-z0-9_]+)?: [EW]: call-to-mktemp /usr/lib/tilo-runtime/2026\.07(?:\+native\.[0-9a-f]{32})?/lib/(?:lib64/)?libc\.so\.6$")
+# libmount and libblkid are signed into the runtime as GIO's dependencies
+# (GLib loads on first media use). util-linux's only setgid/setuid calls in
+# either are drop_permissions(): setgid(getgid()); setuid(getuid()) in a forked
+# child just before it execs a mount.<type>/umount helper (libmount) or
+# dmsetup/lvm for device-mapper topology (libblkid). That drops a setuid
+# caller back to its real ids, whose supplementary groups are already its own.
+# No Tilo app is setuid: each runs unprivileged under bubblewrap with
+# no_new_privs, where real and effective ids are equal and both calls are
+# no-ops. Exactly those two upstream libraries; nothing else is excused.
+addFilter(r"^tilo-session-apps(?:\.[A-Za-z0-9_]+)?: E: missing-call-to-setgroups-before-setuid /usr/lib/tilo-runtime/2026\.07(?:\+native\.[0-9a-f]{32})?/lib/lib(?:blkid|mount)\.so\.1$")
 
 # The env-runtime environment image is a signed, read-only userland that
 # environments stack under their own /usr and /etc. Its files keep exactly the

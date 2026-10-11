@@ -110,6 +110,7 @@ impl InstallerApp {
             Step::Disk => "disk",
             Step::Account => "account",
             Step::Options => "options",
+            Step::Media => "media",
             Step::Review => "review",
             Step::Install => "install",
         }
@@ -194,6 +195,9 @@ impl InstallerApp {
                 "locale": self.locale().trim(),
                 "timezone": self.timezone().trim(),
                 "encryption": self.encryption_summary(),
+            },
+            "media": {
+                "codecs": self.codecs,
             },
             "review": {
                 "recovery_promise": self.recovery_ack,

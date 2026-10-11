@@ -40,7 +40,7 @@ pub const PERMISSION_DENIED_SCRIM: Color = Color::from_rgba8(0, 0, 0, 77);
 
 /// Straight (non-premultiplied) 8-bit sRGB mix — the space most widget
 /// draw paths blend in.
-pub(crate) fn mix8(a: Color, b: Color, t: f32) -> Color {
+pub fn mix8(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     #[allow(
         clippy::cast_possible_truncation,

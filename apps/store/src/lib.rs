@@ -18,10 +18,10 @@
 //!
 //! Module map:
 //!
-//!   * [`resource`]        — the [`Store`] resource, its effects and the
-//!     framework app [`StoreShell`].
-//!   * [`doc_actions`]     — the document's actions: report drafts, notes
-//!     and moderation cases.
+//!   * [`resource`]        — the Store's effects and the framework app
+//!     [`StoreShell`].
+//!   * [`reports`]         — the document: report drafts, their notes and
+//!     moderation cases ([`Reports`]).
 //!   * [`model`]           — [`StoreItem`], `Source`, [`ActionKind`]
 //!     and the filter enum shared across the app.
 //!   * [`registry_client`] — HTTP client for the Tilo registry protocol.
@@ -54,11 +54,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -68,14 +64,15 @@ pub mod actions;
 pub mod app;
 pub mod bindings;
 pub mod config;
-pub mod doc_actions;
 pub mod fixture;
 pub mod flathub_client;
 pub mod flatpakref;
 pub mod images;
 pub mod model;
 pub mod moderation_client;
+pub mod package_import;
 pub mod registry_client;
+pub mod reports;
 pub mod resource;
 pub mod search;
 pub mod sources;
@@ -87,4 +84,5 @@ pub use flatpakref::FlatpakRef;
 pub use model::{
     ActionKind, InstalledState, SourceFilter, StoreItem, StoreItemVersion, StoreSource, StoreTrust,
 };
-pub use resource::{Store, StoreEffect, StoreShell};
+pub use reports::Reports;
+pub use resource::{StoreEffect, StoreShell};

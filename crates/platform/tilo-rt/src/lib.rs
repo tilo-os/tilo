@@ -38,16 +38,6 @@
 //! may block. [`availability`] answers which [`Feature`]s the running target
 //! has; [`CAPABILITIES`] lists them for every target.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 #[cfg(not(target_family = "wasm"))]
 mod app;
 #[cfg(target_family = "wasm")]

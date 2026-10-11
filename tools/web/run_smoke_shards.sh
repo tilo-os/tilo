@@ -9,7 +9,7 @@ shift
 : "${RUNNER_TEMP:?RUNNER_TEMP must name the job scratch directory}"
 port=${CDP_PORT:-9333}
 shards=${TILO_WEB_SMOKE_SHARDS:-2}
-[[ "$shards" == 1 || "$shards" == 2 ]] || { echo 'use one or two browser shards' >&2; exit 2; }
+[[ "$shards" == 1 || "$shards" == 2 || "$shards" == 3 ]] || { echo 'use one, two or three browser shards' >&2; exit 2; }
 [[ "$port" =~ ^[0-9]+$ ]] && ((port > 0 && port + shards - 1 <= 65535)) || { echo 'invalid CDP port' >&2; exit 2; }
 apps=("$@")
 ((shards <= ${#apps[@]})) || shards=${#apps[@]}

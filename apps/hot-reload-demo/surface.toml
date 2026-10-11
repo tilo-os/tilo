@@ -1,0 +1,29 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "hot-reload-demo.document"
+label = "Document"
+version = 1
+
+[[resources.fields]]
+owner = "document"
+path = "title"
+stored = "value"
+title = "Title"
+type = "String"
+
+[[resources.fields]]
+owner = "document"
+path = "body"
+stored = "value"
+title = "Body"
+type = "String"
+
+[[resources.verbs]]
+destructive = true
+id = "clear"
+kind = "undoable"
+label = "Clear the document"
+params = []

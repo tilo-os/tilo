@@ -15,17 +15,6 @@
 //! outcome is reported to a user. This crate holds the mechanism and the
 //! baseline application filter, not those decisions.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 #[cfg(target_os = "linux")]
 pub mod landlock;
 pub mod seccomp;

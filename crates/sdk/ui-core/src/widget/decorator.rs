@@ -34,8 +34,8 @@
 //! and visits every node exactly once. The only methods that describe the
 //! decorator rather than the inner widget are the identity ones:
 //! `concrete_type_name` names the decorator's type and
-//! [`as_any`](Widget::as_any) and [`as_any_mut`](Widget::as_any_mut) are
-//! `None` unless overridden.
+//! [`as_any`](Widget::as_any) and [`as_any_mut`](Widget::as_any_mut)
+//! downcast to the decorator itself unless overridden.
 //!
 //! A boxed [`Element`](super::Element) is wrapped with `type Inner = dyn
 //! Widget;` and accessors returning `&(dyn Widget + 'static)`.
@@ -48,15 +48,12 @@
 //!   `take_control_invocation`) includes the inner widget's answer:
 //!   `let mut all = mine; all.extend(self.inner().resources(doc)); all`.
 //! * **Override the host's entry point.** Some [`Widget`] defaults are
-//!   derived from another method (`draw_with_presence` calls `draw`,
-//!   `perform_action_at` calls `perform_action`, `tooltip_target_at` calls
-//!   `tooltip`, `adjust_layout_with_measure` calls `adjust_layout_style`,
+//!   derived from another method (`tooltip_target_at` calls `tooltip`,
 //!   `collect_damage` calls `needs_redraw`). Here each forwards to the inner
 //!   widget's own method, so an override of the derived-from method alone is
-//!   not what the host calls: override the entry point the host uses
-//!   (`draw_with_presence` for painting in a live frame, and `draw` for
-//!   callers that paint directly). Input has a single entry point,
-//!   [`handle_event`](Widget::handle_event).
+//!   not what the host calls: override the entry point the host uses.
+//!   Painting and input each have a single entry point,
+//!   [`draw`](Widget::draw) and [`handle_event`](Widget::handle_event).
 //! * **The decorator stands in for its inner widget's layout node.** The
 //!   inner widget registers itself in the node map during `build_layout`;
 //!   the decorator then takes that entry, so a host that reaches a widget
@@ -128,7 +125,7 @@ fn stand_in(
 
 /// A widget that extends another by overriding a few [`Widget`] methods and
 /// forwarding the rest. See the [module docs](self).
-pub trait Decorator {
+pub trait Decorator: Sized + 'static {
     /// The widget this one extends.
     type Inner: Widget + ?Sized;
 
@@ -251,8 +248,13 @@ pub trait Decorator {
         self.inner_mut().measure(known, available, text_renderer)
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        self.inner_mut().adjust_layout_style(taffy, node)
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        self.inner_mut().adjust_layout_style(taffy, node, text)
     }
 
     #[doc(hidden)]
@@ -262,16 +264,6 @@ pub trait Decorator {
 
     fn layout_info(&self) -> Option<LayoutInfo> {
         self.inner().layout_info()
-    }
-
-    fn adjust_layout_with_measure(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        text: &mut TextRenderer,
-    ) -> bool {
-        self.inner_mut()
-            .adjust_layout_with_measure(taffy, node, text)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point) {
@@ -327,11 +319,11 @@ pub trait Decorator {
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
-        None
+        Some(self)
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        None
+        Some(self)
     }
 
     fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
@@ -346,6 +338,10 @@ pub trait Decorator {
         self.inner().get_rect()
     }
 
+    fn paint_bounds(&self) -> vello::kurbo::Rect {
+        self.inner().paint_bounds()
+    }
+
     fn child_clip_rect(&self) -> Option<vello::kurbo::Rect> {
         self.inner().child_clip_rect()
     }
@@ -356,12 +352,6 @@ pub trait Decorator {
 
     fn take_search_request(&mut self) -> bool {
         self.inner_mut().take_search_request()
-    }
-
-    fn take_action_revert(
-        &mut self,
-    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
-        self.inner_mut().take_action_revert()
     }
 
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
@@ -462,21 +452,12 @@ pub trait Decorator {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        self.inner_mut().perform_action(action, state, path)
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.inner_mut()
-            .perform_action_at(action, key_path, state, path)
+            .perform_action(action, key_path, state, path)
     }
 
     fn perform_semantic_action(
@@ -494,12 +475,28 @@ pub trait Decorator {
         self.inner().is_enabled()
     }
 
+    fn ime_requires_deferred_ack(&self) -> bool {
+        self.inner().ime_requires_deferred_ack()
+    }
+
+    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        self.inner_mut().start_deferred_text()
+    }
+
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        self.inner_mut().commit_deferred_text(text)
+    }
+
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         self.inner().ime_edit_fingerprint(key)
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         self.inner().ime_purpose()
+    }
+
+    fn ime_multiline(&self) -> bool {
+        self.inner().ime_multiline()
     }
 
     fn presented(&self) -> bool {
@@ -630,6 +627,14 @@ pub trait Decorator {
         self.inner_mut().take_structure_dirty()
     }
 
+    /// A decorator's structure flag is its own [`Decorator::take_structure_dirty`]
+    /// (which may add flags of its own), so by default it says
+    /// [`super::StructureChange::Rebuild`]; one that adds no flags forwards
+    /// its inner widget's change by overriding this.
+    fn take_structure_change(&mut self) -> super::StructureChange {
+        super::StructureChange::of(Decorator::take_structure_dirty(self))
+    }
+
     fn has_pending_visual_work(&self) -> bool {
         self.inner().has_pending_visual_work()
     }
@@ -646,6 +651,10 @@ pub trait Decorator {
         self.inner().collect_damage(regions);
     }
 
+    fn damage_covers_own_box(&self) -> bool {
+        self.inner().damage_covers_own_box()
+    }
+
     fn mark_drawn(&mut self) {
         self.inner_mut().mark_drawn();
     }
@@ -660,25 +669,6 @@ pub trait Decorator {
 
     fn layout_needs_measure(&self) -> bool {
         self.inner().layout_needs_measure()
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.inner_mut().draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 
     fn draw_overlay(
@@ -718,6 +708,12 @@ pub trait Decorator {
 
     fn native_view_frame_start(&mut self) {
         self.inner_mut().native_view_frame_start()
+    }
+
+    /// Decorators must opt in themselves: an outer handler can change what
+    /// its inner widget declares even when the inner scroll is view-only.
+    fn view_only_scroll(&self, _event: &WindowEvent) -> bool {
+        false
     }
 
     fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {
@@ -761,7 +757,7 @@ pub trait Decorator {
 
 /// Every decorator is a widget: each method is the decorator's own, which
 /// forwards to the inner widget unless the decorator overrides it.
-impl<T: Decorator + 'static> Widget for T {
+impl<T: Decorator> Widget for T {
     #[doc(hidden)]
     fn concrete_type_name(&self) -> &'static str {
         Decorator::concrete_type_name(self)
@@ -881,8 +877,13 @@ impl<T: Decorator + 'static> Widget for T {
         Decorator::measure(self, known, available, text_renderer)
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        Decorator::adjust_layout_style(self, taffy, node)
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        Decorator::adjust_layout_style(self, taffy, node, text)
     }
 
     #[doc(hidden)]
@@ -892,15 +893,6 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn layout_info(&self) -> Option<LayoutInfo> {
         Decorator::layout_info(self)
-    }
-
-    fn adjust_layout_with_measure(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        text: &mut TextRenderer,
-    ) -> bool {
-        Decorator::adjust_layout_with_measure(self, taffy, node, text)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point) {
@@ -974,6 +966,10 @@ impl<T: Decorator + 'static> Widget for T {
         Decorator::get_rect(self)
     }
 
+    fn paint_bounds(&self) -> vello::kurbo::Rect {
+        Decorator::paint_bounds(self)
+    }
+
     fn child_clip_rect(&self) -> Option<vello::kurbo::Rect> {
         Decorator::child_clip_rect(self)
     }
@@ -984,12 +980,6 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn take_search_request(&mut self) -> bool {
         Decorator::take_search_request(self)
-    }
-
-    fn take_action_revert(
-        &mut self,
-    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
-        Decorator::take_action_revert(self)
     }
 
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
@@ -1090,20 +1080,11 @@ impl<T: Decorator + 'static> Widget for T {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        Decorator::perform_action(self, action, state, path)
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        Decorator::perform_action_at(self, action, key_path, state, path)
+        Decorator::perform_action(self, action, key_path, state, path)
     }
 
     fn perform_semantic_action(
@@ -1120,12 +1101,28 @@ impl<T: Decorator + 'static> Widget for T {
         Decorator::is_enabled(self)
     }
 
+    fn ime_requires_deferred_ack(&self) -> bool {
+        Decorator::ime_requires_deferred_ack(self)
+    }
+
+    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        Decorator::start_deferred_text(self)
+    }
+
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        Decorator::commit_deferred_text(self, text)
+    }
+
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         Decorator::ime_edit_fingerprint(self, key)
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Decorator::ime_purpose(self)
+    }
+
+    fn ime_multiline(&self) -> bool {
+        Decorator::ime_multiline(self)
     }
 
     fn presented(&self) -> bool {
@@ -1255,6 +1252,10 @@ impl<T: Decorator + 'static> Widget for T {
         Decorator::take_structure_dirty(self)
     }
 
+    fn take_structure_change(&mut self) -> super::StructureChange {
+        Decorator::take_structure_change(self)
+    }
+
     fn has_pending_visual_work(&self) -> bool {
         Decorator::has_pending_visual_work(self)
     }
@@ -1271,6 +1272,10 @@ impl<T: Decorator + 'static> Widget for T {
         Decorator::collect_damage(self, regions);
     }
 
+    fn damage_covers_own_box(&self) -> bool {
+        Decorator::damage_covers_own_box(self)
+    }
+
     fn mark_drawn(&mut self) {
         Decorator::mark_drawn(self);
     }
@@ -1285,26 +1290,6 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn layout_needs_measure(&self) -> bool {
         Decorator::layout_needs_measure(self)
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        Decorator::draw_with_presence(
-            self,
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 
     fn draw_overlay(
@@ -1343,6 +1328,10 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn native_view_frame_start(&mut self) {
         Decorator::native_view_frame_start(self)
+    }
+
+    fn view_only_scroll(&self, event: &WindowEvent) -> bool {
+        Decorator::view_only_scroll(self, event)
     }
 
     fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {

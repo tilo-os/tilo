@@ -1,0 +1,46 @@
+    Starting 3 tests across 1 binary (80 tests skipped)
+        FAIL [   0.009s] (1/3) terminal parse::fixture_tests::fixture_fails
+  stdout ───
+
+    running 1 test
+    test parse::fixture_tests::fixture_fails ... FAILED
+
+    failures:
+
+    failures:
+        parse::fixture_tests::fixture_fails
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'parse::fixture_tests::fixture_fails' (56639) panicked at apps/terminal/src/parse.rs:398:9:
+    assertion `left == right` failed: arithmetic
+      left: 2
+     right: 3
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.012s] 3 tests run: 2 passed, 1 failed, 80 skipped
+        FAIL [   0.009s] (1/3) terminal parse::fixture_tests::fixture_fails
+  stdout ───
+
+    running 1 test
+    test parse::fixture_tests::fixture_fails ... FAILED
+
+    failures:
+
+    failures:
+        parse::fixture_tests::fixture_fails
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'parse::fixture_tests::fixture_fails' (56639) panicked at apps/terminal/src/parse.rs:398:9:
+    assertion `left == right` failed: arithmetic
+      left: 2
+     right: 3
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

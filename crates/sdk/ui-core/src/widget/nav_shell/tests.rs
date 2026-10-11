@@ -38,26 +38,11 @@ impl Widget for Probe {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -396,7 +381,7 @@ fn narrow_windows_push_the_content_over_the_overview() {
 
     // Escape goes back.
     let esc =
-        crate::synthetic_input::key_event(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+        crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
     assert!(h.dispatch_to_root(&esc));
     settle(&mut h, 560, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
@@ -474,7 +459,7 @@ fn the_system_shortcut_toggles_the_sidebar() {
     h.root_mut::<NavShell>()
         .set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
     settle(&mut h, 1280, 800);
-    let key = crate::synthetic_input::key_event(&Key::Character("L".into()), ElementState::Pressed);
+    let key = crate::synthetic_input::key_input(&Key::Character("L".into()), ElementState::Pressed);
     let modifiers = winit::event::Modifiers::from(
         winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
     );
@@ -1123,4 +1108,33 @@ fn a_hidden_inspector_animation_waits_until_the_drawer_is_painted() {
         !shell.inspector.as_ref().unwrap().needs_animation_frame(),
         "opening the drawer paints the retained animation"
     );
+}
+
+#[test]
+fn a_toast_floats_over_the_bottom_corner_and_a_click_dismisses_it() {
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    h.root_mut::<NavShell>().mark_drawn();
+    h.root_mut::<NavShell>().toast("Saved", ToastKind::Success);
+    assert!(h.root::<NavShell>().needs_redraw(), "a new notice repaints");
+    settle(&mut h, 1280, 800);
+    let card = h.root::<NavShell>().toasts.get_rect();
+    assert!(
+        card.width() > 0.0 && card.x1 < 1280.0 && card.y1 < 800.0 && card.y0 > 400.0,
+        "the notice sits inside the window's bottom trailing corner: {card:?}"
+    );
+    assert_eq!(h.root::<NavShell>().toast_text(), Some("Saved"));
+    let announced = h
+        .root::<NavShell>()
+        .children()
+        .last()
+        .and_then(|child| child.accessibility())
+        .and_then(|node| node.value);
+    assert_eq!(
+        announced.as_deref(),
+        Some("Saved"),
+        "a live region announces it"
+    );
+    h.click_at(card.center().x, card.center().y);
+    assert_eq!(h.root::<NavShell>().toast_text(), None);
 }

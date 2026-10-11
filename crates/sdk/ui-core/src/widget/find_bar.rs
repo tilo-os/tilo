@@ -889,26 +889,19 @@ impl Widget for FindBar {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
                 height: length(self.height(theme) as f32),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -1100,7 +1093,7 @@ impl Widget for FindBar {
             };
             // The shared text core owns edits, selection and validation;
             // unsupported field operations remain explicitly unhandled.
-            return field.perform_action(action, state, path);
+            return field.perform_action(action, &[], state, path);
         }
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
@@ -1345,13 +1338,7 @@ impl Widget for FindScope {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         if let Some(bar) = self.bar_node {
             self.bar.apply_layout(taffy, bar, inner);
@@ -1482,7 +1469,7 @@ impl Widget for FindScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::Dispatch;
 
     /// A text a find runs over: case-folding and whole-word aware, keeping
     /// what it found and which match is current.
@@ -1600,24 +1587,17 @@ mod tests {
             _: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style {
+            let style = Style {
                 size: taffy::Size {
                     width: percent(1.0_f32),
                     height: length(200.0_f32),
                 },
                 ..Default::default()
-            });
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let l = taffy.layout(node).copied().unwrap_or_default();
-            self.rect = Rect::new(
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-                origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-                origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-            );
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
         fn draw(
             &mut self,
@@ -1645,19 +1625,11 @@ mod tests {
     }
 
     fn key(logical: Key) -> WindowEvent {
-        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            logical,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     fn send(
@@ -1679,23 +1651,11 @@ mod tests {
             )
             .unwrap();
         scope.apply_layout(&taffy, node, Point::ZERO);
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        scope.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        focus
+        Dispatch::new()
+            .modifiers(modifiers)
+            .layout(&taffy, node)
+            .send(scope, event)
+            .focus_target
     }
 
     #[test]
@@ -1881,7 +1841,7 @@ mod tests {
 #[cfg(test)]
 mod host_driven_tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::Dispatch;
 
     /// Lines that grow under an open bar, found case-insensitively.
     #[derive(Default)]
@@ -2115,9 +2075,7 @@ mod host_driven_tests {
                 _theme: &Theme,
                 node_map: &mut HashMap<NodeId, *mut dyn Widget>,
             ) -> NodeId {
-                let node = taffy.leaf_node(Style::default());
-                node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-                node
+                taffy.widget_leaf(Style::default(), node_map, self)
             }
             fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
             fn draw(
@@ -2137,33 +2095,17 @@ mod host_driven_tests {
             }
         }
         let press = |scope: &mut FindScope, modifiers: winit::keyboard::ModifiersState| {
-            use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Character("f".into());
-            ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-            ev.location = KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
+            let ev = crate::synthetic_input::key_event(
+                Key::Character("f".into()),
+                None,
+                ElementState::Pressed,
+            );
             let event = WindowEvent::KeyboardInput {
                 device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             };
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.leaf_node(Style::default());
-            let mut handled = false;
-            scope.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::from(modifiers),
-                    state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut None,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            Dispatch::new().modifiers(modifiers).send(scope, &event);
         };
         use winit::keyboard::ModifiersState;
         let mut terminal = FindScope::new(Box::new(Page(Log::default())))

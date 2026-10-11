@@ -54,7 +54,7 @@ use std::{
     sync::{Arc, Weak},
     time::SystemTime,
 };
-use tilo_delivery_protocol::delivery_v3::descriptor::GenerationExpectation;
+use tilo_delivery_protocol::descriptor::GenerationExpectation;
 use tilo_desktop_model::{RoomId, WorkspaceId};
 use tilo_peer_state::{AdmissionReport, NeighbourMsg, StatePeer, TransportOrigin};
 use tilo_user_identity::DeviceCert;
@@ -250,6 +250,8 @@ impl SharedOwner {
         for (room, view) in &current.rooms {
             self.notify(*room, view.continuity());
         }
+        drop(current);
+        tilo_identity_host::policy_change::announce();
     }
     fn fenced(&self, current: &Current, room: RoomId) -> bool {
         current.fenced || current.denied.contains(&room) || !self.store.healthy()
@@ -265,6 +267,9 @@ impl SharedOwner {
         if result.is_err() && !self.store.healthy() {
             self.fence_all();
         }
+        // A new publication can change a room's tasks, which the broker
+        // offers as actions: it re-checks on this rather than on a clock.
+        tilo_identity_host::policy_change::announce();
         result
     }
 }
@@ -424,6 +429,11 @@ impl NativeWorkspaceOwner {
             {
                 return Err("workspace task action lease is stale".into());
             }
+            view.peer().check_task_execution_actor(
+                agent_id,
+                run.approval.as_ref(),
+                std::time::SystemTime::now(),
+            )?;
             Ok(())
         })?;
         admit()
@@ -476,6 +486,8 @@ impl NativeWorkspaceOwner {
         }
         let continuity = current.rooms.get(&room).map_or(0, |view| view.continuity());
         self.0.notify(room, continuity);
+        drop(current);
+        tilo_identity_host::policy_change::announce();
     }
     /// Admits genuine relay provenance; pending document prerequisites are also durable.
     ///
@@ -496,13 +508,41 @@ impl NativeWorkspaceOwner {
             return Err("native owner admits only workspace state messages".into());
         }
         let _turn = self.0.mutation.lock();
+        if matches!(&message, NeighbourMsg::AppDocument { .. })
+            && !matches!(origin, TransportOrigin::RetainedNativePublication { .. })
+            && let Some(report) = self.with_current(room, |view| {
+                let exact = view
+                    .peer
+                    .lookup_exact_document_report(origin, &message, now)
+                    .map_err(|error| error.to_string())?;
+                if exact.is_some() && publication::exact_replay_unchanged(view)? {
+                    Ok(exact)
+                } else {
+                    Ok(None)
+                }
+            })?
+        {
+            return Ok(report);
+        }
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         let report = candidate
             .peer
             .receive_from_report(origin, message, now)
             .map_err(|e| e.to_string())?;
+        let previous_publication = candidate.record.publication.clone();
         publication::retire(&mut candidate)?;
-        candidate.record.peer = candidate.peer.durable()?;
+        publication::refresh_governance_checkpoint(&mut candidate)?;
+        let durable = candidate.peer.durable()?;
+        // Authentication and causal admission still run for every replay.
+        // Reuse the actual committed barrier only when both durable peer
+        // state and outgoing custody are byte-for-byte unchanged. In
+        // particular, newly settled prerequisites or retired obligations
+        // still require publication before they can be observed.
+        if durable == candidate.record.peer && candidate.record.publication == previous_publication
+        {
+            return Ok(report);
+        }
+        candidate.record.peer = durable;
         candidate.record.generation = candidate
             .record
             .generation

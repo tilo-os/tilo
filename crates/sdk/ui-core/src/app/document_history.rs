@@ -31,7 +31,7 @@ impl App {
         if encoded.type_id == crate::host_chrome::edit::EDIT_OPERATION {
             return true;
         }
-        self.history_local_resources().iter().flat_map(|resource| &resource.actions).any(|action| matches!(&action.input, tilo_actions::ActionInput::Immediate(value) if value == encoded))
+        self.history_local_resources().iter().flat_map(|resource| &resource.actions).any(|action| matches!(&action.input, tilo_actions::ActionInput::Immediate(value) if value.as_ref() == encoded))
     }
     pub(super) fn with_native_presentation<R>(
         &mut self,
@@ -86,7 +86,7 @@ impl App {
         };
         let _ = self.history_local_resources();
         if layout.pane.is_some() != self.document_history.is_open() {
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             self.layout.layout_dirty = true;
             return Err("History presentation requires layout".into());
         }
@@ -328,18 +328,6 @@ impl App {
         self.apply_confirmed_history_restore();
         self.fulfil_history_preview();
         self.history_changed(revision, open);
-    }
-
-    /// Let History preview a selected version with the app's own root: a
-    /// fresh read-only instance built by `factory`, never the live one.
-    #[must_use]
-    pub fn with_history_preview_root(
-        mut self,
-        factory: impl Fn() -> Result<Box<dyn Widget>, String> + 'static,
-    ) -> Self {
-        self.document_history
-            .set_preview_root(std::rc::Rc::new(factory));
-        self
     }
 
     /// Build the preview root a selection asked for, inside this app's wake
@@ -881,7 +869,7 @@ impl App {
             self.document_history.remove_fallback_bar();
             if let Some(history) = &mut self.history {
                 history.remove_fallback_bar();
-                self.layout.structure_dirty = true;
+                self.layout.request_rebuild();
             }
             if self.native_document_chrome && self.history.is_none() {
                 self.enable_document_history_chrome();
@@ -890,7 +878,7 @@ impl App {
         }
         if let Some(history) = &mut self.history {
             history.remove_open_button();
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         } else if self.native_document_chrome {
             self.enable_document_history_chrome();
         }
@@ -926,7 +914,7 @@ impl App {
     pub fn enable_document_history_chrome(&mut self) {
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         }
         // A registered framework owner already supplies its own shared History
         // surface and custody. The standalone adapter serves unregistered roots.
@@ -941,7 +929,7 @@ impl App {
         self.invalidate_widget_resource_cache();
         self.document_history.enable_search(self.input.platform);
         self.remember_history_content();
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.layout.layout_dirty = true;
     }
 
@@ -949,8 +937,11 @@ impl App {
         if revision != self.document_history.revision() {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
-            self.layout.structure_dirty |= open != self.document_history.is_open()
-                || self.document_history.take_structure_dirty();
+            if open != self.document_history.is_open()
+                || self.document_history.take_structure_dirty()
+            {
+                self.layout.request_rebuild();
+            }
             if !open && self.document_history.is_open() {
                 self.history_focus_pending = true;
             }
@@ -1298,21 +1289,21 @@ mod tests {
                 .filter(|descriptor| {
                     descriptor.address.resource == super::super::history_actions::RESOURCE
                 })
-                .map(|descriptor| (descriptor.address.action, descriptor.contract.permission))
+                .map(|descriptor| (descriptor.address.action, descriptor.contract.kind))
                 .collect::<std::collections::BTreeMap<_, _>>();
-            use tilo_actions::PermissionRequirement::{Read, Write};
+            use tilo_actions::ActionKind::{Read, Undoable};
             assert_eq!(
                 history,
                 [
-                    ("history.close", Write),
-                    ("history.compare", Write),
+                    ("history.close", Undoable),
+                    ("history.compare", Undoable),
                     ("history.list", Read),
                     ("history.open", Read),
-                    ("history.restore", Write),
-                    ("history.view_at", Write),
+                    ("history.restore", Undoable),
+                    ("history.view_at", Undoable),
                 ]
                 .into_iter()
-                .map(|(action, permission)| (action.to_owned(), permission))
+                .map(|(action, kind)| (action.to_owned(), kind))
                 .collect(),
                 "the broker gates each History action on the permission it declares"
             );
@@ -1539,10 +1530,13 @@ mod tests {
             .and_then(|change| change.message())
             .and_then(tilo_actions::ActionContext::from_change_message)
             .expect("restore carries its action context");
-        assert_eq!(
-            context.action_label,
-            crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action")
-        );
+        assert!(matches!(
+            context.what,
+            Some(tilo_actions::Did::History(tilo_actions::HistoryStep {
+                op: tilo_actions::HistoryOp::Restore,
+                ..
+            }))
+        ));
 
         // The autosaved document reopens at the restored version.
         app.autosave().unwrap().flush();
@@ -1550,7 +1544,7 @@ mod tests {
 
         // Ctrl+Z on an app-owned document is this call in the native runner.
         let author = app.local_author().clone();
-        assert!(app.state.undo_as(Some(&author), None, None).is_some());
+        assert!(app.state.undo_as(Some(&author), None, None, None).is_some());
         assert_eq!(title(&app).as_deref(), Some("v3"));
 
         // A review that the live document outgrows is refused, unwritten.
@@ -1587,13 +1581,10 @@ mod tests {
         app.state.doc.put(ROOT, "title", "v2").unwrap();
         app.state.commit_action(None, None);
         let app_id = crate::collaboration::local_app_id();
-        app.permission_ctx = crate::permissions::PermissionContext::from_capabilities(
-            crate::permissions::Actor::agent("reader"),
-            vec![crate::permissions::CapOverride::grant(
-                crate::permissions::Subject::agent("reader"),
-                crate::permissions::Scope::App(app_id),
-                crate::permissions::Verb::Read,
-            )],
+        app.permission_ctx = crate::permissions::PermissionContext::agent_granted(
+            "reader",
+            &crate::permissions::TreePath::root().app(app_id),
+            crate::permissions::policy::KindSet::READ,
         );
         app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
         app.init_layout();

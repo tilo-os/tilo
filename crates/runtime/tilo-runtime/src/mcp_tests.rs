@@ -158,10 +158,10 @@ fn query_rows_carry_the_schema_of_the_generic_apply_argument() {
     assert_eq!(rename.params[0].name, "title");
     // What an `apply` invocation carries validates against what the row shows.
     for action in [
-        Note::RENAME.with("Groceries".into()).build(0).unwrap(),
+        Note::RENAME.with("Groceries").build(0).unwrap(),
         // An absent option is written as `null`.
         tilo_resource::Stamped {
-            operation: schema_rows::NoteAction::Pin { pinned: None },
+            operation: schema_rows::NoteAction::Pin(schema_rows::note::Pin { pinned: None }),
             now_ms: 0,
         },
     ] {

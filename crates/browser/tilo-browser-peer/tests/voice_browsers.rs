@@ -18,35 +18,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use test_http::{Reply, Responder};
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle, VoiceEvent};
-use tilo_moq::client::{
-    CapturedOpus, Client, ClientAuthority, Connection, ConnectionScope, Status,
-};
-use tilo_moq::relay::Direction;
+use tilo_moq::client::{CapturedOpus, Status};
 use tilo_relay_protocol::{Envelope, voice::VoiceGrant};
 
-struct Granted;
-impl ClientAuthority for Granted {
-    fn current(&self, _: &ConnectionScope, _: Direction, _: &str) -> bool {
-        true
-    }
-}
-fn carrier(grant: &VoiceGrant, generation: u64) -> Client {
-    Client::start(
-        Connection {
-            scope: ConnectionScope {
-                endpoint: grant.endpoint.clone(),
-                fingerprints: grant.fingerprints.clone(),
-                owner_epoch: grant.participation,
-                carrier_generation: generation,
-                publication: grant.publication.clone(),
-                subscriptions: grant.subscriptions.clone(),
-            },
-            authorization: grant.token.clone(),
-        },
-        Arc::new(Granted),
-    )
-    .unwrap()
-}
+use call::carrier;
+
 fn grant_json(grant: &VoiceGrant) -> Value {
     json!({
         "call": hex::encode(grant.call), "epoch": grant.epoch,
@@ -145,6 +121,7 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
     let server_carol = carol.clone();
     let call_id = hex::encode(room.call.call);
     let room_id = room.room.clone();
+    let channel_id = room.channel.clone();
     let workspace = room.workspace_id;
     let call = room.call.call;
     let repository = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../");
@@ -156,6 +133,11 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
         }
         if path == "/api/room" {
             return text(room_id.clone());
+        }
+        // The chat's voice channel the governed call is on: its id is the
+        // chat's own, minted when the workspace was made.
+        if path == "/api/channel" {
+            return text(channel_id.clone());
         }
         if path == "/api/alice" {
             return text(alice_id.clone());

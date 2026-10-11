@@ -14,7 +14,7 @@ DIRECT_CONSUMERS = {
 }
 PREPARED_CONSUMERS = {
     "release-verifier-bundles.yml": 1,
-    "check.yml": 5,
+    "check.yml": 6,
     "ci-legacy-apps.yml": 1,
     "ci-nightly.yml": 2,
     "dev-visual-baselines.yml": 1,
@@ -23,6 +23,25 @@ PREPARED_CONSUMERS = {
 
 
 class CargoDownloadCacheActionTests(unittest.TestCase):
+    def test_every_writer_uses_its_restore_primary_key(self) -> None:
+        prepare = (ROOT / PREPARE_ACTION_PATH / "action.yml").read_text()
+        self.assertIn("value: ${{ steps.cargo-downloads.outputs.cache-key }}", prepare)
+        for name, producer, key_output, paths_output in (
+            ("check.yml", "rust-build", "cargo-cache-key", "cargo-cache-paths"),
+            ("ci-nightly.yml", "rust-build", "cargo-cache-key", "cargo-cache-paths"),
+            ("build-ci-builder.yml", "cargo-cache", "cache-key", "paths"),
+            ("dev-focused-test.yml", "downloads", "cache-key", "paths"),
+        ):
+            with self.subTest(workflow=name):
+                workflow = (ROOT / ".forgejo/workflows" / name).read_text()
+                writers = [step for step in workflow.split("- name: ") if "uses: actions/cache/save@" in step and "path: ${{ steps." + producer + ".outputs." + paths_output + " }}" in step]
+                self.assertEqual(len(writers), 1)
+                save = writers[0]
+                self.assertIn("key: ${{ steps." + producer + ".outputs." + key_output + " }}", save)
+                self.assertIn("path: ${{ steps." + producer + ".outputs." + paths_output + " }}", save)
+                self.assertIn("continue-on-error: true", save)
+                self.assertNotIn("hashFiles(", save)
+
     def test_cargo_download_cache_is_one_shared_fail_open_action(self) -> None:
         with self.subTest(phase='action owns the complete fail open cache contract'):
             action = (ROOT / ACTION_PATH / "action.yml").read_text(encoding="utf-8")
@@ -76,14 +95,14 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
                 path.read_text(encoding="utf-8").count("key: cargo-deps-")
                 for path in workflows.glob("*.y*ml")
             )
-            self.assertEqual(remaining_keys, 3)
+            self.assertEqual(remaining_keys, 0)
             for path in workflows.glob("*.y*ml"):
                 with self.subTest(workflow=path.name):
                     source = path.read_text(encoding="utf-8")
                     self.assertNotIn("/cargo-home", source)
                     for save in source.split("uses: actions/cache/save@")[1:]:
                         save = save.split("\n      - ", 1)[0]
-                        if "cargo-deps-" not in save and "downloads.outputs" not in save:
+                        if "cargo-cache" not in save and "downloads.outputs" not in save:
                             continue
                         self.assertRegex(save,
                                          r"path: \$\{\{ steps\.[a-z-]+\.outputs\.(cargo-cache-)?paths \}\}")

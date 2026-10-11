@@ -28,24 +28,25 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Instant;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::{
     AppModel, Button, Column, Element, ModalDialog, ModelPath, NavPane, NavShell, Popover,
     PopoverSide, SidebarPlacement, TextInputKind, Widget,
 };
-use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::actions::{self, FeedsAction};
 use crate::chrome::{Anchor, HeaderButton, reader_settings_panel};
 use crate::fetch::{FetchRequest, FetchResult, FetchWorker};
 use crate::list_pane::{ListPane, ListState};
 use crate::modal::{ModalBody, ModalIntent};
-use crate::model::{Article, Feed, Filter, Id, ReadFont, ReadSettings, ReadTheme, Store};
+use crate::model::{
+    Article, Filter, Id, Library, ReadFont, ReadSettings, ReadTheme, Row, normalize_tags,
+};
 use crate::reader_pane::{ReaderPane, ReaderState};
+use crate::resource::library;
 use crate::sidebar::SidebarNav;
 use crate::{opml, sample};
 
@@ -77,18 +78,21 @@ fn opml_export_request() -> PickRequest {
 /// while the UI stays interactive.
 pub(crate) const FLUSH_BUDGET: usize = 3;
 
-/// How long a toast stays up.
-const TOAST_FOR: std::time::Duration = std::time::Duration::from_secs(4);
-
 /// The core every part of the window reads and changes.
 pub(crate) type Shared = Rc<RefCell<Core>>;
+
+/// What the core asks of the window's notice.
+enum ToastChange {
+    Show(String),
+    Dismiss,
+}
 
 /// What retained controls (the sidebar list, header buttons, the reading
 /// settings) ask for. The root applies them with the document in hand.
 pub(crate) type Requests = Rc<RefCell<Vec<Request>>>;
 
 /// A request from a retained control.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Request {
     /// Show a place in the article list.
     Show(Filter),
@@ -117,7 +121,7 @@ pub(crate) enum Request {
 }
 
 /// What a menu row does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum MenuAction {
     MarkFeedRead(Id),
     RenameFeed(Id),
@@ -129,7 +133,7 @@ pub(crate) enum MenuAction {
 }
 
 impl MenuAction {
-    fn target(self) -> String {
+    fn target(&self) -> String {
         match self {
             Self::MarkFeedRead(id) => format!("feeds.menu.mark-read:{id}"),
             Self::RenameFeed(id) => format!("feeds.menu.rename:{id}"),
@@ -143,7 +147,7 @@ impl MenuAction {
 }
 
 /// Which menu is open.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum MenuKind {
     Feed(Id),
     List,
@@ -173,7 +177,6 @@ impl FeedsModal {
         let cancel = Rc::new(Cell::new(false));
         let dialog = ModalDialog::new(title, body)
             .open(true)
-            .with_destructive(matches!(intent, ModalIntent::Unsubscribe { .. }))
             .primary_action(primary, {
                 let s = Rc::clone(&submit);
                 move || s.set(true)
@@ -234,18 +237,6 @@ impl FeedsModal {
             "Rename feed",
             body,
             "Rename",
-        )
-    }
-
-    fn unsubscribe(feed_id: Id, title: &str) -> Self {
-        let body = ModalBody::message(&format!(
-            "\u{201c}{title}\u{201d} and its articles will be removed from this device.",
-        ));
-        Self::new(
-            ModalIntent::Unsubscribe { feed_id },
-            "Unsubscribe from this feed?",
-            body,
-            "Unsubscribe",
         )
     }
 
@@ -340,18 +331,31 @@ pub(crate) fn plural(n: usize, one: &str, many: &str) -> String {
     }
 }
 
-/// A change the doc-less, draw-time drain produced that still needs to be
-/// persisted. Draining happens while painting (no document in hand), so the
-/// CRDT writes queue here and flush on the next pass that holds the document.
+/// What a refresh fetched for one subscription, still to land in the
+/// library. Draining happens while painting (no document in hand), so it
+/// queues here and lands on the next pass that holds the document.
 #[derive(Clone, Debug)]
-pub(crate) enum DocWrite {
-    Article(Article),
-    Feed(Feed),
+pub(crate) struct Landing {
+    pub(crate) fetched: library::Refreshed,
+}
+
+/// A new item this window asked for, shown once the library holds it: the
+/// verb that makes it mints its id, so the window recognizes it by what it
+/// asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Awaited {
+    /// The subscription to this address: refresh it, and show it when
+    /// asked to.
+    Feed(String, bool),
+    /// The folder of this name that was not there before: show it.
+    Folder(String, Vec<Id>),
 }
 
 /// The state of the window.
 pub(crate) struct Core {
-    pub(crate) store: Store,
+    /// The library as it was presented last; the window changes it only
+    /// through the library's door.
+    pub(crate) store: Rc<Library>,
     pub(crate) filter: Filter,
     pub(crate) selected: Option<Id>,
     pub(crate) settings: ReadSettings,
@@ -364,20 +368,23 @@ pub(crate) struct Core {
     /// Whether the root presents a dialog.
     pub(crate) modal_open: bool,
     pub(crate) menu: Option<OpenMenu>,
-    pub(crate) toast: Option<(String, Instant)>,
+    /// A change to the window's notice, for the root to hand its shell.
+    toast: Option<ToastChange>,
     pub(crate) refresh: RefreshState,
-    pub(crate) pending_doc_writes: Vec<DocWrite>,
-    /// Canonical mutations implied by a brokered View operation: opening an
-    /// unread article from search queues the same `MarkRead` a click sends,
-    /// for the next pass that holds the document.
-    pending_resource_actions: Vec<FeedsAction>,
+    pub(crate) pending_landings: Vec<Landing>,
+    /// Articles opened from search or by an agent, to mark read on the next
+    /// pass that holds the document, as a click does.
+    pending_reads: Vec<Id>,
+    /// New subscriptions and folders this window asked for, until the
+    /// library holds them.
+    pub(crate) awaited: Vec<Awaited>,
     pub(crate) import_rx: Option<PortalChannel>,
     pub(crate) export_rx: Option<(PortalChannel, String)>,
     open_link_rx: Option<LaunchChannel>,
     background_poll_deadline: Cell<Option<Instant>>,
     pub(crate) worker: Option<FetchWorker>,
     synced: bool,
-    pub(crate) dispatcher: Option<ui::framework::Dispatcher<crate::resource::Feeds>>,
+    pub(crate) dispatcher: Option<ui::framework::Dispatcher<Library>>,
     read_settings: Option<ui::framework::Setting<ReadSettings>>,
     refresh_reply: Option<ui::framework::EffectReply>,
     /// The document heads the mirrored store was last reconciled against.
@@ -396,9 +403,18 @@ pub(crate) struct Core {
     pub(crate) first_feed_row: Option<(Id, Rect)>,
 }
 
+/// Mark the article at `id` read or unread.
+fn read_edit(id: &Id, read: bool) -> ui::tilo_resource::Edit<Library> {
+    Library::paths().articles.item(id).read.set(read)
+}
+
 impl Core {
     fn new(demo: bool) -> Self {
-        let store = if demo { sample::store() } else { Store::new() };
+        let store = Rc::new(if demo {
+            sample::store()
+        } else {
+            Library::new()
+        });
         let mut core = Self {
             store,
             filter: Filter::All,
@@ -412,8 +428,9 @@ impl Core {
             menu: None,
             toast: None,
             refresh: RefreshState::default(),
-            pending_doc_writes: Vec::new(),
-            pending_resource_actions: Vec::new(),
+            pending_landings: Vec::new(),
+            pending_reads: Vec::new(),
+            awaited: Vec::new(),
             import_rx: None,
             export_rx: None,
             open_link_rx: None,
@@ -440,33 +457,25 @@ impl Core {
     pub(crate) fn select_featured(&mut self) {
         self.selected = self
             .store
-            .articles_for(Filter::All)
+            .articles_for(&Filter::All)
             .into_iter()
-            .max_by_key(|a| a.blocks.len() + if a.read { 0 } else { 100 })
-            .map(|a| a.id);
+            .max_by_key(|a| a.blocks.0.len() + if a.read { 0 } else { 100 })
+            .map(|a| a.id.clone());
     }
 
     fn ensure_selection(&mut self) {
-        let in_list = self.selected.is_some_and(|id| {
-            self.store
-                .articles_for(self.filter)
-                .iter()
-                .any(|a| a.id == id)
-        });
+        let articles = self.store.articles_for(&self.filter);
+        let in_list = self
+            .selected
+            .as_ref()
+            .is_some_and(|id| articles.iter().any(|a| a.id == id));
         if !in_list {
-            self.selected = self.store.articles_for(self.filter).first().map(|a| a.id);
+            self.selected = articles.first().map(|a| a.id.clone());
         }
     }
 
     pub(crate) fn set_toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), ui::time::now()));
-    }
-
-    pub(crate) fn toast_visible(&self) -> Option<&str> {
-        self.toast
-            .as_ref()
-            .filter(|(_, since)| since.elapsed() < TOAST_FOR)
-            .map(|(message, _)| message.as_str())
+        self.toast = Some(ToastChange::Show(msg.into()));
     }
 
     fn worker(&mut self) -> &mut FetchWorker {
@@ -474,15 +483,15 @@ impl Core {
     }
 
     /// The open article, if it still exists.
-    pub(crate) fn open_article(&self) -> Option<&Article> {
-        self.selected.and_then(|id| self.store.article(id))
+    pub(crate) fn open_article(&self) -> Option<Row<'_, Article>> {
+        self.selected.as_ref().and_then(|id| self.store.article(id))
     }
 
     // --- titles ----------------------------------------------------------
 
     /// The overview's title: what the chosen place is called.
     pub(crate) fn filter_title(&self) -> String {
-        match self.filter {
+        match &self.filter {
             Filter::All => "All articles".to_string(),
             Filter::Unread => "Unread".to_string(),
             Filter::Starred => "Starred".to_string(),
@@ -498,7 +507,7 @@ impl Core {
                 .store
                 .tags()
                 .into_iter()
-                .find(|tag| crate::model::tag_key(tag) == key)
+                .find(|tag| crate::model::tag_key(tag) == *key)
                 .unwrap_or_else(|| "Tag".into()),
         }
     }
@@ -506,7 +515,7 @@ impl Core {
     /// The content's title: the feed the open article came from.
     pub(crate) fn article_title(&self) -> String {
         self.open_article()
-            .and_then(|a| self.store.feed(a.feed_id))
+            .and_then(|a| self.store.feed(&a.feed_id))
             .map(|f| f.title.clone())
             .unwrap_or_default()
     }
@@ -523,12 +532,12 @@ impl Core {
         self.show_pane = Some(NavPane::Overview);
     }
 
-    pub(crate) fn select_article(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
-        self.selected = Some(id);
+    pub(crate) fn select_article(&mut self, id: &Id, doc: &mut ui::widget::Edits<'_>) {
+        self.selected = Some(id.clone());
         self.reader.scroll_to_top();
         self.list.reveal = true;
-        if self.store.mark_read(id, true) {
-            self.perform_action(doc, &actions::mark_read_action(id, true));
+        if self.store.article(id).is_some_and(|article| !article.read) {
+            self.perform(doc, read_edit(id, true));
         }
         // A narrow window pushes the article in; a wide one already shows it.
         self.show_pane = Some(NavPane::Content);
@@ -537,29 +546,31 @@ impl Core {
     fn move_selection(&mut self, delta: i64, doc: &mut ui::widget::Edits<'_>) {
         let ids: Vec<Id> = self
             .store
-            .articles_for(self.filter)
+            .articles_for(&self.filter)
             .iter()
-            .map(|a| a.id)
+            .map(|a| a.id.clone())
             .collect();
         if ids.is_empty() {
             return;
         }
-        let current = self.selected.and_then(|s| ids.iter().position(|&x| x == s));
+        let current = self
+            .selected
+            .as_ref()
+            .and_then(|s| ids.iter().position(|x| x == s));
         let next = match current {
             Some(i) => (i as i64 + delta).clamp(0, ids.len() as i64 - 1) as usize,
             None => 0,
         };
-        if let Some(&id) = ids.get(next) {
+        if let Some(id) = ids.get(next) {
             self.select_article(id, doc);
             // Arrow keys step through the list without leaving it.
             self.show_pane = None;
         }
     }
 
-    pub(crate) fn toggle_star(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
-        if self.store.toggle_star(id) {
-            let starred = self.store.article(id).is_some_and(|a| a.starred);
-            self.perform_action(doc, &actions::set_starred_action(id, starred));
+    pub(crate) fn toggle_star(&mut self, id: &Id, doc: &mut ui::widget::Edits<'_>) {
+        if let Some(starred) = self.store.article(id).map(|article| !article.starred) {
+            self.perform(doc, Library::paths().articles.item(id).starred.set(starred));
             self.set_toast(if starred {
                 "Article starred"
             } else {
@@ -569,16 +580,15 @@ impl Core {
     }
 
     fn toggle_read(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        if let Some(id) = self.selected {
-            let now_read = self.store.article(id).is_none_or(|a| !a.read);
-            if self.store.mark_read(id, now_read) {
-                self.perform_action(doc, &actions::mark_read_action(id, now_read));
-                self.set_toast(if now_read {
-                    "Marked as read"
-                } else {
-                    "Marked as unread"
-                });
-            }
+        if let Some(id) = self.selected.clone()
+            && let Some(now_read) = self.store.article(&id).map(|article| !article.read)
+        {
+            self.perform(doc, read_edit(&id, now_read));
+            self.set_toast(if now_read {
+                "Marked as read"
+            } else {
+                "Marked as unread"
+            });
         }
     }
 
@@ -586,14 +596,28 @@ impl Core {
         let Some(article) = self.open_article() else {
             return;
         };
-        let modal = FeedsModal::edit_tags(article.id, &article.tags);
+        let modal = FeedsModal::edit_tags(article.id.clone(), &article.tag_list());
         self.open_modal(modal);
     }
 
+    /// Mark everything the chosen place lists as read: the library's verbs
+    /// for everything and for one subscription, one step of field edits for
+    /// any other place.
     pub(crate) fn mark_all_read(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        let ids = self.store.mark_all_read(self.filter);
+        let filter = self.filter.clone();
+        let ids = self.store.unread_ids_for(&filter);
         if !ids.is_empty() {
-            self.perform_action(doc, &actions::mark_all_read_action(&ids));
+            match &filter {
+                Filter::All => self.perform(doc, Library::MARK_EVERYTHING_READ.invoke()),
+                Filter::Feed(feed) => {
+                    self.perform(doc, Library::MARK_FEED_READ.with(feed.clone()));
+                }
+                _ => {
+                    for id in &ids {
+                        self.perform(doc, read_edit(id, true));
+                    }
+                }
+            }
         }
         self.set_toast(format!(
             "Marked {} as read",
@@ -603,20 +627,19 @@ impl Core {
 
     // --- action model -----------------------------------------------------
 
-    /// Dispatch one [`FeedsAction`] — the single mutation path shared with
-    /// the palette. It is applied through the action executor (a pinned
-    /// actor and a committed change, so it replays on peers), and the
-    /// document heads captured before it bracket one undo step.
-    pub(crate) fn perform_action(
+    /// Submit one field edit or verb through the library's door, now: the
+    /// single mutation path, shared with the palette and agents. One event's
+    /// submissions are one undo step.
+    pub(crate) fn perform(
         &mut self,
         edits: &mut ui::widget::Edits<'_>,
-        action: &FeedsAction,
+        submit: impl ui::framework::Submit<Library>,
     ) {
         let Some(dispatcher) = self.dispatcher.as_ref() else {
             self.set_toast("The library is not attached to its resource.");
             return;
         };
-        if let Err(error) = dispatcher.apply_now(edits, action) {
+        if let Err(error) = dispatcher.submit_now(edits, submit) {
             self.set_toast(format!("The library was not changed: {error}"));
         }
     }
@@ -637,40 +660,25 @@ impl Core {
 
     // --- folders and subscriptions -----------------------------------------
 
-    /// Add a folder through the same replayable action the palette uses.
+    /// Add a folder through the same verb the palette uses; it is shown
+    /// once the library holds it.
     fn add_folder(&mut self, name: &str, doc: &mut ui::widget::Edits<'_>) {
         let name = name.trim();
         if name.is_empty() {
             return;
         }
-        let order = self
-            .store
-            .folders
-            .iter()
-            .map(|folder| folder.order)
-            .max()
-            .map_or(0, |last| last.saturating_add(1));
-        let folder = crate::model::Folder {
-            id: Uuid::new_v4(),
-            name: name.to_string(),
-            order,
-            collapsed: false,
-        };
-        self.store.upsert_folder(folder.clone());
-        self.perform_action(
-            doc,
-            &actions::add_folder_action(folder.id, &folder.name, folder.order),
-        );
-        self.set_filter(Filter::Folder(folder.id));
-        self.set_toast(format!("Created folder {}", folder.name));
+        let known = self.store.folders.ids().cloned().collect();
+        self.awaited.push(Awaited::Folder(name.to_owned(), known));
+        self.perform(doc, Library::NEW_FOLDER.with(name));
+        self.set_toast(format!("Created folder {name}"));
     }
 
     /// Start a refresh of every subscription. Only enqueues on the worker:
     /// no network I/O on the UI thread. Results drain every frame.
     pub(crate) fn refresh_all(&mut self) {
-        let ids: Vec<Id> = self.store.feeds.iter().map(|f| f.id).collect();
+        let ids: Vec<Id> = self.store.feeds.ids().cloned().collect();
         self.refresh_feeds(&ids);
-        self.toast = None;
+        self.toast = Some(ToastChange::Dismiss);
     }
 
     /// Enqueue a background refresh of `ids`.
@@ -678,10 +686,11 @@ impl Core {
         let reqs: Vec<FetchRequest> = ids
             .iter()
             .filter_map(|id| {
-                self.store.feed(*id).map(|f| FetchRequest::Refresh {
-                    feed_id: f.id,
+                self.store.feed(id).map(|f| FetchRequest::Refresh {
+                    feed_id: id.clone(),
                     url: f.url.clone(),
                     kind: f.kind,
+                    certificate_pin: f.certificate_pin.clone(),
                 })
             })
             .collect();
@@ -699,38 +708,70 @@ impl Core {
         };
     }
 
-    /// Add a subscription. The record is a deterministic action (the id is
-    /// minted here, the feed starts titled with its address); fetching its
-    /// title and articles is external, not an action.
+    /// Add a subscription through the library's verb, in the folder the
+    /// chosen place is in. Once the library holds it, it is refreshed (an
+    /// outside fetch) and shown.
     pub(crate) fn subscribe(&mut self, url: &str, doc: &mut ui::widget::Edits<'_>) {
         let url = url.trim().to_string();
         if url.is_empty() {
             return;
         }
-        let folder = match self.filter {
-            Filter::Folder(id) => Some(id),
-            Filter::Feed(fid) => self.store.feed(fid).and_then(|f| f.folder),
+        if let Some(existing) = self.store.feed_at(&url).map(|feed| feed.id.clone()) {
+            self.set_filter(Filter::Feed(existing));
+            self.set_toast(format!("Already subscribed to {url}"));
+            return;
+        }
+        let folder = match &self.filter {
+            Filter::Folder(id) => Some(id.clone()),
+            Filter::Feed(fid) => self.store.feed(fid).and_then(|f| f.folder.clone()),
             _ => None,
         };
-        let id = Uuid::new_v4();
-        let order = self.store.next_feed_order(folder);
-        let feed = Feed {
-            id,
-            title: url.clone(),
-            url: url.clone(),
-            site_url: crate::fetch::derive_site_url(&url),
-            folder,
-            order,
-            kind: actions::guess_kind(&url),
-        };
-        self.store.upsert_feed(feed);
-        self.perform_action(
+        self.awaited.push(Awaited::Feed(url.clone(), true));
+        self.perform(
             doc,
-            &actions::add_subscription_action(id, &url, folder, order),
+            Library::ADD_SUBSCRIPTION.with(library::AddSubscription {
+                url: url.clone(),
+                folder,
+            }),
         );
-        self.refresh_feeds(&[id]);
-        self.set_filter(Filter::Feed(id));
         self.set_toast(format!("Subscribing to {url}"));
+    }
+
+    /// Show and refresh what this window asked for, now that the library
+    /// holds it.
+    fn arrive(&mut self) {
+        let mut refresh = Vec::new();
+        let mut show = None;
+        self.awaited.retain(|awaited| match awaited {
+            Awaited::Feed(url, shown) => match self.store.feed_at(url) {
+                Some(feed) => {
+                    refresh.push(feed.id.clone());
+                    if *shown {
+                        show = Some(Filter::Feed(feed.id.clone()));
+                    }
+                    false
+                }
+                None => true,
+            },
+            Awaited::Folder(name, known) => match self
+                .store
+                .folders
+                .iter()
+                .find(|(id, folder)| &folder.name == name && !known.contains(id))
+            {
+                Some((id, _)) => {
+                    show = Some(Filter::Folder(id.clone()));
+                    false
+                }
+                None => true,
+            },
+        });
+        if !refresh.is_empty() {
+            self.refresh_feeds(&refresh);
+        }
+        if let Some(filter) = show {
+            self.set_filter(filter);
+        }
     }
 
     pub(crate) fn export_opml(&mut self) {
@@ -807,15 +848,14 @@ impl Core {
                         .map_err(|_| tilo_files::FsError::Io("the file is not UTF-8 text".into()))
                 }) {
                 Ok(text) => {
-                    let new_ids = self.apply_opml_import(&text, doc);
-                    if new_ids.is_empty() {
+                    let added = self.apply_opml_import(&text, doc);
+                    if added.is_empty() {
                         self.set_toast("That file has no new feeds");
                     } else {
                         self.set_toast(format!(
                             "Imported {}",
-                            plural(new_ids.len(), "feed", "feeds")
+                            plural(added.len(), "feed", "feeds")
                         ));
-                        self.refresh_feeds(&new_ids);
                     }
                     true
                 }
@@ -832,39 +872,31 @@ impl Core {
         }
     }
 
-    /// Merge OPML `text` into the store (folders as needed, de-duplicated by
-    /// address) and subscribe to what it added as one action. Returns the
-    /// newly subscribed feeds.
+    /// Subscribe to what OPML `text` lists that the library does not have
+    /// yet (folders as needed, de-duplicated by address) as one verb, and
+    /// refresh those once the library holds them. Returns their addresses.
     pub(crate) fn apply_opml_import(
         &mut self,
         text: &str,
         doc: &mut ui::widget::Edits<'_>,
-    ) -> Vec<Id> {
-        let parsed = opml::parse(text);
-        let had_feeds: std::collections::HashSet<Id> =
-            self.store.feeds.iter().map(|f| f.id).collect();
-        let had_folders: std::collections::HashSet<Id> =
-            self.store.folders.iter().map(|f| f.id).collect();
-        opml::import_into(&mut self.store, &parsed);
-        let feeds: Vec<Feed> = self
-            .store
-            .feeds
-            .iter()
-            .filter(|f| !had_feeds.contains(&f.id))
-            .cloned()
-            .collect();
-        if feeds.is_empty() {
-            return Vec::new();
+    ) -> Vec<String> {
+        let outlines = opml::outlines(&opml::parse(text));
+        let mut added: Vec<String> = Vec::new();
+        for outline in &outlines {
+            let url = outline.url.trim();
+            if !url.is_empty()
+                && self.store.feed_at(url).is_none()
+                && !added.iter().any(|a| a == url)
+            {
+                added.push(url.to_owned());
+            }
         }
-        let folders = self
-            .store
-            .folders
-            .iter()
-            .filter(|f| !had_folders.contains(&f.id))
-            .cloned()
-            .collect();
-        let added = feeds.iter().map(|f| f.id).collect();
-        self.perform_action(doc, &FeedsAction::ImportSubscriptions { folders, feeds });
+        if added.is_empty() {
+            return added;
+        }
+        self.awaited
+            .extend(added.iter().map(|url| Awaited::Feed(url.clone(), false)));
+        self.perform(doc, Library::IMPORT_SUBSCRIPTIONS.with(outlines));
         added
     }
 
@@ -914,12 +946,12 @@ impl Core {
     }
 
     fn open_feed_menu_on(&mut self, feed_id: Id, row: Rect, anchor: Rect) {
-        if self.store.feed(feed_id).is_none() {
+        if self.store.feed(&feed_id).is_none() {
             return;
         }
-        let unread = self.store.unread_for_feed(feed_id) > 0;
+        let unread = self.store.unread_for_feed(&feed_id) > 0;
         self.open_menu(
-            MenuKind::Feed(feed_id),
+            MenuKind::Feed(feed_id.clone()),
             anchor,
             Some(row),
             vec![
@@ -927,11 +959,11 @@ impl Core {
                     MenuItem::action("Mark all as read", || {})
                         .with_icon(Icon::Check)
                         .with_enabled(unread),
-                    MenuAction::MarkFeedRead(feed_id),
+                    MenuAction::MarkFeedRead(feed_id.clone()),
                 ),
                 (
                     MenuItem::action("Rename…", || {}).with_icon(Icon::Pencil),
-                    MenuAction::RenameFeed(feed_id),
+                    MenuAction::RenameFeed(feed_id.clone()),
                 ),
                 (
                     MenuItem::destructive_action("Unsubscribe…", || {}).with_icon(Icon::Trash2),
@@ -1008,9 +1040,9 @@ impl Core {
     ) {
         match action {
             MenuAction::MarkFeedRead(feed_id) => {
-                let ids = self.store.mark_all_read(Filter::Feed(feed_id));
+                let ids = self.store.unread_ids_for(&Filter::Feed(feed_id.clone()));
                 if !ids.is_empty() {
-                    self.perform_action(doc, &actions::mark_all_read_action(&ids));
+                    self.perform(doc, Library::MARK_FEED_READ.with(feed_id));
                 }
                 self.set_toast(format!(
                     "Marked {} as read",
@@ -1020,12 +1052,16 @@ impl Core {
             MenuAction::RenameFeed(feed_id) => {
                 let title = self
                     .store
-                    .feed(feed_id)
+                    .feed(&feed_id)
                     .map(|f| f.title.clone())
                     .unwrap_or_default();
                 self.open_modal(FeedsModal::rename(feed_id, &title));
             }
-            MenuAction::Unsubscribe(feed_id) => self.open_unsubscribe_confirm(feed_id),
+            // The host asks the person before it unsubscribes; the feed
+            // leaves the sidebar once the library no longer holds it.
+            MenuAction::Unsubscribe(feed_id) => {
+                self.perform(doc, Library::UNSUBSCRIBE.with(feed_id));
+            }
             MenuAction::Import => self.request_import(),
             MenuAction::Export => self.export_opml(),
             MenuAction::ToggleRead => self.toggle_read(doc),
@@ -1046,7 +1082,7 @@ impl Core {
         let chosen = open
             .menu
             .take_selection()
-            .and_then(|index| open.actions.get(index).copied());
+            .and_then(|index| open.actions.get(index).cloned());
         if !open.menu.is_open() {
             self.menu = None;
         }
@@ -1071,15 +1107,6 @@ impl Core {
         self.open_modal(FeedsModal::add_folder());
     }
 
-    fn open_unsubscribe_confirm(&mut self, feed_id: Id) {
-        let title = self
-            .store
-            .feed(feed_id)
-            .map(|f| f.title.clone())
-            .unwrap_or_default();
-        self.open_modal(FeedsModal::unsubscribe(feed_id, &title));
-    }
-
     /// Run a dialog's primary action with `value` against the store and the
     /// document. Returns `false` (the dialog stays open) when a required
     /// field is empty.
@@ -1096,51 +1123,49 @@ impl Core {
         match intent {
             ModalIntent::AddSubscription => self.subscribe(&value, doc),
             ModalIntent::AddFolder => self.add_folder(&value, doc),
-            ModalIntent::RenameFeed { feed_id } => self.rename_feed(feed_id, &value, doc),
-            ModalIntent::Unsubscribe { feed_id } => self.unsubscribe_feed(feed_id, doc),
-            ModalIntent::EditArticleTags { article_id } => {
-                let tags = actions::normalize_tags(value.split(','));
-                if self.store.set_tags(article_id, tags.clone()) {
-                    self.perform_action(doc, &actions::set_article_tags_action(article_id, &tags));
-                    self.set_toast(if tags.is_empty() {
-                        "Tags removed".to_string()
-                    } else {
-                        format!("Saved {}", plural(tags.len(), "tag", "tags"))
-                    });
-                }
-            }
+            ModalIntent::RenameFeed { feed_id } => self.rename_feed(&feed_id, &value, doc),
+            ModalIntent::EditArticleTags { article_id } => self.set_tags(&article_id, &value, doc),
         }
         true
     }
 
-    /// Delete a feed and its articles from the store and the document, and
-    /// recover a place or selection that pointed at it.
-    pub(crate) fn unsubscribe_feed(&mut self, feed_id: Id, doc: &mut ui::widget::Edits<'_>) {
-        let title = self
-            .store
-            .feed(feed_id)
-            .map(|f| f.title.clone())
-            .unwrap_or_default();
-        let removed = self.store.remove_feed(feed_id);
-        self.perform_action(doc, &actions::remove_subscription_action(feed_id));
-        if matches!(self.filter, Filter::Feed(id) if id == feed_id) {
-            self.set_filter(Filter::All);
+    /// Give the article `id` the comma-separated tags `value`, normalized:
+    /// one step of edits of its tag set.
+    fn set_tags(&mut self, id: &Id, value: &str, doc: &mut ui::widget::Edits<'_>) {
+        let Some(before) = self.store.article(id).map(|article| article.tags.clone()) else {
+            return;
+        };
+        let tags = normalize_tags(value.split(','));
+        let after: ui::tilo_resource::Set<String> = tags.iter().cloned().collect();
+        if before == after {
+            return;
         }
-        if self.selected.is_some_and(|s| removed.contains(&s)) {
-            self.selected = None;
+        let path = Library::paths().articles.item(id).tags;
+        for edit in path.edits(&before, &after) {
+            self.perform(doc, edit);
         }
-        self.ensure_selection();
-        self.set_toast(format!("Unsubscribed from {title}"));
+        self.set_toast(if tags.is_empty() {
+            "Tags removed".to_string()
+        } else {
+            format!("Saved {}", plural(tags.len(), "tag", "tags"))
+        });
     }
 
-    pub(crate) fn rename_feed(&mut self, feed_id: Id, name: &str, doc: &mut ui::widget::Edits<'_>) {
+    pub(crate) fn rename_feed(
+        &mut self,
+        feed_id: &Id,
+        name: &str,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         let name = name.trim().to_string();
         if name.is_empty() {
             return;
         }
-        if let Some(f) = self.store.feeds.iter_mut().find(|f| f.id == feed_id) {
-            name.clone_into(&mut f.title);
-            self.perform_action(doc, &actions::rename_feed_action(feed_id, &name));
+        if self.store.feed(feed_id).is_some() {
+            self.perform(
+                doc,
+                Library::paths().feeds.item(feed_id).title.replace(name),
+            );
             self.set_toast("Feed renamed");
         }
     }
@@ -1165,25 +1190,46 @@ impl Core {
                     feed_id,
                     title,
                     articles,
+                    certificate_pin,
                 } => {
-                    let mut feed_changed = false;
-                    if let Some(t) = title
-                        && !t.is_empty()
-                        && let Some(f) = self.store.feeds.iter_mut().find(|f| f.id == feed_id)
-                        && f.title != t
-                    {
-                        f.title = t;
-                        feed_changed = true;
-                    }
-                    let mut added = 0;
-                    for a in articles {
-                        if self.store.insert_article_dedup(a.clone()) {
-                            self.pending_doc_writes.push(DocWrite::Article(a));
-                            added += 1;
+                    let Some(feed) = self.store.feed(&feed_id) else {
+                        self.refresh.done += 1;
+                        self.maybe_finish_refresh();
+                        continue;
+                    };
+                    let title = title.filter(|t| !t.is_empty() && *t != feed.title);
+                    // Trust on first use: a feed added without a fetch
+                    // (OPML import, an action) pins what it first sees.
+                    let certificate_pin =
+                        certificate_pin.filter(|_| feed.certificate_pin.is_none());
+                    let mut fresh: Vec<_> = Vec::new();
+                    for article in articles {
+                        let landing = self
+                            .pending_landings
+                            .iter()
+                            .flat_map(|landing| &landing.fetched.articles)
+                            .chain(&fresh)
+                            .any(|queued| {
+                                queued.url == article.url && queued.title == article.title
+                            });
+                        if !landing
+                            && !self
+                                .store
+                                .has_article(&feed_id, &article.url, &article.title)
+                        {
+                            fresh.push(article);
                         }
                     }
-                    if feed_changed && let Some(f) = self.store.feed(feed_id) {
-                        self.pending_doc_writes.push(DocWrite::Feed(f.clone()));
+                    let added = fresh.len();
+                    if title.is_some() || certificate_pin.is_some() || !fresh.is_empty() {
+                        self.pending_landings.push(Landing {
+                            fetched: library::Refreshed {
+                                feed: feed_id,
+                                title,
+                                certificate_pin,
+                                articles: fresh,
+                            },
+                        });
                     }
                     self.refresh.done += 1;
                     if added > 0 {
@@ -1191,19 +1237,6 @@ impl Core {
                         self.refresh.new_items += added;
                     }
                     self.maybe_finish_refresh();
-                }
-                FetchResult::Subscribed { feed, articles } => {
-                    let mut feed = feed;
-                    feed.order = self.store.next_feed_order(feed.folder);
-                    self.store.upsert_feed(feed.clone());
-                    self.pending_doc_writes.push(DocWrite::Feed(feed.clone()));
-                    for a in articles {
-                        if self.store.insert_article_dedup(a.clone()) {
-                            self.pending_doc_writes.push(DocWrite::Article(a));
-                        }
-                    }
-                    self.set_toast(format!("Subscribed to {}", feed.title));
-                    self.set_filter(Filter::Feed(feed.id));
                 }
                 FetchResult::Failed { feed_id, message } => {
                     if feed_id.is_some() {
@@ -1232,28 +1265,36 @@ impl Core {
                         self.refresh.failed_feeds, self.refresh.total
                     ))
                 } else {
-                    Ok(tilo_actions::ActionOutput::default())
+                    Ok(ui::tilo_actions::ActionOutput::default())
                 });
             }
         }
     }
 
-    /// Persist what the live drain queued, at most [`FLUSH_BUDGET`] writes per
+    /// Land what the live drain queued, at most [`FLUSH_BUDGET`] articles per
     /// call, so a big refresh never stalls a frame.
     pub(crate) fn flush_doc_writes(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        if self.pending_doc_writes.is_empty() {
+        let Some(landing) = self.pending_landings.first_mut() else {
             return;
-        }
-        let n = self.pending_doc_writes.len().min(FLUSH_BUDGET);
-        let mut articles = Vec::new();
-        let mut feeds = Vec::new();
-        for write in self.pending_doc_writes.drain(..n) {
-            match write {
-                DocWrite::Article(article) => articles.push(article),
-                DocWrite::Feed(feed) => feeds.push(feed),
-            }
-        }
-        self.perform_action(doc, &FeedsAction::UpsertFetched { articles, feeds });
+        };
+        let rest = if landing.fetched.articles.len() > FLUSH_BUDGET {
+            landing.fetched.articles.split_off(FLUSH_BUDGET)
+        } else {
+            Vec::new()
+        };
+        let fetched = if rest.is_empty() {
+            self.pending_landings.remove(0).fetched
+        } else {
+            let fetched = landing.fetched.clone();
+            landing.fetched = library::Refreshed {
+                feed: fetched.feed.clone(),
+                title: None,
+                certificate_pin: None,
+                articles: rest,
+            };
+            fetched
+        };
+        self.perform(doc, Library::REFRESHED.with(fetched));
     }
 
     /// Reconcile with the document: seed or adopt it on the first pass, then
@@ -1322,8 +1363,8 @@ impl Core {
             Request::Refresh => self.refresh_all(),
             Request::MarkAllRead => self.mark_all_read(doc),
             Request::StarOpen => {
-                if let Some(id) = self.selected {
-                    self.toggle_star(id, doc);
+                if let Some(id) = self.selected.clone() {
+                    self.toggle_star(&id, doc);
                 }
             }
             Request::OpenOriginal => self.open_selected_link(),
@@ -1334,13 +1375,13 @@ impl Core {
             Request::SetFolderCollapsed(id, collapsed) => {
                 let unchanged = self
                     .store
-                    .folders_sorted()
-                    .iter()
-                    .any(|folder| folder.id == id && folder.collapsed == collapsed);
+                    .folders
+                    .get(&id)
+                    .is_none_or(|folder| folder.collapsed == collapsed);
                 if !unchanged {
-                    self.perform_action(
+                    self.perform(
                         doc,
-                        &crate::actions::set_folder_collapsed_action(id, collapsed),
+                        Library::paths().folders.item(&id).collapsed.set(collapsed),
                     );
                 }
             }
@@ -1354,36 +1395,38 @@ impl Core {
         }
     }
 
-    /// Show an item a search hit (or an agent's `open`) points at: the last
-    /// segment of `anchor` names an article or a feed.
-    fn open_anchor(&mut self, anchor: &str) {
-        let last = anchor.rsplit('/').next().unwrap_or(anchor);
-        if let Some(id) = last
-            .strip_prefix("feeds.article:")
-            .and_then(|raw| raw.parse::<Id>().ok())
-        {
-            self.reveal_article(id);
-        } else if let Some(id) = last
-            .strip_prefix("feeds.subscription:")
-            .and_then(|raw| raw.parse::<Id>().ok())
-            && self.store.feed(id).is_some()
-        {
-            self.set_filter(Filter::Feed(id));
+    /// Show the item a search hit (or an agent's `open`) names: an article
+    /// in its feed, a subscription's articles or a folder's.
+    pub(crate) fn open_item(&mut self, id: &Id) -> Result<(), String> {
+        if self.reveal_article(id) {
+            return Ok(());
         }
+        if self.store.feed(id).is_some() {
+            self.set_filter(Filter::Feed(id.clone()));
+            return Ok(());
+        }
+        if self.store.folder(id).is_some() {
+            self.set_filter(Filter::Folder(id.clone()));
+            return Ok(());
+        }
+        Err("no such article, subscription or folder".into())
     }
 
     /// Show `id` in its feed and open it; the read mark waits for the next
     /// pass that holds the document.
-    fn reveal_article(&mut self, id: Id) -> bool {
-        let Some(feed_id) = self.store.article(id).map(|article| article.feed_id) else {
+    fn reveal_article(&mut self, id: &Id) -> bool {
+        let Some(feed_id) = self
+            .store
+            .article(id)
+            .map(|article| article.feed_id.clone())
+        else {
             return false;
         };
         self.set_filter(Filter::Feed(feed_id));
-        self.selected = Some(id);
+        self.selected = Some(id.clone());
         self.reader.scroll_to_top();
-        if self.store.mark_read(id, true) {
-            self.pending_resource_actions
-                .push(actions::mark_read_action(id, true));
+        if self.store.article(id).is_some_and(|article| !article.read) {
+            self.pending_reads.push(id.clone());
         }
         self.show_pane = Some(NavPane::Content);
         true
@@ -1399,8 +1442,8 @@ impl Core {
                 "k" => self.move_selection(-1, doc),
                 "m" => self.toggle_read(doc),
                 "s" => {
-                    if let Some(id) = self.selected {
-                        self.toggle_star(id, doc);
+                    if let Some(id) = self.selected.clone() {
+                        self.toggle_star(&id, doc);
                     }
                 }
                 "t" => self.open_tag_editor(),
@@ -1426,7 +1469,7 @@ impl Core {
                 .worker
                 .as_ref()
                 .is_none_or(|worker| worker.pending() == 0)
-            && self.pending_doc_writes.is_empty()
+            && self.pending_landings.is_empty()
         {
             return None;
         }
@@ -1441,14 +1484,14 @@ impl Core {
 
     /// Whether background work still needs frames: outstanding fetches (the
     /// draw-time drain lands them), visible progress, queued writes, an open
-    /// file chooser, a toast.
+    /// file chooser, a notice not yet handed to the shell.
     pub(crate) fn needs_frames(&self) -> bool {
         self.worker.as_ref().is_some_and(|w| w.pending() > 0)
             || self.refresh.visible()
-            || !self.pending_doc_writes.is_empty()
+            || !self.pending_landings.is_empty()
             || self.import_rx.is_some()
             || self.export_rx.is_some()
-            || self.toast_visible().is_some()
+            || self.toast.is_some()
     }
 }
 
@@ -1466,7 +1509,7 @@ impl HeaderActions<'_> {
         let requests = Rc::clone(self.requests);
         HeaderButton::new(
             Button::icon_only(id, icon, label)
-                .on_effect(move || requests.borrow_mut().push(request)),
+                .on_effect(move || requests.borrow_mut().push(request.clone())),
             self.core,
         )
     }
@@ -1511,7 +1554,7 @@ impl HeaderActions<'_> {
                     "Mark all as read",
                     Request::MarkAllRead,
                 )
-                .enabled_when(|core| core.store.unread_count_for(core.filter) > 0),
+                .enabled_when(|core| core.store.unread_count_for(&core.filter) > 0),
             ),
             Box::new(
                 self.button(
@@ -1604,8 +1647,8 @@ pub struct FeedsApp {
     /// How many layouts in a row gave the window the same rect.
     settled_layouts: u32,
     mount: Option<OverlayMount>,
-    /// Anchors of search hits picked in the framework host.
-    opened: Rc<RefCell<Vec<String>>>,
+    /// Items search hits and agents opened in the framework host.
+    opened: Rc<RefCell<Vec<Id>>>,
 }
 
 impl Default for FeedsApp {
@@ -1660,9 +1703,27 @@ impl FeedsApp {
         }
     }
 
-    /// Where the framework's search opener leaves picked anchors.
-    pub(crate) fn opener(&self) -> Rc<RefCell<Vec<String>>> {
-        Rc::clone(&self.opened)
+    /// What the framework calls with the item a search hit or an agent's
+    /// `open` names: refused when the library holds no such item, shown on
+    /// the next pass.
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&Id) -> Result<(), ui::tilo_resource::Refusal> + 'static {
+        let opened = Rc::clone(&self.opened);
+        let core = Rc::clone(&self.core);
+        move |id: &Id| {
+            let core = core.borrow();
+            let known = core.store.articles.contains(id)
+                || core.store.feeds.contains(id)
+                || core.store.folders.contains(id);
+            if !known {
+                return Err(ui::tilo_resource::Refusal::new(
+                    "no such article, subscription or folder",
+                ));
+            }
+            opened.borrow_mut().push(id.clone());
+            Ok(())
+        }
     }
 
     // --- capture staging ----------------------------------------------------
@@ -1711,16 +1772,17 @@ impl FeedsApp {
                 let article = {
                     let core = self.core.borrow();
                     core.selected
-                        .or_else(|| core.store.articles.first().map(|article| article.id))
+                        .clone()
+                        .or_else(|| core.store.articles.ids().next().cloned())
                 };
                 if let Some(article) = article {
-                    self.core.borrow_mut().reveal_article(article);
+                    self.core.borrow_mut().reveal_article(&article);
                     self.stage_tag_editor();
                     self.take_pending_modal();
                 }
             }
             "context-menu" => {
-                let row = self.core.borrow().first_feed_row;
+                let row = self.core.borrow().first_feed_row.clone();
                 let Some((id, rect)) = row else {
                     self.pending_scenario = Some(scenario);
                     return;
@@ -1733,24 +1795,9 @@ impl FeedsApp {
         self.shell.snap();
     }
 
-    /// Open the add-subscription dialog with `url` typed into its field.
-    pub fn stage_add_subscription(&mut self, url: &str) {
-        self.core.borrow_mut().open_add_subscription();
-        self.take_pending_modal();
-        if let Some(m) = self.modal.as_mut() {
-            m.dialog.content_mut().set_value(url);
-        }
-    }
-
     /// Open the open article's tag editor.
     pub fn stage_tag_editor(&mut self) {
         self.core.borrow_mut().open_tag_editor();
-    }
-
-    /// Merge the bundled sample OPML into the store, as right after an import.
-    pub fn stage_post_import(&mut self) {
-        let parsed = opml::parse(opml::sample_opml());
-        opml::import_into(&mut self.core.borrow_mut().store, &parsed);
     }
 
     /// A refresh of every feed partway through: some done, some updated,
@@ -1769,32 +1816,10 @@ impl FeedsApp {
         };
     }
 
-    pub fn set_read_theme(&mut self, theme: ReadTheme) {
-        self.core.borrow_mut().settings.theme = theme;
-    }
-
-    pub fn set_read_font(&mut self, font: ReadFont) {
-        self.core.borrow_mut().settings.font = font;
-    }
-
-    /// Give two feeds long titles, to check the sidebar elides them.
-    pub fn stage_long_sidebar_titles(&mut self) {
-        let long = [
-            "International Space Station Daily Operations and Mission Updates",
-            "The Exhaustively Comprehensive Front-End Engineering Weekly Digest",
-        ];
-        for (f, title) in self.core.borrow_mut().store.feeds.iter_mut().zip(long) {
-            f.title = title.to_string();
-        }
-    }
-
     // --- framework host ---------------------------------------------------------
 
     /// Attach the framework dispatcher when hosted as a resource surface.
-    pub(crate) fn attach_framework(
-        &self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Feeds>,
-    ) {
+    pub(crate) fn attach_framework(&self, dispatcher: ui::framework::Dispatcher<Library>) {
         self.core.borrow_mut().dispatcher = Some(dispatcher);
     }
 
@@ -1802,12 +1827,12 @@ impl FeedsApp {
 
     /// The open article.
     pub fn selected_article(&self) -> Option<Id> {
-        self.core.borrow().selected
+        self.core.borrow().selected.clone()
     }
 
     /// The place the article list shows.
     pub fn active_filter(&self) -> Filter {
-        self.core.borrow().filter
+        self.core.borrow().filter.clone()
     }
 
     /// The first-run prompt while there are no subscriptions.
@@ -1905,7 +1930,7 @@ impl FeedsApp {
         let Some((intent, value)) = self
             .modal
             .as_ref()
-            .map(|m| (m.intent, m.dialog.content().value().to_string()))
+            .map(|m| (m.intent.clone(), m.dialog.content().value().to_string()))
         else {
             return;
         };
@@ -1953,14 +1978,23 @@ impl FeedsApp {
 
     /// Apply what retained controls asked for, bring the screen a choice
     /// asked for to the front, and keep the column titles current.
+    /// Hand the core's latest notice to the shell, which shows and expires it.
+    fn take_toast(&mut self) {
+        match self.core.borrow_mut().toast.take() {
+            Some(ToastChange::Show(message)) => self.shell.toast(message, ToastKind::Info),
+            Some(ToastChange::Dismiss) => self.shell.dismiss_toast(),
+            None => {}
+        }
+    }
+
     fn settle_controls(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let opened = std::mem::take(&mut *self.opened.borrow_mut());
-        for anchor in opened {
-            self.core.borrow_mut().open_anchor(&anchor);
+        for id in opened {
+            let _ = self.core.borrow_mut().open_item(&id);
         }
         let requests = std::mem::take(&mut *self.requests.borrow_mut());
         for request in requests {
-            if request == Request::ReaderSettings {
+            if matches!(request, Request::ReaderSettings) {
                 self.toggle_settings_panel();
             } else {
                 self.core.borrow_mut().apply(request, doc);
@@ -2001,27 +2035,7 @@ impl FeedsApp {
             self.shell.set_content_title(titles.1.clone());
         }
         self.titles = titles;
-    }
-
-    fn paint_toast(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let core = self.core.borrow();
-        if let Some(message) = core.toast_visible() {
-            paint_transient(
-                scene,
-                transform,
-                text,
-                theme,
-                core.window,
-                ToastAnchor::BottomRight,
-                &ToastCard::new(message, ToastKind::Info),
-            );
-        }
+        self.take_toast();
     }
 
     fn handle_semantic(
@@ -2038,7 +2052,7 @@ impl FeedsApp {
             let chosen = core
                 .menu
                 .as_ref()
-                .and_then(|open| open.actions.get(index).copied())?;
+                .and_then(|open| open.actions.get(index).cloned())?;
             if matches!(action, A11yAction::Activate) {
                 core.menu = None;
                 core.apply_menu_action(chosen, doc);
@@ -2060,20 +2074,20 @@ impl FeedsApp {
                 .and_then(|raw| raw.parse::<Id>().ok())
         };
         if let Some(id) = parse("feeds.article:") {
-            if core.store.article(id).is_none() {
+            if core.store.article(&id).is_none() {
                 return Some(false);
             }
-            core.select_article(id, doc);
+            core.select_article(&id, doc);
         } else if let Some(id) = parse("feeds.star:") {
-            if core.store.article(id).is_none() {
+            if core.store.article(&id).is_none() {
                 return Some(false);
             }
-            core.toggle_star(id, doc);
+            core.toggle_star(&id, doc);
         } else if let Some(key) = target
             .strip_prefix("feeds.reader-tag:")
             .and_then(|raw| raw.parse::<crate::model::TagKey>().ok())
         {
-            if !core.store.articles.iter().any(|article| {
+            if !core.store.articles.values().any(|article| {
                 article
                     .tags
                     .iter()
@@ -2088,7 +2102,7 @@ impl FeedsApp {
         {
             let href = core
                 .open_article()
-                .and_then(|article| article.blocks.get(index))
+                .and_then(|article| article.item().blocks.0.get(index))
                 .and_then(|block| block.href.clone())?;
             core.open_url(&href);
         } else if target == "feeds.empty.add" {
@@ -2131,9 +2145,9 @@ impl ui::widget::Decorator for FeedsApp {
         }
         self.core.borrow_mut().flush_doc_writes(edits);
         self.core.borrow_mut().drain_import(edits);
-        let actions = std::mem::take(&mut self.core.borrow_mut().pending_resource_actions);
-        for action in actions {
-            self.core.borrow_mut().perform_action(edits, &action);
+        let reads = std::mem::take(&mut self.core.borrow_mut().pending_reads);
+        for id in reads {
+            self.core.borrow_mut().perform(edits, read_edit(&id, true));
         }
         self.drain_modal_actions(edits);
         self.settle_controls(edits);
@@ -2144,6 +2158,7 @@ impl ui::widget::Decorator for FeedsApp {
             let (doc, _) = ui::doc::document_ref(state, path);
             self.core.borrow_mut().sync_document(doc);
         }
+        self.take_toast();
         Widget::sync(&mut self.shell, state, path);
         if let Some(modal) = self.modal.as_mut() {
             modal.dialog.sync(state, path);
@@ -2216,11 +2231,7 @@ impl ui::widget::Decorator for FeedsApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         match self.mount.filter(|mount| mount.root == node) {
             Some(mount) => {
-                let l = taffy.layout(node).copied().unwrap_or_default();
-                let inner = Point::new(
-                    origin.x + f64::from(l.location.x),
-                    origin.y + f64::from(l.location.y),
-                );
+                let inner = ui::widget::layout_rect(taffy, node, origin).origin();
                 Widget::apply_layout(&mut self.shell, taffy, mount.shell, inner);
                 if let (Some(modal), Some(dialog)) = (self.modal.as_mut(), mount.dialog) {
                     modal.dialog.apply_layout(taffy, dialog, inner);
@@ -2300,28 +2311,8 @@ impl ui::widget::Decorator for FeedsApp {
     ) {
         // Results land live, every frame, without a document in hand.
         self.core.borrow_mut().drain_fetches_live();
+        self.take_toast();
         Widget::draw(&mut self.shell, scene, transform, text, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.core.borrow_mut().drain_fetches_live();
-        Widget::draw_with_presence(
-            &mut self.shell,
-            scene,
-            transform,
-            text,
-            theme,
-            presence,
-            permissions,
-        );
     }
 
     fn draw_overlay(
@@ -2343,7 +2334,6 @@ impl ui::widget::Decorator for FeedsApp {
                 Widget::draw_overlay(&mut open.menu, scene, transform, text, theme, presence);
             }
         }
-        self.paint_toast(scene, transform, text, theme);
         if let Some(modal) = self.modal.as_mut() {
             modal
                 .dialog
@@ -2503,7 +2493,7 @@ impl ui::widget::Decorator for FeedsApp {
                     .with_live(Politeness::Polite),
             );
         }
-        if let Some(message) = core.toast_visible() {
+        if let Some(message) = self.shell.toast_text() {
             children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(message.to_string())
@@ -2584,20 +2574,23 @@ impl Core {
 }
 
 impl FeedsApp {
-    pub(crate) fn present_library(&self, store: Store) {
+    pub(crate) fn present_library(&self, store: Rc<Library>) {
         let mut core = self.core.borrow_mut();
         let first = !core.synced;
         core.store = store;
+        core.arrive();
+        // A feed shown on its own that is gone (unsubscribed here or by a
+        // collaborator) leaves the list on everything.
+        if matches!(&core.filter, Filter::Feed(id) if core.store.feed(id).is_none()) {
+            core.set_filter(Filter::All);
+        }
         core.ensure_selection();
         if first && core.selected.is_none() {
             core.select_featured();
         }
         core.synced = true;
     }
-    pub(crate) fn attach_dispatcher(
-        &self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Feeds>,
-    ) {
+    pub(crate) fn attach_dispatcher(&self, dispatcher: ui::framework::Dispatcher<Library>) {
         self.attach_framework(dispatcher);
     }
     pub(crate) fn follow_read_settings(&self, setting: ui::framework::Setting<ReadSettings>) {
@@ -2639,28 +2632,13 @@ impl FeedsApp {
     pub(crate) fn export_opml(&self) {
         self.core.borrow_mut().export_opml();
     }
-    pub(crate) fn reveal(&self, item: &str) -> Result<(), String> {
+    /// Show the articles tagged `tag`.
+    pub(crate) fn reveal_tag(&self, tag: &str) -> Result<(), String> {
         let mut core = self.core.borrow_mut();
-        if let Some(raw) = item.strip_prefix("feeds.subscription:") {
-            let id = raw.parse::<Id>().map_err(|_| "invalid feed id")?;
-            if core.store.feed(id).is_none() {
-                return Err("feed no longer exists".into());
-            }
-            core.set_filter(Filter::Feed(id));
-        } else if let Some(raw) = item.strip_prefix("feeds.article:") {
-            let id = raw.parse::<Id>().map_err(|_| "invalid article id")?;
-            if !core.reveal_article(id) {
-                return Err("article no longer exists".into());
-            }
-        } else if item.starts_with("feeds.tag:") {
-            let tag = actions::tag_from_resource_id(item).ok_or("invalid tag")?;
-            if !core.store.has_tag(&tag) {
-                return Err("tag no longer exists".into());
-            }
-            core.set_filter(Filter::Tag(crate::model::tag_key(&tag)));
-        } else {
-            return Err("unknown library item".into());
+        if !core.store.has_tag(tag) {
+            return Err("no article carries that tag".into());
         }
+        core.set_filter(crate::resource::tag_filter(tag));
         Ok(())
     }
 }

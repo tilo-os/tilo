@@ -10,6 +10,7 @@
 //! windows paint, hit testing, fetching, scrolling, and accessibility to the
 //! same visible rows.
 
+use crate::num::f32_of_f64;
 use crate::time::Instant;
 use crate::widget::{AppModel, ModelPath};
 use std::cmp::Ordering;
@@ -186,6 +187,8 @@ pub struct ColumnDef<Row> {
     pub key: String,
     pub header: String,
     pub width: ColumnWidth,
+    /// Smallest readable width before optional columns hide or the table scrolls.
+    pub min_width: f32,
     pub sortable: bool,
     /// `None` renders an empty cell.
     pub text_render: Option<CellTextRender<Row>>,
@@ -231,6 +234,7 @@ impl<Row> ColumnDef<Row> {
             key: key.into(),
             header: header.into(),
             width,
+            min_width: 0.0,
             sortable: false,
             text_render: None,
             render_cell: Box::new(|_, _, _, _, _, _| {}),
@@ -282,6 +286,19 @@ impl<Row> ColumnDef<Row> {
     #[must_use]
     pub fn wrapping(mut self, max_lines: usize) -> Self {
         self.max_lines = max_lines.max(1);
+        self
+    }
+
+    /// Keep a readable cell width while flexible columns share extra room.
+    /// If the remaining columns cannot fit their minima, the table scrolls
+    /// horizontally instead of squeezing their text or controls.
+    #[must_use]
+    pub fn min_width(mut self, width: f32) -> Self {
+        self.min_width = if width.is_finite() {
+            width.max(0.0)
+        } else {
+            0.0
+        };
         self
     }
 
@@ -1774,7 +1791,7 @@ impl<Row> DataTable<Row> {
 
     #[must_use]
     pub fn scroll_y(&self) -> f32 {
-        px(self.viewport.offset())
+        f32_of_f64(self.viewport.offset())
     }
 
     /// Override one display row's measured height while keeping the current
@@ -1971,7 +1988,7 @@ impl<Row> DataTable<Row> {
 
     /// `content - viewport`, floored at 0.
     pub fn max_scroll_y(&self) -> f32 {
-        px(self.viewport.max_offset())
+        f32_of_f64(self.viewport.max_offset())
     }
 
     fn v_metrics(&self) -> ScrollMetrics {
@@ -2562,7 +2579,7 @@ impl<Row> DataTable<Row> {
     fn on_cursor_moved(&mut self, pt: Point, handled: &mut bool) {
         self.last_cursor = Some(pt);
         if self.resize.is_some() {
-            self.drag_resize(px(pt.x));
+            self.drag_resize(f32_of_f64(pt.x));
             *handled = true;
             return;
         }
@@ -2571,7 +2588,7 @@ impl<Row> DataTable<Row> {
             if let Some(track) = self.v_track()
                 && let Some(target) = self.vbar.drag_to(track, self.v_metrics(), pt)
             {
-                self.set_scroll_y(px(target));
+                self.set_scroll_y(f32_of_f64(target));
             }
             *handled = true;
             return;
@@ -2643,7 +2660,7 @@ impl<Row> DataTable<Row> {
                     return;
                 }
                 PressOutcome::Page(target) => {
-                    self.set_scroll_y(px(target));
+                    self.set_scroll_y(f32_of_f64(target));
                     *handled = true;
                     return;
                 }
@@ -2672,7 +2689,7 @@ impl<Row> DataTable<Row> {
                 let Some(key) = self.columns.get(i).map(|c| c.key.clone()) else {
                     continue;
                 };
-                self.begin_resize(&key, px(pt.x));
+                self.begin_resize(&key, f32_of_f64(pt.x));
                 *handled = true;
                 return;
             }
@@ -2972,31 +2989,6 @@ impl<Row> DataTable<Row> {
             _ => {}
         }
     }
-
-    fn route_to_cell_widgets(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
-    ) {
-        if let Some(cell) = self
-            .mounted_cells
-            .iter_mut()
-            .find(|cell| cell.widget.wants_pointer_capture())
-            && let Some(node) = cell.node
-        {
-            cell.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            return;
-        }
-        for cell in self.mounted_cells.iter_mut().rev() {
-            let Some(node) = cell.node else { continue };
-            cell.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            if *ctx.handled {
-                break;
-            }
-        }
-    }
 }
 
 const HEADER_HEIGHT: f64 = 32.0;
@@ -3035,13 +3027,13 @@ fn paint_cell_text<Row>(
         Some(value) => (value, theme.text_primary),
         None => (column.absent.as_str(), theme.text_tertiary),
     };
-    let room = px((cell.width() - 2.0 * pad).max(0.0));
+    let room = f32_of_f64((cell.width() - 2.0 * pad).max(0.0));
     if column.max_lines > 1 {
         // A wrapping cell: its lines centred on the row as one block.
         let lines = text.clamp_to_lines(label, &style, room, column.max_lines);
         let line_h = f64::from(style.line_height_px());
         let block = line_h * lines.len() as f64;
-        let mut y = centered_text_top(cell.y0, cell.height(), px(block));
+        let mut y = centered_text_top(cell.y0, cell.height(), f32_of_f64(block));
         for line in &lines {
             let (w, _) = text.measure_style(line, None, &style);
             let x = align.place(cell, f64::from(w), pad);
@@ -3106,17 +3098,6 @@ fn paint_cell_badge(
 /// the row above, which the unclamped rule would let it do.
 pub(crate) fn centered_text_top(band_y0: f64, band_h: f64, text_h: f32) -> f64 {
     crate::text_metrics::centered_text_top(band_y0, band_h, f64::from(text_h)).max(band_y0)
-}
-
-/// Narrows a bounded screen-space `f64` (row/pixel geometry) to `f32` for
-/// vello/taffy; table content stays far below `f32::MAX`.
-#[inline]
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space pixel values in this widget never approach f32::MAX"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
 }
 
 /// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
@@ -3221,11 +3202,11 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .get(cell.column_index)
                 .is_none_or(|column| column.alignment() == CellAlign::Leading);
             if let Some(column) = self.col_rects.get(cell.column_index) {
-                style.inset.left = length(px(column.x0 - self.rect.x0));
+                style.inset.left = length(f32_of_f64(column.x0 - self.rect.x0));
                 if fills {
-                    style.size.width = Dimension::length(px(column.width()));
+                    style.size.width = Dimension::length(f32_of_f64(column.width()));
                 } else {
-                    style.max_size.width = Dimension::length(px(column.width()));
+                    style.max_size.width = Dimension::length(f32_of_f64(column.width()));
                 }
             } else if let Some(column) = self.columns.get(cell.column_index)
                 && let ColumnWidth::Fixed(width) = column.width
@@ -3240,7 +3221,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .viewport
                 .item_view_top(cell.row_index)
                 .unwrap_or_default();
-            style.inset.top = length(px(self.header_h + top));
+            style.inset.top = length(f32_of_f64(self.header_h + top));
             let _ = taffy.set_style(child, style);
             cell.node = Some(child);
             child_nodes.push(child);
@@ -3268,7 +3249,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 },
                 min_size: Size {
                     width: Dimension::auto(),
-                    height: Dimension::length(px(self.header_h + self.default_row_h)),
+                    height: Dimension::length(f32_of_f64(self.header_h + self.default_row_h)),
                 },
                 flex_grow: 1.0,
                 flex_shrink: 1.0,
@@ -3283,7 +3264,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
             Style {
                 size: Size {
                     width: percent(1.0_f32),
-                    height: Dimension::length(px(height)),
+                    height: Dimension::length(f32_of_f64(height)),
                 },
                 overflow: taffy::Point {
                     x: taffy::Overflow::Clip,
@@ -3300,7 +3281,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
 
     /// Measure [`ColumnWidth::Auto`] columns from their header and the
     /// visible cells, never narrower than four characters' worth of line.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         _taffy: &mut TaffyTree<()>,
         _node: NodeId,
@@ -3370,7 +3351,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     width = width.max(f64::from(measured.width) - pad);
                 }
             }
-            next.insert(col.key.clone(), px((width + pad).max(floor).ceil()));
+            next.insert(col.key.clone(), f32_of_f64((width + pad).max(floor).ceil()));
         }
         // Wrapping cells grow their rows to hold their lines.
         let mut grew = false;
@@ -3393,7 +3374,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                         continue;
                     }
                     let cell = value(row).unwrap_or_default();
-                    let room = px((cr.width() - pad).max(1.0));
+                    let room = f32_of_f64((cr.width() - pad).max(1.0));
                     let n = text
                         .clamp_to_lines(&cell, &cell_style(&theme, col.kind), room, col.max_lines)
                         .len();
@@ -3414,13 +3395,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if self.fill_height {
             // The rows scroll inside whatever height the parent gave.
             let body = (self.rect.height() - self.header_h - self.h_reserve).max(0.0);
@@ -3592,7 +3567,12 @@ impl<Row: 'static> Widget for DataTable<Row> {
             _ => {}
         }
         if self.resize.is_none() && !self.vbar.is_dragging() && !self.drag_scroll.is_tracking() {
-            self.route_to_cell_widgets(event, ctx);
+            crate::widget::route_to_mounted(
+                &mut self.mounted_cells,
+                |mounted| (&mut mounted.widget, mounted.node),
+                event,
+                ctx,
+            );
         }
         if *ctx.handled {
             return;
@@ -3906,17 +3886,16 @@ impl<Row: 'static> Widget for DataTable<Row> {
     /// Rows carry no explicit key, so the path element is the row's display
     /// index (its ordinal among the table's synthetic children); the
     /// callbacks it reaches name the host's row, as `on_row_click` does.
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-        // Empty path: the table itself, not a row — nothing table-specific to do.
         let Some(&row_key) = key_path.first() else {
-            return self.perform_action(action, state, path);
+            return false;
         };
         // A read-only table's rows aren't operable.
         if !self.selectable {
@@ -4058,16 +4037,24 @@ fn column_floor<Row>(
     overrides: &HashMap<String, f32>,
     auto: &HashMap<String, f32>,
 ) -> (f32, Option<f32>) {
+    let minimum = column.min_width;
     if let Some(px) = overrides.get(&column.key).copied() {
-        return (px, Some(px));
+        let width = px.max(minimum);
+        return (width, Some(width));
     }
     match column.width {
-        ColumnWidth::Fixed(px) => (px, Some(px)),
-        ColumnWidth::Auto => auto
-            .get(&column.key)
-            .copied()
-            .map_or((DataTable::<Row>::MIN_COL_WIDTH, None), |px| (px, Some(px))),
-        ColumnWidth::Flex(_) => (DataTable::<Row>::MIN_COL_WIDTH, None),
+        ColumnWidth::Fixed(px) => {
+            let width = px.max(minimum);
+            (width, Some(width))
+        }
+        ColumnWidth::Auto => auto.get(&column.key).copied().map_or(
+            (DataTable::<Row>::MIN_COL_WIDTH.max(minimum), None),
+            |px| {
+                let width = px.max(minimum);
+                (width, Some(width))
+            },
+        ),
+        ColumnWidth::Flex(_) => (DataTable::<Row>::MIN_COL_WIDTH.max(minimum), None),
     }
 }
 
@@ -4105,6 +4092,50 @@ fn hidden_for_room<Row>(
         }
     }
     hidden
+}
+
+/// Allocate weighted space without shrinking a readable flexible minimum.
+fn flexible_column_widths<Row>(
+    columns: &[ColumnDef<Row>],
+    floors: &[(f32, Option<f32>)],
+    hidden: &[bool],
+    mut available: f64,
+) -> Vec<f64> {
+    let mut widths = vec![0.0; columns.len()];
+    let mut pending: Vec<usize> = (0..columns.len())
+        .filter(|&i| !hidden.get(i).copied().unwrap_or(false) && floors[i].1.is_none())
+        .collect();
+    let weight = |i: usize| match columns[i].width {
+        ColumnWidth::Flex(w) => f64::from(w.max(0.0)),
+        _ => 1.0,
+    };
+    while !pending.is_empty() {
+        let total: f64 = pending.iter().map(|&i| weight(i)).sum();
+        let share = |i: usize| {
+            if total > 0.0 {
+                available * weight(i) / total
+            } else {
+                0.0
+            }
+        };
+        let constrained: Vec<usize> = pending
+            .iter()
+            .copied()
+            .filter(|&i| share(i) < f64::from(floors[i].0))
+            .collect();
+        if constrained.is_empty() {
+            for i in pending {
+                widths[i] = share(i);
+            }
+            break;
+        }
+        for i in constrained {
+            widths[i] = f64::from(floors[i].0);
+            available = (available - widths[i]).max(0.0);
+            pending.retain(|&candidate| candidate != i);
+        }
+    }
+    widths
 }
 
 /// Lay the columns out in `host`: fixed, resized and measured `Auto` columns
@@ -4148,6 +4179,11 @@ fn compute_column_rects<Row>(
     }
     let leftover = (total_w - sized).max(0.0);
     let overflow = floor_sum > total_w + 0.5;
+    let floors: Vec<_> = columns
+        .iter()
+        .map(|c| column_floor(c, overrides, auto))
+        .collect();
+    let flexible_widths = flexible_column_widths(columns, &floors, hidden, leftover);
     let mut rects = Vec::with_capacity(columns.len());
     let mut x = host.x0;
     let y0 = host.y0;
@@ -4171,17 +4207,7 @@ fn compute_column_rects<Row>(
                     f64::from(w)
                 }
             }
-            None => {
-                let weight = match c.width {
-                    ColumnWidth::Flex(w) => f64::from(w.max(0.0)),
-                    _ => 1.0,
-                };
-                if flex_sum <= 0.0 {
-                    0.0
-                } else {
-                    leftover * (weight / flex_sum)
-                }
-            }
+            None => flexible_widths[i],
         };
         let next = x + w;
         rects.push(Rect::new(x, y0, next, y1));
@@ -4217,7 +4243,9 @@ fn paint_header_label(
             0.0
         })
     .max(0.0);
-    let label = ctx.text.elide_to_width_style(label, px(room), &text_style);
+    let label = ctx
+        .text
+        .elide_to_width_style(label, f32_of_f64(room), &text_style);
     let (label_w, label_h) = ctx.text.measure_style(&label, None, &text_style);
     let label_y = centered_text_top(cell.y0, cell.height(), label_h);
     let trailing = align == CellAlign::Trailing;
@@ -4429,7 +4457,7 @@ impl<'a> DataTableFace<'a> {
                             width = width.max(f64::from(text.measure_style(cell, None, &style).0));
                         }
                     }
-                    auto.insert(i.to_string(), px((width + pad).ceil()));
+                    auto.insert(i.to_string(), f32_of_f64((width + pad).ceil()));
                 }
                 ColumnDef::new(i.to_string(), c.header, c.width)
             })
@@ -4703,6 +4731,7 @@ mod tier_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use crate::time::Duration;
     use crate::widget::Button;
     use automerge::AutoCommit;
@@ -5161,8 +5190,8 @@ mod tests {
             let mut t = DataTable::<R>::new(sample_cols())
                 .with_row_key(|row| u64::from(row.name.as_bytes()[0]));
             t.set_rows(rows4());
-            t.set_viewport(24.0, px(ROW_HEIGHT));
-            t.set_scroll_y(2.0 * px(ROW_HEIGHT) + 5.0);
+            t.set_viewport(24.0, f32_of_f64(ROW_HEIGHT));
+            t.set_scroll_y(2.0 * f32_of_f64(ROW_HEIGHT) + 5.0);
             let before = t.viewport.item_view_top(2);
 
             t.set_rows(vec![
@@ -5410,7 +5439,6 @@ mod tests {
             // proving the callback path takes precedence (rows stay put).
             t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
             let (tree, node) = lay_out(&mut t);
-            let mods = winit::event::Modifiers::default();
 
             // Header band is y ∈ [0, 28). Name column starts at x=0. Click (20, 10).
             dispatch(
@@ -5418,21 +5446,19 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (20.0, 10.0).into(),
                 },
-                mods,
             );
             dispatch(
                 &mut t,
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                mods,
             );
 
             assert_eq!(*hits.borrow(), vec![0], "header click reported column 0");
@@ -5483,16 +5509,14 @@ mod tests {
             // host's row "a", which is its row 1.
             let _ = lay_out(&mut table);
             let (tree, node) = lay_out(&mut table);
-            let modifiers = winit::event::Modifiers::default();
             dispatch(
                 &mut table,
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (20.0, HEADER_HEIGHT + 12.0).into(),
                 },
-                modifiers,
             );
             for _ in 0..2 {
                 for state in [ElementState::Pressed, ElementState::Released] {
@@ -5501,11 +5525,10 @@ mod tests {
                         &tree,
                         node,
                         &WindowEvent::MouseInput {
-                            device_id: device(),
+                            device_id: winit::event::DeviceId::dummy(),
                             state,
                             button: MouseButton::Left,
                         },
-                        modifiers,
                     );
                 }
             }
@@ -5709,7 +5732,7 @@ mod tests {
 
             let mut doc = automerge::AutoCommit::new();
             let root = automerge::ROOT;
-            let handled = Widget::perform_action_at(
+            let handled = Widget::perform_action(
                 &mut t,
                 &crate::a11y::Action::Activate,
                 &[7],
@@ -5795,7 +5818,7 @@ mod tests {
         typed_text_and_custom_cells_publish_row_specific_values();
     }
 
-    use winit::event::{DeviceId, ElementState, MouseButton};
+    use winit::event::{ElementState, MouseButton};
 
     /// Inside a 300×400 flex-column root so the table's auto width stretches
     /// to 300 and rows get real hit rects.
@@ -5858,17 +5881,15 @@ mod tests {
     /// host scrolls windows its rows, keeps no bar and leaves the wheel.
     #[test]
     fn row_actions_reveal_under_the_pointer_and_a_host_scrolls_the_rows() {
-        let modifiers = winit::event::Modifiers::default();
         let move_to = |table: &mut DataTable<R>, tree: &TaffyTree<()>, node, y: f64| {
             dispatch(
                 table,
                 tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (150.0, y).into(),
                 },
-                modifiers,
             );
         };
         // Case `actions_mount_for_the_hovered_row_only`.
@@ -5938,26 +5959,17 @@ mod tests {
                 Some(100),
                 "rows hit where they are painted"
             );
-            let mut handled = false;
-            let mut doc = AutoCommit::new();
-            let mut focus = None;
-            table.handle_event(
-                &WindowEvent::MouseWheel {
-                    device_id: device(),
-                    delta: MouseScrollDelta::LineDelta(0.0, -3.0),
-                    phase: TouchPhase::Moved,
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            let handled = Dispatch::new()
+                .layout(&tree, node)
+                .send(
+                    &mut table,
+                    &WindowEvent::MouseWheel {
+                        device_id: winit::event::DeviceId::dummy(),
+                        delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+                        phase: TouchPhase::Moved,
+                    },
+                )
+                .handled;
             assert!(!handled, "the wheel is the host's");
         }
     }
@@ -5977,38 +5989,34 @@ mod tests {
             // retained cell controls against those exact column rectangles.
             let _ = lay_out(&mut table);
             let (tree, node) = lay_out(&mut table);
-            let modifiers = winit::event::Modifiers::default();
             dispatch(
                 &mut table,
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (20.0, HEADER_HEIGHT + 12.0).into(),
                 },
-                modifiers,
             );
             dispatch(
                 &mut table,
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                modifiers,
             );
             dispatch(
                 &mut table,
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
-                modifiers,
             );
 
             assert_eq!(clicks.get(), 1, "real cell button receives activation");
@@ -6029,7 +6037,6 @@ mod tests {
             };
             t.set_rows(rows4());
             let (tree, node) = lay_out(&mut t);
-            let mods = winit::event::Modifiers::default();
 
             // The middle of row 2, under the header.
             dispatch(
@@ -6037,21 +6044,19 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (50.0, HEADER_HEIGHT + 2.5 * ROW_HEIGHT).into(),
                 },
-                mods,
             );
             dispatch(
                 &mut t,
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                mods,
             );
 
             assert!(t.selection().is_selected(2), "row 2 selected");
@@ -6063,27 +6068,24 @@ mod tests {
             let mut t = DataTable::<R>::new(sample_cols()); // selectable defaults false
             t.set_rows(rows4());
             let (tree, node) = lay_out(&mut t);
-            let mods = winit::event::Modifiers::default();
             dispatch(
                 &mut t,
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (50.0, 85.0).into(),
                 },
-                mods,
             );
             dispatch(
                 &mut t,
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                mods,
             );
             assert!(
                 t.selection().is_empty(),
@@ -6097,25 +6099,15 @@ mod tests {
             t.set_rows(rows4());
             t.set_focus(true);
             let (tree, node) = lay_out(&mut t);
-            let mods = winit::event::Modifiers::default();
-            // `KeyEvent`'s extra field is `pub(crate)`; zero-init and set the fields we care about.
             let key = |named| {
-                let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-                ev.logical_key = winit::keyboard::Key::Named(named);
-                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                    winit::keyboard::NativeKeyCode::Unidentified,
-                );
-                ev.location = winit::keyboard::KeyLocation::Standard;
-                ev.state = ElementState::Pressed;
-                ev.repeat = false;
-                WindowEvent::KeyboardInput {
-                    device_id: device(),
-                    event: ev,
-                    is_synthetic: false,
-                }
+                crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+                    winit::keyboard::Key::Named(named),
+                    None,
+                    ElementState::Pressed,
+                ))
             };
-            dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown), mods); // → 0
-            dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown), mods); // → 1
+            dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown)); // → 0
+            dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown)); // → 1
             assert_eq!(t.selection().primary(), Some(1));
             assert!(t.selection().is_selected(1));
         }
@@ -6161,34 +6153,8 @@ mod tests {
         aligned_columns_place_their_controls_under_the_header();
     }
 
-    fn dispatch(
-        t: &mut DataTable<R>,
-        tree: &TaffyTree<()>,
-        node: NodeId,
-        ev: &WindowEvent,
-        mods: winit::event::Modifiers,
-    ) {
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        t.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: tree,
-            },
-        );
-    }
-
-    fn device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
+    fn dispatch(t: &mut DataTable<R>, tree: &TaffyTree<()>, node: NodeId, ev: &WindowEvent) {
+        Dispatch::new().layout(tree, node).send(t, ev);
     }
 
     #[test]
@@ -6251,8 +6217,8 @@ mod tests {
                     .collect(),
             );
             let _laid = lay_out(&mut t);
-            t.set_viewport(5.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
-            t.set_scroll_y(10.0 * px(ROW_HEIGHT)); // scrolled past 10 rows
+            t.set_viewport(5.0 * f32_of_f64(ROW_HEIGHT), f32_of_f64(ROW_HEIGHT));
+            t.set_scroll_y(10.0 * f32_of_f64(ROW_HEIGHT)); // scrolled past 10 rows
             let rect = t.get_rect();
             let p = Point::new(rect.x0 + 5.0, rect.y0 + t.header_h + 1.0);
             assert_eq!(
@@ -6271,7 +6237,7 @@ mod tests {
         fn variable_row_heights_share_placement_and_hit_testing() {
             let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
             t.set_rows(rows4());
-            t.set_viewport(60.0, px(ROW_HEIGHT));
+            t.set_viewport(60.0, f32_of_f64(ROW_HEIGHT));
             assert!(t.set_row_height(0, 10.0));
             assert!(t.set_row_height(1, 50.0));
             let _laid = lay_out(&mut t);
@@ -6292,8 +6258,8 @@ mod tests {
                     })
                     .collect(),
             );
-            t.set_viewport(120.0, px(ROW_HEIGHT));
-            t.set_scroll_y(50_000.0 * px(ROW_HEIGHT));
+            t.set_viewport(120.0, f32_of_f64(ROW_HEIGHT));
+            t.set_scroll_y(50_000.0 * f32_of_f64(ROW_HEIGHT));
             let _laid = lay_out(&mut t);
 
             assert!((t.get_rect().height() - (t.header_h + 120.0)).abs() <= 0.5);
@@ -6310,14 +6276,13 @@ mod tests {
 
         fn wheel_scrolls_in_internal_mode() {
             let (mut t, tree, node) = scrolling_table();
-            let mods = winit::event::Modifiers::default();
             assert_eq!(t.scroll_y(), 0.0);
             let wheel = WindowEvent::MouseWheel {
-                device_id: device(),
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                 phase: winit::event::TouchPhase::Moved,
             };
-            dispatch(&mut t, &tree, node, &wheel, mods);
+            dispatch(&mut t, &tree, node, &wheel);
             assert!(
                 t.scroll_y() > 0.0,
                 "wheel down increases scroll_y: {}",
@@ -6348,7 +6313,7 @@ mod tests {
                 .collect(),
         );
         let (tree, node) = lay_out(&mut t);
-        t.set_viewport(5.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
+        t.set_viewport(5.0 * f32_of_f64(ROW_HEIGHT), f32_of_f64(ROW_HEIGHT));
         (t, tree, node)
     }
 
@@ -6416,7 +6381,7 @@ mod tests {
             t.set_rows(rows4());
             let _ = lay_out(&mut t);
             // Viewport taller than the 4 rows → content fits → no bar.
-            t.set_viewport(50.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
+            t.set_viewport(50.0 * f32_of_f64(ROW_HEIGHT), f32_of_f64(ROW_HEIGHT));
             assert!(
                 t.scrollbar_thumb().is_none(),
                 "no bar when rows fit the viewport"
@@ -6448,28 +6413,25 @@ mod tests {
             let thumb = t.scrollbar_thumb().unwrap();
             let x = bar_x(&t);
             let mid_y = thumb.y0.midpoint(thumb.y1);
-            let mods = winit::event::Modifiers::default();
 
             dispatch(
                 &mut t,
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (x, mid_y).into(),
                 },
-                mods,
             );
             dispatch(
                 &mut t,
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                mods,
             );
             assert!(t.vbar.is_dragging(), "press on thumb begins a drag");
             assert!(t.wants_pointer_capture(), "drag captures the pointer");
@@ -6481,10 +6443,9 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (x, mid_y + 50.0).into(),
                 },
-                mods,
             );
             assert!(
                 t.scroll_y() > 0.0,
@@ -6500,10 +6461,9 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (x, mid_y - 50.0).into(),
                 },
-                mods,
             );
             assert!(t.scroll_y() < after, "drag up decreases scroll_y");
 
@@ -6512,11 +6472,10 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
-                mods,
             );
             assert!(!t.vbar.is_dragging(), "release ends the drag");
         }
@@ -6526,32 +6485,30 @@ mod tests {
             let thumb = t.scrollbar_thumb().unwrap();
             let x = bar_x(&t);
             let below_y = thumb.y1 + 5.0;
-            let mods = winit::event::Modifiers::default();
 
             dispatch(
                 &mut t,
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (x, below_y).into(),
                 },
-                mods,
             );
             dispatch(
                 &mut t,
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                mods,
             );
             assert!(!t.vbar.is_dragging(), "track click is not a drag");
             // Paged by ≈ one viewport (five rows) × PAGE_FRACTION.
-            let expected = 5.0 * px(ROW_HEIGHT) * px(crate::widget::scrollbar::PAGE_FRACTION);
+            let expected =
+                5.0 * f32_of_f64(ROW_HEIGHT) * f32_of_f64(crate::widget::scrollbar::PAGE_FRACTION);
             assert!(
                 (t.scroll_y() - expected).abs() < 1.0,
                 "page step ≈ viewport*frac ({expected}), got {}",
@@ -6565,27 +6522,24 @@ mod tests {
             let thumb = t.scrollbar_thumb().unwrap();
             let x = bar_x(&t);
             let mid_y = thumb.y0.midpoint(thumb.y1);
-            let mods = winit::event::Modifiers::default();
             dispatch(
                 &mut t,
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (x, mid_y).into(),
                 },
-                mods,
             );
             dispatch(
                 &mut t,
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                mods,
             );
             assert!(
                 t.selection().is_empty(),
@@ -6605,47 +6559,22 @@ mod tests {
     fn body_drag_scrolls_with_or_without_motion_decay() {
         fn body_drag_scrolls_table_without_selecting_but_click_still_selects() {
             let (mut table, tree, node) = scrolling_table();
-            let modifiers = winit::event::Modifiers::default();
             let body_top = table.get_rect().y0 + table.header_h;
             let move_cursor = |y| WindowEvent::CursorMoved {
-                device_id: device(),
+                device_id: winit::event::DeviceId::dummy(),
                 position: (20.0, y).into(),
             };
             let button = |state| WindowEvent::MouseInput {
-                device_id: device(),
+                device_id: winit::event::DeviceId::dummy(),
                 state,
                 button: MouseButton::Left,
             };
 
-            dispatch(
-                &mut table,
-                &tree,
-                node,
-                &move_cursor(body_top + 100.0),
-                modifiers,
-            );
-            dispatch(
-                &mut table,
-                &tree,
-                node,
-                &button(ElementState::Pressed),
-                modifiers,
-            );
+            dispatch(&mut table, &tree, node, &move_cursor(body_top + 100.0));
+            dispatch(&mut table, &tree, node, &button(ElementState::Pressed));
             assert!(table.wants_pointer_capture());
-            dispatch(
-                &mut table,
-                &tree,
-                node,
-                &move_cursor(body_top + 40.0),
-                modifiers,
-            );
-            dispatch(
-                &mut table,
-                &tree,
-                node,
-                &button(ElementState::Released),
-                modifiers,
-            );
+            dispatch(&mut table, &tree, node, &move_cursor(body_top + 40.0));
+            dispatch(&mut table, &tree, node, &button(ElementState::Released));
             assert_eq!(table.scroll_y(), 60.0);
             assert!(
                 table.selection().is_empty(),
@@ -6653,27 +6582,9 @@ mod tests {
             );
 
             table.set_scroll_y(0.0);
-            dispatch(
-                &mut table,
-                &tree,
-                node,
-                &move_cursor(body_top + 10.0),
-                modifiers,
-            );
-            dispatch(
-                &mut table,
-                &tree,
-                node,
-                &button(ElementState::Pressed),
-                modifiers,
-            );
-            dispatch(
-                &mut table,
-                &tree,
-                node,
-                &button(ElementState::Released),
-                modifiers,
-            );
+            dispatch(&mut table, &tree, node, &move_cursor(body_top + 10.0));
+            dispatch(&mut table, &tree, node, &button(ElementState::Pressed));
+            dispatch(&mut table, &tree, node, &button(ElementState::Released));
             assert!(table.selection().is_selected(0));
         }
 
@@ -6783,7 +6694,7 @@ mod tests {
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = table.build_layout(&mut tree, &theme, &mut map);
         table.set_viewport(200.0, 32.0);
-        assert!(table.adjust_layout_with_measure(&mut tree, node, &mut text));
+        assert!(table.adjust_layout_style(&mut tree, node, &mut text));
         let measured = f64::from(table.auto_widths["name"]);
         let cell = f64::from(
             text.measure_style(
@@ -6795,7 +6706,7 @@ mod tests {
         );
         assert!(measured >= cell, "{measured} fits {cell}");
         assert!(
-            !table.adjust_layout_with_measure(&mut tree, node, &mut text),
+            !table.adjust_layout_style(&mut tree, node, &mut text),
             "settles"
         );
 
@@ -6902,7 +6813,7 @@ mod content_edge_tests {
             let rect = tree.layout(tnode).copied().unwrap_or_default();
             let _ = rect;
             table.apply_layout(&tree, tnode, Point::new(24.0, 0.0));
-            let changed = table.adjust_layout_with_measure(&mut tree, tnode, &mut text);
+            let changed = table.adjust_layout_style(&mut tree, tnode, &mut text);
             node = Some(tnode);
             if !changed {
                 break;
@@ -6918,28 +6829,16 @@ mod content_edge_tests {
         ev: &WindowEvent,
         shift: bool,
     ) -> bool {
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
         let mods = if shift {
-            winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT)
+            winit::keyboard::ModifiersState::SHIFT
         } else {
-            winit::event::Modifiers::default()
+            winit::keyboard::ModifiersState::empty()
         };
-        table.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: tree,
-            },
-        );
-        handled
+        crate::testing::Dispatch::new()
+            .modifiers(mods)
+            .layout(tree, node)
+            .send(table, ev)
+            .handled
     }
 
     fn at(x: f64, y: f64) -> WindowEvent {
@@ -7051,6 +6950,48 @@ mod content_edge_tests {
     }
 
     #[test]
+    fn flexible_minima_keep_identity_readable_before_hiding_or_scrolling() {
+        let mut table = DataTable::new(vec![
+            name_col().min_width(200.0),
+            ColumnDef::new("detail", "Detail", ColumnWidth::Flex(3.0))
+                .min_width(64.0)
+                .priority(1)
+                .with_text(|_: &Item| "detail".to_owned()),
+            ColumnDef::new("action", "Action", ColumnWidth::Fixed(80.0)),
+        ]);
+        table.set_rows(items(3));
+        let _ = settle(&mut table, 600.0, 400.0);
+        assert_eq!(table.hidden, [false, false, false]);
+        assert!(table.col_rects[0].width() >= 200.0);
+        assert!(table.col_rects[1].width() >= 64.0);
+        assert!(
+            table.col_rects[2]
+                .x1
+                .total_cmp(&table.columns_band().x1)
+                .is_eq()
+        );
+        let _ = settle(&mut table, 320.0, 400.0);
+        assert_eq!(table.hidden, [false, true, false]);
+        assert!(table.col_rects[0].width() >= 200.0);
+        assert!(!table.h_overflow());
+        let (tree, node) = settle(&mut table, 240.0, 400.0);
+        assert_eq!(table.hidden, [false, true, false]);
+        assert!(table.col_rects[0].width().total_cmp(&200.0).is_eq());
+        assert!(table.col_rects[2].width().total_cmp(&80.0).is_eq());
+        assert!(table.h_overflow());
+        let before = table.scroll_x();
+        send(&mut table, &tree, node, &at(100.0, 60.0), false);
+        let wheel = WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+            phase: TouchPhase::Moved,
+        };
+        assert!(send(&mut table, &tree, node, &wheel, true));
+        assert!(table.scroll_x() > before);
+        assert!(table.h_track().is_some());
+    }
+
+    #[test]
     fn auto_columns_share_the_leftover_without_a_flexible_one() {
         let mut table = DataTable::new(vec![
             ColumnDef::new("name", "Name", ColumnWidth::Auto).with_text(|r: &Item| r.name.clone()),
@@ -7100,7 +7041,7 @@ mod content_edge_tests {
         assert_eq!(node_a11y.children[0].state.expanded, Some(false));
         assert_eq!(node_a11y.children[1].level, Some(2));
         let mut doc = AutoCommit::new();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             &mut table,
             &crate::a11y::Action::Expand,
             &[0],
@@ -7227,14 +7168,14 @@ mod content_edge_tests {
         );
         assert_eq!(*checks.borrow(), [(1, true)]);
         let mut state = crate::state::State::new();
-        assert!(table.perform_action_at(
+        assert!(table.perform_action(
             &crate::a11y::Action::ToggleCheck,
             &[0, 0],
             &mut crate::widget::Edits::lend(&mut state.doc),
             &state.root,
         ));
         assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
-        assert!(!table.perform_action_at(
+        assert!(!table.perform_action(
             &crate::a11y::Action::ToggleCheck,
             &[0, 99],
             &mut crate::widget::Edits::lend(&mut state.doc),

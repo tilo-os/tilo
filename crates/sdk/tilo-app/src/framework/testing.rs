@@ -6,9 +6,6 @@
 //! invoke actions, that undo reverts them, that a viewer is refused, that
 //! state survives a reopen.
 
-#[cfg(feature = "test-support")]
-pub use super::profiling as phases;
-
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -21,7 +18,7 @@ use ui_core::application::{
 use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
-use ui_core::permissions::{Actor, PermissionContext, Role, UserId};
+use ui_core::permissions::{PermissionContext, Role, UserId};
 
 const AUTHOR: &str = "test-author";
 use ui_core::record::{RecordCheckout, RecordId, RecordStore};
@@ -36,11 +33,13 @@ use super::root::ResourceRoot;
 const INSTANCE: u64 = 7;
 /// The room a test opens the app in unless it names one.
 const TEST_ROOM: &str = "test-workspace";
+/// The device a test app runs on unless it names another.
+const TEST_DEVICE: &str = "test-device";
 
 enum Profile {
-    /// A private temporary profile, removed with the app, and the room the
-    /// app opens in.
-    Temporary(Rc<tempfile::TempDir>, String),
+    /// A private temporary profile, removed with the app, the room the app
+    /// opens in and the device it runs on.
+    Temporary(Rc<tempfile::TempDir>, String, String),
     /// An explicit `--data-dir` profile the app itself would open.
     DataDir(PathBuf),
 }
@@ -88,7 +87,7 @@ impl Profile {
     /// The directory the profile keeps everything in.
     fn root(&self) -> PathBuf {
         match self {
-            Self::Temporary(directory, _) => directory.path().to_path_buf(),
+            Self::Temporary(directory, ..) => directory.path().to_path_buf(),
             Self::DataDir(directory) => data_dir_root(directory),
         }
     }
@@ -97,7 +96,7 @@ impl Profile {
     /// other bytes its record names in, instead of the person's.
     fn content(&self) -> tilo_content::ContentStore {
         match self {
-            Self::Temporary(directory, _) => super::app::profile_content(directory.path()),
+            Self::Temporary(directory, ..) => super::app::profile_content(directory.path()),
             Self::DataDir(directory) => data_dir_content(directory),
         }
     }
@@ -153,9 +152,19 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// Returns any launch, storage or construction failure.
     pub fn in_room(room: &str) -> Result<Self, LaunchError> {
+        Self::fresh(room, Role::Owner, AUTHOR)
+    }
+
+    /// The app as its owner opens it on a fresh profile on the device
+    /// `device`: one of two devices sharing a record, each carrying out what
+    /// is queued for it.
+    ///
+    /// # Errors
+    /// Returns any launch, storage or construction failure.
+    pub fn on_device(device: &str) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         Self::open(
-            Profile::Temporary(profile, room.to_owned()),
+            Profile::Temporary(profile, TEST_ROOM.to_owned(), device.to_owned()),
             Role::Owner,
             AUTHOR,
             &[],
@@ -171,11 +180,17 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// Returns any launch, storage or construction failure.
     pub fn with_role(role: Role) -> Result<Self, LaunchError> {
+        Self::fresh(TEST_ROOM, role, AUTHOR)
+    }
+
+    /// The app as `person` with `role` opens it on a fresh private profile,
+    /// in `room`.
+    fn fresh(room: &str, role: Role, person: &str) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned()),
+            Profile::Temporary(profile, room.to_owned(), TEST_DEVICE.to_owned()),
             role,
-            AUTHOR,
+            person,
             &[],
             None,
             None,
@@ -186,22 +201,12 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The app as `person` (the hex of a root public key) opens it on a
     /// fresh profile: one of that person's devices, whose person records
-    /// ([`ViewCx::person`](super::ViewCx::person)) are theirs.
+    /// ([`RecordEnv::person`](super::RecordEnv::person)) are theirs.
     ///
     /// # Errors
     /// Returns any launch, storage or construction failure.
     pub fn for_person(person: &str) -> Result<Self, LaunchError> {
-        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
-        Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned()),
-            Role::Owner,
-            person,
-            &[],
-            None,
-            None,
-            None,
-            |_| {},
-        )
+        Self::fresh(TEST_ROOM, Role::Owner, person)
     }
 
     /// Open a fresh person profile with a service lent by its mounting host.
@@ -213,7 +218,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn for_person_with_lent<S: 'static>(person: &str, service: S) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned()),
+            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
             person,
             &[],
@@ -224,11 +229,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
+    /// How many of the person's records the window holds open, the records
+    /// a settings section keeps among them: a section's opens only when it
+    /// is first written or stepped.
+    pub fn open_person_records(&mut self) -> usize {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.person_owners().len())
+            .unwrap_or_default()
+    }
+
     /// The person's own record of `P` the running app keeps, as its views
     /// open it.
     pub fn person<P: Resource>(&mut self) -> Option<super::PersonRecord<P>> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.storage.person::<P>())
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.person::<P>())
             .flatten()
     }
 
@@ -237,9 +251,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
     ) -> Option<super::PersonRecord<P>> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
-                root.storage.shared_person::<P>()
-            })
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_person::<P>())
             .flatten()
     }
 
@@ -284,7 +296,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     ) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         let mut app = Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned()),
+            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
             AUTHOR,
             arguments,
@@ -309,7 +321,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned()),
+            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
             AUTHOR,
             &arguments,
@@ -337,7 +349,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .map_err(operation)?;
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned()),
+            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
             AUTHOR,
             &arguments,
@@ -357,7 +369,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned()),
+            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
             AUTHOR,
             &arguments,
@@ -377,7 +389,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn handed(file: OpenFile) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned()),
+            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
             AUTHOR,
             &[],
@@ -417,98 +429,34 @@ impl<A: ResourceApp> HeadlessApp<A> {
         capture: Option<(Capture, (u32, u32))>,
         configure: impl FnOnce(&mut HostContext),
     ) -> Result<Self, LaunchError> {
-        let (profile, private, private_arguments) = private_launch::<A>(profile, arguments)?;
-        let (arguments, options) = split_command_line(&private_arguments, A::OPTIONS, A::FLAGS);
-        let arguments = arguments.as_slice();
-        let person = author.to_owned();
-        let author = UserId(person.clone());
-        let permissions = role_permissions(&person, role);
-        let (mut host, instance) = match &profile {
-            Profile::Temporary(directory, room) => (
-                ApplicationHost::new_with_profile_lifetime(
-                    directory.path().join("state"),
-                    "test-device".into(),
-                    room,
-                    author,
-                    Rc::clone(&permissions),
-                    tilo_actions::ActionContext::default(),
-                    directory.clone(),
-                )?,
-                INSTANCE,
-            ),
-            Profile::DataDir(directory) => (
-                data_dir_host(directory, &author, Rc::clone(&permissions))?,
-                DATA_DIR_INSTANCE,
-            ),
-        };
-        let definition = definition::<A>();
-        let records = host.records_for(definition)?;
-        let named = A::launch_record(&LaunchInput::new(arguments, None).with_options(&options));
-        let mut prepared = prepare_on(
-            &mut host,
-            definition,
-            instance,
-            named,
-            ComponentRunnerInputs::from_native_process(),
+        let mut configure = Some(configure);
+        let opened = open_app(
+            &Opening::of::<A>(),
+            Launch {
+                profile,
+                role,
+                author,
+                arguments,
+                file,
+                handoff,
+                capture,
+            },
+            &mut |context| {
+                if let Some(configure) = configure.take() {
+                    configure(context);
+                }
+            },
         )?;
-        let checkout = prepared.context.record().clone();
-        hand_launch(definition, arguments, &mut prepared)?;
-        prepared.context.provide_launch_options(options);
-        if private {
-            prepared.context.provide_private();
-        }
-        if let Some(file) = file {
-            prepared.context.provide_open_file(file);
-        }
-        if let Some(handoff) = handoff {
-            prepared.context.provide_handoff(handoff);
-        }
-        let captured = capture.is_some();
-        let viewport = match capture {
-            Some((capture, viewport)) => {
-                prepared.context.provide_capture(capture);
-                viewport
-            }
-            None => A::shot_viewport(None),
-        };
-        prepared.context.provide_content(profile.content());
-        let mut prepared = in_profile(prepared, &profile.root(), A::ID);
-        configure(&mut prepared.context);
-        let component =
-            definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
-        let mut harness =
-            FrameHarness::from_component(component, viewport, prepared.runner_inputs)?;
-        settle_launch(&mut harness);
-        // The live host withdraws a component's whole action surface (the
-        // palette's, agents', scripts') when any of its actions breaks its
-        // contract. Every test that opens the app proves it would not.
-        // A capture stages fixtures, not the app someone uses.
-        let violations = if captured {
-            Vec::new()
-        } else {
-            harness.component_contract_violations()
-        };
-        if !violations.is_empty() {
-            return Err(LaunchError::Operation(format!(
-                "{} publishes an action surface the host would refuse: {}",
-                definition.app_id,
-                violations
-                    .iter()
-                    .map(|violation| format!("{}: {}", violation.address, violation.reason))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )));
-        }
         Ok(Self {
-            harness: Some(harness),
-            records,
-            checkout,
-            instance,
-            profile,
+            harness: Some(opened.harness),
+            records: opened.records,
+            checkout: opened.checkout,
+            instance: opened.instance,
+            profile: opened.profile,
             role,
-            author: person,
+            author: author.to_owned(),
             last_effect: None,
-            permissions,
+            permissions: opened.permissions,
             marker: std::marker::PhantomData,
         })
     }
@@ -533,9 +481,29 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// owner changing their access does. Takes effect on the next frame,
     /// which this runs.
     pub fn set_role(&mut self, role: Role) {
-        *self.permissions.borrow_mut() =
-            PermissionContext::from_capabilities(Actor::person(Some(role), &self.author), vec![]);
+        *self.permissions.borrow_mut() = PermissionContext::member(self.author.as_str(), role);
         self.role = role;
+        self.harness().relayout();
+    }
+
+    /// The participant's permissions in force now.
+    #[must_use]
+    pub fn permissions(&self) -> PermissionContext {
+        self.permissions.borrow().clone()
+    }
+
+    /// Change the participant's permissions while the app runs, as the host
+    /// does when the room's grants change. Takes effect on the next frame,
+    /// which this runs.
+    pub fn set_permissions(&mut self, permissions: PermissionContext) {
+        *self.permissions.borrow_mut() = permissions;
+        self.harness().relayout();
+    }
+
+    /// Take the participant out of the room while the app runs: no role and
+    /// no grant left, as when the owner removes them.
+    pub fn leave_room(&mut self) {
+        *self.permissions.borrow_mut() = PermissionContext::stranger(self.author.as_str());
         self.harness().relayout();
     }
 
@@ -556,8 +524,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn relaunch(mut self, arguments: &[&str]) -> Result<Self, LaunchError> {
         self.close()?;
         let profile = match &self.profile {
-            Profile::Temporary(directory, room) => {
-                Profile::Temporary(Rc::clone(directory), room.clone())
+            Profile::Temporary(directory, room, device) => {
+                Profile::Temporary(Rc::clone(directory), room.clone(), device.clone())
             }
             Profile::DataDir(directory) => Profile::DataDir(directory.clone()),
         };
@@ -570,7 +538,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Open what a launch naming `arguments` opens in this window, as the
-    /// app's view does with [`ViewCx::open_here`](super::ViewCx::open_here),
+    /// app's view does with [`RecordEnv::open_here`](super::RecordEnv::open_here),
     /// and run the frame that shows it.
     ///
     /// # Errors
@@ -580,7 +548,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         let outcome = self
             .harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.run.open_here(&arguments))
+            .with_widget_mut(|root: &mut ResourceRoot| root.run.open_here(&arguments))
             .ok_or_else(|| format!("{} is not hosted here", A::TITLE))??;
         self.harness().relayout();
         outcome
@@ -594,7 +562,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// The record the window shows now: the one it was opened on, or one
-    /// its view opened in its place ([`ViewCx::open_here`](super::ViewCx::open_here)).
+    /// its view opened in its place ([`RecordEnv::open_here`](super::RecordEnv::open_here)).
     fn checkout(&self) -> &RecordCheckout {
         self.harness
             .as_ref()
@@ -609,8 +577,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Returns an error if the framework root is absent.
     pub fn take_save_retry(&mut self) -> Result<bool, String> {
         self.harness()
-            .with_widget_mut(|root: &mut super::root::ResourceRoot<A::Resource>| {
-                ui_core::widget::AppWidget::take_save_retry(root)
+            .with_widget_mut(|root: &mut super::root::ResourceRoot| {
+                super::root::RootApp::take_save_retry(root)
             })
             .ok_or_else(|| "the framework root is not mounted".to_owned())
     }
@@ -661,15 +629,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// after the visit, so what the visit changed is what the next frame
     /// draws.
     pub fn with_surface<S: 'static, T>(&mut self, visit: impl FnOnce(&mut S) -> T) -> Option<T> {
-        fn find<S: 'static>(widget: &mut dyn ui_core::widget::Widget) -> Option<&mut S> {
-            if widget.as_any_mut().is_some_and(|any| any.is::<S>()) {
-                return widget.as_any_mut()?.downcast_mut::<S>();
-            }
-            widget.children_mut().into_iter().find_map(find::<S>)
-        }
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
-                find::<S>(ui_core::widget::Decorator::inner_mut(root)).map(visit)
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                super::root::with_surface::<A::Resource, S, T>(root, visit)
             })
             .flatten()
     }
@@ -696,6 +658,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         resource: &str,
         invoke: Invoke<C>,
     ) -> Result<(), tilo_actions::DoorError> {
+        if let Some(refusal) = invoke.refusal() {
+            return Err(tilo_actions::DoorError::Failed(refusal.to_owned()));
+        }
         let Invoke { id, arguments, .. } = invoke;
         let address = BoundActionAddress {
             instance_id: self.instance,
@@ -777,6 +742,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
         invoke: Invoke<A::Resource>,
     ) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::DoorError> {
+        if let Some(refusal) = invoke.refusal() {
+            return Err(tilo_actions::DoorError::Failed(refusal.to_owned()));
+        }
         let Invoke { id, arguments, .. } = invoke;
         let address = BoundActionAddress {
             instance_id: self.instance,
@@ -1025,7 +993,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// `None` when the view has no such widget.
     pub fn with_widget<T: 'static, O>(&mut self, visit: impl FnOnce(&mut T) -> O) -> Option<O> {
         self.harness()
-            .with_widget_mut(|root: &mut super::root::ResourceRoot<A::Resource>| {
+            .with_widget_mut(|root: &mut super::root::ResourceRoot| {
                 find_mut::<T>(root.content.as_mut()).map(visit)
             })
             .flatten()
@@ -1085,6 +1053,28 @@ impl<A: ResourceApp> HeadlessApp<A> {
         arguments: serde_json::Value,
     ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
         self.call_at(None, resource, id, arguments, false)
+    }
+
+    /// What the host is asking the person to confirm right now — a
+    /// destructive verb or a removal that a button, a menu, the palette or
+    /// an immediate application submitted — and the text that confirms it.
+    /// `None` while nothing is asked.
+    pub fn asking(&mut self) -> Option<(tilo_actions::ActionAddress, String)> {
+        self.settle();
+        self.harness().asking()
+    }
+
+    /// Confirm what the host asks, through its real dialog, as the person
+    /// does (type the confirming text, press Enter), and settle: the
+    /// action applies. Answers the action confirmed; `None`, changing
+    /// nothing, when nothing was asked. A test of a delete from a menu
+    /// clicks the menu item, then calls this.
+    pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
+        // What the last event submitted reaches the host first.
+        self.settle();
+        let confirmed = self.harness().confirm_asked();
+        self.settle();
+        confirmed
     }
 
     /// [`Self::call`] after the caller explicitly confirmed this invocation.
@@ -1168,6 +1158,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         invoke: Invoke<A::Resource>,
         confirmed: bool,
     ) -> Result<(), tilo_actions::DoorError> {
+        if let Some(refusal) = invoke.refusal() {
+            return Err(tilo_actions::DoorError::Failed(refusal.to_owned()));
+        }
         let Invoke { id, arguments, .. } = invoke;
         let address = BoundActionAddress {
             instance_id: self.instance,
@@ -1248,6 +1241,29 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .unwrap_or_default()
     }
 
+    /// What each version did through an action, oldest first.
+    pub fn history(&self) -> Vec<tilo_actions::ActionContext> {
+        self.versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .collect()
+    }
+
+    /// The sentences History shows for `entries` in en-US, through the app's
+    /// own catalogue.
+    pub fn sentences<'e>(
+        &self,
+        entries: impl IntoIterator<Item = &'e tilo_actions::ActionContext>,
+    ) -> Vec<String> {
+        let source = A::catalog().and_then(ui_core::i18n::EmbeddedCatalog::source);
+        let catalogue = tilo_history::Catalogue::new("en-US", &Vec::from_iter(source));
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        entries
+            .into_iter()
+            .map(|entry| reader.sentence(entry))
+            .collect()
+    }
+
     /// The version at `heads` as History mode previews it: the app's own
     /// view, read-only, over the document as it was then.
     ///
@@ -1297,7 +1313,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// app's view is not an `S`.
     pub fn surface<S: 'static, O>(&mut self, visit: impl FnOnce(&mut S) -> O) -> Option<O> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
+            .with_widget_mut(|root: &mut ResourceRoot| {
                 root.content
                     .as_any_mut()
                     .and_then(|any| any.downcast_mut::<S>())
@@ -1333,14 +1349,14 @@ pub fn with_surface<A: ResourceApp, S: 'static, T>(
     visit: impl FnOnce(&mut S) -> T,
 ) -> Option<T> {
     harness
-        .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| surface_of::<A, S>(root).map(visit))
+        .with_widget_mut(|root: &mut ResourceRoot| surface_of::<A, S>(root).map(visit))
         .flatten()
 }
 
 /// The custom surface of type `S` that `A`'s view hosts in `harness`,
 /// without running a frame (see [`with_surface`]).
 pub fn surface_in<A: ResourceApp, S: 'static>(harness: &mut FrameHarness) -> Option<&mut S> {
-    surface_of::<A, S>(harness.widget_mut::<ResourceRoot<A::Resource>>()?)
+    surface_of::<A, S>(harness.widget_mut::<ResourceRoot>()?)
 }
 
 /// The custom surface of type `S` that `A`'s view hosts, when `widget` is
@@ -1349,14 +1365,11 @@ pub fn surface_in<A: ResourceApp, S: 'static>(harness: &mut FrameHarness) -> Opt
 pub fn surface_in_root<A: ResourceApp, S: 'static>(
     widget: &mut dyn ui_core::widget::Widget,
 ) -> Option<&mut S> {
-    surface_of::<A, S>(
-        widget
-            .as_any_mut()?
-            .downcast_mut::<ResourceRoot<A::Resource>>()?,
-    )
+    surface_of::<A, S>(widget.as_any_mut()?.downcast_mut::<ResourceRoot>()?)
 }
 
-fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot<A::Resource>) -> Option<&mut S> {
+fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot) -> Option<&mut S> {
+    root.typed::<A::Resource>()?;
     root.content
         .as_mut()
         .as_any_mut()
@@ -1396,6 +1409,18 @@ pub fn detached_live<R: Resource>(
 pub fn inspect_live_window<A: ResourceApp, T>(
     inspect: impl FnOnce(&ui_core::App) -> T,
 ) -> Result<T, LaunchError> {
+    drive_live_window::<A, T>(|app| inspect(app))
+}
+
+/// Drive the window `A`'s live launch opens, mounted as
+/// [`inspect_live_window`] mounts it: the real [`ui_core::App`], which a
+/// test or benchmark feeds input through [`ui_core::App::surface_input`].
+///
+/// # Errors
+/// Returns any launch, storage or construction failure.
+pub fn drive_live_window<A: ResourceApp, T>(
+    drive: impl FnOnce(&mut ui_core::App) -> T,
+) -> Result<T, LaunchError> {
     let profile = tempfile::tempdir().map_err(operation)?;
     let mut host = ApplicationHost::new(
         profile.path().join("state"),
@@ -1415,7 +1440,7 @@ pub fn inspect_live_window<A: ResourceApp, T>(
     )?;
     let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
     let mut app = ui_core::App::from_component(component, prepared.runner_inputs)?;
-    let seen = inspect(&app);
+    let seen = drive(&mut app);
     app.close_components();
     Ok(seen)
 }
@@ -1446,8 +1471,8 @@ pub fn resolve<R: Resource>(
     doc: &mut tilo_resource::Doc,
 ) -> Result<Vec<Vec<R::Action>>, String> {
     let mut applied = Vec::new();
-    while let Some((invocation, _)) = dispatcher.take_attributed() {
-        if invocation.address.resource != dispatcher.resource_id() {
+    while let Some((invocation, _)) = dispatcher.core().take_attributed() {
+        if invocation.address.resource != dispatcher.core().resource_id() {
             return Err(format!(
                 "`{}` on `{}` is not an action of {}",
                 invocation.address.action,
@@ -1467,14 +1492,15 @@ pub fn resolve<R: Resource>(
         };
         let mut refused = None;
         for action in &actions {
-            if let Err(error) = dispatcher.apply_now(&mut ui_core::widget::Edits::lend(doc), action)
+            if let Err(error) =
+                dispatcher.apply_confirmed(&mut ui_core::widget::Edits::lend(doc), action)
             {
                 refused = Some(error.to_string());
                 break;
             }
         }
         match refused {
-            Some(reason) => dispatcher.refuse(&invocation.address.action, reason),
+            Some(reason) => dispatcher.core().refuse(&invocation.address.action, reason),
             None => applied.push(actions),
         }
     }
@@ -1509,20 +1535,173 @@ fn find_mut<T: 'static>(widget: &mut dyn ui_core::widget::Widget) -> Option<&mut
 }
 
 /// Match the native runner's disposable private profile and built-in flag.
-fn private_launch<A: ResourceApp>(
+/// What opening a headless app needs of its type: everything else about
+/// opening it is the same for every app ([`open_app`]).
+struct Opening {
+    definition: &'static ui_core::application::ApplicationDefinition,
+    id: &'static str,
+    options: &'static [&'static str],
+    flags: &'static [&'static str],
+    private_windows: bool,
+    launch_record: fn(&LaunchInput<'_>) -> Option<RecordId>,
+    shot_viewport: fn(Option<&str>) -> (u32, u32),
+}
+
+impl Opening {
+    fn of<A: ResourceApp>() -> Self {
+        Self {
+            definition: definition::<A>(),
+            id: A::ID,
+            options: A::OPTIONS,
+            flags: A::FLAGS,
+            private_windows: A::PRIVATE_WINDOWS,
+            launch_record: A::launch_record,
+            shot_viewport: A::shot_viewport,
+        }
+    }
+}
+
+/// How one headless app is opened: on which profile, as whom, with what.
+struct Launch<'a> {
+    profile: Profile,
+    role: Role,
+    author: &'a str,
+    arguments: &'a [String],
+    file: Option<OpenFile>,
+    handoff: Option<PlaybackHandoff>,
+    capture: Option<(Capture, (u32, u32))>,
+}
+
+/// A headless app [`open_app`] opened.
+struct Opened {
+    harness: FrameHarness,
+    records: RecordStore,
+    checkout: RecordCheckout,
+    instance: u64,
+    profile: Profile,
+    permissions: Rc<RefCell<PermissionContext>>,
+}
+
+/// Open the app `opening` describes as `launch` says, `configure` given its
+/// host context before it is instantiated.
+fn open_app(
+    opening: &Opening,
+    launch: Launch<'_>,
+    configure: &mut dyn FnMut(&mut HostContext),
+) -> Result<Opened, LaunchError> {
+    strict_bindings();
+    let (profile, private, private_arguments) =
+        private_launch(opening.private_windows, launch.profile, launch.arguments)?;
+    let (arguments, options) =
+        split_command_line(&private_arguments, opening.options, opening.flags);
+    let arguments = arguments.as_slice();
+    let person = launch.author.to_owned();
+    let author = UserId(person.clone());
+    let permissions = role_permissions(&person, launch.role);
+    let (mut host, instance) = match &profile {
+        Profile::Temporary(directory, room, device) => (
+            ApplicationHost::new_with_profile_lifetime(
+                directory.path().join("state"),
+                device.clone(),
+                room,
+                author,
+                Rc::clone(&permissions),
+                tilo_actions::ActionContext::default(),
+                directory.clone(),
+            )?,
+            INSTANCE,
+        ),
+        Profile::DataDir(directory) => (
+            data_dir_host(directory, &author, Rc::clone(&permissions))?,
+            DATA_DIR_INSTANCE,
+        ),
+    };
+    let definition = opening.definition;
+    let records = host.records_for(definition)?;
+    let named = (opening.launch_record)(&LaunchInput::new(arguments, None).with_options(&options));
+    let mut prepared = prepare_on(
+        &mut host,
+        definition,
+        instance,
+        named,
+        ComponentRunnerInputs::from_native_process(),
+    )?;
+    let checkout = prepared.context.record().clone();
+    hand_launch(definition, arguments, &mut prepared)?;
+    prepared.context.provide_launch_options(options);
+    if private {
+        prepared.context.provide_private();
+    }
+    if let Some(file) = launch.file {
+        prepared.context.provide_open_file(file);
+    }
+    if let Some(handoff) = launch.handoff {
+        prepared.context.provide_handoff(handoff);
+    }
+    let captured = launch.capture.is_some();
+    let viewport = match launch.capture {
+        Some((capture, viewport)) => {
+            prepared.context.provide_capture(capture);
+            viewport
+        }
+        None => (opening.shot_viewport)(None),
+    };
+    prepared.context.provide_content(profile.content());
+    let mut prepared = in_profile(prepared, &profile.root(), opening.id);
+    configure(&mut prepared.context);
+    let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
+    let mut harness = FrameHarness::from_component(component, viewport, prepared.runner_inputs)?;
+    settle_launch(&mut harness);
+    // The live host withdraws a component's whole action surface (the
+    // palette's, agents', scripts') when any of its actions breaks its
+    // contract. Every test that opens the app proves it would not.
+    // A capture stages fixtures, not the app someone uses.
+    let violations = if captured {
+        Vec::new()
+    } else {
+        harness.component_contract_violations()
+    };
+    if !violations.is_empty() {
+        return Err(LaunchError::Operation(format!(
+            "{} publishes an action surface the host would refuse: {}",
+            definition.app_id,
+            violations
+                .iter()
+                .map(|violation| format!("{}: {}", violation.address, violation.reason))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )));
+    }
+    Ok(Opened {
+        harness,
+        records,
+        checkout,
+        instance,
+        profile,
+        permissions,
+    })
+}
+
+fn private_launch(
+    private_windows: bool,
     profile: Profile,
     arguments: &[String],
 ) -> Result<(Profile, bool, Vec<String>), LaunchError> {
-    let private = A::PRIVATE_WINDOWS && arguments.iter().any(|word| word == "--private");
+    let private = private_windows && arguments.iter().any(|word| word == "--private");
     let arguments = arguments
         .iter()
         .filter(|word| !private || word.as_str() != "--private")
         .cloned()
         .collect();
     let profile = if private {
+        let device = match &profile {
+            Profile::Temporary(_, _, device) => device.clone(),
+            Profile::DataDir(_) => TEST_DEVICE.to_owned(),
+        };
         Profile::Temporary(
             Rc::new(tempfile::tempdir().map_err(operation)?),
             "private".into(),
+            device,
         )
     } else {
         profile
@@ -1564,4 +1743,123 @@ fn split_command_line(
         }
     }
     (arguments, named)
+}
+
+/// What `A` publishes and how its view binds to it, as `tilo-app surface`
+/// commits it and `tilo-app check` compares it: the resource's
+/// [`Surface`](tilo_resource::Surface) and those of the person's records its
+/// views open, every control its view, built headless on an empty record,
+/// binds to something the resource does not publish, the ids of its effects
+/// and named views, and the ids the framework keeps for its own actions
+/// ([`reserved_action_ids`](super::reserved_action_ids)).
+#[must_use]
+pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
+    report_surface(
+        &Opening::of::<A>(),
+        <A::Resource as Resource>::surface(),
+        &published_ids::<A>,
+    )
+}
+
+/// The ids of the effects and of the named views a built view publishes.
+type PublishedIds = (Vec<String>, Vec<String>);
+
+/// [`PublishedIds`] of `A`'s root `harness` hosts.
+fn published_ids<A: ResourceApp>(harness: &mut FrameHarness) -> PublishedIds {
+    harness
+        .with_widget_mut(|root: &mut ResourceRoot| {
+            let typed = root.typed::<A::Resource>()?;
+            let effects = typed.effects.specs().into_iter().map(|spec| spec.id);
+            let views = <A::Resource as Resource>::views(&typed.live.get())
+                .into_iter()
+                .map(|view| view.id);
+            Some((effects.collect(), views.collect()))
+        })
+        .flatten()
+        .unwrap_or_default()
+}
+
+/// [`surface_report`] of the app `opening` describes, whose resource's
+/// surface is `surface`; `published` reads the ids of the effects and the
+/// named views a built view publishes.
+fn report_surface(
+    opening: &Opening,
+    surface: tilo_resource::Surface,
+    published: &dyn Fn(&mut FrameHarness) -> PublishedIds,
+) -> serde_json::Value {
+    let collecting = collect_unbound();
+    let profile = tempfile::tempdir().map(Rc::new).map_err(operation);
+    let built = profile.and_then(|profile| {
+        open_app(
+            opening,
+            Launch {
+                profile: Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+                role: Role::Owner,
+                author: AUTHOR,
+                arguments: &[],
+                file: None,
+                handoff: None,
+                capture: None,
+            },
+            &mut |_| {},
+        )
+    });
+    // What the view publishes besides the resource's verbs: its effects and
+    // the resource's named views, whose ids must not be the framework's.
+    let (effects, views, view) = match built {
+        Ok(mut opened) => {
+            let (effects, views) = published(&mut opened.harness);
+            (effects, views, None)
+        }
+        Err(error) => (Vec::new(), Vec::new(), Some(error.to_string())),
+    };
+    let (unbound, opened) = collecting.finish();
+    let mut resources = vec![surface];
+    resources.extend(opened);
+    serde_json::json!({
+        "resources": resources,
+        "unbound": unbound,
+        "effects": effects,
+        "views": views,
+        "reserved": super::reserved_action_ids(),
+        "view": view,
+    })
+}
+
+/// Collects the controls bound to something the resource does not publish
+/// until [`Self::finish`], instead of failing on the first.
+struct Collecting(());
+
+/// Start collecting unbound controls on this thread.
+fn collect_unbound() -> Collecting {
+    super::controls::UNBOUND.with(|unbound| *unbound.borrow_mut() = Some(Vec::new()));
+    super::controls::OPENED.with(|opened| *opened.borrow_mut() = Some(Vec::new()));
+    Collecting(())
+}
+
+impl Collecting {
+    /// What was collected: one sentence per unbound control, and the
+    /// surfaces of the other records the views opened.
+    fn finish(self) -> (Vec<String>, Vec<tilo_resource::Surface>) {
+        let unbound = super::controls::UNBOUND
+            .with(|unbound| unbound.borrow_mut().take().unwrap_or_default());
+        let opened =
+            super::controls::OPENED.with(|opened| opened.borrow_mut().take().unwrap_or_default());
+        drop(self);
+        (unbound, opened)
+    }
+}
+
+impl Drop for Collecting {
+    fn drop(&mut self) {
+        super::controls::UNBOUND.with(|unbound| *unbound.borrow_mut() = None);
+        super::controls::OPENED.with(|opened| *opened.borrow_mut() = None);
+    }
+}
+
+/// Make a control bound to an action the resource does not publish a panic
+/// on this thread, as [`TestApp`](super::testing::HeadlessApp) and
+/// `tilo-app check` do: a typo in a binding must fail, not grey a button.
+fn strict_bindings() {
+    super::controls::STRICT.with(|strict| strict.set(true));
 }

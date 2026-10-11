@@ -26,7 +26,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use collab_types::caps::{
-    Actor, CapDecision, CapOverride, Principal, ResourceRef, Scope, Subject, Verb,
+    Access, Actor, CapDecision, CapOverride, Principal, ResourceRef, Scope, Subject,
     decide_capability,
 };
 
@@ -138,7 +138,7 @@ impl HostPolicy {
         decide_capability(
             &Actor::app(app_id),
             &ResourceRef::Device(HOST_SHELL_DEVICE.to_string()),
-            Verb::Write,
+            Access::Write,
             &self.capabilities,
             now,
         ) == CapDecision::Allow
@@ -153,7 +153,7 @@ impl HostPolicy {
             CapOverride::grant(
                 Subject::Principal(Principal::App(app_id.to_string())),
                 Scope::Device(HOST_SHELL_DEVICE.to_string()),
-                Verb::Write,
+                Access::Write,
             )
             .with_id(id.clone())
             .granted_by(Principal::Person("local".to_string())),
@@ -289,7 +289,7 @@ impl SessionOwnership {
             .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
         Self {
             owner_key: root.join("user-identity/pubkey.bin"),
-            registry: xdg_paths::xdg::config_home()
+            registry: tilo_paths::xdg::config_home()
                 .filter(|dir| dir.is_absolute())
                 .map(|config| config.join("tilo/identity/registry.json")),
         }
@@ -440,11 +440,15 @@ pub fn login_account() -> Option<LoginAccount> {
 }
 
 /// The command a Host session runs: the login shell as a login shell
-/// (`argv[0]` prefixed with `-`), or the requested program run by it.
+/// (`argv[0]` prefixed with `-`), or the requested program run by it. With
+/// `runs` (a key and the rc file [`crate::runs::bash_rc`] wrote) a `bash`
+/// starts on that rc file instead, which reads the profile as a login shell
+/// would and marks each command run.
 pub fn host_command(
     account: &LoginAccount,
     term: &str,
     program: &[String],
+    runs: Option<(&str, &Path)>,
 ) -> std::process::Command {
     use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new(&account.shell);
@@ -452,7 +456,13 @@ pub fn host_command(
         .shell
         .file_name()
         .map_or_else(|| "sh".into(), |n| n.to_string_lossy().into_owned());
-    cmd.arg0(format!("-{name}"));
+    cmd.env_remove(crate::runs::KEY_ENV);
+    if let (Some((key, rc)), true) = (runs, program.is_empty()) {
+        cmd.arg("--rcfile").arg(rc).arg("-i");
+        cmd.env(crate::runs::KEY_ENV, key);
+    } else {
+        cmd.arg0(format!("-{name}"));
+    }
     if !program.is_empty() {
         cmd.arg("-c");
         cmd.arg(exec_script(program));
@@ -579,7 +589,7 @@ mod tests {
                 )),
                 collab_types::caps::Scope::Device(HOST_SHELL_DEVICE.into()),
                 collab_types::caps::Effect::Restrict,
-                collab_types::caps::Verb::Read,
+                collab_types::caps::Access::Read,
             ));
         assert!(!restricted.allows_host_shell(TERMINAL_APP_ID, now));
 
@@ -651,14 +661,14 @@ mod tests {
             home: dir.path().to_path_buf(),
             shell: PathBuf::from("/usr/bin/fish"),
         };
-        let cmd = host_command(&account, "xterm-256color", &[]);
+        let cmd = host_command(&account, "xterm-256color", &[], None);
         assert_eq!(cmd.get_program(), "/usr/bin/fish");
         assert_eq!(cmd.get_args().count(), 0);
         assert_eq!(cmd.get_current_dir(), Some(dir.path()));
         let home = (std::ffi::OsStr::new("HOME"), Some(dir.path().as_os_str()));
         assert!(cmd.get_envs().any(|pair| pair == home));
 
-        let run = host_command(&account, "xterm", &["htop".into(), "-d".into()]);
+        let run = host_command(&account, "xterm", &["htop".into(), "-d".into()], None);
         let args: Vec<_> = run.get_args().collect();
         assert_eq!(args, ["-c", "exec 'htop' '-d'"]);
     }

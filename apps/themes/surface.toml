@@ -1,0 +1,369 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "themes.studio"
+label = "Themes"
+version = 1
+
+[[resources.fields]]
+owner = "studio"
+path = "themes"
+stored = "collection"
+title = "Themes"
+type = "Collection<Theme>"
+
+[[resources.fields]]
+label = true
+owner = "theme"
+path = "themes.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.dark"
+readonly = true
+stored = "value"
+title = "Ink is light on the surfaces. Switching flips the ladder"
+type = "bool"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.high_contrast"
+stored = "value"
+title = "Every text pairing holds AAA"
+type = "bool"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.hue"
+stored = "value"
+title = "The hue every neutral shares, in degrees; none until something gives"
+type = "Option<f64>"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.chroma"
+stored = "value"
+title = "Neutral chroma"
+type = "f64"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.surfaces"
+stored = "record"
+title = "Surfaces"
+type = "Surfaces"
+
+[[resources.fields]]
+owner = "surfaces"
+path = "themes.*.surfaces.base"
+stored = "value"
+title = "Desktop"
+type = "f64"
+
+[[resources.fields]]
+owner = "surfaces"
+path = "themes.*.surfaces.content"
+stored = "value"
+title = "Window"
+type = "f64"
+
+[[resources.fields]]
+owner = "surfaces"
+path = "themes.*.surfaces.sidebar"
+stored = "value"
+title = "Sidebar"
+type = "f64"
+
+[[resources.fields]]
+owner = "surfaces"
+path = "themes.*.surfaces.inspector"
+stored = "value"
+title = "Inspector"
+type = "f64"
+
+[[resources.fields]]
+owner = "surfaces"
+path = "themes.*.surfaces.raised"
+stored = "value"
+title = "Raised"
+type = "f64"
+
+[[resources.fields]]
+owner = "surfaces"
+path = "themes.*.surfaces.overlay"
+stored = "value"
+title = "Floating chrome"
+type = "f64"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.ink"
+stored = "record"
+title = "Ink"
+type = "Ink"
+
+[[resources.fields]]
+owner = "ink"
+path = "themes.*.ink.primary"
+stored = "value"
+title = "Primary ink"
+type = "f64"
+
+[[resources.fields]]
+owner = "ink"
+path = "themes.*.ink.secondary"
+stored = "value"
+title = "Secondary ink"
+type = "f64"
+
+[[resources.fields]]
+owner = "ink"
+path = "themes.*.ink.tertiary"
+stored = "value"
+title = "Tertiary ink"
+type = "f64"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.status"
+stored = "record"
+title = "Status"
+type = "Status"
+
+[[resources.fields]]
+owner = "status"
+path = "themes.*.status.danger"
+stored = "record"
+title = "Danger"
+type = "StatusTone"
+
+[[resources.fields]]
+owner = "status-tone"
+path = "themes.*.status.danger.lightness"
+stored = "value"
+title = "Lightness"
+type = "f64"
+
+[[resources.fields]]
+owner = "status-tone"
+path = "themes.*.status.danger.chroma"
+stored = "value"
+title = "Chroma"
+type = "f64"
+
+[[resources.fields]]
+owner = "status"
+path = "themes.*.status.warning"
+stored = "record"
+title = "Warning"
+type = "StatusTone"
+
+[[resources.fields]]
+owner = "status-tone"
+path = "themes.*.status.warning.lightness"
+stored = "value"
+title = "Lightness"
+type = "f64"
+
+[[resources.fields]]
+owner = "status-tone"
+path = "themes.*.status.warning.chroma"
+stored = "value"
+title = "Chroma"
+type = "f64"
+
+[[resources.fields]]
+owner = "status"
+path = "themes.*.status.success"
+stored = "record"
+title = "Success"
+type = "StatusTone"
+
+[[resources.fields]]
+owner = "status-tone"
+path = "themes.*.status.success.lightness"
+stored = "value"
+title = "Lightness"
+type = "f64"
+
+[[resources.fields]]
+owner = "status-tone"
+path = "themes.*.status.success.chroma"
+stored = "value"
+title = "Chroma"
+type = "f64"
+
+[[resources.fields]]
+owner = "status"
+path = "themes.*.status.info"
+stored = "record"
+title = "Info"
+type = "StatusTone"
+
+[[resources.fields]]
+owner = "status-tone"
+path = "themes.*.status.info.lightness"
+stored = "value"
+title = "Lightness"
+type = "f64"
+
+[[resources.fields]]
+owner = "status-tone"
+path = "themes.*.status.info.chroma"
+stored = "value"
+title = "Chroma"
+type = "f64"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.tint"
+stored = "value"
+title = "The hue primary actions, selection and on states are tinted with;"
+type = "Option<f64>"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.presence"
+stored = "record"
+title = "Presence"
+type = "Presence"
+
+[[resources.fields]]
+owner = "presence"
+path = "themes.*.presence.lightness"
+stored = "value"
+title = "Presence lightness"
+type = "f64"
+
+[[resources.fields]]
+owner = "presence"
+path = "themes.*.presence.chroma"
+stored = "value"
+title = "Presence chroma"
+type = "f64"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.window_radius"
+stored = "value"
+title = "Window radius"
+type = "f64"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.density"
+stored = "value"
+title = "Density"
+type = "f64"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.face"
+stored = "value"
+title = "Typeface"
+type = "String"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.base_size"
+stored = "value"
+title = "Body size"
+type = "f64"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.distinct_letters"
+stored = "value"
+title = '"Always distinguish similar letters": `Some(true)` always, `None`'
+type = "Option<bool>"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.motion"
+stored = "value"
+title = "Motion"
+type = "f64"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.blur"
+stored = "value"
+title = "Blur"
+type = "f64"
+
+[[resources.fields]]
+owner = "theme"
+path = "themes.*.tint_opacity"
+stored = "value"
+title = "Tint opacity"
+type = "f64"
+
+[[resources.verbs]]
+id = "new-theme"
+kind = "undoable"
+label = "Start a theme from a preset or from one of your themes"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "base"
+required = true
+
+[resources.verbs.params.schema]
+examples = ["dark-graphite"]
+type = "string"
+
+[[resources.verbs]]
+id = "reset"
+kind = "undoable"
+label = "Reset the editable properties to the graphite preset, preserving its name"
+
+[[resources.verbs.params]]
+name = "theme"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "delete"
+kind = "undoable"
+label = "Delete a theme"
+
+[[resources.verbs.params]]
+name = "theme"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+description = "The ladder flips to the stock ladder of that polarity, keeping hue and chroma."
+id = "switch-polarity"
+kind = "undoable"
+label = "Switch a theme between dark (ink light on its surfaces) and light"
+
+[[resources.verbs.params]]
+name = "theme"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "dark"
+required = true
+
+[resources.verbs.params.schema]
+type = "boolean"

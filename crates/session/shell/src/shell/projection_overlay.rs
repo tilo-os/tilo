@@ -7,10 +7,17 @@
 //! section of the same sheet, so "put my desktop on that screen" has one
 //! home whether the screen is on a cable or on the network.
 //!
+//! Between them, the person's other devices' screens are listed, each with
+//! whether it takes part in their shared display layout: on, this device's
+//! pointer and keyboard can move onto it. The four layouts only ever plan
+//! this device's own hardware; another device's screen is arranged, never
+//! driven, from here.
+//!
 //! The sheet owns its state, animation, rendering, credential editing and
 //! hit-testing. The overlay host only coordinates visibility and invalidation.
 
 use std::time::{Duration, Instant};
+use ui::num::{f32_of_f64, f64_of_usize, usize_of_f64};
 
 use settings_store::display_mode::{self, DisplayLayoutError, DisplayLayoutMode};
 use settings_store::hardware::{
@@ -33,9 +40,10 @@ use ui::widget::{EventCtx, TextInput, Widget};
 
 use crate::shell::i18n::{t, t_args};
 use crate::shell::projection::{
-    DisplayResolutionLimit, ProjectionBackend, ProjectionController, ProjectionMode,
-    ProjectionProtocol, ProjectionStatus,
+    DisplayResolutionLimit, ProjectionController, ProjectionMode, ProjectionProtocol,
+    ProjectionStatus,
 };
+use crate::shell::shared_display_actions::{self, SharedDisplayView};
 use ui::TextRole;
 use ui::widget::ButtonRole;
 
@@ -45,25 +53,6 @@ const SCRIM_ALPHA: f32 = 0.45;
 /// the transaction it staged. Bounded so an open sheet never turns into
 /// per-frame settings I/O.
 const DISPLAY_POLL: Duration = Duration::from_millis(250);
-
-#[allow(clippy::cast_precision_loss, reason = "device counts are small")]
-fn usize_to_f64_lossy(n: usize) -> f64 {
-    n as f64
-}
-
-#[allow(clippy::cast_possible_truncation, reason = "screen pixels fit f32")]
-fn f64_to_f32_lossy(v: f64) -> f32 {
-    v as f32
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "float-to-usize casts saturate and caller clamps the result"
-)]
-fn f64_floor_to_usize_saturating(v: f64) -> usize {
-    v.floor() as usize
-}
 
 #[allow(
     clippy::cast_possible_truncation,
@@ -137,6 +126,16 @@ fn layout_for_wireless(mode: ProjectionMode) -> DisplayLayoutMode {
     }
 }
 
+/// A display change still waiting to be applied, kept or reverted.
+fn waiting(transaction: &DisplayTransaction) -> bool {
+    matches!(
+        transaction.state,
+        DisplayTransactionState::Requested
+            | DisplayTransactionState::AwaitingConfirmation
+            | DisplayTransactionState::ConfirmRequested
+    )
+}
+
 /// Attached displays, the committed layout and the transaction this
 /// session staged, as the compositor published them.
 #[derive(Default)]
@@ -148,13 +147,90 @@ pub(crate) struct DisplayLayouts {
     /// Id of the transaction this sheet staged, so an old rejection left in
     /// settings is never reported as the answer to a new choice.
     staged: Option<u64>,
+    /// Id of the change an action opened the sheet for, once it was first
+    /// read for [`Self::settled`].
+    followed: Option<u64>,
     notice: Option<String>,
     answer: Option<crate::shell::display_persistence::PendingAnswer>,
     staging: Option<crate::shell::display_persistence::PendingLayout>,
+
+    /// The person's displays across their devices, as this device routes by
+    /// them; `None` while display continuity is off.
+    person: Option<SharedDisplayView>,
+}
+
+/// One of the person's other devices' screens, as the sheet lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RemoteDisplay {
+    device: String,
+    output: String,
+    name: String,
+    number: usize,
+    revision: u64,
+    device_label: String,
+    online: bool,
+    /// Its device shows something on it; a connected screen switched off
+    /// there is listed so its place in the layout can still be chosen.
+    active: bool,
+    /// Takes part in the shared layout.
+    enabled: bool,
+}
+
+impl RemoteDisplay {
+    fn title(&self) -> String {
+        t_args(
+            "display-remote-title",
+            &[
+                ("number", self.number.to_string().into()),
+                ("name", self.name.clone().into()),
+                ("device", self.device_label.clone().into()),
+            ],
+        )
+    }
+
+    fn detail(&self) -> String {
+        t(match (self.online, self.enabled, self.active) {
+            (false, false, _) => "display-remote-offline-excluded",
+            (false, true, _) => "display-remote-offline",
+            (true, false, _) => "display-remote-out-of-layout",
+            (true, true, false) => "display-remote-switched-off",
+            (true, true, true) => "display-remote-in-layout",
+        })
+    }
 }
 
 impl DisplayLayouts {
+    fn refresh_person(&mut self) {
+        self.person = shared_display_actions::current();
+    }
+
+    /// The other devices' screens in display order.
+    fn remote(&self) -> Vec<RemoteDisplay> {
+        let Some(view) = self.person.as_ref() else {
+            return Vec::new();
+        };
+        view.layout
+            .listed()
+            .filter(|display| !display.local)
+            .map(|display| RemoteDisplay {
+                device: display.device.clone(),
+                output: display.output.clone(),
+                name: display.name.clone(),
+                number: display.order.saturating_add(1),
+                revision: view
+                    .arrangement
+                    .entry(&display.device, &display.output)
+                    .map_or(0, |entry| entry.rev),
+                device_label: display.device_label.clone(),
+                online: display.online,
+                active: display.rect.width > 0,
+                enabled: display.enabled,
+            })
+            .collect()
+    }
+
     fn refresh(&mut self, now: Instant) {
+        self.refresh_person();
         self.outputs = DisplayHardwareSnapshot::load()
             .map(|snapshot| snapshot.outputs)
             .unwrap_or_default();
@@ -215,14 +291,31 @@ impl DisplayLayouts {
 
     /// The staged transaction while it still waits for Keep or Revert.
     fn pending(&self) -> Option<&DisplayTransaction> {
-        self.transaction.as_ref().filter(|transaction| {
-            matches!(
-                transaction.state,
-                DisplayTransactionState::Requested
-                    | DisplayTransactionState::AwaitingConfirmation
-                    | DisplayTransactionState::ConfirmRequested
-            )
-        })
+        self.transaction
+            .as_ref()
+            .filter(|transaction| waiting(transaction))
+    }
+
+    /// Whether display change `id` is over: kept, reverted, refused, or
+    /// replaced by another. Storage is re-read at most every
+    /// [`DISPLAY_POLL`], and at once when a new change is first followed.
+    fn settled(&mut self, id: u64, now: Instant) -> bool {
+        if self.followed != Some(id) {
+            self.followed = Some(id);
+            self.polled_at = None;
+        }
+        self.poll(now);
+        self.read_as_settled(id)
+    }
+
+    /// Whether `id` is settled as last read, or not read since it was
+    /// first followed. Never reads storage.
+    fn read_as_settled(&self, id: u64) -> bool {
+        self.followed != Some(id)
+            || self
+                .transaction
+                .as_ref()
+                .is_none_or(|transaction| transaction.id != id || !waiting(transaction))
     }
 
     fn effective(&self) -> &DisplayConfig {
@@ -310,6 +403,8 @@ enum SheetFocus {
     Layout(DisplayLayoutMode),
     Keep,
     Revert,
+    /// One of the other devices' screens, by its position in the list.
+    Remote(usize),
     Receivers,
 }
 
@@ -341,6 +436,7 @@ impl EventOutcome {
 
 pub struct ProjectionOverlay {
     controller: ProjectionController,
+    authority: Option<crate::shell::chrome_state::Chrome>,
     displays: DisplayLayouts,
     focus: SheetFocus,
     transition: ui::Transition,
@@ -353,6 +449,10 @@ pub struct ProjectionOverlay {
     layout_rects: [Rect; 4],
     keep_rect: Rect,
     revert_rect: Rect,
+    remote_rects: Vec<(RemoteDisplay, Rect)>,
+    remote_scroll: ui::widget::ScrollRegion,
+    remote_theme: Option<Theme>,
+    remote_focus_seen: Option<usize>,
     device_rects: Vec<Rect>,
     refresh_rect: Rect,
     close_rect: Rect,
@@ -374,6 +474,7 @@ impl ProjectionOverlay {
     pub(crate) fn from_controller(controller: ProjectionController) -> Self {
         Self {
             controller,
+            authority: None,
             displays: DisplayLayouts::default(),
             focus: SheetFocus::Layout(DisplayLayoutMode::Extend),
             transition: ui::Transition::closed(),
@@ -383,6 +484,10 @@ impl ProjectionOverlay {
             layout_rects: [Rect::ZERO; 4],
             keep_rect: Rect::ZERO,
             revert_rect: Rect::ZERO,
+            remote_rects: Vec::new(),
+            remote_scroll: ui::widget::ScrollRegion::vertical(),
+            remote_theme: None,
+            remote_focus_seen: None,
             device_rects: Vec::new(),
             refresh_rect: Rect::ZERO,
             close_rect: Rect::ZERO,
@@ -392,15 +497,27 @@ impl ProjectionOverlay {
             fps_rect: Rect::ZERO,
             credential_input: TextInput::local()
                 .with_id("projection-airplay-credential")
-                .with_placeholder(&t("wireless-credential-placeholder"))
+                .with_placeholder(t("wireless-credential-placeholder"))
                 .with_secret(true)
                 .with_enter_submits(true),
             credential_rect: Rect::ZERO,
         }
     }
 
-    pub fn with_backend(backend: Box<dyn ProjectionBackend>) -> Self {
-        Self::from_controller(ProjectionController::new(backend))
+    pub(crate) fn bind_shared_display_authority(
+        &mut self,
+        chrome: crate::shell::chrome_state::Chrome,
+    ) {
+        self.authority = Some(chrome);
+    }
+
+    fn shared_display_editable(&self) -> bool {
+        self.authority.as_ref().is_some_and(|chrome| {
+            crate::shell::search::providers::actions::current_shell_action_authorized(
+                &chrome.borrow(),
+                shared_display_actions::INCLUDE_ID,
+            )
+        })
     }
 
     pub fn controller(&self) -> &ProjectionController {
@@ -453,14 +570,40 @@ impl ProjectionOverlay {
         self.displays.poll_completions(Instant::now())
     }
 
+    /// Whether the display change an action opened this sheet for, `id`,
+    /// has settled, so the sheet that only showed it can close.
+    pub(crate) fn followed_change_settled(&mut self, id: u64, now: Instant) -> bool {
+        self.displays.settled(id, now)
+    }
+
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
         self.transition.is_animating(now)
             || matches!(
                 self.controller.status,
                 ProjectionStatus::Scanning | ProjectionStatus::Connecting { .. }
             )
+            || (self.was_open && self.remote_theme.as_ref().is_some_and(|theme|
+                self.remote_scroll.needs_animation_frame(theme)))
             // The Keep/Revert countdown ticks while the sheet is open.
             || (self.was_open && self.displays.pending().is_some())
+            // The change an action opened the sheet for read as settled: one
+            // more host update closes the sheet.
+            || self.followed_change_read_as_settled()
+    }
+
+    fn followed_change_read_as_settled(&self) -> bool {
+        let Some(state) = self
+            .authority
+            .as_ref()
+            .and_then(|chrome| chrome.try_borrow().ok())
+        else {
+            return false;
+        };
+        let crate::shell::chrome_state::ProjectionFollow::Transaction(id) = state.projection_follow
+        else {
+            return false;
+        };
+        state.overlays.projection && self.displays.read_as_settled(id)
     }
 
     /// The layout the sheet highlights as current: the physical layout when
@@ -504,9 +647,14 @@ impl ProjectionOverlay {
             self.displays.refresh(Instant::now());
             let initial = self
                 .active_layout()
-                .or_else(|| self.enabled_layouts().first().copied())
-                .unwrap_or(DisplayLayoutMode::Extend);
-            self.focus = SheetFocus::Layout(initial);
+                .or_else(|| self.enabled_layouts().first().copied());
+            // With no layout to choose on this device's own screens, the
+            // first choice is the other devices' screens.
+            self.focus = match initial {
+                Some(mode) => SheetFocus::Layout(mode),
+                None if !self.displays.remote().is_empty() => SheetFocus::Remote(0),
+                None => SheetFocus::Layout(DisplayLayoutMode::Extend),
+            };
         } else if !open {
             self.session_open = false;
         }
@@ -579,6 +727,23 @@ impl ProjectionOverlay {
             && let Some(outcome) = self.handle_credential_event(event, ctx, cursor)
         {
             return outcome;
+        }
+        let walks_rows = matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    logical_key: Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown),
+                    ..
+                },
+                ..
+            }
+        );
+        if !walks_rows && let Some(theme) = self.remote_theme.as_ref() {
+            let previously_handled = *ctx.handled;
+            let changed = self.remote_scroll.handle_event(event, ctx, theme);
+            if changed || (!previously_handled && *ctx.handled) {
+                return EventOutcome::consumed(changed);
+            }
         }
         match event {
             WindowEvent::KeyboardInput {
@@ -658,19 +823,32 @@ impl ProjectionOverlay {
     }
 
     /// Up/Down walk the sheet in visual order: layouts, Keep/Revert while a
-    /// change waits for confirmation, then the receivers.
+    /// change waits for confirmation, the other devices' screens, then the
+    /// receivers.
     fn move_focus(&mut self, down: bool) {
         let confirming = self.confirming();
         let last_layout = DisplayLayoutMode::ExternalOnly;
-        self.focus = match (self.focus, down) {
+        let remote = self.displays.remote().len();
+        // Where focus goes below the layouts and the confirmation band.
+        let below = if remote > 0 {
+            Some(SheetFocus::Remote(0))
+        } else if self.controller.devices.is_empty() {
+            None
+        } else {
+            Some(SheetFocus::Receivers)
+        };
+        // Where focus goes above the other devices' screens.
+        let above = if confirming {
+            SheetFocus::Keep
+        } else {
+            SheetFocus::Layout(last_layout)
+        };
+        let next = match (self.focus, down) {
             (SheetFocus::Layout(mode), true) if mode == last_layout => {
                 if confirming {
                     SheetFocus::Keep
-                } else if self.controller.devices.is_empty() {
-                    self.focus
                 } else {
-                    self.controller.selected = 0;
-                    SheetFocus::Receivers
+                    below.unwrap_or(self.focus)
                 }
             }
             (SheetFocus::Layout(mode), true) => DisplayLayoutMode::ALL
@@ -681,32 +859,103 @@ impl ProjectionOverlay {
                 .checked_sub(1)
                 .and_then(|index| DisplayLayoutMode::ALL.get(index))
                 .map_or(self.focus, |previous| SheetFocus::Layout(*previous)),
-            (SheetFocus::Keep | SheetFocus::Revert, true) => {
+            (SheetFocus::Keep | SheetFocus::Revert, true) => below.unwrap_or(self.focus),
+            (SheetFocus::Keep | SheetFocus::Revert, false) => SheetFocus::Layout(last_layout),
+            (SheetFocus::Remote(index), true) if index.saturating_add(1) < remote => {
+                SheetFocus::Remote(index.saturating_add(1))
+            }
+            (SheetFocus::Remote(_), true) => {
                 if self.controller.devices.is_empty() {
                     self.focus
                 } else {
-                    self.controller.selected = 0;
                     SheetFocus::Receivers
                 }
             }
-            (SheetFocus::Keep | SheetFocus::Revert, false) => SheetFocus::Layout(last_layout),
+            (SheetFocus::Remote(index), false) => {
+                index.checked_sub(1).map_or(above, SheetFocus::Remote)
+            }
             (SheetFocus::Receivers, true) => {
                 self.controller.move_selection(1);
                 self.focus
             }
             (SheetFocus::Receivers, false) => {
                 if self.controller.selected == 0 {
-                    if confirming {
-                        SheetFocus::Keep
-                    } else {
-                        SheetFocus::Layout(last_layout)
-                    }
+                    remote.checked_sub(1).map_or(above, SheetFocus::Remote)
                 } else {
                     self.controller.move_selection(-1);
                     self.focus
                 }
             }
         };
+        if next == SheetFocus::Receivers && self.focus != SheetFocus::Receivers {
+            self.controller.selected = 0;
+        }
+        self.focus = next;
+    }
+
+    fn poll_displays(&mut self, now: Instant) {
+        let focused = if let SheetFocus::Remote(index) = self.focus {
+            self.displays.remote().get(index).cloned()
+        } else {
+            None
+        };
+        self.displays.poll(now);
+        if let Some(display) = focused {
+            self.focus = self
+                .displays
+                .remote()
+                .iter()
+                .position(|row| row.device == display.device && row.output == display.output)
+                .map_or(SheetFocus::Receivers, SheetFocus::Remote);
+        }
+    }
+
+    fn toggle_remote(&mut self, index: usize) {
+        if let Some(display) = self.displays.remote().get(index).cloned() {
+            self.toggle_shared_output(&display);
+        }
+    }
+
+    fn toggle_shared_output(&mut self, display: &RemoteDisplay) {
+        if let Some(index) = self
+            .displays
+            .remote()
+            .iter()
+            .position(|row| row.device == display.device && row.output == display.output)
+        {
+            self.focus = SheetFocus::Remote(index);
+        }
+        let result = self
+            .authority
+            .as_ref()
+            .ok_or_else(|| {
+                crate::shell::search::action_api::ActionError::Refused(t(
+                    "display-remote-unavailable",
+                ))
+            })
+            .and_then(|chrome| {
+                shared_display_actions::include(
+                    &chrome.borrow(),
+                    &display.device,
+                    &display.output,
+                    display.revision,
+                    !display.enabled,
+                )
+            });
+        match result {
+            Ok(()) => {
+                self.displays.refresh_person();
+                self.displays.notice = None;
+                if let Some(index) =
+                    self.displays.remote().iter().position(|row| {
+                        row.device == display.device && row.output == display.output
+                    })
+                {
+                    self.focus = SheetFocus::Remote(index);
+                }
+            }
+            Err(error) => self.displays.notice = Some(error.to_string()),
+        }
     }
 
     fn activate_focus(&mut self) {
@@ -720,6 +969,7 @@ impl ProjectionOverlay {
                 self.displays.revert();
                 self.focus = self.active_layout().map_or(self.focus, SheetFocus::Layout);
             }
+            SheetFocus::Remote(index) => self.toggle_remote(index),
             SheetFocus::Receivers => {
                 let selected_id = self
                     .controller
@@ -760,6 +1010,9 @@ impl ProjectionOverlay {
                 self.focus = SheetFocus::Revert;
             }
             Key::Named(NamedKey::Enter) => self.activate_focus(),
+            Key::Named(NamedKey::Space) if matches!(self.focus, SheetFocus::Remote(_)) => {
+                self.activate_focus();
+            }
             Key::Named(NamedKey::Space) => {
                 self.controller.options.audio = !self.controller.options.audio;
             }
@@ -799,6 +1052,13 @@ impl ProjectionOverlay {
                 self.focus = SheetFocus::Layout(mode);
                 self.choose_layout(mode);
             }
+        } else if let Some(display) = self
+            .remote_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(point))
+            .map(|(display, _)| display.clone())
+        {
+            self.toggle_shared_output(&display);
         } else if self.refresh_rect.contains(point) {
             self.controller.refresh();
         } else if self.audio_rect.contains(point) {
@@ -944,6 +1204,11 @@ impl ProjectionOverlay {
                 );
             }
         }
+        for (index, display) in self.displays.remote().iter().enumerate() {
+            sheet
+                .children
+                .push(self.remote_accessibility(index, display));
+        }
         for (index, device) in self.controller.devices.iter().enumerate() {
             sheet.children.push(
                 AccessNode::new(Role::Button)
@@ -956,6 +1221,33 @@ impl ProjectionOverlay {
             );
         }
         sheet
+    }
+
+    fn remote_accessibility(&self, index: usize, display: &RemoteDisplay) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        AccessNode::new(Role::Switch)
+            .with_name(display.title())
+            .with_description(display.detail())
+            .with_semantic_key(format!(
+                "shared-output:{}:{}{}",
+                display.device.len(),
+                display.device,
+                display.output
+            ))
+            .with_bounds(
+                self.remote_rects
+                    .iter()
+                    .find(|(painted, _)| {
+                        painted.device == display.device && painted.output == display.output
+                    })
+                    .map_or(Rect::ZERO, |(_, rect)| *rect),
+            )
+            .with_state(
+                AccessState::new()
+                    .focused(self.focus == SheetFocus::Remote(index))
+                    .checked(display.enabled)
+                    .disabled(!self.shared_display_editable()),
+            )
     }
 
     /// Paint the complete sheet and return whether worker polling changed state.
@@ -1007,7 +1299,7 @@ impl ProjectionOverlay {
         self.was_open = open;
         let now = Instant::now();
         if open {
-            self.displays.poll(now);
+            self.poll_displays(now);
         }
         self.transition.set_open(
             open,
@@ -1047,6 +1339,9 @@ impl ProjectionOverlay {
         self.layout_rects = [Rect::ZERO; 4];
         self.keep_rect = Rect::ZERO;
         self.revert_rect = Rect::ZERO;
+        self.remote_rects.clear();
+        self.remote_theme = None;
+        self.remote_focus_seen = None;
         self.device_rects.clear();
         self.refresh_rect = Rect::ZERO;
         self.close_rect = Rect::ZERO;
@@ -1088,7 +1383,7 @@ impl ProjectionOverlay {
     fn layout_row_rect(&self, index: usize) -> Rect {
         let r = self.sheet_rect();
         // Rows of 52 px on a 58 px pitch, below the 80 px header.
-        let y0 = r.y0 + 80.0 + usize_to_f64_lossy(index) * 58.0;
+        let y0 = r.y0 + 80.0 + f64_of_usize(index) * 58.0;
         Rect::new(r.x0 + 16.0, y0, r.x1 - 16.0, y0 + 52.0)
     }
 
@@ -1099,9 +1394,8 @@ impl ProjectionOverlay {
             + 10.0
     }
 
-    /// Top of the wireless section; the confirmation band or a rejection
-    /// notice pushes it down while visible.
-    fn wireless_top(&self) -> f64 {
+    /// Top of the other devices' screens, after any display confirmation.
+    fn remote_top(&self) -> f64 {
         let band = if self.displays.staging.is_some()
             || self.confirming()
             || self.displays.rejection().is_some()
@@ -1113,9 +1407,69 @@ impl ProjectionOverlay {
         self.confirm_top() + band + 8.0
     }
 
+    fn remote_spacing(&self) -> ui::tokens::Spacing {
+        self.remote_theme
+            .as_ref()
+            .map_or(ui::tokens::Spacing::BASE, |theme| theme.tokens.spacing)
+    }
+
+    fn remote_metrics(&self) -> ui::tokens::Metrics {
+        self.remote_theme
+            .as_ref()
+            .map_or(ui::tokens::Metrics::BASE, |theme| theme.tokens.metrics)
+    }
+
+    fn remote_row_pitch(&self) -> f64 {
+        f64::from(self.remote_metrics().panel_row_height + self.remote_spacing().s2)
+    }
+
+    /// Bound the shared-output viewport; the shared scroll region retains every row.
+    fn remote_viewport(&self) -> Rect {
+        let r = self.sheet_rect();
+        let spacing = self.remote_spacing();
+        let heading = f64::from(self.remote_metrics().menu_row_height);
+        let gutter = f64::from(spacing.s3);
+        let pitch = self.remote_row_pitch();
+        let footer = f64::from(self.remote_metrics().menu_row_height + spacing.s2);
+        let available = (r.y1
+            - self.remote_top()
+            - heading
+            - gutter
+            - self.wireless_controls_height()
+            - Self::device_row_pitch()
+            - footer)
+            .max(pitch);
+        let height = (f64_of_usize(self.displays.remote().len().min(3)) * pitch).min(available);
+        Rect::new(
+            r.x0 + gutter,
+            self.remote_top() + heading,
+            r.x1 - gutter,
+            self.remote_top() + heading + height,
+        )
+    }
+
+    fn remote_row_rect(&self, index: usize) -> Rect {
+        let y0 = f64_of_usize(index) * self.remote_row_pitch();
+        Rect::new(
+            0.0,
+            y0,
+            self.remote_scroll.content_rect().width(),
+            y0 + f64::from(self.remote_metrics().panel_row_height),
+        )
+    }
+
+    /// Wireless receivers keep their section below the bounded shared-output viewport.
+    fn wireless_top(&self) -> f64 {
+        if self.displays.remote().is_empty() {
+            self.remote_top()
+        } else {
+            self.remote_viewport().y1 + f64::from(self.remote_spacing().s3)
+        }
+    }
+
     fn row_rect(&self, index: usize) -> Rect {
         let r = self.sheet_rect();
-        let y0 = self.device_rows_top() + usize_to_f64_lossy(index) * Self::device_row_pitch();
+        let y0 = self.device_rows_top() + f64_of_usize(index) * Self::device_row_pitch();
         Rect::new(r.x0 + 16.0, y0, r.x1 - 16.0, y0 + 56.0)
     }
 
@@ -1128,13 +1482,16 @@ impl ProjectionOverlay {
             })
     }
 
+    fn wireless_controls_height(&self) -> f64 {
+        if self.airplay_selected() {
+            214.0
+        } else {
+            118.0
+        }
+    }
+
     fn device_rows_top(&self) -> f64 {
-        self.wireless_top()
-            + if self.airplay_selected() {
-                214.0
-            } else {
-                118.0
-            }
+        self.wireless_top() + self.wireless_controls_height()
     }
 
     fn draw_content(
@@ -1152,6 +1509,7 @@ impl ProjectionOverlay {
         self.draw_header(scene, transform, text_renderer, theme, r);
         self.draw_layout_rows(scene, transform, text_renderer, theme);
         self.draw_confirm_band(scene, transform, text_renderer, theme, r);
+        self.draw_remote_displays(scene, transform, text_renderer, theme, r);
         self.draw_devices_heading(scene, transform, text_renderer, theme, r);
         self.draw_audio_toggle(scene, transform, text_renderer, theme, r);
         self.draw_stream_chips(scene, transform, text_renderer, theme, r);
@@ -1159,9 +1517,7 @@ impl ProjectionOverlay {
 
         self.device_rects.clear();
         let rows_top = self.device_rows_top();
-        let max_rows =
-            f64_floor_to_usize_saturating((r.y1 - rows_top - 40.0) / Self::device_row_pitch())
-                .max(1);
+        let max_rows = usize_of_f64((r.y1 - rows_top - 40.0) / Self::device_row_pitch()).max(1);
         if self.controller.devices.is_empty() {
             self.draw_devices_empty(scene, transform, text_renderer, theme, r);
         } else {
@@ -1224,7 +1580,7 @@ impl ProjectionOverlay {
             &t("display-sheet-subtitle"),
             colors.text_dim,
             transform.pre_translate((r.x0 + 20.0, r.y0 + 49.0).into()),
-            Some(f64_to_f32_lossy(r.width() - 88.0)),
+            Some(f32_of_f64(r.width() - 88.0)),
             &type_scale.style(TextRole::Caption),
         );
 
@@ -1288,7 +1644,7 @@ impl ProjectionOverlay {
             let pictogram = Rect::new(row.x0 + 12.0, row.y0 + 14.0, row.x0 + 56.0, row.y1 - 14.0);
             draw_layout_pictogram(scene, transform, pictogram, mode, theme, enabled);
             let text_x = pictogram.x1 + 14.0;
-            let text_w = f64_to_f32_lossy(row.x1 - text_x - 44.0);
+            let text_w = f32_of_f64(row.x1 - text_x - 44.0);
             text_renderer.draw_style(
                 scene,
                 &t(layout_title_key(mode)),
@@ -1370,7 +1726,7 @@ impl ProjectionOverlay {
                 &t("display-sheet-saving-layout"),
                 colors.text_dim,
                 transform.pre_translate((band.x0 + 4.0, band.y0 + 8.0).into()),
-                Some(f64_to_f32_lossy(band.width() - 8.0)),
+                Some(f32_of_f64(band.width() - 8.0)),
                 &type_scale.style(TextRole::Caption),
             );
         } else if self.confirming() {
@@ -1389,7 +1745,7 @@ impl ProjectionOverlay {
             let focus = match self.focus {
                 SheetFocus::Keep => Some(crate::shell::display_confirm::BandFocus::Keep),
                 SheetFocus::Revert => Some(crate::shell::display_confirm::BandFocus::Revert),
-                SheetFocus::Layout(_) | SheetFocus::Receivers => None,
+                SheetFocus::Layout(_) | SheetFocus::Remote(_) | SheetFocus::Receivers => None,
             };
             let buttons = crate::shell::display_confirm::paint_keep_revert_band(
                 scene,
@@ -1413,10 +1769,135 @@ impl ProjectionOverlay {
                 &message,
                 colors.semantic.danger,
                 transform.pre_translate((band.x0 + 4.0, band.y0 + 8.0).into()),
-                Some(f64_to_f32_lossy(band.width() - 8.0)),
+                Some(f32_of_f64(band.width() - 8.0)),
                 &type_scale.style(TextRole::Caption),
             );
         }
+    }
+
+    /// Shared output rows use retained-control faces and the shared scroll engine.
+    fn draw_remote_displays(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+    ) {
+        self.remote_rects.clear();
+        let remote = self.displays.remote();
+        if remote.is_empty() {
+            return;
+        }
+        self.remote_theme = Some(theme.clone());
+        text_renderer.draw_style(
+            scene,
+            &t("display-remote-heading"),
+            theme.tokens.colors.text_primary,
+            transform.pre_translate(
+                (r.x0 + f64::from(theme.tokens.spacing.s3), self.remote_top()).into(),
+            ),
+            None,
+            &theme.text(TextRole::Label),
+        );
+        self.remote_scroll
+            .set_viewport(self.remote_viewport(), theme);
+        self.remote_scroll.set_content_size(
+            self.remote_viewport().width(),
+            f64_of_usize(remote.len()) * self.remote_row_pitch(),
+        );
+        let focused = if let SheetFocus::Remote(index) = self.focus {
+            Some(index)
+        } else {
+            None
+        };
+        self.remote_scroll.set_focused(focused.is_some());
+        if focused != self.remote_focus_seen
+            && let Some(index) = focused
+        {
+            self.remote_scroll
+                .scroll_into_view(self.remote_row_rect(index));
+        }
+        self.remote_focus_seen = focused;
+        let content_transform = self.remote_scroll.content_transform(Affine::IDENTITY);
+        let viewport = self.remote_scroll.content_rect();
+        let rows = (0..remote.len())
+            .map(|index| self.remote_row_rect(index))
+            .collect::<Vec<_>>();
+        self.remote_rects = remote
+            .iter()
+            .zip(&rows)
+            .map(|(display, row)| {
+                (
+                    display.clone(),
+                    content_transform
+                        .transform_rect_bbox(*row)
+                        .intersect(viewport),
+                )
+            })
+            .collect();
+        let disabled = !self.shared_display_editable();
+        self.remote_scroll
+            .paint(scene, transform, theme, |scene, transform| {
+                for (index, (display, row)) in remote.iter().zip(&rows).enumerate() {
+                    Self::paint_remote_row(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        *row,
+                        display,
+                        ui::widget::ToggleInteract {
+                            focused: focused == Some(index),
+                            disabled,
+                            ..Default::default()
+                        },
+                    );
+                }
+            });
+    }
+
+    fn paint_remote_row(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        display: &RemoteDisplay,
+        interact: ui::widget::ToggleInteract,
+    ) {
+        let title = t_args(
+            "display-remote-row",
+            &[
+                ("title", display.title().into()),
+                ("status", display.detail().into()),
+            ],
+        );
+        let toggle_width =
+            ui::widget::ToggleFace::size(theme).0 + f64::from(theme.tokens.spacing.s3);
+        let label_rect = Rect::new(row.x0, row.y0, row.x1 - toggle_width, row.y1);
+        ui::widget::Button::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ui::widget::ButtonFace::new(label_rect, &title)
+                .role(ButtonRole::Plain)
+                .icon(ui::icons::Icon::Monitor)
+                .focused(interact.focused)
+                .disabled(interact.disabled),
+        );
+        ui::widget::Toggle::paint(
+            scene,
+            transform,
+            theme,
+            &ui::widget::ToggleFace::new(
+                Rect::new(label_rect.x1, row.y0, row.x1, row.y1),
+                display.enabled,
+            )
+            .focused(interact.focused)
+            .disabled(interact.disabled),
+        );
     }
 
     /// "Wireless displays" heading plus the refresh button beside it.
@@ -1623,7 +2104,7 @@ impl ProjectionOverlay {
                 &t("wireless-credential-hint"),
                 colors.text_dim,
                 transform.pre_translate((r.x0 + 20.0, top + 71.0).into()),
-                Some(f64_to_f32_lossy(r.width() - 40.0)),
+                Some(f32_of_f64(r.width() - 40.0)),
                 &type_scale.style(TextRole::Caption),
             );
         } else {
@@ -1673,7 +2154,7 @@ impl ProjectionOverlay {
         );
         let detail = text_renderer.elide_to_width_style(
             &detail,
-            f64_to_f32_lossy(r.width() - 56.0),
+            f32_of_f64(r.width() - 56.0),
             &type_scale.style(TextRole::Caption),
         );
         let (dw, _) =
@@ -1746,7 +2227,7 @@ impl ProjectionOverlay {
             );
             let name = text_renderer.elide_to_width_style(
                 &device.name,
-                f64_to_f32_lossy(row.width() - 142.0),
+                f32_of_f64(row.width() - 142.0),
                 &type_scale.style(TextRole::Caption),
             );
             text_renderer.draw_style(
@@ -1777,7 +2258,7 @@ impl ProjectionOverlay {
                     colors.text_dim
                 },
                 transform.pre_translate((row.x0 + 46.0, row.y0 + 31.0).into()),
-                Some(f64_to_f32_lossy(row.width() - 142.0)),
+                Some(f32_of_f64(row.width() - 142.0)),
                 &type_scale.style(TextRole::Caption),
             );
             Self::draw_device_action(
@@ -2115,5 +2596,187 @@ mod tests {
             overlay.focus,
             SheetFocus::Layout(DisplayLayoutMode::ExternalOnly)
         );
+    }
+    #[test]
+    fn shared_output_rows_keep_offline_state_and_keyboard_inclusion_separate_from_hardware() {
+        let _home = shared_display_actions::test_support::publish();
+        let mut overlay = overlay_with(two_displays().into_iter().take(1).collect());
+        overlay.bind_shared_display_authority(shared_display_actions::test_support::owner());
+        overlay.displays.refresh_person();
+        assert!(overlay.enabled_layouts().is_empty());
+        let rows = overlay.displays.remote();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].title().contains('2') && rows[0].title().contains("Orange Pi"));
+        assert!(rows[1].detail().contains("Offline"));
+        let mode = overlay.controller.options.mode;
+        overlay.focus = SheetFocus::Remote(0);
+        overlay.handle_key(&Key::Named(NamedKey::Space), Modifiers::default());
+        let saved = settings_store::person_displays::Arrangement::load();
+        assert!(!saved.entry("bb02", "panel").unwrap().enabled);
+        assert!(saved.entry("cc03", "panel").unwrap().enabled);
+        let rows = overlay.displays.remote();
+        let peer = rows
+            .iter()
+            .position(|row| row.device == "bb02" && row.output == "panel")
+            .unwrap();
+        assert!(!rows[peer].enabled);
+        assert_eq!(
+            overlay.focus,
+            SheetFocus::Remote(peer),
+            "focus follows the certified pair, not its old row index"
+        );
+        assert_eq!(overlay.controller.options.mode, mode);
+        assert!(overlay.displays.staging.is_none());
+        overlay.handle_key(&Key::Named(NamedKey::Enter), Modifiers::default());
+        assert!(
+            settings_store::person_displays::Arrangement::load()
+                .entry("bb02", "panel")
+                .unwrap()
+                .enabled
+        );
+        overlay.handle_key(&Key::Named(NamedKey::ArrowDown), Modifiers::default());
+        assert_eq!(overlay.focus, SheetFocus::Remote(1));
+        overlay.handle_key(&Key::Named(NamedKey::Space), Modifiers::default());
+        let offline = overlay.displays.remote().remove(1);
+        assert!(!offline.online && !offline.enabled);
+        assert!(offline.detail().contains("Offline") && offline.detail().contains("Not in layout"));
+        let accessible = overlay.accessibility();
+        let switches = accessible
+            .children
+            .iter()
+            .filter(|node| node.role == ui::a11y::Role::Switch)
+            .collect::<Vec<_>>();
+        assert_eq!(switches.len(), 2);
+        assert_eq!(switches[1].state.checked, Some(false));
+        assert!(
+            switches[1]
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("Offline")
+        );
+    }
+
+    #[test]
+    fn shared_output_scroll_keeps_all_screens_reachable_in_every_theme() {
+        let _home = shared_display_actions::test_support::publish();
+        let mut facts = settings_store::person_displays::PersonDisplays::load().unwrap();
+        let peer = facts
+            .devices
+            .iter_mut()
+            .find(|device| device.device == "bb02")
+            .unwrap();
+        let output = peer.outputs[0].clone();
+        for index in 1..8 {
+            let mut next = output.clone();
+            next.id = format!("extra-{index}");
+            next.name = format!("Extra screen {index}");
+            next.x = index * 960;
+            peer.outputs.push(next);
+        }
+        facts.save().unwrap();
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let mut overlay = overlay_with(two_displays().into_iter().take(1).collect());
+            overlay.bind_shared_display_authority(shared_display_actions::test_support::owner());
+            overlay.displays.refresh_person();
+            let count = overlay.displays.remote().len();
+            assert_eq!(count, 9);
+            overlay.focus = SheetFocus::Remote(count - 1);
+            overlay.draw_remote_displays(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                overlay.sheet_rect(),
+            );
+            assert!(overlay.remote_scroll.overflows_vertically());
+            assert!(overlay.remote_rects[count - 1].1.area() > 0.0);
+            assert!(overlay.remote_rects[0].1.area() <= 0.0);
+            assert!(overlay.wireless_top() < overlay.sheet_rect().y1);
+            assert_eq!(
+                overlay
+                    .accessibility()
+                    .children
+                    .iter()
+                    .filter(|node| node.role == ui::a11y::Role::Switch)
+                    .count(),
+                count
+            );
+            overlay.handle_key(&Key::Named(NamedKey::ArrowUp), Modifiers::default());
+            assert_eq!(overlay.focus, SheetFocus::Remote(count - 2));
+        }
+    }
+    #[test]
+    fn shared_output_focus_tracks_the_certified_pair_after_a_collaborator_edit() {
+        let _home = shared_display_actions::test_support::publish();
+        let mut overlay = overlay_with(two_displays().into_iter().take(1).collect());
+        let chrome = shared_display_actions::test_support::owner();
+        overlay.bind_shared_display_authority(chrome.clone());
+        overlay.displays.refresh_person();
+        overlay.focus = SheetFocus::Remote(0);
+        shared_display_actions::include(&chrome.borrow(), "bb02", "panel", 0, false).unwrap();
+        let view = shared_display_actions::current().unwrap();
+        view.layout
+            .move_to_order(&view.arrangement, "cc03", "panel", 0)
+            .save()
+            .unwrap();
+        overlay.displays.polled_at = None;
+        overlay.poll_displays(Instant::now());
+        let rows = overlay.displays.remote();
+        let peer = rows
+            .iter()
+            .position(|row| row.device == "bb02" && row.output == "panel")
+            .unwrap();
+        assert_eq!(overlay.focus, SheetFocus::Remote(peer));
+        assert_ne!(
+            peer, 0,
+            "the collaborator edit reordered the actual resolved layout"
+        );
+        overlay.handle_key(&Key::Named(NamedKey::Space), Modifiers::default());
+        let saved = settings_store::person_displays::Arrangement::load();
+        assert!(saved.entry("bb02", "panel").unwrap().enabled);
+        assert!(saved.entry("cc03", "panel").unwrap().enabled);
+    }
+
+    #[test]
+    fn shared_output_clicks_keep_the_painted_identity_when_a_collaborator_reorders_rows() {
+        let _home = shared_display_actions::test_support::publish();
+        let mut overlay = overlay_with(two_displays().into_iter().take(1).collect());
+        overlay.bind_shared_display_authority(shared_display_actions::test_support::owner());
+        overlay.displays.refresh_person();
+        let theme = Theme::dark();
+        overlay.draw_remote_displays(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            overlay.sheet_rect(),
+        );
+        let painted_peer = overlay.remote_rects[0].1.center();
+        overlay.handle_click(painted_peer);
+        let saved = settings_store::person_displays::Arrangement::load();
+        assert!(!saved.entry("bb02", "panel").unwrap().enabled);
+        assert!(saved.entry("cc03", "panel").unwrap().enabled);
+        let view = shared_display_actions::current().unwrap();
+        view.layout
+            .move_to_order(&view.arrangement, "cc03", "panel", 0)
+            .save()
+            .unwrap();
+        overlay.displays.polled_at = None;
+        overlay.poll_displays(Instant::now());
+        assert_eq!(
+            overlay.displays.remote()[0].device,
+            "cc03",
+            "a real collaborator reorder changed the row index"
+        );
+        // Another click before repaint must never edit the screen that has
+        // since moved into this row index. Its painted binding is now stale.
+        overlay.handle_click(painted_peer);
+        let saved = settings_store::person_displays::Arrangement::load();
+        assert!(
+            saved.entry("cc03", "panel").unwrap().enabled,
+            "the remembered offline TV was never the clicked target"
+        );
+        assert!(!saved.entry("bb02", "panel").unwrap().enabled);
     }
 }

@@ -102,6 +102,7 @@ pub struct Spec {
     pub dump: Option<String>,
     pub targets: Option<String>,
     pub inspect: Option<String>,
+    pub results: Option<String>,
 }
 
 /// Parse and strictly validate one complete headless-driver payload.
@@ -119,10 +120,17 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
     for key in object.keys() {
         if !matches!(
             key.as_str(),
-            "viewport" | "actions" | "audit" | "audit_report" | "dump" | "targets" | "inspect"
+            "viewport"
+                | "actions"
+                | "audit"
+                | "audit_report"
+                | "dump"
+                | "targets"
+                | "inspect"
+                | "results"
         ) {
             return Err(format!(
-                "unknown field {key:?}; expected viewport, actions, audit, audit_report, dump, targets, or inspect"
+                "unknown field {key:?}; expected viewport, actions, audit, audit_report, dump, targets, inspect, or results"
             ));
         }
     }
@@ -144,6 +152,7 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
         dump: optional_string(object, "dump")?,
         targets: optional_string(object, "targets")?,
         inspect: optional_string(object, "inspect")?,
+        results: optional_string(object, "results")?,
     })
 }
 
@@ -633,12 +642,14 @@ mod tests {
             let actions = r#"[{"perform":{"target":"name","action":"set_value","value":"Ada"}},{"wait_for_named":{"target":"result","timeout_ms":750}},{"expect":{"target":"result","role":"static_text","name_contains":"Done","busy":false,"timeout_ms":1000}},{"tap_at":[4,5]}]"#;
             let standalone = parse_actions(actions).unwrap();
             let complete = parse_spec(&format!(
-                r#"{{"viewport":[800,600],"actions":{actions},"audit":true,"audit_report":"audit.json","inspect":"tree.json"}}"#
+                r#"{{"viewport":[800,600],"actions":{actions},"audit":true,"audit_report":"audit.json","inspect":"tree.json","results":"results.json"}}"#
             ))
             .unwrap();
             assert_eq!(complete.actions, standalone);
             assert_eq!(complete.viewport, Some((800, 600)));
             assert!(complete.audit);
+            assert_eq!(complete.results.as_deref(), Some("results.json"));
+            assert!(parse_spec(r#"{"results":3}"#).is_err());
             assert_eq!(complete.audit_report.as_deref(), Some("audit.json"));
         }
 

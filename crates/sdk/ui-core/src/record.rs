@@ -35,8 +35,6 @@ use durable_store::{DurableStore, StorageKey};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-mod native_file;
-pub use native_file::{FileHistoryReader, InitialFileHistory};
 pub mod person;
 pub mod transfer;
 
@@ -188,6 +186,21 @@ impl RecordId {
     /// strings here would turn a room index into an allocation oracle.
     pub fn parse(s: &str) -> Option<Self> {
         valid_record_id(s, 0).then(|| Self(s.to_string()))
+    }
+
+    /// The URI asking an app to open this record
+    /// ([`collab_types::RECORD_URI_SCHEME`]).
+    #[must_use]
+    pub fn uri(&self) -> String {
+        format!("{}:{}", collab_types::RECORD_URI_SCHEME, self.0)
+    }
+
+    /// The record a [`Self::uri`] names.
+    #[must_use]
+    pub fn from_uri(uri: &str) -> Option<Self> {
+        uri.strip_prefix(collab_types::RECORD_URI_SCHEME)?
+            .strip_prefix(':')
+            .and_then(Self::parse)
     }
 
     pub fn as_str(&self) -> &str {
@@ -658,6 +671,32 @@ pub fn init_scoped(
     if RecordId::parse(id.as_str()).is_none() || !kind.is_valid() {
         return false;
     }
+    // A stamp written on its own is the record's genesis and is committed
+    // as one; written with other pending operations, it is part of the
+    // change those make, which names itself.
+    let alone = doc.pending_ops() == 0;
+    let stamped = stamp_scoped(doc, id, kind, home, room);
+    if alone && stamped && doc.pending_ops() != 0 {
+        commit_genesis(doc);
+    } else if alone && stamped && stamp_surface(doc).is_some() {
+        // The app's package opens a record its surface did not name yet (a
+        // newer package, or a record from before records named one): its
+        // surface decides the record's changes from here on.
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),
+        );
+    }
+    stamped
+}
+
+fn stamp_scoped(
+    doc: &mut AutoCommit,
+    id: &RecordId,
+    kind: &RecordKind,
+    home: &str,
+    room: Option<&str>,
+) -> bool {
     let Some(m) = meta_obj(doc) else {
         // The document's root object is gone — nothing to stamp.
         return false;
@@ -703,6 +742,36 @@ pub fn init_scoped(
     true
 }
 
+/// Commit what a brand-new record starts with (its identity, references and
+/// first content) as its genesis, which names itself as such.
+fn commit_genesis(doc: &mut AutoCommit) {
+    let _ = stamp_surface(doc);
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+    );
+}
+
+/// The key of the record identity naming the surface its changes are
+/// decided against: the content hash of its app package's `surface.toml`.
+pub const SURFACE: &str = "surface";
+
+/// Name, in the record's identity, the surface of its app running here.
+/// `Some(true)` when it replaced another app surface, `Some(false)` when it
+/// named the first, `None` when nothing changed.
+fn stamp_surface(doc: &mut AutoCommit) -> Option<bool> {
+    let m = meta_ro(doc)?;
+    let kind = str_at(doc, &m, "kind")?;
+    let hash = hex::encode(crate::app_surface::hash_of_kind(&kind)?);
+    match str_at(doc, &m, SURFACE) {
+        Some(named) if named == hash => None,
+        named => {
+            doc.put(&m, SURFACE, hash).ok()?;
+            Some(named.is_some())
+        }
+    }
+}
+
 /// The identity stamped into `doc`, if it holds a record.
 pub fn identity(doc: &AutoCommit) -> Option<RecordCheckout> {
     let m = meta_ro(doc)?;
@@ -710,6 +779,11 @@ pub fn identity(doc: &AutoCommit) -> Option<RecordCheckout> {
     let kind = RecordKind::new(str_at(doc, &m, "kind")?);
     let checkout = RecordCheckout::new(id, kind);
     checkout.is_valid().then_some(checkout)
+}
+
+/// [`identity`] of a saved document, as a peer sends it.
+pub fn identity_saved(bytes: &[u8]) -> Option<RecordCheckout> {
+    identity(&AutoCommit::load(bytes).ok()?)
 }
 
 /// Identities this record's document was known by before adoption, oldest
@@ -1229,7 +1303,6 @@ pub struct RecordSet {
     // Retained from the private native construction scope; weakly borrows the
     // one actual worker after construction ends. Never a positive authority.
     native_initial: Option<crate::collaboration::native_initial::InitialReadBridge>,
-    file_mode_selected: bool,
     // Drop after the writers and reservations above. Temporary profiles must
     // outlive asynchronous flushes and recovery handles, not just their host.
     _profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
@@ -1296,7 +1369,6 @@ impl RecordSet {
             pending: HashMap::new(),
             next_reservation: 0,
             native_initial: crate::collaboration::native_initial::capture_bridge(),
-            file_mode_selected: false,
             _profile_lifetime: None,
         }
     }
@@ -1322,7 +1394,6 @@ impl RecordSet {
             pending: HashMap::new(),
             next_reservation: 0,
             native_initial: None,
-            file_mode_selected: false,
             _profile_lifetime: None,
         }
     }
@@ -1995,7 +2066,7 @@ impl RecordSet {
             }
             owner.validate_schema(&doc)?;
             validate_identity(&doc, want, &self.home)?;
-            doc.commit();
+            commit_genesis(&mut doc);
             let owner = Rc::new(owner);
             let autosave = app_state::DocWriter::start_new(&owner, &mut doc)?;
             (doc, autosave)
@@ -2174,7 +2245,7 @@ impl RecordStore {
             .merge_incoming(&mut preserved)
             .map_err(|error| RecordOpenError::Initialization(error.to_string()))?;
         seed(&mut document).map_err(RecordOpenError::Initialization)?;
-        document.commit();
+        commit_genesis(&mut document);
         validate_identity(&document, checkout, &workspace.id)?;
         let bytes = document.save();
         initialization
@@ -2206,9 +2277,6 @@ impl RecordStore {
             writer.request(current);
         }
         Ok(())
-    }
-    pub(crate) fn from_owner(owner: std::rc::Rc<std::cell::RefCell<RecordSet>>) -> Self {
-        Self(owner)
     }
 }
 
@@ -2316,7 +2384,6 @@ impl RecordOwners {
             native_initial: (joins_construction && self.portable.is_none())
                 .then(crate::collaboration::native_initial::capture_bridge)
                 .flatten(),
-            file_mode_selected: false,
             _profile_lifetime: self.profile_lifetime.clone(),
         });
         if let Some(cache) = &self.portable {
@@ -2593,22 +2660,43 @@ fn genesis(
                 .map_err(|error| RecordOpenError::Initialization(error.to_string()))?;
         }
     }
-    if !init_scoped(
-        &mut made,
-        &checkout.id,
-        &checkout.kind,
-        workspace,
-        Some(workspace),
-    ) {
+    // Stamped, not committed: the identity is part of the one genesis change.
+    let stamped = if checkout.id.is_package_primary() {
+        init_scoped(
+            &mut made,
+            &checkout.id,
+            &checkout.kind,
+            workspace,
+            Some(workspace),
+        )
+    } else {
+        RecordId::parse(checkout.id.as_str()).is_some()
+            && checkout.kind.is_valid()
+            && stamp_scoped(
+                &mut made,
+                &checkout.id,
+                &checkout.kind,
+                workspace,
+                Some(workspace),
+            )
+    };
+    if !stamped {
         return Err(RecordOpenError::IdentityMismatch);
     }
     initialize(&mut made).map_err(RecordOpenError::Initialization)?;
+    // The app's surface is the same wherever its package is installed: named
+    // in the genesis, not in a change of this device's afterwards.
+    let _ = stamp_surface(&mut made);
     // Every member must derive the same genesis, so the initializer may not
     // author it under an actor of its own.
     if made.get_actor() != &actor {
         return Err(RecordOpenError::IdentityMismatch);
     }
-    made.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+    made.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
+            .with_time(0),
+    );
     let changes = made.get_changes(&[]);
     let mut created = AutoCommit::new().with_actor(doc.get_actor().clone());
     ApplyIncoming::apply_incoming(&mut created, changes)
@@ -2690,7 +2778,7 @@ impl RecordReservation {
         seed(&mut doc).map_err(RecordOpenError::Initialization)?;
         owner.validate_schema(&doc)?;
         validate_identity(&doc, &self.checkout, &workspace)?;
-        doc.commit();
+        commit_genesis(&mut doc);
         let mut set = self.store.0.borrow_mut();
         if set
             .pending
@@ -3179,7 +3267,7 @@ impl RecordStore {
                 &RecordRef::new(target.id.clone(), relation.clone()),
             );
         }
-        doc.commit();
+        commit_genesis(&mut doc);
         let mut autosave = owner.map(|owner| owner.writer());
         if let Some(error) = autosave
             .as_ref()
@@ -3628,25 +3716,6 @@ impl RecordStore {
             .map(|document| crate::invocation_scope::with_record_loan(self, id, document, f))
     }
 
-    /// Read a record's document.
-    /// Merge an already admitted remote mutation into the one record owner.
-    /// Preserves unfinished local work and rebases shared undo only after merge.
-    pub fn can_merge_admitted(&self, checkout: &RecordCheckout) -> Result<bool, String> {
-        crate::bound_dispatch::can_merge_remote_owned_document(self, checkout)
-            .map_err(|error| error.to_string())
-    }
-    pub fn merge_admitted(
-        &self,
-        checkout: &RecordCheckout,
-        mutation: &collab_types::DocumentMutation,
-    ) -> Result<Option<bool>, String> {
-        let changed = crate::bound_dispatch::merge_remote_owned_document(self, checkout, mutation)
-            .map_err(|e| e.to_string())?;
-        if changed == Some(true) {
-            let _ = self.try_flush();
-        }
-        Ok(changed)
-    }
     pub fn read<R>(&self, id: &RecordId, f: impl FnOnce(&AutoCommit) -> R) -> Option<R> {
         self.read_checked(id, f).ok()
     }
@@ -3661,53 +3730,6 @@ impl RecordStore {
         let mut set = self.0.borrow_mut();
         let (doc, history) = set.document_and_history_mut(id)?;
         Some(f(doc, history))
-    }
-
-    /// Execute one externally addressed document action through the record's
-    /// same owned frame as its mounted application. The frame preserves the
-    /// action generation, author, application instance, semantic context, and
-    /// one undo boundary.
-    ///
-    /// # Errors
-    /// Refuses a record that is absent, busy, or no longer owned by this store.
-    pub fn with_owned_action<R>(
-        &self,
-        id: &RecordId,
-        instance_id: crate::application::InstanceId,
-        app_id: &str,
-        author: crate::permissions::UserId,
-        context: tilo_actions::ActionContext,
-        callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
-    ) -> Result<R, RecordOpenError> {
-        let checkout = self
-            .open_records()
-            .into_iter()
-            .find(|checkout| checkout.id == *id)
-            .ok_or(RecordOpenError::MissingRecord)?;
-        crate::bound_dispatch::with_owned_record_action(
-            self,
-            &checkout,
-            instance_id,
-            app_id,
-            author,
-            context,
-            callback,
-        )
-        .map_err(|error| match error {
-            crate::bound_dispatch::BoundDispatchError::Record(error) => error,
-            crate::bound_dispatch::BoundDispatchError::Persistence(message) => {
-                durable_store::StoreError::Failed {
-                    context: "owner model persistence offer".to_owned(),
-                    message,
-                }
-                .into()
-            }
-            crate::bound_dispatch::BoundDispatchError::MissingNode
-            | crate::bound_dispatch::BoundDispatchError::ClosedLifetime
-            | crate::bound_dispatch::BoundDispatchError::CrossRecordReentry => {
-                RecordOpenError::Busy
-            }
-        })
     }
 
     /// Inspect committed history without turning a pending burst into a boundary.
@@ -3735,41 +3757,6 @@ impl RecordStore {
     pub fn flush(&self) {
         self.0.borrow_mut().flush_open();
     }
-}
-
-#[allow(dead_code, reason = "used by feature-gated collaboration paths")]
-fn validate_replica_identity(
-    doc: &AutoCommit,
-    checkout: &RecordCheckout,
-    workspace: &str,
-    origin: &str,
-) -> Result<(), String> {
-    validate_identity(doc, checkout, workspace).map_err(|error| error.to_string())?;
-    // A losing CRDT value must not conceal a foreign identity. Independent
-    // equal stamps are harmless; every concurrent value must name this record.
-    for (value, object) in doc.get_all(ROOT, META).map_err(|error| error.to_string())? {
-        if value != Value::Object(ObjType::Map) {
-            return Err("conflicting record identity".into());
-        }
-        for (field, expected) in [
-            ("id", checkout.id.as_str()),
-            ("kind", checkout.kind.as_str()),
-            (ROOM, workspace),
-            ("home", origin),
-        ] {
-            let values = doc
-                .get_all(&object, field)
-                .map_err(|error| error.to_string())?;
-            if values.is_empty()
-                || values
-                    .iter()
-                    .any(|(value, _)| value.as_str() != Some(expected))
-            {
-                return Err("conflicting record identity".into());
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Whether the document carries its record metadata map.
@@ -3847,12 +3834,60 @@ pub fn tick(
     set.checkout(state, room, &want).then_some(want)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod identity_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two devices creating the same record make byte for byte the same
+    /// single genesis change, under the record's own actor at time zero,
+    /// and converge on one record.
+    #[test]
+    fn two_creators_of_one_record_make_one_identical_genesis() {
+        let kind = RecordKind::new("test.genesis-note");
+        // The app's surface is named in the record's identity.
+        crate::app_surface::register_package("so.tilo.test-genesis", b"surface");
+        crate::app_surface::register_kind(kind.as_str(), "so.tilo.test-genesis");
+        let checkout = RecordCheckout::new(RecordId::for_tab(3), kind);
+        let create = |actor: &[u8]| {
+            let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(actor));
+            genesis(&mut doc, &checkout, "room", |doc| {
+                doc.put(automerge::ROOT, "title", "Untitled")
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+            // What a store commits after the seed adds nothing to it.
+            commit_genesis(&mut doc);
+            doc
+        };
+        let mut one = create(b"device-one");
+        let mut two = create(b"device-two");
+        let changes = one.get_changes(&[]);
+        assert_eq!(changes.len(), 1, "genesis is one change");
+        let genesis = &changes[0];
+        assert_eq!(
+            genesis.actor_id(),
+            &genesis_actor_of(&checkout.id, &checkout.kind, "room")
+        );
+        assert_eq!(genesis.timestamp(), 0);
+        assert_eq!(
+            one.get_changes(&[])
+                .iter()
+                .map(|change| change.hash())
+                .collect::<Vec<_>>(),
+            two.get_changes(&[])
+                .iter()
+                .map(|change| change.hash())
+                .collect::<Vec<_>>(),
+            "both devices make the identical genesis"
+        );
+        one.merge(&mut two).unwrap();
+        assert_eq!(one.get_changes(&[]).len(), 1, "they converge on one record");
+    }
 
     /// A Writer record stamped `document` before the kind was renamed opens
     /// as the rich-text kind, and opening it rewrites nothing.

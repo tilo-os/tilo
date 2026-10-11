@@ -6,7 +6,7 @@ use crate::shell::state::{
 };
 use vello::kurbo::{Point as KurboPoint, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
+use winit::keyboard::{Key, NamedKey};
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
@@ -435,161 +435,12 @@ pub fn is_shell_chord(event: &WindowEvent, modifiers: &Modifiers, overlay_open: 
 /// logical-key table for events synthesised without a physical key — the DRM backend's libinput bridge and the test-control socket both build `KeyEvent`s that way.
 pub fn evdev_keycode(key: &KeyEvent) -> Option<u32> {
     // Only an identified physical key carries a trustworthy scancode: winit maps `PhysicalKey::Unidentified` to `KEY_UNKNOWN` (240), which would otherwise make every synthesised keystroke a dead key.
-    if let PhysicalKey::Code(code) = key.physical_key
-        && let Some(scancode) = evdev_from_physical(code)
+    if let Some(scancode) = ui::evdev::from_physical(key.physical_key)
         && scancode != 0
     {
         return Some(scancode);
     }
     evdev_from_logical(&key.logical_key)
-}
-
-/// Physical key positions use the peer protocol's Linux input-event codes on every host.
-/// Table follows the vendored winit Linux keymap (MIT/Apache-2.0).
-#[allow(
-    clippy::too_many_lines,
-    reason = "One auditable physical-position to wire-code table preserves the complete protocol mapping."
-)]
-pub fn evdev_from_physical(code: KeyCode) -> Option<u32> {
-    match code {
-        KeyCode::Escape => Some(1),
-        KeyCode::Digit1 => Some(2),
-        KeyCode::Digit2 => Some(3),
-        KeyCode::Digit3 => Some(4),
-        KeyCode::Digit4 => Some(5),
-        KeyCode::Digit5 => Some(6),
-        KeyCode::Digit6 => Some(7),
-        KeyCode::Digit7 => Some(8),
-        KeyCode::Digit8 => Some(9),
-        KeyCode::Digit9 => Some(10),
-        KeyCode::Digit0 => Some(11),
-        KeyCode::Minus => Some(12),
-        KeyCode::Equal => Some(13),
-        KeyCode::Backspace => Some(14),
-        KeyCode::Tab => Some(15),
-        KeyCode::KeyQ => Some(16),
-        KeyCode::KeyW => Some(17),
-        KeyCode::KeyE => Some(18),
-        KeyCode::KeyR => Some(19),
-        KeyCode::KeyT => Some(20),
-        KeyCode::KeyY => Some(21),
-        KeyCode::KeyU => Some(22),
-        KeyCode::KeyI => Some(23),
-        KeyCode::KeyO => Some(24),
-        KeyCode::KeyP => Some(25),
-        KeyCode::BracketLeft => Some(26),
-        KeyCode::BracketRight => Some(27),
-        KeyCode::Enter => Some(28),
-        KeyCode::ControlLeft => Some(29),
-        KeyCode::KeyA => Some(30),
-        KeyCode::KeyS => Some(31),
-        KeyCode::KeyD => Some(32),
-        KeyCode::KeyF => Some(33),
-        KeyCode::KeyG => Some(34),
-        KeyCode::KeyH => Some(35),
-        KeyCode::KeyJ => Some(36),
-        KeyCode::KeyK => Some(37),
-        KeyCode::KeyL => Some(38),
-        KeyCode::Semicolon => Some(39),
-        KeyCode::Quote => Some(40),
-        KeyCode::Backquote => Some(41),
-        KeyCode::ShiftLeft => Some(42),
-        KeyCode::Backslash => Some(43),
-        KeyCode::KeyZ => Some(44),
-        KeyCode::KeyX => Some(45),
-        KeyCode::KeyC => Some(46),
-        KeyCode::KeyV => Some(47),
-        KeyCode::KeyB => Some(48),
-        KeyCode::KeyN => Some(49),
-        KeyCode::KeyM => Some(50),
-        KeyCode::Comma => Some(51),
-        KeyCode::Period => Some(52),
-        KeyCode::Slash => Some(53),
-        KeyCode::ShiftRight => Some(54),
-        KeyCode::NumpadMultiply => Some(55),
-        KeyCode::AltLeft => Some(56),
-        KeyCode::Space => Some(57),
-        KeyCode::CapsLock => Some(58),
-        KeyCode::F1 => Some(59),
-        KeyCode::F2 => Some(60),
-        KeyCode::F3 => Some(61),
-        KeyCode::F4 => Some(62),
-        KeyCode::F5 => Some(63),
-        KeyCode::F6 => Some(64),
-        KeyCode::F7 => Some(65),
-        KeyCode::F8 => Some(66),
-        KeyCode::F9 => Some(67),
-        KeyCode::F10 => Some(68),
-        KeyCode::NumLock => Some(69),
-        KeyCode::ScrollLock => Some(70),
-        KeyCode::Numpad7 => Some(71),
-        KeyCode::Numpad8 => Some(72),
-        KeyCode::Numpad9 => Some(73),
-        KeyCode::NumpadSubtract => Some(74),
-        KeyCode::Numpad4 => Some(75),
-        KeyCode::Numpad5 => Some(76),
-        KeyCode::Numpad6 => Some(77),
-        KeyCode::NumpadAdd => Some(78),
-        KeyCode::Numpad1 => Some(79),
-        KeyCode::Numpad2 => Some(80),
-        KeyCode::Numpad3 => Some(81),
-        KeyCode::Numpad0 => Some(82),
-        KeyCode::NumpadDecimal => Some(83),
-        KeyCode::Lang5 => Some(85),
-        KeyCode::IntlBackslash => Some(86),
-        KeyCode::F11 => Some(87),
-        KeyCode::F12 => Some(88),
-        KeyCode::IntlRo => Some(89),
-        KeyCode::Lang3 => Some(90),
-        KeyCode::Lang4 => Some(91),
-        KeyCode::Convert => Some(92),
-        KeyCode::KanaMode => Some(93),
-        KeyCode::NonConvert => Some(94),
-        KeyCode::NumpadEnter => Some(96),
-        KeyCode::ControlRight => Some(97),
-        KeyCode::NumpadDivide => Some(98),
-        KeyCode::PrintScreen => Some(99),
-        KeyCode::AltRight => Some(100),
-        KeyCode::Home => Some(102),
-        KeyCode::ArrowUp => Some(103),
-        KeyCode::PageUp => Some(104),
-        KeyCode::ArrowLeft => Some(105),
-        KeyCode::ArrowRight => Some(106),
-        KeyCode::End => Some(107),
-        KeyCode::ArrowDown => Some(108),
-        KeyCode::PageDown => Some(109),
-        KeyCode::Insert => Some(110),
-        KeyCode::Delete => Some(111),
-        KeyCode::AudioVolumeMute => Some(113),
-        KeyCode::AudioVolumeDown => Some(114),
-        KeyCode::AudioVolumeUp => Some(115),
-        KeyCode::NumpadEqual => Some(117),
-        KeyCode::Pause => Some(119),
-        KeyCode::NumpadComma => Some(121),
-        KeyCode::Lang1 => Some(122),
-        KeyCode::Lang2 => Some(123),
-        KeyCode::IntlYen => Some(124),
-        KeyCode::SuperLeft => Some(125),
-        KeyCode::SuperRight => Some(126),
-        KeyCode::ContextMenu => Some(127),
-        KeyCode::MediaTrackNext => Some(163),
-        KeyCode::MediaPlayPause => Some(164),
-        KeyCode::MediaTrackPrevious => Some(165),
-        KeyCode::MediaStop => Some(166),
-        KeyCode::F13 => Some(183),
-        KeyCode::F14 => Some(184),
-        KeyCode::F15 => Some(185),
-        KeyCode::F16 => Some(186),
-        KeyCode::F17 => Some(187),
-        KeyCode::F18 => Some(188),
-        KeyCode::F19 => Some(189),
-        KeyCode::F20 => Some(190),
-        KeyCode::F21 => Some(191),
-        KeyCode::F22 => Some(192),
-        KeyCode::F23 => Some(193),
-        KeyCode::F24 => Some(194),
-        _ => None,
-    }
 }
 
 /// Logical-key → evdev keycode fallback. Values are from `linux/input-event-codes.h`.
@@ -1100,20 +951,13 @@ impl SuperTap {
 #[cfg(test)]
 mod super_tap_tests {
     use super::*;
-    use winit::keyboard::{KeyLocation, PhysicalKey};
+    use winit::keyboard::KeyLocation;
 
     fn key(logical: Key, state: ElementState) -> WindowEvent {
-        // winit's `KeyEvent` has a private platform field, so the struct is
-        // zero-initialised and every public field overwritten.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        let mut ev = ui::synthetic_input::key_event(logical, None, state);
         ev.location = KeyLocation::Left;
-        ev.state = state;
-        ev.repeat = false;
-        ev.text = None;
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
         }
@@ -1153,7 +997,7 @@ mod super_tap_tests {
         let mut tap = SuperTap::default();
         tap.observe(&super_key(ElementState::Pressed));
         tap.observe(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
@@ -1161,7 +1005,7 @@ mod super_tap_tests {
 
         tap.observe(&super_key(ElementState::Pressed));
         tap.observe(&WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(0.0, 1.0),
             phase: winit::event::TouchPhase::Moved,
         });
@@ -1186,20 +1030,18 @@ mod tests {
     use crate::shell::state::{AppKind, Strip, Workspace, WorkspaceId};
     use std::time::{Duration, Instant};
     use ui::widget::{WheelJumpAccum, wheel_jump_detents};
-    use winit::event::{DeviceId, KeyEvent};
+    use winit::event::DeviceId;
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey, SmolStr};
     fn key_event(logical: Key, pressed: bool) -> WindowEvent {
-        // Mirrors the synthesis helpers already used by the test-control executor: winit's `KeyEvent` has a private platform field, so the struct is zero-initialised.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = if pressed {
-            ElementState::Pressed
-        } else {
-            ElementState::Released
-        };
-        ev.repeat = false;
+        let ev = ui::synthetic_input::key_event(
+            logical,
+            None,
+            if pressed {
+                ElementState::Pressed
+            } else {
+                ElementState::Released
+            },
+        );
         WindowEvent::KeyboardInput {
             device_id: unsafe { std::mem::zeroed::<DeviceId>() },
             event: ev,
@@ -1474,7 +1316,11 @@ mod tests {
         }
 
         fn evdev_keycode_prefers_the_physical_scancode() {
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+            let mut ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
+                None,
+                winit::event::ElementState::Pressed,
+            );
             // `KeyA` is evdev 30; the logical key deliberately disagrees so a fallback to the table would produce a different value.
             ev.physical_key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyA);
             ev.logical_key = Key::Character(SmolStr::new("z"));
@@ -2602,7 +2448,7 @@ mod lock_chord_tests {
         /// A non-keyboard event (cursor move) is never the lock chord even with Super held.
         fn cursor_move_is_not_lock_chord() {
             let ev = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: PhysicalPosition::new(10.0, 10.0),
             };
             assert!(!locks(&ev, mods_with_super(true)));

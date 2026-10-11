@@ -52,7 +52,7 @@ impl HostIdentity {
             }
             let store =
                 crate::registry::IdentityRegistryStore::from_env().map_err(|e| e.to_string())?;
-            let registry = store.load_reconciled().map_err(|e| e.to_string())?;
+            let registry = store.load_reconciled_cached().map_err(|e| e.to_string())?;
             let mut selected = registry
                 .workspace_identities
                 .iter()

@@ -11,7 +11,7 @@ use tilo_peer_state::join::{
     self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
     TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1,
 };
-use tilo_relay::workspace_join::WorkspaceJoinClient;
+use tilo_relay_session::workspace_join::WorkspaceJoinClient;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 fn current(identity: &HostIdentity, topic: u64, expected: &DeviceCert) -> Result<(), String> {

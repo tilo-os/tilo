@@ -773,17 +773,16 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "decode")]
-    #[allow(dead_code, reason = "only the media-stack check is used here")]
-    mod generated_clip {
+    #[cfg(all(feature = "decode", feature = "gst"))]
+    mod media_stack {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/support/generated_clip.rs"
+            "/tests/support/media_stack.rs"
         ));
     }
 
     use super::*;
-    use crate::doc::sample_project;
+    use crate::seed::sample_project;
 
     #[test]
     #[allow(
@@ -942,7 +941,8 @@ mod tests {
                 id: uuid::Uuid::new_v4(),
                 kind: EffectKind::Grayscale,
                 amount: 1.0,
-            }];
+            }]
+            .into();
             let CompositedFrame::Clip { base: after, .. } = composite(&p, 6.0) else {
                 panic!("expected clip");
             };
@@ -989,7 +989,6 @@ mod tests {
                 fps: 30.0,
                 palette: 0,
                 path: crate::media::workspace_path("s.mp4"),
-                hydration: crate::media::Hydration::Projected,
                 ..Default::default()
             });
             let tid = Uuid::new_v4();
@@ -1034,7 +1033,6 @@ mod tests {
             fps: 30.0,
             palette: 0,
             path: path.to_string_lossy().into_owned(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let tid = Uuid::new_v4();
@@ -1107,7 +1105,6 @@ mod tests {
                 palette: 0,
                 // Absolute path that does not exist → resolve reports Projected.
                 path: "/definitely/not/here-preview.mp4".into(),
-                hydration: crate::media::Hydration::Projected,
                 ..Default::default()
             });
             let tid = Uuid::new_v4();
@@ -1155,7 +1152,7 @@ mod tests {
         'case: {
             use gstreamer as gst;
             use gstreamer::prelude::*;
-            if !generated_clip::media_stack() {
+            if !media_stack::media_stack() {
                 break 'case;
             }
 
@@ -1236,7 +1233,6 @@ mod tests {
                 fps: 30.0,
                 palette,
                 path: crate::media::workspace_path("m.mp4"),
-                hydration: crate::media::Hydration::Projected,
                 ..Default::default()
             });
             id
@@ -1384,7 +1380,8 @@ mod tests {
                     id: uuid::Uuid::new_v4(),
                     kind: EffectKind::Sepia,
                     amount: 0.5,
-                }];
+                }]
+                .into();
                 c.fade_in = 2.0;
                 c.opacity = 0.5;
             }

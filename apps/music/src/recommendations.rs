@@ -1,14 +1,13 @@
 //! Explainable library exploration. No provider request or listening history.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Model, Set};
 
 use crate::model::{Library, Track};
 
-mod document;
 mod resources;
-pub(crate) use document::{read, seed, write};
 pub use resources::{PREFERENCES, resource_by_id, resources};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,17 +29,23 @@ impl Input {
     }
 
     pub fn label(self) -> String {
-        ui::i18n!(&format!("music-recommendations-input-{}", self.key()))
+        crate::i18n::t(&format!("music-recommendations-input-{}", self.key()))
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// What recommendations explore from, and the person's feedback on them.
+#[derive(Clone, Debug, PartialEq, Model)]
 pub struct Preferences {
+    /// Explore from liked songs
     pub likes: bool,
+    /// Explore from saved albums
     pub saved_albums: bool,
+    /// Explore from followed artists
     pub followed_artists: bool,
-    pub preferred_artists: BTreeSet<String>,
-    pub dismissed: BTreeSet<String>,
+    /// Preferred artists, by id.
+    pub preferred_artists: Set<String>,
+    /// Songs not to suggest again, by track id.
+    pub dismissed: Set<String>,
 }
 
 impl Default for Preferences {
@@ -49,13 +54,33 @@ impl Default for Preferences {
             likes: true,
             saved_albums: true,
             followed_artists: true,
-            preferred_artists: BTreeSet::new(),
-            dismissed: BTreeSet::new(),
+            preferred_artists: Set::new(),
+            dismissed: Set::new(),
         }
     }
 }
 
 impl Preferences {
+    /// Whether `track` was dismissed.
+    pub fn is_dismissed(&self, track: &str) -> bool {
+        self.dismissed.contains(&track.to_owned())
+    }
+
+    /// Whether `artist` is preferred.
+    pub fn prefers(&self, artist: &str) -> bool {
+        self.preferred_artists.contains(&artist.to_owned())
+    }
+
+    /// The path of `input`'s switch.
+    pub fn input_path(input: Input) -> tilo_resource::Path<Library, bool> {
+        let paths = Library::paths().recommendations;
+        match input {
+            Input::Likes => paths.likes,
+            Input::SavedAlbums => paths.saved_albums,
+            Input::FollowedArtists => paths.followed_artists,
+        }
+    }
+
     pub fn enabled(&self, input: Input) -> bool {
         match input {
             Input::Likes => self.likes,
@@ -88,7 +113,7 @@ impl Reason {
             Self::SavedAlbum(id) => ("saved", lib.album_title(id)),
             Self::FollowedArtist(id) => ("followed", lib.artist_name(id)),
             Self::SharedGenre { artist, genre } => {
-                return ui::i18n::I18nManager::format(
+                return crate::i18n::t_args(
                     "music-recommendations-reason-genre",
                     &[
                         ("artist", lib.artist_name(artist).into()),
@@ -97,7 +122,7 @@ impl Reason {
                 );
             }
         };
-        ui::i18n::I18nManager::format(
+        crate::i18n::t_args(
             &format!("music-recommendations-reason-{key}"),
             &[("name", name.into())],
         )
@@ -145,7 +170,7 @@ impl Signals {
 
 fn reason(lib: &Library, track: &Track, signals: &Signals) -> Option<(u8, Reason)> {
     let prefs = &lib.recommendations;
-    if prefs.preferred_artists.contains(&track.artist_id) {
+    if prefs.prefers(&track.artist_id) {
         return Some((5, Reason::PreferredArtist(track.artist_id.clone())));
     }
     if let Some(liked) = signals.liked_artists.get(&track.artist_id) {
@@ -154,7 +179,7 @@ fn reason(lib: &Library, track: &Track, signals: &Signals) -> Option<(u8, Reason
     if let Some(album) = signals.saved_artists.get(&track.artist_id) {
         return Some((3, Reason::SavedAlbum(album.clone())));
     }
-    if prefs.followed_artists && lib.followed_artists.contains(&track.artist_id) {
+    if prefs.followed_artists && lib.is_artist_followed(&track.artist_id) {
         return Some((2, Reason::FollowedArtist(track.artist_id.clone())));
     }
     let artist = lib.artist(&track.artist_id)?;
@@ -174,7 +199,7 @@ fn reason(lib: &Library, track: &Track, signals: &Signals) -> Option<(u8, Reason
 
 /// Explore known, unliked library songs. Stable ranking; plays are never read.
 pub(crate) fn suggestion(lib: &Library, id: &str) -> Option<Suggestion> {
-    if lib.is_liked(id) || lib.recommendations.dismissed.contains(id) {
+    if lib.is_liked(id) || lib.recommendations.is_dismissed(id) {
         return None;
     }
     let track = lib.track(id)?;
@@ -190,9 +215,7 @@ pub fn suggestions(lib: &Library, limit: usize) -> Vec<Suggestion> {
     let mut matches = lib
         .tracks
         .values()
-        .filter(|track| {
-            !lib.is_liked(&track.id) && !lib.recommendations.dismissed.contains(&track.id)
-        })
+        .filter(|track| !lib.is_liked(&track.id) && !lib.recommendations.is_dismissed(&track.id))
         .filter_map(|track| {
             reason(lib, track, &signals).map(|(score, reason)| (score, track.id.clone(), reason))
         })

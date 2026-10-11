@@ -16,6 +16,7 @@ description = "The canonical Tilo desktop model shared by every host."
 # `tools/policy/check_desktop_model_dependencies.py` enforces that list.
 
 [dependencies]
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 automerge.workspace = true
 blake3.workspace = true
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }

@@ -170,6 +170,57 @@ fn a_withdrawn_admission_refuses_reads_and_writes() {
     assert!(records.load().is_empty());
 }
 
+#[test]
+fn display_rpc_requires_explicit_origin_and_exact_published_uuid_before_host_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let record = calls.clone();
+    let delegate = Arc::new(
+        move |_: &[u8], _: runtime_collab::settings::DisplayOrigin| {
+            record.fetch_add(1, Ordering::SeqCst);
+            Ok(b"{}".to_vec())
+        },
+    );
+    run(async {
+        let client: runtime_collab::collab_capnp::app_settings::Client = capnp_rpc::new_client(
+            AppSettingsServer::new("so.tilo.settings", session(dir.path()), admitted())
+                .with_display(Some(delegate)),
+        );
+        let mut missing = client.display_control_request();
+        missing
+            .get()
+            .set_command_json(br#"{"operation":"identify"}"#);
+        assert!(
+            missing.send().promise.await.is_err(),
+            "omitted origin cannot default to local intent"
+        );
+        for bytes in [vec![], vec![0; 15], vec![0; 17]] {
+            let mut request = client.display_control_request();
+            request
+                .get()
+                .set_origin(runtime_collab::collab_capnp::DisplayRequestOrigin::Published);
+            request.get().set_published_invocation(&bytes);
+            assert!(request.send().promise.await.is_err());
+        }
+        let mut invalid_local = client.display_control_request();
+        invalid_local
+            .get()
+            .set_origin(runtime_collab::collab_capnp::DisplayRequestOrigin::LocalHost);
+        invalid_local.get().set_published_invocation(&[0; 16]);
+        assert!(invalid_local.send().promise.await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let settings: AppSettingsHandle = client.into();
+        settings
+            .display_control(
+                br#"{"operation":"inspect"}"#,
+                runtime_collab::settings::DisplayOrigin::LocalHost,
+            )
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    });
+}
+
 fn revocable_admission(allowed: Arc<AtomicBool>) -> Revalidate {
     Arc::new(move || {
         if allowed.load(Ordering::Acquire) {

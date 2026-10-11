@@ -25,11 +25,13 @@
 //!     pub fn edit(&mut self, text: String) { self.body = text; }
 //! }
 //!
-//! let kinds = Kinds::new().with(ResourceKind::of::<Note>());
-//! let note = kinds.get("example.note").unwrap();
-//! let doc = tilo_resource::Doc::new();
-//! let tree = note.publish("example.note", &doc).unwrap();
-//! assert!(tree.actions.iter().any(|action| action.id == "edit"));
+//! fn main() {
+//!     let kinds = Kinds::new().with(ResourceKind::of::<Note>());
+//!     let note = kinds.get("example.note").unwrap();
+//!     let doc = tilo_resource::Doc::new();
+//!     let tree = note.publish("example.note", &doc).unwrap();
+//!     assert!(tree.actions.iter().any(|action| action.id == "edit"));
+//! }
 //! ```
 
 use std::any::Any;
@@ -51,7 +53,7 @@ pub struct ResourceKind {
     name: fn(&dyn Any) -> Option<String>,
     publish: fn(&str, &str, &dyn Any) -> Option<tilo_actions::Resource>,
     search: fn(&dyn Any) -> Option<Vec<SearchEntry>>,
-    child: fn(&dyn Any, &str) -> Option<tilo_actions::Resource>,
+    child: fn(&dyn Any, &Doc, &str) -> Option<tilo_actions::Resource>,
     register: fn(&mut ActionRegistry),
     initialize: fn(&mut Doc) -> Result<(), ModelError>,
     encode: fn(serde_json::Value) -> Result<EncodedAction, String>,
@@ -83,8 +85,8 @@ fn publish<R: Resource>(id: &str, label: &str, state: &dyn Any) -> Option<tilo_a
         .map(|state| resource::publish::<R>(id, label, state))
 }
 
-fn child<R: Resource>(state: &dyn Any, id: &str) -> Option<tilo_actions::Resource> {
-    R::child(state.downcast_ref::<R::State>()?, id)
+fn child<R: Resource>(state: &dyn Any, doc: &Doc, id: &str) -> Option<tilo_actions::Resource> {
+    resource::child_by_id::<R>(state.downcast_ref::<R::State>()?, doc, id)
 }
 
 fn search<R: Resource>(state: &dyn Any) -> Option<Vec<SearchEntry>> {
@@ -93,9 +95,9 @@ fn search<R: Resource>(state: &dyn Any) -> Option<Vec<SearchEntry>> {
 
 fn lands<R: Resource>(doc: &Doc, action: &EncodedAction) -> Option<Place> {
     let action: R::Action = if action.type_id == R::ACTION_TYPE {
-        serde_json::from_slice(&action.payload).ok()?
+        tilo_actions::decode_json(&action.payload).ok()?
     } else if action.type_id == crate::group::group_type::<R>() {
-        serde_json::from_slice::<crate::group::ActionGroup<R::Action>>(&action.payload)
+        tilo_actions::decode_json::<crate::group::ActionGroup<R::Action>>(&action.payload)
             .ok()?
             .actions
             .pop()?
@@ -106,11 +108,23 @@ fn lands<R: Resource>(doc: &Doc, action: &EncodedAction) -> Option<Place> {
 }
 
 fn encode<R: Resource>(action: serde_json::Value) -> Result<EncodedAction, String> {
+    encode_in(crate::vocabulary::<R>(), action)
+}
+
+/// [`ResourceKind::encode`] of the resource `vocabulary`.
+fn encode_in(
+    vocabulary: &crate::Vocabulary,
+    action: serde_json::Value,
+) -> Result<EncodedAction, String> {
     let mut arguments = serde_json::Map::new();
     arguments.insert(resource::APPLY_PARAM.to_owned(), action);
-    let action =
-        resource::build_action::<R>(resource::APPLY, &arguments, resource::origin_now_ms())?;
-    resource::encode::<R>(&action).map_err(|error| error.to_string())
+    let action = resource::build_action_of(
+        vocabulary,
+        resource::APPLY,
+        &arguments,
+        resource::origin_now_ms(),
+    )?;
+    action.encode().map_err(|error| error.to_string())
 }
 
 impl ResourceKind {
@@ -211,6 +225,26 @@ impl ResourceKind {
         self.read(doc).is_ok()
     }
 
+    /// [`Self::read`] of a saved document, as a peer sends it.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when `bytes` are no document, or one that does
+    /// not hold this resource.
+    pub fn read_saved(&self, bytes: &[u8]) -> Result<Box<dyn Any>, ModelError> {
+        let doc = Doc::load(bytes).map_err(|error| ModelError::invalid(error.to_string()))?;
+        self.read(&doc)
+    }
+
+    /// [`Self::holds`] for a saved document.
+    pub fn holds_saved(&self, bytes: &[u8]) -> bool {
+        self.read_saved(bytes).is_ok()
+    }
+
+    /// The heads of a saved document; `None` when `bytes` are no document.
+    pub fn saved_heads(bytes: &[u8]) -> Option<Vec<automerge::ChangeHash>> {
+        Doc::load(bytes).ok().map(|mut doc| doc.get_heads())
+    }
+
     /// What the open resource is called, from a state [`Self::read`]
     /// returned.
     pub fn name(&self, state: &dyn Any) -> String {
@@ -236,7 +270,7 @@ impl ResourceKind {
     /// Returns why this document does not hold the publishing resource.
     pub fn child(&self, doc: &Doc, id: &str) -> Result<Option<tilo_actions::Resource>, ModelError> {
         let state = self.read(doc)?;
-        Ok((self.child)(state.as_ref(), id))
+        Ok((self.child)(state.as_ref(), doc, id))
     }
 
     /// [`Self::publish`] from a state [`Self::read`] returned.

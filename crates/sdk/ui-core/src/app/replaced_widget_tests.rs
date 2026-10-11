@@ -2,6 +2,7 @@
 //! one: a pointer move before the next layout (its cursor and tooltip
 //! lookups) reached a dropped colour picker and crashed Canvas.
 
+use crate::widget::TaffyTreeExt;
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -50,11 +51,7 @@ impl Widget for Swapper {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.child.build_layout(taffy, theme, node_map);
-        let node = taffy
-            .new_with_children(taffy::Style::default(), &[child])
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(taffy::Style::default(), &[child], node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = Rect::from_origin_size(origin, (100.0, 40.0));
@@ -162,5 +159,103 @@ fn a_topology_poll_that_replaces_widgets_retires_nodes_before_pointer_queries() 
             .node_map
             .values()
             .all(|p| alive.contains(&p.cast::<()>().addr()))
+    );
+}
+
+fn replacing_app() -> (App, Rc<Cell<bool>>) {
+    use crate::widget::replaced_tripwire::{ReplaceAt, Replacing};
+    let (root, armed) = Replacing::new(ReplaceAt::Sync);
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+    app.init_layout();
+    let child = app.focusable_order[0];
+    app.set_focused_node(Some(child));
+    armed.set(true);
+    // A sync outside the model pass (installing History syncs the root
+    // directly) replaces the focused control; the map still names it.
+    app.root_widget.sync(&app.state.doc, &app.state.root);
+    assert!(!armed.get(), "the sync replaced the control");
+    (app, armed)
+}
+
+/// Capturing where focus is after a replacement reads the live tree, never
+/// the layout's pointer to the replaced control.
+#[test]
+fn focus_captured_after_a_replacement_reads_the_live_tree() {
+    let (mut app, _armed) = replacing_app();
+    assert!(
+        app.capture_focus_identity().is_none(),
+        "the replacement was never focused"
+    );
+    assert!(app.layout.node_map.is_empty(), "the stale map is forgotten");
+    assert!(app.layout.structure_dirty);
+}
+
+/// The history sweep visits mapped nodes: replaced ones are forgotten
+/// before it.
+#[test]
+fn the_history_sweep_after_a_replacement_visits_no_replaced_control() {
+    let (mut app, _armed) = replacing_app();
+    let _ = app.service_history();
+    let mut alive = HashSet::new();
+    live(app.root_widget.as_ref(), &mut alive);
+    assert!(
+        app.layout
+            .node_map
+            .values()
+            .all(|pointer| alive.contains(&pointer.cast::<()>().addr()))
+    );
+}
+
+/// An assistive technology's action that arrives after a replacement and
+/// before the next layout reaches no replaced control.
+#[test]
+fn an_accessibility_action_after_a_replacement_reaches_no_replaced_control() {
+    use crate::a11y::Action;
+    let (root, armed) = crate::widget::replaced_tripwire::Replacing::new(
+        crate::widget::replaced_tripwire::ReplaceAt::Sync,
+    );
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+    app.init_layout();
+    let target = app
+        .build_a11y_tree_update(1.0)
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Tripwire"))
+        .map(|(id, _)| *id)
+        .expect("the control is exported");
+    armed.set(true);
+    app.root_widget.sync(&app.state.doc, &app.state.root);
+    assert!(!armed.get(), "the sync replaced the control");
+    assert!(app.dispatch_a11y_action(target, &Action::Focus).is_none());
+    app.rebuild_structure();
+    assert_eq!(app.focusable_order.len(), 1);
+}
+
+/// A replacement reported before the layout was built is part of that
+/// layout: an assistive technology's action afterwards reaches the control
+/// it names, rather than being dropped as if the tree had changed since.
+#[test]
+fn a_replacement_the_layout_already_took_in_does_not_drop_an_action() {
+    use crate::a11y::Action;
+    use crate::widget::replaced_tripwire::{ReplaceAt, Replacing};
+    let (root, armed) = Replacing::new(ReplaceAt::Sync);
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+    armed.set(true);
+    app.root_widget.sync(&app.state.doc, &app.state.root);
+    assert!(!armed.get(), "the sync replaced the control");
+    app.init_layout();
+    let target = app
+        .build_a11y_tree_update(1.0)
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Tripwire"))
+        .map(|(id, _)| *id)
+        .expect("the control is exported");
+    let control = app.focusable_order[0];
+    let _ = app.dispatch_a11y_action(target, &Action::Focus);
+    assert_eq!(
+        app.focused_node,
+        Some(control),
+        "the action reached the control"
     );
 }

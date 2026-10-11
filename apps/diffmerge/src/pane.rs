@@ -1,6 +1,7 @@
 //! What the diff and merge panes paint the same way: code metrics measured in
 //! the theme's `Code` role, column headers, and the wash a change takes.
 
+use ui::num::f32_of_f64;
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
@@ -93,7 +94,7 @@ pub fn paint_header(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, rule: Optio
         let label_style = ctx.theme.text(TextRole::Label);
         let shown = ctx
             .text
-            .elide_to_width_style(name, to_f32(room), &label_style);
+            .elide_to_width_style(name, f32_of_f64(room), &label_style);
         let used = f64::from(ctx.text.measure_style(&shown, None, &label_style).0);
         ctx.text_role_in_band(
             &shown,
@@ -107,7 +108,9 @@ pub fn paint_header(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, rule: Optio
             let left = room - used - gap;
             if left > 0.0 {
                 let caption = ctx.theme.text(TextRole::Caption);
-                let shown = ctx.text.elide_to_width_style(note, to_f32(left), &caption);
+                let shown = ctx
+                    .text
+                    .elide_to_width_style(note, f32_of_f64(left), &caption);
                 ctx.text_role_in_band(
                     &shown,
                     TextRole::Caption,
@@ -153,13 +156,4 @@ pub fn washed(theme: &Theme, tone: Tone, active: bool) -> Color {
 /// A line's top-left, centred in a row of `m` that starts at `y`.
 pub fn line_origin(x: f64, y: f64, m: &CodeMetrics) -> Point {
     Point::new(x, y + m.text_dy)
-}
-
-/// Narrows a pixel width to the renderer's `f32`.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "pane widths are a few thousand logical pixels, exact in f32"
-)]
-pub fn to_f32(px: f64) -> f32 {
-    px as f32
 }

@@ -27,10 +27,17 @@
 //! Override iterations: `TILO_UI_DASH_ITERS=2000`.
 //! Override the render target: `TILO_UI_DASH_WIDTH=3840
 //! TILO_UI_DASH_HEIGHT=2160`.
+//! Set `TILO_UI_DASH_PEER=1` to add a collaborator whose pointer (dot and
+//! name) moves on every event, drawn through the framework's presence layer;
+//! `TILO_UI_DASH_PEER=full` repaints the window on every such frame instead,
+//! the rule before TIL-634, for comparison.
 //! Set `TILO_UI_DASH_VERIFY=1` to run a separate retained-damage pixel
 //! parity preflight. It compares 40 (configurable: 20..=100) already-built
 //! native scenes to a persistent full-render reference; it does not produce
 //! performance measurements or accept benchmark budget gates.
+//! Set `TILO_UI_DASH_SAMPLES=<path>` to write every redrawing frame's total
+//! (microseconds, one per line) for `tools/perf/record.py emit`; the
+//! scheduled performance lane records `render.ui.frame_us.4k` from it.
 //! Native masked sparse fine shading is enabled by default when supported;
 //! set `VELLO_SPARSE_FINE=0` to disable it. The raster-pixel metric remains
 //! the actual fine-shaded native pixels; profile output separately accounts
@@ -47,7 +54,6 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use tilo_ui::TextRole;
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::offscreen::{OffscreenRenderTiming, OffscreenRenderer};
-use tilo_ui::permissions::PermissionContext;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -60,7 +66,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::dpi::PhysicalPosition;
 use winit::event::{
-    DeviceId, ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+    ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 };
 
 /// Narrows the canvas size (bounded, well under 10,000px) from `u32` to
@@ -136,6 +142,8 @@ fn reject_budgets_in_diagnostic_mode(mode: &str, reject_profile_flags: bool) {
         "TILO_UI_DASH_GPU_BUDGET_BYTES",
         "TILO_UI_DASH_RSS_GROWTH_BUDGET_KIB",
         "TILO_UI_DASH_GPU_GROWTH_BUDGET_BYTES",
+        // Samples of a diagnostic run are not comparable with the lane's.
+        "TILO_UI_DASH_SAMPLES",
     ];
     // Verification intentionally suppresses every profile report, whereas
     // timestamp diagnostics compose with the frame/host profile reports.
@@ -484,8 +492,8 @@ mod damage_verifier_tests {
         gpu_timestamp_sample_label, has_complete_gpu_dispatch_timestamp,
         has_complete_gpu_timestamp, has_gpu_dispatch_timestamp_stage, mean_frame_budget_passes,
         native_pixel_coordinates, p99_values, parse_mean_frame_budget, pixel_differs_beyond_aa,
-        redraw_frame_totals, sparse_coarse_profile_totals, traffic_byte_redraw_budget_passes,
-        unaccounted_render_us,
+        redraw_frame_samples, redraw_frame_totals, sparse_coarse_profile_totals,
+        traffic_byte_redraw_budget_passes, unaccounted_render_us,
     };
 
     #[test]
@@ -805,6 +813,33 @@ mod damage_verifier_tests {
             assert!(parse_mean_frame_budget(Some("nope")).is_err());
         }
     }
+
+    #[test]
+    fn frame_samples_are_the_redraw_population_the_budgets_rank() {
+        assert_eq!(redraw_frame_samples(&[]), "");
+        let histo = [
+            Phase {
+                total_us: 99_999,
+                ..Phase::default()
+            },
+            Phase {
+                draw_us: 1,
+                total_us: 7_000,
+                ..Phase::default()
+            },
+            Phase {
+                render_us: 1,
+                total_us: 9_000,
+                ..Phase::default()
+            },
+        ];
+        // The skipped event is not a frame; both redraws are, in event order.
+        assert_eq!(redraw_frame_samples(&histo), "7000\n9000\n");
+        assert_eq!(
+            redraw_frame_samples(&histo).lines().count(),
+            redraw_frame_totals(&histo).map_or(0, |(_, redraws)| redraws)
+        );
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -830,13 +865,92 @@ struct BenchState<'a> {
     root_node: NodeId,
     text_renderer: &'a mut TextRenderer,
     presence: &'a PresenceCtx,
-    perms: &'a PermissionContext,
     theme: &'a Theme,
     scene: &'a mut Scene,
     renderer: &'a mut OffscreenRenderer,
     damage_regions: &'a mut Vec<vello::kurbo::Rect>,
     canvas_w: u32,
     canvas_h: u32,
+    /// `TILO_UI_DASH_PEER=1`: a collaborator whose pointer moves on every
+    /// event, painted over the widgets the way an app window paints it.
+    peer: Option<&'a mut PeerBench>,
+}
+
+/// A remote collaborator's pointer, drawn through the framework's presence
+/// layer: each frame damages only where the pointer and its name were and
+/// are, never the whole window.
+struct PeerBench {
+    presence: PresenceCtx,
+    layer: tilo_ui::presence::PresenceLayer,
+    /// `TILO_UI_DASH_PEER=full`: the rule before TIL-634, under which any
+    /// visible collaborator repainted the whole window, for comparison.
+    full_repaint: bool,
+}
+
+impl PeerBench {
+    fn from_env() -> Option<Self> {
+        let mode = tilo_ui::env::var("TILO_UI_DASH_PEER").ok()?;
+        let full_repaint = match mode.as_str() {
+            "1" => false,
+            "full" => true,
+            _ => {
+                eprintln!("TILO_UI_DASH_PEER must be 1 or full, got {mode:?}");
+                std::process::exit(2);
+            }
+        };
+        Some(Self {
+            presence: PresenceCtx::default(),
+            layer: tilo_ui::presence::PresenceLayer::new(),
+            full_repaint,
+        })
+    }
+
+    /// Glide the pointer along a slow Lissajous path across the canvas, a
+    /// few dozen pixels per event, like a person's hand at ~30 Hz.
+    fn move_pointer(&mut self, i: usize, canvas_w: u32, canvas_h: u32) {
+        let (w, h) = (f64::from(canvas_w), f64::from(canvas_h));
+        let t = idx_f64(i);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "pointer positions inside a canvas well under f32's exact range"
+        )]
+        let at = [
+            (w / 2.0 + w / 3.0 * (t * 0.031).sin()) as f32,
+            (h / 2.0 + h / 3.0 * (t * 0.023).cos()) as f32,
+        ];
+        self.presence
+            .upsert_remote_cursor("peer-ada".into(), at, Some("Ada Lovelace"));
+    }
+
+    /// Paint the pointer into the presence layer and append it over the
+    /// widgets. Returns its damage, `None` when it must repaint everything.
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        viewport: vello::kurbo::Rect,
+    ) -> Option<Vec<vello::kurbo::Rect>> {
+        let presence = &self.presence;
+        self.layer.record(|layer| {
+            tilo_ui::scene_parts::part_drawn(
+                layer,
+                tilo_ui::scene_parts::PartKey::new("bench.remote-presence", ()),
+                |layer| {
+                    tilo_ui::presence::draw_remote_presence(
+                        layer,
+                        Affine::IDENTITY,
+                        viewport,
+                        text_renderer,
+                        theme,
+                        presence,
+                    )
+                },
+            );
+        });
+        scene.append(self.layer.scene(), None);
+        self.layer.damage().filter(|_| !self.full_repaint)
+    }
 }
 
 #[allow(
@@ -892,7 +1006,7 @@ fn full_draw(
     let t_draw = tilo_ui::time::now();
     state.scene.reset();
     // Wire the spatial-culling viewport just like the live App
-    // does. Without this the bench's `draw_with_presence` walks
+    // does. Without this the bench's `draw` walks
     // see `viewport == None` and skip the culling short-circuit,
     // masking the Item 1 win in the benchmark output.
     let vp = vello::kurbo::Rect::new(
@@ -902,15 +1016,18 @@ fn full_draw(
         f64::from(state.canvas_h),
     );
     let prev_vp = state.presence.push_viewport(vp);
-    state.root.draw_with_presence(
+    state.root.draw(
         state.scene,
         Affine::IDENTITY,
         state.text_renderer,
         state.theme,
         state.presence,
-        state.perms,
     );
     state.presence.pop_viewport(prev_vp);
+    let peer_damage = state
+        .peer
+        .as_deref_mut()
+        .map(|peer| peer.draw(state.scene, state.text_renderer, state.theme, vp));
     phase.draw_us = t_draw.elapsed().as_micros();
     if let (Some(before), Some(breakdown)) =
         (allocation_before_draw, allocation_breakdown.as_deref_mut())
@@ -929,12 +1046,19 @@ fn full_draw(
     // the complete native target. Visual-only changes use the union of dirty
     // leaves plus a 16px safety margin for AA, focus rings, and small shadows.
     state.damage_regions.clear();
-    if layout_dirty {
+    if layout_dirty || matches!(peer_damage, Some(None)) {
         state.damage_regions.push(vp);
     } else {
         state.root.collect_damage(state.damage_regions);
         for rect in &mut *state.damage_regions {
             *rect = rect.inflate(16.0, 16.0).intersect(vp);
+        }
+        // The peer's marks, as the native runner submits them: whole pixels
+        // plus one for rounding.
+        for rect in peer_damage.into_iter().flatten().flatten() {
+            state
+                .damage_regions
+                .push(rect.expand().inflate(1.0, 1.0).intersect(vp));
         }
         state.damage_regions.retain(|rect| !rect.is_zero_area());
         if state.damage_regions.is_empty() {
@@ -980,6 +1104,9 @@ fn full_draw(
     }
 
     state.root.mark_drawn();
+    if let Some(peer) = state.peer.as_deref_mut() {
+        peer.layer.presented();
+    }
 }
 
 fn dispatch(state: &mut BenchState<'_>, doc: &mut AutoCommit, event: &WindowEvent) {
@@ -1002,7 +1129,7 @@ fn dispatch(state: &mut BenchState<'_>, doc: &mut AutoCommit, event: &WindowEven
 }
 
 fn make_cursor(x: f64, y: f64) -> WindowEvent {
-    let device_id: DeviceId = unsafe { std::mem::zeroed() };
+    let device_id = winit::event::DeviceId::dummy();
     WindowEvent::CursorMoved {
         device_id,
         position: PhysicalPosition::new(x, y),
@@ -1010,7 +1137,7 @@ fn make_cursor(x: f64, y: f64) -> WindowEvent {
 }
 
 fn make_click_press() -> WindowEvent {
-    let device_id: DeviceId = unsafe { std::mem::zeroed() };
+    let device_id = winit::event::DeviceId::dummy();
     WindowEvent::MouseInput {
         device_id,
         state: ElementState::Pressed,
@@ -1019,7 +1146,7 @@ fn make_click_press() -> WindowEvent {
 }
 
 fn make_click_release() -> WindowEvent {
-    let device_id: DeviceId = unsafe { std::mem::zeroed() };
+    let device_id = winit::event::DeviceId::dummy();
     WindowEvent::MouseInput {
         device_id,
         state: ElementState::Released,
@@ -1028,7 +1155,7 @@ fn make_click_release() -> WindowEvent {
 }
 
 fn make_wheel(dy: f32) -> WindowEvent {
-    let device_id: DeviceId = unsafe { std::mem::zeroed() };
+    let device_id = winit::event::DeviceId::dummy();
     WindowEvent::MouseWheel {
         device_id,
         delta: MouseScrollDelta::LineDelta(0.0, dy),
@@ -1204,15 +1331,15 @@ fn print_warmup_report(state: &BenchState<'_>) {
     );
     println!(
         "after warm-up: CPU path-tag retained host pool={}B (excluded from known GPU bytes)",
-        state.renderer.cpu_pathtag_pool_retained_bytes(),
+        state.renderer.vello().cpu_pathtag_pool_retained_bytes(),
     );
     println!(
         "after warm-up: CPU metadata retained host pool={}B (excluded from known GPU bytes)",
-        state.renderer.cpu_metadata_pool_retained_bytes(),
+        state.renderer.vello().cpu_metadata_pool_retained_bytes(),
     );
     println!(
         "after warm-up: CPU draw-prefix retained host pool={}B (excluded from known GPU bytes)",
-        state.renderer.cpu_draw_prefix_pool_retained_bytes(),
+        state.renderer.vello().cpu_draw_prefix_pool_retained_bytes(),
     );
 }
 
@@ -1228,6 +1355,11 @@ fn dispatch_bench_event(
     positions: [(f64, f64); 5],
 ) {
     let [pa, pb, pc, pd, pe] = positions;
+    // A collaborator's pointer moves on every event.
+    let (canvas_w, canvas_h) = (state.canvas_w, state.canvas_h);
+    if let Some(peer) = state.peer.as_deref_mut() {
+        peer.move_pointer(i, canvas_w, canvas_h);
+    }
     if scroll_mode {
         // Alternate scroll direction every ~50 events so we
         // exercise both clamp-eats-it (at the edges) and
@@ -1336,8 +1468,9 @@ fn run_bench_loop(
             );
         }
 
-        // App-style gate: only draw if the tree signals dirty.
-        let redrew = state.root.needs_redraw();
+        // App-style gate: only draw if the tree signals dirty (or the peer
+        // moved).
+        let redrew = state.root.needs_redraw() || state.peer.is_some();
         if redrew {
             total_redraws = total_redraws.saturating_add(1);
             let render_timing = render_timings
@@ -2115,15 +2248,15 @@ fn print_final_report(
     );
     println!(
         "CPU path-tag retained host pool: {}B (excluded from known GPU bytes)",
-        state.renderer.cpu_pathtag_pool_retained_bytes(),
+        state.renderer.vello().cpu_pathtag_pool_retained_bytes(),
     );
     println!(
         "CPU metadata retained host pool: {}B (excluded from known GPU bytes)",
-        state.renderer.cpu_metadata_pool_retained_bytes(),
+        state.renderer.vello().cpu_metadata_pool_retained_bytes(),
     );
     println!(
         "CPU draw-prefix retained host pool: {}B (excluded from known GPU bytes)",
-        state.renderer.cpu_draw_prefix_pool_retained_bytes(),
+        state.renderer.vello().cpu_draw_prefix_pool_retained_bytes(),
     );
     if let Some((rss, peak)) = process_memory_kib() {
         println!("process memory: rss={rss} KiB peak={peak} KiB");
@@ -2199,6 +2332,47 @@ fn redraw_frame_totals(histo: &[Phase]) -> Option<(u128, usize)> {
             )
         });
     (redraws > 0).then_some((total_us, redraws))
+}
+
+/// The redraw population the frame budgets rank, one total in microseconds
+/// per line: the samples file `tools/perf/record.py emit` reads.
+fn redraw_frame_samples(histo: &[Phase]) -> String {
+    histo
+        .iter()
+        .filter(|phase| phase.draw_us > 0 || phase.render_us > 0)
+        .fold(String::new(), |mut samples, phase| {
+            let _ = writeln!(samples, "{}", phase.total_us);
+            samples
+        })
+}
+
+/// `TILO_UI_DASH_SAMPLES=<path>`: write every redrawing frame's total, so the
+/// scheduled performance lane records the distribution rather than the
+/// printed summary.
+#[allow(
+    clippy::exit,
+    reason = "a run that cannot hand its samples to the performance lane must not pass as recorded"
+)]
+fn write_frame_samples(histo: &[Phase], path: &std::path::Path) {
+    let samples = redraw_frame_samples(histo);
+    if samples.is_empty() {
+        eprintln!(
+            "frame-samples: FAIL (no redrawing frames were measured; use animated or scroll mode)"
+        );
+        std::process::exit(2);
+    }
+    if let Err(error) = std::fs::write(path, &samples) {
+        eprintln!(
+            "frame-samples: FAIL (cannot write {}: {error})",
+            path.display()
+        );
+        std::process::exit(2);
+    }
+    println!(
+        "frame-samples: {} redraw totals (us) written to {}",
+        samples.lines().count(),
+        path.display()
+    );
 }
 
 /// Whether the exact redraw total is within the requested arithmetic mean.
@@ -2599,94 +2773,94 @@ pub fn run(_args: &[String]) {
             "UI renderer adapter: unavailable (selected shared render context is inaccessible)"
         ),
     }
-    let gpu_dispatch_timestamp_status = renderer.gpu_dispatch_timestamp_status();
+    let gpu_dispatch_timestamp_status = renderer.vello_mut().gpu_dispatch_timestamp_status();
     println!(
         "sparse fine: configured={} supported={} (raster metric is actual fine-shaded native pixels; profile retains coarse-prefix accounting)",
         sparse_fine_configured,
-        renderer.sparse_fine_supported(),
+        renderer.vello().sparse_fine_supported(),
     );
     println!(
         "compute-pass batching: configured={compute_batch_configured} active={} (default shared GPU batching; VELLO_COMPUTE_BATCH=0 disables it)",
-        renderer.compute_pass_batching_enabled(),
+        renderer.vello().compute_pass_batching_enabled(),
     );
     println!(
         "sparse coarse: forced={sparse_coarse_configured} auto={sparse_coarse_auto_configured} supported={} adaptive_active={} active_bin_available={} (AUTO requires no forced coarse flag and selects active native bins only when coverage saves at least half and 32 bins; otherwise coarse remains dense)",
-        renderer.sparse_coarse_supported(),
-        renderer.sparse_coarse_adaptive_enabled(),
-        renderer.sparse_coarse_active_bins_available(),
+        renderer.vello().sparse_coarse_supported(),
+        renderer.vello().sparse_coarse_adaptive_enabled(),
+        renderer.vello().sparse_coarse_active_bins_available(),
     );
     println!(
         "sparse path tile bounds: env_requested={sparse_tile_bounds_requested} renderer_requested={} available={} (reported bbox tile area is only actual applied coverage; it is not allocated per-path tiles or physical memory saved)",
-        renderer.sparse_tile_bounds_requested(),
-        renderer.sparse_tile_bounds_available(),
+        renderer.vello().sparse_tile_bounds_requested(),
+        renderer.vello().sparse_tile_bounds_available(),
     );
     println!(
         "sparse fine quad skip: env_requested={sparse_fine_quad_skip_requested} renderer_requested={} available={} (reported groups are actual Area fine invocations, not GPU memory or copy savings)",
-        renderer.sparse_fine_quad_skip_requested(),
-        renderer.sparse_fine_quad_skip_available(),
+        renderer.vello().sparse_fine_quad_skip_requested(),
+        renderer.vello().sparse_fine_quad_skip_available(),
     );
     println!(
         "sparse opaque prune: env_requested={sparse_opaque_prune_requested} renderer_requested={} available={} (reported selections mean only that the coarse shader was selected; they do not count tiles or commands pruned, GPU memory, or copy savings)",
-        renderer.sparse_opaque_prune_requested(),
-        renderer.sparse_opaque_prune_available(),
+        renderer.vello().sparse_opaque_prune_requested(),
+        renderer.vello().sparse_opaque_prune_available(),
     );
     println!(
         "sparse solid fuse: env_requested={sparse_solid_fuse_requested} renderer_requested={} available={} (reported selections mean only that the matched producer/consumer shader path was selected; they do not count fused commands, GPU memory, or copy savings)",
-        renderer.sparse_solid_fuse_requested(),
-        renderer.sparse_solid_fuse_available(),
+        renderer.vello().sparse_solid_fuse_requested(),
+        renderer.vello().sparse_solid_fuse_available(),
     );
     println!(
         "sparse segment row mask: env_requested={sparse_segment_row_mask_requested} renderer_requested={} available={} (reported selections mean only that the paired sparse shader path was selected; they do not count skipped rows, GPU memory, or copy savings)",
-        renderer.sparse_segment_row_mask_requested(),
-        renderer.sparse_segment_row_mask_available(),
+        renderer.vello().sparse_segment_row_mask_requested(),
+        renderer.vello().sparse_segment_row_mask_available(),
     );
     println!(
         "canonical segment order: env_requested={canonical_segment_order_requested} renderer_requested={} available={} (selected attempts report only an actual recorded pass, not completion or speed)",
-        renderer.canonical_segment_order_requested(),
-        renderer.canonical_segment_order_available(),
+        renderer.vello().canonical_segment_order_requested(),
+        renderer.vello().canonical_segment_order_available(),
     );
     println!(
         "area PPT8: env_requested={area_ppt8_requested} renderer_requested={} available={} (selected attempts report only an actual recorded Area shader pass, not completion or speed)",
-        renderer.area_ppt8_requested(),
-        renderer.area_ppt8_available(),
+        renderer.vello().area_ppt8_requested(),
+        renderer.vello().area_ppt8_available(),
     );
     println!(
         "clip single group: env_requested={clip_single_group_requested} renderer_requested={} available={} (selected attempts report only an actual recorded clip shader pass, not completion or speed)",
-        renderer.clip_single_group_requested(),
-        renderer.clip_single_group_available(),
+        renderer.vello().clip_single_group_requested(),
+        renderer.vello().clip_single_group_available(),
     );
     println!(
         "CPU path tags: configured={cpu_pathtag_configured} active={} (only path-tag reduce/scan use CPU; flatten and later stages remain GPU, with CPU tag-monoid upload retained)",
-        renderer.cpu_pathtag_enabled(),
+        renderer.vello().cpu_pathtag_enabled(),
     );
     println!(
         "CPU path-tag reuse: configured={cpu_pathtag_reuse_configured} active={} retained_host_pool={}B (excluded from known GPU bytes)",
-        renderer.cpu_pathtag_reuse_enabled(),
-        renderer.cpu_pathtag_pool_retained_bytes(),
+        renderer.vello().cpu_pathtag_reuse_enabled(),
+        renderer.vello().cpu_pathtag_pool_retained_bytes(),
     );
     println!(
         "CPU metadata: configured={cpu_metadata_configured} active={} retained_host_pool={}B (bbox-clear and draw-reduce only; flatten and later stages remain GPU)",
-        renderer.cpu_metadata_enabled(),
-        renderer.cpu_metadata_pool_retained_bytes(),
+        renderer.vello().cpu_metadata_enabled(),
+        renderer.vello().cpu_metadata_pool_retained_bytes(),
     );
     println!(
         "CPU draw prefix: configured={cpu_draw_prefix_configured} active={} retained_host_pool={}B (bounded draw-prefix only; GPU draw leaf consumes the same GPU monoid table)",
-        renderer.cpu_draw_prefix_enabled(),
-        renderer.cpu_draw_prefix_pool_retained_bytes(),
+        renderer.vello().cpu_draw_prefix_enabled(),
+        renderer.vello().cpu_draw_prefix_pool_retained_bytes(),
     );
     println!(
         "sparse upload reuse: configured={} active={} persistent_gpu_bytes={} (before the first sparse upload)",
         sparse_upload_reuse_configured,
-        renderer.sparse_upload_reuse_enabled(),
+        renderer.vello().sparse_upload_reuse_enabled(),
         renderer.memory_stats().vello.sparse_upload_bytes,
     );
     println!(
         "deferred bump readback: configured={defer_bump_readback_configured} active={} (moves the same synchronous bump download after fine; it does not eliminate measurement, recovery, or waits)",
-        renderer.defer_bump_readback_enabled(),
+        renderer.vello().defer_bump_readback_enabled(),
     );
     println!(
         "direct path dispatch: configured={direct_path_dispatch_configured} active={} (replaces GPU indirect path-count/path-tiling setup; it does not remove CPU readback)",
-        renderer.direct_path_dispatch_enabled(),
+        renderer.vello().direct_path_dispatch_enabled(),
     );
     println!(
         "geometric damage capacity: configured={} active={} (default on; TILO_UI_DAMAGE_GEOMETRIC=0 restores fixed-width capacity)",
@@ -2701,7 +2875,6 @@ pub fn run(_args: &[String]) {
     let theme = Theme::dark();
     let mut text_renderer = TextRenderer::new();
     let presence = PresenceCtx::default();
-    let perms = PermissionContext::permissive();
     let mut doc = AutoCommit::new();
 
     let mut root = build_tree(include_animated);
@@ -2713,6 +2886,17 @@ pub fn run(_args: &[String]) {
 
     let tree_size = count_widgets(root.as_ref());
     println!("dashboard widget tree: {tree_size} widgets");
+    let mut peer = PeerBench::from_env();
+    if let Some(peer) = peer.as_ref() {
+        println!(
+            "peer: a collaborator's pointer moves on every event ({})",
+            if peer.full_repaint {
+                "full repaint while visible, the rule before TIL-634"
+            } else {
+                "presence-layer damage"
+            }
+        );
+    }
 
     let mut state = BenchState {
         root: &mut root,
@@ -2721,13 +2905,13 @@ pub fn run(_args: &[String]) {
         root_node,
         text_renderer: &mut text_renderer,
         presence: &presence,
-        perms: &perms,
         theme: &theme,
         scene: &mut scene,
         renderer: &mut renderer,
         damage_regions: &mut damage_regions,
         canvas_w,
         canvas_h,
+        peer: peer.as_mut(),
     };
 
     warm_up(&mut state);
@@ -2864,10 +3048,13 @@ pub fn run(_args: &[String]) {
         print_render_timing_profile(
             &run.histo,
             timings,
-            state.renderer.gpu_timestamp_buffer_bytes(),
+            state.renderer.vello().gpu_timestamp_buffer_bytes(),
             gpu_dispatch_timestamp_status,
-            state.renderer.gpu_dispatch_timestamp_buffer_bytes(),
+            state.renderer.vello().gpu_dispatch_timestamp_buffer_bytes(),
         );
+    }
+    if let Some(path) = tilo_ui::env::var_os("TILO_UI_DASH_SAMPLES").filter(|raw| !raw.is_empty()) {
+        write_frame_samples(&run.histo, std::path::Path::new(&path));
     }
     if let Some(snapshot) = run.allocations {
         report_and_enforce_allocations(

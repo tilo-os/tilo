@@ -37,6 +37,8 @@
 //! (`theme.in_region(Region::Sidebar)` in a sidebar, `theme.on_ground(..)`
 //! elsewhere): the painter reads that ground from `surfaces.content`.
 
+use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
@@ -439,7 +441,7 @@ pub fn nav_rail_item_height(
         rail_caption_width(theme, width),
     );
     let caption = f64::from(theme.text(TextRole::Caption).line_height_px());
-    nav_rail_row_height(theme) + caption * count_f64(lines.len().saturating_sub(1))
+    nav_rail_row_height(theme) + caption * f64_of_usize(lines.len().saturating_sub(1))
 }
 
 /// The run a rail caption is set in, inside a tile `width` wide.
@@ -511,7 +513,7 @@ pub fn rail_caption_lines(
             cut
         });
         if cut == 0 {
-            let line = text_renderer.elide_to_width_style(label, to_f32(max_w), &style);
+            let line = text_renderer.elide_to_width_style(label, f32_of_f64(max_w), &style);
             return vec![line];
         }
         let (head, tail) = word.split_at(cut);
@@ -524,7 +526,7 @@ pub fn rail_caption_lines(
     if rest.is_empty() {
         return vec![first];
     }
-    let second = text_renderer.elide_to_width_style(&rest, to_f32(max_w), &style);
+    let second = text_renderer.elide_to_width_style(&rest, f32_of_f64(max_w), &style);
     vec![first, second]
 }
 
@@ -630,8 +632,10 @@ fn list_layout(
     let selection = Rect::new(r.x0 + s2, r.y0 + hairline, r.x1 - s2, r.y1 - hairline);
     let mid = selection.center().y;
 
-    let mut x =
-        selection.x0 + s2 + depth_f64(face.depth) * s4 + if face.under_section { s1 } else { 0.0 };
+    let mut x = selection.x0
+        + s2
+        + f64_of_usize(face.depth) * s4
+        + if face.under_section { s1 } else { 0.0 };
     let check = face.checked.map(|_| {
         let rect = slot(x, mid, icon_side);
         x = rect.x1 + gap;
@@ -746,12 +750,12 @@ fn list_layout(
         // Marks overlap by an `s1` step, the trailing one on top.
         let side = f64::from(tokens.spacing.s3);
         let step = side - s1;
-        let total = side + step * count_f64(face.presence.len().saturating_sub(1));
+        let total = side + step * f64_of_usize(face.presence.len().saturating_sub(1));
         let x0 = trailing - total;
         trailing = x0 - s2;
         (0..face.presence.len())
             .map(|index| {
-                let x = x0 + step * count_f64(index);
+                let x = x0 + step * f64_of_usize(index);
                 Rect::new(x, mid - side / 2.0, x + side, mid + side / 2.0)
             })
             .collect()
@@ -902,7 +906,7 @@ pub fn paint_nav_row(
     let max_w = (layout.label_x1 - layout.label_x0).max(0.0);
     match face.style {
         NavRowStyle::List => {
-            let label = text_renderer.elide_to_width_style(face.label, to_f32(max_w), &measure);
+            let label = text_renderer.elide_to_width_style(face.label, f32_of_f64(max_w), &measure);
             text_renderer.draw_style(
                 scene,
                 &label,
@@ -918,7 +922,7 @@ pub fn paint_nav_row(
             for (index, line) in lines.iter().enumerate() {
                 let (line_w, _) = text_renderer.measure_style(line, None, &style);
                 let x = layout.selection.center().x - f64::from(line_w) / 2.0;
-                let y = layout.label_top + caption * count_f64(index);
+                let y = layout.label_top + caption * f64_of_usize(index);
                 text_renderer.draw_style(
                     scene,
                     line,
@@ -932,7 +936,7 @@ pub fn paint_nav_row(
     }
     if let (Some(secondary), Some(top)) = (face.secondary, layout.secondary_top) {
         let style = secondary_style(theme);
-        let line = text_renderer.elide_to_width_style(secondary, to_f32(max_w), &style);
+        let line = text_renderer.elide_to_width_style(secondary, f32_of_f64(max_w), &style);
         text_renderer.draw_style(
             scene,
             &line,
@@ -1269,7 +1273,7 @@ pub fn paint_nav_section(
     }
     let style = theme.text(TextRole::Subheading);
     let max_w = (layout.title_x1 - layout.title_x0).max(0.0);
-    let title = text_renderer.elide_to_width_style(face.title, to_f32(max_w), &style);
+    let title = text_renderer.elide_to_width_style(face.title, f32_of_f64(max_w), &style);
     let (_, line_h) = text_renderer.measure_style(&title, None, &style);
     let y = crate::text_metrics::centered_text_top(
         layout.band.y0,
@@ -1317,22 +1321,6 @@ pub fn paint_nav_section(
             },
         );
     }
-}
-
-fn count_f64(count: usize) -> f64 {
-    f64::from(u32::try_from(count).unwrap_or(u32::MAX))
-}
-
-fn depth_f64(depth: usize) -> f64 {
-    f64::from(u32::try_from(depth).unwrap_or(u32::MAX))
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "an on-screen width in logical pixels; f32 holds it exactly at every UI extent"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
 }
 
 #[cfg(test)]

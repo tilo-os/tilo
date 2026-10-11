@@ -10,16 +10,12 @@
     reason = "test harness failures are assertions"
 )]
 
-use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::ops::{Deref, DerefMut};
 
-use smithay::reexports::calloop::EventLoop;
-use smithay::reexports::wayland_server::Display;
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
-    wl_surface,
+    wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, event_created_child};
+use wayland_client::{Connection, Dispatch, QueueHandle, event_created_child};
 use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
     zwp_keyboard_shortcuts_inhibit_manager_v1, zwp_keyboard_shortcuts_inhibitor_v1,
 };
@@ -28,9 +24,9 @@ use wayland_protocols::wp::tablet::zv2::client::{
     zwp_tablet_pad_strip_v2, zwp_tablet_pad_v2, zwp_tablet_seat_v2, zwp_tablet_tool_v2,
     zwp_tablet_v2,
 };
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey};
+use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use settings_store::hardware::{PadDial, TabletConfig};
 use shell::compositor::backend::{
@@ -38,8 +34,9 @@ use shell::compositor::backend::{
     TabletPhase, TabletTool, TabletToolKind,
 };
 use shell::compositor::frame::FrameBuilder;
-use shell::compositor::state::State;
 use shell::compositor::tablet_pad::{DialSteps, dial_events};
+
+use crate::support::wayland;
 
 #[derive(Debug, PartialEq)]
 enum Wire {
@@ -81,25 +78,7 @@ struct Client {
     pad_serial: u32,
 }
 
-impl Dispatch<wl_registry::WlRegistry, ()> for Client {
-    fn event(
-        state: &mut Self,
-        _: &wl_registry::WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            state.globals.push((name, interface, version));
-        }
-    }
-}
+crate::support::wayland::test_client!(Client);
 
 impl Dispatch<zwp_tablet_seat_v2::ZwpTabletSeatV2, ()> for Client {
     fn event(
@@ -318,36 +297,6 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
     }
 }
 
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Client {
-    fn event(
-        _: &mut Self,
-        base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
-    fn event(
-        _: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-        }
-    }
-}
-
 wayland_client::delegate_noop!(Client: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
 wayland_client::delegate_noop!(Client: ignore wl_buffer::WlBuffer);
@@ -360,74 +309,28 @@ wayland_client::delegate_noop!(Client: ignore zwp_tablet_v2::ZwpTabletV2);
 wayland_client::delegate_noop!(Client: ignore zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1);
 
 struct Harness {
-    display: Display<State>,
-    state: State,
+    wl: wayland::Harness<Client>,
     fb: FrameBuilder,
-    queue: wayland_client::EventQueue<Client>,
-    client: Client,
-    conn: Connection,
-    _event_loop: EventLoop<'static, State>,
+}
+
+impl Deref for Harness {
+    type Target = wayland::Harness<Client>;
+    fn deref(&self) -> &Self::Target {
+        &self.wl
+    }
+}
+
+impl DerefMut for Harness {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.wl
+    }
 }
 
 impl Harness {
     fn new() -> Self {
-        let event_loop = EventLoop::try_new().expect("calloop");
-        let display = Display::new().expect("display");
-        let state = State::new(event_loop.handle(), display.handle());
-        let fb = FrameBuilder::with_handle(state.workspace_tree.clone(), false, (1280, 800));
-        let (server, client) = UnixStream::pair().expect("socket pair");
-        display
-            .handle()
-            .insert_client(
-                server,
-                Arc::new(shell::compositor::state::ClientState::default()),
-            )
-            .expect("client insert");
-        client.set_nonblocking(true).expect("nonblocking");
-        let conn = Connection::from_socket(client).expect("client connection");
-        let queue = conn.new_event_queue::<Client>();
-        let mut harness = Self {
-            display,
-            state,
-            fb,
-            queue,
-            client: Client::default(),
-            conn,
-            _event_loop: event_loop,
-        };
-        let _registry = harness
-            .conn
-            .display()
-            .get_registry(&harness.queue.handle(), ());
-        harness.pump();
-        harness
-    }
-
-    fn pump(&mut self) {
-        for _ in 0..6 {
-            let _ = self.queue.flush();
-            let _ = self.display.dispatch_clients(&mut self.state);
-            let _ = self.display.flush_clients();
-            if let Some(guard) = self.conn.prepare_read() {
-                let _ = guard.read();
-            }
-            let _ = self.queue.dispatch_pending(&mut self.client);
-        }
-    }
-
-    fn bind<I: Proxy + 'static>(&self, interface: &str, version: u32) -> I
-    where
-        Client: Dispatch<I, ()>,
-    {
-        let (name, _, advertised) = self
-            .client
-            .globals
-            .iter()
-            .find(|(_, name, _)| name == interface)
-            .unwrap_or_else(|| panic!("{interface} is advertised"))
-            .clone();
-        let registry = self.conn.display().get_registry(&self.queue.handle(), ());
-        registry.bind(name, version.min(advertised), &self.queue.handle(), ())
+        let wl = wayland::Harness::new();
+        let fb = FrameBuilder::with_handle(wl.state.workspace_tree.clone(), false, (1280, 800));
+        Self { wl, fb }
     }
 
     /// Open a toplevel and return its surface and compositor id, laid out.
@@ -441,32 +344,28 @@ impl Harness {
         toplevel.set_app_id(app_id.into());
         self.pump();
         let _ = self.fb.paint_settled();
-        let id = self
-            .state
-            .workspace_tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.strips.iter())
-            .flat_map(|strip| strip.window_groups.iter())
-            .flat_map(|group| group.tabs.iter())
-            .find_map(|tab| match &tab.tile {
-                shell::shell::state::TileContent::Foreign {
-                    app_id: actual,
-                    surface_id,
-                } if actual == app_id => Some(*surface_id),
-                _ => None,
-            })
-            .expect("foreign surface was adopted");
+        // Layout sends the opening xdg configure. Acknowledge it before
+        // the caller can attach its first buffer.
+        self.pump();
+        let id = self.foreign_id(app_id);
         (surface, id)
     }
 
     /// Give `surface` a first buffer, so it is mapped and can take focus.
-    fn map(&mut self, surface: &wl_surface::WlSurface) {
+    fn map(&mut self, surface: &wl_surface::WlSurface, surface_id: u64) {
+        self.map_sized(surface, surface_id, (64, 64));
+    }
+
+    fn map_sized(
+        &mut self,
+        surface: &wl_surface::WlSurface,
+        surface_id: u64,
+        (width, height): (i32, i32),
+    ) {
         use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
-        // 64×64 ARGB.
-        let (width, height, stride, len) = (64, 64, 256, 16_384_usize);
+        let stride = width.checked_mul(4).expect("ARGB stride");
+        let len = usize::try_from(stride.checked_mul(height).expect("ARGB extent"))
+            .expect("positive ARGB extent");
         let shm = self.bind::<wl_shm::WlShm>("wl_shm", 1);
         // SAFETY: a null-terminated name and a valid flag word are the whole
         // contract of `memfd_create`.
@@ -492,7 +391,15 @@ impl Harness {
         surface.damage(0, 0, width, height);
         surface.commit();
         self.pump();
+        assert!(
+            shell::compositor::foreign::store().is_mapped(surface_id),
+            "the committed SHM buffer maps before painting or asynchronous pixel conversion"
+        );
         let _ = self.fb.paint_settled();
+        assert!(
+            shell::compositor::foreign::store().is_mapped(surface_id),
+            "the real first-buffer commit maps the configured toplevel"
+        );
     }
 
     /// The centre of the app's tile, where a pen lands on it.
@@ -551,7 +458,7 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
 
     // Before the app asks for a tablet seat the pen is a pointer to it.
     let fallback = shell::compositor::client_input::route_tablet_event(
-        &mut h.state,
+        &mut h.wl.state,
         &mut h.fb,
         &pen(TabletPhase::TipDown, centre),
         false,
@@ -584,7 +491,7 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
         TabletPhase::TipUp,
     ] {
         let routed = shell::compositor::client_input::route_tablet_event(
-            &mut h.state,
+            &mut h.wl.state,
             &mut h.fb,
             &pen(phase, centre),
             false,
@@ -610,7 +517,7 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
     // A barrel button, as the backend reports it after the tablet's
     // settings remapped it, reaches the app as a tool button.
     let routed = shell::compositor::client_input::route_tablet_event(
-        &mut h.state,
+        &mut h.wl.state,
         &mut h.fb,
         &pen(
             TabletPhase::Button {
@@ -633,7 +540,7 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
     // On the lock screen the pen is the pointer, even over a tablet-aware
     // app, and the app sees none of it.
     let locked = shell::compositor::client_input::route_tablet_event(
-        &mut h.state,
+        &mut h.wl.state,
         &mut h.fb,
         &pen(TabletPhase::TipDown, centre),
         true,
@@ -663,7 +570,7 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
 fn a_pen_over_a_tablet_aware_app_still_moves_the_cursor_focuses_and_holds_its_stroke() {
     let mut h = Harness::new();
     let (surface, app) = h.open("org.example.Draw");
-    h.map(&surface);
+    h.map(&surface, app);
     let centre = h.centre_of(app);
     let manager = h.bind::<zwp_tablet_manager_v2::ZwpTabletManagerV2>("zwp_tablet_manager_v2", 1);
     let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
@@ -674,7 +581,7 @@ fn a_pen_over_a_tablet_aware_app_still_moves_the_cursor_focuses_and_holds_its_st
     h.client.wire.clear();
     let route = |h: &mut Harness, phase, at| {
         let routed = shell::compositor::client_input::route_tablet_event(
-            &mut h.state,
+            &mut h.wl.state,
             &mut h.fb,
             &pen(phase, at),
             false,
@@ -747,11 +654,10 @@ fn an_app_that_declines_the_pad_keeps_the_pads_own_mapping() {
 
     let no_mods = winit::event::Modifiers::default();
     let _ = shell::compositor::client_input::route_input(
-        &mut h.state,
+        &mut h.wl.state,
         &mut h.fb,
         &WindowEvent::CursorMoved {
-            // SAFETY: an inert device id, as the input adapters use.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(centre.0, centre.1),
         },
         &no_mods,
@@ -761,7 +667,7 @@ fn an_app_that_declines_the_pad_keeps_the_pads_own_mapping() {
     let mut turned = Vec::new();
     for angle in [10.0, 40.0] {
         turned = shell::compositor::client_input::route_pad_event(
-            &mut h.state,
+            &mut h.wl.state,
             &h.fb,
             pad_event(
                 &mut steps,
@@ -862,17 +768,16 @@ fn a_tablet_aware_app_gets_pad_rings_and_strips_and_others_scroll() {
     // is under the pointer, as a new pad's rings do by default.
     let no_mods = winit::event::Modifiers::default();
     let _ = shell::compositor::client_input::route_input(
-        &mut h.state,
+        &mut h.wl.state,
         &mut h.fb,
         &WindowEvent::CursorMoved {
-            // SAFETY: an inert device id, as the input adapters use.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(centre.0, centre.1),
         },
         &no_mods,
     );
     let landed = shell::compositor::client_input::route_pad_event(
-        &mut h.state,
+        &mut h.wl.state,
         &h.fb,
         pad_event(
             &mut steps,
@@ -884,7 +789,7 @@ fn a_tablet_aware_app_gets_pad_rings_and_strips_and_others_scroll() {
     );
     assert!(landed.is_empty(), "a touch landing moves nothing yet");
     let turned = shell::compositor::client_input::route_pad_event(
-        &mut h.state,
+        &mut h.wl.state,
         &h.fb,
         pad_event(
             &mut steps,
@@ -904,7 +809,7 @@ fn a_tablet_aware_app_gets_pad_rings_and_strips_and_others_scroll() {
     for event in turned {
         if let BackendEvent::Input(event) = event {
             let _ = shell::compositor::client_input::route_input(
-                &mut h.state,
+                &mut h.wl.state,
                 &mut h.fb,
                 &event,
                 &no_mods,
@@ -935,7 +840,7 @@ fn a_tablet_aware_app_gets_pad_rings_and_strips_and_others_scroll() {
 
     let route = |h: &mut Harness, event: PadEvent| {
         let routed =
-            shell::compositor::client_input::route_pad_event(&mut h.state, &h.fb, event, false);
+            shell::compositor::client_input::route_pad_event(&mut h.wl.state, &h.fb, event, false);
         h.pump();
         routed
     };
@@ -1035,7 +940,7 @@ fn a_tablet_aware_app_gets_pad_rings_and_strips_and_others_scroll() {
     );
     assert!(landed.fallback.is_empty());
     let locked = shell::compositor::client_input::route_pad_event(
-        &mut h.state,
+        &mut h.wl.state,
         &h.fb,
         pad_event(
             &mut steps,
@@ -1071,7 +976,7 @@ fn pad_in_tablet_app(h: &mut Harness) -> u64 {
     h.state.add_tablet_pad(test_pad());
     h.pump();
     let routed = shell::compositor::client_input::route_pad_event(
-        &mut h.state,
+        &mut h.wl.state,
         &h.fb,
         pad_event(
             &mut DialSteps::default(),
@@ -1152,7 +1057,7 @@ fn the_pad_map_shows_the_focused_apps_labels() {
 
     // A mode switch asks the app for new labels: the old ones go.
     let _ = shell::compositor::client_input::route_pad_event(
-        &mut h.state,
+        &mut h.wl.state,
         &h.fb,
         pad_event(
             &mut DialSteps::default(),
@@ -1237,7 +1142,7 @@ fn the_pad_map_falls_back_to_tilos_mapping() {
 
     // The ring's action follows its group's mode.
     let fallback = shell::compositor::client_input::route_pad_event(
-        &mut h.state,
+        &mut h.wl.state,
         &h.fb,
         pad_event(
             &mut DialSteps::default(),
@@ -1300,20 +1205,17 @@ fn a_pad_leaves_the_app_as_soon_as_keyboard_focus_does() {
 }
 
 fn key(logical: Key, pressed: bool) -> WindowEvent {
-    // SAFETY: `KeyEvent` keeps platform data private; the input adapters
-    // build it the same way.
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = logical;
-    event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    event.location = KeyLocation::Standard;
-    event.state = if pressed {
-        ElementState::Pressed
-    } else {
-        ElementState::Released
-    };
+    let event = ui::synthetic_input::key_event(
+        logical,
+        None,
+        if pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        },
+    );
     WindowEvent::KeyboardInput {
-        // SAFETY: an inert device id, as the DRM adapter uses.
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event,
         is_synthetic: false,
     }
@@ -1348,13 +1250,13 @@ fn an_inhibiting_vm_gets_super_chords_until_focus_or_the_release_chord_takes_the
     // Super+Tab is the overview; while inhibited it reaches the VM.
     let super_mods = Modifiers::from(ModifiersState::SUPER);
     let routed = shell::compositor::client_input::route_input(
-        &mut h.state,
+        &mut h.wl.state,
         &mut h.fb,
         &key(Key::Named(NamedKey::Tab), true),
         &super_mods,
     );
     let _ = shell::compositor::client_input::route_input(
-        &mut h.state,
+        &mut h.wl.state,
         &mut h.fb,
         &key(Key::Named(NamedKey::Tab), false),
         &super_mods,
@@ -1383,4 +1285,13 @@ fn an_inhibiting_vm_gets_super_chords_until_focus_or_the_release_chord_takes_the
     drop(h);
     assert!(released);
     assert!(!still_active);
+}
+
+#[test]
+fn a_non_null_shm_commit_maps_for_input_before_async_conversion_finishes() {
+    let mut harness = Harness::new();
+    let (surface, id) = harness.open("org.tilo.test.pending-shm-input");
+    // A valid larger buffer keeps conversion in flight across the wire pump.
+    // Mapping must follow the applied commit, not worker scheduling or paint.
+    harness.map_sized(&surface, id, (2048, 2048));
 }

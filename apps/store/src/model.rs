@@ -57,6 +57,8 @@ impl StoreSource {
 /// Provenance claim the Store can substantiate for an item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StoreTrust {
+    /// Signed local file authorized by this person's existing scoped attestor.
+    TrustedAttestor,
     PublisherSigned,
     Flathub,
     /// Metadata from the device’s configured Flatpak repository.
@@ -66,6 +68,7 @@ pub enum StoreTrust {
 impl StoreTrust {
     pub fn label(self) -> String {
         match self {
+            Self::TrustedAttestor => ui::i18n!("store-package-local-trust"),
             Self::PublisherSigned => "Publisher + registry verified".to_string(),
             Self::Flathub => "Flathub distribution".to_string(),
             Self::ConfiguredRemote => ui::i18n!("store-remote-trust-short"),

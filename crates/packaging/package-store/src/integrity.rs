@@ -203,6 +203,21 @@ pub fn read_record(
     })
 }
 
+/// The payload collection the record in `dir` names, decoded without
+/// replaying the signature chain. For accounting and garbage collection
+/// only — never for trust: nothing here proves the collection is the one
+/// the publisher signed. [`read_record`] and [`verify`] are the checks.
+///
+/// # Errors
+///
+/// Returns [`IntegrityError::Read`] when the collection cannot be read and
+/// [`IntegrityError::CollectionMalformed`] when it does not decode.
+pub fn read_collection(dir: &Path) -> Result<Collection, IntegrityError> {
+    let path = dir.join(COLLECTION_FILE);
+    let bytes = std::fs::read(&path).map_err(|source| IntegrityError::Read { path, source })?;
+    Collection::decode(&bytes).map_err(|e| IntegrityError::CollectionMalformed(e.to_string()))
+}
+
 fn check_signature(root: &SignedRoot) -> Result<(), IntegrityError> {
     let signature = root.signature.ok_or(IntegrityError::RootUnsigned)?;
     let publisher = VerifyingKey::from_bytes(&root.publisher_identity)
@@ -294,6 +309,22 @@ fn collect_unexpected(root: &Path, dir: &Path, expected: &BTreeSet<&str>, out: &
     }
 }
 
+/// Where a package ships its public surface: the resources its records
+/// hold, their verbs and fields, and which are the person's own.
+pub const SURFACE_FILE: &str = "surface.toml";
+
+/// The surface the signed package ships: its `surface.toml` bytes from the
+/// payload, only when they hash to the blob the signed collection names.
+/// `None` for a package that ships none, one whose surface changed after
+/// install, or one without a signed record.
+#[must_use]
+pub fn signed_surface(package: &InstalledPackage) -> Option<Vec<u8>> {
+    let record = read_record(&record_dir(package), &package.id, &package.package_id_hex).ok()?;
+    let signed = record.collection.entries.get(SURFACE_FILE)?;
+    let bytes = std::fs::read(package.payload_root.join(SURFACE_FILE)).ok()?;
+    (BlobHash::of(&bytes) == *signed).then_some(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::{Signer, SigningKey};
@@ -345,6 +376,7 @@ mod tests {
             runtime: String::new(),
             source: String::new(),
             held: false,
+            payload_bytes: 0,
             system: false,
         }
     }

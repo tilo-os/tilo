@@ -99,9 +99,7 @@ fn write_sample_media(dir: &Path) -> Option<PathBuf> {
 fn scratch_dir() -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static SEQ: AtomicU32 = AtomicU32::new(0);
-    let nanos = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
+    let nanos = ui::time::unix_now_ns();
     let dir = std::env::temp_dir().join(format!(
         "tilo-vp-real-decode 日本語 #%-{}-{}-{}",
         std::process::id(),

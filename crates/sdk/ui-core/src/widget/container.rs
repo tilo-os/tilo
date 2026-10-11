@@ -305,18 +305,6 @@ impl Container {
         self
     }
 
-    /// [`Self::interactive`] through an exported resource action.
-    #[must_use]
-    pub fn interactive_action(
-        mut self,
-        id: impl Into<String>,
-        binding: tilo_actions::ActionBinding<()>,
-    ) -> Self {
-        self.activation = crate::widget::activation::Activation::new(id);
-        self.activation.set_action(binding);
-        self
-    }
-
     /// The container's surface under its current interaction: the raised
     /// well when it has a background (lifted on hover and press), the
     /// ground's selection lift when it is bare and interactive.
@@ -510,13 +498,7 @@ impl Widget for Container {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
 
         if let Some(child) = &mut self.child
             && let Some(&child_node) = taffy.children(node).unwrap_or_default().first()
@@ -536,8 +518,17 @@ impl Widget for Container {
         self.paint_surface(scene, transform, theme);
 
         if let Some(child) = &mut self.child {
-            child.draw(scene, transform, text_renderer, theme, presence);
+            crate::widget::draw_child(
+                child.as_mut(),
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
         }
+
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -549,7 +540,7 @@ impl Widget for Container {
         if self.activation.is_bound() {
             if *ctx.handled {
                 // A control inside took the press; the container stays put.
-                self.activation.state.pressed = false;
+                self.activation.cancel_press();
                 return;
             }
             let target = self.rect.inflate(self.bleed.0, self.bleed.1);
@@ -577,6 +568,7 @@ impl Widget for Container {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -679,64 +671,12 @@ impl Widget for Container {
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty())
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.paint_surface(scene, transform, theme);
-
-        if let Some(child) = &mut self.child {
-            child.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
-        }
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
-    }
 }
 
 crate::widget::activation::activation_controls!(Container, activation);
 impl crate::presence::capability::PublishesPresence for Container {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 
@@ -918,6 +858,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut c,
                 &crate::a11y::Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

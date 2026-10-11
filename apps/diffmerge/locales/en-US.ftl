@@ -83,3 +83,23 @@ history-output = Merged result
 history-none = No merged result was recorded in this version
 history-page-output = Merged result
 history-page-originals = Original inputs unavailable and recorded choices
+
+## Opposite-only aligned source lines
+
+diff-gap-added-right = { $count ->
+    [one] 1 added line on Right
+   *[other] { $count } added lines on Right
+}
+diff-gap-removed-left = { $count ->
+    [one] 1 removed line on Left
+   *[other] { $count } removed lines on Left
+}
+
+## History: what each change did, by field and by verb
+diffmerge-session-merged = Edited the merged result
+diffmerge-open-comparison = Compared { $left_label } with { $right_label }
+diffmerge-open-merge = Opened a merge of { $ours_label } and { $theirs_label }
+diffmerge-take-ours = Took ours for a change
+diffmerge-take-theirs = Took theirs for a change
+diffmerge-take-both = Took both sides for a change
+diffmerge-resolve = Resolved a change by hand

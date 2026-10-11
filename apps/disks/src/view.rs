@@ -6,14 +6,13 @@
 //! the theme decides how it looks. Interaction leaves as an [`Intent`] the
 //! app applies to the window and the machine.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use ui::format::bytes_si;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{Rhythm, TextRole};
-use ui::widget::Widget;
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -42,18 +41,7 @@ pub(crate) enum Intent {
 }
 
 /// The queue controls write to and the app drains.
-#[derive(Clone, Default)]
-pub(crate) struct Intents(Rc<RefCell<Vec<Intent>>>);
-
-impl Intents {
-    pub(crate) fn push(&self, intent: Intent) {
-        self.0.borrow_mut().push(intent);
-    }
-
-    pub(crate) fn take(&self) -> Vec<Intent> {
-        std::mem::take(&mut *self.0.borrow_mut())
-    }
-}
+pub(crate) type Intents = ui::Intents<Intent>;
 
 /// Everything the detail page shows, borrowed from the app.
 pub(crate) struct DetailModel<'a> {
@@ -120,57 +108,13 @@ pub(crate) fn rescan_button(intents: &Intents) -> Button {
 
 /// Nothing to show: the system reported no block devices.
 pub(crate) fn empty_state(intents: &Intents) -> Element {
-    Box::new(RescanOnAction::new(
+    Box::new(
         EmptyState::new("No drives found")
             .with_icon(Icon::HardDrive)
             .with_message("Attach a drive, then rescan.")
-            .with_action("Rescan"),
-        intents.clone(),
-    ))
-}
-
-/// An empty state whose one action rescans the drives.
-pub(crate) struct RescanOnAction {
-    state: EmptyState,
-    intents: Intents,
-}
-
-impl RescanOnAction {
-    fn new(state: EmptyState, intents: Intents) -> Self {
-        Self { state, intents }
-    }
-
-    fn forward(&mut self) {
-        if self.state.take_action() {
-            self.intents.push(Intent::Rescan);
-        }
-    }
-}
-
-impl ui::widget::Decorator for RescanOnAction {
-    type Inner = EmptyState;
-
-    fn inner(&self) -> &EmptyState {
-        &self.state
-    }
-
-    fn inner_mut(&mut self) -> &mut EmptyState {
-        &mut self.state
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &ui::winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        Widget::handle_event(&mut self.state, event, ctx);
-        self.forward();
-    }
-
-    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
-        self.forward();
-        Widget::update(&mut self.state, state, path)
-    }
+            .with_action("Rescan")
+            .on_effect(intents.sender(Intent::Rescan)),
+    )
 }
 
 /// The detail of the selected drive: its state at a glance, the actions that

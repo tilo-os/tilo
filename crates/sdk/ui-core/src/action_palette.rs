@@ -382,6 +382,15 @@ impl Default for ActionPalette {
 }
 
 impl ActionPalette {
+    /// The action the palette is asking the person to confirm, and the text
+    /// that confirms it, while it asks.
+    #[must_use]
+    pub fn asking(&self) -> Option<(&tilo_actions::ActionAddress, &str)> {
+        self.confirm
+            .as_ref()
+            .map(|confirm| (&confirm.pending.address, confirm.expected.as_str()))
+    }
+
     /// A closed palette. Load resources / providers, then `open`.
     pub fn new() -> Self {
         Self::with_inputs(TextRenderer::new(), SearchField::new)
@@ -651,7 +660,7 @@ impl ActionPalette {
             Some(true) => {
                 self.focus_part(0);
                 self.handle_key(
-                    &crate::synthetic_input::key_event(
+                    &crate::synthetic_input::key_input(
                         &Key::Named(NamedKey::Enter),
                         ElementState::Pressed,
                     ),
@@ -1204,7 +1213,7 @@ impl ActionPalette {
                 .borrow()
                 .check(&crate::permissions::PermissionScope::app(
                     &binding.app_id,
-                    collab_types::caps::Verb::Read,
+                    crate::permissions::ActionKind::Read,
                 ));
         };
         // Provider resolution runs through its captured owner. Eager resources
@@ -1215,7 +1224,7 @@ impl ActionPalette {
                 .find(|snapshot| snapshot.binding.same_component(binding))
                 .and_then(|snapshot| {
                     snapshot
-                        .resources
+                        .resources()
                         .iter()
                         .find(|resource| {
                             tilo_actions::door::resolve(std::slice::from_ref(resource), address)
@@ -1379,7 +1388,7 @@ impl ActionPalette {
                         || RowResolution::Address(address.clone()),
                         |binding| {
                             RowResolution::Bound(crate::bound_dispatch::BoundActionTarget {
-                                physical_text: false,
+                                input: crate::bound_dispatch::Input::Discrete,
                                 binding: (*binding).clone(),
                                 address: crate::bound_dispatch::BoundActionAddress {
                                     instance_id: binding.instance_id,
@@ -1527,7 +1536,6 @@ impl ActionPalette {
             return false;
         };
         let mut context = ActionContext::for_resource(
-            &flattened.action.label,
             flattened.resource_id.as_str(),
             &flattened.resource_kind,
             &flattened.resource_label,
@@ -1589,12 +1597,20 @@ impl ActionPalette {
                 }
             }
         }
-        Some(Self::dispatch_encoded(
-            doc,
+        let mut context = pending.context;
+        let kind = context
+            .resource
+            .as_ref()
+            .map(|resource| resource.kind.clone())
+            .unwrap_or_default();
+        if let Some(described) = tilo_actions::Described::of_published(
             &encoded,
-            registry,
-            transport,
-            pending.context,
+            tilo_actions::ActionKey::new("", kind, &pending.address.action),
+        ) {
+            context = context.with_described(described);
+        }
+        Some(Self::dispatch_encoded(
+            doc, &encoded, registry, transport, context,
         ))
     }
 
@@ -1668,7 +1684,7 @@ impl ActionPalette {
                 .iter()
                 .find(|snapshot| snapshot.binding.same_component(&target.binding))?;
             let resources = snapshot
-                .resources
+                .resources()
                 .iter()
                 .cloned()
                 .filter_map(|resource| {
@@ -1845,7 +1861,6 @@ impl ActionPalette {
             return None;
         }
         let mut context = ActionContext::for_resource(
-            &fa.action.label,
             fa.resource_id.as_str(),
             &fa.resource_kind,
             &fa.resource_label,
@@ -1861,7 +1876,7 @@ impl ActionPalette {
                 .is_some_and(|parameter| parameter.ty != tilo_actions::ParamType::Text);
         Some(match &fa.action.input {
             ActionInput::Immediate(enc) => ActionKind::NoArgument {
-                intent: PreparedActionIntent::Encoded(enc.clone()),
+                intent: PreparedActionIntent::Encoded(enc.as_ref().clone()),
                 context,
                 kind: fa.action.kind,
                 confirmation: fa.action.contract.confirmation.clone(),
@@ -1955,7 +1970,7 @@ impl ActionPalette {
             let Ok(_entry) = snapshot.binding.enter() else {
                 continue;
             };
-            for resource in snapshot.resources.iter().cloned().filter_map(|resource| {
+            for resource in snapshot.resources().iter().cloned().filter_map(|resource| {
                 crate::bound_dispatch::filter_resource(&snapshot.binding, resource)
             }) {
                 for fa in flatten(&[resource]) {
@@ -1969,7 +1984,7 @@ impl ActionPalette {
                         fa.resource_label, fa.action.label, snapshot.binding.instance_id
                     );
                     let target = crate::bound_dispatch::BoundActionTarget {
-                        physical_text: false,
+                        input: crate::bound_dispatch::Input::Discrete,
                         binding: snapshot.binding.clone(),
                         address: crate::bound_dispatch::BoundActionAddress {
                             instance_id: snapshot.binding.instance_id,
@@ -2329,7 +2344,7 @@ impl ActionPalette {
         } else if matches!(action, crate::a11y::Action::Focus) {
             true
         } else {
-            self.field.perform_action(action, doc, root)
+            self.field.perform_action(action, &[], doc, root)
         };
         if let Some(query) = self.field.take_dirty() {
             if self.arg.is_none() && self.confirm.is_none() {
@@ -2448,6 +2463,7 @@ impl ActionPalette {
             {
                 self.controls.children_mut()[focused - 1].perform_action(
                     &crate::a11y::Action::Activate,
+                    &[],
                     doc,
                     path,
                 );
@@ -2979,7 +2995,7 @@ impl Widget for ActionPalette {
             if matches!(action, crate::a11y::Action::Focus) {
                 self.focus_part(0);
             }
-            return self.field.perform_action(action, doc, path);
+            return self.field.perform_action(action, &[], doc, path);
         }
         if !self.in_argument_mode() && !self.history_review_required {
             let handled = self
@@ -2996,7 +3012,8 @@ impl Widget for ActionPalette {
                 if matches!(action, crate::a11y::Action::Focus) {
                     self.focus_part(index + 1);
                 }
-                let handled = self.controls.children_mut()[index].perform_action(action, doc, path);
+                let handled =
+                    self.controls.children_mut()[index].perform_action(action, &[], doc, path);
                 let (doc, path) = crate::doc::document(doc, path);
                 self.drain_command(doc, path);
                 return handled;
@@ -3367,7 +3384,13 @@ mod tests {
                 .expect("dispatch ok");
             assert!(matches!(d, Dispatched::AppliedLocal(_)));
             let context = d.envelope().context.as_ref().expect("palette provenance");
-            assert_eq!(context.action_label, "Mark done");
+            let Some(tilo_actions::Did::Verb(verb)) = &context.what else {
+                panic!("the published action is recorded: {context:?}");
+            };
+            assert_eq!(
+                (verb.action.kind.as_str(), verb.action.action.as_str()),
+                ("test.thing", "mark")
+            );
             assert_eq!(
                 context
                     .resource
@@ -3800,22 +3823,12 @@ mod tests {
     }
 
     fn enter_key() -> KeyEvent {
-        // SAFETY: `handle_key` only reads `logical_key` + `state`.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(NamedKey::Enter);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        ev
+        crate::synthetic_input::key_event(Key::Named(NamedKey::Enter), None, ElementState::Pressed)
     }
 
     fn enter() -> WindowEvent {
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: enter_key(),
             is_synthetic: false,
         }
@@ -3979,7 +3992,7 @@ mod tests {
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let enter =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
         palette.handle_key(
             &enter,
             &Modifiers::default(),

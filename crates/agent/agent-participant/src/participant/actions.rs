@@ -20,7 +20,7 @@ use std::collections::VecDeque;
 use tilo_actions::door::DoorError;
 use tilo_actions::remote::{
     ActionHostError, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
-    CatalogueRow, Confirmation, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
+    CatalogueRow, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, application_open_target, workspace_provider,
     workspace_provider_room,
 };
@@ -63,6 +63,14 @@ impl AgentParticipant {
             return;
         };
         let reply = match frame.message {
+            RemoteActionMessage::FeedbackRequest { correlation, .. } => {
+                RemoteActionMessage::FeedbackResponse {
+                    correlation,
+                    result: Err(ActionHostError::Unavailable {
+                        reason: "agents do not own canonical feedback delivery".into(),
+                    }),
+                }
+            }
             RemoteActionMessage::CatalogueRequest { correlation, query } => {
                 RemoteActionMessage::CatalogueResponse {
                     correlation,
@@ -72,7 +80,7 @@ impl AgentParticipant {
             RemoteActionMessage::Invoke(request) => {
                 RemoteActionMessage::Receipt(self.invoke_remote(request))
             }
-            RemoteActionMessage::Observe { invocation } => RemoteActionMessage::Update {
+            RemoteActionMessage::Observe { invocation, .. } => RemoteActionMessage::Update {
                 invocation,
                 state: None,
             },
@@ -90,7 +98,8 @@ impl AgentParticipant {
                     }),
                 }
             }
-            RemoteActionMessage::CatalogueResponse { .. }
+            RemoteActionMessage::FeedbackResponse { .. }
+            | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
@@ -212,7 +221,7 @@ impl AgentParticipant {
             .iter()
             .find(|(earlier, _)| earlier.invocation == request.invocation)
         {
-            return if *earlier == request {
+            return if earlier.same_invocation(&request) {
                 receipt.clone()
             } else {
                 rejected(&request, ActionHostError::InvocationConflict)
@@ -287,8 +296,11 @@ impl AgentParticipant {
             }
             InvokeArgument::Json(arguments) => arguments.clone(),
         };
-        let confirmed = matches!(request.confirmation, Some(Confirmation::Confirmed));
-        self.invoke_as(&route, &target.address, &arguments, confirmed)
+        // Whoever drives the agent's records from afar confirms nothing by
+        // their word here: the agent's door cannot tell a person's device
+        // from another agent's, so an action that asks first is refused
+        // and is the person's to run themselves.
+        self.invoke_as(&route, &target.address, &arguments, false)
             .map(Option::unwrap_or_default)
             .map_err(|error| match error {
                 Refusal::Door(error) => door_status(&error),
@@ -304,6 +316,16 @@ pub(super) enum Refusal {
     /// The agent refused: paused, outside its delegation, record not open,
     /// or the change could not be committed.
     Agent(String),
+}
+
+impl Refusal {
+    /// The refusal as a step's error reads.
+    pub(super) fn into_text(self) -> String {
+        match self {
+            Self::Door(error) => format!("{}: {error}", error.code()),
+            Self::Agent(reason) => reason,
+        }
+    }
 }
 
 fn rejected(request: &InvokeRequest, error: ActionHostError) -> InvocationReceipt {

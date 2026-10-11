@@ -25,7 +25,7 @@ reject() {
 
 require 'bounded_command::run\(' "update controls do not use bounded execution"
 require 'LONG_UPDATE_TIMEOUT' "network-backed image staging has no explicit deadline"
-require 'helper_diagnostic' "update helper diagnostics are not sanitized"
+require 'stderr_diagnostic\(\)' "update helper diagnostics are not sanitized"
 reject 'Command::new|\.output\(\)|wait_with_output|\.spawn\(\)' \
     "update controls contain a raw subprocess path"
 

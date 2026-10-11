@@ -7,9 +7,9 @@
 
 use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::widget::EntryKind;
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, ObjType, ROOT};
-use collab_types::OpClass;
 
 use super::*;
 use crate::permissions::UserId;
@@ -261,7 +261,7 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         assert_eq!(rows[1].summary, "+6 -0 chars", "\" world\"");
         assert_eq!(rows[2].summary, "+1 -0 chars", "\"!\"");
         for r in &rows {
-            assert_eq!(r.op_class, OpClass::Splice, "text edits are splices");
+            assert_eq!(r.entry_kind, EntryKind::Text, "text edits are splices");
         }
     }
     // phase: deletions_are_counted_and_a_removed_block_is_a_tombstone
@@ -310,10 +310,10 @@ fn rows_attribute_and_summarise_what_actually_changed() {
             rows[1].summary, "+0 -5 chars",
             "deleting \" this\" is five chars"
         );
-        assert_eq!(rows[1].op_class, OpClass::Splice);
+        assert_eq!(rows[1].entry_kind, EntryKind::Text);
         assert_eq!(
-            rows[2].op_class,
-            OpClass::Tombstone,
+            rows[2].entry_kind,
+            EntryKind::Delete,
             "a removed block is a delete"
         );
         assert_eq!(rows[2].summary, "-1 block");
@@ -337,12 +337,12 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         assert_eq!(entries.len(), 3, "three commits, three rows");
         assert_eq!(entries[0].summary, "+5 -0 chars");
         assert_eq!(entries[1].summary, "+6 -0 chars");
-        assert_eq!(entries[1].op_class, OpClass::Splice);
+        assert_eq!(entries[1].entry_kind, EntryKind::Text);
         assert_eq!(
             entries[2].summary, "Edited title",
             "a map put names the field it edited"
         );
-        assert_eq!(entries[2].op_class, OpClass::EditMeta);
+        assert_eq!(entries[2].entry_kind, EntryKind::Details);
         assert!(
             entries.iter().all(|e| e.author.name == "Alice"),
             "single-actor document, single author"
@@ -382,7 +382,6 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         let block = dm.insert_block(None, "paragraph");
         dm.splice_text(&block, 0, 0, "launch");
         let context = tilo_actions::ActionContext::for_resource(
-            "Edit",
             "notes.note:launch",
             "notes.note",
             "Launch brief",
@@ -801,11 +800,20 @@ fn an_action_context_names_its_change_before_any_field_fallback() {
     doc.put(ROOT, "title", "draft").unwrap();
     doc.commit();
     doc.put(ROOT, "title", "final").unwrap();
-    let context = tilo_actions::ActionContext::for_resource("Rename report", "r", "doc", "Report");
+    let context = tilo_actions::ActionContext::for_resource("r", "doc", "Report").with_described(
+        tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "finalize"),
+            [],
+        )),
+    );
     doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
     let entries = HistorySource::new().entries(&mut doc);
     let last = entries.last().unwrap();
-    assert_eq!(Some(last.summary.clone()), context.summary());
+    assert_eq!(
+        last.summary,
+        crate::history_source::sentence::sentence(&context)
+    );
+    assert_eq!(last.summary, "Finalize in Report");
     assert!(!last.summary.contains("title"), "{}", last.summary);
 }
 
@@ -920,4 +928,212 @@ fn a_package_primary_documents_genesis_is_left_out_of_a_feed_too() {
         1,
         "a document's first edit is not a genesis unless its store made it"
     );
+}
+
+#[test]
+fn rows_tell_the_readers_changes_from_a_collaborators_and_an_agents() {
+    use crate::widget::history::AuthorRelation;
+    use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+    let mut doc = AutoCommit::new();
+    let step = |doc: &mut AutoCommit, key: &str, invoker: ActionInvoker| {
+        doc.put(ROOT, key, "x").unwrap();
+        let context = ActionContext::for_resource("r", "doc", "Report")
+            .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "edit"),
+                [],
+            )))
+            .with_invoker(invoker);
+        doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    };
+    step(&mut doc, "mine", ActionInvoker::actor("ada"));
+    step(&mut doc, "theirs", ActionInvoker::actor("ada"));
+    step(
+        &mut doc,
+        "agents",
+        ActionInvoker::actor("agent:claude")
+            .with_kind(ActorKind::Agent)
+            .acting_for("ada"),
+    );
+    let mut authors = AuthorDirectory::new();
+    authors.set_reader("ada");
+    let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+    let rows: Vec<(String, AuthorRelation)> = entries
+        .iter()
+        .rev()
+        .take(3)
+        .map(|entry| (entry.author.name.clone(), entry.author.relation))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (
+                "claude · Agent, for you".to_owned(),
+                AuthorRelation::Software
+            ),
+            ("ada".to_owned(), AuthorRelation::Person),
+            ("You".to_owned(), AuthorRelation::Reader),
+        ]
+    );
+}
+
+// N. A long-lived reader reads each change once and says what a fresh read says
+
+/// What `entries_since` says and how many changes it read doing so.
+fn read_since(
+    source: &HistorySource,
+    doc: &mut AutoCommit,
+    log: &mut HistoryLog,
+) -> (Vec<HistoryEntry>, usize) {
+    let before = log.changes_read();
+    let entries = source.entries_since(doc, log);
+    (entries, log.changes_read() - before)
+}
+
+/// `entries_since` agrees with a fresh `entries`, and so do the heads the
+/// log names for every row and the hash and dependencies it keeps for them.
+fn assert_matches_a_fresh_read(
+    source: &HistorySource,
+    doc: &mut AutoCommit,
+    log: &HistoryLog,
+    since: &[HistoryEntry],
+    step: &str,
+) {
+    let fresh = source.entries(doc);
+    assert_eq!(since, fresh.as_slice(), "{step}: rows");
+    for entry in &fresh {
+        assert_eq!(
+            log.heads_for_entry(&entry.id),
+            heads_for_entry(doc, &entry.id),
+            "{step}: heads of {:?}",
+            entry.summary
+        );
+        let (hash, deps) = log.change(&entry.id).expect("a listed change is logged");
+        let change = doc.get_change_by_hash(&hash).expect("the logged hash");
+        assert_eq!(entry_id_from_hash(&hash.to_string()), entry.id, "{step}");
+        assert_eq!(deps, change.deps(), "{step}: deps of {:?}", entry.summary);
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one growing document, one labelled phase per kind of change appended"
+)]
+fn entries_since_reads_only_appended_changes_and_matches_entries() {
+    // A window of four, so appending slides it past changes read earlier.
+    let source = source().with_max_entries(4);
+    let mut log = HistoryLog::default();
+
+    // phase: a qdoc document, edited by one person a change at a time
+    let (mut doc, c, mut ids) = qdoc_doc("alice");
+    let (rows, read) = read_since(&source, &mut doc, &mut log);
+    assert_eq!(
+        read,
+        doc.get_changes(&[]).len().min(4),
+        "the first read reads the window"
+    );
+    assert_matches_a_fresh_read(&source, &mut doc, &log, &rows, "genesis");
+    let block = {
+        let mut dm = tilo_doc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
+        dm.insert_block(None, "paragraph")
+    };
+    tilo_resource::history::commit_stamped_at(&mut doc, T0 + HOUR);
+    let mut len = 0;
+    for ((n, word), hours) in ["one", " two", " three", " four", " five", " six"]
+        .into_iter()
+        .enumerate()
+        .zip(2_i64..)
+    {
+        {
+            let mut dm = tilo_doc::DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
+            dm.splice_text(&block, len, 0, word);
+        }
+        len += word.chars().count();
+        tilo_resource::history::commit_stamped_at(&mut doc, T0 + HOUR * hours);
+        let (rows, read) = read_since(&source, &mut doc, &mut log);
+        assert_eq!(
+            read,
+            if n == 0 { 2 } else { 1 },
+            "edit {n}: only what was appended"
+        );
+        assert_matches_a_fresh_read(&source, &mut doc, &log, &rows, &format!("edit {n}"));
+    }
+
+    // phase: a peer's concurrent edits, merged in
+    let mut bob = doc.fork();
+    bob.set_actor(ActorId::from("bob".as_bytes()));
+    {
+        let mut bob_ids = tilo_doc::IdGen::new(bob.get_actor().to_hex_string());
+        let mut dm = tilo_doc::DocMut {
+            doc: &mut bob,
+            c: &c,
+            ids: &mut bob_ids,
+        };
+        dm.splice_text(&block, 0, 0, "Bob: ");
+    }
+    tilo_resource::history::commit_stamped_at(&mut bob, T0 + 20 * HOUR);
+    {
+        let mut dm = tilo_doc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
+        dm.splice_text(&block, 0, 0, "Alice: ");
+    }
+    tilo_resource::history::commit_stamped_at(&mut doc, T0 + 21 * HOUR);
+    doc.merge(&mut bob).expect("peers merge");
+    let (rows, read) = read_since(&source, &mut doc, &mut log);
+    assert_eq!(read, 2, "both sides of the merge, once each");
+    assert_matches_a_fresh_read(&source, &mut doc, &log, &rows, "merge");
+
+    // phase: a change that only names a version is read but listed by no one
+    let start = rows.first().expect("rows").id;
+    groups::name_range(&mut doc, &start, None, "Draft");
+    tilo_resource::history::commit_stamped_at(&mut doc, T0 + 22 * HOUR);
+    let (rows, read) = read_since(&source, &mut doc, &mut log);
+    assert_eq!(read, 1, "the naming change");
+    assert_matches_a_fresh_read(&source, &mut doc, &log, &rows, "named range");
+
+    // phase: nothing new reads nothing
+    let (rows, read) = read_since(&source, &mut doc, &mut log);
+    assert_eq!(read, 0, "an unchanged document");
+    assert_matches_a_fresh_read(&source, &mut doc, &log, &rows, "unchanged");
+
+    // phase: another document is read from scratch
+    let (mut other, _block) = two_identity_document();
+    let (rows, read) = read_since(&source, &mut other, &mut log);
+    let changes = other.get_changes(&[]).len();
+    assert_eq!(read, changes.min(4), "the other document's window");
+    assert_matches_a_fresh_read(&source, &mut other, &log, &rows, "another document");
+
+    // phase: a change of locale reads the window again, in its words
+    crate::i18n::I18nManager::set_pseudo_locale(crate::i18n::PseudoLocale::Expanded);
+    let (rows, read) = read_since(&source, &mut other, &mut log);
+    let fresh = source.entries(&mut other);
+    crate::i18n::I18nManager::set_pseudo_locale(crate::i18n::PseudoLocale::Off);
+    assert_eq!(read, changes.min(4), "a new locale reads again");
+    assert_eq!(rows, fresh, "rows in the new locale");
+
+    // phase: an unschematised document whose window slides one change at a time
+    let mut plain = AutoCommit::new();
+    plain.set_actor(ActorId::from("alice".as_bytes()));
+    let mut log = HistoryLog::default();
+    for n in 0..8_i64 {
+        plain.put(ROOT, format!("field-{}", n % 3), n).unwrap();
+        if n % 4 == 3 {
+            plain.delete(ROOT, "field-0").unwrap();
+        }
+        tilo_resource::history::commit_stamped_at(&mut plain, T0 + n * HOUR);
+        let (rows, read) = read_since(&source, &mut plain, &mut log);
+        assert_eq!(read, 1, "plain edit {n}");
+        assert_matches_a_fresh_read(&source, &mut plain, &log, &rows, &format!("plain {n}"));
+    }
 }

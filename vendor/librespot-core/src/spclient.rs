@@ -7,7 +7,6 @@ use crate::config::{OS, os_version};
 use crate::{
     Error, FileId, SpotifyId, SpotifyUri,
     apresolve::SocketAddress,
-    config::SessionConfig,
     dealer::protocol::TransferOptions,
     error::ErrorKind,
     protocol::{
@@ -178,18 +177,10 @@ impl SpClient {
 
         client_data.client_version = spotify_semantic_version();
 
-        // Current state of affairs: keymaster ID works on all tested platforms, but may be phased out,
-        // so it seems a good idea to mimick the real clients. `self.session().client_id()` returns the
-        // ID of the client that last connected, but requesting a client token with this ID only works
-        // on macOS and Windows. On Android and iOS we can send a platform-specific client ID and are
-        // then presented with a hash cash challenge. On Linux, we have to pass the old keymaster ID.
-        // We delegate most of this logic to `SessionConfig`.
+        // SessionConfig already supplies platform defaults. An embedding host's
+        // explicit OAuth client must remain its identity on every platform.
         let os = OS;
-        let client_id = match os {
-            "macos" | "windows" => self.session().client_id(),
-            os => SessionConfig::default_for_os(os).client_id,
-        };
-        client_data.client_id = client_id;
+        client_data.client_id = self.session().client_id();
 
         let connectivity_data = client_data.mut_connectivity_sdk_data();
         connectivity_data.device_id = self.session().device_id().to_string();

@@ -381,6 +381,14 @@ impl ScreenReader {
         self.speaker.set_voice(voice);
     }
 
+    /// Speak at the rate and in the voice the person chose in Settings.
+    pub fn configure(&mut self, settings: &settings_store::screen_reader::ScreenReaderSettings) {
+        self.set_rate(settings.rate);
+        if let Some(voice) = settings.voice.engine_voice() {
+            self.set_voice(voice);
+        }
+    }
+
     /// The single funnel every utterance goes through. An interrupting push
     /// first stops in-flight speech, then drains the coalesced queue into
     /// the speaker — immediately, which keeps the `NullSpeaker` test path
@@ -715,6 +723,7 @@ pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
 mod tests {
     use super::*;
     use crate::a11y::{AccessNode, AccessState, Role};
+    use crate::widget::TaffyTreeExt;
     use tts::NullSpeaker;
 
     fn n(role: Role) -> AccessNode {
@@ -1144,11 +1153,7 @@ mod tests {
                 .iter_mut()
                 .map(|c| c.build_layout(taffy, theme, node_map))
                 .collect();
-            let node = taffy
-                .new_with_children(taffy::Style::default(), &kids)
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_node(taffy::Style::default(), &kids, node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: taffy::NodeId, _o: vello::kurbo::Point) {
         }

@@ -21,7 +21,6 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 lru.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-actions = { path = "../../crates/collab/actions" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The registry list, its client and its trust classification. Shared
@@ -29,7 +28,11 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # — one definition, so the two cannot drift into disagreeing about
 # whether an entry verifies.
 app-cli = { path = "../../crates/packaging/app-cli" }
-app-host = { path = "../../crates/packaging/app-host" }
+# The app host's client side only. Its daemon (`service`) is the privileged
+# door this app talks to over the launcher-issued capability, not code it
+# links; with it, the content store and the filesystem would also land in
+# the shared runtime every app maps.
+app-host = { path = "../../crates/packaging/app-host", default-features = false }
 # The installed-package row the app host lists.
 package-store = { path = "../../crates/packaging/package-store" }
 registry-types = { path = "../../crates/packaging/registry-types" }
@@ -38,7 +41,6 @@ blake3.workspace = true
 getrandom.workspace = true
 rand_core.workspace = true
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
@@ -53,8 +55,11 @@ tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
+base64.workspace = true
+flate2.workspace = true
 desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
-app-host = { path = "../../crates/packaging/app-host", features = ["test-support"] }
+app-host = { path = "../../crates/packaging/app-host", default-features = false, features = ["test-support"] }
 capnp.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }

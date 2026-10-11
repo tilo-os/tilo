@@ -16,11 +16,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -31,7 +27,7 @@ pub mod archive;
 pub mod breadcrumbs;
 pub mod command;
 pub mod config;
-mod doc;
+mod directory_watch;
 pub mod effects;
 pub mod external_drag;
 pub mod favorites;
@@ -66,7 +62,8 @@ pub mod views;
 pub use command::{CommandSink, FileCommand};
 pub use files_app::{FileExplorerWidget, StartupInputs};
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod unavailable_projection_tests;
 pub use resource::{FileExplorer, FileExplorerShell};
 
@@ -86,5 +83,5 @@ pub fn mounted_files_in(
 
 /// The Files application definition: the one every host mounts.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<FileExplorerShell>()
+    ui::built_in_definition!(FileExplorerShell)
 }

@@ -14,11 +14,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -31,8 +27,7 @@ use clap::Parser;
 use tilo_agent::{Config, Session};
 
 /// A participant without a window: joins the session's collaboration broker
-/// and handles addressed document instructions or canonical package-primary
-/// Chat summons (`--app so.tilo.chat`, no `--record`).
+/// and carries out broker-leased tasks (`--task-runs`).
 #[derive(Parser, Debug)]
 #[command(name = "tilo-agent")]
 struct Cli {
@@ -58,8 +53,9 @@ struct Cli {
     /// Normal launched sessions inherit `TILO_SVC_COLLAB_FD` instead.
     #[arg(long)]
     endpoint: Option<PathBuf>,
-    /// Pause between edits, in milliseconds, so the caret can be watched.
-    #[arg(long, default_value_t = 250)]
+    /// Pause after each action and edit, in milliseconds, so the caret can be
+    /// watched. A demo affordance: by default the agent acts at full speed.
+    #[arg(long, default_value_t = tilo_agent::session::DEFAULT_PACE_MS)]
     pace_ms: u64,
     /// Exit after the first instruction has been carried out.
     #[arg(long)]
@@ -115,6 +111,10 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let mut cli = Cli::parse();
+    anyhow::ensure!(
+        cli.task_runs,
+        tilo_agent::session::DOCUMENT_MODE_UNAVAILABLE
+    );
     let managed = std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some();
     let model_timeout_ms = cli.model_timeout_ms.unwrap_or(if managed {
         MANAGED_MODEL_TIMEOUT_MS
@@ -133,17 +133,10 @@ fn main() -> anyhow::Result<()> {
     // decision, not something a headless participant grants itself.
     let agent_id = cli.agent_id.clone().unwrap_or_else(|| cli.name.clone());
     let permissions = {
-        use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
-        PermissionContext::from_capabilities(
-            Actor::agent(&agent_id),
-            vec![
-                CapOverride::grant(
-                    Subject::agent(&agent_id),
-                    Scope::App(cli.app.clone()),
-                    Verb::Write,
-                )
-                .with_id("invited"),
-            ],
+        ui::permissions::PermissionContext::agent_granted_at(
+            &agent_id,
+            &[ui::permissions::TreePath::root().app(cli.app.clone())],
+            ui::permissions::KindSet::READ_UNDOABLE,
         )
     };
     let cfg = Config {
@@ -163,12 +156,7 @@ fn main() -> anyhow::Result<()> {
         permissions,
         content: device_content(),
     };
-    let mut session = Session::connect(cfg)?;
-    if cli.task_runs {
-        session.run_task_runs()
-    } else {
-        session.run()
-    }
+    Session::connect(cfg)?.run_task_runs()
 }
 
 /// The device content store the launcher handed this agent: where the
@@ -179,4 +167,31 @@ fn device_content() -> tilo_content::ContentStore {
         return device;
     }
     tilo_content::ContentStore::memory()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pace is a demo affordance: an agent started without `--pace-ms`
+    /// (as every launcher starts it) never pauses after an action.
+    #[test]
+    fn an_agent_started_without_a_pace_acts_at_full_speed() {
+        let cli = Cli::try_parse_from([
+            "tilo-agent",
+            "--workspace",
+            "00000000-0000-0000-0000-000000000001",
+        ])
+        .unwrap();
+        assert_eq!(Duration::from_millis(cli.pace_ms), Duration::ZERO);
+        let demo = Cli::try_parse_from([
+            "tilo-agent",
+            "--workspace",
+            "00000000-0000-0000-0000-000000000001",
+            "--pace-ms",
+            "600",
+        ])
+        .unwrap();
+        assert_eq!(demo.pace_ms, 600, "demos still choose a visible pace");
+    }
 }

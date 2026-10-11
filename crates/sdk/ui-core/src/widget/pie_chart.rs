@@ -24,7 +24,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::presence::PresenceCtx;
@@ -32,7 +32,8 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
+    ChartNavAction, ChartTouchTracker, InteractiveChart, chart_nav_action, handle_chart_event,
+    moved_index,
 };
 use crate::widget::{TaffyTreeExt, Widget};
 
@@ -684,6 +685,45 @@ impl PieChart {
     }
 }
 
+impl InteractiveChart for PieChart {
+    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
+        (
+            &mut self.pointer,
+            &mut self.keyboard_inspection,
+            &mut self.touch,
+        )
+    }
+    fn update_hover(&mut self) {
+        self.hovered = self.hit_test(self.pointer);
+    }
+    fn clear_hover(&mut self) {
+        self.hovered = None;
+    }
+    fn activate_hovered(&mut self) -> bool {
+        let Some(slice) = self.hovered.and_then(|index| self.slices.get(index)) else {
+            return false;
+        };
+        if !slice.interactive {
+            return false;
+        }
+        self.activated = Some(slice.id.clone());
+        true
+    }
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
+        let indices = self
+            .sectors_at(crate::time::now())
+            .into_iter()
+            .map(|sector| sector.index)
+            .collect::<Vec<_>>();
+        let position = self
+            .hovered
+            .and_then(|index| indices.iter().position(|candidate| *candidate == index));
+        self.hovered = moved_index(position, indices.len(), action)
+            .and_then(|position| indices.get(position).copied());
+        self.hovered.is_some()
+    }
+}
+
 impl Widget for PieChart {
     fn build_layout(
         &mut self,
@@ -692,7 +732,7 @@ impl Widget for PieChart {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.theme = Some(theme.clone());
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: self.height.map_or_else(Dimension::auto, Dimension::length),
@@ -700,9 +740,8 @@ impl Widget for PieChart {
             // Without a fixed height the chart takes the room it is given.
             flex_grow: if self.height.is_some() { 0.0 } else { 1.0 },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -729,13 +768,7 @@ impl Widget for PieChart {
         }
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x + l.size.width),
-            origin.y + f64::from(l.location.y + l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
     fn draw(
         &mut self,
@@ -857,77 +890,10 @@ impl Widget for PieChart {
         self.draw_tooltip(scene, transform, tr, theme);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.hovered = self.hit_test(point);
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.hovered = self.hit_test(point);
-                    if let Some(slice) = self.hovered.and_then(|index| self.slices.get(index))
-                        && slice.interactive
-                    {
-                        self.activated = Some(slice.id.clone());
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.hovered = self.hit_test(self.pointer);
-                self.keyboard_inspection = false;
-            }
-            WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => self.hovered = None,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(index) = self.hovered
-                    && let Some(slice) = self.slices.get(index)
-                    && slice.interactive
-                {
-                    self.activated = Some(slice.id.clone());
-                    *ctx.handled = true;
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-            }
-            _ if self.focused && chart_nav_action(event).is_some() => {
-                let Some(action) = chart_nav_action(event) else {
-                    return;
-                };
-                let indices = self
-                    .sectors_at(crate::time::now())
-                    .into_iter()
-                    .map(|sector| sector.index)
-                    .collect::<Vec<_>>();
-                if action == ChartNavAction::Activate {
-                    if let Some(slice) = self.hovered.and_then(|index| self.slices.get(index))
-                        && slice.interactive
-                    {
-                        self.activated = Some(slice.id.clone());
-                    }
-                } else {
-                    let position = self
-                        .hovered
-                        .and_then(|index| indices.iter().position(|candidate| *candidate == index));
-                    self.hovered = moved_index(position, indices.len(), action)
-                        .and_then(|position| indices.get(position).copied());
-                    self.keyboard_inspection = self.hovered.is_some();
-                }
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            _ => {}
+        // Keys inspect the pie only while it has focus; otherwise they belong
+        // to whatever does.
+        if self.focused || chart_nav_action(event).is_none() {
+            handle_chart_event(self, event, ctx);
         }
     }
     fn accessibility(&self) -> Option<AccessNode> {
@@ -966,28 +932,22 @@ impl Widget for PieChart {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            key_path,
+            self.slices.iter().filter(|s| s.interactive).map(|s| &s.id),
+        ) else {
             return false;
         };
-        if let Some(slice) = self
-            .slices
-            .iter()
-            .find(|s| s.interactive && crate::a11y::hash_key(&s.id) == *key)
-        {
-            self.activated = Some(slice.id.clone());
-            return true;
-        }
-        false
+        self.activated = Some(id.clone());
+        true
     }
     fn name(&self) -> &'static str {
         "PieChart"

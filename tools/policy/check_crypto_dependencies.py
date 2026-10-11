@@ -64,9 +64,9 @@ FORBIDDEN = frozenset(
 ALLOWED = {
     "tilo-seal": FORBIDDEN,
     # Apple's iCloud sign-in is SRP-6a over a PBKDF2 of the password, fixed
-    # by the protocol; the provider's client implements that exchange and
-    # seals nothing with it.
-    "cloud-source-icloud": frozenset({"pbkdf2"}),
+    # by the protocol; tilo-crypto's `srp_apple` implements that exchange
+    # and seals nothing with it.
+    "tilo-crypto": frozenset({"pbkdf2"}),
 }
 
 DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")

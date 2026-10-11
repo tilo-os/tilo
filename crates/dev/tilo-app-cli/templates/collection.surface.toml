@@ -1,0 +1,54 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "generated.items"
+label = "Items"
+version = 1
+
+[[resources.fields]]
+owner = "items"
+path = "items"
+stored = "collection"
+title = "Items"
+type = "Collection<Item>"
+
+[[resources.fields]]
+label = true
+owner = "item"
+path = "items.*.title"
+stored = "value"
+title = "Names the item in history, search and the palette"
+type = "String"
+
+[[resources.fields]]
+owner = "item"
+path = "items.*.done"
+stored = "value"
+title = "Done"
+type = "bool"
+
+[[resources.verbs]]
+id = "add"
+kind = "undoable"
+label = "Add an item"
+
+[[resources.verbs.params]]
+name = "title"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "remove"
+kind = "undoable"
+label = "Remove an item. Undo brings it back"
+
+[[resources.verbs.params]]
+name = "item"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"

@@ -17,7 +17,7 @@ pub use reservation::{preflight_storage, reserved_file_bytes};
 pub(crate) const MAX_ENTRIES: usize = 64;
 pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES * 2 + 1;
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredPublication {
     version: u32,
     revision: u64,
@@ -43,7 +43,7 @@ impl Default for StoredPublication {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredOutgoing {
     ordinal: u64,
     id: [u8; 32],
@@ -351,13 +351,32 @@ pub(crate) fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), 
     let NeighbourMsg::AppDocument { envelope, .. } = message else {
         return Err("native outgoing requires document".into());
     };
+    // The one host classifier (`neighbour_wire::retention`), shared with
+    // browser peers and the relay. A single-use MLS application message has
+    // no retention class and is refused here like any live frame.
     let (channel, kind) = tilo_peer_state::transport::retention(message, false)
         .ok_or("unsupported native outgoing document payload")?;
     Ok((
         enrollment::ns(envelope.timestamp)?,
         channel,
-        kind == Retention::Delta,
+        member_publishes_as_delta(kind, envelope.encryption.is_some()),
     ))
+}
+/// Whether a member publishes this document as a retained delta.
+///
+/// A member never replaces a record's retained checkpoint under its own
+/// relay author: a cleartext snapshot is the governor's baseline and stays a
+/// checkpoint, which [`allowed`] never releases and the session refuses.
+///
+/// A content-key ciphertext the classifier calls a checkpoint (a sealed
+/// snapshot or compaction) is published as a delta instead: the host appends
+/// it after the record's checkpoint rather than letting a member's write
+/// replace it. This is the conservative choice (TIL-163) and keeps the class
+/// every sealed write had before the classifiers were unified, so stored
+/// outgoing entries still validate. Letting a member's sealed checkpoint
+/// compact the host's tail is a protocol decision this does not make.
+fn member_publishes_as_delta(kind: Retention, sealed: bool) -> bool {
+    kind == Retention::Delta || sealed
 }
 struct Count {
     bytes: usize,
@@ -686,6 +705,29 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
     }
     Ok(())
 }
+/// An exact replay changes no peer state; reuse its barrier only when there
+/// is no retirement, reservation repair or checkpoint refresh to publish.
+pub(crate) fn exact_replay_unchanged(view: &NativeCommittedView) -> Result<bool, String> {
+    let publication = state(view)?;
+    let originals = decode_entries(&publication.entries)?;
+    for message in &originals {
+        if retired(&view.peer, message, view.device().device_public_key).unwrap_or(false) {
+            return Ok(false);
+        }
+    }
+    if reservation::validate(view, &originals).is_err()
+        || (!publication.projection.is_empty() && !publication.reservation.has_recovery())
+    {
+        return Ok(false);
+    }
+    if let Some(checkpoint) = publication.governance.first()
+        && encode(&view.peer.room_message(), MAX_BYTES)? != checkpoint.bytes
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 pub(crate) fn retire(view: &mut NativeCommittedView) -> Result<(), String> {
     let publication = state(view)?;
     let mut remove = BTreeSet::new();
@@ -697,10 +739,28 @@ pub(crate) fn retire(view: &mut NativeCommittedView) -> Result<(), String> {
             remove.insert(entry.id);
         }
     }
+    // A projection also carries the sequence whose durable watermark retires
+    // its originals. While any original still owes recovery, keep it: the next
+    // reconciliation reuses it while it is current. Clearing it here signed a
+    // fresh retransmission at every reconciliation, without bound, for each
+    // original the governor already holds but has not yet acknowledged.
+    let remaining = publication
+        .entries
+        .iter()
+        .filter(|entry| !remove.contains(&entry.id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let owes_recovery = decode_entries(&remaining)
+        .and_then(|originals| {
+            view.peer
+                .reserve_local_recovery(&originals, None, view.device().device_public_key)
+        })
+        .is_ok_and(|reservation| reservation.entries() > 0);
     // A projection has no user receipt/exact index. Empty obligations prove its
     // whole history is in the actual durable governor receipt, independently of
     // whether this retransmission sequence itself was observed by the governor.
     let remove_projection = !publication.projection.is_empty()
+        && !owes_recovery
         && decode_entries(&publication.projection)
             .and_then(|projection| {
                 view.peer.validate_local_recovery_projection(

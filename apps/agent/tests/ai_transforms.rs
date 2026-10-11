@@ -20,7 +20,6 @@ use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
-use collab_types::{PermissionProfileRule, Scope, Verb};
 use serde_json::{Map, Value, json};
 use tilo_actions::outcome::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_actions::params::{ActionParam, ParamType};
@@ -240,12 +239,14 @@ fn ai_shortcut(transform: AiTransform, input: Binding) -> Shortcut {
         inputs: Vec::new(),
         steps: vec![Step::new("ai", StepKind::Ai { transform, input })],
         output: Some(Binding::step("ai", "")),
-        grant: vec![PermissionProfileRule::grant(
-            Scope::App(AGENT_APP_ID.into()),
-            Verb::Write,
+        grant: vec![tilo_action_policy::Rule::new(
+            tilo_action_policy::TreePath::root()
+                .any(tilo_action_policy::Level::Room)
+                .app(AGENT_APP_ID),
+            tilo_action_policy::KindSet::READ_UNDOABLE,
+            tilo_action_policy::Answer::Allow,
         )],
         triggers: Vec::new(),
-        consents: Vec::new(),
         saved_by: None,
     }
 }
@@ -261,7 +262,6 @@ fn run_shortcut(host: &AgentHost, shortcut: &Shortcut, inputs: Map<String, Value
             mode: RunMode::Unattended,
             trigger: RunTrigger::Manual,
             inputs,
-            consents: Vec::new(),
         },
     ))
 }

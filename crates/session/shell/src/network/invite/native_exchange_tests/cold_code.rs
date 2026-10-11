@@ -6,6 +6,9 @@ use std::path::Path;
 use tilo_actions::Action as _;
 use tilo_joined_room::{ApplicationInitialization, ApplicationRecord, DocumentRead};
 
+/// The kind of the record a Code Editor project is.
+pub(super) const PROJECT_KIND: &str = <code_editor::Project as tilo_resource::Resource>::KIND;
+
 pub(super) const APP: &str = "so.tilo.code-editor";
 pub(super) const RECORD: &str = "tab:000000000000002a";
 pub(super) const FILE: &str = "fe55ab4e-e645-4499-aa86-0c4141907080";
@@ -14,7 +17,7 @@ pub(super) const BODY: &str =
 
 #[tokio::test]
 async fn native_cold_code_body_is_admitted_before_local_rendering() {
-    Box::pin(super::actual_exchange(false, true, false)).await;
+    Box::pin(super::actual_exchange(false, true, None)).await;
 }
 
 pub(super) fn governor(directory: &Path) -> TestGovernor {
@@ -28,13 +31,8 @@ pub(super) fn governor(directory: &Path) -> TestGovernor {
     let owner = crate::shell::native_workspace_owner::open(tree.shared()).unwrap();
     let mut governor =
         tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
-    let route = ApplicationRecord::declared(
-        APP,
-        RECORD,
-        code_editor::resource::PROJECT_KIND,
-        &[code_editor::resource::PROJECT_KIND.into()],
-    )
-    .unwrap();
+    let route =
+        ApplicationRecord::declared(APP, RECORD, PROJECT_KIND, &[PROJECT_KIND.into()]).unwrap();
     let now = SystemTime::now();
     assert!(
         owner
@@ -107,28 +105,30 @@ fn capture(
     owner: &NativeWorkspaceOwner,
     certificate: &DeviceCert,
 ) -> tilo_joined_room::CommittedDocument {
-    try_capture(owner, certificate).unwrap()
+    try_capture(owner, certificate)
+        .unwrap()
+        .expect("a settled cold native room holds no partial checkpoint")
 }
 
+/// `None` is the production read's answer while a checkpoint is still
+/// arriving; every refusal stays an error.
 fn try_capture(
     owner: &NativeWorkspaceOwner,
     certificate: &DeviceCert,
-) -> Result<tilo_joined_room::CommittedDocument, String> {
+) -> Result<Option<tilo_joined_room::CommittedDocument>, String> {
     owner.with_current(
         RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(),
-        |view| {
-            let DocumentRead::Captured(capture) = view.read_document(
-                certificate.device_public_key,
-                APP,
-                RECORD,
-                None,
-                64 * 1024,
-                SystemTime::now(),
-            )?
-            else {
-                return Err("cold native record was not captured".into());
-            };
-            Ok(capture)
+        |view| match view.read_document(
+            certificate.device_public_key,
+            APP,
+            RECORD,
+            None,
+            64 * 1024,
+            SystemTime::now(),
+        )? {
+            DocumentRead::Captured(capture) => Ok(Some(capture)),
+            DocumentRead::CheckpointPending => Ok(None),
+            DocumentRead::Unchanged(_) => Err("cold native record was not captured".into()),
         },
     )
 }
@@ -142,22 +142,26 @@ fn source_document(directory: &Path) -> AutoCommit {
         .unwrap();
     let checkout = RecordCheckout::new(
         RecordId::parse(RECORD).unwrap(),
-        RecordKind::new(code_editor::resource::PROJECT_KIND),
+        RecordKind::new(PROJECT_KIND),
     );
     records.create_record(&checkout).unwrap();
     records.try_open_record(&checkout).unwrap();
     records
         .with(&checkout.id, |document| {
-            code_editor::actions::CodeEditorAction::CreateFile {
-                id: FILE.into(),
-                name: "native.rs".into(),
-                parent: None,
-                language: "rust".into(),
-                order: 0,
-                seed: BODY.into(),
-            }
+            code_editor::actions::record_entry_action(
+                FILE,
+                code_editor::project::EntryKind::File,
+                "native.rs",
+                None,
+                "Rust",
+            )
             .apply(document)
             .unwrap();
+            code_editor::actions::record_text_action(FILE, BODY)
+                .apply(document)
+                .unwrap();
+            // Applied here without the executor, so the test names the step.
+            collab_types::CommitNamed::commit_edit(document, PROJECT_KIND, "buffers");
             assert_eq!(
                 body(document),
                 BODY,
@@ -217,6 +221,15 @@ pub(super) fn mount_with_network(
     profile: &Path,
     network: &Arc<crate::shell::network::ShellNetwork>,
 ) -> MountedCode {
+    mount_with_network_and_reads(owner, identity, profile, network, None)
+}
+pub(super) fn mount_with_network_and_reads(
+    owner: &NativeWorkspaceOwner,
+    identity: &HostIdentity,
+    profile: &Path,
+    network: &Arc<crate::shell::network::ShellNetwork>,
+    reads: Option<crate::shell::collab_broker::NativeReadHarnessWrapper>,
+) -> MountedCode {
     use std::{
         cell::{Cell, RefCell},
         os::unix::fs::PermissionsExt as _,
@@ -232,11 +245,12 @@ pub(super) fn mount_with_network(
         .tempdir_in(profile.parent().unwrap())
         .unwrap();
     let socket = runtime.path().join("c.sock");
-    let broker = crate::shell::collab_broker::spawn_native_owner_harness(
+    let broker = crate::shell::collab_broker::spawn_native_owner_harness_with_reads(
         socket.clone(),
         tree,
         vec![identity.device_cert.device_public_key],
         network,
+        reads,
     )
     .unwrap();
     let refusal = connect_manager(&socket, identity, false)
@@ -279,7 +293,7 @@ pub(super) fn mount_with_network(
                 42,
                 ui::record::RecordCheckout::new(
                     ui::record::RecordId::parse(RECORD).unwrap(),
-                    ui::record::RecordKind::new(code_editor::resource::PROJECT_KIND),
+                    ui::record::RecordKind::new(PROJECT_KIND),
                 ),
                 inputs,
             )
@@ -337,7 +351,7 @@ fn open_semantic_resource(app: &mut ui::App) {
     let mut scene = ui::vello::Scene::new();
     app.surface_frame(&LocalSurface, &mut scene);
     app.refresh_semantic_tree();
-    let effect = code_editor::CodeEditorEffect::Open { file: FILE.into() };
+    let effect = code_editor::CodeEditorEffect::ShowFile { file: FILE.into() };
     let action = effect.id();
     let node = app
         .semantic_tree()
@@ -396,7 +410,11 @@ fn connect_manager(
     );
     let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
     if launcher_custody {
-        crate::shell::launcher::register_in_process_launch(APP, tilo_joined_room::testing::ROOM);
+        crate::shell::launcher::register_in_process_window(
+            APP,
+            tilo_joined_room::testing::ROOM,
+            Some(42),
+        );
         launcher::services::write_collab_handoff(&mut stream, APP, tilo_joined_room::testing::ROOM)
             .unwrap();
     }
@@ -458,15 +476,46 @@ pub(super) fn prepare_offline_edits(
     governor.refresh_checkpoint().unwrap();
 }
 
+/// Sign `changes` to the Code record the way every SDK document signer signs
+/// a write outside its record owner's turn: with the process-wide unordered
+/// sequence, never the dense `floor + 1` an owner recovery projection may
+/// reserve in its own turn first.
+pub(super) fn unordered_document_message(
+    room: RoomId,
+    changes: Vec<u8>,
+    key: &ed25519_dalek::SigningKey,
+    now: SystemTime,
+) -> NeighbourMsg {
+    let room = room.to_string();
+    let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+    let mutation = collab_types::DocumentMutation::Incremental(changes);
+    let mut envelope = collab_types::SignedOp::new_unsigned(
+        mutation.encode().unwrap(),
+        collab_types::document_artifact_id(APP, &room, RECORD),
+        author,
+        collab_types::document_attestation_id(APP, &room, RECORD),
+        collab_types::OpKind::Change,
+        now,
+        collab_types::next_unordered_document_sequence(now),
+    );
+    collab_types::sign_op(&mut envelope, key).unwrap();
+    NeighbourMsg::AppDocument {
+        peer: tilo_peer_state::peer_handle(author.as_bytes()),
+        app_id: APP.into(),
+        cluster_id: room,
+        record_id: RECORD.into(),
+        envelope: Box::new(envelope),
+    }
+}
+
 fn offline_edit(
     owner: &NativeWorkspaceOwner,
     key: &ed25519_dalek::SigningKey,
     text: &str,
 ) -> NeighbourMsg {
-    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
     let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
     let now = SystemTime::now();
-    let message = owner
+    let changes = owner
         .with_current(room, |view| {
             let mut document =
                 AutoCommit::load(&view.peer().document(APP, RECORD).unwrap()).unwrap();
@@ -474,33 +523,16 @@ fn offline_edit(
                 key.verifying_key().to_bytes().to_vec(),
             ));
             let heads = document.get_heads();
-            code_editor::actions::text_edit_action(FILE.into(), BODY, text)
+            code_editor::actions::text_edit_action(FILE, BODY, text)
                 .apply(&mut document)
                 .unwrap();
-            view.peer().clone().publish_incremental(
-                APP,
-                RECORD,
-                document.save_after(&heads),
-                key,
-                now,
-            )
+            collab_types::CommitNamed::commit_edit(&mut document, PROJECT_KIND, "buffers");
+            Ok(document.save_after(&heads))
         })
         .unwrap();
-    let NeighbourMsg::AppDocument { envelope, .. } = &message else {
-        panic!("native edit must be signed app data")
-    };
+    let message = unordered_document_message(room, changes, key, now);
     owner
-        .commit_document(
-            OwnerCommitRequest {
-                room: room.to_string(),
-                operation: CommitOperation::Document {
-                    app: APP.into(),
-                    record: RECORD.into(),
-                    envelope: envelope.clone(),
-                },
-            },
-            now,
-        )
+        .commit_document(tilo_joined_room::testing::request(&message).unwrap(), now)
         .unwrap();
     owner
         .with_current(room, |view| {
@@ -604,13 +636,12 @@ pub(super) async fn restart_after_offline_edits(
                     .admit(live.identity)
                     .expect("reconnected signed frame must cross native custody");
                 // A canonical cut arrives in multiple signed frames. Until
-                // its covered body arrives, the production read must refuse.
-                let capture = match try_capture(&owner, &live.identity.device_cert) {
-                    Ok(capture) => capture,
-                    Err(error) => {
-                        assert_eq!(error, "bounded peer refusal: Invalid(Coverage)");
-                        continue;
-                    }
+                // its covered body arrives, the production read must report
+                // the pending checkpoint and hand out nothing.
+                let Some(capture) = try_capture(&owner, &live.identity.device_cert)
+                    .expect("a reconnecting read is pending or captured, never refused")
+                else {
+                    continue;
                 };
                 let document = AutoCommit::load(&capture.bytes).unwrap();
                 if body(&document) == format!("// source offline\n{BODY}// receiving offline\n") {

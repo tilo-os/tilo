@@ -122,15 +122,6 @@ impl RemoteAccountHealth {
     }
 }
 
-/// Load the externally configured file providers from the user's account
-/// store, mounted under the user's home.
-pub fn load() -> Vec<RemoteAccount> {
-    match accounts::config_root() {
-        Some(root) => load_in(&root, crate::model::user_home().as_deref()),
-        None => Vec::new(),
-    }
-}
-
 /// Load from an explicit Settings config root, with mounts under
 /// `home/Remote`. DAV URLs with userinfo/query or a non-HTTPS scheme are
 /// withheld. OAuth providers use fixed public service labels rather than
@@ -293,6 +284,12 @@ pub fn type_id(kind: RemoteAccountKind) -> AccountTypeId {
         RemoteAccountKind::Dropbox => DROPBOX_TYPE.into(),
         RemoteAccountKind::ICloudDrive => ICLOUD_DRIVE_TYPE.into(),
     }
+}
+
+/// The account id a [`resource_id`] names.
+pub fn account_of_resource(resource: &str) -> Option<String> {
+    let hex_id = resource.strip_prefix("files.remote-account:")?;
+    String::from_utf8(hex::decode(hex_id).ok()?).ok()
 }
 
 #[cfg(test)]

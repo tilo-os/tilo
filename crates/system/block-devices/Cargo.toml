@@ -22,5 +22,8 @@ serde_json.workspace = true
 zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 workspace-hack = { version = "0.1" }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

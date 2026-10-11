@@ -31,11 +31,18 @@ use ui::widget::TileHost;
 /// else the built-in Scratch, so a runtime without apps still opens one.
 pub(crate) fn applications() -> Vec<&'static ApplicationDefinition> {
     let registered = ui::application::registry::applications();
-    if registered.is_empty() {
+    let mut applications = if registered.is_empty() {
         vec![crate::scratch::definition()]
     } else {
         registered
+    };
+    if !applications
+        .iter()
+        .any(|app| app.app_id == tilo_desktop::feedback::PACKAGE)
+    {
+        applications.push(tilo_desktop::feedback::definition());
     }
+    applications
 }
 
 /// An application the page can open by id, Scratch included: windows a
@@ -63,6 +70,7 @@ pub(crate) fn catalogue() -> Vec<Application> {
 
 /// Everything a tab's component is prepared with.
 pub(crate) struct Inputs {
+    pub feedback: Option<tilo_desktop::feedback::transport::Startup>,
     pub owners: RecordOwners,
     pub views: Rc<InstanceViewStore>,
     pub device: String,
@@ -78,6 +86,8 @@ pub(crate) struct Inputs {
 /// State the mount and the tile source share.
 #[derive(Clone, Default)]
 pub(crate) struct Shared {
+    /// Trusted host custody, never configured from a launch URL or draft.
+    pub feedback: Rc<RefCell<Option<tilo_desktop::feedback::PrivateFeedback>>>,
     /// Every package's record owner opened so far, flushed with the mount.
     pub stores: Rc<RefCell<Vec<RecordStore>>>,
     pub images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
@@ -437,6 +447,9 @@ impl Tiles {
         };
         let definition = application(app_id)
             .ok_or_else(|| format!("{app_id} is not available in the browser"))?;
+        if definition.app_id == tilo_desktop::feedback::PACKAGE {
+            return self.private_feedback(tab.id);
+        }
         let store = self.store(definition)?;
         let saved = self.shared.records.borrow().get(&tab.id).cloned();
         let (target, named_new) = match saved {
@@ -511,6 +524,29 @@ impl Tiles {
 }
 
 impl Tiles {
+    fn private_feedback(&self, instance: TabId) -> Result<AppComponent, String> {
+        let mut component = match self.shared.feedback.borrow().as_ref() {
+            Some(feedback) => feedback.prepare(&self.inputs.device, &self.inputs.author, instance),
+            None => tilo_desktop::feedback::unconfigured(
+                &self.inputs.device,
+                &self.inputs.author,
+                instance,
+            ),
+        }
+        .map_err(|error| error.to_string())?;
+        let woken = Arc::clone(&self.shared.woken);
+        let notify = Arc::clone(&self.notify);
+        component
+            .mount_with_owner_queue(&self.shared.owner_wakes, move |_| {
+                woken.store(true, Ordering::Release);
+                notify();
+            })
+            .map_err(|error| error.to_string())?;
+        // Its ephemeral draft owner never enters Shared.stores/records:
+        // neither replication nor desktop restore can publish raw text.
+        Ok(component)
+    }
+
     /// What a tab no record is bound to opens: the room's default record
     /// while no other window of the app shows it (the record a native
     /// launch into the room opens too), otherwise a new one. The second
@@ -734,7 +770,7 @@ impl Persistence {
             &mut history,
             &value,
             &self.author,
-            crate::history::now_seconds(),
+            ui::time::unix_now_i64(),
         ) {
             self.history_dirty.set(true);
         }
@@ -862,7 +898,7 @@ fn stored_records(desktop: &StoredDesktop) -> HashMap<TabId, RecordCheckout> {
 /// # Errors
 /// Refuses an application id the page does not register.
 pub(crate) fn mount(
-    inputs: Inputs,
+    mut inputs: Inputs,
     store: Rc<dyn DurableStore>,
     apps: Option<&[String]>,
     workspace_name: Option<&str>,
@@ -871,6 +907,16 @@ pub(crate) fn mount(
     let key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "desktop");
     let salt = peer_salt(&inputs.salt);
     let shared = Shared::default();
+    if let Some(startup) = inputs.feedback.take() {
+        if startup.reporter().principal()
+            != &tilo_actions::remote::CallerPrincipal::Person(inputs.author.clone())
+        {
+            return Err("feedback reporter does not own this profile".into());
+        }
+        startup
+            .install(Rc::clone(&store), &mut shared.feedback.borrow_mut())
+            .map_err(|error| error.to_string())?;
+    }
     let tree = if let Some(stored) = load_stored(store.as_ref(), &key) {
         *shared.records.borrow_mut() = stored_records(&stored);
         stored.tree

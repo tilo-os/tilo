@@ -864,6 +864,11 @@ accounts-edit = Bearbeiten
 accounts-check-server = Server prüfen
 accounts-verify = Anmeldung prüfen
 accounts-remove = Entfernen
+accounts-status-paused = Synchronisierung pausiert
+accounts-sync-now = Jetzt synchronisieren
+accounts-pause-sync = Synchronisierung pausieren
+accounts-resume-sync = Synchronisierung fortsetzen
+accounts-cloud-unavailable = Der Cloud-Kontodienst läuft nicht
 accounts-display-name = Anzeigename
 accounts-email = E-Mail-Adresse
 accounts-username = Benutzername
@@ -1173,7 +1178,7 @@ settings-bluetooth-forgot = { $name } vergessen.
 settings-bluetooth-forget-failed = { $name } konnte nicht vergessen werden: { $error }
 settings-bluetooth-forget-ask = { $name } vergessen? Das entfernt Bindung und Schlüssel.
 input-keyboard-title = Tastatur
-input-keyboard-caption = Passe die Tastenwiederholung, die Compose-Taste und die Feststelltaste an.
+input-keyboard-caption = Wähle, wie schnell gehaltene Tasten wiederholt werden.
 input-active-source = Aktive Eingabequelle
 input-key-repeat = Wiederholgeschwindigkeit
 input-key-repeat-off = Wiederholung ist aus — Schieberegler bewegen, um sie einzuschalten
@@ -1225,6 +1230,8 @@ net-wifi-off = WLAN ist aus
 net-connected-to = Verbunden mit { $ssid }
 net-not-connected = Nicht verbunden
 net-no-wifi-adapter = Kein WLAN-Adapter an diesem Gerät
+net-no-modem = Kein Mobilfunkmodem an diesem Gerät
+net-no-radio = Kein WLAN- oder Mobilfunkadapter an diesem Gerät
 net-applying = Netzwerkänderungen werden angewendet…
 net-refreshing = Wird aktualisiert…
 net-refresh = Aktualisieren
@@ -1417,7 +1424,7 @@ perm-kind-action = App-Aktion
 perm-verb-rw = lesen und schreiben
 perm-verb-ro = nur lesen
 perm-any-host = Jeder Host
-perm-action-detail = „{ $action }“ in { $app } nutzen
+perm-action-detail = „{ $action }“ auf { $resource } in { $app } nutzen
 perm-expiry-always = Immer
 perm-expiry-temp = Vorübergehend
 perm-expiry-logout = Bis zur Abmeldung
@@ -1692,35 +1699,36 @@ upd-caveat-apps = Selbst installierte Apps werden ebenfalls NICHT zurückgesetzt
 upd-roll-back-later = Zurückrollen und später neu starten
 upd-help-title = So funktionieren Updates
 upd-help-2 = Wenn ein neues Image dreimal hintereinander keinen Anmeldebildschirm erreicht, geht dieses Gerät von selbst zum vorherigen zurück. Gibt es nichts zum Zurückkehren, startet es stattdessen im Reparaturmodus.
-upd-codecs = Zusätzliche Codecs
-upd-codecs-explain = H.264, HEVC und andere patentierte Formate sind nicht Teil von Tilo. Das Codec-Paket lädt sie unter deren eigenen Lizenzen von RPM Fusion und Cisco herunter; Tilo hostet oder verteilt sie nicht. OpenH264 Video Codec provided by Cisco Systems, Inc. Sie können das Paket hier entfernen und erneut installieren. Die vollständige Cisco-Binärlizenz steht unter /usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt und https://www.openh264.org/BINARY_LICENSE.txt.
+upd-codecs = Mehr Video- und Audioformate abspielen
+upd-codecs-explain = Wird von den Herausgebern der Formate auf dieses Gerät geladen. Du kannst es hier jederzeit wieder ausschalten.
 upd-status = Status
 upd-progress = Fortschritt: { $percent } %
-upd-installing-codecs = Media-Codecs werden installiert
+upd-installing-codecs = Weitere Formate werden installiert
 upd-codecs-removing = Wird entfernt…
-upd-codecs-checking-driver = Hardware-Treiber wird geprüft…
+upd-codecs-checking-driver = Hardwareunterstützung wird geprüft…
 upd-codecs-starting = Wird gestartet…
-upd-codecs-not-installed = Nicht installiert
-upd-codecs-waiting = Warte auf eine Internetverbindung. Die Installation startet automatisch, sobald dieses Gerät online ist.
+upd-codecs-not-installed = Aus
+upd-codecs-waiting = Warte auf eine Internetverbindung. Es wird von selbst eingeschaltet, sobald dieses Gerät online ist.
 upd-codecs-step = { $label } (Schritt { $step } von { $steps })…
-upd-codecs-downloading = Wird heruntergeladen und installiert…
-upd-codecs-failed = Installation fehlgeschlagen
-upd-codecs-failed-reason = Installation fehlgeschlagen: { $error }
-upd-codecs-installed-hw = Installiert, einschließlich Hardware-H.264/HEVC
-upd-codecs-installed-mesa = Installiert. Hardware-H.264/HEVC wartet auf einen passenden Mesa-Build von RPM Fusion.
-upd-codecs-installed-sw = Installiert (Software-Codecs)
-upd-codecs-refresh-failed = Die letzte Aktualisierung des Codec-Pakets ist fehlgeschlagen: { $error }
-upd-codecs-applies-hw = Apps, die du ab jetzt öffnest, können H.264 und HEVC mit Hardwarebeschleunigung wiedergeben und aufnehmen. Der Desktop selbst lädt den neuen Videotreiber beim Start: Melde dich ab und wieder an, um Hardware-H.264/HEVC für Bildschirmfreigabe und Aufnahme zu nutzen, und öffne bereits laufende Apps neu.
-upd-codecs-applies-sw = Neue Codecs wirken sofort: Anrufe, Bildschirmfreigabe und Videos holen sie beim nächsten Start. Ein Neustart ist nicht nötig.
-upd-codecs-install = Media-Codecs installieren
+upd-codecs-step-bytes = { $label } { $done } von { $total } MB (Schritt { $step } von { $steps })…
+upd-codecs-downloading = Wird heruntergeladen…
+upd-codecs-failed = Konnte nicht installiert werden
+upd-codecs-failed-reason = Konnte nicht installiert werden: { $error }
+upd-codecs-installed-hw = Ein, einschließlich Hardware-H.264/HEVC
+upd-codecs-installed-mesa = Ein. Hardware-H.264/HEVC folgt, sobald ein passender Treiber veröffentlicht ist.
+upd-codecs-installed-sw = Ein
+upd-codecs-refresh-failed = Die letzte Aktualisierung der Formate ist fehlgeschlagen: { $error }
+upd-codecs-applies-hw = Apps, die du ab jetzt öffnest, geben H.264 und HEVC mit Hardwarebeschleunigung wieder und nehmen damit auf. Melde dich ab und wieder an, um es für Bildschirmfreigabe und Aufnahme zu nutzen, und öffne bereits laufende Apps neu.
+upd-codecs-applies-sw = Wirkt sofort: Anrufe, Bildschirmfreigabe und Videos nutzen es beim nächsten Start. Ein Neustart ist nicht nötig.
+upd-codecs-install = Installieren
 upd-codecs-try-again = Erneut versuchen
-upd-codecs-cancel = Installation abbrechen
-upd-codecs-remove = Media-Codecs entfernen
-upd-codecs-refresh = Erneut nach dem Hardware-Treiber suchen
+upd-codecs-cancel = Abbrechen
+upd-codecs-remove = Entfernen
+upd-codecs-refresh = Erneut nach Hardwareunterstützung suchen
 upd-notice-schedule = Download-Zeitplan konnte nicht geändert werden: { $error }
 upd-notice-metered = Richtlinie für getaktete Netze konnte nicht geändert werden: { $error }
-upd-notice-codecs-worker = Das Codec-Paket konnte nicht geändert werden: Worker konnte nicht starten
-upd-notice-codecs = Das Codec-Paket konnte nicht geändert werden: { $error }
+upd-notice-codecs-worker = Die Formate konnten nicht geändert werden: Worker konnte nicht starten
+upd-notice-codecs = Die Formate konnten nicht geändert werden: { $error }
 upd-notice-fw-reboot = Firmware-Installation abgeschlossen. Starte neu, um das Update zu aktivieren.
 upd-notice-fw-ok = Firmware-Installation erfolgreich abgeschlossen.
 upd-notice-fw-failed = Firmware-Installation fehlgeschlagen: { $error }
@@ -1756,13 +1764,13 @@ net-profiles-error = Gespeicherte Netzwerke können nicht gelesen werden: { $err
 net-sims-error = SIM-Karten können nicht gelesen werden: { $error }
 upd-status-error = Nach Updates kann nicht gesucht werden: { $error }
 upd-rollback-error = Das vorherige System-Image kann nicht gelesen werden: { $error }
-time-clock-error = Uhr kann nicht gelesen werden: { $error }
 time-status-error = Zeiteinstellungen können nicht gelesen werden: { $error }
 time-zones-error = Zeitzonen können nicht aufgelistet werden: { $error }
 time-zone-unread = Aktuelle Zeitzone unbekannt
 settings-users-read-error = Die Konten dieses Geräts können nicht gelesen werden: { $error }
 settings-users-autologin-error = Automatische Anmeldung kann nicht gelesen werden: { $error }
 settings-bluetooth-read-error = Bluetooth kann nicht gelesen werden: { $error }
+settings-bluetooth-no-adapter = Kein Bluetooth-Adapter an diesem Gerät
 sound-devices-error = Audiogeräte können nicht aufgelistet werden: { $error }
 sound-volume-error = Ausgabelautstärke kann nicht gelesen werden: { $error }
 sound-input-error = Eingangspegel kann nicht gelesen werden: { $error }
@@ -1777,6 +1785,7 @@ settings-printers-jobs-read-error = Druckaufträge können nicht aufgelistet wer
 settings-printers-scanners-read-error = Scanner können nicht aufgelistet werden: { $error }
 agent-key-read-error = Ob ein Schlüssel gespeichert ist, kann nicht festgestellt werden: { $error }
 
+display-host-observation-timeout = Der Status der Bildschirmvorschau konnte nicht aktualisiert werden. Prüfe die aktuelle Konfiguration, bevor du fortfährst.
 shortcut-name-dictation-toggle = Diktat starten oder beenden
 shortcut-name-dictation-finish = Diktat beenden
 shortcut-name-dictation-cancel = Diktat abbrechen
@@ -1957,8 +1966,40 @@ input-map-inspect-key = Physische Taste untersuchen
 input-map-inspection-unavailable = Die aktuellen Zeichen dieser physischen Taste sind nicht verfügbar. Aktiviere das Einstellungsfenster oder wähle eine Layout-Vorschau.
 input-map-current-symbols = Aktuelle Zeichen
 
-settings-appearance-text-scale = Textskalierung
 
+a11y-dictation-language = Diktatsprache
+a11y-dictation-language-desc = Wähle eine Sprache, um die Erkennung zu verbessern und die Wartezeit zu verkürzen. Die automatische Erkennung deckt weitere unterstützte Sprachen ab. Diktieren nutzt dein Systemmikrofon aus den Klangeinstellungen und fragt vor jeder Aufnahme.
+dictation-language-auto = Automatische Erkennung
+dictation-language-en = Englisch
+dictation-language-de = Deutsch
+dictation-language-fr = Französisch
+dictation-language-es = Spanisch
+dictation-language-ar = Arabisch
+dictation-language-zh = Mandarin-Chinesisch
+dictation-language-ja = Japanisch
+dictation-language-it = Italienisch
+dictation-language-pt = Portugiesisch
+dictation-language-hi = Hindi
+dictation-language-ru = Russisch
+dictation-language-uk = Ukrainisch
+dictation-language-ko = Koreanisch
+dictation-language-tr = Türkisch
+dictation-language-pl = Polnisch
+dictation-language-id = Indonesisch
+dictation-language-vi = Vietnamesisch
+dictation-language-nl = Niederländisch
+dictation-language-bn = Bengalisch
+dictation-language-he = Hebräisch
+dictation-language-fa = Persisch
+dictation-language-th = Thailändisch
+dictation-language-sv = Schwedisch
+dictation-language-cs = Tschechisch
+dictation-language-el = Griechisch
+dictation-language-ta = Tamil
+dictation-language-ur = Urdu
+dictation-language-hu = Ungarisch
+dictation-language-ro = Rumänisch
+dictation-language-fi = Finnisch
 display-devices-title = Bildschirme auf deinen Geräten
 display-device-screen = { $device } · { $screen } · { $status }
 display-device-online = Online
@@ -1974,6 +2015,8 @@ display-device-move-confirmed = Das Gerät hat seine neue Bildschirmposition bes
 display-device-move-changed = Die Geräteanordnung wurde vor der Bestätigung geändert. Erneut versuchen.
 display-device-move-unconfirmed = Das Gerät hat diese Position nicht bestätigt. Aktualisieren und erneut versuchen.
 
+a11y-dictation-literal = Wörtliches Diktieren
+a11y-dictation-literal-desc = Erkannte Wörter unverändert lassen. Wenn ausgeschaltet, werden eindeutige Zahlenkorrekturen auf Deutsch, Englisch, Französisch oder Spanisch bereinigt, etwa „zwei, äh, nein, drei“ zu „drei“. Namen, Zitate und andere Unflüssigkeiten bleiben unverändert.
 input-dictionary-title = Persönliches Wörterbuch
 input-dictionary-caption = Hinzugefügte Wörter stehen der Rechtschreibprüfung, der Bildschirmtastatur und dem Diktieren auf dem Gerät zur Verfügung. Schreibweise und Groß- und Kleinschreibung bleiben erhalten.
 input-dictionary-unavailable = Dein lokales persönliches Wörterbuch ist in dieser Sitzung nicht verfügbar.
@@ -1986,3 +2029,365 @@ input-dictionary-remove = Entfernen
 input-dictionary-reset = Alle Wörter entfernen
 input-dictionary-word-placeholder = Ein Wort eingeben
 input-dictionary-all-languages = Alle Sprachen
+
+input-scope-all = Alle Tastaturen
+input-scope-inheritance = Physische Tastaturen nutzen diese Quellen, bis du die eigene Liste einer Tastatur änderst. Die Bildschirmtastatur hat eigene Quellen.
+input-keyboard-scope = Tastatur
+input-source-activate = Aktivieren
+input-sources-selection-description = Wähle eine Quelle zum Ansehen oder Bearbeiten. Ziehe sie, um die Reihenfolge zu ändern.
+input-sources-back = Zurück zu den Eingabequellen
+input-sources-cancel = Abbrechen
+input-sources-unavailable = Die Liste der Eingabequellen konnte nicht angezeigt werden.
+input-osk-qwerty = Englisch (QWERTY)
+input-osk-azerty = Französisch (AZERTY)
+input-osk-preview-description = Die Bildschirmtastatur verwendet diese Buchstabenanordnung. Compose- und Feststelltastenoptionen gelten für physische Tastaturen.
+input-source-options = Layout-Optionen
+input-source-inspection = Tasten untersuchen
+
+input-keyboard-numbered = { $name } ({ $number })
+
+input-source-show = Anzeigen
+input-source-hide = Ausblenden
+
+input-source-add-short = Hinzufügen
+input-source-add-title = Eingabequelle hinzufügen
+
+# Keyboard source editing errors.
+input-error-keyboard-retained = Die Tastatur ist nicht mehr verfügbar; ihre Zuordnung bleibt gespeichert.
+input-error-keyboard-unavailable = Die Tastatur ist derzeit nicht verfügbar.
+input-error-source-unconfigured = Die Quelle ist für diese Tastatur nicht eingerichtet.
+input-error-source-add-unavailable = Die Quelle ist in der Ansicht zum Hinzufügen nicht verfügbar.
+input-error-source-choose = Wähle eine Quelle zum Hinzufügen.
+input-error-source-physical-options = Optionen für physische Tastaturen gelten nicht für die Bildschirmtastatur.
+input-error-source-compose = Ungültige Compose-Taste.
+input-error-source-caps = Ungültiges Verhalten der Feststelltaste.
+input-error-source-option = Ungültige Tastaturoption.
+input-error-source-missing = Die Quelle ist nicht eingerichtet.
+input-error-source-add = Die Quelle kann dieser Tastatur nicht hinzugefügt werden.
+input-error-source-last = Die letzte Quelle kann nicht entfernt werden.
+input-error-source-empty = Es ist keine Quelle mehr vorhanden.
+input-error-source-first = Die Quelle steht bereits an erster Stelle.
+input-error-source-end = Die Quelle steht bereits an letzter Stelle.
+input-error-source-overflow = Die Position der Quelle liegt außerhalb des gültigen Bereichs.
+input-error-source-operation = Dieser Vorgang ist keine Quellenaktion.
+input-error-live-map-physical = Die Live-Ansicht einer physischen Tastatur ist für die Bildschirmtastatur nicht verfügbar.
+
+settings-disk-unlock-title = Entsperren der Festplatte
+settings-disk-unlock-intro = Nach einem Neustart kann eine hier eingerichtete verschlüsselte Festplatte statt mit der Passphrase mit der Zustimmung eines deiner anderen Geräte öffnen.
+settings-disk-unlock-refresh = Aktualisieren
+settings-disk-unlock-loading = Lese, wie die Festplatten dieses Computers entsperren …
+settings-disk-unlock-read-error = Nicht lesbar, wie die Festplatten dieses Computers entsperren: { $error }
+settings-disk-unlock-none = Keine verschlüsselte Festplatte dieses Computers entsperrt mit deinen anderen Geräten.
+settings-disk-unlock-volume = Verschlüsselte Festplatte { $id }
+settings-disk-unlock-secrets = Geheimnisse zum Entsperren
+settings-disk-unlock-sealed = An das TPM gebunden
+settings-disk-unlock-sealed-body = Die Hälfte des Schlüssels auf diesem Computer und die WLAN-Passwörter unten sind an sein TPM gebunden. Nur dieser Computer kann sie lesen, wenn er von Tilo signierte Software startet.
+settings-disk-unlock-cleartext = Im Klartext im Festplatten-Header
+settings-disk-unlock-cleartext-body = Dieser Computer hat kein nutzbares TPM, daher liegen seine Hälfte des Schlüssels und die WLAN-Passwörter unten unverschlüsselt im Festplatten-Header. Wer diese Festplatte in der Hand hat, kann sie lesen. Allein öffnen sie die Festplatte nicht: Eines deiner Geräte muss weiterhin zustimmen.
+settings-disk-unlock-siblings = Beim Start gefragte Geräte
+settings-disk-unlock-no-siblings = Keine
+settings-disk-unlock-networks = WLAN zum Entsperren
+settings-disk-unlock-networks-sealed = Kabelverbindungen werden immer versucht. Beim Start werden nur die hier verwendeten WLANs genutzt; ihre Passwörter sind an das TPM gebunden.
+settings-disk-unlock-networks-cleartext = Kabelverbindungen werden immer versucht. Beim Start werden nur die hier verwendeten WLANs genutzt. Wer diese Festplatte in der Hand hat, kann ihre Passwörter lesen.
+settings-disk-unlock-wifi-error = Gespeicherte WLANs nicht lesbar: { $error }
+settings-disk-unlock-no-wifi = Kein gespeichertes WLAN. Verbinde dich zuerst mit einem, um es zum Entsperren zu nutzen.
+settings-disk-unlock-use = Verwenden
+settings-disk-unlock-stop = Nicht mehr verwenden
+settings-disk-unlock-chosen = Zum Entsperren verwendet
+settings-disk-unlock-unsaved = Auf diesem Computer nicht mehr gespeichert.
+settings-disk-unlock-changing = Ändere die Netzwerke zum Entsperren …
+settings-disk-unlock-change-error = Die Netzwerke zum Entsperren wurden nicht geändert: { $error }
+settings-disk-unlock-saved = Beim Start kann jetzt über { $networks } und Kabelverbindungen entsperrt werden.
+settings-disk-unlock-wired-only = Beim Start wird jetzt nur über Kabelverbindungen entsperrt.
+settings-disk-unlock-refreshed = Entsperren der Festplatte aktualisiert.
+settings-disk-unlock-busy = Eine andere Änderung der Netzwerke zum Entsperren läuft noch.
+settings-disk-unlock-not-authorised = Die Zustimmung eines Administrators wurde nicht erteilt.
+settings-disk-unlock-gone = Diese Festplatte entsperrt nicht mehr mit deinen anderen Geräten.
+settings-disk-unlock-bad-request = Diese Anfrage nennt keine nutzbare Festplatte und kein nutzbares Netzwerk.
+settings-disk-unlock-too-many = Die Antwort nennt mehr Festplatten, als dieser Computer haben kann.
+settings-disk-unlock-malformed = Die Antwort zum Entsperren der Festplatte war nicht lesbar: { $error }
+
+# Gemeinsame Anzeigeanordnung, unabhängig von der Eingabeberechtigung.
+display-shared-title = Deine gemeinsame Anzeigeanordnung
+display-shared-description = Anzeigen behalten die Anordnung ihres Geräts. Einbindung und Reihenfolge folgen dir auf andere Geräte; die Fernsteuerung benötigt eine separate Berechtigung.
+display-shared-include = In die gemeinsame Anordnung aufnehmen
+display-shared-order = Anzeigennummer
+display-shared-read-only = Die gemeinsame Anzeigeübersicht ist schreibgeschützt.
+display-shared-unavailable = Diese Anzeige wird nicht mehr erkannt.
+display-shared-stale = Die Anordnung wurde geändert. Aktualisiere diese Anzeige und versuche es erneut.
+display-shared-order-invalid = Wähle eine Anzeigennummer aus der aktuellen Liste.
+display-shared-save-failed = Die Anordnung konnte nicht gespeichert werden: { $error }
+display-shared-saved = Gemeinsame Anzeigeanordnung gespeichert.
+display-shared-move-stale = Das Gerät hat seine Position bestätigt, aber die gemeinsame Anordnung wurde geändert. Aktualisiere sie und versuche es erneut.
+display-shared-auto-input = Automatische Eingabe von deinen Geräten erlauben
+display-shared-auto-description = Solange eine Anzeige dieses Geräts eingebunden ist, dürfen deine registrierten Geräte es steuern, wenn sie online sind. Kontinuität und Anzeige/Eingabe müssen ebenfalls aktiviert sein. Abgelehnte Geräte bleiben abgelehnt. Diese Auswahl gilt nur hier.
+
+## History: what each change to a settings section did
+
+settings-appearance-prefs-high-contrast = { $new ->
+    [true] Hohen Kontrast eingeschaltet
+   *[false] Hohen Kontrast ausgeschaltet
+}
+settings-appearance-prefs-reduce-motion = { $new ->
+    [true] Weniger Bewegung eingeschaltet
+   *[false] Weniger Bewegung ausgeschaltet
+}
+settings-appearance-prefs-reduce-transparency = { $new ->
+    [true] Weniger Transparenz eingeschaltet
+   *[false] Weniger Transparenz ausgeschaltet
+}
+settings-appearance-prefs-forced-colors = { $new ->
+    [true] Designfarben für Inhalte erzwungen
+   *[false] Designfarben für Inhalte nicht mehr erzwungen
+}
+settings-accessibility-prefs-large-cursor = { $new ->
+    [true] Großen Mauszeiger eingeschaltet
+   *[false] Großen Mauszeiger ausgeschaltet
+}
+settings-accessibility-prefs-sticky-keys = { $new ->
+    [true] Einrastfunktion eingeschaltet
+   *[false] Einrastfunktion ausgeschaltet
+}
+settings-accessibility-prefs-slow-keys = { $new ->
+    [true] Anschlagverzögerung eingeschaltet
+   *[false] Anschlagverzögerung ausgeschaltet
+}
+settings-accessibility-prefs-bounce-keys = { $new ->
+    [true] Tastenprellen-Filter eingeschaltet
+   *[false] Tastenprellen-Filter ausgeschaltet
+}
+settings-accessibility-prefs-bounce-keys-alert = { $new ->
+    [true] Hinweis beim Tastenprellen eingeschaltet
+   *[false] Hinweis beim Tastenprellen ausgeschaltet
+}
+settings-accessibility-prefs-mouse-keys = { $new ->
+    [true] Maustasten eingeschaltet
+   *[false] Maustasten ausgeschaltet
+}
+settings-accessibility-prefs-visual-alerts = { $new ->
+    [true] Visuelle Hinweise eingeschaltet
+   *[false] Visuelle Hinweise ausgeschaltet
+}
+settings-accessibility-prefs-cursor-crosshair = { $new ->
+    [true] Fadenkreuz am Zeiger eingeschaltet
+   *[false] Fadenkreuz am Zeiger ausgeschaltet
+}
+settings-accessibility-prefs-thick-text-caret = { $new ->
+    [true] Breite Schreibmarke eingeschaltet
+   *[false] Breite Schreibmarke ausgeschaltet
+}
+settings-accessibility-prefs-switch-control = { $new ->
+    [true] Schaltersteuerung eingeschaltet
+   *[false] Schaltersteuerung ausgeschaltet
+}
+settings-input-prefs-tap-to-click = { $new ->
+    [true] Tippen zum Klicken eingeschaltet
+   *[false] Tippen zum Klicken ausgeschaltet
+}
+settings-input-prefs-tap-drag = { $new ->
+    [true] Tippen und Ziehen eingeschaltet
+   *[false] Tippen und Ziehen ausgeschaltet
+}
+settings-input-prefs-tap-drag-lock = { $new ->
+    [true] Ziehsperre eingeschaltet
+   *[false] Ziehsperre ausgeschaltet
+}
+settings-input-prefs-disable-while-typing = { $new ->
+    [true] Touchpad beim Tippen ausgeschaltet
+   *[false] Touchpad beim Tippen eingeschaltet gelassen
+}
+settings-input-prefs-middle-emulation = { $new ->
+    [true] Mittelklick-Emulation eingeschaltet
+   *[false] Mittelklick-Emulation ausgeschaltet
+}
+settings-input-prefs-left-handed = { $new ->
+    [true] Maustasten für die linke Hand vertauscht
+   *[false] Maustasten für die rechte Hand eingestellt
+}
+settings-input-prefs-touchpad-gestures = { $new ->
+    [true] Touchpad-Gesten eingeschaltet
+   *[false] Touchpad-Gesten ausgeschaltet
+}
+settings-input-prefs-touchpad-enabled = { $new ->
+    [true] Touchpad eingeschaltet
+   *[false] Touchpad ausgeschaltet
+}
+settings-input-prefs-touchpad-disabled-on-external-mouse = { $new ->
+    [true] Touchpad bei angeschlossener Maus ausgeschaltet
+   *[false] Touchpad bei angeschlossener Maus eingeschaltet gelassen
+}
+settings-text-assistance-prefs-check-spelling = { $new ->
+    [true] Rechtschreibprüfung eingeschaltet
+   *[false] Rechtschreibprüfung ausgeschaltet
+}
+settings-text-assistance-prefs-auto-correct = { $new ->
+    [true] Autokorrektur eingeschaltet
+   *[false] Autokorrektur ausgeschaltet
+}
+settings-power-prefs-auto-suspend = { $new ->
+    [true] Automatischen Ruhezustand eingeschaltet
+   *[false] Automatischen Ruhezustand ausgeschaltet
+}
+settings-notification-prefs-do-not-disturb = { $new ->
+    [true] „Nicht stören“ eingeschaltet
+   *[false] „Nicht stören“ ausgeschaltet
+}
+settings-notification-prefs-show-banners = { $new ->
+    [true] Mitteilungsbanner eingeschaltet
+   *[false] Mitteilungsbanner ausgeschaltet
+}
+settings-notification-prefs-show-previews = { $new ->
+    [true] Mitteilungsvorschau eingeschaltet
+   *[false] Mitteilungsvorschau ausgeschaltet
+}
+settings-notification-prefs-play-sounds = { $new ->
+    [true] Mitteilungstöne eingeschaltet
+   *[false] Mitteilungstöne ausgeschaltet
+}
+settings-notification-prefs-show-on-lock-screen = { $new ->
+    [true] Mitteilungen auf dem Sperrbildschirm gezeigt
+   *[false] Mitteilungen auf dem Sperrbildschirm ausgeblendet
+}
+settings-notification-prefs-show-badges = { $new ->
+    [true] Mitteilungsabzeichen eingeschaltet
+   *[false] Mitteilungsabzeichen ausgeschaltet
+}
+settings-notification-prefs-per-app = Mitteilungen einer App geändert
+settings-app-notification-rule-banners = Mitteilungsbanner einer App geändert
+settings-app-notification-rule-sounds = Mitteilungstöne einer App geändert
+settings-app-notification-rule-badges = Kennzeichen einer App geändert
+settings-app-notification-rule-previews = Nachrichtenvorschau einer App geändert
+settings-app-notification-rule-lock-screen = Mitteilungen einer App auf dem Sperrbildschirm geändert
+settings-app-notification-rule-cross-device = Mitteilungen einer App auf anderen Geräten geändert
+settings-app-notification-rule-priority = { $new ->
+    [true] Eine App während des Fokus durchgelassen
+   *[false] Eine App während des Fokus nicht mehr durchgelassen
+}
+settings-app-notification-rule-priority-contacts = { $new ->
+    [true] Prioritätskontakte einer App während des Fokus durchgelassen
+   *[false] Prioritätskontakte einer App während des Fokus nicht mehr durchgelassen
+}
+settings-app-notification-rule-muted-until = Stummschaltung einer App geändert
+settings-focus-schedule-enabled = { $new ->
+    [true] Fokuszeiten eingeschaltet
+   *[false] Fokuszeiten ausgeschaltet
+}
+settings-focus-schedule-allow-priority = { $new ->
+    [true] Vorrangige Apps während des Fokus zugelassen
+   *[false] Vorrangige Apps während des Fokus nicht mehr zugelassen
+}
+settings-system-sound-prefs-enabled = { $new ->
+    [true] Systemtöne eingeschaltet
+   *[false] Systemtöne ausgeschaltet
+}
+settings-system-sound-events-notification = { $new ->
+    [true] Mitteilungston eingeschaltet
+   *[false] Mitteilungston ausgeschaltet
+}
+settings-system-sound-events-message = { $new ->
+    [true] Nachrichtenton eingeschaltet
+   *[false] Nachrichtenton ausgeschaltet
+}
+settings-system-sound-events-volume-change = { $new ->
+    [true] Ton bei Lautstärkeänderung eingeschaltet
+   *[false] Ton bei Lautstärkeänderung ausgeschaltet
+}
+settings-system-sound-events-screenshot = { $new ->
+    [true] Bildschirmfoto-Ton eingeschaltet
+   *[false] Bildschirmfoto-Ton ausgeschaltet
+}
+settings-system-sound-events-device-connected = { $new ->
+    [true] Ton beim Anschließen eingeschaltet
+   *[false] Ton beim Anschließen ausgeschaltet
+}
+settings-system-sound-events-device-disconnected = { $new ->
+    [true] Ton beim Trennen eingeschaltet
+   *[false] Ton beim Trennen ausgeschaltet
+}
+settings-system-sound-events-low-battery = { $new ->
+    [true] Ton bei schwachem Akku eingeschaltet
+   *[false] Ton bei schwachem Akku ausgeschaltet
+}
+settings-system-sound-events-error = { $new ->
+    [true] Fehlerton eingeschaltet
+   *[false] Fehlerton ausgeschaltet
+}
+settings-display-prefs-night-light = { $new ->
+    [true] Nachtlicht eingeschaltet
+   *[false] Nachtlicht ausgeschaltet
+}
+settings-display-prefs-night-light-schedule = { $new ->
+    [true] Nachtlicht folgt Tag und Nacht
+   *[false] Nachtlicht folgt nicht mehr Tag und Nacht
+}
+settings-desktop-controls-vim-mode = { $new ->
+    [true] Vim-Tasten für den Desktop eingeschaltet
+   *[false] Vim-Tasten für den Desktop ausgeschaltet
+}
+settings-appearance-prefs-mode = Erscheinungsbild auf { $new } gestellt
+settings-appearance-prefs-dark-theme = { $new } für den dunklen Modus gewählt
+settings-appearance-prefs-light-theme = { $new } für den hellen Modus gewählt
+settings-appearance-prefs-density = Abstandsdichte geändert
+settings-appearance-prefs-text-scale = Textgröße geändert
+settings-appearance-prefs-ui-scale = Größe der Oberfläche geändert
+settings-appearance-prefs-schedule = Beginn von Tag und Nacht geändert
+settings-appearance-prefs-sunrise = Tagesbeginn auf { $new } gestellt
+settings-appearance-prefs-sunset = Nachtbeginn auf { $new } gestellt
+settings-appearance-prefs-wallpaper-scope = Geändert, für welche Arbeitsbereiche ein neues Hintergrundbild gilt
+settings-appearance-prefs-wallpaper-target = Geändert, wo ein neues Hintergrundbild erscheint
+settings-appearance-prefs-distinct-letters = Unterscheidung ähnlicher Buchstaben geändert
+settings-accessibility-prefs-cursor-size = Zeigergröße auf { $new } gestellt
+settings-accessibility-prefs-on-screen-keyboard = Geändert, wann die Bildschirmtastatur erscheint
+settings-accessibility-prefs-bounce-keys-delay-ms = Verzögerung des Tastenprellen-Filters geändert
+settings-accessibility-prefs-color-filter = Farbfilter geändert
+settings-accessibility-prefs-magnifier-zoom = Lupe auf { $new }× gestellt
+settings-accessibility-prefs-magnifier-view = Darstellung der Lupe geändert
+settings-accessibility-prefs-switch-key-pair = Tasten der Schaltersteuerung geändert
+settings-accessibility-prefs-switch-scan-ms = Abtastung der Schaltersteuerung geändert
+settings-input-prefs-touchpad-natural-scroll = Scrollrichtung des Touchpads geändert
+settings-input-prefs-mouse-natural-scroll = Scrollrichtung der Maus geändert
+settings-input-prefs-pointer-speed = Zeigergeschwindigkeit geändert
+settings-input-prefs-touchpad-pointer-speed = Touchpad-Geschwindigkeit geändert
+settings-input-prefs-mouse-pointer-speed = Mausgeschwindigkeit geändert
+settings-input-prefs-key-repeat = Tastenwiederholung geändert
+settings-input-prefs-accel-profile = Zeigerbeschleunigung geändert
+settings-input-prefs-touchpad-click-method = Klickverhalten des Touchpads geändert
+settings-input-prefs-touchpad-scroll-method = Scrollverhalten des Touchpads geändert
+settings-input-prefs-scroll-speed = Scrollgeschwindigkeit geändert
+settings-text-assistance-prefs-spelling-language = Sprache der Rechtschreibprüfung geändert
+settings-power-prefs-suspend-minutes = Geändert, wann der Rechner in den Ruhezustand geht
+settings-power-prefs-saver-suspend-minutes = Ruhezustand im Energiesparmodus geändert
+settings-power-prefs-balanced-suspend-minutes = Ruhezustand im ausgewogenen Modus geändert
+settings-power-prefs-performance-suspend-minutes = Ruhezustand im Leistungsmodus geändert
+settings-power-prefs-blank-minutes = Geändert, wann der Bildschirm ausgeht
+settings-power-prefs-lock-minutes = Geändert, wann der Bildschirm gesperrt wird
+settings-power-prefs-lid-close-action = Verhalten beim Zuklappen geändert
+settings-power-prefs-power-key-action = Verhalten der Ein-/Aus-Taste geändert
+settings-power-prefs-low-battery-percent = Warnung bei schwachem Akku auf { $new } % gestellt
+settings-power-prefs-critical-battery-percent = Kritischen Akkustand auf { $new } % gestellt
+settings-power-prefs-critical-action = Verhalten bei kritischem Akkustand geändert
+settings-focus-schedule-start-minute = Beginn der Fokuszeit geändert
+settings-focus-schedule-end-minute = Ende der Fokuszeit geändert
+settings-focus-schedule-weekdays = Fokustage geändert
+settings-system-sound-prefs-volume = Lautstärke der Systemtöne geändert
+settings-system-sound-prefs-theme = Klangschema geändert
+settings-audio-prefs-balance = Balance zwischen links und rechts geändert
+settings-display-prefs-night-light-temperature = Wärme des Nachtlichts geändert
+settings-display-prefs-scale = Bildschirmskalierung geändert
+settings-locale-currency = Währung geändert
+settings-locale-date-format = Datumsformat geändert
+settings-locale-time-format = Zeitformat geändert
+settings-locale-measurement = Maßsystem geändert
+settings-locale-number-style = Zahlenformat geändert
+settings-locale-first-day-of-week = Ersten Wochentag geändert
+settings-choose-theme = Design { $theme } gewählt
+settings-set-key-repeat = Tastenwiederholung geändert
+settings-mute-app = Stummschaltung einer App geändert
+settings-allow-continuity = { $on ->
+    [true] Continuity zwischen Geräten erlaubt
+   *[false] Continuity zwischen Geräten beendet
+}
+settings-allow-capability = { $on ->
+    [true] { $capability } für Continuity erlaubt
+   *[false] { $capability } für Continuity beendet
+}

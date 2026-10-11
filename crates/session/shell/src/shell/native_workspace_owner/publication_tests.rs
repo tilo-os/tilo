@@ -5,9 +5,9 @@
 use super::tests::tree_of;
 use super::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
-use parking_lot::RwLock;
-use std::{sync::Arc, time::SystemTime};
+use std::time::SystemTime;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_joined_room::testing as internals;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
@@ -29,7 +29,7 @@ fn edit(
             ));
             let heads = doc.get_heads();
             doc.put(ROOT, "offline-edit", value).unwrap();
-            doc.commit();
+            doc.commit_edit("fixture", "offline-edit");
             view.peer().clone().publish_incremental(
                 "so.tilo.chat",
                 "",
@@ -91,7 +91,7 @@ fn native_outgoing_offline_commit_preserves_exact_bytes_and_retry_across_restart
     drop(owner);
     let mut tree = persist::load_tree_from(&path).unwrap();
     tree.persist_path = Some(path);
-    let owner = open(Arc::new(RwLock::new(tree))).unwrap();
+    let owner = open(crate::shell::state::WorkspaceTreeHandle::new(tree)).unwrap();
     let bytes = owner
         .with_outgoing(room, now, |_, outgoing| {
             Ok(outgoing
@@ -389,7 +389,7 @@ fn native_outgoing_uncertain_append_fences_and_reopens_exact_committed_bytes() {
         let path = directory.path().join("state.json");
         let mut tree = persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path);
-        let owner = open(Arc::new(RwLock::new(tree))).unwrap();
+        let owner = open(crate::shell::state::WorkspaceTreeHandle::new(tree)).unwrap();
         assert_eq!(
             owner
                 .with_outgoing(room, now, |_, outgoing| Ok(outgoing
@@ -400,6 +400,82 @@ fn native_outgoing_uncertain_append_fences_and_reopens_exact_committed_bytes() {
             vec![expected]
         );
     }
+}
+
+/// A member write carrying only history the room already holds, as an app
+/// does when it sends its whole record after a frontier reset.
+fn resend_known_history(
+    owner: &NativeWorkspaceOwner,
+    room: RoomId,
+    key: &SigningKey,
+    now: SystemTime,
+) -> OwnerCommitRequest {
+    let message = owner
+        .with_current(room, |view| {
+            let mut doc =
+                AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap()).unwrap();
+            view.peer().clone().publish_incremental(
+                "so.tilo.chat",
+                "",
+                doc.save_after(&[]),
+                key,
+                now,
+            )
+        })
+        .unwrap();
+    let NeighbourMsg::AppDocument {
+        app_id,
+        record_id,
+        envelope,
+        ..
+    } = message
+    else {
+        unreachable!()
+    };
+    OwnerCommitRequest {
+        room: room.to_string(),
+        operation: CommitOperation::Document {
+            app: app_id,
+            record: record_id,
+            envelope,
+        },
+    }
+}
+
+#[test]
+fn native_outgoing_acknowledged_history_reuses_one_projection_until_retired() {
+    let (_directory, owner, room, now, key) = super::tests::test_enrolled_owner();
+    let mut remote = governor(&owner, room);
+    owner
+        .commit_document(resend_known_history(&owner, room, &key, now), now)
+        .unwrap();
+    // The governor's durable receipt already holds this history, but not the
+    // write's own sequence, so the original still awaits its watermark.
+    checkpoint(&owner, room, &mut remote, now, 600);
+    owner.reconcile_outgoing(room, &key, now).unwrap();
+    let sent = visible(&owner, room, now);
+    assert_eq!(sent.len(), 2, "the original and one recovery projection");
+    for _ in 0..3 {
+        owner.reconcile_outgoing(room, &key, now).unwrap();
+        assert_eq!(
+            visible(&owner, room, now),
+            sent,
+            "reconciliation must not sign another retransmission of the same obligation"
+        );
+    }
+    for bytes in &sent {
+        remote
+            .receive_from_report(
+                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                postcard::from_bytes(bytes).unwrap(),
+                now,
+            )
+            .unwrap();
+    }
+    checkpoint(&owner, room, &mut remote, now, 601);
+    owner.reconcile_outgoing(room, &key, now).unwrap();
+    assert!(visible(&owner, room, now).is_empty());
+    assert_eq!(owner.outgoing_status(room, now).unwrap().pending, 0);
 }
 
 #[test]
@@ -516,7 +592,7 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
         drop(owner);
         let mut tree = persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path.clone());
-        owner = open(Arc::new(RwLock::new(tree))).unwrap();
+        owner = open(crate::shell::state::WorkspaceTreeHandle::new(tree)).unwrap();
         owner
             .with_current(room, |view| {
                 // Durable watermarks originate in a HashMap. Restoring may
@@ -704,7 +780,7 @@ fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamp
         .unwrap();
         let projection = published.projection[0].clone();
         tree.persist_path = Some(path.clone());
-        let owner = open(Arc::new(RwLock::new(tree))).unwrap();
+        let owner = open(crate::shell::state::WorkspaceTreeHandle::new(tree)).unwrap();
         assert!(
             visible(&owner, room, later).is_empty(),
             "uncertain publication preserves custody, not transient governor freshness"
@@ -744,7 +820,7 @@ fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamp
         let mut tree = persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path);
         assert!(
-            open(Arc::new(RwLock::new(tree))).is_err(),
+            open(crate::shell::state::WorkspaceTreeHandle::new(tree)).is_err(),
             "restore must derive capacity proof from actual obligations"
         );
     }
@@ -792,7 +868,7 @@ fn native_outgoing_projection_history_substitution_cannot_restore() {
     let mut tree = persist::load_tree_from(&path).unwrap();
     tree.persist_path = Some(path);
     assert!(
-        open(Arc::new(RwLock::new(tree))).is_err(),
+        open(crate::shell::state::WorkspaceTreeHandle::new(tree)).is_err(),
         "valid local signature and reserved sequence cannot substitute uncommitted history"
     );
 }
@@ -845,7 +921,7 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
                 AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap()).unwrap();
             let heads = doc.get_heads();
             doc.put(ROOT, "large-offline", text).unwrap();
-            doc.commit();
+            doc.commit_edit("fixture", "large-offline");
             view.peer().clone().publish_incremental(
                 "so.tilo.chat",
                 "",
@@ -972,4 +1048,50 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(owner.outgoing_status(room, now).unwrap().pending, 0);
     owner.health().unwrap();
+}
+
+#[test]
+fn native_document_checkpoint_invalidates_old_authority_snapshot_without_grant_change() {
+    let (_directory, owner, room, now, key) = super::tests::test_enrolled_owner();
+    let tree = tree_of(&owner);
+    let (witness, before, capabilities) = {
+        let tree = tree.read();
+        (
+            tree.native_runtime.authority_witness(),
+            tree.native_authority.clone(),
+            tree.desktop
+                .workspaces
+                .iter()
+                .find(|slot| slot.room == room)
+                .expect("the enrolled owner must project its real room")
+                .sandbox
+                .clone(),
+        )
+    };
+    assert_eq!(witness.authority_status(&before, room), Ok(()));
+    let (request, _) = edit(&owner, room, &key, now, 1);
+    owner.commit_document(request, now).unwrap();
+    let after = tree.read();
+    assert_eq!(
+        after
+            .desktop
+            .workspaces
+            .iter()
+            .find(|slot| slot.room == room)
+            .unwrap()
+            .sandbox,
+        capabilities,
+        "a document checkpoint does not withdraw accepted filesystem grants",
+    );
+    assert_eq!(
+        witness.authority_status(&before, room),
+        Err(store::AuthorityRejection::StaleAcceptedSnapshot),
+        "the original whole-authority snapshot must not renew current policy",
+    );
+    assert!(!witness.authority_is_current(&before, room));
+    assert_eq!(
+        witness.authority_status(&after.native_authority, room),
+        Ok(())
+    );
+    assert!(witness.authority_is_current(&after.native_authority, room));
 }

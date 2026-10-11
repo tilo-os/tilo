@@ -1,0 +1,19 @@
+{
+  "qualification_only": true,
+  "runtime_changes": false,
+  "reason": "Pinned CEF base_test_4396276.patch changes trace-test code placement and dependency/visibility wiring; restore exact Chromium HEAD versions of these two test-only files, identical before/after. Retain original tests, compiler checks and library separation. Reverse before SDK production.",
+  "cef_patch_sha256": "9b0d331bf884b1cf7c2ad8294eb499faf52a36fc05b3b29475e3c87a6a4c8d5d",
+  "files": [
+    {
+      "repo_path": "base/test/BUILD.gn",
+      "upstream_post_cef_sha256": "6a198eede80539f4b35317a7415b024a1ac43cc2cfa0722c608c7048019f5a14",
+      "candidate_sha256": "911ad67beb4d504ce54746b6d3bbd0c14aa8488e93c821ff22a0ed33c23b32c8"
+    },
+    {
+      "repo_path": "base/test/tracing/test_trace_processor_export.h",
+      "upstream_post_cef_sha256": "0643c93768064f73fe1dc75cb7d90d7a7d9e1c695f0a04a64e369f92b5447da9",
+      "candidate_sha256": "1002401810dbad53783040643c29a08851308078ca9cb19a84e32f62e00a02dc"
+    }
+  ],
+  "patch_sha256": "1c497db1198237a4375480ebd5bf695334e98d60b98689238fc2001920019e2e"
+}

@@ -70,6 +70,8 @@ def patch_services(root):
     text = loaded.read_text()
     text = text.replace('private final HashMap<String, Service> running_services;', '''private final HashMap<String, Service> running_services;
     private final HashMap<String, Integer> tiloServiceStarts = new HashMap<>();
+    private final HashMap<String, Integer> tiloPendingServiceStarts = new HashMap<>();
+    private final HashMap<String, Integer> tiloCancelledServiceStarts = new HashMap<>();
     private final HashSet<Service> tiloStartedServices = new HashSet<>();
     private final HashMap<Service, Integer> tiloRestartModes = new HashMap<>();
     private final HashSet<String> tiloRecoveringServices = new HashSet<>();''')
@@ -83,18 +85,24 @@ def patch_services(root):
                     throw new IllegalStateException("service start identifiers exhausted");
                 startId = previous + 1;
                 tiloServiceStarts.put(className, startId);
+                tiloPendingServiceStarts.put(className, startId);
             } else startId = 0;
         }''')
     text = text.replace('Service service = running_services.get(className);', '''Service service;
-                    synchronized (running_services) { service = running_services.get(className); }''', 1)
+                    synchronized (running_services) {
+                        if (tiloStartCancelled(className, startId)) return;
+                        service = running_services.get(className);
+                    }''', 1)
     text = text.replace('''\t\t\t\t\t\tservice.onCreate();
 \t\t\t\t\t\trunning_services.put(className, service);''', '''                        synchronized (running_services) {
+                            if (tiloStartCancelled(className, startId)) return;
                             running_services.put(className, service);
                             if (serviceConnection == null) tiloStartedServices.add(service);
                         }
                         service.onCreate();''')
     text = text.replace('service.onStartCommand(intent, 0, 0);', '''synchronized (running_services) {
-                            if (running_services.get(className) != service) return;
+                            if (running_services.get(className) != service ||
+                                    tiloStartCancelled(className, startId)) return;
                             tiloStartedServices.add(service);
                         }
                         int restartMode = service.onStartCommand(tiloRecoveringServices.remove(className) ? null : intent, 0, startId);
@@ -105,6 +113,15 @@ def patch_services(root):
                         tiloPublishRecovery();
                         if (restartMode == 3)
                             android.util.Log.w("TiloService", "intent redelivery recovery is not qualified");''')
+    text = text.replace('''\t\t\t\t\tSlog.e(TAG, "startService: failed to start service " + className, e);
+\t\t\t\t}''', '''                    Slog.e(TAG, "startService: failed to start service " + className, e);
+                } finally {
+                    synchronized (running_services) {
+                        Integer pending = tiloPendingServiceStarts.get(className);
+                        if (serviceConnection == null && pending != null && pending.intValue() == startId)
+                            tiloPendingServiceStarts.remove(className);
+                    }
+                }''', 1)
     begin = text.index('\tpublic boolean stopService(Intent intent) {')
     end = text.index('\n\tpublic void receiveBroadcast(', begin)
     text = text[:begin] + '''    public synchronized void tiloPublishRecovery() {
@@ -140,10 +157,29 @@ def patch_services(root):
     public boolean stopService(Intent intent) {
         if (intent.getComponent() == null) return false;
         Service service;
+        boolean pending;
         synchronized (running_services) {
-            service = running_services.get(intent.getComponent().getClassName());
+            String name = intent.getComponent().getClassName();
+            pending = tiloCancelPendingStarts(name);
+            service = running_services.get(name);
         }
-        return service != null && tiloStopService(service, -1, false);
+        boolean stopped = service != null && tiloStopService(service, -1, false);
+        return pending || stopped;
+    }
+
+    // Call only while holding running_services. Cancellation fences queued callbacks;
+    // later starts have increasing identifiers and remain admissible.
+    private boolean tiloStartCancelled(String name, int startId) {
+        Integer cancelled = tiloCancelledServiceStarts.get(name);
+        return startId != 0 && cancelled != null && startId <= cancelled.intValue();
+    }
+
+    private boolean tiloCancelPendingStarts(String name) {
+        Integer pending = tiloPendingServiceStarts.remove(name);
+        if (pending == null) return false;
+        tiloCancelledServiceStarts.put(name, pending);
+        tiloRecoveringServices.remove(name);
+        return true;
     }
 
     public boolean tiloStopSelf(Service service, int startId) {
@@ -157,6 +193,7 @@ def patch_services(root):
             Integer latest = tiloServiceStarts.get(name);
             if (requireStarted && !tiloStartedServices.contains(service)) return false;
             if (startId != -1 && (latest == null || latest.intValue() != startId)) return false;
+            tiloCancelPendingStarts(name);
             running_services.remove(name);
             tiloStartedServices.remove(service);
             tiloRestartModes.remove(service);

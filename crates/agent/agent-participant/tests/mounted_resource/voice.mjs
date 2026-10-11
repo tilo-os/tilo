@@ -5,6 +5,8 @@ import {createServer} from 'node:https';
 import {readFileSync, existsSync, mkdirSync, writeFileSync} from 'node:fs';
 import {resolve, join, extname} from 'node:path';
 import {createInterface} from 'node:readline';
+import {performance} from 'node:perf_hooks';
+import {randomUUID} from 'node:crypto';
 import {launch, sleep} from '../../../../../tools/web/chrome.mjs';
 import {mountChat} from './mount-chat.mjs';
 
@@ -33,13 +35,24 @@ const fixture = JSON.parse((await lines.next()).value);
 const browsers = new Set();
 const pages = [];
 const stages = [];
+const checkpoints = [];
+const started = performance.now();
+const runId = randomUUID();
+let currentCheckpoint = 'setup';
 let currentStage = 'setup';
-const stage = name => {currentStage = name; stages.push(name); process.stdout.write(JSON.stringify({stage:name}) + '\n');};
+const stage = name => {currentStage = name; stages.push(name); checkpoint(name); process.stdout.write(JSON.stringify({stage:name}) + '\n');};
 const evidence = resolve('target/mounted-resource-voice');
 mkdirSync(evidence, {recursive:true});
+const checkpoint = (name, details = {}) => {
+  currentCheckpoint = name;
+  checkpoints.push({name, elapsedMs:Math.round(performance.now() - started), ...details});
+  writeFileSync(join(evidence, 'progress.json'), JSON.stringify({runId, stage:currentStage, checkpoint:currentCheckpoint, checkpoints}, null, 2) + '\n');
+};
 const close = async () => {await Promise.allSettled([...browsers].map(browser => browser.close())); browsers.clear();};
 const deadline = setTimeout(() => {
-  console.error('Mounted Chat voice exceeded its 130-second bound at', currentStage);
+  writeFileSync(join(evidence, 'failure.json'), JSON.stringify({runId, stage:currentStage, checkpoint:currentCheckpoint,
+    error:'DeadlineExceeded', elapsedMs:Math.round(performance.now() - started), checkpoints}, null, 2) + '\n');
+  console.error('Mounted Chat voice exceeded its 130-second bound at', currentStage, 'checkpoint', currentCheckpoint);
   void close().finally(() => process.exit(1));
 }, 130_000);
 deadline.unref();
@@ -67,7 +80,7 @@ async function open(device) {
 
 async function action(tab, name, gesture = false) {
   const response = await tab.send('Runtime.evaluate', {expression:
-    `mount.invokeAction('chat.call:' + fixture.voiceChannel, ${JSON.stringify(name)})`,
+    `mount.invokeAction(fixture.callRow, ${JSON.stringify(name)})`,
     returnByValue:true, userGesture:gesture});
   assert.equal(response.result?.exceptionDetails, undefined, 'public Chat action failed');
   const result = response.result.result.value;
@@ -101,7 +114,7 @@ try {
   const first = await open({});
   const second = await open(fixture.secondDevice);
   for (const tab of pages) {
-    const controls = await tab.evaluate("mount.actions('chat.call:' + fixture.voiceChannel).map(a=>a.address.action)");
+    const controls = await tab.evaluate("mount.actions(fixture.callRow).map(a=>a.address.action)");
     for (const name of ['join-call','call-status','mute','unmute','leave-call']) assert.ok(controls.includes(name), `public ${name} missing`);
     await action(tab, 'join-call');
   }
@@ -146,12 +159,19 @@ try {
   await waitReported(second, value => value.reported.capture_active);
   stage('actual-chat-rejoin-requires-fresh-unmute');
   stage('revoke');
-  assert.equal(JSON.parse((await lines.next()).value).revoked, true);
+  checkpoint('await-owner-revocation-acknowledgement');
+  const removal = JSON.parse((await lines.next()).value);
+  assert.equal(removal.revoked, true);
+  checkpoint('owner-revocation-acknowledged', {generation:removal.generation, hostElapsedMs:removal.elapsedMs});
   await first.waitFor('!peer.voice.call.stats().captureActive', {timeout:20_000});
+  checkpoint('revoked-capture-stopped');
   await first.waitFor('voiceEvidence.contexts.every(c=>c.state === "closed") && voiceEvidence.streams.every(s=>s.getTracks().every(t=>t.readyState === "ended"))');
   assert.equal(await resourcesClosed(first), true, 'revocation closes every real browser audio resource');
+  checkpoint('revoked-audio-resources-closed');
   assert.equal(await second.evaluate('peer.voice.call.stats().captureActive'), true, 'revocation must not stop another admitted person');
+  checkpoint('other-person-still-capturing');
   await action(second, 'leave-call');
+  checkpoint('other-person-leave-accepted');
   await second.waitFor('peer.voice.call.state.phase === "idle"');
   assert.equal(await resourcesClosed(second), true);
   stage('owner-revocation-stops-only-the-revoked-person');
@@ -164,11 +184,11 @@ try {
     contextsClosed:voiceEvidence.contexts.every(c=>c.state === 'closed'),
     workersStopped:voiceEvidence.workers.every(w=>w.stopped),
   })`));
-  writeFileSync(join(evidence, 'journey.json'), JSON.stringify({mode:'compiled-chat-browser-voice', app:'so.tilo.chat',
+  writeFileSync(join(evidence, 'journey.json'), JSON.stringify({runId, mode:'compiled-chat-browser-voice', app:'so.tilo.chat',
     devices:2, syntheticAudio:true, physicalMicrophone:false, decodedRmsThreshold:0.015,
-    observations, stages}, null, 2) + '\n');
+    observations, stages, checkpoints}, null, 2) + '\n');
 } catch (error) {
-  writeFileSync(join(evidence, 'failure.json'), JSON.stringify({stage:currentStage, error:error.name}, null, 2));
+  writeFileSync(join(evidence, 'failure.json'), JSON.stringify({runId, stage:currentStage, checkpoint:currentCheckpoint, error:error.name, checkpoints}, null, 2));
   throw Error(`Mounted Chat voice failed at ${currentStage}: ${error.name}`);
 } finally {
   clearTimeout(deadline);

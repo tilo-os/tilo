@@ -15,7 +15,10 @@ use crate::store::{
 };
 use crate::transport::Envelope;
 use automerge::transaction::Transactable;
+use collab_types::CommitNamed as _;
 use tilo_peer_state::{StatePeer, TransportOrigin};
+
+mod tail_cache_tests;
 
 // ---- shared drivers -------------------------------------------------------
 
@@ -425,13 +428,22 @@ fn synthetic_signed(
     seq: u64,
     now: web_time::SystemTime,
 ) -> NeighbourMsg {
+    synthetic_signed_record(key, room, "one", &mutation, (seq, now))
+}
+fn synthetic_signed_record(
+    key: &ed25519_dalek::SigningKey,
+    room: &str,
+    record: &str,
+    mutation: &collab_types::DocumentMutation,
+    (seq, now): (u64, web_time::SystemTime),
+) -> NeighbourMsg {
     let source = key.verifying_key().to_bytes();
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().unwrap(),
-        collab_types::document_artifact_id("selector.app", room, "one"),
+        collab_types::document_artifact_id("selector.app", room, record),
         collab_types::Ed25519PublicKey::from_bytes(source),
-        collab_types::document_attestation_id("selector.app", room, "one"),
-        collab_types::OpClass::Splice,
+        collab_types::document_attestation_id("selector.app", room, record),
+        collab_types::OpKind::Change,
         now,
         seq,
     );
@@ -440,7 +452,7 @@ fn synthetic_signed(
         peer: tilo_peer_state::peer_handle(&source),
         app_id: "selector.app".into(),
         cluster_id: room.into(),
-        record_id: "one".into(),
+        record_id: record.into(),
         envelope: Box::new(envelope),
     }
 }
@@ -480,6 +492,22 @@ fn retain_synthetic(
     for msg in messages {
         retain(store, &synthetic_frame(authority, msg, checkpoint));
     }
+}
+/// The sequence the baseline checkpoint covers `app`'s record at.
+fn baseline_sequence(meta: &serde_json::Value, app: &str) -> u64 {
+    meta["baseline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| fs::read(producer_fixture().join(row["file"].as_str().unwrap())).unwrap())
+        .map(|bytes| postcard::from_bytes::<NeighbourMsg>(&bytes).unwrap())
+        .find_map(|message| match &message {
+            NeighbourMsg::AppDocument { app_id, .. } if app_id == app => {
+                Some(document_seq(&message))
+            }
+            _ => None,
+        })
+        .unwrap()
 }
 fn document_seq(msg: &NeighbourMsg) -> u64 {
     let NeighbourMsg::AppDocument { envelope, .. } = msg else {
@@ -827,7 +855,8 @@ fn selected_shell_replay_pins_survive_later_selection_and_activation_budget_is_o
             .unwrap()
             .coverage
             .sequence,
-        3
+        baseline_sequence(&meta, "so.tilo.word-processor"),
+        "the pinned replay is the baseline the store selected first"
     );
     let selected = selected_current(&store).unwrap();
     let mut cursor = PublicationCursor::open(&selected).unwrap();
@@ -1143,7 +1172,7 @@ fn serial_incomplete_checkpoint_pairs_wait_then_publish_each_route_once() {
 }
 
 #[test]
-fn serial_checkpoint_refresh_reference_repeats_global_selection_per_frame() {
+fn serial_checkpoint_refresh_filters_unrelated_proof_reads() {
     let meta = producer_metadata();
     let (_tmp, store) = selected_baseline_store(&meta);
     let mut global_selections = 0;
@@ -1158,7 +1187,7 @@ fn serial_checkpoint_refresh_reference_repeats_global_selection_per_frame() {
     }
 
     assert_eq!(global_selections, 4);
-    assert_eq!(global_reads, 100);
+    assert_eq!(global_reads, 74);
 }
 
 #[test]
@@ -1275,7 +1304,7 @@ fn rejected_checkpoint_fixture(serial: bool) {
     let mut branch_a = automerge::AutoCommit::load(&baseline).unwrap();
     branch_a.set_actor(automerge::ActorId::from(vec![71]));
     branch_a.put(automerge::ROOT, "candidate", "A").unwrap();
-    branch_a.commit();
+    branch_a.commit_edit("fixture", "candidate");
     let candidate = synthetic_signed(
         &key,
         authority.room(),
@@ -1295,7 +1324,7 @@ fn rejected_checkpoint_fixture(serial: bool) {
     branch_b.set_actor(automerge::ActorId::from(vec![72]));
     let baseline_heads = branch_b.get_heads();
     branch_b.put(automerge::ROOT, "fallback", "B").unwrap();
-    branch_b.commit();
+    branch_b.commit_edit("fixture", "fallback");
     let tail = incremental(
         &key,
         &authority,
@@ -1919,12 +1948,12 @@ fn subscription_replay_falls_back_to_current_when_current_tail_is_a_prerequisite
         automerge::AutoCommit::load(&owner.document("selector.app", "one").unwrap()).unwrap();
     let baseline_heads = branch.get_heads();
     branch.put(automerge::ROOT, "first", "T1").unwrap();
-    branch.commit();
+    branch.commit_edit("fixture", "first");
     let t1_heads = branch.get_heads();
     let t1_bytes = changes_since(&mut branch, &baseline_heads);
     let t1 = incremental(&key, &authority, t1_bytes, seq + 1, now);
     branch.put(automerge::ROOT, "second", "T2").unwrap();
-    branch.commit();
+    branch.commit_edit("fixture", "second");
     let t2_bytes = changes_since(&mut branch, &t1_heads);
     let t2 = incremental(&key, &authority, t2_bytes, seq + 2, now);
     let (tmp, store) = bound_store(authority.clone());
@@ -2049,7 +2078,7 @@ fn shell_selection_uncovered_tail_blocks_new_floor_until_complete_successor_cont
         automerge::AutoCommit::load(&owner.document("selector.app", "one").unwrap()).unwrap();
     let old_heads = branch.get_heads();
     branch.put(automerge::ROOT, "uncovered", "T2").unwrap();
-    branch.commit();
+    branch.commit_edit("fixture", "uncovered");
     let tail_bytes = changes_since(&mut branch, &old_heads);
     let cp2 = owner.durable_bootstrap_messages(&key, now, 2).unwrap();
     let tail = incremental(&key, &authority, tail_bytes, document_seq(&cp2[1]), now);
@@ -2162,7 +2191,7 @@ fn initial_shell_basis_replays_independent_reversed_author_tails_in_exact_sequen
         branch
             .put(automerge::ROOT, format!("tail-{i}"), u64::from(i))
             .unwrap();
-        branch.commit();
+        branch.commit_edit("fixture", "fixture");
         let bytes = changes_since(&mut branch, &heads);
         tilo_automerge::ApplyIncoming::load_incoming(&mut expected, &bytes).unwrap();
         tails.push(incremental(
@@ -2217,7 +2246,7 @@ fn reopened_shell_basis_replays_dependent_tails_cumulatively_in_signed_sequence_
     for (offset, (field, value)) in [("first", "T1"), ("second", "T2")].into_iter().enumerate() {
         let heads = branch.get_heads();
         branch.put(automerge::ROOT, field, value).unwrap();
-        branch.commit();
+        branch.commit_edit("fixture", "fixture");
         let bytes = changes_since(&mut branch, &heads);
         tails.push(incremental(
             &key,
@@ -2284,7 +2313,7 @@ fn initial_shell_conflict_or_t2_without_t1_remains_unselected() {
             branch
                 .put(automerge::ROOT, format!("case-{i}"), u64::from(i))
                 .unwrap();
-            branch.commit();
+            branch.commit_edit("fixture", "fixture");
             let bytes = changes_since(&mut branch, &heads);
             tails.push(incremental(
                 &key,

@@ -29,7 +29,7 @@ use ui::widget::toggle_group::SegmentedStyle;
 use ui::widget::{ControlSize, EmptyState, EmptyStateContent, SegmentedFace, ToggleGroup, Widget};
 
 use crate::highlight;
-use crate::i18n::t;
+use crate::i18n::{count, t, t_args};
 use crate::model::{AlignedRow, DiffModel, RowKind};
 use crate::pane::{self, CodeMetrics};
 use crate::scroll::{HScroll, wheel_pixels};
@@ -119,6 +119,59 @@ impl Side {
     }
 }
 
+/// Opposite-only lines keep their aligned rows, with one explanation per run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SourceGap {
+    first: usize,
+    end: usize,
+}
+
+impl Side {
+    const fn index(self) -> usize {
+        match self {
+            Self::Left => 0,
+            Self::Right => 1,
+        }
+    }
+
+    const fn opposite(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+}
+
+fn source_gaps(rows: &[AlignedRow], side: Side) -> Vec<SourceGap> {
+    let mut gaps = Vec::new();
+    let mut first = None;
+    for (index, row) in rows.iter().enumerate() {
+        let absent = side.text(row).is_none() && side.opposite().text(row).is_some();
+        if absent {
+            first.get_or_insert(index);
+        } else if let Some(first) = first.take() {
+            gaps.push(SourceGap { first, end: index });
+        }
+    }
+    if let Some(first) = first {
+        gaps.push(SourceGap {
+            first,
+            end: rows.len(),
+        });
+    }
+    gaps
+}
+
+fn gap_label(side: Side, gap: SourceGap) -> String {
+    t_args(
+        match side {
+            Side::Left => "diff-gap-added-right",
+            Side::Right => "diff-gap-removed-left",
+        },
+        &[("count", count(gap.end - gap.first))],
+    )
+}
+
 /// Build a single-leaf taffy node. `new_leaf` only fails when the tree itself
 /// is corrupted, which cannot happen for a tree we just built in this same
 /// function — mirrors the established `TaffyTreeExt` convention used by `ui`.
@@ -135,6 +188,7 @@ pub struct DiffView {
     model: Arc<DiffModel>,
     left_label: String,
     right_label: String,
+    gaps: [Vec<SourceGap>; 2],
     /// Syntax spans per source line of each side, tokenized as a whole file.
     left_spans: Vec<Arc<[Span]>>,
     right_spans: Vec<Arc<[Span]>>,
@@ -176,6 +230,7 @@ impl DiffView {
             model: Arc::default(),
             left_label: String::new(),
             right_label: String::new(),
+            gaps: std::array::from_fn(|_| Vec::new()),
             left_spans: Vec::new(),
             right_spans: Vec::new(),
             left_highlight: None,
@@ -220,6 +275,10 @@ impl DiffView {
 
     pub fn set_inputs(&mut self, left_label: &str, left: &str, right_label: &str, right: &str) {
         self.model = crate::model::comparison(left, right);
+        self.gaps = [
+            source_gaps(&self.model.rows, Side::Left),
+            source_gaps(&self.model.rows, Side::Right),
+        ];
         self.left_label = left_label.to_string();
         self.right_label = right_label.to_string();
         // Small sources finish immediately; large ones paint the complete
@@ -449,15 +508,7 @@ impl Widget for DiffView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.place(Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        ));
+        self.place(ui::widget::layout_rect(taffy, node, origin));
     }
 
     fn draw(
@@ -729,7 +780,88 @@ impl DiffView {
                         .selected(self.active_block == Some(index)),
                 )
         }));
+        for (side, col) in self.visible_columns() {
+            let (first, end) = self.visible_rows();
+            for gap in self.visible_gaps(side, first, end) {
+                controls.push(
+                    AccessNode::new(Role::StaticText)
+                        .with_name(gap_label(side, *gap))
+                        .with_bounds(self.gap_band(col, *gap, first)),
+                );
+            }
+        }
         controls
+    }
+
+    fn visible_columns(&self) -> Vec<(Side, Rect)> {
+        if self.is_compact() {
+            let side = if self.compact_show_right {
+                Side::Right
+            } else {
+                Side::Left
+            };
+            vec![(
+                side,
+                Rect::new(
+                    self.rect.x0,
+                    self.rect.y0,
+                    self.rect.x1 - self.metrics.strip_w,
+                    self.rect.y1,
+                ),
+            )]
+        } else {
+            let (left, right) = self.column_rects();
+            vec![(Side::Left, left), (Side::Right, right)]
+        }
+    }
+
+    fn visible_rows(&self) -> (usize, usize) {
+        let row_h = self.metrics.code.row_h;
+        let first = (self.scroll_y / row_h).floor() as usize;
+        // Code prefetches extra rows, but labels and their accessibility
+        // bounds belong only to rows intersecting the actual viewport.
+        let end = ((self.scroll_y + self.body_height()) / row_h).ceil() as usize;
+        (first, end.min(self.model.rows.len()))
+    }
+
+    fn visible_gaps(&self, side: Side, first: usize, end: usize) -> &[SourceGap] {
+        let gaps = self.gaps.get(side.index()).map_or(&[][..], Vec::as_slice);
+        let start = gaps.partition_point(|gap| gap.end <= first);
+        let stop = gaps.partition_point(|gap| gap.first < end);
+        gaps.get(start..stop.max(start)).unwrap_or_default()
+    }
+
+    fn gap_band(&self, col: Rect, gap: SourceGap, first_visible: usize) -> Rect {
+        let view = self.code_view(col);
+        let y =
+            view.y0 + gap.first.max(first_visible) as f64 * self.metrics.code.row_h - self.scroll_y;
+        Rect::new(
+            view.x0,
+            y.max(view.y0),
+            view.x1,
+            (y + self.metrics.code.row_h).min(view.y1),
+        )
+    }
+
+    fn draw_gap_labels(&self, ctx: &mut PaintCtx<'_>, col: Rect, side: Side) {
+        let (first, end) = self.visible_rows();
+        let style = ctx.theme.text(TextRole::Caption);
+        for gap in self.visible_gaps(side, first, end) {
+            let band = self.gap_band(col, *gap, first);
+            let label = ctx.text.elide_to_width_style(
+                &gap_label(side, *gap),
+                ui::num::f32_of_f64(band.width()),
+                &style,
+            );
+            ctx.text_role_in_band(
+                &label,
+                TextRole::Caption,
+                ctx.theme.text_dim,
+                band.x0,
+                band,
+                None,
+            );
+        }
     }
 
     /// Column rects for the two source panes, excluding the overview strip.
@@ -832,7 +964,7 @@ impl DiffView {
             let caption = theme.text(TextRole::Caption);
             let shown = ctx.text.elide_to_width_style(
                 &file,
-                pane::to_f32((band.width() - 2.0 * inset).max(0.0)),
+                ui::num::f32_of_f64((band.width() - 2.0 * inset).max(0.0)),
                 &caption,
             );
             ctx.text_role_in_band(
@@ -936,6 +1068,7 @@ impl DiffView {
                 line_spans(spans, side.number(row)),
             );
         }
+        self.draw_gap_labels(ctx, col, side);
         ctx.scene.pop_layer();
         ctx.scene.pop_layer();
     }

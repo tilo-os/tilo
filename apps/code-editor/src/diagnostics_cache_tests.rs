@@ -26,6 +26,64 @@ fn diagnostics_cache_reuses_only_identical_committed_inputs() {
     equal_pending_counts_with_different_text_never_alias();
 }
 
+#[test]
+fn diagnostics_switching_retains_exact_results_with_bounded_inactive_records() {
+    let (mut app, mut doc, first) = fixture();
+    let first_node = app.session.active_buffer().unwrap().node;
+    let other = app
+        .session
+        .project
+        .nodes
+        .values()
+        .find(|node| matches!(node.kind, NodeKind::File { .. }) && node.id != first_node)
+        .unwrap()
+        .id;
+    let second = app.buffer_key(other);
+    replace(&mut doc, &second, "// TODO second source\n");
+    doc.commit();
+    app.refresh_diagnostics(&doc);
+    let first_rows = app.panel.problems().to_vec();
+    app.session.open_file(other);
+    app.refresh_diagnostics(&doc);
+    let second_rows = app.panel.problems().to_vec();
+    assert_ne!(first_rows, second_rows);
+    for _ in 0..3 {
+        app.session.open_file(first_node);
+        app.refresh_diagnostics(&doc);
+        assert_eq!(app.panel.problems(), first_rows);
+        app.session.open_file(other);
+        app.refresh_diagnostics(&doc);
+        assert_eq!(app.panel.problems(), second_rows);
+    }
+    assert_eq!(app.diagnostics_buffer_reads, 2);
+    replace(
+        &mut doc,
+        &first,
+        &"// TODO large diagnostics\n".repeat(16_385),
+    );
+    doc.commit();
+    app.session.open_file(first_node);
+    app.refresh_diagnostics(&doc);
+    assert!(app.panel.problems().len() > 16_384);
+    let oversized = app.diagnostics_cache.as_ref().unwrap().revision.clone();
+    app.session.open_file(other);
+    app.refresh_diagnostics(&doc);
+    assert!(app.inactive_diagnostics.len() <= 2);
+    assert!(
+        app.inactive_diagnostics
+            .iter()
+            .map(|cache| cache.local.len())
+            .sum::<usize>()
+            <= 16_384
+    );
+    assert!(
+        app.inactive_diagnostics
+            .iter()
+            .all(|cache| cache.revision != oversized),
+        "oversized snapshots are not retained"
+    );
+}
+
 fn unchanged_diagnostics_reuse_local_lint() {
     let (mut app, doc, _) = fixture();
     app.refresh_diagnostics(&doc);
@@ -123,14 +181,18 @@ fn heads_language_buffer_and_lsp_scope_invalidate_but_lsp_payload_does_not() {
     assert_eq!(app.diagnostics_buffer_reads, 4);
     app.session.open_file(shown);
     app.refresh_diagnostics(&doc);
-    assert_eq!(app.diagnostics_buffer_reads, 5);
+    assert_eq!(
+        app.diagnostics_buffer_reads, 4,
+        "returning to identical inputs reuses the prior buffer snapshot"
+    );
+    let historical_rows = app.panel.problems().to_vec();
     let historical = doc.get_heads();
     let mut remote = doc.fork();
     replace(&mut remote, &key, "TODO remote\n");
     remote.commit();
     doc.merge_incoming(&mut remote).unwrap();
     app.refresh_diagnostics(&doc);
-    assert_eq!(app.diagnostics_buffer_reads, 6);
+    assert_eq!(app.diagnostics_buffer_reads, 5);
     let expected = lint::lint(
         &EditorDoc::read_buffer_key(&doc, &key).unwrap(),
         Language::Python,
@@ -140,7 +202,11 @@ fn heads_language_buffer_and_lsp_scope_invalidate_but_lsp_payload_does_not() {
     // A restored historical checkout has different heads even in this same widget.
     doc = doc.fork_at(&historical).unwrap();
     app.refresh_diagnostics(&doc);
-    assert_eq!(app.diagnostics_buffer_reads, 7);
+    assert_eq!(
+        app.diagnostics_buffer_reads, 5,
+        "exact historical inputs remain reusable"
+    );
+    assert_eq!(app.panel.problems(), historical_rows);
 }
 
 fn equal_pending_counts_with_different_text_never_alias() {

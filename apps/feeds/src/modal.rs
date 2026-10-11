@@ -24,7 +24,7 @@ use crate::model::Id;
 
 /// What a feeds dialog is asking for, so the submit handler knows which
 /// mutation to run against the store and the document.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModalIntent {
     /// Add a new subscription from the typed address.
     AddSubscription,
@@ -32,8 +32,6 @@ pub enum ModalIntent {
     AddFolder,
     /// Rename an existing feed.
     RenameFeed { feed_id: Id },
-    /// Confirm unsubscribing from a feed. No text input.
-    Unsubscribe { feed_id: Id },
     /// Replace the selected article's comma-separated tags.
     EditArticleTags { article_id: Id },
 }
@@ -41,7 +39,7 @@ pub enum ModalIntent {
 impl ModalIntent {
     /// Whether this intent requires a non-empty field. Tag editing also owns
     /// a field, but an empty value deliberately means "remove all tags".
-    pub fn requires_input(self) -> bool {
+    pub fn requires_input(&self) -> bool {
         matches!(
             self,
             ModalIntent::AddSubscription | ModalIntent::AddFolder | ModalIntent::RenameFeed { .. }
@@ -140,35 +138,24 @@ impl Widget for ModalBody {
             children.push(node);
             node
         });
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Column,
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                gap: Size {
-                    width: taffy::LengthPercentage::length(0.0),
-                    height: taffy::LengthPercentage::length(theme.tokens.spacing.rhythm.section),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
             },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            gap: Size {
+                width: taffy::LengthPercentage::length(0.0),
+                height: taffy::LengthPercentage::length(theme.tokens.spacing.rhythm.section),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = self.rect.origin();
         if let Some(node) = self.caption_node {
             self.caption.apply_layout(taffy, node, inner);

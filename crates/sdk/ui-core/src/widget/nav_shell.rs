@@ -50,6 +50,8 @@
 //! host next builds the tree, never in the middle of the event, so the host
 //! never holds a widget the shell has dropped.
 
+use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -77,6 +79,7 @@ use crate::widget::{
 };
 
 mod header_parts;
+use crate::widget::toast::{ToastKind, ToastStack};
 use header_parts::{HeaderTitle, MoreActions};
 
 /// Caps the per-frame dt so a stale clock (first frame, or a parked event
@@ -782,8 +785,8 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     }
     stack.push(NavPane::Content);
     let front = stack_index(&stack, inputs.pane);
-    let pos = inputs.push_pos.map_or(index_f64(front), |pos| {
-        pos.clamp(0.0, index_f64(stack.len().saturating_sub(1)))
+    let pos = inputs.push_pos.map_or(f64_of_usize(front), |pos| {
+        pos.clamp(0.0, f64_of_usize(stack.len().saturating_sub(1)))
     });
     g.stack = if stack.len() > 1 {
         stack.clone()
@@ -816,7 +819,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     let region_w = region.width();
     let screen_x = |pane: NavPane| -> f64 {
         let i = stack_index(&stack, pane);
-        (index_f64(i) - pos) * w
+        (f64_of_usize(i) - pos) * w
     };
     // Sidebar.
     let mut sidebar_body = Rect::ZERO;
@@ -1119,24 +1122,12 @@ fn stack_index(stack: &[NavPane], pane: NavPane) -> usize {
         .unwrap_or(stack.len().saturating_sub(1))
 }
 
-fn index_f64(i: usize) -> f64 {
-    f64::from(u32::try_from(i).unwrap_or(u32::MAX))
-}
-
 #[allow(
     clippy::cast_possible_truncation,
     reason = "a reveal is clamped to 0..=1, always well within f32 range"
 )]
 fn unit_f32(v: f64) -> f32 {
     v.clamp(0.0, 1.0) as f32
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "on-screen layout extents fit f32 exactly at every UI scale"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
 }
 
 /// The shell's buttons report presses here.
@@ -1182,9 +1173,7 @@ impl Widget for InertPart {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style::default());
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(Style::default(), node_map, self)
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
@@ -1272,6 +1261,11 @@ pub struct NavShell {
     structure_dirty: bool,
     layout_dirty: bool,
     paint_dirty: bool,
+    /// The window's transient notices, over its bottom trailing corner.
+    toasts: ToastStack,
+    /// Where the notices were last painted, damaged when they change.
+    toasts_painted: Rect,
+    toasts_dirty: bool,
 }
 
 impl Default for NavShell {
@@ -1350,11 +1344,44 @@ impl NavShell {
             structure_dirty: false,
             layout_dirty: true,
             paint_dirty: true,
+            toasts: ToastStack::new().with_max(1),
+            toasts_painted: Rect::ZERO,
+            toasts_dirty: false,
         }
     }
 
     fn shell_button(id: &str, icon: Icon, name: &str, on_press: impl FnMut() + 'static) -> Button {
         Button::icon_only(id, icon, name).on_view(on_press)
+    }
+
+    // --- notices -----------------------------------------------------------
+
+    /// Show a transient notice over the window's bottom trailing corner: an
+    /// operation's result or failure. It replaces the one showing, expires on
+    /// its own (held while the pointer rests on it and under the capture
+    /// clock), and a click dismisses it.
+    pub fn toast(&mut self, text: impl Into<String>, kind: ToastKind) {
+        self.toasts.push(text, kind);
+        self.toasts_dirty = true;
+    }
+
+    /// Take down the notice showing, when its news no longer holds.
+    pub fn dismiss_toast(&mut self) {
+        if !self.toasts.is_empty() {
+            self.toasts.dismiss(0);
+            self.toasts_dirty = true;
+        }
+    }
+
+    /// The notice showing, if any.
+    pub fn toast_text(&self) -> Option<&str> {
+        self.toasts.iter().next().map(|toast| toast.text.as_str())
+    }
+
+    fn toasts_expired(&self) -> bool {
+        self.toasts
+            .next_wake_deadline()
+            .is_some_and(|deadline| deadline <= crate::time::now())
     }
 
     // --- slots -------------------------------------------------------------
@@ -1458,14 +1485,6 @@ impl NavShell {
     #[must_use]
     pub fn inspector_header(mut self, title: impl Into<String>, actions: Vec<Element>) -> Self {
         self.set_inspector_header(title, actions);
-        self
-    }
-
-    /// How many items the sidebar holds, after its title (a quiet count, as
-    /// `SectionHeader::count`).
-    #[must_use]
-    pub fn sidebar_count(mut self, count: usize) -> Self {
-        self.set_count(Column::Sidebar, Some(count));
         self
     }
 
@@ -1698,24 +1717,9 @@ impl NavShell {
         self.set_title(Column::Inspector, title.into());
     }
 
-    /// Show or clear the count after the sidebar's title.
-    pub fn set_sidebar_count(&mut self, count: Option<usize>) {
-        self.set_count(Column::Sidebar, count);
-    }
-
-    /// Show or clear the count after the overview's title.
-    pub fn set_overview_count(&mut self, count: Option<usize>) {
-        self.set_count(Column::Overview, count);
-    }
-
     /// Show or clear the count after the content's title.
     pub fn set_content_count(&mut self, count: Option<usize>) {
         self.set_count(Column::Content, count);
-    }
-
-    /// Show or clear the count after the inspector's title.
-    pub fn set_inspector_count(&mut self, count: Option<usize>) {
-        self.set_count(Column::Inspector, count);
     }
 
     /// Whether the content's page stack can go back, for an app that keeps
@@ -1924,15 +1928,6 @@ impl NavShell {
         downcast(slot)
     }
 
-    /// The inspector as the widget the app gave it.
-    pub fn inspector_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
-        let slot = match at_mut(&mut self.pending.bodies, Column::Inspector) {
-            Some(Staged(pending)) => pending.as_deref_mut(),
-            None => self.inspector.as_deref_mut(),
-        };
-        downcast(slot)
-    }
-
     /// The window's filter field ([`Self::with_filter`]): its query and the
     /// count the filtered column reports.
     pub fn filter(&self) -> Option<&SearchField> {
@@ -2136,7 +2131,7 @@ impl NavShell {
             let stack = &self.geometry.stack;
             let from = inputs
                 .push_pos
-                .unwrap_or_else(|| index_f64(stack_index(stack, inputs.pane)));
+                .unwrap_or_else(|| f64_of_usize(stack_index(stack, inputs.pane)));
             inputs.pane = pane;
             inputs.push_from = Some(from);
             inputs.push_progress = 0.0;
@@ -2554,7 +2549,7 @@ impl NavShell {
             if let Some(row) = header.more.take_choice()
                 && let Some(action) = header.actions.get_mut(shown.saturating_add(row))
             {
-                action.perform_action(&crate::a11y::Action::Activate, state, path);
+                action.perform_action(&crate::a11y::Action::Activate, &[], state, path);
                 acted = true;
             }
         }
@@ -2656,7 +2651,7 @@ impl NavShell {
                 inputs.push_pos = None;
                 inputs.push_progress = 1.0;
             } else {
-                let target = index_f64(stack_index(&stack, inputs.pane));
+                let target = f64_of_usize(stack_index(&stack, inputs.pane));
                 if reduce || base.as_secs_f64() <= 0.0 {
                     inputs.push_progress = 1.0;
                 } else if inputs.push_progress < 1.0 {
@@ -2986,28 +2981,21 @@ struct Frame<'a> {
     text: &'a mut TextRenderer,
     theme: &'a Theme,
     presence: &'a PresenceCtx,
-    permissions: Option<&'a crate::permissions::PermissionContext>,
 }
 
 impl Frame<'_> {
     /// Draw one of the shell's children with the theme of the ground it
     /// stands on.
     fn draw(&mut self, widget: Option<&mut (dyn Widget + 'static)>, theme: &Theme) {
-        let Some(widget) = widget else {
-            return;
-        };
-        match self.permissions {
-            Some(p) => {
-                widget.draw_with_presence(
-                    self.scene,
-                    self.transform,
-                    self.text,
-                    theme,
-                    self.presence,
-                    p,
-                );
-            }
-            None => widget.draw(self.scene, self.transform, self.text, theme, self.presence),
+        if let Some(widget) = widget {
+            crate::widget::draw_child(
+                widget,
+                self.scene,
+                self.transform,
+                self.text,
+                theme,
+                self.presence,
+            );
         }
     }
 }
@@ -3101,7 +3089,7 @@ fn measure(
         return Ok(natural);
     }
     let proposal = Size {
-        width: MeasureConstraint::AtMost(to_f32(bound)),
+        width: MeasureConstraint::AtMost(f32_of_f64(bound)),
         height: MeasureConstraint::Intrinsic,
     };
     let measured = ManualContext::measure(ctx, index, proposal)?.size;
@@ -3177,7 +3165,7 @@ fn place_header(
         if widths.is_empty() {
             0.0
         } else {
-            widths.iter().sum::<f64>() + gap * index_f64(widths.len().saturating_sub(1))
+            widths.iter().sum::<f64>() + gap * f64_of_usize(widths.len().saturating_sub(1))
         }
     };
     let reserve = run(&compact);
@@ -3357,18 +3345,14 @@ impl Widget for NavShell {
         self.built = true;
         self.structure_dirty = false;
         self.invalidation.invalidate();
-        let node = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
-            &nodes,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &nodes, node_map, self)
     }
 
     fn manual_layout_policy(&self) -> Option<ManualPolicy> {
@@ -3380,13 +3364,7 @@ impl Widget for NavShell {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.refresh_geometry();
         self.reconcile_size_class();
         self.refresh_geometry();
@@ -3442,34 +3420,42 @@ impl Widget for NavShell {
             text: text_renderer,
             theme,
             presence,
-            permissions: None,
         });
         self.tick(theme);
     }
 
-    fn draw_with_presence(
+    fn draw_overlay(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
     ) {
-        if !presence.should_cull(self.rect) {
-            self.paint(&mut Frame {
-                scene,
-                transform,
-                text: text_renderer,
-                theme,
-                presence,
-                permissions: Some(permissions),
-            });
+        for child in self.children_mut() {
+            child.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        self.tick(theme);
+        self.toasts.advance(crate::time::now());
+        let window = presence.viewport.get().unwrap_or(self.rect);
+        self.toasts
+            .place_bottom_right(window, f64::from(theme.tokens.spacing.s6));
+        self.toasts
+            .draw(scene, transform, text_renderer, theme, presence);
+        self.toasts_painted = self.toasts.get_rect();
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if !self.toasts.is_empty() {
+            let before = (self.toasts.len(), self.toasts.is_hovered());
+            self.toasts.handle_event(event, ctx);
+            // The dismiss control's hover shows too.
+            self.toasts_dirty |= *ctx.handled
+                || before != (self.toasts.len(), self.toasts.is_hovered())
+                || matches!(event, WindowEvent::CursorMoved { .. });
+            if *ctx.handled {
+                return;
+            }
+        }
         if self.handle_own_event(event, ctx) {
             *ctx.handled = true;
             return;
@@ -3483,17 +3469,27 @@ impl Widget for NavShell {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.exposed_parts()
+        let mut children: Vec<&dyn Widget> = self
+            .exposed_parts()
             .iter()
             .filter_map(|part| self.exposed(*part))
-            .collect()
+            .collect();
+        if !self.toasts.is_empty() {
+            children.push(&self.toasts);
+        }
+        children
     }
 
+    // A showing notice is the last child, so assistive technology announces
+    // it as a live region.
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         for part in self.exposed_parts() {
             if let Some(widget) = self.exposed(part) {
                 visitor(widget);
             }
+        }
+        if !self.toasts.is_empty() {
+            visitor(&self.toasts);
         }
     }
 
@@ -3516,6 +3512,7 @@ impl Widget for NavShell {
             history_open,
             history_close,
             inert_parts,
+            toasts,
             ..
         } = self;
         let mut stubs = inert_parts.iter_mut();
@@ -3588,6 +3585,9 @@ impl Widget for NavShell {
                 out.push(widget);
             }
         }
+        if !toasts.is_empty() {
+            out.push(toasts);
+        }
         out
     }
 
@@ -3626,7 +3626,7 @@ impl Widget for NavShell {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let mut earliest: Option<Instant> = None;
+        let mut earliest = self.toasts.next_wake_deadline();
         self.for_each_owned(|child| {
             if let Some(deadline) = child.next_wake_deadline() {
                 earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
@@ -3659,6 +3659,8 @@ impl Widget for NavShell {
 
     fn needs_redraw(&self) -> bool {
         self.paint_dirty
+            || self.toasts_dirty
+            || self.toasts_expired()
             || self.animating
             || self.fade < 1.0
             || self
@@ -3669,6 +3671,7 @@ impl Widget for NavShell {
 
     fn mark_drawn(&mut self) {
         self.paint_dirty = false;
+        self.toasts_dirty = false;
         self.for_each_owned_mut(|child| child.mark_drawn());
     }
 
@@ -3680,6 +3683,9 @@ impl Widget for NavShell {
             regions.push(self.rect);
         } else {
             self.for_each_owned(|child| child.collect_damage(regions));
+            if self.toasts_dirty || self.toasts_expired() {
+                regions.push(self.toasts_painted.union(self.toasts.get_rect()));
+            }
         }
     }
 
@@ -3720,6 +3726,13 @@ impl WindowHeader for NavShell {
 }
 
 impl crate::widget::controls::ActionControls for NavShell {
+    fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        self.for_each_child(&mut |child| {
+            bindings.extend(crate::widget::controls::action_control_bindings(child));
+        });
+        bindings
+    }
     fn install_control_custody(
         &mut self,
         domain: &crate::ControlDomain,

@@ -73,6 +73,19 @@ jobs:
           '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
 
+      # crates/workspace-hack unifies third-party features across members; a
+      # dependency change that is not regenerated splits the shared builds again.
+      # Fail before the slower policy and dependency scans when it is stale.
+      - name: Workspace-hack matches the dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! { cargo hakari generate --diff && cargo hakari manage-deps --dry-run; }; then
+            echo "crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result (DEVELOPMENT.md, Dependency features)." >&2
+            exit 1
+          fi
+          cargo hakari verify
+
       - name: Require reasons for Rust lint exceptions in changed files
         run: >-
           python3 tools/ci/check_changed_rust_allows.py
@@ -86,31 +99,39 @@ jobs:
           '${{ github.event.before }}'
 
       - name: Repository policy suite
-        run: bash tools/policy/run.sh
+        run: bash tools/ci/measure.sh "repository policy tests" -- bash tools/policy/run.sh
+
+      # Release / apps measures each shipped tapp against its budget; this
+      # text check, which builds nothing, makes every budget change reviewed:
+      # growth needs a raise file and a new app needs a budget.
+      - name: App package size budgets only decrease
+        shell: bash
+        run: |
+          # A pull request compares with the main it was merged onto; a push
+          # to main, with its first parent (the previous main).
+          base='${{ steps.merge.outputs.main }}'
+          python3 tools/perf/tapp_size_ratchet.py check-budget --base "${base:-HEAD~1}"
+
+      # The same rule for the shared app runtime's size and load-cost budgets
+      # (tools/perf/runtime-size-budget/; DEVELOPMENT.md, "Runtime size").
+      - name: Runtime size budgets only decrease
+        shell: bash
+        run: |
+          base='${{ steps.merge.outputs.main }}'
+          python3 tools/perf/runtime_size_ratchet.py check-budget --base "${base:-HEAD~1}"
 
       # The lint app developers run locally: an app that adds platform code
       # without moving it into a platform crate or declaring itself native
       # fails here. ci-fast already provides /usr/bin/cc (pinned digest).
       - name: Tilo app lints
-        run: cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all
+        run: bash tools/ci/measure.sh "app lint check" -- cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all
 
       - name: cargo deny
-        run: cargo deny --workspace check --hide-inclusion-graph
-
-      # crates/workspace-hack unifies third-party features across members; a
-      # dependency change that is not regenerated splits the shared builds again.
-      - name: Workspace-hack matches the dependency graph
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! { cargo hakari generate --diff && cargo hakari manage-deps --dry-run; }; then
-            echo "crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result (DEVELOPMENT.md, Dependency features)." >&2
-            exit 1
-          fi
-          cargo hakari verify
+        run: bash tools/ci/measure.sh "dependency policy check" -- cargo deny --workspace check --hide-inclusion-graph
 
       - name: cargo machete
         run: >-
+          bash tools/ci/measure.sh "unused dependency check" --
           bash tools/ci/check-unused-dependencies.sh --changed
           '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'

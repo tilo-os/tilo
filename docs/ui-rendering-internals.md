@@ -126,9 +126,42 @@ scratch target and is copied into the retained target—there is no lower-
 resolution render or upscale. Layout/structure/model synchronization, overlays,
 post-processing, invalid retained contents, and damage covering at least half
 the surface fall back to a full render. A clean compositor-only presentation
-performs no Vello raster pass. Spatial culling still avoids visiting
+performs no Vello raster pass. Inside the compositor, an app hosted in a tab
+gets the same treatment from the other side: a widget may mark what it draws
+as a keyed damage part with the bounds it paints (`ui::scene_parts::part`),
+and the compositor repaints only the parts whose encoded commands changed;
+the app's frames hand over the same widget damage a window submits, plus the
+old and new bounds of a tooltip, so the compositor repaints that rather than
+the whole tile (see docs/architecture/compositor.md, "Frame damage"). In a
+window of its own, a tooltip still repaints the window: its floating
+material blurs what is under it, and the render worker repaints in full while
+any backdrop is on screen. Spatial culling still avoids visiting
 off-viewport widgets during scene recording; cached scrollable subtrees retain
 all of their commands so scrolling cannot reveal a hole.
+
+A scroll moves every pixel of its viewport, so a window copies instead of
+repainting them (`ui::scroll_copy`). A scroller whose content moved by a pure
+translation since the presented frame offers the move from `collect_damage`
+(`Scrollable`, and Notes' page); only a host collecting inside
+`scroll_copy::accepting` takes it, any other host gets the viewport damage.
+The window plans each offer against the widget tree it drew: the copy keeps to
+whole device pixels inside every ancestor's child clip, and is refused (the
+viewport repaints) for a delta that is not a whole number of device pixels or
+a scroller drawn under another transform than the window's. What paints over
+or under the content without moving with it is damage: the scroller's bars
+and edge fades, every other widget whose box (with a 16 px effect reach)
+reaches in, the edges of every ancestor, and anything inside the content that
+stayed put (a pinned title, a sticky header). Damage that a copy reads is
+carried along to where it lands (`scroll_copy::carry`), and the strip the copy
+exposed is repainted. A relayout whose only moves are scrolls (a long list
+mounting the rows it brought near is a described rebuild) stays sparse; any
+other move, peer presence marks, or another desktop's header bar repaint as
+before. The render worker moves the pixels within its retained target through
+a 128-row scratch band (WebGPU refuses a copy within one texture) or, on a
+software adapter, within its CPU canvas, then rasterizes the damage; the
+compositor gets the copies' destinations as damage too. History's toolbar is
+compared with the presented frame's paint instead of counting as a layer, so a
+framework window no longer repaints whole on every frame.
 
 The worker acquires the swapchain before packing or uploading a scene. If the
 surface is occluded, timed out, outdated, or gone, that attempt performs zero

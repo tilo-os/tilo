@@ -509,30 +509,17 @@ fn text_box_keys_and_notes_editing() {
     }
 }
 
-/// An agent writes a slide's notes as the deck's child text.
+/// An agent writes a slide's notes with one field edit at their path.
 #[test]
-fn an_agent_writes_speaker_notes_as_a_plain_text_resource() {
-    use ui::tilo_resource::{Invoke, PlainText, TextEdit};
+fn an_agent_writes_speaker_notes_by_a_field_edit() {
     let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
     let slide = bench.deck().slides[0].id.clone();
-    let child = crate::actions::notes_resource_id(&slide);
-    let declared = bench.app.agent_surface();
-    assert!(
-        declared.as_array().unwrap().iter().any(|row| {
-            row["resource"] == child.as_str()
-                && row["resource_kind"] == <PlainText as ui::tilo_resource::Resource>::KIND
-        }),
-        "the notes are published as plain text: {declared}"
-    );
+    let edit = crate::actions::slide_paths(&slide)
+        .notes
+        .replace("thank the hosts");
     bench
         .app
-        .invoke_child::<PlainText>(
-            &child,
-            Invoke::<PlainText>::apply(&TextEdit::ReplaceText {
-                text: "thank the hosts".into(),
-            })
-            .unwrap(),
-        )
+        .call("field-edit", serde_json::json!({ "edit": edit }))
         .unwrap();
     assert_eq!(notes(&bench), "thank the hosts");
     assert!(bench.undo());
@@ -638,9 +625,9 @@ fn typing_in_a_text_box_edits_it_through_the_decks_dispatcher() {
 /// A text box's words are a rich-text resource of their own beneath their
 /// element, which an agent edits as the deck's action.
 #[test]
-fn an_agent_edits_a_text_box_as_a_rich_text_resource() {
-    use ui::tilo_resource::Resource as _;
+fn an_agent_edits_a_text_box_by_a_field_edit() {
     let (mut bench, _) = editing_starter_box("Title", ui::permissions::Role::Owner);
+    let slide = bench.deck().slides[0].id.clone();
     let id = bench.deck().slides[0]
         .elements
         .iter()
@@ -648,26 +635,15 @@ fn an_agent_edits_a_text_box_as_a_rich_text_resource() {
         .unwrap()
         .id
         .clone();
-    let child = crate::actions::text_resource_id(&id);
-    let declared = bench.app.agent_surface();
-    assert!(
-        declared.as_array().unwrap().iter().any(|row| {
-            row["resource"] == child.as_str()
-                && row["resource_kind"] == tilo_document::RichText::KIND
-        }),
-        "the words are published as rich text: {declared}"
-    );
+    let edit = crate::actions::element_paths(&slide, &id)
+        .body
+        .perform(&tilo_document::RichTextAction::ReplaceBody {
+            markdown: "from an agent".into(),
+        })
+        .unwrap();
     bench
         .app
-        .invoke_child::<tilo_document::RichText>(
-            &child,
-            ui::tilo_resource::Invoke::<tilo_document::RichText>::apply(
-                &tilo_document::RichTextAction::ReplaceBody {
-                    markdown: "from an agent".into(),
-                },
-            )
-            .unwrap(),
-        )
+        .call("field-edit", serde_json::json!({ "edit": edit }))
         .unwrap();
     assert_eq!(element_text(&bench, &id).text, "from an agent");
     assert!(bench.undo());

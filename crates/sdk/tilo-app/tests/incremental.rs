@@ -27,6 +27,15 @@ fn loads() -> usize {
 pub struct Counted(pub String);
 
 impl Model for Counted {
+    tilo_app::tilo_resource::leaf_paths!();
+    fn to_json(&self) -> tilo_app::tilo_resource::__private::serde_json::Value {
+        self.0.to_json()
+    }
+    fn from_json(
+        value: &tilo_app::tilo_resource::__private::serde_json::Value,
+    ) -> Result<Self, ModelError> {
+        <String as Model>::from_json(value).map(Self)
+    }
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         LOADS.with(|loads| loads.set(loads.get() + 1));
         String::load(doc, value, id).map(Self)

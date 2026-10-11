@@ -1,4 +1,13 @@
 chip-title = Chip Design
+chip-placement-title = Reported macro placement
+chip-placement-disclaimer = Macro footprints only; other instances are omitted. Reported geometry does not establish layout authentication or signoff. Coordinates are in micrometers, with the physical origin at the lower left.
+chip-placement-total = Total reported instances
+chip-placement-omitted = Instances omitted from this view
+chip-placement-die = Die bounds (µm)
+chip-placement-master = Cell master
+chip-placement-bounds = Macro bounds (µm)
+chip-placement-orientation = Orientation
+chip-placement-status = Placement status
 chip-study-disclaimer = Producer-reported architecture comparison. Stage links and artifact identities are unverified here. Cycles and generic cells establish no clock speed, physical area, energy or coding quality.
 chip-study-checks = Producer-reported stage checks
 chip-study-stage = Reported experiment stage
@@ -218,3 +227,21 @@ chip-flow-exact = Exact comparison
 chip-flow-characterization = Backend characterization
 chip-flow-completed = Completed simulation
 chip-flow-expected-refusal = Expected refusal; no completed result
+
+chip-open-invalid = This file is not a supported Chip Design report. No report was imported.
+
+## History: what each change to the project did
+
+chip-design-import-report = Imported an analytical storage report
+chip-design-remove-report = Removed an analytical storage report
+chip-design-import-verification = Imported a hardware verification receipt
+chip-design-remove-verification = Removed a hardware verification receipt
+chip-design-add-node = Added the operator { $node }
+chip-design-set-shape = Reshaped the operator { $node }
+chip-design-remove-node = Removed the operator { $node }
+chip-design-connect = Connected { $from_node } to { $to_node }
+chip-design-disconnect = Disconnected the { $port } input of { $node }
+chip-design-operator-node-x = Moved an operator
+chip-design-operator-node-y = Moved an operator
+chip-design-operator-node-output-width = Changed the matrix output width of an operator
+chip-design-project-nodes = Changed the operators

@@ -5,7 +5,7 @@ use super::{
 };
 use crate::history_mode::{checked_files::FilePreviewInput, files_session::FileController};
 use crate::i18n::I18nManager;
-use collab_types::{FileVersionId, files::CheckedHistoryOperationV1 as Operation};
+use fs_protocol::{FileVersionId, files::CheckedHistoryOperationV1 as Operation};
 
 impl HistoryHost {
     pub(super) fn close_files_presentation(&mut self) {
@@ -382,15 +382,15 @@ impl HistoryHost {
         toolbar
     }
 }
-fn version_label(provenance: &collab_types::FileProvenance) -> String {
+fn version_label(provenance: &fs_protocol::FileProvenance) -> String {
     I18nManager::lookup_plain(match provenance {
-        collab_types::FileProvenance::Create => "history-files-created",
-        collab_types::FileProvenance::Edit => "history-files-edited",
-        collab_types::FileProvenance::Rename => "history-files-renamed",
-        collab_types::FileProvenance::Move => "history-files-moved",
-        collab_types::FileProvenance::Delete => "history-files-deleted",
-        collab_types::FileProvenance::Restore { .. } => "history-files-restored",
-        collab_types::FileProvenance::ConflictResolution => "history-files-conflict-resolved",
+        fs_protocol::FileProvenance::Create => "history-files-created",
+        fs_protocol::FileProvenance::Edit => "history-files-edited",
+        fs_protocol::FileProvenance::Rename => "history-files-renamed",
+        fs_protocol::FileProvenance::Move => "history-files-moved",
+        fs_protocol::FileProvenance::Delete => "history-files-deleted",
+        fs_protocol::FileProvenance::Restore { .. } => "history-files-restored",
+        fs_protocol::FileProvenance::ConflictResolution => "history-files-conflict-resolved",
     })
 }
 
@@ -416,7 +416,7 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
                     identity.clone(),
                     crate::presence::user_color(&identity),
                 ),
-                op_class: collab_types::OpClass::Compaction,
+                entry_kind: crate::widget::EntryKind::Compaction,
                 artifact_kind: collab_types::ArtifactKind::File,
                 timestamp: crate::time::UNIX_EPOCH
                     .checked_add(crate::time::Duration::from_millis(version.timestamp_ms))
@@ -482,7 +482,7 @@ mod tests {
                     .map(|id| crate::HistoryEntry {
                         id: crate::HistoryEntryId(*uuid::Uuid::from_u128(id).as_bytes()),
                         author: crate::HistoryAuthor::new("Unknown author", 0.0, "unknown"),
-                        op_class: collab_types::OpClass::Compaction,
+                        entry_kind: crate::widget::EntryKind::Compaction,
                         artifact_kind: collab_types::ArtifactKind::File,
                         timestamp: crate::time::UNIX_EPOCH,
                         summary: "File revision".into(),
@@ -504,7 +504,7 @@ mod tests {
         // phase: files_confirmation_queued_after_same_frame_cancel_cannot_submit
         {
             use crate::history_mode::checked_files::{FileHistoryTarget, FileHistoryTransport};
-            use collab_types::files::*;
+            use fs_protocol::files::*;
             struct Transport;
             impl FileHistoryTransport for Transport {
                 fn read(
@@ -531,7 +531,7 @@ mod tests {
                 }
             }
             let mut host = test_host();
-            let record = collab_types::FileRecordId(uuid::Uuid::from_u128(3));
+            let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(3));
             let mut files = FileController::new(FileHistoryTarget {
                 binding: uuid::Uuid::new_v4(),
                 record,
@@ -573,7 +573,7 @@ mod tests {
         // phase: round1_root_target_replacement_or_removal_invalidates_queued_confirmation
         {
             use crate::history_mode::checked_files::{FileHistoryTarget, FileHistoryTransport};
-            use collab_types::files::*;
+            use fs_protocol::files::*;
             struct Transport;
             impl FileHistoryTransport for Transport {
                 fn read(
@@ -605,7 +605,7 @@ mod tests {
                     panic!()
                 };
                 let source = source.clone();
-                let record = collab_types::FileRecordId(uuid::Uuid::from_u128(3));
+                let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(3));
                 let target = FileHistoryTarget {
                     binding: uuid::Uuid::new_v4(),
                     record,
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn round1_resource_recovery_keeps_original_transport_and_rejects_wrong_lifetime() {
         use crate::history_mode::checked_files::{FileHistoryTarget, FileHistoryTransport};
-        use collab_types::files::*;
+        use fs_protocol::files::*;
         use std::sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -732,7 +732,7 @@ mod tests {
         let scope = FileHistoryReadScopeV1 {
             workspace_id: uuid::Uuid::from_u128(1),
             mount_lifetime: uuid::Uuid::from_u128(2),
-            record_id: collab_types::FileRecordId(uuid::Uuid::from_u128(3)),
+            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(3)),
             frontier: [4; 32],
         };
         let original = Arc::new(Transport {

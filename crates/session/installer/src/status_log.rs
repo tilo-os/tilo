@@ -12,8 +12,9 @@
 //! viewport/content-size wiring. Tailing is exactly the installer's need.
 
 use std::collections::HashMap;
+use ui::widget::TaffyTreeExt;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Fill};
@@ -62,37 +63,11 @@ impl Widget for StatusLog {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `new_leaf` only errors for a corrupted tree; `Widget::build_layout`
-        // returns a bare `NodeId` across every implementor, so surfacing a
-        // theoretical error here would mean threading a `Result` through the
-        // whole toolkit for a branch that can't be taken.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh style cannot fail")]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(self.height),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(crate::full_width_row(self.height), node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `layout` only errors for a `NodeId` from a different tree, which
-        // never happens here since `node` is always the id this same widget
-        // received from its own `build_layout` call.
-        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

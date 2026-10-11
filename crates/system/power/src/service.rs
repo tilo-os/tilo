@@ -10,20 +10,34 @@
 //! * mirrors the [`InhibitRegistry`] into a logind `idle:sleep` block lock, and the other way
 //!   round holds the registry while another program (`systemd-inhibit`, a remote admin
 //!   session) holds a logind `idle` or `sleep` block lock, so idle-suspend waits for it;
-//! * polls the battery, runs the threshold [`BatteryMonitor`], and pushes low/critical toasts
+//! * watches the battery, runs the threshold [`BatteryMonitor`], and pushes low/critical toasts
 //!   + a critical auto-suspend;
 //! * reacts to lid changes per policy (suspend / lock / ignore);
 //! * drains [`PowerCommand::Suspend`] requests and issues `logind.Suspend`;
-//! * resets the compositor's idle timer on resume.
+//! * resets the compositor's idle timer on resume;
+//! * samples the battery history at its own resolution.
+//!
+//! The service sleeps until something happens: a command wakes it through the bridge, an
+//! inhibitor change through the registry, the lid and the battery through `UPower`'s
+//! `PropertiesChanged`. Only what announces nothing runs on a deadline (`Deadlines`): logind's
+//! inhibitor list while an idle timeout is armed, the next history sample, a lease's lapse, and
+//! resubscribing a signal stream that ended.
 //!
 //! The reaction *mappings* (battery events → signals, lid → effect) are pure functions
 //! tested below; `run` only wires them to the D-Bus streams.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use futures_util::StreamExt;
+use tokio::sync::Notify;
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use crate::battery::{BatteryEvent, BatteryMonitor, BatterySnapshot};
 use crate::bridge::{PowerBridge, PowerCommand, PowerNotification, PowerSignal};
+use crate::history::{BatteryHistoryPoint, MIN_INTERVAL_MINUTES, PowerHistoryWriter};
 use crate::inhibit::{INHIBIT_POWER, INHIBIT_SUSPEND, InhibitRegistry, InhibitToken};
 use crate::logind::{LogindInhibitor, LogindManager};
 use crate::policy::{PowerAction, PowerPolicy};
@@ -33,10 +47,100 @@ use crate::upower::UPowerMonitor;
 /// Retry D-Bus signal subscriptions slowly enough that a repeatedly failing
 /// bus cannot turn the service loop into a hot spin, while still recovering
 /// promptly after logind/power-profiles-daemon restarts.
-const SIGNAL_STREAM_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+const SIGNAL_STREAM_RETRY_DELAY: Duration = Duration::from_secs(5);
 
-fn stream_retry_after(now: tokio::time::Instant) -> tokio::time::Instant {
-    now.checked_add(SIGNAL_STREAM_RETRY_DELAY).unwrap_or(now)
+/// How often the service re-reads logind's inhibitor list while an idle timeout is armed. logind
+/// announces no change to it, so this is a poll; an idle suspend reads it once more before acting
+/// ([`PowerCommand::IdleSuspend`]).
+const FOREIGN_INHIBITOR_POLL: Duration = Duration::from_secs(30);
+
+/// Never sample the battery history more often than this.
+const HISTORY_SAMPLE_FLOOR: Duration = Duration::from_secs(60);
+
+/// When no history point is due (no battery, a failed read), look again after the history's own
+/// resolution.
+const HISTORY_SAMPLE_RETRY: Duration = Duration::from_secs(MIN_INTERVAL_MINUTES * 60);
+
+fn stream_retry_after(now: Instant) -> Instant {
+    after(now, SIGNAL_STREAM_RETRY_DELAY)
+}
+
+fn after(now: Instant, delay: Duration) -> Instant {
+    now.checked_add(delay).unwrap_or(now)
+}
+
+/// Every moment the service must wake without being told to. Commands, inhibitor changes, the
+/// lid, the battery, sleep and profile changes wake it by themselves.
+#[derive(Debug, Default)]
+struct Deadlines {
+    /// Resubscribe to logind's `PrepareForSleep`.
+    sleep_stream: Option<Instant>,
+    /// Resubscribe to power-profiles-daemon's `ActiveProfile`.
+    profile_stream: Option<Instant>,
+    /// Resubscribe to `UPower`'s `LidIsClosed`.
+    lid_stream: Option<Instant>,
+    /// Resubscribe to the display device's charge.
+    battery_stream: Option<Instant>,
+    /// Re-read logind's inhibitor list; only while an idle timeout is armed.
+    foreign_inhibitors: Option<Instant>,
+    /// Sample the battery history.
+    history: Option<Instant>,
+    /// A registry lease stops counting by itself.
+    lease_lapse: Option<Instant>,
+    /// Whether `foreign_inhibitors` follows an armed idle timeout; becoming armed reads at once.
+    foreign_armed: bool,
+}
+
+impl Deadlines {
+    fn next(&self) -> Option<Instant> {
+        [
+            self.sleep_stream,
+            self.profile_stream,
+            self.lid_stream,
+            self.battery_stream,
+            self.foreign_inhibitors,
+            self.history,
+            self.lease_lapse,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+}
+
+/// The signal streams the loop waits on; `None` while one waits for its resubscription
+/// deadline.
+struct Streams {
+    sleep: Option<zbus::proxy::SignalStream<'static>>,
+    profile: Option<zbus::proxy::PropertyStream<'static, String>>,
+    lid: Option<zbus::proxy::PropertyStream<'static, bool>>,
+    battery: Option<futures_util::stream::BoxStream<'static, ()>>,
+}
+
+/// Whether `slot` has come due at `now`; clears it when it has.
+fn take_due(slot: &mut Option<Instant>, now: Instant) -> bool {
+    if slot.is_some_and(|at| at <= now) {
+        *slot = None;
+        true
+    } else {
+        false
+    }
+}
+
+/// Whether any idle timeout is armed — the only time another program's logind lock changes what
+/// the compositor does.
+fn idle_timeout_armed(policy: &PowerPolicy) -> bool {
+    policy.idle_blank.is_some() || policy.idle_lock.is_some() || policy.idle_suspend.is_some()
+}
+
+/// How long to wait for the next history sample: until the first second a point can land
+/// (`due_minute`), but never less than [`HISTORY_SAMPLE_FLOOR`].
+fn history_wait(due_minute: Option<u64>, now_secs: u64) -> Duration {
+    due_minute
+        .map_or(HISTORY_SAMPLE_RETRY, |minute| {
+            Duration::from_secs(minute.saturating_mul(60).saturating_sub(now_secs))
+        })
+        .max(HISTORY_SAMPLE_FLOOR)
 }
 
 /// What a lid/power-key/critical decision resolves to for the service.
@@ -124,9 +228,6 @@ pub fn sleep_reaction(going_to_sleep: bool) -> PowerSignal {
 /// mirror as an outside hold would let two sessions keep each other awake forever.
 const OWN_INHIBITOR_WHO: [&str; 2] = ["Tilo power", "Tilo compositor"];
 
-/// How often the service re-reads logind's inhibitor list (in 250 ms ticks): 20 = every 5 s.
-const FOREIGN_INHIBITOR_POLL_EVERY: u32 = 20;
-
 /// One logind `ListInhibitors` row: `(what, who, why, mode, uid, pid)`.
 pub type LogindInhibitorRow = (String, String, String, String, u32, u32);
 
@@ -190,6 +291,10 @@ pub struct PowerService {
     sleep_lock_drawn: bool,
     preparing_for_sleep: bool,
     suspend_task: Option<tokio::task::JoinHandle<()>>,
+    /// Keeps the battery history in memory between samples.
+    history: PowerHistoryWriter,
+    /// How often the loop has woken; see [`Self::wakeup_counter`].
+    wakeups: Arc<AtomicU64>,
 }
 
 impl PowerService {
@@ -208,9 +313,23 @@ impl PowerService {
         policy: PowerPolicy,
     ) -> zbus::Result<Self> {
         let conn = zbus::Connection::system().await?;
-        let logind = LogindManager::with_connection(&conn).await?;
-        let upower = UPowerMonitor::with_connection(&conn).await?;
-        let power_profiles = PowerProfilesMonitor::with_connection(&conn).await.ok();
+        Self::with_connection(&conn, bridge, registry, policy).await
+    }
+
+    /// [`Self::connect`] on an existing connection to logind and `UPower`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either the `logind` or `UPower` proxy cannot be built.
+    pub async fn with_connection(
+        conn: &zbus::Connection,
+        bridge: PowerBridge,
+        registry: InhibitRegistry,
+        policy: PowerPolicy,
+    ) -> zbus::Result<Self> {
+        let logind = LogindManager::with_connection(conn).await?;
+        let upower = UPowerMonitor::with_connection(conn).await?;
+        let power_profiles = PowerProfilesMonitor::with_connection(conn).await.ok();
 
         // Best-effort: if logind refuses the delegate lock we still run our policy; logind may
         // just also act on the lid. Do not fail startup.
@@ -252,97 +371,53 @@ impl PowerService {
             sleep_lock_drawn: false,
             preparing_for_sleep: false,
             suspend_task: None,
+            history: PowerHistoryWriter::new(),
+            wakeups: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Counts every time the running loop wakes, for diagnostics and the idle-wakeup tests: an
+    /// idle session with no armed timeout should leave it still for minutes.
+    pub fn wakeup_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.wakeups)
     }
 
     /// Run the service loop until the process ends. Never returns under normal operation.
     pub async fn run(mut self) {
-        // Prompt cadence for commands + registry mirroring + lid polling; battery is polled less
-        // often (every `BATTERY_POLL_EVERY` ticks).
-        const BATTERY_POLL_EVERY: u32 = 80; // 250ms * 80 = 20s
-
         let policy = self.policy;
         info!(target: "tilo::power", ?policy, "power service started");
 
-        let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
-        let mut ticks: u32 = 0;
-
-        // Resume stream. D-Bus signal streams can end when the bus daemon or
-        // connection is restarted (common during a desktop/session restart),
-        // so keep a bounded retry instead of leaving resume handling disabled.
-        let mut sleep_stream = match self.logind.receive_prepare_for_sleep().await {
-            Ok(stream) => Some(stream),
-            Err(error) => {
-                warn!(target: "tilo::power", %error, "PrepareForSleep subscription unavailable; retrying");
-                None
-            }
-        };
-        let mut sleep_stream_retry_at = tokio::time::Instant::now();
-        let profile_monitor = self.power_profiles.clone();
-        let mut profile_stream = match profile_monitor.as_ref() {
-            Some(monitor) => Some(monitor.receive_active_profile_changed().await),
-            None => None,
-        };
-        let mut profile_stream_retry_at = tokio::time::Instant::now();
-
-        if let Some(monitor) = profile_monitor.as_ref()
-            && let Ok(profile) = monitor.active_profile().await
-        {
-            self.apply_active_profile(&profile);
-        }
-
-        // Prime battery + lid so a machine that boots already-low / lid-closed reacts promptly.
-        self.poll_battery().await;
-        self.poll_lid().await;
+        let commands = self.bridge.command_wake();
+        let registry_changed = Arc::new(Notify::new());
+        self.registry.on_change({
+            let changed = Arc::clone(&registry_changed);
+            move || changed.notify_one()
+        });
+        let mut deadlines = Deadlines::default();
+        let mut streams = self.start(&mut deadlines).await;
 
         loop {
+            self.schedule_polls(&mut deadlines);
+            let next_deadline = deadlines.next();
             tokio::select! {
-                _ = tick.tick() => {
-                    let now = tokio::time::Instant::now();
-                    if sleep_stream.is_none() && now >= sleep_stream_retry_at {
-                        match self.logind.receive_prepare_for_sleep().await {
-                            Ok(stream) => {
-                                info!(target: "tilo::power", "subscribed to logind PrepareForSleep");
-                                sleep_stream = Some(stream);
-                            }
-                            Err(error) => {
-                                debug!(target: "tilo::power", %error, "PrepareForSleep subscription unavailable; retrying");
-                                sleep_stream_retry_at = stream_retry_after(now);
-                            }
-                        }
-                    }
-                    if profile_stream.is_none()
-                        && now >= profile_stream_retry_at
-                        && let Some(monitor) = profile_monitor.as_ref()
-                    {
-                        // power-profiles-daemon's zbus property stream has
-                        // no fallible subscription step; if its stream
-                        // ended, creating a new one is the retry.
-                        profile_stream = Some(monitor.receive_active_profile_changed().await);
-                        info!(target: "tilo::power", "subscribed to power-profile changes");
-                    }
-                    self.reap_suspend_task().await;
-                    if ticks.is_multiple_of(FOREIGN_INHIBITOR_POLL_EVERY) {
-                        self.poll_foreign_inhibitors().await;
-                    }
-                    self.drain_commands().await;
-                    self.mirror_inhibit_registry().await;
-                    self.poll_lid().await;
-                    ticks = ticks.wrapping_add(1);
-                    if ticks.is_multiple_of(BATTERY_POLL_EVERY) {
-                        self.poll_battery().await;
+                () = commands.notified() => self.drain_commands().await,
+                () = registry_changed.notified() => self.mirror_inhibit_registry().await,
+                joined = join_or_pending(&mut self.suspend_task) => {
+                    self.suspend_task = None;
+                    if let Err(error) = joined {
+                        warn!(target: "tilo::power", %error, "logind Suspend task failed");
                     }
                 }
-                msg = next_or_pending(&mut sleep_stream), if sleep_stream.is_some() => {
+                msg = next_or_pending(&mut streams.sleep), if streams.sleep.is_some() => {
                     if let Some(msg) = msg {
-                        self.handle_prepare_for_sleep(&msg).await;
+                        self.handle_prepare_for_sleep(&msg, &mut deadlines).await;
                     } else {
                         warn!(target: "tilo::power", "PrepareForSleep stream ended; scheduling resubscription");
-                        sleep_stream = None;
-                        sleep_stream_retry_at = stream_retry_after(tokio::time::Instant::now());
+                        streams.sleep = None;
+                        deadlines.sleep_stream = Some(stream_retry_after(Instant::now()));
                     }
                 }
-                changed = next_or_pending(&mut profile_stream), if profile_stream.is_some() => {
+                changed = next_or_pending(&mut streams.profile), if streams.profile.is_some() => {
                     if let Some(changed) = changed {
                         match changed.get().await {
                             Ok(profile) => self.apply_active_profile(&profile),
@@ -350,31 +425,188 @@ impl PowerService {
                         }
                     } else {
                         debug!(target: "tilo::power", "power-profile stream ended; scheduling resubscription");
-                        profile_stream = None;
-                        profile_stream_retry_at = stream_retry_after(tokio::time::Instant::now());
+                        streams.profile = None;
+                        deadlines.profile_stream = Some(stream_retry_after(Instant::now()));
                     }
                 }
+                changed = next_or_pending(&mut streams.lid), if streams.lid.is_some() => {
+                    if changed.is_some() {
+                        self.poll_lid().await;
+                    } else {
+                        debug!(target: "tilo::power", "lid stream ended; scheduling resubscription");
+                        streams.lid = None;
+                        deadlines.lid_stream = Some(stream_retry_after(Instant::now()));
+                    }
+                }
+                changed = next_or_pending(&mut streams.battery), if streams.battery.is_some() => {
+                    if changed.is_some() {
+                        self.poll_battery().await;
+                    } else {
+                        debug!(target: "tilo::power", "battery stream ended; scheduling resubscription");
+                        streams.battery = None;
+                        deadlines.battery_stream = Some(stream_retry_after(Instant::now()));
+                    }
+                }
+                () = sleep_until_or_pending(next_deadline) => {
+                    self.resubscribe_due(&mut streams, &mut deadlines).await;
+                    self.poll_due(&mut deadlines).await;
+                }
             }
+            self.wakeups.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    /// Poll the battery once and apply the threshold reaction.
-    async fn poll_battery(&mut self) {
+    /// Subscribe to every signal the loop waits on and prime the state they report, so a machine
+    /// that boots already-low / lid-closed reacts promptly; from then on the daemons announce
+    /// their changes.
+    async fn start(&mut self, deadlines: &mut Deadlines) -> Streams {
+        // Resume stream. D-Bus signal streams can end when the bus daemon or
+        // connection is restarted (common during a desktop/session restart),
+        // so keep a bounded retry instead of leaving resume handling disabled.
+        let sleep = match self.logind.receive_prepare_for_sleep().await {
+            Ok(stream) => Some(stream),
+            Err(error) => {
+                warn!(target: "tilo::power", %error, "PrepareForSleep subscription unavailable; retrying");
+                deadlines.sleep_stream = Some(stream_retry_after(Instant::now()));
+                None
+            }
+        };
+        let profile_monitor = self.power_profiles.clone();
+        let profile = match profile_monitor.as_ref() {
+            Some(monitor) => Some(monitor.receive_active_profile_changed().await),
+            None => None,
+        };
+        if let Some(monitor) = profile_monitor.as_ref()
+            && let Ok(profile) = monitor.active_profile().await
+        {
+            self.apply_active_profile(&profile);
+        }
+
+        self.sample_history(deadlines).await;
+        self.poll_battery().await;
+        self.poll_lid().await;
+        let streams = Streams {
+            sleep,
+            profile,
+            lid: Some(self.upower.receive_lid_changes().await),
+            battery: Some(self.upower.receive_battery_changes().await),
+        };
+        if idle_timeout_armed(&self.policy) {
+            self.poll_foreign_inhibitors().await;
+            deadlines.foreign_armed = true;
+        }
+        self.mirror_inhibit_registry().await;
+        self.drain_commands().await;
+        streams
+    }
+
+    /// Resubscribe every signal stream whose retry has come due.
+    async fn resubscribe_due(&mut self, streams: &mut Streams, deadlines: &mut Deadlines) {
+        let now = Instant::now();
+        if take_due(&mut deadlines.sleep_stream, now) {
+            match self.logind.receive_prepare_for_sleep().await {
+                Ok(stream) => {
+                    info!(target: "tilo::power", "subscribed to logind PrepareForSleep");
+                    streams.sleep = Some(stream);
+                }
+                Err(error) => {
+                    debug!(target: "tilo::power", %error, "PrepareForSleep subscription unavailable; retrying");
+                    deadlines.sleep_stream = Some(stream_retry_after(now));
+                }
+            }
+        }
+        if take_due(&mut deadlines.profile_stream, now)
+            && let Some(monitor) = self.power_profiles.as_ref()
+        {
+            // power-profiles-daemon's zbus property stream has
+            // no fallible subscription step; if its stream
+            // ended, creating a new one is the retry.
+            streams.profile = Some(monitor.receive_active_profile_changed().await);
+            info!(target: "tilo::power", "subscribed to power-profile changes");
+        }
+        if take_due(&mut deadlines.lid_stream, now) {
+            streams.lid = Some(self.upower.receive_lid_changes().await);
+            self.poll_lid().await;
+        }
+        if take_due(&mut deadlines.battery_stream, now) {
+            streams.battery = Some(self.upower.receive_battery_changes().await);
+            self.poll_battery().await;
+        }
+    }
+
+    /// Run every poll whose deadline has come due.
+    async fn poll_due(&mut self, deadlines: &mut Deadlines) {
+        let now = Instant::now();
+        if take_due(&mut deadlines.foreign_inhibitors, now) {
+            self.poll_foreign_inhibitors().await;
+        }
+        if take_due(&mut deadlines.lease_lapse, now) {
+            self.mirror_inhibit_registry().await;
+        }
+        if take_due(&mut deadlines.history, now) {
+            self.sample_history(deadlines).await;
+        }
+    }
+
+    /// Arm the deadlines that follow from the current state: logind's inhibitor list is read
+    /// only while an idle timeout is armed (and another program's hold is dropped when none is),
+    /// and a lease that will lapse needs a wake when it does.
+    fn schedule_polls(&mut self, deadlines: &mut Deadlines) {
+        let now = Instant::now();
+        if idle_timeout_armed(&self.policy) {
+            // An idle timeout that was just armed reads at once: a lock taken while none was
+            // armed must not wait a whole poll to count.
+            let first = !std::mem::replace(&mut deadlines.foreign_armed, true);
+            deadlines.foreign_inhibitors.get_or_insert_with(|| {
+                if first {
+                    now
+                } else {
+                    after(now, FOREIGN_INHIBITOR_POLL)
+                }
+            });
+        } else {
+            deadlines.foreign_armed = false;
+            deadlines.foreign_inhibitors = None;
+            if self.foreign_hold.take().is_some() {
+                debug!(target: "tilo::power", "no idle timeout armed: stopped following other programs' locks");
+            }
+        }
+        let wall = std::time::Instant::now();
+        deadlines.lease_lapse = self
+            .registry
+            .next_lapse_for(INHIBIT_POWER, wall)
+            .map(|lapse| after(now, lapse.saturating_duration_since(wall)));
+    }
+
+    /// Sample the power sources into the history and schedule the next sample for when a point
+    /// can land.
+    async fn sample_history(&mut self, deadlines: &mut Deadlines) {
+        let now_secs = tilo_clock::unix_now();
+        let mut due_minute: Option<u64> = None;
         match self.upower.history_samples().await {
             Ok(samples) => {
                 for sample in samples {
-                    if let Err(error) = crate::history::record_power_history(
-                        sample.kind,
+                    let point = BatteryHistoryPoint::sampled(
+                        now_secs / 60,
                         sample.capacity,
                         sample.health,
                         sample.on_ac,
-                    ) {
+                    );
+                    if let Err(error) = self.history.record(sample.kind, point) {
                         debug!(target: "tilo::power", %error, "power history sample could not be stored");
+                    }
+                    if let Some(minute) = self.history.next_due_minute(sample.kind) {
+                        due_minute = Some(due_minute.map_or(minute, |due| due.min(minute)));
                     }
                 }
             }
             Err(error) => debug!(target: "tilo::power", %error, "power history sample failed"),
         }
+        deadlines.history = Some(after(Instant::now(), history_wait(due_minute, now_secs)));
+    }
+
+    /// Read the battery once and apply the threshold reaction.
+    async fn poll_battery(&mut self) {
         let snap = match self.upower.battery_snapshot().await {
             Ok(s) => s,
             Err(e) => {
@@ -412,8 +644,8 @@ impl PowerService {
         }
     }
 
-    /// Poll the lid and, on the open→closed edge, apply the lid policy. Edge-triggered so we
-    /// act once per close, not every tick it stays shut.
+    /// Read the lid and, on the open→closed edge, apply the lid policy. Edge-triggered so we
+    /// act once per close, not on every reading while it stays shut.
     async fn poll_lid(&mut self) {
         let closed = match self.upower.lid_is_closed().await {
             Ok(c) => c,
@@ -437,7 +669,7 @@ impl PowerService {
         }
     }
 
-    async fn handle_prepare_for_sleep(&mut self, msg: &zbus::Message) {
+    async fn handle_prepare_for_sleep(&mut self, msg: &zbus::Message, deadlines: &mut Deadlines) {
         // `PrepareForSleep(true)` = about to sleep, `false` = just resumed.
         if let Ok(going_to_sleep) = msg.body().deserialize::<bool>() {
             if going_to_sleep {
@@ -451,6 +683,13 @@ impl PowerService {
                 self.sleep_lock_drawn = false;
                 self.sleep_delay_lock = take_sleep_delay_lock(&self.logind).await;
                 self.bridge.push_signal(sleep_reaction(false));
+                // The loop's deadlines run on the monotonic clock, which stood still while the
+                // machine slept: what came due during sleep is due now.
+                let now = Instant::now();
+                deadlines.history = Some(now);
+                if deadlines.foreign_inhibitors.is_some() {
+                    deadlines.foreign_inhibitors = Some(now);
+                }
             }
         }
     }
@@ -460,6 +699,7 @@ impl PowerService {
         for cmd in self.bridge.drain_commands() {
             match cmd {
                 PowerCommand::Suspend => self.start_suspend().await,
+                PowerCommand::IdleSuspend => self.start_idle_suspend().await,
                 PowerCommand::LockScreenDrawn => {
                     self.sleep_lock_drawn = true;
                     self.release_sleep_delay_if_ready();
@@ -522,6 +762,23 @@ impl PowerService {
         }
     }
 
+    /// Suspend because the session went idle, unless another program took a logind lock since
+    /// the last [`FOREIGN_INHIBITOR_POLL`]: then report [`PowerSignal::SuspendFailed`], which
+    /// un-latches the compositor's idle suspend until the registry is clear again.
+    async fn start_idle_suspend(&mut self) {
+        self.poll_foreign_inhibitors().await;
+        if self.registry.is_inhibited() {
+            info!(
+                target: "tilo::power",
+                reasons = ?self.registry.active_reasons(),
+                "idle suspend withdrawn: the machine is held awake"
+            );
+            self.bridge.push_signal(PowerSignal::SuspendFailed);
+            return;
+        }
+        self.start_suspend().await;
+    }
+
     /// Issue the suspend request, if logind allows it. The inhibitor registry is the compositor's
     /// gate for *idle* suspend; lid/critical suspends are deliberate and proceed regardless.
     async fn start_suspend(&mut self) {
@@ -568,18 +825,6 @@ impl PowerService {
         }
     }
 
-    async fn reap_suspend_task(&mut self) {
-        if self
-            .suspend_task
-            .as_ref()
-            .is_some_and(tokio::task::JoinHandle::is_finished)
-            && let Some(task) = self.suspend_task.take()
-            && let Err(error) = task.await
-        {
-            warn!(target: "tilo::power", %error, "logind Suspend task failed");
-        }
-    }
-
     fn release_sleep_delay_if_ready(&mut self) {
         if self.preparing_for_sleep && self.sleep_lock_drawn {
             debug!(target: "tilo::power", "lock frame drawn; releasing sleep delay inhibitor");
@@ -614,6 +859,24 @@ async fn take_sleep_delay_lock(logind: &LogindManager) -> Option<LogindInhibitor
     }
 }
 
+/// `select!` helper: wait for the running suspend task, or park forever when there is none.
+async fn join_or_pending(
+    task: &mut Option<tokio::task::JoinHandle<()>>,
+) -> Result<(), tokio::task::JoinError> {
+    match task {
+        Some(task) => task.await,
+        None => std::future::pending().await,
+    }
+}
+
+/// `select!` helper: sleep until `deadline`, or park forever when there is none.
+async fn sleep_until_or_pending(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
 /// `select!` helper: poll an `Option<Stream>`, or park forever when absent so the branch is
 /// simply inert rather than a busy `None`.
 async fn next_or_pending<S: futures_util::Stream + Unpin>(
@@ -633,7 +896,7 @@ mod tests {
     fn service_reacts_to_lid_sleep_and_signal_edges() {
         // Phase `ended_signal_streams_back_off_before_resubscribe`.
         {
-            let now = tokio::time::Instant::now();
+            let now = Instant::now();
             let retry = stream_retry_after(now);
             assert!(retry > now);
             assert_eq!(retry.duration_since(now), SIGNAL_STREAM_RETRY_DELAY);
@@ -730,6 +993,71 @@ mod tests {
     }
 
     #[test]
+    fn deadlines_follow_the_policy_and_the_history() {
+        // Phase `the_loop_wakes_for_the_earliest_deadline_only`.
+        {
+            let now = Instant::now();
+            let mut deadlines = Deadlines::default();
+            assert_eq!(deadlines.next(), None, "nothing armed: the loop only waits");
+            deadlines.history = Some(now + HISTORY_SAMPLE_RETRY);
+            deadlines.foreign_inhibitors = Some(now + FOREIGN_INHIBITOR_POLL);
+            assert_eq!(deadlines.next(), Some(now + FOREIGN_INHIBITOR_POLL));
+            assert!(!take_due(&mut deadlines.foreign_inhibitors, now));
+            assert!(take_due(
+                &mut deadlines.foreign_inhibitors,
+                now + FOREIGN_INHIBITOR_POLL
+            ));
+            assert_eq!(
+                deadlines.foreign_inhibitors, None,
+                "a due deadline is spent"
+            );
+            assert_eq!(deadlines.next(), Some(now + HISTORY_SAMPLE_RETRY));
+        }
+        // Phase `foreign_locks_matter_only_while_an_idle_timeout_is_armed`.
+        {
+            let never = PowerPolicy {
+                idle_blank: None,
+                idle_lock: None,
+                idle_suspend: None,
+                ..PowerPolicy::default()
+            };
+            assert!(!idle_timeout_armed(&never));
+            for armed in [
+                PowerPolicy {
+                    idle_blank: Some(Duration::from_secs(60)),
+                    ..never
+                },
+                PowerPolicy {
+                    idle_lock: Some(Duration::from_secs(60)),
+                    ..never
+                },
+                PowerPolicy {
+                    idle_suspend: Some(Duration::from_secs(60)),
+                    ..never
+                },
+            ] {
+                assert!(idle_timeout_armed(&armed));
+            }
+        }
+        // Phase `history_is_sampled_when_a_point_can_land_and_never_twice_a_minute`.
+        {
+            let now_secs = 1_000 * 60 + 30;
+            assert_eq!(
+                history_wait(Some(1_015), now_secs),
+                Duration::from_secs(14 * 60 + 30),
+                "wakes at the first second the next point lands"
+            );
+            assert_eq!(
+                history_wait(Some(1_000), now_secs),
+                HISTORY_SAMPLE_FLOOR,
+                "an overdue point still waits the floor"
+            );
+            assert_eq!(history_wait(None, now_secs), HISTORY_SAMPLE_RETRY);
+            assert!(HISTORY_SAMPLE_RETRY >= HISTORY_SAMPLE_FLOOR);
+        }
+    }
+
+    #[test]
     fn battery_events_toast_and_suspend_according_to_policy() {
         // Phase `low_event_becomes_a_noncritical_toast_no_suspend`.
         {
@@ -809,3 +1137,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod fake_bus_tests;

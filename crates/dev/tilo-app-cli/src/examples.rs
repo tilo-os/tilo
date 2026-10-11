@@ -54,58 +54,58 @@ pub const ALL: &[Example] = &[
     Example {
         name: "counter",
         concept: "resources and actions",
-        summary: "A number changed only through validated actions, with undo, a confirmed reset and a viewer role.",
+        summary: "A number set at its path and changed by verbs, all checked by the model, with undo, a confirmed reset and a viewer role.",
         web: true,
-        files: example_files_with_common!("counter"),
+        files: example_files_with_common!("counter", "surface.toml"),
     },
     Example {
         name: "bound-controls",
         concept: "bound controls",
         summary: "Text, checkbox, number, slider and dropdown controls, each bound to a resource field.",
         web: true,
-        files: example_files_with_common!("bound-controls"),
+        files: example_files_with_common!("bound-controls", "surface.toml"),
     },
     Example {
         name: "virtual-list",
         concept: "lists and virtualization",
         summary: "A hundred-million-row list that loads only the rows in view, with variable heights and row buttons.",
         web: true,
-        files: example_files_with_common!("virtual-list"),
+        files: example_files_with_common!("virtual-list", "surface.toml"),
     },
     Example {
         name: "data-table",
         concept: "tables",
         summary: "Text and widget columns over a sparse source, row selection and actions from cells.",
         web: true,
-        files: example_files_with_common!("data-table"),
+        files: example_files_with_common!("data-table", "surface.toml"),
     },
     Example {
         name: "tree-browser",
         concept: "navigation and master-detail",
         summary: "A tree picks a section, a detail pane edits it, and compact windows switch panes.",
         web: true,
-        files: example_files_with_common!("tree-browser"),
+        files: example_files_with_common!("tree-browser", "surface.toml"),
     },
     Example {
         name: "background-task",
         concept: "async work",
         summary: "A cancellable computation on a worker thread, started by a button or by any caller of its action.",
         web: true,
-        files: example_files_with_common!("background-task"),
+        files: example_files_with_common!("background-task", "surface.toml"),
     },
     Example {
         name: "shared-checklist",
         concept: "collaboration and undo",
         summary: "A checklist whose tests edit two replicas concurrently and show what merges, and what undo takes back.",
         web: true,
-        files: example_files_with_common!("shared-checklist"),
+        files: example_files_with_common!("shared-checklist", "surface.toml"),
     },
     Example {
         name: "localized",
         concept: "localization",
         summary: "English and German catalogs with arguments and plurals, switched live and checked with the pseudo-locale.",
         web: true,
-        files: example_files_with_common!("localized", "locales/de-DE.ftl"),
+        files: example_files_with_common!("localized", "locales/de-DE.ftl", "surface.toml"),
     },
     Example {
         name: "graph-screens",
@@ -119,6 +119,7 @@ pub const ALL: &[Example] = &[
             "src/screens.rs",
             "ui/about.json",
             "ui/main.json",
+            "surface.toml",
         ),
     },
     Example {
@@ -126,7 +127,7 @@ pub const ALL: &[Example] = &[
         concept: "generated visuals",
         summary: "A QR code drawn from resource text, described for screen readers, empty until there is a payload.",
         web: true,
-        files: example_files_with_common!("qr-code"),
+        files: example_files_with_common!("qr-code", "surface.toml"),
     },
 ];
 
@@ -186,6 +187,50 @@ pub fn find(name: &str) -> Result<&'static Example> {
 #[must_use]
 pub fn examples_json() -> serde_json::Value {
     serde_json::Value::Array(ALL.iter().map(Example::to_json).collect())
+}
+
+/// One example, optionally with one of its embedded files. No checkout is needed.
+///
+/// # Errors
+/// Unknown example names or paths outside the example's embedded file list.
+pub fn details(name: &str, file: Option<&str>) -> Result<serde_json::Value> {
+    let example = find(name)?;
+    let mut result = serde_json::Map::from_iter([
+        ("example".into(), example.to_json()),
+        (
+            "create_command".into(),
+            serde_json::json!(format!("tilo-app new NAME --from-example {name}")),
+        ),
+    ]);
+    if let Some(path) = file {
+        let (_, content) = example
+            .files
+            .iter()
+            .find(|(embedded, _)| *embedded == path)
+            .with_context(|| {
+                let paths = example
+                    .files
+                    .iter()
+                    .map(|(path, _)| *path)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("the {name} example has no embedded file {path:?}; choose one of: {paths}")
+            })?;
+        result.insert("file".into(), serde_json::json!(path));
+        result.insert("content".into(), serde_json::json!(content));
+    } else {
+        result.insert(
+            "files".into(),
+            serde_json::json!(
+                example
+                    .files
+                    .iter()
+                    .map(|(path, _)| *path)
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
+    Ok(serde_json::Value::Object(result))
 }
 
 /// Replace the files `new` rendered for a starter app with the example's,

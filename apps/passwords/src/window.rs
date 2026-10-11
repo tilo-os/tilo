@@ -6,13 +6,14 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use ui::num::u32_of_usize;
 
 use accounts::{SecretId, SecretItemKind};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::{
     AppModel, Button, Element, ModelPath, NavItem, NavList, NavPane, NavSection, NavShell, Widget,
 };
@@ -59,10 +60,6 @@ fn filter_icon(filter: VaultFilter) -> Icon {
     }
 }
 
-fn count(n: usize) -> u32 {
-    u32::try_from(n).unwrap_or(u32::MAX)
-}
-
 impl Core {
     fn nav_sections(&self) -> Vec<NavSection> {
         let vault = VaultFilter::ALL
@@ -72,7 +69,7 @@ impl Core {
                     .icon(filter_icon(filter));
                 match self.count(filter) {
                     0 => item,
-                    n => item.count(count(n)),
+                    n => item.count(u32_of_usize(n)),
                 }
             })
             .collect();
@@ -82,7 +79,7 @@ impl Core {
             .len()
             .saturating_add(self.app_proposals.len());
         if access_count > 0 {
-            access = access.count(count(access_count));
+            access = access.count(u32_of_usize(access_count));
         }
         vec![
             NavSection::new("vault", "Vault", vault),
@@ -186,8 +183,6 @@ pub struct PasswordsSurface {
     pending: Option<String>,
     settled_layouts: u32,
     last_window: vello::kurbo::Rect,
-    /// The toast last painted, so a new or expired one repaints the window.
-    painted_toast: Option<String>,
 }
 
 impl PasswordsSurface {
@@ -220,7 +215,6 @@ impl PasswordsSurface {
             pending: None,
             settled_layouts: 0,
             last_window: vello::kurbo::Rect::ZERO,
-            painted_toast: None,
         };
         surface.settle();
         surface
@@ -234,6 +228,25 @@ impl PasswordsSurface {
     /// The fixture vault, for tests and captures.
     pub fn demo() -> Self {
         Self::with_core(Core::demo())
+    }
+
+    /// What a search hit or an agent's `open` runs: show the vault item
+    /// its anchor names, as clicking its row does; refused for an item the
+    /// vault does not hold.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) -> Result<(), &'static str> + 'static {
+        let core = Rc::clone(&self.core);
+        let requests = Rc::clone(&self.requests);
+        move |anchor| {
+            let id = anchor
+                .strip_prefix(crate::actions::ITEM_PREFIX)
+                .map(|id| SecretId(id.to_owned()))
+                .ok_or("not an item of the vault")?;
+            if core.borrow().item(&id).is_none() {
+                return Err("the vault holds no such item");
+            }
+            requests.borrow_mut().push(Request::Open(id));
+            Ok(())
+        }
     }
 
     #[cfg(test)]
@@ -252,8 +265,8 @@ impl PasswordsSurface {
     }
 
     /// Apply what controls asked for, then bring the window in step: the
-    /// content page, the overview, its title, the front pane and the
-    /// search index.
+    /// content page, the overview, its title, the front pane, the notice and
+    /// the search index.
     pub(crate) fn settle(&mut self) {
         self.core.borrow_mut().refresh_model();
         loop {
@@ -266,7 +279,7 @@ impl PasswordsSurface {
             }
         }
         self.core.borrow_mut().expire();
-        let (page, list, screen, title, front) = {
+        let (page, list, screen, title, front, toast) = {
             let mut core = self.core.borrow_mut();
             (
                 core.page_revision,
@@ -274,8 +287,12 @@ impl PasswordsSurface {
                 core.screen,
                 core.filter.label().to_owned(),
                 core.show_pane.take(),
+                core.toast.take(),
             )
         };
+        if let Some(message) = toast {
+            self.shell.toast(message, ToastKind::Info);
+        }
         if self.built_page != Some(page) {
             self.built_page = Some(page);
             let content = {
@@ -440,32 +457,6 @@ impl PasswordsSurface {
         self.requests.borrow_mut().push(request);
         true
     }
-
-    fn toast_changed(&self) -> bool {
-        let core = self.core.borrow();
-        core.toast.as_ref().map(|(message, _)| message) != self.painted_toast.as_ref()
-    }
-
-    fn paint_toast(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let core = self.core.borrow();
-        if let Some((message, _)) = &core.toast {
-            paint_transient(
-                scene,
-                transform,
-                text,
-                theme,
-                core.window,
-                ToastAnchor::BottomRight,
-                &ToastCard::new(message, ToastKind::Info),
-            );
-        }
-    }
 }
 
 impl ui::widget::Decorator for PasswordsSurface {
@@ -518,20 +509,12 @@ impl ui::widget::Decorator for PasswordsSurface {
         presence: &PresenceCtx,
     ) {
         Widget::draw_overlay(&mut self.shell, scene, transform, text, theme, presence);
-        self.paint_toast(scene, transform, text, theme);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        match event {
-            WindowEvent::Focused(false) => {
-                // A reveal is only for the actively attended window.
-                self.core.borrow_mut().hide_revealed();
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.core.borrow_mut().pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            }
-            _ => {}
+        if matches!(event, WindowEvent::Focused(false)) {
+            // A reveal is only for the actively attended window.
+            self.core.borrow_mut().hide_revealed();
         }
         Widget::handle_event(&mut self.shell, event, ctx);
         if !*ctx.handled && self.handle_shortcut(event, ctx) {
@@ -545,26 +528,7 @@ impl ui::widget::Decorator for PasswordsSurface {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.core.borrow().model_changed()
-            || self.toast_changed()
-            || Widget::needs_redraw(&self.shell)
-    }
-
-    fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
-        if self.toast_changed() {
-            regions.push(self.last_window);
-        }
-        Widget::collect_damage(&self.shell, regions);
-    }
-
-    fn mark_drawn(&mut self) {
-        self.painted_toast = self
-            .core
-            .borrow()
-            .toast
-            .as_ref()
-            .map(|(message, _)| message.clone());
-        Widget::mark_drawn(&mut self.shell);
+        self.core.borrow().model_changed() || Widget::needs_redraw(&self.shell)
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {

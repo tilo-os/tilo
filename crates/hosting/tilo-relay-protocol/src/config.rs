@@ -585,11 +585,22 @@ mod tests {
 
     #[test]
     fn shell_authority_config_accepts_exact_local_binding() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../tilo-relay/tests/fixtures/shell-proof/failure.json"
-        ))
-        .unwrap();
-        let binding = serde_json::json!({"id": "42", "shell_authority": {"room": fixture["room"], "governor": fixture["authority"]}});
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
+        let mut governor = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Native workspace peer".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut governor, &root).unwrap();
+        let binding = serde_json::json!({"id": "42", "shell_authority": {
+            "room": "5e11f00d-7110-4000-8000-000000000001",
+            "governor": governor,
+        }});
         let binding: WorkspaceBinding = serde_json::from_value(binding).unwrap();
         assert_eq!(
             toml::from_str::<WorkspaceBinding>(&toml::to_string(&binding).unwrap()).unwrap(),
