@@ -496,6 +496,14 @@ pub fn installed_versions() -> Result<std::collections::HashMap<String, String>,
 }
 
 fn installed_manifest_version(path: &std::path::Path) -> Option<String> {
+    // Runtime packages may have no executable entrypoint. Parse their normal
+    // package manifest rather than requiring the launcher's app-only view.
+    if let Ok(text) = std::fs::read_to_string(path)
+        && let Ok(manifest) = tilo_app_package::Manifest::from_toml_str(&text)
+        && !manifest.package.version.is_empty()
+    {
+        return Some(manifest.package.version);
+    }
     tilo_app_package::view::read_manifest(path)
         .ok()
         .map(|manifest| manifest.version)
