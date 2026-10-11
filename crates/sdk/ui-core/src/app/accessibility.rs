@@ -1,42 +1,9 @@
 // Accessibility configuration, semantic focus, announcements, and action routing.
 
 impl App {
-    fn persisted_accessibility_bool(key: &str) -> bool {
-        settings_store::load_section("accessibility")
-            .get(key)
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-    }
-
-    fn configure_screen_reader(reader: &mut crate::screen_reader::ScreenReader) {
-        let section = settings_store::load_section("accessibility");
-        let rate_pct = section
-            .get("screen_reader_rate")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(100)
-            .clamp(50, 200);
-        // Always in 50..=200, so this always fits u8 losslessly.
-        let rate = f32::from(u8::try_from(rate_pct).unwrap_or(100)) / 100.0;
-        reader.set_rate(rate);
-        let voice = section
-            .get("screen_reader_voice")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|voice| match voice {
-                "english_us" => Some("en-us"),
-                "english_gb" => Some("en-gb"),
-                "german" => Some("de"),
-                "french" => Some("fr"),
-                "spanish" => Some("es"),
-                _ => None,
-            });
-        if let Some(voice) = voice {
-            reader.set_voice(voice);
-        }
-    }
-
     fn configured_screen_reader() -> crate::screen_reader::ScreenReader {
         let mut reader = crate::screen_reader::ScreenReader::new();
-        Self::configure_screen_reader(&mut reader);
+        reader.configure(&settings_store::screen_reader::ScreenReaderSettings::load());
         reader
     }
 
