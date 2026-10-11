@@ -17952,7 +17952,10 @@ impl Widget for ShellOverlayHost {
                 work_area.set_vertical_padding(0.0);
                 work_area.set_extra_top_padding(12.0);
                 work_area.set_extra_bottom_padding(12.0);
-                work_area.set_gap(theme.gap_standard);
+                // The column holds zero-height navigation leaves ahead of the
+                // rows; a gap between them (`gap_standard` here) stacked two
+                // stray gaps over the first strip.
+                work_area.set_gap(0.0);
             }
         }
         let spans = self.strip_output_spans();

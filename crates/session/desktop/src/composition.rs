@@ -31,8 +31,9 @@ pub enum WorkArea {
     #[default]
     Framed,
     /// `top` px separate the window surfaces from the top bar and the same
-    /// margin separates them from the bottom edge. A maximized window abuts
-    /// the bar and the bottom edge directly.
+    /// margin separates them from the bottom edge, with nothing else in
+    /// between (the navigation leaves are zero-height and add no gap). A
+    /// maximized window abuts the bar and the bottom edge directly.
     Flush { top: f32 },
 }
 pub struct SurfaceChrome {
@@ -244,8 +245,12 @@ impl DesktopSurface {
                         .any(|g| g.maximized)
                 });
                 let column = column.with_vertical_padding(0.0);
+                // The zero-height navigation leaves ahead of the rows are
+                // separated by the column gap too; two stray gaps used to
+                // stack above the first strip on top of `top`.
+                let column = column.with_gap(0.0);
                 if maximized {
-                    column.with_gap(0.0)
+                    column
                 } else {
                     column
                         .with_extra_top_padding(top)
