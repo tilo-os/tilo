@@ -11,17 +11,10 @@
     reason = "test harness failures are assertions"
 )]
 
-use std::os::unix::net::UnixStream;
-use std::sync::Arc;
-
-use smithay::reexports::calloop::EventLoop;
-use smithay::reexports::wayland_server::Display;
-use wayland_client::protocol::{wl_compositor, wl_pointer, wl_registry, wl_seat, wl_surface};
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_client::protocol::{wl_compositor, wl_pointer, wl_seat, wl_surface};
+use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 use winit::event::{MouseScrollDelta, TouchPhase};
-
-use shell::compositor::state::State;
 
 #[derive(Debug, PartialEq)]
 enum Wire {
@@ -38,25 +31,7 @@ struct Client {
     wire: Vec<Wire>,
 }
 
-impl Dispatch<wl_registry::WlRegistry, ()> for Client {
-    fn event(
-        state: &mut Self,
-        _: &wl_registry::WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            state.globals.push((name, interface, version));
-        }
-    }
-}
+crate::support::wayland::test_client!(Client);
 
 fn axis(axis: WEnum<wl_pointer::Axis>) -> wl_pointer::Axis {
     axis.into_result().expect("a known axis")
@@ -87,129 +62,14 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Client {
     }
 }
 
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Client {
-    fn event(
-        _: &mut Self,
-        base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
-    fn event(
-        _: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-        }
-    }
-}
-
 delegate_noop!(Client: ignore wl_compositor::WlCompositor);
 delegate_noop!(Client: ignore wl_surface::WlSurface);
 delegate_noop!(Client: ignore wl_seat::WlSeat);
 delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 
-struct Harness {
-    display: Display<State>,
-    state: State,
-    queue: wayland_client::EventQueue<Client>,
-    client: Client,
-    conn: Connection,
-    _event_loop: EventLoop<'static, State>,
-}
+type Harness = crate::support::wayland::Harness<Client>;
 
 impl Harness {
-    fn new() -> Self {
-        let event_loop = EventLoop::try_new().expect("calloop");
-        let display = Display::new().expect("display");
-        let state = State::new(event_loop.handle(), display.handle());
-        let (server, client) = UnixStream::pair().expect("socket pair");
-        display
-            .handle()
-            .insert_client(
-                server,
-                Arc::new(shell::compositor::state::ClientState::default()),
-            )
-            .expect("client insert");
-        client.set_nonblocking(true).expect("nonblocking");
-        let conn = Connection::from_socket(client).expect("client connection");
-        let queue = conn.new_event_queue::<Client>();
-        let mut harness = Self {
-            display,
-            state,
-            queue,
-            client: Client::default(),
-            conn,
-            _event_loop: event_loop,
-        };
-        let _registry = harness
-            .conn
-            .display()
-            .get_registry(&harness.queue.handle(), ());
-        harness.pump();
-        harness
-    }
-
-    fn pump(&mut self) {
-        for _ in 0..6 {
-            let _ = self.queue.flush();
-            let _ = self.display.dispatch_clients(&mut self.state);
-            let _ = self.display.flush_clients();
-            if let Some(guard) = self.conn.prepare_read() {
-                let _ = guard.read();
-            }
-            let _ = self.queue.dispatch_pending(&mut self.client);
-        }
-    }
-
-    fn bind<I: Proxy + 'static>(&self, interface: &str, version: u32) -> I
-    where
-        Client: Dispatch<I, ()>,
-    {
-        let (name, _, advertised) = self
-            .client
-            .globals
-            .iter()
-            .find(|(_, name, _)| name == interface)
-            .unwrap_or_else(|| panic!("{interface} is advertised"))
-            .clone();
-        let registry = self.conn.display().get_registry(&self.queue.handle(), ());
-        registry.bind(name, version.min(advertised), &self.queue.handle(), ())
-    }
-
-    fn foreign_id(&self, app_id: &str) -> u64 {
-        self.state
-            .workspace_tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.strips.iter())
-            .flat_map(|strip| strip.window_groups.iter())
-            .flat_map(|group| group.tabs.iter())
-            .find_map(|tab| match &tab.tile {
-                shell::shell::state::TileContent::Foreign {
-                    app_id: actual,
-                    surface_id,
-                } if actual == app_id => Some(*surface_id),
-                _ => None,
-            })
-            .expect("foreign surface was adopted")
-    }
-
     /// What the client heard for one scroll event.
     fn scroll(&mut self, delta: MouseScrollDelta, phase: TouchPhase) -> Vec<Wire> {
         self.client.wire.clear();

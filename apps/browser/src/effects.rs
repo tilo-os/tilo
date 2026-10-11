@@ -153,43 +153,19 @@ pub enum BrowserEffect {
     /// Read page content
     ///
     /// Answers with the page's outline: its elements and their refs.
-    #[effect(
-        row,
-        job,
-        returns,
-        idempotent,
-        programmatic,
-        untrusted,
-        permission = "write"
-    )]
+    #[effect(row, job, returns, idempotent, programmatic, untrusted)]
     ReadPage,
     /// What changed on the page
     ///
     /// Answers with the outline lines added and removed since the last read,
     /// or the whole outline when the document is new.
-    #[effect(
-        row,
-        job,
-        returns,
-        idempotent,
-        programmatic,
-        untrusted,
-        permission = "write"
-    )]
+    #[effect(row, job, returns, idempotent, programmatic, untrusted)]
     ReadPageChanges,
     /// Element at a page point
     ///
     /// Answers with what a click at the point would hit, through overlays
     /// and banners, and the interactive element holding it.
-    #[effect(
-        row,
-        job,
-        returns,
-        idempotent,
-        programmatic,
-        untrusted,
-        permission = "write"
-    )]
+    #[effect(row, job, returns, idempotent, programmatic, untrusted)]
     ReadPageElementAt {
         #[param("Viewport x in CSS pixels from the page's left edge")]
         x: f64,
@@ -200,15 +176,7 @@ pub enum BrowserEffect {
     ///
     /// Answers once the document has loaded and stopped changing for a
     /// quiet period, or the longest wait passed.
-    #[effect(
-        row,
-        job,
-        returns,
-        idempotent,
-        programmatic,
-        untrusted,
-        permission = "write"
-    )]
+    #[effect(row, job, returns, idempotent, programmatic, untrusted)]
     WaitPageSettled {
         #[param("How long the page must stay unchanged, milliseconds (default 500)")]
         quiet_ms: Option<u32>,
@@ -219,15 +187,7 @@ pub enum BrowserEffect {
     ///
     /// Console messages and uncaught errors, collected from the first time
     /// an agent touched the tab.
-    #[effect(
-        row,
-        job,
-        returns,
-        idempotent,
-        programmatic,
-        untrusted,
-        permission = "write"
-    )]
+    #[effect(row, job, returns, idempotent, programmatic, untrusted)]
     ReadPageConsole {
         #[param(
             "Only entries after this sequence number: the `next` of the previous answer (default 0)"
@@ -238,15 +198,7 @@ pub enum BrowserEffect {
     ///
     /// Method, address, type, status, size and failure of the page's
     /// requests, never headers, bodies or cookies.
-    #[effect(
-        row,
-        job,
-        returns,
-        idempotent,
-        programmatic,
-        untrusted,
-        permission = "write"
-    )]
+    #[effect(row, job, returns, idempotent, programmatic, untrusted)]
     ReadPageNetwork {
         #[param(
             "Only entries after this sequence number: the `next` of the previous answer (default 0)"

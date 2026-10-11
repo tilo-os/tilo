@@ -29,6 +29,7 @@ BINARY_INPUTS = {
     "dist/apps/app-collections.toml",
     "tools/apps/app_package_isa.py",
     "tools/ci/rustc-thin-app-wrapper.sh",
+    "tools/ci/runtime-dylib-lazy-link.py",
     "os/scripts/build-thin-apps.sh",
     "os/Containerfile.builder",
     "os/external-assets/github-assets.tsv",
@@ -45,6 +46,7 @@ PACKAGING_INPUTS = {
     "dist/apps/assemble-collection.sh",
     "tools/apps/assemble_app_collection.py",
     "os/scripts/bake-runtime-bundle.sh",
+    "os/scripts/collect-runtime-dependencies.py",
     "os/scripts/stamp-runtime.sh",
     "tools/assemble_verified_apps.py",
     "tools/app_packaging_plan.py",
@@ -60,6 +62,7 @@ VERIFICATION_INPUTS = {
     "tools/apps/create_app_receipt.py",
     "tools/apps/final_app_receipt.py",
     "os/scripts/verify-elf-hardening.sh",
+    "os/scripts/verify-runtime-bundle-closure.sh",
     "tools/canonical_verifier_bundle.py",
     "tools/app_packaging_qualification.py",
     ".forgejo/workflows/release-apps.yml",
@@ -74,6 +77,17 @@ FULL_REBUILD_PREFIXES = (
 # These are explicitly built by package-apps.sh, not ordinary app dependencies.
 # A change reaching their graph affects the shared runtime or every emitted tapp.
 FLEET_BUILD_PACKAGES = {"runtime-dylib", "tilo-app-package-cli", "runtime-bundle"}
+# Runtime engines are built with every runtime and signed into its
+# bundle, so a change reaching one changes the runtime every app names.
+ENGINES = "crates/runtime/engines"
+
+
+def runtime_engines(root: Path = ROOT) -> set[str]:
+    """The packages under crates/runtime/engines/, which build-thin-apps.sh builds."""
+    return {
+        tomllib.loads(manifest.read_text())["package"]["name"]
+        for manifest in sorted((root / ENGINES).glob("*/Cargo.toml"))
+    }
 
 
 def architecture_matrix(
@@ -289,7 +303,7 @@ def apps_from_changes(
         }
         seeds.update(lock_affected_packages or ())
         affected = ci_select.closure(seeds, ci_select.reverse_dependencies(packages, root))
-        if affected & FLEET_BUILD_PACKAGES:
+        if affected & (FLEET_BUILD_PACKAGES | runtime_engines(root)):
             return sorted(catalog)
         selected.update(
             name for name, app in catalog.items() if app["package"] in affected

@@ -64,9 +64,9 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
             assert_eq!(custody.certificate().unwrap(),
                 *env.authority.additional_certificates.lock().unwrap().last().unwrap());
             assert!(!pending.is_finished(), "custody is not actual adoption");
-            let grants = std::mem::take(&mut env.membership.write().workspaces[0].capabilities);
+            let grants = std::mem::take(&mut env.membership.write().workspaces[0].policy.grants);
             assert!(custody.certificate().is_err(), "fresh rights, not the launch snapshot, govern admission");
-            env.membership.write().workspaces[0].capabilities = grants;
+            env.membership.write().workspaces[0].policy.grants = grants;
             assert!(custody.certificate().is_ok());
             host.cancel(&person, &original).unwrap();
             assert!(
@@ -94,7 +94,13 @@ impl crate::services::LauncherServices for ObservedLauncher {
     fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
         Vec::new()
     }
-    fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+    fn launch(
+        &self,
+        _: &str,
+        _: &tilo_desktop_model::Workspace,
+        _: Option<&str>,
+        _: &crate::services::LaunchPlace,
+    ) -> Result<(), String> {
         Err("unobserved launches are not a readiness receipt".into())
     }
     fn begin_launch(
@@ -183,10 +189,7 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                 );
                 if scenario == "revoked" {
                     let mut tree = env.membership.write();
-                    let grants = tree.workspaces[0].capabilities.clone();
-                    for grant in grants {
-                        tree.workspaces[0].revoke_capability(&grant.id);
-                    }
+                    tree.workspaces[0].revoke_grants_matching(|_| true);
                 } else if scenario == "expired" {
                     env.control.advance_monotonic(Duration::from_secs(80));
                 }
@@ -281,25 +284,20 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                     },
                 )
                 .await;
-                let room = env.route.cluster_id.clone();
+                use crate::test_support::{Grants as _, KindSet, Subject};
                 let target = "host:org.example.App.desktop";
-                let target_grant = CapOverride::grant(
-                    Subject::agent("scribe"),
-                    collab_types::Scope::App(target.into()),
-                    Verb::Write,
-                );
-                for cap in [
-                    CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
-                    CapOverride::grant(
-                        Subject::agent("scribe"),
-                        collab_types::Scope::App(env.route.app_id.clone()),
-                        Verb::Write,
-                    ),
-                ] {
-                    env.membership.write().workspaces[0].grant_capability(cap);
+                {
+                    let workspace = &mut env.membership.write().workspaces[0];
+                    workspace.admit_agent("scribe", KindSet::READ);
+                    workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
                 }
-                let target_grant_id = (scenario != "denied")
-                    .then(|| env.membership.write().workspaces[0].grant_capability(target_grant));
+                let target_grant_id = (scenario != "denied").then(|| {
+                    env.membership.write().workspaces[0].allow_app(
+                        Subject::agent("scribe"),
+                        target,
+                        KindSet::ALL,
+                    )
+                });
                 let agent = rig.caller(&env, 905, Some("scribe")).await;
                 let original = id(0xc510);
                 invoke(&agent.handle, &rig.binding, original).await.unwrap();
@@ -345,7 +343,7 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                 if scenario == "revoked" {
                     assert!(
                         env.membership.write().workspaces[0]
-                            .revoke_capability(target_grant_id.as_ref().unwrap())
+                            .revoke_grant(target_grant_id.as_ref().unwrap())
                     );
                 }
                 adopt.send(Ok(())).unwrap();
@@ -362,6 +360,95 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                         .iter()
                         .any(|(id, _)| *id == launch_id)
                 );
+            }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for scenario in ["ready", "revoked"] {
+                let env = Environment::new();
+                let (started, started_rx) = std::sync::mpsc::channel();
+                let (adopt, receiver) = tokio::sync::oneshot::channel();
+                let launcher = Arc::new(ObservedLauncher {
+                    started,
+                    receiver: Mutex::new(Some(receiver)),
+                    requests: Mutex::new(vec![]),
+                    original: Mutex::new(None),
+                });
+                let rig = Rig::with_services(
+                    &env,
+                    HostServices {
+                        local_person: Some(Arc::new(NativePersonFixture(env.authority.clone()))),
+                        launcher: Some(launcher.clone()),
+                        ..env.membership.services()
+                    },
+                )
+                .await;
+                let person = principal_id_for_root(env.cert.user_public_key);
+                let caller = tilo_actions::remote::Caller::local_person(&person)
+                    .in_room(env.route.cluster_id.clone());
+                let original = tilo_actions::InvocationId::new();
+                let pending_admission = rig.state.action_invoke_local_person(
+                    &caller,
+                    &tilo_actions::remote::InvokeRequest {
+                        invocation: original,
+                        on_behalf_of: None,
+                        target: tilo_actions::remote::RemoteActionTarget {
+                            provider: "903".into(),
+                            address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                        },
+                        argument: tilo_actions::remote::InvokeArgument::None,
+                        context: None,
+                        confirmation: None,
+                        revision: Some("original-r1".into()),
+                        wait_ms: None,
+                    },
+                );
+                rig.state.drain_action_directory_bridge(&rig.directories);
+                let admitted = local_host_answer(pending_admission).await.unwrap();
+                assert_eq!(
+                    admitted.status,
+                    tilo_actions::remote::ReceiptStatus::Accepted
+                );
+                let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
+                assert_eq!(delivered.actor, person);
+                assert_eq!(delivered.invocation_uuid, original.0.into_bytes());
+                let handle = rig.worker.handle.clone();
+                let pending = tokio::task::spawn_local(async move {
+                    handle
+                        .launch_installed_application_for(
+                            "host:org.example.App.desktop",
+                            None,
+                            None,
+                            Some(original.0.into_bytes()),
+                        )
+                        .await
+                });
+                certified_launch_wait(&started_rx).await;
+                assert!(
+                    !pending.is_finished(),
+                    "host origin is not a startup receipt"
+                );
+                assert_eq!(
+                    launcher.requests.lock().unwrap()[0].3.as_deref(),
+                    Some(person.as_str())
+                );
+                if scenario == "revoked" {
+                    *env.authority.certificate.lock().unwrap() = None;
+                }
+                adopt.send(Ok(())).unwrap();
+                let (_, json) = pending.await.unwrap().unwrap();
+                let update: tilo_actions::InvocationUpdate = serde_json::from_str(&json).unwrap();
+                assert_eq!(
+                    matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+                    scenario == "ready",
+                    "{update:?}"
+                );
+                rig.stop().await;
             }
         })
         .await;

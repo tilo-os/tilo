@@ -13,10 +13,11 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui::widget::TaffyTreeExt;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_ui::State;
-use tilo_ui::headless::Driver;
+use tilo_ui::headless::FrameHarness;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -44,29 +45,18 @@ impl Widget for Probe {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Style::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Style::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
+        self.rect = tilo_ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -117,7 +107,7 @@ impl Widget for Probe {
 }
 
 struct Harness {
-    driver: Driver,
+    driver: FrameHarness,
     events: Rc<RefCell<Vec<WindowEvent>>>,
     menu_open_at: Rc<RefCell<Option<[f32; 2]>>>,
 }
@@ -135,7 +125,7 @@ fn harness(raw_touch: bool) -> Harness {
         events: events.clone(),
         menu_open_at: menu_open_at.clone(),
     };
-    let driver = Driver::new(State::new(), Box::new(probe), (600, 400));
+    let driver = FrameHarness::new(State::new(), Box::new(probe), (600, 400));
     events.borrow_mut().clear();
     Harness {
         driver,

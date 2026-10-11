@@ -115,12 +115,6 @@ impl<R> LibvirtBackend<R> {
             virsh: OsString::from("virsh"),
         }
     }
-
-    #[must_use]
-    pub fn with_virsh(mut self, path: impl Into<OsString>) -> Self {
-        self.virsh = path.into();
-        self
-    }
 }
 
 impl<R: CommandRunner> LibvirtBackend<R> {

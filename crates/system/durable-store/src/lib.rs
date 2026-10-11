@@ -11,17 +11,6 @@
 //! or view envelopes. Callers decide what a key's bytes mean; the store only
 //! promises ordering, single ownership and honest durability.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::any::Any;
 use std::fmt;
 use std::path::PathBuf;
@@ -288,6 +277,25 @@ pub trait DurableStore {
     /// Where a host that keeps the key in a local file keeps it. Only for
     /// diagnostics and tools that work on that file; `None` elsewhere.
     fn local_path(&self, _key: &StorageKey) -> Option<PathBuf> {
+        None
+    }
+
+    /// Keep `hint` beside the key's value on this device: bytes a caller
+    /// derived from a value it wrote, to make the next read of that value
+    /// cheaper to use. A hint is never part of the value, never leaves the
+    /// device and may be dropped at any time, so the caller must recognise
+    /// the value it was made for itself; a store that keeps none drops it.
+    /// The key must be leased, as for [`Self::write`].
+    ///
+    /// # Errors
+    /// An unleased key, or a failure writing the hint.
+    fn write_hint(&self, _key: &StorageKey, _hint: &[u8]) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// The hint last kept beside the key by [`Self::write_hint`], if the
+    /// store still has one.
+    fn read_hint(&self, _key: &StorageKey) -> Option<Vec<u8>> {
         None
     }
 }

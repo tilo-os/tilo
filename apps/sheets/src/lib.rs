@@ -14,8 +14,9 @@
 //!     (formula, numeric series, dates, month/weekday names, text+number).
 //!   * [`settings`] — the person's shared locale defaults and the
 //!     per-document overrides that layer on top of it.
-//!   * [`doc`]      — the Automerge document model (sheets + cells live in
-//!     the CRDT, so collaboration and undo come for free).
+//!   * [`workbook`] — the stored model: sheets of cells under stable row and
+//!     column ids, with charts and comments anchored at them.
+//!   * [`resource`] — the workbook's verbs, its derived places and the app.
 //!   * [`csv`]      — CSV import/export.
 //!   * [`xlsx`]     — Excel `.xlsx` import/export.
 //!   * [`ods`]      — `LibreOffice` Calc `.ods` import/export.
@@ -45,11 +46,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -59,7 +56,6 @@ pub mod actions;
 pub mod app;
 pub mod cell_actions;
 pub mod csv;
-pub mod doc;
 pub mod fill;
 pub mod formula;
 pub mod grid;
@@ -71,13 +67,15 @@ pub mod ods;
 pub mod resource;
 pub mod sample;
 pub mod settings;
+pub mod workbook;
 pub mod xlsx;
 
 pub use app::SheetsApp;
 
-pub use resource::{SheetsShell, SheetsWorkbook};
+pub use resource::SheetsShell;
+pub use workbook::Workbook;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<SheetsShell>()
+    ui::built_in_definition!(SheetsShell)
 }

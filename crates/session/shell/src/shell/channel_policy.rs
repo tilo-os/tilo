@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 use collab_types::Ed25519PublicKey;
 
 use super::channel_encryption::ChannelDirectory;
-use super::state::{CapRole, RoomAuthority, RoomId, WorkspaceTree, WorkspaceTreeHandle};
+use super::state::{RoomAuthority, RoomId, WorkspaceTree, WorkspaceTreeHandle};
 
 /// The devices of this machine's own identity in a room, as its fleet
 /// certifies them: `(certificate, revoked)`.
@@ -32,15 +32,39 @@ pub type OwnDevices = Box<dyn Fn(RoomId) -> Vec<(tilo_user_identity::DeviceCert,
 pub type AuthenticatedDevices =
     Box<dyn Fn(&[u8; 32]) -> Vec<tilo_user_identity::DeviceCert> + Send>;
 
+/// When the authenticated devices next change by time alone, after a Unix
+/// nanosecond instant: a certificate expiring, a revocation dated ahead.
+pub type AuthenticatedChanges = Box<dyn Fn(u64) -> Option<u64> + Send>;
+
 /// [`ChannelDirectory`] over the live workspace tree.
+///
+/// Every input of [`ChannelDirectory::allowed_devices`] announces its writes
+/// ([`tilo_identity_host::policy_change`]): the tree as a write guard that
+/// changed policy is released, the fleet on save and through the identity directory's watch,
+/// the network's authenticated devices on each change. Stewards re-check on
+/// those announcements and at [`ChannelDirectory::next_policy_change`]
+/// rather than every second (TIL-707), while the clock and the watch hold.
 pub struct WorkspaceChannelDirectory {
     tree: WorkspaceTreeHandle,
     own_devices: OwnDevices,
+    authenticated_changes: AuthenticatedChanges,
 }
 
 impl WorkspaceChannelDirectory {
     pub fn new(tree: WorkspaceTreeHandle, own_devices: OwnDevices) -> Self {
-        Self { tree, own_devices }
+        Self {
+            tree,
+            own_devices,
+            authenticated_changes: Box::new(|_| None),
+        }
+    }
+
+    /// The directory, told when the devices `own_devices` adds from the
+    /// session's authentications change by time alone.
+    #[must_use]
+    pub fn with_authenticated_changes(mut self, changes: AuthenticatedChanges) -> Self {
+        self.authenticated_changes = changes;
+        self
     }
 
     /// Production source of this machine's own devices: the fleet of the
@@ -122,6 +146,54 @@ impl ChannelDirectory for WorkspaceChannelDirectory {
         let own = (self.own_devices)(room);
         allowed_devices(&self.tree.read(), room, now, &own)
     }
+
+    fn policy_epoch(&self) -> Option<u64> {
+        // The fleet is read on every re-check: another process revoking a
+        // device in it is seen only through the identity directory's watch.
+        (tilo_identity_host::policy_change::timers_reliable()
+            && tilo_identity_host::policy_change::identity_files_watched())
+        .then(tilo_identity_host::policy_change::epoch)
+    }
+
+    fn next_policy_change(&self, room: RoomId, now: u64) -> Option<u64> {
+        let own = (self.own_devices)(room);
+        let authenticated = (self.authenticated_changes)(now.saturating_mul(1_000_000_000))
+            .map(tilo_action_broker::policy_schedule::second_at_or_after);
+        next_policy_change(&self.tree.read(), room, now, &own)
+            .into_iter()
+            .chain(authenticated.filter(|at| *at > now))
+            .min()
+    }
+}
+
+/// The first second after `now` at which [`allowed_devices`] for `room` can
+/// answer differently with nothing written: a capability of the room
+/// expiring (members and service members alike), or a certificate of a
+/// device the room admitted or of this identity's fleet expiring.
+pub fn next_policy_change(
+    tree: &WorkspaceTree,
+    room: RoomId,
+    now: u64,
+    own_devices: &[(tilo_user_identity::DeviceCert, bool)],
+) -> Option<u64> {
+    let capabilities = tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)?
+        .next_grant_expiry_after(now);
+    let admitted = tree
+        .room_peer_identities
+        .get(&room)
+        .into_iter()
+        .flat_map(|identities| identities.values())
+        .map(|identity| &identity.device_cert);
+    let certificates = admitted
+        .chain(own_devices.iter().map(|(cert, _)| cert))
+        .filter_map(|cert| cert.expires_at_ns)
+        .map(tilo_action_broker::policy_schedule::second_at_or_after)
+        .filter(|at| *at > now);
+    capabilities.into_iter().chain(certificates).min()
 }
 
 /// Every device that may read `room`'s channels at `now` (Unix seconds).
@@ -139,11 +211,34 @@ pub fn allowed_devices(
     else {
         return BTreeSet::new();
     };
-    let readers: BTreeSet<String> = workspace
-        .roster_at(now)
+    // Members, and anyone a grant names (a share, a time-limited reader),
+    // who may read the room now.
+    let mut people: BTreeSet<String> = workspace
+        .roster()
         .into_iter()
-        .filter(|(_, role)| role_reads(*role))
         .map(|(person, _)| person)
+        .collect();
+    people.extend(
+        workspace
+            .policy
+            .grants
+            .iter()
+            .filter_map(|grant| match &grant.subject {
+                tilo_action_policy::Subject::Person(person) => Some(person.clone()),
+                _ => None,
+            }),
+    );
+    let room_node = workspace.node();
+    let readers: BTreeSet<String> = people
+        .into_iter()
+        .filter(|person| {
+            workspace.answer_at(
+                person,
+                &room_node,
+                tilo_action_policy::ActionKind::Read,
+                now,
+            ) == tilo_action_policy::Answer::Allow
+        })
         .collect();
     let now_ns = now.saturating_mul(1_000_000_000);
     let reads = |cert: &tilo_user_identity::DeviceCert| {
@@ -171,25 +266,18 @@ pub fn allowed_devices(
         }
     }
     for member in super::service_members::service_members(workspace, now) {
-        if member.verb.implies(collab_types::caps::Verb::Read) {
+        if member.kinds.contains(tilo_action_policy::ActionKind::Read) {
             allowed.insert(member.device);
         }
     }
     allowed
 }
 
-fn role_reads(role: CapRole) -> bool {
-    matches!(
-        role,
-        CapRole::Owner | CapRole::Editor | CapRole::Commenter | CapRole::Viewer
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::shell::state::GovernedPeerIdentity;
-    use collab_types::caps::{CapOverride, Principal, Subject, Verb};
+    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Role, Subject};
 
     fn cert(
         root: &ed25519_dalek::SigningKey,
@@ -256,10 +344,6 @@ mod tests {
         hex::encode(root.verifying_key().to_bytes())
     }
 
-    fn member(root: &ed25519_dalek::SigningKey) -> Subject {
-        Subject::Principal(Principal::Person(person(root)))
-    }
-
     fn endpoint(cert: &tilo_user_identity::DeviceCert) -> String {
         iroh::EndpointId::from_bytes(&cert.device_public_key)
             .unwrap()
@@ -296,14 +380,19 @@ mod tests {
             .find(|candidate| candidate.id == workspace)
             .unwrap();
         entry.set_owner(person(&owner));
-        entry.grant_capability(CapOverride::membership(
-            member(&bob),
-            room.to_string(),
-            Verb::Write,
-        ));
-        // Carol's grant runs out at 500.
-        entry.grant_capability(
-            CapOverride::membership(member(&carol), room.to_string(), Verb::Read).with_expiry(500),
+        entry.admit(person(&bob), Role::Editor);
+        // Carol may read until 500.
+        let node = entry.node();
+        entry.grant(
+            Grant::new(
+                "carol-reads",
+                Subject::person(person(&carol)),
+                node,
+                KindSet::READ,
+                Answer::Allow,
+                Subject::person(person(&owner)),
+            )
+            .with_lifetime(Lifetime::Until(500_000)),
         );
         admit(&mut tree, room, cert(&bob, 20, false), Vec::new());
         admit(&mut tree, room, cert(&bob, 21, false), Vec::new());
@@ -342,11 +431,65 @@ mod tests {
             .iter_mut()
             .find(|candidate| candidate.id == workspace)
             .unwrap()
-            .revoke_matching(|cap| cap.subject == member(&bob));
+            .dismiss(&person(&bob));
         assert_eq!(
             allowed_devices(&tree, room, 1_000, &own),
             BTreeSet::from([device_key(10)])
         );
         assert!(allowed_devices(&tree, RoomId::new(), 1_000, &own).is_empty());
+    }
+
+    /// Stewards re-check at the first instant the readers change
+    /// by time alone, and that instant is exactly where the answer changes.
+    #[test]
+    fn the_next_policy_change_is_where_the_readers_change_by_time() {
+        let owner = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let carol = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let dave = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        let mut tree = WorkspaceTree::default();
+        let workspace = tree.append_empty_workspace("Shared");
+        let room = tree.room_of(workspace).unwrap();
+        let entry = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|candidate| candidate.id == workspace)
+            .unwrap();
+        entry.set_owner(person(&owner));
+        // Carol's grant runs out at 500; Dave's device certificate at 300.
+        let node = entry.node();
+        let reads = |id: &str, root: &ed25519_dalek::SigningKey| {
+            Grant::new(
+                id,
+                Subject::person(person(root)),
+                node.clone(),
+                KindSet::READ,
+                Answer::Allow,
+                Subject::person(person(&owner)),
+            )
+        };
+        entry.grant(reads("carol-reads", &carol).with_lifetime(Lifetime::Until(500_000)));
+        entry.grant(reads("dave-reads", &dave));
+        admit(&mut tree, room, cert(&carol, 30, false), Vec::new());
+        let mut daves = cert(&dave, 40, false);
+        daves.expires_at_ns = Some(299_999_999_999);
+        tilo_user_identity::sign_device_cert(&mut daves, &dave).unwrap();
+        admit(&mut tree, room, daves, Vec::new());
+        // This machine's second device's certificate ends at 800.
+        let mut second = cert(&owner, 11, false);
+        second.expires_at_ns = Some(800_000_000_000);
+        tilo_user_identity::sign_device_cert(&mut second, &owner).unwrap();
+        let own = vec![(cert(&owner, 10, false), false), (second, false)];
+
+        assert_eq!(next_policy_change(&tree, room, 100, &own), Some(300));
+        assert!(allowed_devices(&tree, room, 299, &own).contains(&device_key(40)));
+        assert!(!allowed_devices(&tree, room, 300, &own).contains(&device_key(40)));
+        assert_eq!(next_policy_change(&tree, room, 300, &own), Some(500));
+        assert!(allowed_devices(&tree, room, 499, &own).contains(&device_key(30)));
+        assert!(!allowed_devices(&tree, room, 500, &own).contains(&device_key(30)));
+        assert_eq!(next_policy_change(&tree, room, 500, &own), Some(800));
+        assert!(!allowed_devices(&tree, room, 800, &own).contains(&device_key(11)));
+        assert_eq!(next_policy_change(&tree, room, 800, &own), None);
+        assert_eq!(next_policy_change(&tree, RoomId::new(), 100, &own), None);
     }
 }

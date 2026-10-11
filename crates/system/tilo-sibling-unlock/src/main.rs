@@ -8,6 +8,8 @@
 //!   owner's devices (`tilo-disk-encrypt enrol --sibling` runs it).
 //! * `remove DEVICE`: remove the slot and its token.
 //! * `status DEVICE`: what is enrolled, without secrets.
+//! * `volumes`: every volume enrolled on this machine, without secrets
+//!   (Settings reads it through polkit; the description is root's alone).
 //! * `replay TRANSCRIPT`: send a kept exchange's frames to its sibling again
 //!   and print the answers (verification: a replay must be refused).
 //!
@@ -55,6 +57,8 @@ enum Command {
     },
     /// Print what is enrolled on DEVICE, without secrets.
     Status { device: PathBuf },
+    /// Print every volume enrolled on this machine, without secrets.
+    Volumes,
     /// Send the frames of a kept exchange to its siblings again and print
     /// what they answer.
     Replay {
@@ -171,6 +175,10 @@ fn main() -> Result<ExitCode> {
                 "{}",
                 serde_json::to_string_pretty(&enrol::status(&device)?)?
             );
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Volumes => {
+            println!("{}", serde_json::to_string_pretty(&enrol::enrolled()?)?);
             Ok(ExitCode::SUCCESS)
         }
         Command::Replay { transcript } => {

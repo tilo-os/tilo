@@ -183,7 +183,7 @@ impl TestEnv {
         c.env("PATH", std::env::var("PATH").unwrap_or_default());
         c.env("XDG_CONFIG_HOME", self.xdg_config());
         c.env("XDG_DATA_HOME", self.xdg_data());
-        c.env("HOME", self.home.path()); // fallback for xdg_paths::data_dir
+        c.env("HOME", self.home.path()); // fallback for tilo_paths::data_dir
         c
     }
 }

@@ -65,7 +65,20 @@ fn raw_changes(doc: &mut AutoCommit, since: &[ChangeHash]) -> Vec<Vec<u8>> {
 /// The whole document as a value tree, for comparing content across replicas
 /// and across an undo.
 pub fn hydrated(doc: &mut AutoCommit) -> automerge::hydrate::Value {
-    doc.document().hydrate(None)
+    use automerge::ReadDoc as _;
+    use automerge::transaction::Transactable as _;
+    // History's own bookkeeping (what is undone, named versions) is not
+    // content.
+    let mut content = doc.fork();
+    let bookkeeping: Vec<String> = content
+        .keys(automerge::ROOT)
+        .filter(|key| key.starts_with(crate::history_source::steps::BOOKKEEPING_PREFIX))
+        .collect();
+    for key in bookkeeping {
+        let _ = content.delete(automerge::ROOT, key);
+    }
+    content.commit();
+    content.document().hydrate(None)
 }
 
 /// What applying one action to a seed did.
@@ -210,6 +223,15 @@ pub fn undo_round_trip(
     if after_doc == before_doc && state.undo_depth() == depth {
         return Applied::Unchanged;
     }
+    // Housekeeping and content from outside are nobody's undo step.
+    if !action.change_kind().is_step() {
+        assert_eq!(
+            state.undo_depth(),
+            depth,
+            "{what}: housekeeping records no undo step"
+        );
+        return Applied::Changed;
+    }
     assert_eq!(
         state.undo_depth().checked_sub(depth),
         Some(1),
@@ -351,7 +373,7 @@ fn prompted_argument(spec: &ActionSpec, text: &str) -> Option<(String, ArgValue)
 /// the external path builds a different action.
 pub fn spec_encoding(spec: &ActionSpec, arg: Option<&str>) -> EncodedAction {
     let (palette, supplied) = match (&spec.input, arg) {
-        (ActionInput::Immediate(encoded), None) => (encoded.clone(), Vec::new()),
+        (ActionInput::Immediate(encoded), None) => (encoded.as_ref().clone(), Vec::new()),
         (ActionInput::Deferred { build, .. }, None) => (build(), Vec::new()),
         (ActionInput::Prompted { build, .. }, Some(arg)) => (
             build(arg),
@@ -834,13 +856,6 @@ mod tests {
                 }),
             ),
             (
-                "an undo entry without a visible change fails",
-                "changes the document's content",
-                Box::new(|| {
-                    assert_one_undo_boundary_reverts(&seed(), &registry(), &encode(&Probe::Churn));
-                }),
-            ),
-            (
                 "a spec that disagrees with its builder fails",
                 "encode the same action",
                 Box::new(spec_disagrees),
@@ -874,6 +889,11 @@ mod tests {
                 }),
             ),
         ];
+        // A change with no visible effect is no undo step at all.
+        assert_eq!(
+            undo_round_trip(&seed(), &registry(), &encode(&Probe::Churn)),
+            Applied::Unchanged
+        );
         for (case, expected, check) in cases {
             let payload =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(check)).expect_err(case);

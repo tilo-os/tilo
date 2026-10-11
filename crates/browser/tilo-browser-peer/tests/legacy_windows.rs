@@ -11,8 +11,9 @@ mod support;
 
 use neighbour_wire::NeighbourMsg;
 use tilo_browser_peer::Host;
-use tilo_relay_client::{AttributedPresence, Envelope, RelayClient};
+use tilo_relay_client::{AttributedPresence, Envelope};
 use tilo_relay_protocol::legacy_window as wire;
+use tilo_relay_session::RelayClient;
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{enrol, ready, start_host, start_peer, workspace};
@@ -90,11 +91,15 @@ fn typing(text: &str) -> Vec<wire::InputEvent> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_window_reaches_browser_and_only_granted_input_returns() {
+    Box::pin(native_window_scenario()).await;
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one production cross-carrier scenario"
 )]
-async fn native_window_reaches_browser_and_only_granted_input_returns() {
+async fn native_window_scenario() {
     let (root, _) = UserIdentity::generate("Legacy viewer", 1);
     let host_device = enrol(&root, "host", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
@@ -340,4 +345,19 @@ async fn native_window_reaches_browser_and_only_granted_input_returns() {
     native.close().await;
     drop(web);
     relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cached_static_windows_survive_concurrent_viewer_handoffs() {
+    let mut scenarios = tokio::task::JoinSet::new();
+    for _ in 0..4 {
+        scenarios.spawn(async {
+            for _ in 0..8 {
+                Box::pin(native_window_scenario()).await;
+            }
+        });
+    }
+    while let Some(result) = scenarios.join_next().await {
+        result.expect("every original cross-carrier cached-window scenario completes");
+    }
 }

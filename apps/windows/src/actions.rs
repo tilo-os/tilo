@@ -1,53 +1,16 @@
-//! Palette/automation contract for Windows compatibility decisions.
+//! What Windows Apps does on this machine, as typed effects, and the live
+//! rows it publishes for what the compatibility service reports.
 //!
 //! Launch, VM resume, permission changes, repair, and snapshot operations are
-//! external service calls and therefore are deliberately not CRDT actions. The
+//! external service calls and therefore never document changes. The
 //! selected route is the one durable, user-authored policy value, so it is a
-//! replayable action. This keeps collaboration from becoming remote process
-//! control while allowing a team to agree on a launch policy.
+//! field of [`crate::resource::Windows`], edited at its path. This keeps
+//! collaboration from becoming remote process control while allowing a team
+//! to agree on a launch policy.
 use crate::model::{Catalogue, Route};
-use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
-use serde::{Deserialize, Serialize};
-use tilo_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Availability, ConfirmationPolicy,
-    DiscoveryScope, Doc, EncodedAction, ExecutionLocus, Resource,
-};
+use tilo_actions::{ActionSpec, Availability, ConfirmationPolicy};
 use ui::framework::LiveRow;
 use ui::tilo_resource::{self, Effect};
-
-pub const WINDOWS_ACTION_TYPE: &str = "windows.compat.action";
-/// Stable id of the manager resource published by [`tilo_resource::publish`].
-pub const MANAGER_RESOURCE_ID: &str = "windows.manager";
-const ROOT_KEY: &str = "windows-compat";
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WindowsAction {
-    SetRoute { app_id: String, route: Route },
-    ResetRoute { app_id: String },
-}
-
-impl Action for WindowsAction {
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        let map = match doc.get(&ROOT, ROOT_KEY)? {
-            Some((automerge::Value::Object(ObjType::Map), id)) => id,
-            _ => doc.put_object(&ROOT, ROOT_KEY, ObjType::Map)?,
-        };
-        match self {
-            Self::SetRoute { app_id, route } => doc.put(&map, app_id, route.label())?,
-            Self::ResetRoute { app_id } => {
-                doc.delete(&map, app_id)?;
-            }
-        }
-        Ok(())
-    }
-    fn locus(&self) -> ExecutionLocus {
-        ExecutionLocus::ClientLocal
-    }
-}
-
-pub fn register(registry: &mut ActionRegistry) {
-    registry.register::<WindowsAction>(WINDOWS_ACTION_TYPE);
-}
 
 /// What Windows Apps asks the compatibility service and the managed
 /// appliance to do. None of it is document state: a launch, an install or a
@@ -62,49 +25,49 @@ pub enum WindowsEffect {
         app: String,
     },
     /// Install Windows application.
-    #[effect(job, privileged, permission = "admin")]
+    #[effect(job, privileged, kind = "outside")]
     Install {
         #[param("Path of the installer; omit to choose one")]
         path: Option<String>,
     },
     /// Import Windows ISO.
-    #[effect(job, privileged, permission = "admin")]
+    #[effect(job, privileged, kind = "outside")]
     ImportIso {
         #[param("Path of the ISO; omit to choose one")]
         path: Option<String>,
     },
     /// Open recovery desktop.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     Recovery,
     /// Start Windows.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     Start,
     /// Restart Windows.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     Restart,
     /// Suspend Windows.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     Suspend,
     /// Resume Windows.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     Resume,
     /// Shut down Windows.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     Shutdown,
     /// Connect temporarily for activation.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     TemporaryNetwork,
     /// Connect temporarily for Windows Update.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     UpdateNetwork,
     /// Disconnect temporary network access.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     RevokeNetwork,
     /// Install in a private capsule.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     InstallPrivateCapsule,
     /// Install in the Windows appliance.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     InstallWindowsAppliance,
     /// Launch.
     #[effect(row, job)]
@@ -113,13 +76,13 @@ pub enum WindowsEffect {
         app: String,
     },
     /// Open in Windows appliance.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     LaunchVmFallback {
         #[param("The application's id")]
         app: String,
     },
     /// Open file in Windows.
-    #[effect(job, permission = "read")]
+    #[effect(job, kind = "read")]
     OpenFile {
         #[param("The application's id")]
         app: String,
@@ -127,37 +90,37 @@ pub enum WindowsEffect {
         path: Option<String>,
     },
     /// Publish launcher.
-    #[effect(row, job, permission = "admin")]
+    #[effect(row, job, kind = "outside")]
     Publish {
         #[param("The application's id")]
         app: String,
     },
     /// Retry installation.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     RetryInstall {
         #[param("The application's private capsule")]
         capsule: String,
     },
     /// Install in Windows appliance.
-    #[effect(row, job, privileged, permission = "admin")]
+    #[effect(row, job, privileged, kind = "outside")]
     EscalateInstall {
         #[param("The application's private capsule")]
         capsule: String,
     },
     /// Remove launcher.
-    #[effect(row, job, destructive, permission = "admin")]
+    #[effect(row, job, destructive, kind = "outside")]
     RemoveLauncher {
         #[param("The application's id")]
         app: String,
     },
     /// Uninstall.
-    #[effect(row, job, destructive, permission = "admin")]
+    #[effect(row, job, destructive, kind = "outside")]
     Uninstall {
         #[param("The application's id")]
         app: String,
     },
     /// Delete application data.
-    #[effect(row, job, destructive, permission = "admin")]
+    #[effect(row, job, destructive, kind = "outside")]
     DeleteData {
         #[param("The application's private capsule")]
         capsule: String,
@@ -232,28 +195,6 @@ fn offered(effect: &WindowsEffect, available: bool, reason: Option<&str>) -> Act
     spec
 }
 
-/// Read one collaborative route override from the shared document.
-pub fn route_override(doc: &Doc, app_id: &str) -> Option<Route> {
-    let (_, map) = doc.get(&ROOT, ROOT_KEY).ok().flatten()?;
-    match doc.get(&map, app_id).ok().flatten()?.0.as_str()? {
-        "Wine" => Some(Route::Wine),
-        "Proton" => Some(Route::Proton),
-        "Windows VM" => Some(Route::Vm),
-        _ => None,
-    }
-}
-pub fn encode(action: &WindowsAction) -> EncodedAction {
-    EncodedAction::encode(WINDOWS_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
-        type_id: WINDOWS_ACTION_TYPE.into(),
-        payload: Vec::new(),
-    })
-}
-pub(crate) fn immediate(id: &str, label: &str, action: &WindowsAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, WINDOWS_ACTION_TYPE, action).unwrap_or_else(|_| {
-        ActionSpec::immediate_encoded(id, label, action.locus(), encode(action))
-    })
-}
-
 fn availability(available: bool, reason: Option<&str>) -> Availability {
     if available {
         Availability::Available
@@ -291,40 +232,10 @@ fn appliance_effects(ready: bool) -> Vec<ActionSpec> {
     .collect()
 }
 
-/// Document-bound route shortcuts for one override already in shared state.
-pub fn override_app_resource(app_id: &str, route: Route) -> Resource {
-    let _ = route;
-    let mut resource = Resource::new(
-        format!("windows.app:{app_id}"),
-        "windows.compat-app",
-        app_id.to_owned(),
-    );
-    for candidate in Route::ALL {
-        resource = resource.with_action(immediate(
-            &format!("route-{}", candidate.short().to_ascii_lowercase()),
-            &format!("Use {}", candidate.label()),
-            &WindowsAction::SetRoute {
-                app_id: app_id.to_owned(),
-                route: candidate,
-            },
-        ));
-    }
-    // An override is recorded in the document, so reset is always offered.
-    resource.with_action(immediate(
-        "reset-route",
-        "Use catalogue recommendation",
-        &WindowsAction::ResetRoute {
-            app_id: app_id.to_owned(),
-        },
-    ))
-}
-
 /// What the service reports, as rows beneath the manager: the install
 /// awaiting a choice, the appliance and every catalogue application, each
 /// with the effects the service offers on it now. A route change is not
-/// among them: it is the resource's own action (the `set-route` declaration,
-/// and the override rows [`override_app_resource`] publishes), which these
-/// rows merge into by id.
+/// among them: it is a field edit of the resource's routes.
 pub fn live_rows(catalogue: &Catalogue) -> Vec<LiveRow> {
     let mut rows = Vec::new();
     if let Some(confirmation) = &catalogue.vm_install_confirmation {
@@ -337,16 +248,15 @@ pub fn live_rows(catalogue: &Catalogue) -> Vec<LiveRow> {
 
 fn app_row(app: &crate::model::WindowsApp) -> LiveRow {
     let maintenance = maintenance_specs(app);
-    let mut launch = offered(
+    let launch = offered(
         &WindowsEffect::Launch {
             app: app.id.clone(),
         },
         app.launch_available,
         app.launch_unavailable_reason.as_deref(),
     );
-    launch.contract.discovery = DiscoveryScope::Launchable;
     let mut row = LiveRow::new(
-        format!("windows.app:{}", app.id),
+        crate::search::app_resource_id(&app.id),
         "windows.compat-app",
         &app.name,
     )
@@ -472,7 +382,7 @@ fn prefix_row(app: &crate::model::WindowsApp, maintenance: &[ActionSpec]) -> Opt
 
 fn pending_install_row(confirmation: &crate::model::VmInstallConfirmation) -> LiveRow {
     LiveRow::new(
-        "windows.pending-install",
+        PENDING_INSTALL_ROW,
         "windows.pending-install",
         format!("Install {}", confirmation.display_name),
     )
@@ -480,9 +390,15 @@ fn pending_install_row(confirmation: &crate::model::VmInstallConfirmation) -> Li
     .effect(&WindowsEffect::InstallWindowsAppliance)
 }
 
+/// The managed appliance's row.
+pub const APPLIANCE_ROW: &str = "windows.appliance";
+
+/// The row of the install awaiting a choice.
+pub const PENDING_INSTALL_ROW: &str = "windows.pending-install";
+
 fn appliance_row(catalogue: &Catalogue) -> LiveRow {
     let mut appliance = LiveRow::new(
-        "windows.appliance",
+        APPLIANCE_ROW,
         "windows.appliance",
         "Managed Windows appliance",
     );
@@ -496,48 +412,7 @@ fn appliance_row(catalogue: &Catalogue) -> LiveRow {
 mod tests {
     use super::*;
     use crate::provider::CompatibilityProvider;
-    use tilo_actions::{
-        ExecutionMode, OperationKind, PermissionRequirement, ResultSpec, RiskLevel,
-    };
-
-    fn registry() -> ActionRegistry {
-        let mut registry = ActionRegistry::new();
-        register(&mut registry);
-        registry
-    }
-
-    fn set_route(app_id: &str, route: Route) -> WindowsAction {
-        WindowsAction::SetRoute {
-            app_id: app_id.into(),
-            route,
-        }
-    }
-
-    fn reset_route(app_id: &str) -> WindowsAction {
-        WindowsAction::ResetRoute {
-            app_id: app_id.into(),
-        }
-    }
-
-    /// A shared document in which a collaborator has moved the game off its
-    /// catalogue route, authored through the route action itself.
-    fn seeded_doc() -> Doc {
-        let mut doc = Doc::new();
-        let action = set_route("cyberpunk-2077", Route::Wine);
-        tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
-        doc
-    }
-
-    /// The tree the resource publishes for `doc`.
-    fn resources(doc: &Doc) -> Vec<Resource> {
-        use ui::tilo_resource::Resource as _;
-        let state = crate::resource::Windows::read(doc).unwrap();
-        vec![ui::tilo_resource::publish::<crate::resource::Windows>(
-            MANAGER_RESOURCE_ID,
-            "Windows manager",
-            &state,
-        )]
-    }
+    use tilo_actions::{ActionKind, ExecutionMode, OperationKind, Resource, ResultSpec, RiskLevel};
 
     /// The rows the sample catalogue publishes beneath the manager.
     fn sample_rows() -> Vec<Resource> {
@@ -547,56 +422,8 @@ mod tests {
             .collect()
     }
 
-    ui::action_contract_tests! {
-        seed: seeded_doc(),
-        registry: registry(),
-        resources: |doc| resources(doc),
-        palette: [
-            "Use Wine",
-            "Use Proton",
-            "Use catalogue recommendation",
-        ],
-        replay: [
-            route_override => |_| encode(&set_route("cyberpunk-2077", Route::Proton)),
-            route_reset => |_| encode(&reset_route("cyberpunk-2077")),
-        ],
-        undo: [
-            route_override => |_| encode(&set_route("adobe-reader", Route::Proton)),
-            route_reset => |_| encode(&reset_route("cyberpunk-2077")),
-        ],
-        encodes: [
-            use_proton => ("windows.app:cyberpunk-2077", "route-proton", |_, _| {
-                encode(&set_route("cyberpunk-2077", Route::Proton))
-            }),
-            catalogue_recommendation => ("windows.app:cyberpunk-2077", "reset-route", |_, _| {
-                encode(&reset_route("cyberpunk-2077"))
-            }),
-        ],
-    }
-
     #[test]
-    fn route_policy_is_explicit_deterministic_and_resettable() {
-        // Case `route_policy_is_deterministic_and_reset_removes_it`.
-        {
-            let mut doc = Doc::new();
-            WindowsAction::SetRoute {
-                app_id: "reader".into(),
-                route: Route::Proton,
-            }
-            .apply(&mut doc)
-            .unwrap();
-            let (_, map) = doc.get(&ROOT, ROOT_KEY).unwrap().unwrap();
-            assert_eq!(
-                doc.get(&map, "reader").unwrap().unwrap().0.as_str(),
-                Some("Proton")
-            );
-            WindowsAction::ResetRoute {
-                app_id: "reader".into(),
-            }
-            .apply(&mut doc)
-            .unwrap();
-            assert!(doc.get(&map, "reader").unwrap().is_none());
-        }
+    fn every_row_offers_effects_with_honest_contracts() {
         // Case `every_catalogue_app_can_launch_and_no_row_edits_the_document`.
         {
             let res = sample_rows();
@@ -702,7 +529,7 @@ mod tests {
                 open_file.contract.availability,
                 Availability::Unavailable { .. }
             ));
-            assert_eq!(open_file.contract.permission, PermissionRequirement::Read);
+            assert_eq!(open_file.contract.kind, ActionKind::Read);
         }
     }
 }

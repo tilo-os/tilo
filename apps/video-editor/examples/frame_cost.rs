@@ -97,16 +97,18 @@ fn main() -> anyhow::Result<()> {
     // The single biggest item inside `sync`, measured on its own: rebuilding
     // the whole `Project` out of the Automerge document.
     println!("\ninside sync, on a document holding the sample project:");
-    let mut doc = automerge::AutoCommit::new();
-    video_editor::doc::VideoDoc::seed_sample(&mut doc);
+    let mut doc = video_editor::seed::sample_document();
+    let read = |doc: &automerge::AutoCommit| {
+        <video_editor::Project as ui::tilo_resource::Resource>::read(doc).ok()
+    };
     let mut load = Vec::with_capacity(120);
     let mut heads = Vec::with_capacity(120);
     for _ in 0..8 {
-        std::hint::black_box(video_editor::doc::VideoDoc::load_project(&doc));
+        std::hint::black_box(read(&doc));
     }
     for _ in 0..120 {
         let t = ui::time::now();
-        std::hint::black_box(video_editor::doc::VideoDoc::load_project(&doc));
+        std::hint::black_box(read(&doc));
         load.push(t.elapsed().as_micros());
         let t = ui::time::now();
         std::hint::black_box(doc.get_heads());
@@ -123,7 +125,7 @@ fn main() -> anyhow::Result<()> {
     println!("\ncompositing a 1080p frame (production compositor, no decode):");
     match video_editor::gpu::HeadlessCompositor::new() {
         Ok(mut c) => {
-            let project = video_editor::doc::sample_project();
+            let project = video_editor::seed::sample_project();
             let mut sources = video_editor::gpu::NoSources;
             for _ in 0..4 {
                 std::hint::black_box(c.frame(&project, 6.0, 1920, 1080, &mut sources));

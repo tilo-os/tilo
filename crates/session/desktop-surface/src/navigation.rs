@@ -399,7 +399,7 @@ pub fn admit_with(
         }
         Command::GlobalSearch { .. } => Ok(Admitted::Search(None)),
         Command::Commands { query, .. } => {
-            if tilo_desktop_search::rank::query_input_is_bounded(query) {
+            if ui::search::system::query_input_is_bounded(query) {
                 Ok(Admitted::Search(Some(query.clone())))
             } else {
                 Err("Search query too long".into())
@@ -795,7 +795,7 @@ pub fn snapshot_with(
                 id: w.id.0.to_string(),
                 label: w.name.clone(),
                 room: w.room.to_string(),
-                owner: w.owner.clone(),
+                owner: w.owner().cloned(),
                 strips: w
                     .strips
                     .iter()

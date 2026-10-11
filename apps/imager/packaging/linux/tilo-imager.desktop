@@ -1,8 +1,13 @@
 [Desktop Entry]
 Type=Application
-Name=Tilo Imager
-Comment=Create and verify Tilo installation media
-Exec=tilo-imager
+Name=Tilo Installer
+Comment=Set up Tilo Desktop or create verified installation media
+Exec=tilo-imager --setup
 Icon=tilo-imager
 Terminal=false
 Categories=System;Utility;
+Actions=WriteMedia;
+
+[Desktop Action WriteMedia]
+Name=Write a disk image
+Exec=tilo-imager

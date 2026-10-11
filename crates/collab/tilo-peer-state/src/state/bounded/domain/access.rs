@@ -1,6 +1,6 @@
 //! Current access facts; never an owner or caller credential.
 use super::{BoundedPeerError, PeerRead, SystemTime, backend};
-/// Data from actual current membership and the unchanged capability evaluator.
+/// Data from actual current membership and the room's grants.
 /// The embedding owner still binds its authenticated caller, route and time.
 pub struct PeerRoomAccess {
     read: bool,
@@ -33,10 +33,10 @@ impl PeerRead<'_> {
         now: SystemTime,
     ) -> Result<bool, BoundedPeerError> {
         let member = self.member(device, now)?;
+        let policy = member.room_policy();
+        let bound = tilo_action_policy::roles::foreign_device_bound();
         Ok(backend::access::document_read(
-            member.role(),
-            member.capabilities(),
-            member.person(),
+            &member.authority(&policy, &bound),
             self.room(),
             app,
             record,
@@ -55,13 +55,10 @@ impl PeerRead<'_> {
         now: SystemTime,
     ) -> Result<PeerRoomAccess, BoundedPeerError> {
         let member = self.member(device, now)?;
-        let (read, write) = backend::access::room(
-            member.role(),
-            member.capabilities(),
-            member.person(),
-            self.room(),
-            now,
-        );
+        let policy = member.room_policy();
+        let bound = tilo_action_policy::roles::foreign_device_bound();
+        let (read, write) =
+            backend::access::room(&member.authority(&policy, &bound), self.room(), now);
         Ok(PeerRoomAccess {
             read,
             write,

@@ -49,16 +49,21 @@ impl Sandbox {
     }
 
     pub(super) fn authorized(&self, published: &Published) -> bool {
+        self.authorization_status(published).is_ok()
+    }
+
+    pub(super) fn authorization_status(&self, published: &Published) -> Result<(), &'static str> {
         if self.capabilities.is_empty() {
-            return true;
+            return Ok(());
         }
-        let Some(policy) = published.rooms.get(&self.binding.0).filter(|policy| {
-            policy
-                .runtime
-                .authority_is_current(&policy.authority, self.binding.0)
-        }) else {
-            return false;
-        };
+        let policy = published
+            .rooms
+            .get(&self.binding.0)
+            .ok_or("room_projection_missing")?;
+        policy
+            .runtime
+            .authority_status(&policy.authority, self.binding.0)
+            .map_err(crate::shell::native_workspace_owner::store::AuthorityRejection::reason)?;
         let now = Some(tilo_clock::unix_now_ms() / 1000);
         let app = Subject::app(&self.binding.1);
         let grants: Vec<_> = self
@@ -68,13 +73,13 @@ impl Sandbox {
             .collect();
         if grants
             .iter()
-            .any(|grant| !grant.is_live_at(now) || !policy.capabilities.contains(grant))
+            .any(|grant| !grant.is_live_at(now) || !policy.sandbox.contains(grant))
         {
-            return false;
+            return Err("captured_grant_withdrawn_or_expired");
         }
         // A new narrowing can cover a descendant of a granted directory.
         // Checking only the grant's root would miss that removed authority.
-        !policy.capabilities.iter().any(|restriction| {
+        if policy.sandbox.iter().any(|restriction| {
             if restriction.subject != app
                 || restriction.effect != Effect::Restrict
                 || !restriction.is_live_at(now)
@@ -90,9 +95,12 @@ impl Sandbox {
                     return false;
                 };
                 (path_covers(root, path) || path_covers(path, root))
-                    && !restriction.verb.implies(grant.verb)
+                    && !restriction.access.implies(grant.access)
             })
-        })
+        }) {
+            return Err("new_narrowing_overlap");
+        }
+        Ok(())
     }
 
     fn interrupt(&self) {
@@ -160,12 +168,17 @@ pub(super) fn reconcile(published: &mut Published) {
     let revoked: Vec<_> = published
         .sandboxes
         .iter()
-        .filter_map(|(&pid, sandbox)| (!sandbox.authorized(published)).then_some(pid))
+        .filter_map(|(&pid, sandbox)| {
+            sandbox
+                .authorization_status(published)
+                .err()
+                .map(|reason| (pid, reason))
+        })
         .collect();
-    for pid in revoked {
+    for (pid, authority_rejection) in revoked {
         if let Some(sandbox) = published.sandboxes.remove(&pid) {
             sandbox.interrupt();
-            tracing::info!(room = %sandbox.binding.0, package_id = %sandbox.binding.1,
+            tracing::info!(room = %sandbox.binding.0, package_id = %sandbox.binding.1, authority_rejection,
                 "application interrupted after accepted filesystem authority withdrawal");
         }
     }
@@ -174,7 +187,7 @@ pub(super) fn reconcile(published: &mut Published) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::caps::Verb;
+    use collab_types::caps::Access;
     use std::process::{Child, Command};
     use std::time::{Duration, Instant};
 
@@ -225,13 +238,13 @@ mod tests {
         let grant = CapOverride::grant(
             Subject::app("so.tilo.android"),
             Scope::FsPath("/disposable/document".into()),
-            Verb::Write,
+            Access::Write,
         )
         .with_id("document");
-        tree.desktop.workspaces[0].capabilities.push(grant.clone());
+        tree.desktop.workspaces[0].sandbox.push(grant.clone());
         tree.append_empty_workspace("Other isolated room");
         let other_room = tree.desktop.workspaces.last_mut().unwrap();
-        other_room.capabilities.push(grant.clone());
+        other_room.sandbox.push(grant.clone());
         let other_room = other_room.room;
         let mut published = Published {
             rooms: super::super::Export::of(&tree).0,
@@ -260,11 +273,11 @@ mod tests {
             .rooms
             .get_mut(&room)
             .unwrap()
-            .capabilities
+            .sandbox
             .push(CapOverride::grant(
                 Subject::app("so.tilo.other"),
                 Scope::FsPath("/elsewhere".into()),
-                Verb::Read,
+                Access::Read,
             ));
         reconcile(&mut published);
         assert!(revoked.0.try_wait().unwrap().is_none());
@@ -273,7 +286,7 @@ mod tests {
             .rooms
             .get_mut(&room)
             .unwrap()
-            .capabilities
+            .sandbox
             .retain(|cap| cap.id != "document");
         reconcile(&mut published);
         assert!(
@@ -307,9 +320,9 @@ mod tests {
         let grant = CapOverride::grant(
             Subject::app("so.tilo.android"),
             Scope::FsPath("/disposable".into()),
-            Verb::Write,
+            Access::Write,
         );
-        tree.desktop.workspaces[0].capabilities.push(grant.clone());
+        tree.desktop.workspaces[0].sandbox.push(grant.clone());
         let mut published = Published {
             rooms: super::super::Export::of(&tree).0,
             ..Published::default()
@@ -328,12 +341,12 @@ mod tests {
             .rooms
             .get_mut(&room)
             .unwrap()
-            .capabilities
+            .sandbox
             .push(CapOverride::new(
                 Subject::app("so.tilo.android"),
                 Scope::FsPath("/disposable/child".into()),
                 Effect::Restrict,
-                Verb::Read,
+                Access::Read,
             ));
         reconcile(&mut published);
         assert!(restricted.stopped());
@@ -341,14 +354,14 @@ mod tests {
         let expired_grant = CapOverride::grant(
             Subject::app("so.tilo.android"),
             Scope::FsPath("/expired".into()),
-            Verb::Read,
+            Access::Read,
         )
         .with_expiry(1);
         published
             .rooms
             .get_mut(&room)
             .unwrap()
-            .capabilities
+            .sandbox
             .push(expired_grant.clone());
         published.sandboxes.insert(
             expired.0.id(),

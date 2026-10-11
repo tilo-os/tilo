@@ -1,5 +1,6 @@
 use super::{MusicApp, Track};
-#[cfg(all(test, feature = "audio"))]
+#[cfg(test)]
+#[cfg(feature = "audio")]
 use ui::widget::Continuable as _;
 use ui::widget::toast::ToastKind;
 
@@ -18,7 +19,7 @@ impl MusicApp {
         ui::widget::Button::icon_only(
             "music-open-file",
             ui::icons::Icon::FolderOpen,
-            &ui::i18n!("music-open-audio-file"),
+            &crate::i18n::t("music-open-audio-file"),
         )
         .on_action(binding)
     }
@@ -203,8 +204,27 @@ impl MusicApp {
         Ok(request)
     }
 
+    pub(super) fn observe_local_duration(&mut self) {
+        if let Some(file) = self
+            .local_file
+            .as_mut()
+            .filter(|file| self.pb.current.as_deref() == Some(&file.track.id))
+            && let Some(duration) = self.audio.duration_ms().filter(|duration| *duration > 0)
+        {
+            file.observed_duration_ms = Some(duration);
+        }
+    }
+
     pub(super) fn start_local_file(&mut self) -> Result<u64, String> {
         let file = self.local_file.as_ref().ok_or("No local file is open")?;
+        if self.pb.playing
+            && file
+                .observed_duration_ms
+                .is_some_and(|duration| self.pb.position_ms >= duration)
+        {
+            self.pb.position_ms = 0;
+        }
+        self.playhead_ms = self.pb.position_ms as f64;
         if !crate::files::is_nonempty_file(&file.path) {
             return Err("Local audio file is unavailable or empty".into());
         }
@@ -352,7 +372,7 @@ mod tests {
                 assert!(app.rect.contains(rect.center()));
                 assert!(rect.y1 <= app.body_rect.y0, "the action sits in the header");
                 assert_eq!(tree.children(node).unwrap().len(), app.children().len());
-                let device_id = unsafe { std::mem::zeroed() };
+                let device_id = winit::event::DeviceId::dummy();
                 let events = [
                     winit::event::WindowEvent::CursorMoved {
                         device_id,
@@ -372,26 +392,18 @@ mod tests {
                         button: winit::event::MouseButton::Left,
                     },
                 ];
+                let mut sending = ui::testing::Dispatch::new()
+                    .doc(&mut doc)
+                    .layout(&tree, node);
                 for event in events {
-                    app.handle_event(
-                        &event,
-                        &mut ui::widget::EventCtx {
-                            scale_factor: 1.0,
-                            modifiers: &winit::event::Modifiers::default(),
-                            state: ui::widget::Edits::lend(&mut doc),
-                            path: &automerge::ROOT,
-                            handled: &mut false,
-                            focus_target: &mut None,
-                            node_id: node,
-                            taffy: &tree,
-                        },
-                    );
+                    sending.send(&mut app, &event);
                 }
                 let intent = ui::widget::controls::take_control_invocation(&mut app)
                     .expect("visible shared button intent");
+                assert_eq!(intent.address.resource, "music.library");
                 assert_eq!(
-                    intent.address,
-                    tilo_actions::ActionAddress::new("music.library", "open-file")
+                    intent.address.action,
+                    ui::tilo_resource::Effect::id(&crate::actions::MusicEffect::OpenFile)
                 );
                 assert!(intent.arguments.is_empty());
                 assert!(
@@ -522,6 +534,98 @@ mod tests {
             assert!(app.local_file.is_none());
             assert!(!app.audio.has_stream());
         }
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
+    #[serial_test::serial(audio_backend)]
+    #[expect(
+        clippy::float_cmp,
+        reason = "EOF and replay assign exact integer-millisecond playhead values"
+    )]
+    fn local_decoder_duration_survives_eos_and_replay_rewinds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("finished local song.wav");
+        wav(&path);
+        let mut app = MusicApp::without_profile();
+        app.open_local_file(path.to_str().unwrap()).unwrap();
+        wait_for_audio(&mut app);
+        let duration = app.current_duration_ms();
+        assert!(duration >= 2900);
+        let deadline = tilo_test_env::hang_deadline();
+        while app.pb.playing {
+            app.tick();
+            assert!(
+                ui::time::now() < deadline,
+                "local decoder did not reach EOS"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!app.audio.has_stream());
+        assert!(app.playback_error.is_none());
+        assert_eq!(
+            app.current_duration_ms(),
+            duration,
+            "the visible local duration must survive real decoder teardown"
+        );
+        assert_eq!(app.playhead_ms, duration as f64);
+        let ui::framework::Effected::Done(status) = app
+            .begin_effect(
+                tilo_actions::InvocationId::new(),
+                crate::actions::MusicEffect::PlaybackStatus,
+            )
+            .unwrap()
+        else {
+            panic!("playback inspection must return the actual stopped state");
+        };
+        let status = status.value.unwrap();
+        assert_eq!(status["duration_ms"], duration);
+        assert_eq!(
+            status["position_ms"], duration,
+            "actual local EOS must retain its observed end position after decoder teardown"
+        );
+        assert_eq!(status["confirmed_playing"], false);
+        assert_eq!(status["requested_playing"], false);
+        // The self-managed sink retains its actual decoded-buffer history at
+        // EOS; a stopped source must not erase that evidence or report playing.
+        assert_eq!(status["rendered_counter_unit"], "sink_buffers");
+        assert!(status["rendered_buffers"].as_u64().unwrap() > 0);
+        let resource =
+            crate::app::MusicApp::publish_resource(&app, crate::actions::LOCAL_FILE_RESOURCE_ID)
+                .unwrap();
+        let action = resource
+            .actions
+            .iter()
+            .find(|a| a.id == "play-pause")
+            .unwrap();
+        let encoded = action.build_json(&serde_json::Map::new()).unwrap();
+        let invocation = tilo_actions::InvocationId::new();
+        assert!(matches!(
+            app.start_effect(invocation, &encoded.payload).unwrap(),
+            ui::framework::Effected::Pending
+        ));
+        assert_eq!(
+            app.pb.position_ms, 0,
+            "replay must not seek to the ended position"
+        );
+        assert_eq!(app.playhead_ms, 0.0);
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            app.tick();
+            if let Some(update) = app.take_effect_result(invocation) {
+                let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
+                    panic!("real replay did not succeed: {update:?}");
+                };
+                assert_eq!(output.value, Some(serde_json::json!({"state":"playing"})));
+                action.contract.result.validate(&output).unwrap();
+                assert!(app.audio.frames_rendered() > 0);
+                assert!(app.audio.is_playing_confirmed());
+                break;
+            }
+            assert!(ui::time::now() < deadline, "replay produced no actual PCM");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        app.audio.stop();
     }
 
     #[test]
@@ -714,8 +818,7 @@ mod tests {
         };
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -783,8 +886,7 @@ mod tests {
         wav(&path);
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -841,8 +943,7 @@ mod tests {
         wav(&path);
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -975,12 +1076,14 @@ mod tests {
             .expect("tests capture decoded audio")
             .clone();
         let until = tilo_test_env::hang_deadline();
-        // A playing source must also be rendering before the caller acts on
-        // it. Unlike a sound server's sink, the capture sink can stall when it
-        // is paused while still completing its switch to PLAYING.
+        // First PCM can arrive before the asynchronous Playing transition.
+        // Keep driving production tick until the active decoder confirms it,
+        // within the original deadline. The capture sink can also stall when
+        // paused while still completing its switch to Playing.
         let rendered_before = capture.snapshot().rendered;
         while app.audio.frames_rendered() == 0
             || app.audio.needs_poll()
+            || (app.pb.playing && !app.audio.is_playing_confirmed())
             || (app.pb.playing && capture.snapshot().rendered == rendered_before)
         {
             app.tick();
@@ -1015,7 +1118,7 @@ mod tests {
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
             assert!(app.lib.tracks.is_empty());
-            assert!(crate::doc::load_library(&doc).tracks.is_empty());
+            assert!(crate::seed::library_of(&doc).tracks.is_empty());
             assert_eq!(app.pb.queue.len(), 1);
             assert!(app.pb.playing);
             assert!(app.worker.is_none());
@@ -1070,6 +1173,11 @@ mod tests {
                         panic!("resume did not succeed: {result:?}");
                     };
                     assert_eq!(output.value, Some(serde_json::json!({"state":"playing"})));
+                    action
+                        .contract
+                        .result
+                        .validate(&output)
+                        .expect("real resumed PCM completion must match the published result");
                     assert!(app.audio.frames_rendered() >= before);
                     assert!(app.audio.is_playing_confirmed());
                     break;
@@ -1135,6 +1243,7 @@ mod tests {
                 spotify_catalogue: false,
                 local_file: app.local_file.clone(),
                 playback: app.pb.clone(),
+                queue_catalogue: Vec::new(),
             };
             let profile_path = dir.path().join("profile.json");
             crate::storage::save_device_profile_to(&profile_path, &profile).unwrap();
@@ -1159,6 +1268,7 @@ mod tests {
                     ..Default::default()
                 },
                 local_file: Some(file),
+                queue_catalogue: Vec::new(),
             };
             let profile_path = dir.path().join("profile.json");
             crate::storage::save_device_profile_to(&profile_path, &profile).unwrap();

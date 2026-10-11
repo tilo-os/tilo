@@ -18,12 +18,17 @@
 mod admin;
 mod admissions;
 #[cfg(feature = "agents")]
+mod agent_members;
+#[cfg(feature = "agents")]
 mod applications;
 mod collaboration;
 mod pages;
+#[cfg(feature = "agents")]
+mod steward_endpoint;
 mod stewardship;
 #[cfg(test)]
 mod tests;
+mod topology_namespace;
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
@@ -40,14 +45,16 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
-pub use admin::{
-    ROOM_ADMIN_ALPN, RoomAdminClient, RoomAdminError, RoomAdminProtocol, RoomCommand, RoomReply,
-    RoomSummary,
-};
+pub use admin::RoomAdminProtocol;
 pub use collaboration::{
-    CancelInvitationRequest, CollaborationError, GovernanceCompletion, GrantAppAuthorshipRequest,
-    IssueInvitationRequest, IssuedInvitation, PendingInvitation, RemoveMemberRequest,
-    RoomJoinService, SetMemberRoleRequest,
+    CollaborationError, GovernanceCompletion, GrantAppAuthorshipRequest, RoomJoinService,
+};
+// The administration wire vocabulary and the device's client, under the
+// daemon's historic paths.
+pub use tilo_relay_session::rooms::{
+    CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
+    ROOM_ADMIN_ALPN, RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand, RoomReply,
+    RoomSummary, SetMemberRoleRequest,
 };
 
 use crate::peer::WorkspaceRegistry;
@@ -435,6 +442,12 @@ pub(crate) struct RoomHost {
     pub(crate) cert: DeviceCert,
     pub(crate) key: SigningKey,
     pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
+    /// The live handshake trust policy, for [`crate::room_access::decide`].
+    #[cfg(feature = "agents")]
+    pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
+    /// Agent delegations, for [`crate::room_access::decide`].
+    #[cfg(feature = "agents")]
+    pub(crate) agents: crate::peer::AgentRegistry,
 }
 
 /// The rooms this relay governs.
@@ -456,6 +469,10 @@ struct RoomsInner {
 pub(crate) struct RoomAuthority {
     rooms: std::sync::Weak<RoomsInner>,
     room: String,
+    /// The device governing the room: this relay's own, which also stewards
+    /// the room's channels. Read by the steward-key decision only.
+    #[cfg(any(test, feature = "agents"))]
+    governor: [u8; 32],
 }
 
 impl RoomAuthority {
@@ -467,6 +484,22 @@ impl RoomAuthority {
     /// The governed room.
     pub(crate) fn room(&self) -> &str {
         &self.room
+    }
+
+    /// The device governing the room, which stewards its channels.
+    #[cfg(any(test, feature = "agents"))]
+    pub(crate) const fn governor(&self) -> &[u8; 32] {
+        &self.governor
+    }
+
+    /// An authority governed by `governor`, for a test of the decision.
+    #[cfg(test)]
+    pub(crate) fn governed_by(room: &str, governor: [u8; 32]) -> Self {
+        Self {
+            rooms: std::sync::Weak::new(),
+            room: room.to_owned(),
+            governor,
+        }
     }
 }
 
@@ -528,12 +561,11 @@ impl Rooms {
     ///
     /// Returns why the room could not be created, persisted or bound.
     pub async fn create(&self, name: &str) -> Result<RoomSummary, String> {
-        let host = &self.inner.host;
         let room = GovernedRoom::create(
             &self.inner.dir,
             name,
-            &host.cert,
-            &host.key,
+            &self.inner.host.cert,
+            &self.inner.host.key,
             SystemTime::now(),
         )?;
         self.bind(&room).await?;
@@ -566,6 +598,20 @@ impl Rooms {
         summaries
     }
 
+    /// The delegated agents on `room`'s roster, acting or not now.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the room's roster could not be read.
+    pub async fn agents(
+        &self,
+        room: &str,
+    ) -> Result<Vec<tilo_peer_state::GovernedAgent>, CollaborationError> {
+        let room = self.room(room).await?;
+        let agents = room.lock().await.peer().governed_agents(SystemTime::now());
+        agents.map_err(CollaborationError::new)
+    }
+
     /// The device that governs every room here: this relay's own.
     #[must_use]
     pub fn governor(&self) -> &DeviceCert {
@@ -580,27 +626,23 @@ impl Rooms {
 
     /// The current role of `device` only when room Write permission is allowed,
     /// including live capability restrictions; `None` otherwise.
-    #[cfg_attr(
-        not(feature = "web"),
-        allow(dead_code, reason = "read by the web listener")
-    )]
     pub(crate) async fn legacy_writer_role(
         &self,
         room: &str,
         device: [u8; 32],
     ) -> Option<collab_types::role::Role> {
-        use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
         let governed = self.room(room).await.ok()?;
         let governed = governed.lock().await;
         let now = SystemTime::now();
-        let (role, caps, person) = governed.peer().permissions(device, now).ok()?;
+        let member = governed.peer().permissions(device, now).ok()?;
         drop(governed);
-        let actor = Actor::person(Some(role), person).in_room(room.to_owned());
-        let resource = ResourceRef::Room(room.to_owned());
-        let seconds = now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
-        (decide_capability(&actor, &resource, Verb::Write, &caps, Some(seconds))
-            == CapDecision::Allow)
-            .then_some(role)
+        member
+            .allows(
+                &member.policy.node(),
+                tilo_action_policy::ActionKind::Undoable,
+                now,
+            )
+            .then_some(member.role)
     }
 
     async fn room(&self, room: &str) -> Result<Arc<AsyncMutex<GovernedRoom>>, CollaborationError> {
@@ -653,16 +695,26 @@ impl Rooms {
             host.access.state_root().to_path_buf(),
             workspace_id,
             true,
-            false,
+            crate::room_access::AdmissionMode::Governed,
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await
         .map_err(|error| error.to_string())?;
         let mut runtime = workspace.lock().await;
-        runtime.admit_authenticated = false;
+        // This relay's room authority governs the room: never auto-enrol,
+        // even if the room was autobound before the authority took it.
+        if std::mem::replace(
+            &mut runtime.admission,
+            crate::room_access::AdmissionMode::Governed,
+        ) != crate::room_access::AdmissionMode::Governed
+        {
+            crate::authority_epoch::bump();
+        }
         runtime.room_authority = Some(RoomAuthority {
             rooms: Arc::downgrade(&self.inner),
             room: room.room().to_owned(),
+            #[cfg(any(test, feature = "agents"))]
+            governor: host.cert.device_public_key,
         });
         if runtime.governor_tap.is_none() {
             let (tap, notices) = tokio::sync::mpsc::channel(RECORD_NOTICES);
@@ -741,11 +793,9 @@ impl Rooms {
             return Ok(());
         }
         let now = SystemTime::now();
-        let (role, ..) = room.peer().permissions(author, now)?;
-        if !matches!(
-            role,
-            collab_types::role::Role::Owner | collab_types::role::Role::Editor
-        ) {
+        let member = room.peer().permissions(author, now)?;
+        let node = collab_types::validator::document_node(&member.policy.room, &app_id, &record_id);
+        if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
             return Err(format!(
                 "{app_id} record written by a device that may not edit"
             ));
@@ -858,6 +908,14 @@ impl Rooms {
             .replace(room.workspace_id(), true, access)
             .await
             .map_err(|error| error.to_string())?;
+        host.access
+            .replace_standings(
+                room.workspace_id(),
+                true,
+                room.peer().governed_standings(SystemTime::now())?,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
         while let Some(entry) = room.record.outgoing.get(room.record.published) {
             let message: tilo_peer_state::NeighbourMsg =
                 postcard::from_bytes(&entry.bytes).map_err(|error| error.to_string())?;
@@ -920,10 +978,6 @@ impl Rooms {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
-}
-
-fn now_ns() -> u64 {
-    tilo_clock::unix_now_ns()
 }
 
 fn system_time(now_ns: u64) -> SystemTime {

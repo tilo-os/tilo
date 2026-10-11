@@ -198,12 +198,6 @@ impl<B, A, C, L> WindowsAppliance<B, A, C, L> {
             agent_timeout: Duration::from_secs(45),
         }
     }
-
-    #[must_use]
-    pub fn with_agent_timeout(mut self, timeout: Duration) -> Self {
-        self.agent_timeout = timeout;
-        self
-    }
 }
 
 impl<B, A, C, L> WindowsAppliance<B, A, C, L>

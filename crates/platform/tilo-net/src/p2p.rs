@@ -329,7 +329,8 @@ mod imp_web {
     }
 }
 
-#[cfg(all(test, not(target_family = "wasm")))]
+#[cfg(test)]
+#[cfg(not(target_family = "wasm"))]
 mod tests {
     /// Peers on other builds read these bytes: a little-endian `u32` length,
     /// then the frame; an empty frame is legal.

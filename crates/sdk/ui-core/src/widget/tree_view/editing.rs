@@ -6,7 +6,7 @@
 
 use super::{
     DropPlacement, DropTarget, ElementState, Key, KeyEvent, LABEL_ROLE, MouseButton, NamedKey,
-    NodeId, Point, Rect, ReorderDrop, TreeModel, TreeRowKey, TreeView, WindowEvent, idx_to_f64,
+    NodeId, Point, Rect, ReorderDrop, TreeModel, TreeRowKey, TreeView, WindowEvent,
 };
 use crate::widget::{TextInput, Widget};
 
@@ -160,7 +160,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let index = self.visible_index_of(id)?;
         let row = self.visible_row_rect(index)?;
         let (_, depth) = self.index.row_at(&self.model, index)?;
-        let x0 = row.x0 + self.row_inset + idx_to_f64(depth) * self.indent_px + self.disclosure_w;
+        let x0 = row.x0
+            + self.row_inset
+            + crate::num::f64_of_usize(depth) * self.indent_px
+            + self.disclosure_w;
         Some(Rect::new(
             x0 + lead,
             row.y0,

@@ -82,6 +82,14 @@ fn bold_ranges(app: &TestApp<Document>) -> Vec<(usize, usize)> {
     })
 }
 
+/// The verb a change's entry records.
+fn verb(context: &ui::tilo_actions::ActionContext) -> &str {
+    match &context.what {
+        Some(ui::tilo_actions::Did::Verb(verb)) => &verb.action.action,
+        other => panic!("a verb: {other:?}"),
+    }
+}
+
 #[test]
 fn a_keystroke_is_an_action_and_undo_takes_back_a_word_at_a_time() {
     let mut app = open();
@@ -89,7 +97,7 @@ fn a_keystroke_is_an_action_and_undo_takes_back_a_word_at_a_time() {
     assert_eq!(paragraphs(&app), ["hello world"]);
     let last = app.versions().pop().unwrap();
     let context = last.context.as_ref().unwrap();
-    assert_eq!(context.action_label, "Splice text");
+    assert_eq!(verb(context), "splice-text");
     assert_eq!(
         context
             .resource
@@ -156,7 +164,7 @@ fn moving_a_paragraph_up_is_one_move_the_document_keeps() {
     app.harness().set_modifiers(&[]);
     assert_eq!(paragraphs(&app), ["second", "first"]);
     let last = app.versions().pop().unwrap();
-    assert_eq!(last.context.as_ref().unwrap().action_label, "Move blocks");
+    assert_eq!(verb(last.context.as_ref().unwrap()), "move-blocks");
     assert!(app.undo());
     assert_eq!(paragraphs(&app), ["first", "second"]);
 }
@@ -171,7 +179,7 @@ fn typed_text_is_attributed_to_its_writer_by_the_splice_itself() {
     // The last keystroke is one splice, and that splice named its writer.
     let last = app.versions().pop().unwrap();
     let context = last.context.as_ref().unwrap();
-    assert_eq!(context.action_label, "Splice text");
+    assert_eq!(verb(context), "splice-text");
     let writer = context.invoker.as_ref().unwrap().actor.clone();
     assert!(!writer.is_empty());
     assert_eq!(authors(&app), [(0, 5, writer.clone()), (0, 5, writer)]);
@@ -306,4 +314,18 @@ fn an_agent_edit_through_the_action_door_is_shown_and_undoable() {
     app.harness().key("End");
     app.harness().type_text(".");
     assert_eq!(paragraphs(&app), ["typed by hand."]);
+}
+
+#[test]
+fn a_typed_word_stays_one_undo_step_after_a_restart() {
+    let mut app = open();
+    app.harness().type_text("hello world");
+    assert_eq!(paragraphs(&app), ["hello world"]);
+    let mut app = app.reopen().unwrap();
+    assert!(app.undo());
+    assert_eq!(paragraphs(&app), ["hello "], "one word is one step");
+    assert!(app.undo());
+    assert_eq!(paragraphs(&app), [""]);
+    assert!(app.redo());
+    assert_eq!(paragraphs(&app), ["hello "]);
 }

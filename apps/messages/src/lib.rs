@@ -3,6 +3,7 @@
 //! privileged broker; it is never inferred from names or widget state.
 
 mod enrollment;
+mod groups;
 mod history;
 #[cfg(test)]
 mod history_tests;
@@ -18,24 +19,97 @@ use ui::prelude::*;
 use ui::widget::Element;
 
 /// The mounted resource carries no external message plaintext into a workspace
-/// CRDT. Private external histories remain the broker's account-owned data.
+/// CRDT. Private external histories remain the broker's account-owned data,
+/// and everything Messages does is one of its effects. The record's schema
+/// version is the framework's.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Messages {
-    pub schema_version: u64,
-}
+pub struct Messages {}
 
 #[resource(kind = "tilo.messages", label = "Messages")]
-impl Messages {
-    /// Initialize the version marker without creating contacts or messages.
-    #[action(housekeeping)]
-    pub fn initialize_record(&mut self) {
-        self.schema_version = 1;
-    }
-}
+impl Messages {}
 
 #[derive(Clone, Effect)]
 #[effect(operation = "tilo.messages.view", device_only)]
 pub enum MessagesEffect {
+    /// Inspect private service groups for one explicitly selected sender account.
+    #[effect(
+        job,
+        sensitive,
+        returns,
+        cancellable,
+        kind = "read",
+        label = "messages-list-groups"
+    )]
+    ListGroups { service: String, account: String },
+    /// Fetch current service membership; this does not authorize a group send.
+    #[effect(
+        job,
+        sensitive,
+        returns,
+        cancellable,
+        kind = "read",
+        label = "messages-read-group-membership"
+    )]
+    ReadGroupMembership {
+        service: String,
+        account: String,
+        group: String,
+    },
+    /// Read private text only for this selected service group.
+    #[effect(
+        job,
+        sensitive,
+        returns,
+        cancellable,
+        kind = "read",
+        label = "messages-group-history"
+    )]
+    ReadGroupHistory {
+        service: String,
+        account: String,
+        group: String,
+    },
+    /// Send once using the reviewed membership and original sender account.
+    #[effect(job, sensitive, label = "messages-group-send")]
+    SendGroupText {
+        service: String,
+        account: String,
+        group: String,
+        review: String,
+        operation: String,
+        #[param(secret)]
+        text: String,
+    },
+    /// Add one explicitly selected current Contacts association.
+    #[effect(job, destructive, label = "messages-group-add")]
+    AddGroupMember {
+        service: String,
+        account: String,
+        group: String,
+        review: String,
+        operation: String,
+        person: String,
+        choice: String,
+    },
+    #[effect(job, destructive, label = "messages-group-remove")]
+    RemoveGroupMember {
+        service: String,
+        account: String,
+        group: String,
+        review: String,
+        operation: String,
+        member: String,
+    },
+    #[effect(job, destructive, label = "messages-group-leave")]
+    LeaveGroup {
+        service: String,
+        account: String,
+        group: String,
+        review: String,
+        operation: String,
+    },
+    #[effect(view, idempotent, label = "messages-close-groups")]
+    CloseGroups,
     /// Open private account setup without changing a conversation or account.
     #[effect(view, idempotent, label = "messages-setup-accounts")]
     OpenAccountSetup,
@@ -53,8 +127,14 @@ pub enum MessagesEffect {
         attempt: String,
     },
     /// Link a first account without manufacturing a configured account row.
-    #[effect(job, sensitive, cancellable, label = "messages-first-signal")]
+    #[effect(job, sensitive, cancellable, label = "messages-first-account-prepare")]
     BeginFirstEnrollment { service: String },
+    /// Open the host's private SIM chooser without granting modem access.
+    #[effect(job, sensitive, cancellable, idempotent, label = "messages-first-sms")]
+    ListSmsSims,
+    /// Review one opaque host choice; bus paths and SIM identifiers are not inputs.
+    #[effect(job, sensitive, cancellable, label = "messages-select-sim")]
+    SelectSmsSim { selection: String },
     /// Verify the exact unpublished pairing and review its self identity.
     #[effect(job, sensitive, cancellable, label = "messages-finish-link")]
     CompleteFirstEnrollment {
@@ -69,6 +149,9 @@ pub enum MessagesEffect {
         account: String,
         display_name: String,
     },
+    /// Retire an interrupted unpublished attempt and return to service selection.
+    #[effect(view, idempotent, label = "messages-first-reset")]
+    ResetFirstEnrollment,
     /// Interrupt only this account's private provisioning attempt.
     #[effect(view, idempotent, label = "messages-cancel-link")]
     CancelLink,
@@ -93,7 +176,7 @@ pub enum MessagesEffect {
         job,
         cancellable,
         idempotent,
-        permission = "read",
+        kind = "read",
         label = "messages-refresh-history"
     )]
     ReadHistory { choice: String },
@@ -134,11 +217,7 @@ impl std::fmt::Debug for MessagesEffect {
     }
 }
 
-pub(crate) static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "messages-empty-heading",
-);
+ui::embedded_catalog!(pub(crate) static CATALOG, "messages-empty-heading", ["en-US"]);
 
 pub struct MessagesShell;
 
@@ -176,5 +255,5 @@ impl ResourceApp for MessagesShell {
 
 #[must_use]
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<MessagesShell>()
+    ui::built_in_definition!(MessagesShell)
 }

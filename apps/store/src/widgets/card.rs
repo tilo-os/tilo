@@ -143,12 +143,26 @@ pub fn provenance(item: &StoreItem) -> String {
             };
         }
     };
-    let version = item.latest_version();
+    let version = visible_version(item);
     if version.is_empty() {
         kind.to_string()
     } else {
         format!("{kind}, version {version}")
     }
+}
+
+/// Native catalogue builds include the commit in `SemVer` metadata. Keep that
+/// exact identity in package details and actions, rather than on every card.
+pub fn visible_version(item: &StoreItem) -> &str {
+    let version = item.latest_version();
+    if matches!(item.source, StoreSource::Tilo { .. })
+        && let Some((release, commit)) = version.split_once("+g")
+        && commit.len() == 40
+        && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return release;
+    }
+    version
 }
 
 /// Turn registry category identifiers into human-facing labels without
@@ -164,7 +178,7 @@ pub fn category_label(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{category_label, provenance};
+    use super::{category_label, provenance, visible_version};
 
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
 
@@ -200,5 +214,17 @@ mod tests {
             installed: InstalledState::Not,
         };
         assert_eq!(provenance(&item), "Flatpak app, version 2.4");
+        let mut native = item;
+        native.source = StoreSource::Tilo {
+            registry_name: "Tilo".into(),
+        };
+        native.versions[0].version = "0.2.0-rc.3+g4b07574f432de8ca4fc7f108e07c0237b75b4b05".into();
+        assert_eq!(provenance(&native), "Tilo app, version 0.2.0-rc.3");
+        assert_eq!(
+            native.latest_version(),
+            "0.2.0-rc.3+g4b07574f432de8ca4fc7f108e07c0237b75b4b05"
+        );
+        native.versions[0].version = "0.2.0+gpu".into();
+        assert_eq!(visible_version(&native), "0.2.0+gpu");
     }
 }

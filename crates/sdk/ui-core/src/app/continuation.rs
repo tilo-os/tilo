@@ -470,7 +470,7 @@ impl App {
         if !view.valid()
             || route.app_id != view.app
             || route.cluster_id.to_string() != view.room
-            || route.record.as_deref() != Some(format!("continuation:{}", view.instance).as_str())
+            || self.continuation.private_instance != Some(view.instance)
         {
             return;
         }

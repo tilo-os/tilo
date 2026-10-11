@@ -44,13 +44,6 @@ fn layout_picker(picker: &mut ColorPicker) -> (TaffyTree<()>, NodeId) {
     (taffy, root_node)
 }
 
-/// Synthesise a `DeviceId`. Winit doesn't expose a public
-/// constructor; zero-init is the project convention (see
-/// `color_picker.rs` unit tests).
-fn synth_device_id() -> winit::event::DeviceId {
-    unsafe { std::mem::zeroed() }
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
@@ -137,7 +130,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         let center_y = f64::midpoint(hex_rect.y0, hex_rect.y1);
 
         let move_ev = WindowEvent::CursorMoved {
-            device_id: synth_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(center_x, center_y),
         };
         (&mut picker as &mut dyn Widget).handle_event(
@@ -157,7 +150,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         // The picker proposes focus on its own node id (the App needs that to
         // blur sibling widgets); set_focus(true) then redirects onto the input.
         let press_ev = WindowEvent::MouseInput {
-            device_id: synth_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
@@ -207,11 +200,11 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         let in_x = f64::midpoint(hex_rect.x0, hex_rect.x1);
         let in_y = f64::midpoint(hex_rect.y0, hex_rect.y1);
         let move_in = WindowEvent::CursorMoved {
-            device_id: synth_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(in_x, in_y),
         };
         let press = WindowEvent::MouseInput {
-            device_id: synth_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
@@ -249,7 +242,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         );
 
         let release = WindowEvent::MouseInput {
-            device_id: synth_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         };
@@ -273,7 +266,7 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         let out_x = sv.x0 - 10.0;
         let out_y = 8.0;
         let move_out = WindowEvent::CursorMoved {
-            device_id: synth_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(out_x, out_y),
         };
         (&mut picker as &mut dyn Widget).handle_event(

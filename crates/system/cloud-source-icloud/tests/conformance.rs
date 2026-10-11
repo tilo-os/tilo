@@ -1,14 +1,14 @@
 //! The cloud-source conformance suite for iCloud Drive:
 //!
-//! - against the in-process fake (always), signed in through the full SRP
-//!   and two-factor flow;
+//! - against the in-process fake (always), with a trusted session it issues
+//!   (custody's tests run the sign-in itself against the same fake);
 //! - against a live account when `TILO_LIVE_ICLOUD_SESSION` holds a
 //!   serialized [`StoredSession`] (JSON or base64 JSON, including its trust
 //!   token), each run in its own `conformance-<uuid>` folder. Skipped when
 //!   the variable is absent.
 //!
-//! A live session that can no longer be renewed without a new two-factor
-//! code is not a provider failure: the suite's checks skip, and
+//! A live session Apple no longer accepts is not a provider failure (custody
+//! renews sessions; this suite only consumes one): the suite's checks skip, and
 //! `live::session_is_current` fails with [`REAUTH_NEEDED`] in its message,
 //! so a scheduled job tells "re-auth needed" apart from breakage (any other
 //! failure).
@@ -23,11 +23,10 @@
 use std::io::Read;
 use std::sync::Arc;
 
+use cloud_source::Error;
 use cloud_source::conformance::{Fault, Fixture, SwitchableCredential};
 use cloud_source::{CloudSource, ItemId, StaticCredential, UploadTarget};
-use cloud_source_icloud::auth::{
-    AuthError, Authenticator, Endpoints, SessionCredentials, StoredSession,
-};
+use cloud_source_icloud::auth::StoredSession;
 use cloud_source_icloud::fake::{FakeFault, FakeICloud};
 use cloud_source_icloud::{ICloudConfig, ICloudDrive};
 
@@ -46,7 +45,7 @@ struct FakeFixture {
 impl FakeFixture {
     fn start() -> Self {
         let server = FakeICloud::start();
-        let session = server.sign_in();
+        let session = server.session();
         let credentials = Arc::new(SwitchableCredential::new(Box::new(StaticCredential(
             session.credential(),
         ))));
@@ -91,6 +90,7 @@ impl Fixture for FakeFixture {
             Fault::RateLimited => FakeFault::RateLimited,
             Fault::ServerError => FakeFault::ServerError,
             Fault::TruncatedBody => FakeFault::TruncatedBody,
+            Fault::ClosedEarly => FakeFault::ClosedEarly,
             Fault::ExpiredCredential => FakeFault::ExpiredSession,
             // No change feed, no cursors.
             Fault::CursorReset => return false,
@@ -106,7 +106,7 @@ cloud_source::conformance_suite!(fake, FakeFixture::start());
 enum Live {
     Absent,
     Expired,
-    Ready(SessionCredentials),
+    Ready(StoredSession),
 }
 
 fn live_session() -> Live {
@@ -115,11 +115,14 @@ fn live_session() -> Live {
     };
     let session = StoredSession::from_json(&raw)
         .unwrap_or_else(|_| panic!("{LIVE_SESSION_VAR} does not hold a stored iCloud session"));
-    let auth = Authenticator::new(Endpoints::apple()).unwrap();
-    let credentials = SessionCredentials::new(auth, session, None, None);
-    match credentials.verify() {
-        Ok(()) => Live::Ready(credentials),
-        Err(AuthError::SessionExpired) => Live::Expired,
+    let account = ICloudDrive::new(
+        ICloudConfig::apple(),
+        Arc::new(StaticCredential(session.credential())),
+    )
+    .unwrap();
+    match account.stat(&account.root()) {
+        Ok(_) => Live::Ready(session),
+        Err(Error::Unauthorized) => Live::Expired,
         Err(error) => panic!("the live iCloud session could not be checked: {error}"),
     }
 }
@@ -136,10 +139,11 @@ struct LiveFixture {
 
 impl LiveFixture {
     fn from_env() -> Option<Self> {
-        let Live::Ready(shared) = live_session() else {
+        let Live::Ready(session) = live_session() else {
             return None;
         };
-        let account = ICloudDrive::new(ICloudConfig::apple(), Arc::new(shared.clone())).unwrap();
+        let shared = || StaticCredential(session.credential());
+        let account = ICloudDrive::new(ICloudConfig::apple(), Arc::new(shared())).unwrap();
         let name = format!("conformance-{}", uuid::Uuid::new_v4().simple());
         let folder = account
             .create_folder(&account.root(), &name)
@@ -147,9 +151,9 @@ impl LiveFixture {
             .id;
         let mut scoped = ICloudConfig::apple();
         scoped.root = folder.clone();
-        let credentials = Arc::new(SwitchableCredential::new(Box::new(shared.clone())));
+        let credentials = Arc::new(SwitchableCredential::new(Box::new(shared())));
         let source = ICloudDrive::new(scoped.clone(), Arc::clone(&credentials) as _).unwrap();
-        let remote = ICloudDrive::new(scoped, Arc::new(shared)).unwrap();
+        let remote = ICloudDrive::new(scoped, Arc::new(shared())).unwrap();
         Some(Self {
             credentials,
             source,
@@ -255,7 +259,7 @@ mod fake_specifics {
     use super::*;
 
     fn signed_in(server: &FakeICloud) -> ICloudDrive {
-        let session = server.sign_in();
+        let session = server.session();
         ICloudDrive::new(
             server.config(),
             Arc::new(StaticCredential(session.credential())),

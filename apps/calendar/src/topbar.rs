@@ -93,7 +93,7 @@ impl Topbar {
         self.view_rect = Rect::new(content.x0, self.rect.y1, content.x1, content.y1);
         let variants = period_title_variants(view, anchor);
         self.geometry = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-            solve(self.rect, show_toggle, &variants, text, theme)
+            solve(self.rect, show_toggle, view, &variants, text, theme)
         });
     }
 
@@ -152,7 +152,8 @@ impl Topbar {
         self.hits.push((g.search, Action::Search));
 
         if !g.segments.is_empty() {
-            let labels: Vec<&str> = View::ALL.iter().map(|v| v.label()).collect();
+            let owned: Vec<String> = View::ALL.iter().map(|v| v.display_label()).collect();
+            let labels: Vec<&str> = owned.iter().map(String::as_str).collect();
             let selected = View::ALL.iter().position(|v| *v == view).unwrap_or(0);
             let hovered = g.segments.iter().position(|s| s.contains(pointer));
             ToggleGroup::paint(
@@ -167,10 +168,16 @@ impl Topbar {
             }
         }
 
-        let new_event = if g.new_event_icon_only {
-            ButtonFace::icon_only(g.new_event, Icon::Plus, NEW_EVENT).role(ButtonRole::Primary)
+        let task_label = crate::resource::t("calendar-tasks-new");
+        let new_label = if view == View::Tasks {
+            task_label.as_str()
         } else {
-            ButtonFace::new(g.new_event, NEW_EVENT)
+            NEW_EVENT
+        };
+        let new_event = if g.new_event_icon_only {
+            ButtonFace::icon_only(g.new_event, Icon::Plus, new_label).role(ButtonRole::Primary)
+        } else {
+            ButtonFace::new(g.new_event, new_label)
                 .icon(Icon::Plus)
                 .role(ButtonRole::Primary)
         };
@@ -220,6 +227,7 @@ impl Topbar {
             View::Month => ("Previous month", "Next month"),
             View::Week | View::Agenda => ("Previous week", "Next week"),
             View::Day => ("Previous day", "Next day"),
+            View::Tasks => return,
         };
         for (rect, icon, name, action) in [
             (
@@ -293,6 +301,7 @@ impl Topbar {
 fn solve(
     band: Rect,
     show_toggle: bool,
+    view: View,
     variants: &[String],
     text: &mut TextRenderer,
     theme: &Theme,
@@ -306,22 +315,22 @@ fn solve(
     let square = height;
     // Chrome folds away before the title loses its month: the room it asks
     // for is its compact variant ("Jun 2026"), not the bare year.
-    let title_need = variants
-        .get(1)
-        .or_else(|| variants.last())
-        .map_or(0.0, |variant| {
-            f64::from(
-                text.measure_style(variant, None, &theme.text(TextRole::Title))
-                    .0,
-            )
-        })
-        .min(band.width());
+    let title_need = title_width(variants, band, text, theme);
 
     let today_label_w = ButtonFace::new(Rect::ZERO, TODAY).intrinsic_width(text, theme);
-    let new_label_w = ButtonFace::new(Rect::ZERO, NEW_EVENT)
-        .icon(Icon::Plus)
-        .intrinsic_width(text, theme);
-    let labels: Vec<&str> = View::ALL.iter().map(|v| v.label()).collect();
+    let task_label = crate::resource::t("calendar-tasks-new");
+    let new_label_w = ButtonFace::new(
+        Rect::ZERO,
+        if view == View::Tasks {
+            &task_label
+        } else {
+            NEW_EVENT
+        },
+    )
+    .icon(Icon::Plus)
+    .intrinsic_width(text, theme);
+    let owned: Vec<String> = View::ALL.iter().map(|v| v.display_label()).collect();
+    let labels: Vec<&str> = owned.iter().map(String::as_str).collect();
     let switcher_w = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, text, theme);
 
     // (new event icon-only, switcher shown, today icon-only), most to least
@@ -338,9 +347,11 @@ fn solve(
         let (new_icon, switcher, today_icon) = step;
         let leading = edge
             + if show_toggle { square + related } else { 0.0 }
-            + 2.0 * square
-            + related
-            + if today_icon { square } else { today_label_w }
+            + if view == View::Tasks {
+                0.0
+            } else {
+                2.0 * square + related + if today_icon { square } else { today_label_w }
+            }
             + sibling;
         let trailing = edge
             + if new_icon { square } else { new_label_w }
@@ -367,7 +378,11 @@ fn solve(
         next.x1 + related,
         if today_icon { square } else { today_label_w },
     );
-    let title_x0 = today.x1 + sibling;
+    let title_x0 = if view == View::Tasks {
+        x
+    } else {
+        today.x1 + sibling
+    };
 
     let new_w = if new_icon { square } else { new_label_w };
     let new_event = control(band.x1 - edge - new_w, new_w);
@@ -402,8 +417,22 @@ fn solve(
     }
 }
 
+fn title_width(variants: &[String], band: Rect, text: &mut TextRenderer, theme: &Theme) -> f64 {
+    variants
+        .get(1)
+        .or_else(|| variants.last())
+        .map_or(0.0, |variant| {
+            f64::from(
+                text.measure_style(variant, None, &theme.text(TextRole::Title))
+                    .0,
+            )
+        })
+        .min(band.width())
+}
+
 fn period_title_variants(view: View, anchor: NaiveDate) -> Vec<String> {
     match view {
+        View::Tasks => vec![crate::resource::t("calendar-tasks-title")],
         View::Month => vec![
             date::month_title(anchor),
             date::month_title_short(anchor),
@@ -433,6 +462,43 @@ fn period_title_variants(view: View, anchor: NaiveDate) -> Vec<String> {
 mod tests {
     use super::*;
     use vello::Scene;
+
+    #[test]
+    fn tasks_view_drops_period_navigation() {
+        for theme in [Theme::light(), Theme::dark()] {
+            for width in [720.0, 1280.0] {
+                let mut bar = Topbar::new();
+                bar.layout(
+                    Rect::new(0.0, 0.0, width, 800.0),
+                    true,
+                    View::Tasks,
+                    anchor(),
+                    &theme,
+                );
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                let hits = bar.draw(
+                    &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+                    (View::Tasks, anchor()),
+                    Point::ZERO,
+                    &SidebarDrawer::new(),
+                );
+                assert!(!hits.iter().any(|(_, action)| matches!(
+                    action,
+                    Action::Previous | Action::Next | Action::Today
+                )));
+                assert!(hits.iter().any(|(_, action)| *action == Action::NewEvent));
+                assert!(
+                    hits.iter()
+                        .any(|(_, action)| *action == Action::ShowSidebar)
+                );
+                assert_eq!(
+                    period_title_variants(View::Tasks, anchor()),
+                    vec![crate::resource::t("calendar-tasks-title")]
+                );
+            }
+        }
+    }
 
     fn anchor() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 9, 3).expect("valid test date")

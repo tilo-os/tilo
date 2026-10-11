@@ -69,7 +69,7 @@ fn sealed(peer: &StatePeer, key: &SigningKey, at: SystemTime, ciphertext: &[u8])
         collab_types::document_artifact_id(APP, peer.room(), RECORD),
         author,
         collab_types::document_attestation_id(APP, peer.room(), RECORD),
-        OpClass::Splice,
+        OpKind::Change,
         at,
         1,
         metadata(peer, 1),
@@ -197,13 +197,13 @@ fn an_expired_sealed_write_renews_its_ciphertext_under_the_next_sequence_and_ret
         (
             renewed.artifact,
             renewed.attestation_id,
-            renewed.op_class,
+            renewed.kind,
             renewed.author
         ),
         (
             original.artifact,
             original.attestation_id,
-            original.op_class,
+            original.kind,
             original.author
         )
     );

@@ -8,6 +8,7 @@ use crate::model::{MAX_REPORT_BYTES, report_id};
 
 pub(super) mod flow;
 mod operators;
+pub(super) mod placement;
 pub(super) mod study;
 mod superblock;
 pub use operators::{Observations, OperatorSummary};
@@ -673,14 +674,7 @@ impl VerificationRecord {
             imported_bytes_blake3: report_id(json),
             imported_bytes_sha256: if receipt.evidence_flow.is_some() {
                 use sha2::Digest;
-                Some(sha2::Sha256::digest(json.as_bytes()).iter().try_fold(
-                    String::with_capacity(64),
-                    |mut output, byte| {
-                        use std::fmt::Write;
-                        write!(&mut output, "{byte:02x}").map_err(|error| error.to_string())?;
-                        Ok::<_, String>(output)
-                    },
-                )?)
+                Some(hex::encode(sha2::Sha256::digest(json.as_bytes())))
             } else {
                 None
             },

@@ -25,6 +25,10 @@ impl Seal {
             changed: (metadata.ctime(), metadata.ctime_nsec()),
         }
     }
+    pub(super) fn unchanged(&self, metadata: &fs::Metadata) -> bool {
+        self.matches(metadata) && self.changed == (metadata.ctime(), metadata.ctime_nsec())
+    }
+
     pub(super) fn matches(&self, metadata: &fs::Metadata) -> bool {
         let current = Self::of(metadata);
         self.identity == current.identity
@@ -38,14 +42,18 @@ impl Seal {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Folder {
-    path: Vec<u8>,
+pub(super) struct Folder {
+    pub(super) path: Vec<u8>,
     root: Vec<u8>,
     root_identity: Seal,
     identity: Seal,
 }
 impl Folder {
-    fn new(path: &Path, grant: &Grant, folder: &SecureNearbyDestination) -> Result<Self, String> {
+    pub(super) fn new(
+        path: &Path,
+        grant: &Grant,
+        folder: &SecureNearbyDestination,
+    ) -> Result<Self, String> {
         let metadata = folder.metadata()?;
         Ok(Self {
             path: path.as_os_str().as_bytes().into(),
@@ -54,12 +62,12 @@ impl Folder {
             identity: Seal::of(&metadata),
         })
     }
-    fn open(
+    pub(super) fn open(
         &self,
         tree: &WorkspaceTreeHandle,
         context: &FileClipboardContext,
     ) -> Result<SecureNearbyDestination, String> {
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         let path = decode_path(&self.path)?;
         let grant = Grant::open(tree, context.workspace(), &path, true, context.owner())?;
         grant.check(tree, context.workspace(), context.owner())?;
@@ -97,6 +105,8 @@ struct Item {
     redoing: bool,
     #[serde(default)]
     moving: Option<relocate::MoveIntent>,
+    #[serde(default)]
+    restore_info: Option<super::restore::Info>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -163,10 +173,17 @@ impl Journal {
                 undone: false,
                 redoing: false,
                 moving: None,
+                restore_info: operation.restore_info.clone(),
             });
         }
         let receipt = Receipt {
-            version: 1,
+            // Older hosts must refuse Restore receipts rather than dropping
+            // their metadata compensation and treating them as ordinary Cut.
+            version: if operation.restore_info.is_some() {
+                2
+            } else {
+                1
+            },
             workspace: operation.context.workspace().into(),
             owner: operation.context.owner().into(),
             window: operation.context.window().into(),
@@ -195,7 +212,7 @@ impl Journal {
         id: &str,
     ) -> Result<Arc<PendingReceipt>, String> {
         context.authorize(if context.is_history_compensation() {
-            Permission::Write
+            Permission::Undoable
         } else {
             Permission::Read
         })?;
@@ -247,7 +264,15 @@ impl Journal {
         }
         let receipt: Receipt = serde_json::from_reader(file.take(MAX_RECEIPT_BYTES + 1))
             .map_err(|error| error.to_string())?;
-        if receipt.version != 1
+        let restore_shape = receipt
+            .items
+            .iter()
+            .filter(|item| item.restore_info.is_some())
+            .count();
+        if !matches!(receipt.version, 1 | 2)
+            || (receipt.version == 1 && restore_shape != 0)
+            || (receipt.version == 2
+                && (receipt.items.len() != 1 || restore_shape != 1 || !receipt.cut))
             || name != std::ffi::OsStr::new(&receipt.filename()?)
             || receipt.items.len() > runtime_collab::file_clipboard::MAX_ENTRIES
         {
@@ -276,7 +301,7 @@ impl Journal {
         tree: &WorkspaceTreeHandle,
         context: &FileClipboardContext,
     ) -> Result<Reply, String> {
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         let directory = self
             .directory()?
             .ok_or("durable clipboard receipt unavailable")?;
@@ -428,6 +453,74 @@ impl PendingReceipt {
             change(item)
         })
     }
+    pub(super) fn consume_restore_info(
+        &self,
+        source: &Source,
+        tree: &WorkspaceTreeHandle,
+        context: &FileClipboardContext,
+    ) -> Result<(), String> {
+        let info = self
+            .receipt
+            .lock()
+            .map_err(|_| "clipboard journal unavailable")?
+            .items
+            .iter()
+            .find(|item| item.original == source.path.as_os_str().as_bytes())
+            .ok_or("clipboard source unavailable")?
+            .restore_info
+            .clone();
+        if let Some(info) = info {
+            info.remove(tree, context)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn restore_source_info(
+        &self,
+        source: &Source,
+        tree: &WorkspaceTreeHandle,
+        context: &FileClipboardContext,
+    ) -> Result<(), String> {
+        let index = self
+            .receipt
+            .lock()
+            .map_err(|_| "clipboard journal unavailable")?
+            .items
+            .iter()
+            .position(|item| item.original == source.path.as_os_str().as_bytes())
+            .ok_or("clipboard source unavailable")?;
+        self.restore_metadata(index, tree, context)
+    }
+
+    fn restore_metadata(
+        &self,
+        index: usize,
+        tree: &WorkspaceTreeHandle,
+        context: &FileClipboardContext,
+    ) -> Result<(), String> {
+        let info = self
+            .receipt
+            .lock()
+            .map_err(|_| "clipboard journal unavailable")?
+            .items
+            .get(index)
+            .ok_or("clipboard item unavailable")?
+            .restore_info
+            .clone();
+        if let Some(mut info) = info {
+            info.restore(tree, context)?;
+            self.change(|receipt| {
+                receipt
+                    .items
+                    .get_mut(index)
+                    .ok_or("clipboard item unavailable")?
+                    .restore_info = Some(info);
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
     pub(super) fn staged(&self, source: &Source, path: &Path, seal: Seal) -> Result<(), String> {
         self.item_change(source, |item| {
             item.staged = Some((path.as_os_str().as_bytes().into(), seal));
@@ -650,7 +743,7 @@ impl PendingReceipt {
         tree: &WorkspaceTreeHandle,
         context: &FileClipboardContext,
     ) -> Result<Reply, String> {
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         self.resume_moves(tree, context)?;
         let receipt = self
             .receipt
@@ -717,6 +810,12 @@ impl PendingReceipt {
             if !item.undone && !item.redoing {
                 return Err("transfer is not awaiting Redo".into());
             }
+            if item.undone
+                && !item.redoing
+                && let Some(info) = &item.restore_info
+            {
+                info.check(tree, context)?;
+            }
             let (material, leaf, material_path) = redo_material(receipt, item, tree, context)?;
             let entry = optional_entry(&material, &leaf)?.ok_or("Redo object no longer exists")?;
             if !seal.matches(&entry.metadata().map_err(|error| error.to_string())?) {
@@ -737,7 +836,7 @@ impl PendingReceipt {
                     .undone = false;
                 Ok(())
             })?;
-            context.authorize(Permission::Write)?;
+            context.authorize(Permission::Undoable)?;
             receipt.destination.open(tree, context)?;
             if receipt.cut {
                 item.parent.open(tree, context)?;
@@ -761,6 +860,9 @@ impl PendingReceipt {
         {
             super::trash::consume_info(&decode_path(path)?)?;
         }
+        if let Some(info) = &item.restore_info {
+            info.remove(tree, context)?;
+        }
         let metadata = destination
             .entry(name)?
             .metadata()
@@ -783,7 +885,7 @@ impl PendingReceipt {
         tree: &WorkspaceTreeHandle,
         context: &FileClipboardContext,
     ) -> Result<Reply, String> {
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         self.resume_moves(tree, context)?;
         let receipt = self
             .receipt
@@ -801,6 +903,7 @@ impl PendingReceipt {
             if let Err(reason) = self
                 .undo_item(&receipt, index, tree, context)
                 .and_then(|()| self.recover_quarantine(&receipt, index, tree, context))
+                .and_then(|()| self.restore_metadata(index, tree, context))
             {
                 error = Some(reason);
                 break;
@@ -908,7 +1011,7 @@ impl PendingReceipt {
         }
         let root = decode_path(&receipt.destination.path)?;
         let (directory, name, path) = recovery_material(item, &root, &destination, staged, seal)?;
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         receipt.destination.open(tree, context)?;
         if let Some(source) = &source
             && optional_entry(source, original_name)?.is_none()
@@ -1000,7 +1103,7 @@ fn already_restored(
     if let Some(path) = &item.trash {
         let path = decode_path(path)?;
         let files = super::trash::files_directory()?;
-        let expected = xdg_paths::data_dir()
+        let expected = tilo_paths::data_dir()
             .ok_or("home Trash unavailable")?
             .join("Trash/files");
         if path.parent() != Some(expected.as_path()) {
@@ -1040,7 +1143,7 @@ fn redo_material(
                 .as_ref()
                 .ok_or("Copy Undo recovery is unavailable")?,
         )?;
-        let expected = xdg_paths::data_dir()
+        let expected = tilo_paths::data_dir()
             .ok_or("home Trash unavailable")?
             .join("Trash/files");
         if trash.parent() != Some(expected.as_path()) {

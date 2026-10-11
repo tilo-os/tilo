@@ -61,6 +61,11 @@ impl NoWayland {
     fn text(&self, _target: ClipboardTarget) -> Option<String> {
         None
     }
+    fn request_text(&self, _target: ClipboardTarget) -> std::sync::mpsc::Receiver<Option<String>> {
+        let (reply, result) = std::sync::mpsc::channel();
+        let _ = reply.send(None);
+        result
+    }
     fn set_image(&self, _width: usize, _height: usize, _rgba: &[u8]) -> bool {
         false
     }

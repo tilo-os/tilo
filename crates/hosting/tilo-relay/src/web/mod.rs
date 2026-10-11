@@ -218,7 +218,7 @@ impl Relay {
         let grants = live::LiveGrants::new();
         let live = LiveRelay::new(Arc::new(live::Authority(grants.clone())));
         let legacy =
-            legacy::LegacyWindows::new(live.clone(), context.relay.own_cert.device_public_key);
+            legacy::LegacyWindows::new(live.clone(), context.relay.identity.cert.device_public_key);
         let _ = context.relay.live_bridge.set(Arc::new(Bridge {
             live: live.clone(),
             legacy: legacy.clone(),
@@ -231,7 +231,7 @@ impl Relay {
             legacy: legacy.clone(),
             live,
             host_info: HostInfo {
-                host_cert: context.relay.own_cert,
+                host_cert: context.relay.identity.cert,
                 webtransport_port: addr.port(),
                 certificate_sha256: identity.pinned_sha256.clone(),
             },
@@ -247,19 +247,7 @@ impl Relay {
                 None => tokio::spawn(live.serve(endpoint)),
             },
         );
-        tasks.push(tokio::spawn({
-            async move {
-                let mut observe = tokio::time::interval(live::OBSERVATION);
-                observe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                let mut sweep = tokio::time::interval(Duration::from_secs(5));
-                loop {
-                    tokio::select! {
-                        _ = observe.tick() => grants.observe(&sessions).await,
-                        _ = sweep.tick() => sessions.sweep(),
-                    }
-                }
-            }
-        }));
+        tasks.push(tokio::spawn(grants.follow(sessions)));
         let mut plain_origin = None;
         if let Some(plain) = config.plain_listen {
             let plain = tokio::net::TcpListener::bind(plain)
@@ -405,16 +393,17 @@ async fn maintain_legacy(legacy: Arc<legacy::LegacyWindows>, context: crate::dae
             };
             let revoked = context
                 .relay
+                .identity
                 .revocations
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_revoked(&device);
             let writable = match authority {
                 Some(authority) => match authority.rooms() {
-                    Some(rooms) => matches!(
-                        rooms.legacy_writer_role(authority.room(), device).await,
-                        Some(collab_types::Role::Owner | collab_types::Role::Editor)
-                    ),
+                    Some(rooms) => rooms
+                        .legacy_writer_role(authority.room(), device)
+                        .await
+                        .is_some_and(crate::room_access::role_writes),
                     None => false,
                 },
                 None => true,
@@ -453,14 +442,7 @@ async fn legacy_input(
         surface,
         events,
     } = request;
-    if !live::admitted(
-        &web.sessions,
-        member.device_public_key,
-        member.user_public_key,
-        workspace_id,
-    )
-    .await
-    {
+    if !live::admitted(&web.sessions, member, workspace_id).await {
         return Err(refused());
     }
     let publisher_user = web
@@ -483,12 +465,10 @@ async fn legacy_input(
         None => None,
     };
     let may = match governed {
-        Some((rooms, room)) => matches!(
-            rooms
-                .legacy_writer_role(&room, member.device_public_key)
-                .await,
-            Some(collab_types::role::Role::Owner | collab_types::role::Role::Editor)
-        ),
+        Some((rooms, room)) => rooms
+            .legacy_writer_role(&room, member.device_public_key)
+            .await
+            .is_some_and(crate::room_access::role_writes),
         None => member.user_public_key == publisher_user,
     };
     if !may {
@@ -504,7 +484,7 @@ async fn legacy_input(
             publisher,
             surface,
             events,
-            &relay.own_cert,
+            &relay.identity.cert,
             std::time::Instant::now(),
         )
         .map_err(|_| status(StatusCode::NOT_FOUND, "no such window"))?;
@@ -944,14 +924,7 @@ async fn route(
             let workspace_id: u64 = decode(&bytes)?;
             let token = session.token();
             web.grants
-                .issue(
-                    sessions,
-                    token,
-                    session.peer.device_public_key,
-                    session.peer.user_public_key,
-                    workspace_id,
-                    None,
-                )
+                .issue(sessions, token, &session.peer, workspace_id, None)
                 .await
                 .map(|grant| encoded(&grant))
                 .ok_or_else(|| status(StatusCode::FORBIDDEN, "not admitted to this workspace"))
@@ -967,8 +940,7 @@ async fn route(
                 .issue(
                     sessions,
                     token,
-                    session.peer.device_public_key,
-                    session.peer.user_public_key,
+                    &session.peer,
                     request.workspace_id,
                     Some(&request.agent_id),
                 )
@@ -1008,7 +980,6 @@ async fn route(
             let stream = web
                 .live
                 .fallback_open(&bytes, id)
-                .await
                 .map_err(fallback_status)?;
             let mut response = Response::new(Body::Stream(stream));
             if let Ok(value) = header::HeaderValue::from_str(&hex::encode(id)) {

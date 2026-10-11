@@ -11,9 +11,11 @@ use ui::semantic_document_read::{
 };
 
 pub const OPERATION_TYPE: &str = "chat.read";
-pub static READERS: [RegisteredSemanticReader; 2] = [
+pub static READERS: [RegisteredSemanticReader; 4] = [
     RegisteredSemanticReader::new(OPERATION_TYPE, result_schema, validate_request, project),
     crate::feedback::receipt_read::READER,
+    crate::feedback::status_read::READER,
+    crate::feedback::destination_read::READER,
 ];
 
 #[derive(Serialize, Deserialize)]
@@ -31,14 +33,15 @@ fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticR
     }
     let request: Request =
         serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
-    if resource.kind != "chat.channel"
-        || !(resource
-            .id
-            .as_str()
-            .strip_prefix("chat.channel:")
-            .is_some_and(|channel| {
-                !channel.is_empty() && channel.len() <= 128 && channel == request.channel
-            }))
+    let named =
+        ui::tilo_resource::items::item_of_resource::<crate::resource::Chat>(resource.id.as_str());
+    if resource.kind != "chat.workspace.channels"
+        || !named.is_some_and(|(field, channel)| {
+            field == "channels"
+                && !channel.as_str().is_empty()
+                && channel.as_str().len() <= 128
+                && channel.as_str() == request.channel
+        })
         || !(1..=32).contains(&request.page_size)
     {
         return Err(SemanticReadError::InvalidRequest);

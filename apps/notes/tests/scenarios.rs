@@ -101,6 +101,13 @@ fn every_scenario_reaches_its_state() {
 }
 
 #[test]
+fn imported_note_keeps_its_success_notification_in_capture() {
+    ui::clock::freeze_for_capture();
+    check(Some("import_success"), (1280, 720))
+        .expect("the imported document and its notification are both captured");
+}
+
+#[test]
 fn rename_scenario_keeps_its_real_inline_editor_focused() {
     check(Some("rename"), (1280, 720)).expect("the real double-click rename remains focused");
 }
@@ -110,7 +117,7 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
     let mut app = TestApp::<NotesShell>::capture_at(scenario, viewport)
         .map_err(|error| format!("capture failed: {error:?}"))?;
     let Some(title) = shown_title(scenario) else {
-        let pages = app.read_document(notes::doc::NotesDoc::list_pages);
+        let pages = app.read_document(notes::read::list_pages);
         return if pages.is_empty() {
             Ok(())
         } else {
@@ -118,7 +125,7 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
         };
     };
     let panel = app.read_document(|doc| {
-        let workspace = notes::notebook::project(doc, None)?;
+        let workspace = notes::read::project(doc)?;
         let page = workspace
             .pages()
             .iter()

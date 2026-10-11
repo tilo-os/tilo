@@ -34,7 +34,7 @@ mod tests {
         });
         // The worker coalesced the first pending buffer. Its damage still
         // belongs to the replacement buffer which contains both updates.
-        frames.publish_captured_rgba(id, &pixels, 32, 32, last_commit);
+        frames.publish_captured_for_test(id, &pixels, (32, 32), last_commit);
         let middle = frames.frame_seq(id);
         assert_eq!(
             frames.frame_damage_between(id, previous, middle, (32, 32)),
@@ -42,7 +42,7 @@ mod tests {
         );
         let third = Rect::new(22.0, 23.0, 26.0, 27.0);
         let next = frames.with_entry(id, |entry| entry.damage_history.begin(Some(vec![third])));
-        frames.publish_captured_rgba(id, &pixels, 32, 32, next);
+        frames.publish_captured_for_test(id, &pixels, (32, 32), next);
         let current = frames.frame_seq(id);
         assert_eq!(
             frames.frame_damage_between(id, previous, current, (32, 32)),
@@ -66,7 +66,7 @@ mod tests {
                 .damage_history
                 .begin(Some(vec![Rect::new(2.0, 3.0, 6.0, 7.0)]))
         });
-        frames.publish_captured_rgba(id, &pixels, 32, 32, known);
+        frames.publish_captured_for_test(id, &pixels, (32, 32), known);
         let current = frames.frame_seq(id);
         assert!(
             frames
@@ -89,7 +89,7 @@ mod tests {
             }
             newest
         });
-        frames.publish_captured_rgba(id, &pixels, 32, 32, newest);
+        frames.publish_captured_for_test(id, &pixels, (32, 32), newest);
         assert!(
             frames
                 .frame_damage_between(id, start, frames.frame_seq(id), (32, 32))

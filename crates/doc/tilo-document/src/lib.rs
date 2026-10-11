@@ -12,6 +12,8 @@
 //! The heading outline is a projection kept current the same way.
 
 pub mod action;
+pub mod anchor;
+pub mod field;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -28,7 +30,8 @@ use tilo_doc::schema::{
 };
 use tilo_doc::snapshot::{AttrVal, BlockView, ChangeView, CommentView, NoteView};
 
-pub use action::{RICH_TEXT_ACTION_TYPE, RICH_TEXT_ACTION_TYPE_LEGACY, RichTextAction};
+pub use action::{RICH_TEXT_ACTION_TYPE, RichTextAction};
+pub use anchor::TextAnchor;
 
 /// The styles every document has; they cannot be deleted.
 pub const BUILTIN_STYLES: [&str; 6] = ["body", "heading1", "heading2", "heading3", "list", "quote"];
@@ -57,8 +60,19 @@ pub enum ClipAttr {
     Str(String),
 }
 
-/// The rich-text resource. See the module docs.
-pub struct RichText;
+/// The rich-text resource (see the module docs), and rich text as a field of
+/// a record: `pub body: RichText` stores a document's worth of rich text
+/// under the field, read as its [`RichTextState`] and edited through
+/// [`RichTextAction`]s at the field's path ([`field`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RichText {
+    state: Option<RichTextState>,
+    /// Markdown a new value starts with, written when it is stored.
+    initial: Option<String>,
+    /// Edits a verb made to this value, applied in order when the record
+    /// holding it is written back.
+    pending: Vec<RichTextAction>,
+}
 
 /// One entry of the heading outline.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -236,7 +250,7 @@ pub struct RichTextState {
     containers: Containers,
     /// Where the rich text sits in its document: empty at the root, the
     /// path to the field's map when it is a field of another resource.
-    root_path: tilo_resource::Path,
+    root_path: tilo_resource::ObjPath,
     body: Rc<BodyOrder>,
     /// Every heading, image and table cell, read whole: the outline and the
     /// document's objects are listed without reading its prose.
@@ -245,7 +259,7 @@ pub struct RichTextState {
     /// Where the objects of loaded and featured paragraphs sit (the
     /// paragraph's map, its text, its attributes), so a change to one is
     /// placed without asking the document.
-    objects: HashMap<ObjId, tilo_resource::Path>,
+    objects: HashMap<ObjId, tilo_resource::ObjPath>,
     /// The objects indexed for each paragraph, so forgetting one touches
     /// only its own.
     paragraph_objects: HashMap<String, Vec<ObjId>>,
@@ -362,51 +376,6 @@ impl RichTextState {
             .collect()
     }
 
-    /// Up to `limit` blocks of `kind` nearest position `around`, in
-    /// document order: what a view near there lists (the sections, images
-    /// and tables around a caret) at the cost of the neighbourhood it looks
-    /// through, not of the document.
-    pub fn featured_near(&self, kind: &str, around: usize, limit: usize) -> Vec<Rc<BlockView>> {
-        /// How far either way to look.
-        const REACH: usize = 20_000;
-        // Few enough to list them all.
-        if self
-            .featured
-            .values()
-            .filter(|view| view.kind == kind)
-            .count()
-            <= limit
-        {
-            return self.featured(kind);
-        }
-        let mut found: Vec<(usize, Rc<BlockView>)> = Vec::new();
-        let len = self.body.len();
-        let at = |position: usize| {
-            self.body
-                .id_at(position)
-                .and_then(|id| self.featured.get(id))
-                .filter(|view| view.kind == kind)
-                .map(|view| (position, Rc::clone(view)))
-        };
-        for step in 0..=REACH {
-            let before = around.checked_sub(step);
-            let after = around.saturating_add(step);
-            if before.is_none() && after >= len {
-                break;
-            }
-            found.extend(before.and_then(at));
-            if step > 0 && after < len {
-                found.extend(at(after));
-            }
-            if found.len() >= limit {
-                break;
-            }
-        }
-        found.sort_by_key(|(position, _)| *position);
-        found.truncate(limit);
-        found.into_iter().map(|(_, view)| view).collect()
-    }
-
     pub fn header(&self) -> &Rc<Vec<BlockView>> {
         &self.header
     }
@@ -462,8 +431,8 @@ fn containers_of(doc: &Doc, root: &ObjId) -> Result<Containers, ModelError> {
 }
 
 /// The path from the document's root to `obj`, root first.
-fn path_to(doc: &Doc, obj: &ObjId) -> tilo_resource::Path {
-    let mut path: tilo_resource::Path = doc
+fn path_to(doc: &Doc, obj: &ObjId) -> tilo_resource::ObjPath {
+    let mut path: tilo_resource::ObjPath = doc
         .parents(obj)
         .map(|parents| parents.map(|parent| (parent.obj, parent.prop)).collect())
         .unwrap_or_default();
@@ -484,7 +453,7 @@ fn paragraph_objects(
     c: &Containers,
     root_path: &[(ObjId, automerge::Prop)],
     id: &str,
-) -> Vec<(ObjId, tilo_resource::Path)> {
+) -> Vec<(ObjId, tilo_resource::ObjPath)> {
     use automerge::Prop;
     let Some(block) = block_obj(doc, &c.blocks, id) else {
         return Vec::new();
@@ -530,17 +499,21 @@ impl Resource for RichText {
     type State = RichTextState;
     type Action = RichTextAction;
 
-    fn least_permission() -> tilo_resource::PermissionRequirement {
-        tilo_resource::PermissionRequirement::Comment
+    fn least_need() -> tilo_actions::ActionNeed {
+        tilo_actions::ActionNeed {
+            kind: tilo_resource::ActionKind::Undoable,
+            field: Some(tilo_actions::COMMENTS_FIELD.to_owned()),
+            privileged: false,
+        }
     }
 
-    /// A comment or a reply needs only the right to comment.
-    fn permission(action: &RichTextAction) -> tilo_resource::PermissionRequirement {
+    /// A comment or a reply writes only the comments.
+    fn field_of(action: &RichTextAction) -> Option<&'static str> {
         match action {
             RichTextAction::AddComment { .. } | RichTextAction::ReplyToComment { .. } => {
-                tilo_resource::PermissionRequirement::Comment
+                Some(tilo_actions::COMMENTS_FIELD)
             }
-            _ => tilo_resource::PermissionRequirement::Write,
+            _ => None,
         }
     }
 
@@ -550,7 +523,7 @@ impl Resource for RichText {
 
     /// A change to a paragraph on screen is placed from the index kept of
     /// its objects.
-    fn locate(state: &RichTextState, obj: &ObjId) -> Option<tilo_resource::Path> {
+    fn locate(state: &RichTextState, obj: &ObjId) -> Option<tilo_resource::ObjPath> {
         state.objects.get(obj).cloned()
     }
 
@@ -690,12 +663,6 @@ impl Resource for RichText {
             (1.., 1.., true, true) => at.saturating_add(*del) == *before_at || at == before_at,
             _ => false,
         }
-    }
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        registry.register::<RichTextAction>(RICH_TEXT_ACTION_TYPE);
-        // Old history still carries the word-processor type id.
-        registry.register::<RichTextAction>(crate::action::RICH_TEXT_ACTION_TYPE_LEGACY);
     }
 
     /// Every edit, derived from [`RichTextAction`] itself, so agents read the

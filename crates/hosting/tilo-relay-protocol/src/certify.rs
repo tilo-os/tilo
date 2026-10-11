@@ -27,6 +27,14 @@
 //! proposal (or a narrower one). A bare `Issue` is refused for such a
 //! request, so an agent never exists without its delegation.
 //!
+//! An agent the host supervises asks its person before an action their
+//! grants leave to them. The host queues the question for this one
+//! invocation as a [`PendingConfirmation`]; an approver lists them
+//! (`ApproverRequest::Confirmations`), shows each as the host's
+//! confirmation sheet ([`PendingConfirmation::question`], Allow once or
+//! Deny) and answers with `ApproverRequest::Answer`. An unanswered question
+//! expires as a refusal.
+//!
 //! The host never signs a certificate. An approver is a device of the host's
 //! user with `can_admit_devices`, i.e. one that holds root custody. The host
 //! checks every issued certificate against the exact request and its
@@ -143,6 +151,59 @@ pub enum ApproverRequest {
     },
     /// Read the proposals of every pending agent request.
     AgentProposals,
+    /// Read every question an agent is waiting on.
+    Confirmations,
+    /// Answer one question.
+    Answer {
+        /// [`PendingConfirmation::id`] of the question.
+        id: [u8; 32],
+        /// The person's answer, for that one invocation.
+        answer: ConfirmationAnswer,
+    },
+}
+
+/// A question an agent on the host puts to its person: one invocation of
+/// an action the person's grants leave to them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingConfirmation {
+    /// Names this question, to answer it.
+    pub id: [u8; 32],
+    /// [`AgentDelegation::agent_id`] of the asking agent.
+    pub agent_id: String,
+    /// The agent's display name.
+    pub agent_label: String,
+    /// What the action does, as the record that offers it says.
+    pub action_label: String,
+    /// What it acts on, as the record that offers it says.
+    pub resource_label: String,
+    /// What the action risks, as `tilo_actions::RiskLevel` names it
+    /// (`none`, `low`, `destructive`, `privileged`, `sensitive`), for the
+    /// sheet to state. An approver reads an unknown name as the gravest.
+    pub risk: String,
+    /// The room the agent acts in.
+    pub room: String,
+    /// Unanswered by then, the question is a refusal; ns since the epoch.
+    pub expires_at_ns: u64,
+}
+
+impl PendingConfirmation {
+    /// The question as the confirmation sheet puts it.
+    #[must_use]
+    pub fn question(&self) -> String {
+        format!(
+            "{} wants to {}: {}, for you",
+            self.agent_label, self.action_label, self.resource_label
+        )
+    }
+}
+
+/// The person's answer to a [`PendingConfirmation`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConfirmationAnswer {
+    /// Run this one invocation.
+    AllowOnce,
+    /// Do not run it.
+    Deny,
 }
 
 /// Host answer to an [`ApproverRequest`].
@@ -159,4 +220,6 @@ pub enum ApproverReply {
     },
     /// Every pending agent request's proposal.
     AgentProposals(Vec<PendingAgent>),
+    /// Every question an agent is waiting on.
+    Confirmations(Vec<PendingConfirmation>),
 }

@@ -150,3 +150,42 @@ slides-open-accept = Open
 slides-save-title = Save presentation
 slides-save-accept = Save
 slides-pick-presentations-filter = Presentations (.odp, .pptx)
+
+## History: what each change did, by field and by verb
+slides-deck-title = Renamed the deck
+slides-deck-palette = Changed the theme to { $new }
+slides-slide-layout = Changed a slide's layout to { $new }
+slides-slide-background = Changed a slide's background to { $new }
+slides-slide-notes = Edited the speaker notes
+slides-element-x = Moved { $item }
+slides-element-y = Moved { $item }
+slides-element-w = Resized { $item }
+slides-element-h = Resized { $item }
+slides-element-body = Edited { $item }
+slides-element-src = Changed the picture of { $item }
+slides-element-fill = Changed the colour of { $item }
+slides-element-stroke = Changed the outline of { $item }
+slides-element-stroke-width = Changed the outline width of { $item }
+slides-element-font-size = Changed the font size of { $item }
+slides-element-align = Aligned { $item } { $new }
+slides-element-bold = { $new ->
+    [true] Made { $item } bold
+   *[other] Made { $item } not bold
+}
+slides-element-italic = { $new ->
+    [true] Made { $item } italic
+   *[other] Made { $item } not italic
+}
+slides-element-radius = Rounded the corners of { $item }
+slides-add-slide = Added a slide
+slides-insert-slide = Added a slide
+slides-duplicate-slide = Duplicated a slide
+slides-delete-slide = Deleted a slide
+slides-move-slide = Moved a slide
+slides-set-text = Rewrote a slide's text
+slides-add-element = Added an element to a slide
+slides-insert-element = Added an element to a slide
+slides-delete-element = Deleted { $item }
+slides-bring-to-front = Brought { $item } to the front
+slides-send-to-back = Sent { $item } to the back
+slides-replace-deck = Replaced the deck with { $title }

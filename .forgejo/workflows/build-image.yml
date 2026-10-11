@@ -67,6 +67,10 @@ on:
         description: "Independently reviewed SHA-256 of the firmware manifest"
         required: false
         default: ""
+      board_series_seed:
+        description: "Reviewed immutable Lenovo generation-1 image digest; required only to initialize its signed update series"
+        required: false
+        default: ""
       allow_public_lenovo_firmware:
         description: "Explicitly permit this Lenovo dispatch to publish bundled firmware through the public tilo owner"
         type: boolean
@@ -109,7 +113,7 @@ concurrency:
   # Generic generations are a single dense security series. Generic tag,
   # manual main and nightly publications share its lock so concurrent runs
   # cannot allocate the same generation; a scheduled run also holds it for its
-  # freshness check. The one-off Lenovo image uses fixed generation 1 and an
+  # freshness check. Lenovo has a separate dense signed generation series and an
   # immutable source-specific tag, so it serializes only with Lenovo reruns of
   # the same source. Full validation proofs allocate nothing and share one queue across refs,
   # so branch dispatches cannot fill the large fleet with duplicate VM work.
@@ -118,7 +122,7 @@ concurrency:
   # Epoch 2 retires the lock held by cancelled run 36454. Forgejo left one
   # failed release's ARM worker active after cancellation and queued later
   # signed releases behind it. The old run cannot enter promotion.
-  group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'orangepi-3b-v2-1') && format('tilo-os-image-orangepi-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || 'tilo-os-image-validate-2' }}
+  group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && 'tilo-os-image-lenovo-series' || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'orangepi-3b-v2-1') && format('tilo-os-image-orangepi-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || 'tilo-os-image-validate-2' }}
   # A pull request's dev build is superseded by its next commit. Every main
   # commit's dev build runs at once, side by side; its moving tags only move
   # forward (os/dev/move-tag-forward.sh). Board jobs wait on a small runner
@@ -129,9 +133,67 @@ concurrency:
 env:
   TILO_ALLOW_PUBLIC_LENOVO_FIRMWARE: ${{ github.event.inputs.allow_public_lenovo_firmware || 'false' }}
   TILO_DEV_INPUT_COHORT: ${{ (inputs.fex_payload_candidate != '' || inputs.windows_guest_candidate != '') && github.run_id || '' }}
+  # Content-based layers for the generic OS image (TIL-747, "Rechunk the
+  # image" below). The repository variable TILO_RECHUNK=0 turns it off without
+  # a commit: the image then keeps one layer per Containerfile instruction.
+  TILO_RECHUNK: ${{ vars.TILO_RECHUNK || '1' }}
 
 jobs:
+  # A dispatch builds main's head, and `plan` accepts only a published app
+  # collection with that commit's app inputs. Release / apps publishes it about
+  # 40 minutes after the commit lands, and main has usually moved on by then,
+  # so a dispatch made once the collection exists finds a head it does not
+  # match. Dispatch while Release / apps is publishing for the head instead:
+  # this job waits for every Release / apps main run, pushed or dispatched,
+  # that was queued or running when the dispatch was made (on a quiet main,
+  # dispatch a full Release / apps publication first), so `plan`, which
+  # reads the collection variables when it starts, sees what that run
+  # published. It decides nothing; `plan` still refuses a collection whose
+  # app inputs differ.
+  await-app-collection:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.app_collection_source == '' && github.event.inputs.signed_development_board != 'true'
+    runs-on: runner-quality
+    timeout-minutes: 110
+    steps:
+      - name: Checkout app input policy
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Wait for the Release / apps run publishing this commit's apps
+        env:
+          COLLECTION_SOURCE: ${{ vars.TILO_APP_COLLECTION_SOURCE }}
+          TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ $COLLECTION_SOURCE =~ ^[0-9a-f]{40}$ ]] \
+             && git fetch --quiet --no-tags --depth=1 origin "$COLLECTION_SOURCE" \
+             && bash tools/ci/check_app_collection_source.sh "$COLLECTION_SOURCE" "$GITHUB_SHA" >/dev/null 2>&1; then
+            echo "::notice::the published collection of $COLLECTION_SOURCE already has this commit's app inputs"
+            exit 0
+          fi
+          api="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/actions/runs"
+          get() { curl --fail --silent --show-error --retry 3 --header "Authorization: token $TOKEN" "$1"; }
+          # Runs created before this one are for this commit or its ancestors.
+          since=$(get "$api/$GITHUB_RUN_ID" | jq -er '.created') || since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          deadline=$((SECONDS + 100 * 60))
+          while :; do
+            publishing=$(get "$api?workflow_id=release-apps.yml&limit=50" | jq -r --arg since "$since" \
+              '[.workflow_runs[] | select(.prettyref == "main" and .created <= $since
+                 and (.status == "running" or .status == "waiting" or .status == "blocked"))
+               | .index_in_repo] | map(tostring) | join(" ")') || publishing=unknown
+            [[ -n $publishing ]] || break
+            if (( SECONDS >= deadline )); then
+              echo "::warning::Release / apps run(s) $publishing still publishing; planning with the current collection"
+              break
+            fi
+            echo "waiting for Release / apps run(s) $publishing"
+            sleep 60
+          done
+
   plan:
+    needs: await-app-collection
+    # Build / OS dev and every event but a main dispatch skip the wait.
+    if: ${{ !cancelled() && needs.await-app-collection.result != 'failure' }}
     # Orchestration only: it must not queue behind the test lanes.
     runs-on: runner-quality
     timeout-minutes: 15
@@ -483,18 +545,22 @@ jobs:
       - name: Ensure the signed OCI inspector is available
         run: |
           set -euo pipefail
-          if command -v skopeo >/dev/null; then
+          missing=()
+          command -v skopeo >/dev/null || missing+=(skopeo)
+          # os/scripts/oci-rechunk.py reads the dev lane's zstd layers (TIL-747).
+          command -v zstd >/dev/null || python3 -c 'import compression.zstd' 2>/dev/null || missing+=(zstd)
+          if (( ${#missing[@]} == 0 )); then
             exit 0
           fi
           sudo -n true
           if command -v apt-get >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive
             sudo -n apt-get -o Acquire::Retries=3 update
-            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo
+            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends "${missing[@]}"
           elif command -v dnf >/dev/null; then
-            sudo -n dnf --setopt=retries=3 install -y skopeo
+            sudo -n dnf --setopt=retries=3 install -y "${missing[@]}"
           else
-            echo '::error::native OS runner must provide skopeo, apt-get, or dnf'
+            echo "::error::native OS runner must provide ${missing[*]}, apt-get, or dnf"
             exit 1
           fi
           command -v skopeo >/dev/null
@@ -663,20 +729,8 @@ jobs:
           esac
           printf '%s  %s\n' "$COLLECTION_SHA256" "$work/apps.tar.gz" \
             | sha256sum --check --strict
-          found=0
-          while IFS= read -r member; do
-            if [[ $member == tapp/ || $member == runtime/ || $member == index.json || $member == SHA256SUMS ]]; then
-              continue
-            elif [[ $member =~ ^tapp/[A-Za-z0-9][A-Za-z0-9._+-]*\.tapp$ ]]; then
-              found=1
-            elif [[ $member =~ ^runtime(/[A-Za-z0-9][A-Za-z0-9._+-]*)+/?$ ]]; then
-              continue
-            else
-              printf 'unexpected app collection member: %s\n' "$member" >&2
-              exit 1
-            fi
-          done < <(tar -tzf "$work/apps.tar.gz")
-          [[ $found == 1 ]]
+          tar -tzf "$work/apps.tar.gz" \
+            | tools/apps/check-collection-members.sh --require-tapp "app collection"
           source="$(tar -xzOf "$work/apps.tar.gz" index.json | jq -r '.source // empty')"
           if [[ $source != "$COLLECTION_SOURCE" ]]; then
             if [[ $DEV_BUILD == true ]]; then
@@ -1250,6 +1304,19 @@ jobs:
             [[ $validate != true ]] \
               || echo 'TILO_IMAGE_OUTPUT=type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' >> "$GITHUB_ENV"
           fi
+          # TIL-747: a generic image that leaves this job (tilo-ci, or a
+          # release) is re-laid out by content before anything consumes it
+          # ("Rechunk the image"). The dev lane's BuildKit then pushes the raw
+          # image beside it as <series>-<arch>-layered.
+          rechunk=false
+          if [[ $TILO_RECHUNK == 1 && '${{ needs.plan.outputs.hardware-profile }}' == generic \
+                && ( $fast == true || $validate == true ) ]]; then
+            rechunk=true
+            if [[ $fast == true ]]; then
+              echo "TILO_IMAGE_TAGS=registry.tilo.so/tilo/tilo-ci:$series-${{ matrix.arch }}-layered" >> "$GITHUB_ENV"
+            fi
+          fi
+          echo "rechunk=$rechunk" >> "$GITHUB_OUTPUT"
           echo "dev-gate=$([[ $validate == true && $publish != true && $fast != true ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "dev-channel=$([[ $GITHUB_REF == refs/heads/main ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           if [[ "$publish" == true ]]; then
@@ -1395,8 +1462,14 @@ jobs:
           # does too, and the variable no longer changes anything.
           SERIES_GENESIS_REVISION: ${{ vars.TILO_OS_SERIES_GENESIS_REVISION }}
           HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
+          TILO_BOARD_SERIES_SEED: ${{ github.event.inputs.board_series_seed }}
         run: |
           set -euo pipefail
+          if [[ ${HARDWARE_PROFILE:-generic} == lenovo-83ed ]]; then
+            gen="$(./os/dev/board-generation.sh)"
+            echo "TILO_GENERATION=$gen" >> "$GITHUB_ENV"
+            exit 0
+          fi
           if [[ ${HARDWARE_PROFILE:-generic} != generic ]]; then
             # Board artifacts have an immutable update reference and no automatic
             # upgrade series. Do not allocate a generic genN.
@@ -1483,6 +1556,13 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          # Signs the apps a dev image compiles itself, the same identity in
+          # every build, so unchanged apps keep their bytes and paths and an
+          # update carries only the apps that changed. It is in no
+          # trust list; a publication takes the released collection instead
+          # and never receives it. The runtime bundles' keys, which the
+          # launcher trusts, stay minted per build.
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1522,6 +1602,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           # The toolchain is the builder stage up to the workspace sources. A
@@ -1610,6 +1691,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1649,6 +1731,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           # No layer cache: the compile goes through the compiler cache, and its
@@ -1732,6 +1815,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1771,6 +1855,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
@@ -1789,6 +1874,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1825,6 +1911,7 @@ jobs:
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-tools-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
@@ -1850,6 +1937,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1897,6 +1985,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           # The compile results are this builder's own; the rootfs and the
@@ -1925,6 +2014,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1963,10 +2053,77 @@ jobs:
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-to: |
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }},mode=min,ignore-error=true
+
+      # Content-based layers (TIL-747). A Containerfile layer is a new blob
+      # whenever its instruction runs again, so an update between two commits
+      # that change one app pulled most of the image. os/dev/rechunk-image.sh
+      # re-lays the image out by RPM package and large file with chunkah
+      # (os/Containerfile.rechunk): an unchanged component is the same blob
+      # in the next build, and whited-out bytes and /sysroot's ostree objects
+      # are in no layer. os/scripts/oci-rechunk.py takes xattrs (file
+      # capabilities, which BuildKit's snapshot of the image lacks) and
+      # directory times from the raw image's layers, and refuses the result
+      # unless every path is the raw image's, with its type, mode, owner,
+      # xattrs and bytes. Everything below consumes the rechunked
+      # image: the dev lane's tilo-ci series name, or the archive in place
+      # (before the builder is cleared, and its own rechunk after the
+      # independent rebuild). The install gate then seals the rechunked tree.
+      # The epoch caps the time of files no package owns; like the dev lane's
+      # SOURCE_DATE_EPOCH it moves only with the base and the RPM snapshot,
+      # so consecutive builds share every unchanged layer.
+      - name: Rechunk the image
+        id: rechunk
+        if: steps.release-mode.outputs.rechunk == 'true' && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success')
+        timeout-minutes: 45
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+          DEV_FAST: ${{ steps.release-mode.outputs.dev-fast }}
+          DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
+          ARCH: ${{ matrix.arch }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
+        run: |
+          set -euo pipefail
+          epoch=0
+          for ref in "$BASE_REF" "$RPMS_REF"; do
+            created="$(date -u -d "$(skopeo inspect "docker://$ref" | jq -er .Created)" +%s)"
+            if (( created > epoch )); then epoch=$created; fi
+          done
+          (( epoch > 0 ))
+          report="$RUNNER_TEMP/rechunk-$ARCH.json"
+          if [[ $DEV_FAST == true ]]; then
+            # BuildKit pushed the raw image as <series>-<arch>-layered.
+            digest="$(./os/dev/rechunk-image.sh --builder "$BUILDER_NAME" \
+              --source "docker://registry.tilo.so/tilo/tilo-ci@$BUILD_DIGEST" \
+              --name "registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH" \
+              --epoch "$epoch" --push --report "$report" | tail -n1)"
+          else
+            # Replaced in place, under its first tag: the steps below select it
+            # by that tag and this step's digest.
+            archive=/var/tmp/tilo-image.tar
+            first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
+            test -n "$first_tag"
+            digest="$(./os/dev/rechunk-image.sh --builder "$BUILDER_NAME" --source "oci-archive:$archive" \
+              --name "$first_tag" --epoch "$epoch" --archive "$archive" --report "$report" | tail -n1)"
+          fi
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
+          jq -r '"::notice::rechunked \(.raw_layers) layers, \(.raw_compressed) B -> \(.chunked_layers) layers, \(.chunked_compressed) B; \(.paths) paths equal, \(.clamped_times) times capped, \(.pruned_paths) /sysroot paths (\(.pruned_bytes) B) dropped, \(.split_hard_link_groups) hard-link groups split, \(.seconds) s"' "$report"
+
+      # The comparison report and chunkah's component list: which packages and
+      # files each layer holds.
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always() && steps.rechunk.outcome != 'skipped'
+        continue-on-error: true
+        with:
+          name: rechunk-report-${{ matrix.arch }}
+          path: ${{ runner.temp }}/rechunk-${{ matrix.arch }}*.json
+          if-no-files-found: warn
 
       # Dev VMs must not wait on release gating. Every branch build that gets
       # this far pushes its image, unsigned, to tilo-ci: a development-only
@@ -1984,7 +2141,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
           DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
           DEV_FAST: ${{ steps.release-mode.outputs.dev-fast }}
-          BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
+          BUILD_DIGEST: ${{ steps.rechunk.outputs.digest || steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
         run: |
           set -euo pipefail
           ref="registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH"
@@ -2129,6 +2286,25 @@ jobs:
           provenance: false
           no-cache: true
 
+      # The rebuild is re-laid out as the publication was ("Rechunk the
+      # image"), by a chunkah this builder compiles again: the comparison
+      # below then also proves the rechunk reproducible.
+      - name: Rechunk the independent rebuild
+        id: repro-rechunk
+        if: steps.release-mode.outputs.rechunk == 'true' && steps.repro.outcome == 'success'
+        timeout-minutes: 45
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+          EPOCH: ${{ steps.rechunk.outputs.epoch }}
+        run: |
+          set -euo pipefail
+          [[ -n $EPOCH ]] || { echo '::error::the publication itself was not rechunked'; exit 1; }
+          archive=/var/tmp/tilo-image-repro.tar
+          digest="$(./os/dev/rechunk-image.sh --builder "$BUILDER_NAME" --source "oci-archive:$archive" \
+            --name "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" --epoch "$EPOCH" --archive "$archive" | tail -n1)"
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       # Keep the rebuild after its runner is gone, so a publication lane whose
       # image differs can diff the two file by file.
       - name: Retain the independent rebuild for comparison
@@ -2137,7 +2313,7 @@ jobs:
         run: |
           set -euo pipefail
           repro_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image-repro.tar \
-            "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" '${{ steps.repro.outputs.digest }}')"
+            "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" '${{ steps.repro-rechunk.outputs.digest || steps.repro.outputs.digest }}')"
           TMPDIR=/var/tmp skopeo copy --retry-times 3 --preserve-digests \
             "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_ref" \
             'docker://registry.tilo.so/tilo/tilo-repro-debug:${{ github.run_id }}-${{ matrix.arch }}-reproduce'
@@ -2180,7 +2356,7 @@ jobs:
           set -euo pipefail
           [[ $REPRO_OUTCOME == success ]] || { echo '::error::the independent rebuild failed'; exit 1; }
           repro_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image-repro.tar \
-            "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" '${{ steps.repro.outputs.digest }}')"
+            "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" '${{ steps.repro-rechunk.outputs.digest || steps.repro.outputs.digest }}')"
           manifest="$(skopeo inspect --raw "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_ref" | sha256sum | awk '{print $1}')"
           [[ $manifest =~ ^[0-9a-f]{64}$ ]]
           echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
@@ -2401,6 +2577,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -2446,6 +2623,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
 
@@ -2461,7 +2639,7 @@ jobs:
         if: steps.release-mode.outputs.publish == 'true'
         env:
           REPRO_MANIFEST: ${{ steps.reproduction.outputs.manifest }}
-          BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
+          BUILD_DIGEST: ${{ steps.rechunk.outputs.digest || steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
           DEBUG_TAG: registry.tilo.so/tilo/tilo-repro-debug:${{ github.run_id }}-${{ matrix.arch }}
         run: |
           set -euo pipefail
@@ -2583,7 +2761,7 @@ jobs:
           # reference to Skopeo, including for the independent rebuild.
           first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
           test -n "$first_tag"
-          first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" '${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}')"
+          first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" '${{ steps.rechunk.outputs.digest || steps.build.outputs.digest || steps.build-uncached.outputs.digest }}')"
           repro_image="$TILO_OS_REPOSITORY:repro-${GITHUB_SHA}"
 
           if [[ $HARDWARE_PROFILE != generic ]]; then
@@ -2864,6 +3042,8 @@ jobs:
           # The call card starts the workspace's call through Chat's own
           # action: Chat opens already in the call, not on a Call button.
           ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh card "Start a call" Chat --expect "Leave call"'
+          # The Tasks card opens Calendar through its own read-only view action.
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh card Tasks Calendar --expect "Task list"'
           # Browser renders a page through its Chromium engine runtime: Browser
           # opens through the app palette's action, the page comes from a
           # server in the guest, the address arrives on the real keyboard, and
@@ -3532,7 +3712,9 @@ jobs:
           printf '%s' "$freshness" | jq -e --arg digest "$index_digest" \
             --arg source "$GITHUB_SHA" --argjson generation "$generation" --argjson now "$now" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
-              | any(.digest == $digest and .sourceRevision == $source
+              | any(.repository == "code.tilo.so/tilo/tilo"
+                    and .schema == "https://tilo.sh/security/release-freshness/v1"
+                    and .digest == $digest and .sourceRevision == $source
                     and .generation == $generation and .issuedAt <= $now
                     and .expiresAt > $now and (.expiresAt - .issuedAt) <= 604800)
             ' >/dev/null
@@ -3884,7 +4066,8 @@ jobs:
 
   # Board images stay outside the generic multiarch latest/genN series. This
   # publishes one immutable, source-bound ARM64 reference for an initial board
-  # installation; it intentionally has no mutable upgrade channel yet.
+  # installation. Lenovo also promotes its verified board-specific generation
+  # series; Orange Pi remains an immutable one-off board installation.
   promote-board:
     needs: [plan, build-and-push]
     if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.hardware-profile != 'generic'
@@ -3932,8 +4115,9 @@ jobs:
           esac
           child=release-child/aarch64.json
           digest="$(jq -er --arg source "$GITHUB_SHA" '
-            select(.architecture == "aarch64" and .sourceRevision == $source and .generation == 1)
+            select(.architecture == "aarch64" and .sourceRevision == $source and (.generation | type == "number" and floor == . and . >= 1))
             | .digest | select(test("^sha256:[0-9a-f]{64}$"))' "$child")"
+          generation="$(jq -er .generation "$child")"
           image="code.tilo.so/tilo/tilo@$digest"
           target="code.tilo.so/tilo/tilo:$HARDWARE_PROFILE-$GITHUB_SHA"
           cosign verify --key keys/cosign.pub "$image" >/dev/null
@@ -3942,24 +4126,27 @@ jobs:
             --type https://tilo.sh/security/release-freshness/v1 "$image")"
           now="$(date -u +%s)"
           printf '%s' "$freshness" | jq -e --arg digest "$digest" \
-            --arg source "$GITHUB_SHA" --argjson now "$now" '
+            --arg source "$GITHUB_SHA" --argjson generation "$generation" --argjson now "$now" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
-              | any(.digest == $digest and .sourceRevision == $source
-                    and .generation == 1 and .issuedAt <= $now
+              | any(.repository == "code.tilo.so/tilo/tilo"
+                    and .schema == "https://tilo.sh/security/release-freshness/v1"
+                    and .digest == $digest and .sourceRevision == $source
+                    and .generation == $generation and .issuedAt <= $now
                     and .expiresAt > $now and (.expiresAt - .issuedAt) <= 604800)' >/dev/null
           provenance="$(cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$image")"
           printf '%s' "$provenance" | jq -e \
             --arg source "git+ssh://code.tilo.so/tilo/tilo@$GITHUB_SHA" \
-            --arg digest "$digest" --arg profile "$HARDWARE_PROFILE" \
+            --arg digest "$digest" --argjson generation "$generation" --arg profile "$HARDWARE_PROFILE" \
             --arg definition "$(sha256sum "os/hardware/profiles/$HARDWARE_PROFILE.json" | cut -d' ' -f1)" \
             --arg firmware "$FIRMWARE_CANDIDATE" \
             --arg manifest "$FIRMWARE_MANIFEST_SHA256" \
             --arg fex "$FEX_PAYLOAD_CANDIDATE" --arg guest "$WINDOWS_GUEST_CANDIDATE" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(.buildDefinition.internalParameters.expectedReleaseDigest == $digest
-                    and .buildDefinition.externalParameters.generation == 1
+                    and .buildDefinition.externalParameters.generation == $generation
                     and .buildDefinition.externalParameters.hardwareProfile == $profile
                     and .buildDefinition.externalParameters.architecture == "aarch64"
+                    and .buildDefinition.externalParameters.hardwareDefinitionSha256 == $definition
                     and .buildDefinition.externalParameters.firmwareManifestSha256 == $manifest
                     and any(.buildDefinition.resolvedDependencies[]?; .uri == $source)
                     and (if $profile == "lenovo-83ed" then
@@ -3994,6 +4181,20 @@ jobs:
           fi
           actual="$(skopeo inspect --raw "docker://$target" | sha256sum | awk '{print "sha256:" $1}')"
           [[ $actual == "$digest" ]] || { echo '::error::board tag digest changed'; exit 1; }
+          if [[ $HARDWARE_PROFILE == lenovo-83ed ]]; then
+            # Tags are discovery hints; the resolver authenticates the exact
+            # image signature, profile-bound provenance and dense history.
+            series="code.tilo.so/tilo/tilo:lenovo-83ed-gen$generation"
+            if skopeo inspect --raw "docker://$series" > series-manifest.json 2> series-error.log; then
+              existing="sha256:$(sha256sum series-manifest.json | cut -d' ' -f1)"
+              [[ $existing == "$digest" ]] || { echo '::error::board generation already owns different bytes'; exit 1; }
+            elif grep -Eq 'manifest unknown|MANIFEST_UNKNOWN|name unknown|NAME_UNKNOWN' series-error.log; then
+              skopeo copy --preserve-digests "docker://$image" "docker://$series"
+            else
+              cat series-error.log >&2; exit 1
+            fi
+            skopeo copy --preserve-digests "docker://$image" docker://code.tilo.so/tilo/tilo:lenovo-83ed-latest
+          fi
           echo "::notice::CI-built and signed $HARDWARE_PROFILE ARM64 image: $image; immutable update reference: $target"
 
   # Integration images remain unsigned and outside the production tilo
@@ -4005,7 +4206,8 @@ jobs:
   promote-integration:
     needs: [plan, build-and-push]
     if: needs.plan.outputs.publish != 'true' && needs.plan.outputs.signed-development-board != 'true' && needs.plan.outputs.skip != 'true' && github.ref == 'refs/heads/main'
-    runs-on: runner
+    # Manifest-only promotion must not wait behind native compilation.
+    runs-on: runner-quality
     timeout-minutes: 60
     steps:
       - name: Install OCI index tooling

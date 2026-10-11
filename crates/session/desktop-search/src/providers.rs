@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 
 use tilo_actions::{ActionAddress, Availability, Resource};
 
-use crate::kind::ResourceKind;
 use crate::model::{ActionTarget, Hit, Source, Target};
-use crate::rank::{self, MAX_PROVIDER_SCORE};
+use crate::rank;
+use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind, rank_fields};
 
 /// An application the desktop can open.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,7 +40,7 @@ impl Source for Applications {
                     app.category.as_deref(),
                     app.description.as_deref(),
                 )?;
-                let (section, presented) = rank::empty_palette_presentation(&app.id);
+                let presented = ui::search::system::starting_point_rank(&app.id);
                 if let Some(reason) = &app.unavailable {
                     let score = if needle.trim().is_empty() {
                         presented
@@ -65,7 +65,14 @@ impl Source for Applications {
                     });
                 }
                 let (score, subtitle) = if needle.trim().is_empty() {
-                    (presented, format!("{section} · {}", app.id))
+                    (
+                        presented,
+                        format!(
+                            "{} · {}",
+                            ui::search::system::starting_point_group(&app.id),
+                            app.id
+                        ),
+                    )
                 } else {
                     let detail = app.category.as_deref().map_or_else(
                         || app.id.clone(),
@@ -153,7 +160,7 @@ impl Source for Commands {
                 let score = if needle.trim().is_empty() {
                     20
                 } else {
-                    rank::rank_fields(
+                    rank_fields(
                         needle,
                         &[
                             (&command.title, ui::search::FieldWeight::TITLE),

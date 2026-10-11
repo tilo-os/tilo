@@ -97,16 +97,12 @@ fn clipboard_bridge_runs_in_a_real_sandboxed_child() {
 }
 
 fn await_registration() {
-    use std::io::Read as _;
-    let fd: i32 = std::env::var("TILO_INTERNAL_LAUNCH_REGISTRATION_FD")
-        .expect("production registration gate")
-        .parse()
-        .expect("gate descriptor");
-    assert!(fd >= 3);
-    // SAFETY: this disposable launcher child received ownership of this one
-    // inherited registration descriptor through the production launch gate.
-    let mut gate = unsafe { File::from_raw_fd(fd) };
-    gate.read_exact(&mut [0u8; 1])
+    assert_eq!(
+        std::env::var(launcher::registration_gate::LAUNCH_REGISTRATION_STDIN_ENV).as_deref(),
+        Ok("1"),
+        "production registration gate"
+    );
+    launcher::registration_gate::wait_on_stdin()
         .expect("production launch registration precedes child connection");
 }
 fn apply_landlock(info: &ChildInfo) {
@@ -167,17 +163,22 @@ async fn child_journey(info: &ChildInfo) {
             b"actual sandboxed source"
         );
         assert_eq!(source.exists(), !cut);
-        assert!(matches!(
-            b.compensate(Command::Undo { operation })
-                .await
-                .expect("sandboxed native Undo"),
-            Reply::Settled {
-                completed: 1,
-                error: None,
-                undone: true,
-                ..
-            }
-        ));
+        let undone = b
+            .compensate(Command::Undo { operation })
+            .await
+            .expect("sandboxed native Undo");
+        assert!(
+            matches!(
+                undone,
+                Reply::Settled {
+                    completed: 1,
+                    error: None,
+                    undone: true,
+                    ..
+                }
+            ),
+            "sandboxed native Undo settled as {undone:?}"
+        );
         assert_eq!(
             fs::read(&source).expect("source remains or is restored"),
             b"actual sandboxed source"
@@ -251,7 +252,7 @@ fn start_child(fixture: &Fixture, protected_path: PathBuf) {
     .expect("the actual Files manifest");
     let plan = launcher::capabilities::CapabilityPlan::for_app(
         APP,
-        &fixture.tree.read().workspaces[0].capabilities,
+        &fixture.tree.read().workspaces[0].sandbox,
         None,
     );
     assert_eq!(plan.rw_paths, vec![fixture.directory.path().to_path_buf()]);

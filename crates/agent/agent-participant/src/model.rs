@@ -4,8 +4,9 @@
 //! steps is read exactly as [`crate::DirectPlanner`] reads it; any other
 //! text goes to a [`PlanModel`]. The model is `apps/agent`'s action
 //! discovery (`tilo_agent::tools` over a `tilo_agent::surface::Catalogue`):
-//! it lists and describes operations through read-only tools and finishes
-//! with a `plan` naming only operations those tools returned. Its answer is
+//! it is shown the published operations with the task, lists and describes
+//! more through read-only tools when it needs to, and finishes with a `plan`
+//! naming only operations it was shown. Its answer is
 //! untrusted: every step is mapped back to an offered address here, and then
 //! checked against the delegation and the app's door by the participant like
 //! any other step.
@@ -22,13 +23,13 @@ use tilo_agent::tools::Answer;
 use tilo_browser_peer::DocumentRoute;
 use tilo_model_gateway::openai::{self, Failure, Target as ApiTarget};
 
-use crate::planner::{PlanContext, Planner, Step, StepAction, steps_from_json};
+use crate::planner::{PlanContext, Planner, Step, StepAction, written_steps};
 
 /// The most steps one task may be planned into.
 pub const MOST_STEPS: usize = 8;
 
 /// Chooses operations for a task from a catalogue.
-pub trait PlanModel {
+pub trait PlanModel: Send {
     /// The operations (by offer id) and their arguments that carry out
     /// `task`, using only `catalogue`.
     ///
@@ -189,10 +190,8 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
 
 impl Planner for ModelPlanner {
     fn plan(&mut self, task: &str, context: &PlanContext) -> Result<Vec<Step>, String> {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(task)
-            && (value.is_array() || value.is_object())
-        {
-            return steps_from_json(&value, context);
+        if let Some(steps) = written_steps(task, context) {
+            return steps;
         }
         let (catalogue, targets) = catalogue(context);
         let answer = self.model.choose(task, &catalogue, MOST_STEPS)?;
@@ -556,6 +555,29 @@ pub struct OpenAiModel {
     api_key: ApiKey,
     timeout: std::time::Duration,
     target: ApiTarget,
+    /// One HTTP client for every call, so later turns reuse its pooled
+    /// connection rather than resolving, connecting and handshaking again.
+    /// Built by the first call, on the thread [`Self::post`] runs it on:
+    /// `new` runs inside the agent's entered runtime, where a blocking client
+    /// may not be built. Held as `Any` because this crate reaches reqwest
+    /// only through `tilo_net`, so it cannot name the client's type; see
+    /// [`built_once`].
+    client: std::sync::OnceLock<Box<dyn std::any::Any + Send + Sync>>,
+}
+
+/// What `slot` holds, built by `build` the first time. `T` is inferred from
+/// `build`, so a value whose type this crate cannot name can still be kept.
+fn built_once<T: Send + Sync + 'static, E: std::fmt::Display>(
+    slot: &std::sync::OnceLock<Box<dyn std::any::Any + Send + Sync>>,
+    build: impl FnOnce() -> Result<T, E>,
+) -> Result<&T, String> {
+    if slot.get().is_none() {
+        let fresh = build().map_err(|error| format!("no HTTP client: {error}"))?;
+        let _ = slot.set(Box::new(fresh));
+    }
+    slot.get()
+        .and_then(|held| held.downcast_ref::<T>())
+        .ok_or_else(|| "no HTTP client".to_string())
 }
 
 impl OpenAiModel {
@@ -581,6 +603,7 @@ impl OpenAiModel {
             api_key,
             timeout,
             target,
+            client: std::sync::OnceLock::new(),
         }
     }
 
@@ -650,12 +673,12 @@ impl OpenAiModel {
             detail,
             retry_after: None,
         };
-        let client = tilo_net::http::blocking_client()
-            .timeout(budget)
-            .build()
-            .map_err(|error| rejected(format!("no HTTP client: {error}")))?;
+        // Each request carries its own budget, replacing the client's default.
+        let client = built_once(&self.client, || tilo_net::http::blocking_client().build())
+            .map_err(rejected)?;
         let mut request = client
             .post(&self.endpoint)
+            .timeout(budget)
             .header("content-type", "application/json")
             .body(body.to_string());
         if self.target.needs_idempotency_key() {
@@ -703,12 +726,19 @@ impl PlanModel for OpenAiModel {
         let mut run = [0_u8; 16];
         getrandom::fill(&mut run).map_err(|_| "no randomness for the model call".to_string())?;
         let mut revealed = tilo_agent::tools::Revealed::new();
+        // The published operations come with the task (and are revealed), so
+        // a task they answer is planned on the first turn. One string: an
+        // OpenAI-compatible provider caches the repeated operations prefix
+        // by itself.
+        let task = tilo_agent::model::action_user_turn(task, &[], catalogue, &mut revealed).text();
         let mut messages = vec![
             serde_json::json!({
                 "role": "system",
                 "content": "You drive Tilo apps only through the resource/action tools. \
-                    Discover operations with the listing tools before planning, describe any \
-                    operation that takes arguments, and finish by calling `plan` exactly once. \
+                    The task lists the operations published right now with their parameters: \
+                    when one of them does what is asked, plan it straight away. Use the listing \
+                    tools only for what that list leaves out, describe an operation only when \
+                    its arguments are unclear, and finish by calling `plan` exactly once. \
                     Preserve every argument's declared JSON type. Never invent an operation id \
                     or parameter. When an app you need is not open, plan its open operation and \
                     put the rest of the request in `then`.",
@@ -719,7 +749,7 @@ impl PlanModel for OpenAiModel {
             let body = self.target.shape(serde_json::json!({
                 "model": self.model,
                 "messages": messages,
-                "tools": openai::functions(&tilo_agent::tools::definitions(&revealed, most_steps)),
+                "tools": openai::functions(&tilo_agent::tools::definitions(most_steps)),
                 "tool_choice": "required",
                 "max_tokens": TURN_OUTPUT_TOKENS,
             }));
@@ -739,11 +769,16 @@ impl PlanModel for OpenAiModel {
             }
             messages.push(reply.message);
             for call in &reply.calls {
-                if call.name == tilo_agent::tools::PLAN {
-                    return tilo_agent::tools::read_plan(&call.input, &revealed, most_steps);
-                }
-                let result =
-                    tilo_agent::tools::answer(&call.name, &call.input, catalogue, &mut revealed);
+                let result = if call.name == tilo_agent::tools::PLAN {
+                    // A refused plan goes back to the model with the reason
+                    // (and the shown ids it may have meant) for another try.
+                    match tilo_agent::tools::read_plan(&call.input, &revealed, most_steps) {
+                        Ok(answer) => return Ok(answer),
+                        Err(error) => tilo_agent::tools::plan_refused(&error),
+                    }
+                } else {
+                    tilo_agent::tools::answer(&call.name, &call.input, catalogue, &mut revealed)
+                };
                 messages.push(openai::tool_result(call, &result));
             }
         }
@@ -995,6 +1030,174 @@ mod tests {
         assert_eq!(second["max_completion_tokens"], TURN_OUTPUT_TOKENS);
         assert_eq!(second["messages"][3]["role"], "tool");
         assert!(second.get("max_tokens").is_none());
+    }
+
+    /// A chat-completions answer calling `plan` with one step, `operation`.
+    fn plan_answer(id: &str, operation: &str) -> String {
+        let answer = serde_json::json!({"choices": [{"message": {"role": "assistant", "content": null,
+            "tool_calls": [{"id": id, "type": "function", "function": {"name": "plan",
+                "arguments": serde_json::json!({"steps": [{"operation": operation, "arguments": {}}],
+                    "why": "open", "then": "add a note"}).to_string()}}]}, "finish_reason": "tool_calls"}]});
+        http("200 OK", &answer.to_string())
+    }
+
+    fn standard(url: &str) -> OpenAiModel {
+        OpenAiModel::new(
+            url,
+            "pinned",
+            ApiKey::None,
+            std::time::Duration::from_secs(30),
+            ApiTarget::Standard,
+        )
+    }
+
+    /// The published operations come with the task, so a task they answer
+    /// is planned in ONE request — no listing or describing turn first.
+    #[test]
+    fn an_operation_the_task_turn_lists_is_planned_in_one_request() {
+        let offer = open_notes().offers[0].id();
+        let (url, sent) = endpoint(vec![plan_answer("c1", &offer)]);
+        let answer = standard(&url)
+            .choose("open notes then add a note", &open_notes(), MOST_STEPS)
+            .unwrap();
+        assert_eq!(answer.actions, vec![offer.clone()]);
+        let requests: Vec<(String, String)> = sent.try_iter().collect();
+        assert_eq!(requests.len(), 1, "one model turn");
+        let first: serde_json::Value = serde_json::from_str(&requests[0].1).unwrap();
+        let task = first["messages"][1]["content"].as_str().unwrap();
+        assert!(task.contains(&offer), "{task}");
+        assert!(task.contains("open notes then add a note"), "{task}");
+        let system = first["messages"][0]["content"].as_str().unwrap();
+        assert!(!system.contains("before planning"), "{system}");
+    }
+
+    /// An id the conversation never showed is refused back to the model with
+    /// what to name instead; the corrected plan is taken. The tools are the
+    /// same bytes on every turn, so the prompt prefix stays cacheable.
+    #[test]
+    fn an_unshown_operation_is_refused_back_to_the_model_with_stable_tools() {
+        let offer = open_notes().offers[0].id();
+        let invented = "app.so.tilo.sheets#open";
+        let (url, sent) = endpoint(vec![plan_answer("c1", invented), plan_answer("c2", &offer)]);
+        let answer = standard(&url)
+            .choose("open notes then add a note", &open_notes(), MOST_STEPS)
+            .unwrap();
+        assert_eq!(answer.actions, vec![offer.clone()]);
+        let requests: Vec<serde_json::Value> = sent
+            .try_iter()
+            .map(|(_, body)| serde_json::from_str(&body).unwrap())
+            .collect();
+        assert_eq!(requests.len(), 2);
+        let refusal = &requests[1]["messages"][3];
+        assert_eq!(refusal["role"], "tool");
+        assert_eq!(refusal["tool_call_id"], "c1");
+        let text = refusal["content"].as_str().unwrap();
+        assert!(text.contains(invented), "{text}");
+        assert!(text.contains("nothing was performed"), "{text}");
+        assert!(
+            text.contains(&format!("Listed ids for that action: {offer}")),
+            "{text}"
+        );
+        let tools = |request: &serde_json::Value| serde_json::to_string(&request["tools"]).unwrap();
+        assert_eq!(tools(&requests[0]), tools(&requests[1]));
+        assert!(!tools(&requests[0]).contains("\"enum\""));
+        assert_eq!(requests[0]["messages"][0], requests[1]["messages"][0]);
+    }
+
+    /// An endpoint that keeps each connection open and answers `answers` in
+    /// order across them, reporting how many requests each connection
+    /// carried (one count per accepted connection).
+    fn keep_alive_endpoint(
+        answers: Vec<String>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<usize>>>) {
+        use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let carried = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let answers = std::sync::Arc::new(std::sync::Mutex::new(
+            answers
+                .into_iter()
+                .collect::<std::collections::VecDeque<_>>(),
+        ));
+        let counts = carried.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let connection = {
+                    let mut counts = counts.lock().unwrap();
+                    counts.push(0_usize);
+                    counts.len().saturating_sub(1)
+                };
+                let (answers, counts) = (answers.clone(), counts.clone());
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.unwrap());
+                    loop {
+                        let mut length = 0;
+                        loop {
+                            let mut line = String::new();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                                return;
+                            }
+                            if let Some(value) =
+                                line.to_ascii_lowercase().strip_prefix("content-length:")
+                            {
+                                length = value.trim().parse().unwrap();
+                            }
+                            if line == "\r\n" {
+                                break;
+                            }
+                        }
+                        let mut body = vec![0; length];
+                        reader.read_exact(&mut body).unwrap();
+                        let mut served = counts.lock().unwrap();
+                        served[connection] = served[connection].saturating_add(1);
+                        drop(served);
+                        let answer = answers.lock().unwrap().pop_front().unwrap();
+                        reader.get_mut().write_all(answer.as_bytes()).unwrap();
+                    }
+                });
+            }
+        });
+        (url, carried)
+    }
+
+    /// Later turns of a task go over a connection an earlier turn opened:
+    /// the model keeps one client, not one per call (which would carry
+    /// exactly one request on every connection).
+    #[test]
+    fn later_turns_reuse_an_earlier_turns_connection() {
+        let offer = open_notes().offers[0].id();
+        let list = serde_json::json!({"choices": [{"message": {"role": "assistant", "content": null,
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "list_operations",
+                "arguments": "{\"application\":\"so.tilo.notes\"}"}}]}, "finish_reason": "tool_calls"}]});
+        let plan = serde_json::json!({"choices": [{"message": {"role": "assistant", "content": null,
+            "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "plan",
+                "arguments": serde_json::json!({"steps": [{"operation": offer, "arguments": {}}],
+                    "why": "open", "then": null}).to_string()}}]}, "finish_reason": "tool_calls"}]});
+        let kept_open = |body: &serde_json::Value| {
+            let body = body.to_string();
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+        };
+        let (url, carried) =
+            keep_alive_endpoint(vec![kept_open(&list), kept_open(&list), kept_open(&plan)]);
+        let mut model = OpenAiModel::new(
+            &url,
+            "test-model",
+            ApiKey::None,
+            std::time::Duration::from_secs(30),
+            ApiTarget::Standard,
+        );
+        let answer = model
+            .choose("open notes", &open_notes(), MOST_STEPS)
+            .unwrap();
+        assert_eq!(answer.actions, vec![offer]);
+        let carried = carried.lock().unwrap().clone();
+        assert_eq!(carried.iter().sum::<usize>(), 3, "{carried:?}");
+        // A connection opened speculatively may carry nothing; one turn's
+        // connection must have carried a later turn too.
+        assert!(carried.iter().any(|&requests| requests >= 2), "{carried:?}");
     }
 
     #[test]

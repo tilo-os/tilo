@@ -41,6 +41,8 @@ pub const SESSION_RUNTIME_SUPPORTED: bool = runtime_portal::local_socket::SUPPOR
 pub const SESSION_RUNTIME_SUPPORTED: bool = false;
 
 #[cfg(feature = "broker-transport")]
+pub(crate) mod approved_checks;
+#[cfg(feature = "broker-transport")]
 mod broker;
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
@@ -54,7 +56,8 @@ pub mod record_content;
 mod route_keys;
 #[cfg(feature = "broker-transport")]
 pub use broker::{
-    CertifiedEndpointIdentity, HostSessionConnector, speaker_command, wifi_continuity_command,
+    CertifiedEndpointIdentity, HostSessionConnector, display_control, speaker_command,
+    wifi_continuity_command,
 };
 // Committed reads live with the broker worker that retains them. Without the
 // broker transport no committed capture can exist, but the type stays part of
@@ -99,11 +102,6 @@ mod portable_committed {
     }
 }
 pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};
-
-#[cfg(any(test, feature = "test-support"))]
-mod loopback;
-#[cfg(any(test, feature = "test-support"))]
-pub use loopback::{LoopbackPeer, LoopbackTransport};
 
 /// Reserved `invokePublishedAction.peerId` meaning "the application
 /// connection making this request". Live broker peer ids are allocated from
@@ -157,6 +155,15 @@ pub fn speaker_command(
     _command: runtime_collab::SpeakerCommand,
 ) -> Result<runtime_collab::SpeakerReply, String> {
     Err("speakers need the certified collaboration service".to_string())
+}
+
+/// The native display control service is unavailable without an admitted broker.
+///
+/// # Errors
+/// Always reports unavailable on this transport.
+#[cfg(not(feature = "broker-transport"))]
+pub fn display_control(_command: Vec<u8>, _origin: DisplayOrigin) -> Result<Vec<u8>, String> {
+    Err("Displays need the certified collaboration service.".into())
 }
 
 pub use crate::host::ContinuationMetadata;
@@ -432,6 +439,7 @@ pub enum CollabRequest {
         update: runtime_collab::TaskRunUpdate,
     },
     ReportTaskRun {
+        request_id: Option<u64>,
         run_id: u64,
         lease: String,
         update: runtime_collab::TaskRunUpdate,
@@ -496,31 +504,9 @@ pub enum ActionDirectoryRequest {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExportedInput {
-    None,
-    Text {
-        prompt: String,
-        placeholder: String,
-        wants_content: bool,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedAction {
-    pub resource: String,
-    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
-    pub action: String,
-    pub resource_kind: String,
-    pub resource_label: String,
-    pub action_label: String,
-    pub description: Option<String>,
-    pub operation_kind: String,
-    pub params_json: String,
-    pub contract_json: String,
-    pub view: Option<tilo_actions::ResourceViewDescriptor>,
-    pub input: ExportedInput,
-}
+/// One inert operation this application exports, and what invoking it
+/// carries: the one exported-action shape, shared with the broker.
+pub use runtime_collab::{ExportedAction, ExportedInput};
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct BrokerActionSurface {
@@ -560,13 +546,7 @@ pub struct BrokerActionInput {
 }
 
 #[derive(serde::Deserialize)]
-#[cfg_attr(
-    not(feature = "broker-transport"),
-    allow(
-        dead_code,
-        reason = "only the broker transport decodes the catalogue wire"
-    )
-)]
+#[cfg(feature = "broker-transport")]
 pub(crate) struct BrokerActionCatalogueWire {
     pub(crate) surfaces: Vec<BrokerActionSurface>,
 }
@@ -819,6 +799,14 @@ pub enum CollabEvent {
         request_id: u64,
         result: Result<bool, String>,
     },
+    TaskRunControl {
+        request_id: u64,
+        control: runtime_collab::TaskRunControl,
+    },
+    TaskRunReportResult {
+        request_id: u64,
+        result: Result<(), String>,
+    },
     WorkspaceControl {
         session_id: u64,
         event: runtime_collab::WorkspaceControlEvent,
@@ -1029,7 +1017,7 @@ impl SigningIdentity {
         &mut self,
         payload: Vec<u8>,
         artifact: collab_types::ArtifactId,
-        op_class: collab_types::OpClass,
+        kind: collab_types::OpKind,
     ) -> Result<collab_types::SignedOp, SignedSendError> {
         let timestamp = crate::time::wall();
         let sequence = self
@@ -1041,7 +1029,7 @@ impl SigningIdentity {
             artifact,
             self.public_key,
             self.attestation_id,
-            op_class,
+            kind,
             timestamp,
             sequence,
         );
@@ -1229,10 +1217,9 @@ impl CollaborationManager {
     }
 }
 
-/// Launcher-issued instance identity for an app window. It deliberately rides
-/// in the existing record component of the authenticated CRDT route so the
-/// broker can retain multiple Browser windows in one workspace without
-/// conflating their continuation metadata.
+/// Compatibility route marker for a launcher-issued app window. Native
+/// document routes obtain their separate window binding from original broker
+/// custody; this environment value cannot authorize native private control.
 fn continuation_instance_env() -> Option<String> {
     let environment = crate::host::environment();
     let value = environment.identity.continuity_instance.as_deref()?.trim();
@@ -1365,6 +1352,23 @@ impl CollaborationManager {
         self.primary_route.current(self.is_connected())
     }
 
+    pub(crate) fn private_window_instance(&self) -> Option<u64> {
+        let witness = self.primary_route()?;
+        let Backend::Transport(transport) = &self.backend else {
+            return None;
+        };
+        if transport.committed_document_required(&witness.route.channel_id()) {
+            return transport.private_window_binding(&witness.route);
+        }
+        witness
+            .route
+            .record
+            .as_deref()?
+            .strip_prefix("continuation:")?
+            .parse::<u64>()
+            .ok()
+    }
+
     /// Whether requests currently reach peers: [`Self::state`] is
     /// [`CollaborationState::Ready`].
     pub fn is_connected(&self) -> bool {
@@ -1414,10 +1418,10 @@ impl CollaborationManager {
         &mut self,
         payload: Vec<u8>,
         artifact: collab_types::ArtifactId,
-        op_class: collab_types::OpClass,
+        kind: collab_types::OpKind,
     ) -> Result<(), SignedSendError> {
         let identity = self.identity.as_mut().ok_or(SignedSendError::NoIdentity)?;
-        let envelope = identity.sign_op(payload, artifact, op_class)?;
+        let envelope = identity.sign_op(payload, artifact, kind)?;
         self.send(CollabRequest::SignedOperation {
             envelope: Box::new(envelope),
         });
@@ -1637,14 +1641,32 @@ impl CollaborationManager {
     }
 
     /// Whether the actual route's original document history has been applied.
-    /// This is the same transport gate used before document publication.
+    /// This is the same transport gate used before document publication. A
+    /// closed transport never reopens, so its routes stop being ready the
+    /// moment it closes, before the worker clears their read state.
     pub(crate) fn document_route_ready(&self, route: Option<&RouteSpec>) -> bool {
         let channel = route.map(RouteSpec::channel_id);
         !self.awaiting_primary
             && match &self.backend {
-                Backend::Transport(transport) => transport.document_publishable(channel.as_deref()),
+                Backend::Transport(transport) => {
+                    !matches!(transport.status(), TransportStatus::Closed(_))
+                        && transport.document_publishable(channel.as_deref())
+                }
                 Backend::Disabled(_) => false,
             }
+    }
+
+    /// Independently sample the existing transport read gates without admission.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub(crate) fn controlled_document_read_phase_for_test(
+        &self,
+        route: &RouteSpec,
+    ) -> Option<serde_json::Value> {
+        if let Backend::Transport(transport) = &self.backend {
+            transport.controlled_document_read_phase_for_test(&route.channel_id())
+        } else {
+            None
+        }
     }
 
     /// Test-only: whether `route` has resolved its document mode, so a
@@ -1672,6 +1694,10 @@ impl CollaborationManager {
         req: CollabRequest,
     ) -> Result<(), CollabSendError> {
         if self.missing_required_document_custody(&req) {
+            tracing::debug!(
+                cause = "missing_committed_document_custody",
+                "document route handoff refused"
+            );
             return Err(CollabSendError::Unavailable);
         }
         if matches!(req, CollabRequest::Hello { .. }) {
@@ -1679,6 +1705,10 @@ impl CollaborationManager {
             return Err(CollabSendError::Unavailable);
         }
         if self.awaiting_primary {
+            tracing::debug!(
+                cause = "primary_join_pending",
+                "document route handoff refused"
+            );
             return Err(CollabSendError::Unavailable);
         }
         if let CollabRequest::NativeMediaCommand {
@@ -1707,6 +1737,17 @@ impl CollaborationManager {
             && matches!(&self.backend, Backend::Transport(transport)
                 if transport.committed_document_required(&route.channel_id()));
         if unpublishable && !known_pending_document {
+            let required = match &self.backend {
+                Backend::Transport(transport) => {
+                    transport.committed_document_required(&route.channel_id())
+                }
+                Backend::Disabled(_) => false,
+            };
+            tracing::debug!(
+                cause = "original_history_unapplied",
+                required,
+                "document route handoff refused"
+            );
             // Join first; the route's original history must be applied
             // before any local mutation is published on it.
             let _ = self.submit(TransportCommand::Join(route));
@@ -1715,8 +1756,12 @@ impl CollaborationManager {
         // A known committed route may be refreshing. Required original
         // custody was checked above; retain this mutation in the bounded queue.
         // The worker still waits for this exact route before checking retained
-        // custody and applying the route's existing certification/commit policy.
-        Ok(self.submit(TransportCommand::ToRoute(route, req))?)
+        // custody and applying the existing certification/commit policy.
+        let result = self.submit(TransportCommand::ToRoute(route, req));
+        if let Err(error) = &result {
+            tracing::debug!(%error, cause = "transport_queue_refusal", "document route handoff refused");
+        }
+        Ok(result?)
     }
 
     pub(crate) fn document_publication_failed(&self) -> bool {
@@ -1749,6 +1794,18 @@ impl CollaborationManager {
             Backend::Disabled("pre-terminal document publication; outcome unknown".into());
         self.awaiting_primary = false;
         self.primary_route.accepted = None;
+    }
+
+    pub(crate) fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>) {
+        if let Backend::Transport(transport) = &mut self.backend {
+            transport.set_document_owner_routes(routes);
+        }
+    }
+
+    pub(crate) fn finish_event_batch(&mut self) {
+        if let Backend::Transport(transport) = &mut self.backend {
+            transport.finish_event_batch();
+        }
     }
 
     /// Drain every event pending on the current backend. Non-blocking.
@@ -2072,33 +2129,6 @@ mod task4_route_tests {
     }
 }
 
-/// A host-owned document commit resolving to the broker-signed envelope.
-pub type HostDocumentCommit =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<SignedOp, String>> + Send + 'static>>;
-
-/// Host-local capability, never selected by a wire peer. Called on the SDK
-/// shovel thread, while the application's ordinary owner thread keeps pumping.
-/// Implementations bind an exact route and revalidate current authority.
-/// Native launcher and explicit-key endpoints retain their existing signer.
-pub trait HostDocumentCommitter: Send + Sync {
-    fn commit(
-        &self,
-        route: &RouteSpec,
-        mutation: collab_types::DocumentMutation,
-    ) -> HostDocumentCommit;
-
-    /// Required custody must reach the concrete final owner intact. A legacy
-    /// committer cannot silently downgrade it to its unqualified commit method.
-    fn commit_scoped(
-        &self,
-        _route: &RouteSpec,
-        _mutation: collab_types::DocumentMutation,
-        _authorization: crate::invocation_scope::DocumentAuthorization,
-    ) -> HostDocumentCommit {
-        Box::pin(async { Err("host has no final scoped document evaluator".into()) })
-    }
-}
-
 #[cfg(test)]
 mod portable_transport_tests {
     use super::*;
@@ -2127,3 +2157,6 @@ mod portable_transport_tests {
         assert!(manager.poll().is_empty());
     }
 }
+
+/// Original authority retained across display background work.
+pub use runtime_collab::DisplayOrigin;

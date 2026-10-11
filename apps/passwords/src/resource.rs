@@ -1,8 +1,8 @@
 //! Passwords as a framework app. The vault is this device's encrypted
 //! credential store, not a document: its items are published as live rows,
 //! and everything Passwords does with them is a [`PasswordsEffect`]. The
-//! resource's document holds nothing; the place shown and the open item are
-//! this window's own view state.
+//! resource's model holds nothing, so no secret can sync; the place shown
+//! and the open item are this window's own view state.
 
 use std::rc::Rc;
 
@@ -10,7 +10,7 @@ use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
     RunMode, ViewCx,
 };
-use ui::tilo_resource::{Doc, ModelError, NoAction, Resource};
+use ui::tilo_resource::{self, Model, resource};
 use ui::widget::Element;
 
 use crate::actions::PasswordsEffect;
@@ -21,21 +21,12 @@ use crate::window::PasswordsSurface;
 mod credential_owner_tests;
 
 /// The password vault resource: the door the vault's rows and effects are
-/// published on.
-pub struct Passwords;
+/// published on. It stores nothing; the vault is the device's.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Passwords {}
 
-impl Resource for Passwords {
-    const KIND: &'static str = "passwords.vault";
-    const LABEL: &'static str = "Password vault";
-    const ACTION_TYPE: &'static str = "passwords.action";
-
-    type State = ();
-    type Action = NoAction;
-
-    fn read(_doc: &Doc) -> Result<(), ModelError> {
-        Ok(())
-    }
-}
+#[resource(kind = "passwords.vault", label = "Password vault")]
+impl Passwords {}
 
 /// A capture shows the fixture vault in place of the person's.
 pub struct DemoVault;
@@ -74,15 +65,12 @@ impl ResourceApp for PasswordsShell {
         } else {
             PasswordsSurface::new(crate::PasswordsModel::open())
         };
+        cx.on_open(surface.opener());
         cx.surface(surface)
     }
 
     fn scenarios() -> &'static [&'static str] {
         crate::window::SCENARIOS
-    }
-
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
     }
 
     /// A screenshot never opens the person's vault: it shows synthetic items
@@ -93,7 +81,7 @@ impl ResourceApp for PasswordsShell {
 }
 
 impl ResourceSurface<Passwords, PasswordsEffect> for PasswordsSurface {
-    fn present(&mut self, _state: &Rc<()>) {}
+    fn present(&mut self, _state: &Rc<Passwords>) {}
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
@@ -140,6 +128,7 @@ mod tests {
 
     use super::*;
     use crate::actions::item_resource_id;
+    use ui::tilo_resource::Resource;
 
     #[test]
     fn every_launch_withholds_the_vault_window_from_captures() {
@@ -230,7 +219,15 @@ mod tests {
         for private in ["Private bank", "ada@private.example", "not-public-7A"] {
             assert!(!published_text.contains(private), "published {private:?}");
         }
-        for id in ["add", "import", "export", "filter", "open"] {
+        assert!(
+            vault
+                .actions
+                .iter()
+                .find(|action| action.id == "open")
+                .is_some_and(|open| open.params().iter().any(|p| p.name == "anchor")),
+            "the vault opens an item by its anchor; the row opens itself"
+        );
+        for id in ["add", "import", "export", "filter"] {
             assert!(
                 vault.actions.iter().any(|action| action.id == id),
                 "the vault offers {id}"
@@ -266,7 +263,7 @@ mod tests {
         // Filtering and opening are this window's own view: nothing in the
         // document changes and no history is written.
         let versions = app.versions().len();
-        app.effect(&PasswordsEffect::Open { item: id.0.clone() })
+        app.effect_on(&row_id, &PasswordsEffect::Open { item: id.0.clone() })
             .unwrap();
         app.effect(&PasswordsEffect::Filter {
             filter: "favorites".into(),
@@ -291,6 +288,44 @@ mod tests {
             .unwrap();
         assert!(crate::PasswordsModel::open().items().is_empty());
         assert!(published(&mut app, &row_id).is_none(), "its row is gone");
+    }
+
+    /// Opening an item's anchor, as a search hit or an agent does, shows
+    /// it even where a filter hid it; an item the vault lacks is refused.
+    #[test]
+    fn opening_an_anchor_shows_its_item_and_refuses_one_the_vault_lacks() {
+        let _profile = profile();
+        let mut model = crate::PasswordsModel::open();
+        let mut item = SecretItem::login("Private bank", "ada@private.example", "not-public-7A");
+        let id = model.save_item(&mut item).unwrap();
+        drop(model);
+        let mut app = TestApp::<PasswordsShell>::new().unwrap();
+        app.effect(&PasswordsEffect::Filter {
+            filter: "favorites".into(),
+        })
+        .unwrap();
+        app.call(
+            "open",
+            serde_json::json!({ "anchor": item_resource_id(&id.0) }),
+        )
+        .unwrap();
+        assert!(
+            app.call(
+                "open",
+                serde_json::json!({ "anchor": item_resource_id("not-in-the-vault") })
+            )
+            .is_err(),
+            "an item the vault does not hold is not opened"
+        );
+        app.settle();
+        assert_eq!(
+            app.surface_mut::<PasswordsSurface>()
+                .core()
+                .selected
+                .as_ref(),
+            Some(&id),
+            "opening its anchor shows the item, as a search hit does"
+        );
     }
 
     #[test]

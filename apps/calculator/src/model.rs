@@ -2,7 +2,9 @@
 //! mirror of the CRDT document (see `doc.rs`); state is authored here and
 //! flushed into Automerge so undo/redo and live collaboration work.
 
+use crate::actions::GraphKind;
 use crate::engine::{self, Ctx};
+use ui::tilo_resource::{self, Model};
 
 /// Top-level app mode (segmented control in the header).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -45,19 +47,33 @@ impl Mode {
             _ => Mode::Calc,
         }
     }
+    /// The graph list this mode plots, if it is a graph mode.
+    pub fn graph(self) -> Option<GraphKind> {
+        match self {
+            Mode::Calc => None,
+            Mode::Graph2d => Some(GraphKind::Curve2d),
+            Mode::Graph3d => Some(GraphKind::Surface3d),
+        }
+    }
 }
 
 /// One evaluated entry in the calculator history.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Model, Clone, Debug, PartialEq)]
 pub struct HistoryEntry {
+    /// Calculation
+    #[model(label)]
     pub expr: String,
+    /// Result
     pub result: String,
 }
 
-/// A `y = f(x)` curve for the 2D plotter.
-#[derive(Clone, Debug, PartialEq)]
+/// A curve (`y = f(x)`) or surface (`z = f(x, y)`) row of a graph.
+#[derive(Model, Clone, Debug, PartialEq)]
 pub struct PlotFn {
+    /// Formula
+    #[model(label)]
     pub expr: String,
+    /// Shown
     pub visible: bool,
 }
 
@@ -167,6 +183,36 @@ pub const DEMO_CURVES: [&str; 4] = ["(x^2+1)/(x-3)", "0.25*x^2-2", "sqrt(x+6)", 
 pub const DEMO_SURFACES: [&str; 2] = [DEFAULT_SURFACE, "sin(x)*cos(y)-3"];
 
 impl CalcModel {
+    /// The rows of a graph list.
+    pub fn graphs(&self, kind: GraphKind) -> &[PlotFn] {
+        match kind {
+            GraphKind::Curve2d => &self.funcs,
+            GraphKind::Surface3d => &self.surfaces,
+        }
+    }
+
+    pub fn graphs_mut(&mut self, kind: GraphKind) -> &mut Vec<PlotFn> {
+        match kind {
+            GraphKind::Curve2d => &mut self.funcs,
+            GraphKind::Surface3d => &mut self.surfaces,
+        }
+    }
+
+    /// The row of a graph list its editor edits.
+    pub fn active_graph(&self, kind: GraphKind) -> usize {
+        match kind {
+            GraphKind::Curve2d => self.active_fn,
+            GraphKind::Surface3d => self.active_surface,
+        }
+    }
+
+    pub fn active_graph_mut(&mut self, kind: GraphKind) -> &mut usize {
+        match kind {
+            GraphKind::Curve2d => &mut self.active_fn,
+            GraphKind::Surface3d => &mut self.active_surface,
+        }
+    }
+
     /// Rich starting content for tests and offline demos: a populated,
     /// lived-in calculator and graphs. The live app boots empty
     /// ([`CalcModel::default`]); a capture stages the same content through
@@ -225,9 +271,9 @@ impl CalcModel {
     }
 
     /// Commit `=`: evaluate, push history, update Ans. Returns the committed
-    /// [`HistoryEntry`] (a clone) so the caller can dispatch the matching
-    /// [`CommitHistory`](crate::actions::CalculatorAction) action — the shared,
-    /// replayable, undoable path the history list is mutated through. Returns
+    /// [`HistoryEntry`] (a clone) so the caller can submit the matching
+    /// `commit-history` verb — the shared, replayable, undoable path the
+    /// history list is changed through. Returns
     /// `None` when there is nothing to commit (empty or unparseable expression),
     /// so no action is dispatched.
     pub fn commit_equals(&mut self) -> Option<HistoryEntry> {

@@ -25,11 +25,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -102,6 +98,9 @@ pub mod operations;
 pub mod recovery;
 
 pub mod storage;
+
+#[cfg(unix)]
+pub mod cloud;
 
 #[cfg(unix)]
 pub mod blobs;

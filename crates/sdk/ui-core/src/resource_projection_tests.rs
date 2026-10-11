@@ -55,9 +55,8 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
         let (mut app, counts, visible) = counted_control_app(false);
         app.refresh_control_action_availability();
         app.actions.permission_generation.set(u64::MAX);
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
         assert!(!app.root_widget.children()[0].is_enabled());
         app.set_permission_ctx(PermissionContext::permissive());
@@ -153,9 +152,7 @@ impl Widget for SemanticCountingPublisher {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
     fn draw(
@@ -188,18 +185,29 @@ impl Widget for SemanticCountingPublisher {
     }
 }
 
+/// One counted inventory read: `Publisher`'s resources while `visible`,
+/// listed twice when `duplicate`.
+fn counted_resources(
+    counts: &[Cell<usize>; 2],
+    visible: &Cell<bool>,
+    duplicate: bool,
+    doc: &AutoCommit,
+) -> Vec<Resource> {
+    counts[0].set(counts[0].get() + 1);
+    let mut resources = if visible.get() {
+        crate::resources::PublishesResources::resources(&Publisher, doc)
+    } else {
+        Vec::new()
+    };
+    if duplicate {
+        resources.extend(resources.clone());
+    }
+    resources
+}
+
 impl crate::resources::PublishesResources for SemanticCountingPublisher {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        self.counts[0].set(self.counts[0].get() + 1);
-        let mut resources = if self.visible.get() {
-            Publisher.resources(_doc)
-        } else {
-            Vec::new()
-        };
-        if self.duplicate {
-            resources.extend(resources.clone());
-        }
-        resources
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }
 
@@ -259,9 +267,8 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
             app.action_registry_mut().register::<Flip>(FLIP_TYPE);
             app.refresh_control_action_availability();
             assert!(enabled.get(), "wrapper {wrapper}");
-            app.set_permission_ctx(PermissionContext::from_capabilities(
-                collab_types::caps::Actor::person(None, "restricted"),
-                Vec::new(),
+            app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+                "restricted",
             ));
             assert!(
                 !enabled.get(),
@@ -350,9 +357,7 @@ impl Widget for InventoryOnlyPublisher {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
     fn draw(
@@ -380,17 +385,8 @@ impl Widget for InventoryOnlyPublisher {
 }
 
 impl crate::resources::PublishesResources for InventoryOnlyPublisher {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        self.counts[0].set(self.counts[0].get() + 1);
-        let mut resources = if self.visible.get() {
-            Publisher.resources(_doc)
-        } else {
-            Vec::new()
-        };
-        if self.duplicate {
-            resources.extend(resources.clone());
-        }
-        resources
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }
 
@@ -429,9 +425,7 @@ impl Widget for FastInventoryPublisher {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
     fn draw(
@@ -459,17 +453,8 @@ impl Widget for FastInventoryPublisher {
 }
 
 impl crate::resources::PublishesResources for FastInventoryPublisher {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        self.counts[0].set(self.counts[0].get() + 1);
-        let mut resources = if self.visible.get() {
-            Publisher.resources(_doc)
-        } else {
-            Vec::new()
-        };
-        if self.duplicate {
-            resources.extend(resources.clone());
-        }
-        resources
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }
 

@@ -25,6 +25,7 @@
 //! tests here and through the real fill-handle event path in `app`.
 
 use crate::model::{CellFormat, CellValue, date_to_serial, serial_to_ymd};
+use ui::num::f64_of_usize;
 
 /// One source cell handed to the fill engine: the stored raw input, the
 /// computed value (used to recognise numeric / date series), and the display
@@ -342,16 +343,9 @@ fn linear_at(vals: &[f64], p: usize) -> f64 {
 /// `Item 1` becomes `Item 2`).
 fn series_at(vals: &[f64], p: usize) -> f64 {
     match vals {
-        [only] => only + pos_f64(p),
+        [only] => only + f64_of_usize(p),
         _ => line_value(vals, p),
     }
-}
-
-/// A position or length in a fill series as a float. These are cell counts,
-/// so `u32` covers every value one can reach by dragging, and the widening is
-/// exact — unlike a `usize as f64` cast, which silently rounds past 2^53.
-fn pos_f64(p: usize) -> f64 {
-    f64::from(u32::try_from(p).unwrap_or(u32::MAX))
 }
 
 /// The line through `vals` (positions `0..len`) evaluated at `p`. Uses the
@@ -368,19 +362,23 @@ fn line_value(vals: &[f64], p: usize) -> f64 {
         .zip(vals.iter().skip(1))
         .all(|(a, b)| ((b - a) - step).abs() <= 1e-9 * (1.0 + a.abs().max(b.abs())));
     if is_ap {
-        return first + step * pos_f64(p);
+        return first + step * f64_of_usize(p);
     }
     // Least-squares linear fit over positions 0..len.
-    let n = pos_f64(len);
-    let sx: f64 = (0..len).map(pos_f64).sum();
+    let n = f64_of_usize(len);
+    let sx: f64 = (0..len).map(f64_of_usize).sum();
     let sy: f64 = vals.iter().sum();
     let sxx: f64 = (0..len)
         .map(|i| {
-            let x = pos_f64(i);
+            let x = f64_of_usize(i);
             x * x
         })
         .sum();
-    let sxy: f64 = vals.iter().enumerate().map(|(i, v)| pos_f64(i) * v).sum();
+    let sxy: f64 = vals
+        .iter()
+        .enumerate()
+        .map(|(i, v)| f64_of_usize(i) * v)
+        .sum();
     let n_sxx = n * sxx;
     let sx_squared = sx * sx;
     let denom = n_sxx - sx_squared;
@@ -389,7 +387,7 @@ fn line_value(vals: &[f64], p: usize) -> f64 {
     }
     let slope = (n * sxy - sx * sy) / denom;
     let intercept = (sy - slope * sx) / n;
-    intercept + slope * pos_f64(p)
+    intercept + slope * f64_of_usize(p)
 }
 
 /// Render a number as the shortest exact-looking decimal (matching how the
@@ -514,7 +512,8 @@ fn split_trailing_number(s: &str) -> Option<(String, f64, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{CellFormat, CellValue, DateStyle};
+    use crate::model::{CellFormat, CellValue};
+    use tilo_locale::DateStyle;
 
     fn num(n: f64) -> FillCell {
         FillCell::new(num_to_raw(n), CellValue::Number(n), CellFormat::General)

@@ -9,10 +9,11 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use collab_types::Ed25519PublicKey;
 #[cfg(test)]
-use collab_types::FilePermission;
-use collab_types::{Ed25519PublicKey, FileRecordId, SHARE_CONTROL_FRAMING};
-pub use collab_types::{
+use fs_protocol::FilePermission;
+use fs_protocol::{FileRecordId, SHARE_CONTROL_FRAMING};
+pub use fs_protocol::{
     MAX_SHARE_CONTROL_FRAME_BYTES, NamedGrantMetadataV1, NamedShareDeliveryStateV1,
     SHARE_CONTROL_VERSION, ShareControlErrorCode, ShareControlOperationV1, ShareControlRequestV1,
     ShareControlResponseV1, ShareControlResultV1,
@@ -47,6 +48,7 @@ pub struct ShareControlServer {
     repository: Arc<RecordRepository>,
     clock: Arc<dyn Clock>,
     named_outbox: Option<Arc<crate::NamedShareOutbox>>,
+    reachability: crate::reachability::Reachability,
 }
 
 impl ShareControlServer {
@@ -117,12 +119,21 @@ impl ShareControlServer {
             repository,
             clock,
             named_outbox: None,
+            reachability: crate::reachability::Reachability::default(),
         })
     }
 
     #[must_use]
     pub fn with_named_delivery_outbox(mut self, outbox: Arc<crate::NamedShareOutbox>) -> Self {
         self.named_outbox = Some(outbox);
+        self
+    }
+
+    /// Wake `reachability` before a share is created: its recipient will
+    /// dial this device (TIL-774).
+    #[must_use]
+    pub fn with_reachability(mut self, reachability: crate::reachability::Reachability) -> Self {
+        self.reachability = reachability;
         self
     }
 
@@ -194,6 +205,13 @@ impl ShareControlServer {
             return error_response(ShareControlErrorCode::UnsupportedVersion);
         }
         let now_ms = self.clock.now_ms();
+        if matches!(
+            request.operation,
+            ShareControlOperationV1::CreateNamed { .. }
+                | ShareControlOperationV1::CreateBearerV2 { .. }
+        ) {
+            self.reachability.wake("a share is being created");
+        }
         let result = match request.operation {
             ShareControlOperationV1::CreateNamed {
                 record_id,
@@ -408,7 +426,8 @@ pub enum ShareControlServerError {
 
 #[cfg(test)]
 mod tests {
-    use collab_types::{ContentHash, FileActor, FileMetadataV1, IndexStatus, generate_keypair};
+    use collab_types::generate_keypair;
+    use fs_protocol::{ContentHash, FileActor, FileMetadataV1, IndexStatus};
     use iroh::SecretKey;
 
     use tilo_clock::FixedClock;

@@ -21,7 +21,7 @@ pub const LETTER_LAYOUTS: [(&str, &str); 2] = [
 ];
 
 /// The letter layout names a preference may take.
-pub const LAYOUT_NAMES: [&str; 2] = ["qwerty", "azerty"];
+pub use tilo_keyboard_map::touch::LAYOUT_NAMES;
 
 /// One keyboard preference set to a value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,7 +48,19 @@ impl SetPreference {
                 if !LAYOUT_NAMES.contains(&layout.as_str()) {
                     return Err(format!("no letter layout named {layout:?}"));
                 }
+                if preferences.layouts.is_empty() {
+                    preferences.layouts =
+                        LAYOUT_NAMES.iter().map(|name| (*name).to_owned()).collect();
+                }
+                if !preferences.layouts.contains(&preferences.layout)
+                    && LAYOUT_NAMES.contains(&preferences.layout.as_str())
+                {
+                    preferences.layouts.push(preferences.layout.clone());
+                }
                 layout.clone_into(&mut preferences.layout);
+                if !preferences.layouts.contains(layout) {
+                    preferences.layouts.push(layout.clone());
+                }
             }
             Self::Suggestions(enabled) => preferences.suggestions = *enabled,
             Self::Personalization(enabled) => {
@@ -69,25 +81,25 @@ impl SetPreference {
 #[effect(operation = "osk.keyboard")]
 pub enum OskEffect {
     /// Set the letter layout text fields open in.
-    #[effect(permission = "read", label = "Set keyboard layout")]
+    #[effect(kind = "read", label = "Set keyboard layout")]
     SetLayout {
         #[param("Letter layout", choices = LAYOUT_NAMES)]
         value: String,
     },
     /// Enable or disable the suggestion bar.
-    #[effect(permission = "read", label = "Set suggestions")]
+    #[effect(kind = "read", label = "Set suggestions")]
     SetSuggestions {
         #[param("Enabled")]
         value: bool,
     },
     /// Enable or disable adapting to what this person types.
-    #[effect(permission = "read", label = "Set personalization")]
+    #[effect(kind = "read", label = "Set personalization")]
     SetPersonalization {
         #[param("Enabled")]
         value: bool,
     },
     /// Replace this person's recent emoji list.
-    #[effect(permission = "read", label = "Set recent emoji")]
+    #[effect(kind = "read", label = "Set recent emoji")]
     SetEmojiRecents {
         #[param("Recent emoji, most recent first")]
         value: Vec<String>,
@@ -96,12 +108,7 @@ pub enum OskEffect {
     ///
     /// Learned word rankings, tap positions, kept words and recent emoji;
     /// the personalization preference stays as it is.
-    #[effect(
-        row,
-        permission = "read",
-        destructive,
-        label = "Clear learned suggestions"
-    )]
+    #[effect(row, kind = "read", destructive, label = "Clear learned suggestions")]
     ClearPersonal,
 }
 
@@ -204,4 +211,36 @@ pub(crate) fn preference_rows(preferences: &OskPreferences) -> Vec<LiveRow> {
         },
     ));
     vec![layout, suggestions, emoji]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_action_preserves_legacy_choices_and_explicit_single_source() {
+        let mut preferences = OskPreferences {
+            layout: "azerty".into(),
+            suggestions: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            SetPreference::Layout("azerty".into()).apply(&mut preferences),
+            Ok(())
+        );
+        assert_eq!(preferences.layouts, ["qwerty", "azerty"]);
+        assert_eq!(preferences.layout, "azerty");
+        assert!(!preferences.suggestions);
+        preferences.layouts = vec!["azerty".into()];
+        assert_eq!(
+            SetPreference::Layout("azerty".into()).apply(&mut preferences),
+            Ok(())
+        );
+        assert_eq!(preferences.layouts, ["azerty"]);
+        assert_eq!(
+            SetPreference::Layout("qwerty".into()).apply(&mut preferences),
+            Ok(())
+        );
+        assert_eq!(preferences.layouts, ["azerty", "qwerty"]);
+    }
 }

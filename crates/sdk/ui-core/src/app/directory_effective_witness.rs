@@ -215,8 +215,11 @@ mod tests {
         assert_eq!(witness(original.clone()), Some(baseline));
         assert_ne!(witness(fixed(2)), Some(baseline));
         let mut public = original.clone();
-        public.input =
-            ActionInput::Immediate(EncodedAction::encode_operation("test.other", &1).unwrap());
+        public.input = ActionInput::Immediate(
+            EncodedAction::encode_operation("test.other", &1)
+                .unwrap()
+                .into(),
+        );
         assert_ne!(witness(public), Some(baseline));
         let mut operation_type = original.clone();
         operation_type.operation_type = Some("test.other".into());

@@ -11,6 +11,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+#[path = "fake_broker.rs"]
+mod fake_broker;
 #[path = "mock_broker.rs"]
 mod mock_broker;
 #[path = "schema_v2.rs"]

@@ -10,22 +10,11 @@ fn peer_hardware_language_metadata_survives_projection_without_a_source_extensio
         let mut sample = synced_sample();
         let id = "00000000-0000-4000-8000-0000000000ed";
         sample.app.merge_peer_edit(|doc| {
-            EditorDoc::create_file(
+            crate::test_support::peer_file(
                 doc,
-                &crate::doc::CollaborativeFile {
-                    id: id.into(),
-                    kind: "file".into(),
-                    name: "hardware.txt".into(),
-                    path: "hardware.txt".into(),
-                    parent: None,
-                    language: language.label().into(),
-                    order: 1,
-                    deleted: false,
-                    name_revision: 0,
-                    structure_revision: 0,
-                    language_revision: 0,
-                    deletion_revision: 0,
-                },
+                id,
+                "hardware.txt",
+                language.label(),
                 "module mac;\nendmodule\n",
             );
         });
@@ -100,6 +89,60 @@ fn search_projection_rebuilds_only_on_revisions_or_an_exhausted_generation() {
     exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor();
 }
 
+#[test]
+fn navigation_and_result_changes_reuse_symbols_but_pending_forks_do_not() {
+    use automerge::transaction::Transactable;
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        let before = app.search_refresh_stats();
+        app.invalidate_search_projection();
+        app.refresh_search_entries(doc.doc());
+        assert_eq!(app.search_refresh_stats().buffer_reads, before.buffer_reads);
+        let node = app.active_file_node().expect("sample source");
+        let key = app.buffer_key(node);
+        let object = EditorDoc::buffer_text_key(doc, &key).expect("authoritative text");
+        let mut first = doc.doc().clone();
+        let mut second = doc.doc().clone();
+        first
+            .splice_text(&object, 0, 0, "fn pending_first() {}\n")
+            .unwrap();
+        second
+            .splice_text(&object, 0, 0, "fn pending_other() {}\n")
+            .unwrap();
+        assert_eq!(first.pending_ops(), second.pending_ops());
+        assert!(first.pending_ops() > 0);
+        assert_eq!(first.committed_heads(), second.committed_heads());
+        app.refresh_search_entries(&first);
+        assert!(
+            app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name == "pending_first")
+        );
+        app.refresh_search_entries(&second);
+        assert!(
+            app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name == "pending_other")
+        );
+        assert!(
+            !app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name == "pending_first")
+        );
+        app.refresh_search_entries(doc.doc());
+        assert!(
+            !app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name.starts_with("pending_"))
+        );
+        assert_eq!(
+            first.pending_ops(),
+            second.pending_ops(),
+            "reading did not commit either fork"
+        );
+    });
+}
+
 fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
     let mut sample = synced_sample();
     sample.with_doc(|app, doc| {
@@ -127,7 +170,7 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
         assert_eq!(after_document.rebuilds, idle.rebuilds.saturating_add(1));
         assert!(
             ui::search::SearchProvider::search(
-                &ui::framework::testing::search_source::<crate::resource::CodeEditor>(
+                &ui::framework::testing::search_source::<crate::project::Project>(
                     app.code_search_entries()
                 ),
                 "revision_gate_needle"
@@ -162,12 +205,16 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
         app.sync(doc.doc(), &automerge::ROOT);
         let after_results = app.search_refresh_stats();
         assert_eq!(
+            after_results.buffer_reads, after_project.buffer_reads,
+            "new result previews do not rescan authoritative source bodies"
+        );
+        assert_eq!(
             after_results.rebuilds,
             after_project.rebuilds.saturating_add(1)
         );
         assert!(
             ui::search::SearchProvider::search(
-                &ui::framework::testing::search_source::<crate::resource::CodeEditor>(
+                &ui::framework::testing::search_source::<crate::project::Project>(
                     app.code_search_entries()
                 ),
                 "result_revision_needle"
@@ -261,31 +308,34 @@ fn the_embedded_terminal_is_the_projects_terminal_child() {
     crate::test_support::editor(&mut app, |app| {
         app.shots_terminal_input("printf 'CHILD_TERM_OK\\n'\n");
     });
-    let shown = |app: &ui::framework::testing::TestApp<crate::CodeEditorShell>| {
-        app.state().terminal.as_ref().is_some_and(|session| {
-            session
-                .screen
-                .active()
-                .iter()
-                .any(|line| line.text.contains("CHILD_TERM_OK"))
-        })
+    // The shell's output stays in the terminal; the project records the
+    // session the process took.
+    let shown = |app: &mut ui::framework::testing::TestApp<crate::CodeEditorShell>| {
+        let recorded = app
+            .state()
+            .terminal_panel
+            .as_ref()
+            .is_some_and(|session| !session.pane_id().is_empty());
+        recorded
+            && crate::test_support::editor(app, |app| app.shots_terminal_grid_text())
+                .is_some_and(|text| text.contains("CHILD_TERM_OK"))
     };
     let deadline = ui::time::now() + HANG_BOUND;
-    while !shown(&app) && ui::time::now() < deadline {
+    while !shown(&mut app) && ui::time::now() < deadline {
         app.settle();
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(
-        shown(&app),
-        "the shell's output is the session the project records"
+        shown(&mut app),
+        "the shell's output shows, and the session is the one the project records"
     );
-    let published =
-        <crate::resource::CodeEditor as ui::tilo_resource::Resource>::children(&app.state());
+    let published = app.harness().resources();
     let child = published
         .iter()
+        .flat_map(|resource| resource.children.iter())
         .find(|child| child.id.as_str() == crate::resource::TERMINAL_RESOURCE_ID)
         .expect("the project publishes its terminal");
-    assert_eq!(child.kind, "terminal.session");
+    assert_eq!(child.kind, "code_editor.project.terminal");
     app.read_document(|doc| {
         assert!(
             doc.get(automerge::ROOT, "terminal_title")
@@ -471,12 +521,15 @@ fn quick_open_and_go_to_line_open_the_host_palette() {
     assert_eq!(
         ui::host_palette::take(),
         Some(ui::host_palette::PaletteRequest::Action(
-            ui::tilo_actions::ActionAddress::new(crate::resource::PROJECT_KIND, "go-to-line")
+            ui::tilo_actions::ActionAddress::new(
+                <crate::project::Project as ui::tilo_resource::Resource>::KIND,
+                "go-to-line"
+            )
         )),
         "go to line asks for its line on the published effect"
     );
     let entries =
-        <crate::resource::CodeEditor as ui::tilo_resource::Resource>::search(&sample.app.state());
+        <crate::project::Project as ui::tilo_resource::Resource>::search(&sample.app.state());
     assert!(
         entries.iter().any(|entry| entry.title == "main.rs"),
         "the project's files are its search entries"
@@ -574,24 +627,7 @@ fn a_collaborative_file_is_adopted_as_a_tracked_file() {
     let before = sample.editor(|app| app.session.project.nodes.len());
     let orphan = "00000000-0000-4000-8000-0000000000ee";
     sample.app.merge_peer_edit(|doc| {
-        EditorDoc::create_file(
-            doc,
-            &crate::doc::CollaborativeFile {
-                id: orphan.into(),
-                kind: "file".into(),
-                name: "peer.rs".into(),
-                path: "peer.rs".into(),
-                parent: None,
-                language: "Rust".into(),
-                order: 1,
-                deleted: false,
-                name_revision: 0,
-                structure_revision: 0,
-                language_revision: 0,
-                deletion_revision: 0,
-            },
-            "// created out of band\n",
-        );
+        crate::test_support::peer_file(doc, orphan, "peer.rs", "Rust", "// created out of band\n");
     });
     sample.app.settle();
     let (adopted, after) = sample.editor(|app| {

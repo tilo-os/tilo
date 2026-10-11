@@ -36,11 +36,7 @@ enum Vault {
 
 const CLOSED: &str = "the vault is not open in this window";
 
-pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "passwords-credential-permission",
-);
+ui::embedded_catalog!(pub(crate) static CATALOG, "passwords-credential-permission", ["en-US"]);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VaultHealth {
@@ -333,7 +329,7 @@ impl PasswordsModel {
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<PasswordsShell>()
+    ui::built_in_definition!(PasswordsShell)
 }
 
 #[cfg(test)]

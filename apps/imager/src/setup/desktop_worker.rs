@@ -195,7 +195,8 @@ pub fn maybe_run_desktop_helper(args: &[String]) -> Result<Option<i32>, String> 
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::super::desktop_install::{DesktopInstallEvent, DesktopInstallRequest};
     use super::*;

@@ -580,27 +580,19 @@ impl Widget for ProgressRing {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let side = crate::num::f32_of_f64(self.face().diameter(theme));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(side),
                 height: Dimension::length(side),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        let rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        let rect = crate::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.dirty = true;
         }
@@ -743,11 +735,6 @@ impl BarGauge {
         self
     }
 
-    /// Update the fraction (clamped to `0..1`).
-    pub fn set_fraction(&mut self, frac: f32) {
-        self.frac = frac.clamp(0.0, 1.0);
-    }
-
     fn resolve_color(&self, theme: &Theme) -> Color {
         match self.fill {
             Fillcolor::Threshold(t) => t.color(theme, self.frac),
@@ -882,32 +869,7 @@ impl BarGauge {
 }
 
 impl Widget for BarGauge {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-    }
+    crate::widget::chart_navigation::chart_leaf!();
 
     fn draw(
         &mut self,
@@ -935,10 +897,6 @@ impl Widget for BarGauge {
         "BarGauge"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         // `label` names it; `value` is the caller's readout when present
@@ -956,10 +914,6 @@ impl Widget for BarGauge {
                 .with_optional_name(name)
                 .with_value(value),
         )
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 

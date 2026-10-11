@@ -208,10 +208,7 @@ fn signed_snapshot(
     owner: &SigningKey,
     previous: Option<&SignedRegistrySnapshot>,
 ) -> SignedRegistrySnapshot {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = tilo_clock::try_unix_now().unwrap();
     let publisher = entry.publisher_pubkey_hex.clone();
     let mut snapshot = SignedRegistrySnapshot {
         protocol: registry_types::SNAPSHOT_PROTOCOL,
@@ -700,7 +697,7 @@ fn installed_apps_keep_exactly_the_services_they_declared() {
         let root = packaged_payload_root(scratch.path(), PKG);
 
         // What the publisher declared, read with the launcher's own reader, so "declared" means what the launcher would act on.
-        let declared = launcher::manifest::read_manifest(&root.join("manifest.toml"))
+        let declared = tilo_app_package::view::read_manifest(&root.join("manifest.toml"))
             .expect("the fixture manifest parses");
         assert!(
             declared.sandbox.services.contains_key("collab"),
@@ -732,7 +729,7 @@ fn installed_apps_keep_exactly_the_services_they_declared() {
             runtime_dir.path(),
         );
 
-        let reached = launcher::manifest::read_manifest(&installed.manifest_path)
+        let reached = tilo_app_package::view::read_manifest(&installed.manifest_path)
             .expect("the installed manifest parses");
         assert_eq!(
             reached.sandbox.services, declared.sandbox.services,

@@ -19,26 +19,6 @@ impl SettingsBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self { ctx }
     }
-    /// Called by the compositor settings authority after it mutates the shared
-    /// store. Keeping signal emission explicit prevents a background portal
-    /// task from outliving the D-Bus connection.
-    pub async fn emit_change(
-        &self,
-        ctxt: &SignalEmitter<'_>,
-        namespace: &str,
-        key: &str,
-    ) -> zbus::Result<()> {
-        if let Some(value) = self.ctx.desktop_services.settings.get(namespace, key) {
-            Self::setting_changed(
-                ctxt,
-                namespace.to_string(),
-                key.to_string(),
-                value.to_owned_value(),
-            )
-            .await?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(target_os = "linux")]

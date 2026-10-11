@@ -2,7 +2,8 @@
 use super::*;
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 use tilo_actions::remote::{
-    Caller, CatalogueQuery, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    InvocationState, InvokeArgument, InvokeRequest, Pending, PendingPoll, RemoteActionTarget,
 };
 
 fn fixture() -> (
@@ -72,6 +73,7 @@ fn request() -> InvokeRequest {
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     }
 }
 
@@ -530,34 +532,22 @@ fn continuation_fixture() -> (
     Caller,
     mpsc::UnboundedReceiver<InvocationEnvelope>,
 ) {
-    use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+    use crate::test_support::{Grants as _, KindSet, Role, Subject, TreePath};
     let mut workspace = Workspace::new(WorkspaceId(53), "Effect continuation");
     workspace.set_owner("a1".repeat(32));
     let room = workspace.room.to_string();
-    workspace.grant_capability(CapOverride::membership(
+    workspace.admit_agent("scribe", KindSet::READ);
+    workspace.allow_app(Subject::agent("scribe"), "so.tilo.test", KindSet::ALL);
+    workspace.admit("b2".repeat(32), Role::Editor);
+    workspace.deny(
         Subject::agent("scribe"),
-        room.clone(),
-        Verb::Write,
-    ));
-    workspace.grant_capability(CapOverride::grant(
-        Subject::agent("scribe"),
-        Scope::App("so.tilo.test".into()),
-        Verb::Write,
-    ));
-    workspace.grant_capability(CapOverride::membership(
-        Subject::person("b2".repeat(32)),
-        room.clone(),
-        Verb::Write,
-    ));
-    workspace.grant_capability(CapOverride::new(
-        Subject::agent("scribe"),
-        Scope::Action {
-            app: "so.tilo.test".into(),
-            action: "erase".into(),
-        },
-        Effect::Restrict,
-        Verb::Read,
-    ));
+        &TreePath::root()
+            .app("so.tilo.test")
+            .any(tilo_action_policy::Level::Kind)
+            .resource("test:block-a")
+            .action("erase"),
+        KindSet::ALL,
+    );
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
@@ -842,5 +832,178 @@ fn retired_execution_cannot_query_observe_or_cancel_but_legacy_callers_can() {
         state
             .action_cancel(&legacy, &legacy_request.invocation)
             .is_ok()
+    );
+}
+
+/// The broker's door, counting how often a shortcut run observes through it.
+struct CountedDoor {
+    door: action_host::BrokerDoor,
+    observes: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ActionHost for CountedDoor {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        self.door.query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        self.door.invoke(caller, request)
+    }
+
+    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        self.observes.fetch_add(1, Ordering::Relaxed);
+        self.door.observe(caller, id)
+    }
+
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        self.door.next_change(caller, id)
+    }
+
+    fn cancel(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Result<(), ActionHostError> {
+        self.door.cancel(caller, id)
+    }
+}
+
+/// Hooks for a run whose host says when a step changes, so nothing may fall
+/// back to polling it.
+struct NoPolling(crate::automation::DoorHooks);
+
+impl tilo_automation::RunHooks for NoPolling {
+    fn confirm(
+        &self,
+        request: tilo_automation::ConfirmationRequest,
+    ) -> Pending<Option<tilo_actions::remote::Confirmation>> {
+        self.0.confirm(request)
+    }
+
+    fn ask(&self, request: tilo_automation::AskRequest) -> Pending<Option<serde_json::Value>> {
+        self.0.ask(request)
+    }
+
+    fn settle(&self, invocation: tilo_actions::InvocationId) -> Pending<()> {
+        panic!("the broker's door says when {invocation:?} changes; nothing polls it")
+    }
+}
+
+/// A shortcut step that runs in the background is observed once per change
+/// it makes, not once per poll interval for as long as it runs.
+#[tokio::test]
+async fn shortcut_step_observes_once_per_change() {
+    const PROGRESS_UPDATES: u64 = 3;
+    // The look for an earlier invocation, one wake for the admission itself,
+    // then one per progress update and one for the outcome.
+    const MOST_OBSERVES: usize = 6;
+    let (state, caller, mut app) = fixture();
+    let observes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let shortcut = tilo_automation::Shortcut {
+        id: "export".into(),
+        name: "Export".into(),
+        inputs: Vec::new(),
+        steps: vec![tilo_automation::Step::new(
+            "update",
+            tilo_automation::StepKind::Invoke {
+                action: tilo_actions::ActionKey::new("so.tilo.test", "test.block", "update"),
+                resource: tilo_automation::Selector::Fixed("test:block-a".into()),
+                args: std::collections::BTreeMap::new(),
+            },
+        )],
+        output: None,
+        grant: vec![tilo_action_policy::Rule::new(
+            tilo_action_policy::TreePath::root()
+                .any(tilo_action_policy::Level::Room)
+                .app("so.tilo.test"),
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Allow,
+        )],
+        triggers: Vec::new(),
+        saved_by: None,
+    };
+    let hooks = NoPolling(crate::automation::DoorHooks::new(
+        None,
+        tokio::runtime::Handle::current(),
+    ));
+    let running = tokio::spawn({
+        let state = Arc::clone(&state);
+        let observes = Arc::clone(&observes);
+        async move {
+            let door = CountedDoor {
+                door: action_host::BrokerDoor::new(state),
+                observes,
+            };
+            tilo_automation::run(
+                &door,
+                &hooks,
+                tilo_automation::RunRequest {
+                    shortcut: &shortcut,
+                    run: tilo_automation::RunId::new(),
+                    caller,
+                    mode: tilo_automation::RunMode::Unattended,
+                    trigger: tilo_automation::RunTrigger::Manual,
+                    inputs: serde_json::Map::new(),
+                },
+            )
+            .await
+        }
+    });
+
+    let delivered = app.recv().await.expect("the step reaches the app");
+    // Each pause is many of the old 25 ms poll intervals and well inside the
+    // door's safety interval: only a change may wake the run.
+    let pause = std::time::Duration::from_millis(150);
+    for sequence in 1..=PROGRESS_UPDATES {
+        tokio::time::sleep(pause).await;
+        state
+            .apply_invocation_update(
+                7,
+                delivered.id,
+                tilo_actions::InvocationUpdate::Progress {
+                    invocation: delivered.invocation,
+                    sequence,
+                    phase: "Exporting".into(),
+                    completed: Some(sequence),
+                    total: Some(PROGRESS_UPDATES),
+                    message: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(pause).await;
+    state
+        .apply_invocation_update(
+            7,
+            delivered.id,
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation: delivered.invocation,
+                output: tilo_actions::ActionOutput::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let report = running.await.expect("the run finishes");
+    assert_eq!(
+        report.outcome,
+        tilo_automation::RunOutcome::Completed,
+        "{report:?}"
+    );
+    let observes = observes.load(Ordering::Relaxed);
+    assert!(
+        observes <= MOST_OBSERVES,
+        "{observes} observations for {PROGRESS_UPDATES} progress updates"
     );
 }

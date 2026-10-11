@@ -25,18 +25,35 @@ use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::Rect;
 
-use photos::actions::{PhotosResources, register};
-use photos::doc::PhotosDoc;
-use photos::model::{Album, Edits, Rect01};
+use automerge::{AutoCommit, ROOT};
+use photos::model::{Album, Edits, PhotoLibrary, Rect01};
 use photos::pixels::{self, Rgba};
 use photos::{PhotosApp, shots_pattern};
+use ui::tilo_resource::{Fields as _, Resource as _};
+
+/// The library `doc` holds.
+fn library(doc: &AutoCommit) -> PhotoLibrary {
+    PhotoLibrary::read(doc).expect("the library reads")
+}
+
+/// Make `doc` hold `library`.
+fn set_library(doc: &mut AutoCommit, library: &PhotoLibrary) {
+    library
+        .write_fields(doc, &ROOT)
+        .expect("the library writes");
+}
+
+/// The library as published.
+fn published(doc: &AutoCommit) -> tilo_actions::Resource {
+    ui::tilo_resource::publish::<PhotoLibrary>("photos.library", "Photos", &library(doc))
+}
 
 /// A laid-out app, ready to assert on. It is mounted in the production frame
 /// host on its first frame; until then the app and its document are driven
 /// directly, exactly as before any frame ran.
 struct Harness {
     /// The door the app submits its edits to, resolved before each look.
-    dispatch: ui::framework::Dispatcher<photos::Photos>,
+    dispatch: ui::framework::Dispatcher<PhotoLibrary>,
     unmounted: Option<(PhotosApp, ui::State)>,
     mounted: Option<Framed<PhotosApp>>,
     theme: Theme,
@@ -70,9 +87,8 @@ impl Harness {
         // What the app submitted lands, as the host applies it after a pass.
         ui::framework::testing::resolve(&self.dispatch, &mut state.doc)
             .expect("submitted edits apply");
-        let library = <photos::Photos as ui::tilo_resource::Resource>::read(&state.doc)
-            .expect("the library reads");
-        ui::framework::ResourceSurface::<photos::Photos, photos::actions::PhotosEffect>::present(
+        let library = library(&state.doc);
+        ui::framework::ResourceSurface::<PhotoLibrary, photos::actions::PhotosEffect>::present(
             app,
             &std::rc::Rc::new(library),
         );
@@ -111,7 +127,8 @@ impl Harness {
             .open_photo_id()
             .expect("a photograph is open")
             .to_owned();
-        PhotosDoc::photo(&self.state().doc, &id)
+        library(&self.state().doc)
+            .photo(&id)
             .expect("the shown photograph is in the library")
             .edits
     }
@@ -123,11 +140,13 @@ impl Harness {
             .open_photo_id()
             .expect("a photograph is open")
             .to_owned();
-        tilo_actions::Action::apply(
-            &photos::actions::PhotosAction::set(&id, &edits),
-            &mut self.state().doc,
-        )
-        .expect("the edit applies");
+        let doc = &mut self.state().doc;
+        let mut library = library(doc);
+        library
+            .photo_mut(&id)
+            .expect("the photograph is there")
+            .edits = edits;
+        set_library(doc, &library);
     }
 
     fn window_rect(&self) -> Rect {
@@ -160,8 +179,8 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
             .with_text_scale(2.0)
             .with_reduce_motion(true);
         let mut driver =
-            ui::headless::Driver::new_with_theme(state, Box::new(app), (390, 844), theme);
-        register(driver.action_registry_mut());
+            ui::headless::FrameHarness::new_with_theme(state, Box::new(app), (390, 844), theme);
+        PhotoLibrary::register(driver.action_registry_mut());
         let audit = driver.native_app_audit();
         assert!(
             audit.is_certified(),
@@ -191,21 +210,25 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
         let (path, _) = staged(dir.path(), 320, 240);
         let mut hz = Harness::new(960.0, 700.0);
         hz.app().open_path(&path);
-        let photo_id = PhotosDoc::library(&hz.state().doc).photos[0].id.clone();
-        let mut library = PhotosDoc::library(&hz.state().doc);
-        library.albums.extend([
-            Album {
-                id: "photos.album:destination-a".into(),
-                name: "Weekend plans".into(),
-                photo_ids: vec![photo_id.clone()],
-            },
-            Album {
-                id: "photos.album:destination-b".into(),
-                name: "Home projects".into(),
-                photo_ids: vec![photo_id],
-            },
-        ]);
-        PhotosDoc::set_library(&mut hz.state().doc, &library);
+        let photo_id = library(&hz.state().doc)
+            .photos
+            .values()
+            .next()
+            .unwrap()
+            .id
+            .clone();
+        let mut library = library(&hz.state().doc);
+        library.add_album(Album {
+            id: "photos.album:destination-a".into(),
+            name: "Weekend plans".into(),
+            photo_ids: photos::model::labels([photo_id.clone()]),
+        });
+        library.add_album(Album {
+            id: "photos.album:destination-b".into(),
+            name: "Home projects".into(),
+            photo_ids: photos::model::labels([photo_id]),
+        });
+        set_library(&mut hz.state().doc, &library);
         let (app, _) = hz.parts();
         app.show_selection_for_shot();
         app.show_selection_destination_chooser_for_shot();
@@ -375,8 +398,7 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
     {
         let mut hz = Harness::new(900.0, 600.0);
         let scene = hz.frame();
-        let resources = PhotosResources.publish_resources(&hz.state().doc);
-        assert_eq!(resources.len(), 1);
+        let resources = [published(&hz.state().doc)];
         assert_eq!(resources[0].id.0, "photos.library");
         assert!(
             <photos::actions::PhotosEffect as ui::tilo_resource::Effect>::specs()
@@ -405,7 +427,7 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
 
         assert!(!hz.app().has_image());
         assert!(hz.app().open_photo_id().is_none());
-        assert!(PhotosDoc::library(&hz.state().doc).photos.is_empty());
+        assert!(library(&hz.state().doc).photos.is_empty());
     }
 }
 
@@ -741,7 +763,7 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
 
         // Enumerating is a pure read.
         let before = hz.state().doc.save();
-        let resources = PhotosResources.publish_resources(&hz.state().doc);
+        let resources = [published(&hz.state().doc)];
         let flat = flatten(&resources);
         assert_eq!(
             hz.state().doc.save(),
@@ -749,7 +771,6 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
             "enumeration mutated the document"
         );
 
-        assert_eq!(resources.len(), 1, "one durable library");
         let shown = hz
             .app()
             .open_photo_id()
@@ -758,11 +779,21 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         let photo = resources[0]
             .children
             .iter()
-            .find(|child| child.id.0 == shown)
+            .find(|child| child.id.0 == photos::resource::photo_resource_id(&shown))
             .expect("the open photograph is published in the library");
         assert_eq!(photo.label, "harbour.png");
-        // The size is legible from titles alone — no display needed.
-        assert_eq!(photo.children[0].label, "400 x 200 pixels");
+        // The size is legible from what the photograph reads as — no
+        // display needed.
+        let content =
+            PhotoLibrary::read_content(&library(&hz.state().doc), &hz.state().doc, Some(&shown))
+                .expect("a photograph reads as content");
+        assert_eq!(
+            (
+                content["image"]["width"].as_u64(),
+                content["image"]["height"].as_u64()
+            ),
+            (Some(400), Some(200))
+        );
 
         // Every row is addressable by a composite key with no coordinate in it.
         for row in &flat {
@@ -776,17 +807,17 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
 
         // Invoke rotate-right by id, and the pixels must follow.
         let mut registry = ActionRegistry::new();
-        register(&mut registry);
+        PhotoLibrary::register(&mut registry);
         let spec = photo
             .actions
             .iter()
             .find(|a| a.id == "rotate-right")
             .expect("rotate-right is published");
-        let tilo_actions::ActionInput::Immediate(encoded) = &spec.input else {
-            panic!("rotate-right fires immediately");
-        };
+        let encoded = spec
+            .build_json(&serde_json::Map::new())
+            .expect("rotate-right needs nothing but its photograph");
         registry
-            .decode(encoded)
+            .decode(&encoded)
             .unwrap()
             .apply(&mut hz.state().doc)
             .unwrap();
@@ -811,7 +842,7 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
     // the exported pixels against the original by identity rather than by size.
     eprintln!("phase a_caller_with_no_display_crops_by_address_and_gets_those_pixels");
     {
-        use tilo_actions::{ActionInput, ActionRegistry};
+        use tilo_actions::ActionRegistry;
 
         let dir = tempfile::tempdir().unwrap();
         let (path, original) = staged(dir.path(), 400, 400);
@@ -821,7 +852,7 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
 
         // Address the photograph by the id derived from its content — no
         // enumeration, no coordinate, nothing that needs a screen.
-        let resources = PhotosResources.publish_resources(&hz.state().doc);
+        let resources = [published(&hz.state().doc)];
         let id = hz
             .app()
             .open_photo_id()
@@ -835,23 +866,30 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         let photo = resources[0]
             .children
             .iter()
-            .find(|child| child.id.0 == id)
+            .find(|child| child.id.0 == photos::resource::photo_resource_id(&id))
             .expect("the photograph is published by its id");
 
-        let ActionInput::Prompted { build, .. } = &photo
+        let crop = photo
             .actions
             .iter()
             .find(|a| a.id == "crop")
-            .expect("crop is published")
-            .input
-        else {
-            panic!("crop collects an argument");
-        };
+            .expect("crop is published");
+        assert!(
+            crop.params().iter().any(|param| param.name == "region"),
+            "crop collects the region"
+        );
+        let encoded = crop
+            .build_json(
+                serde_json::json!({ "region": { "x": 0.5, "y": 0.5, "w": 0.5, "h": 0.5 } })
+                    .as_object()
+                    .unwrap(),
+            )
+            .expect("the region binds");
 
         let mut registry = ActionRegistry::new();
-        register(&mut registry);
+        PhotoLibrary::register(&mut registry);
         registry
-            .decode(&build("0.5,0.5,0.5,0.5"))
+            .decode(&encoded)
             .expect("the envelope decodes")
             .apply(&mut hz.state().doc)
             .expect("the crop applies");
@@ -1006,16 +1044,18 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
         for (w, h) in [(1280.0, 800.0), (390.0, 844.0)] {
             let mut hz = Harness::new(w, h);
             hz.app().open_path(&path);
-            let mut library = PhotosDoc::library(&hz.state().doc);
-            let seed = library.photos[0].clone();
+            let mut library = library(&hz.state().doc);
+            let seed = library.photos.values().next().unwrap().clone();
             for suffix in ["dusk", "trail", "museum", "market"] {
                 let mut extra = seed.clone();
                 extra.id = format!("{}:{suffix}", seed.id);
                 extra.image.name = format!("{suffix}-photograph-with-a-long-name.png");
-                extra.tags = vec!["a deliberately long but bounded metadata label".into()];
+                extra.tags = photos::model::labels([
+                    "a deliberately long but bounded metadata label".to_owned(),
+                ]);
                 library.add_photo(extra);
             }
-            PhotosDoc::set_library(&mut hz.state().doc, &library);
+            set_library(&mut hz.state().doc, &library);
             hz.app().show_library();
             hz.frame();
             hz.frame();
@@ -1064,24 +1104,20 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
         let (path, _) = staged(dir.path(), 1200, 800);
         let mut hz = Harness::new(1440.0, 900.0);
         hz.app().open_path(&path);
-        let mut library = PhotosDoc::library(&hz.state().doc);
-        let seed = library.photos[0].clone();
+        let mut library = library(&hz.state().doc);
+        let seed = library.photos.values().next().unwrap().clone();
         for suffix in ["dusk", "trail", "museum", "market"] {
             let mut extra = seed.clone();
             extra.id = format!("{}:{suffix}", seed.id);
             extra.image.name = format!("{suffix}.png");
             library.add_photo(extra);
         }
-        library.albums.push(Album {
+        library.add_album(Album {
             id: "photos.album:layout".into(),
             name: "Layout coverage".into(),
-            photo_ids: library
-                .photos
-                .iter()
-                .map(|photo| photo.id.clone())
-                .collect(),
+            photo_ids: library.all_photos().map(|photo| photo.id.clone()).collect(),
         });
-        PhotosDoc::set_library(&mut hz.state().doc, &library);
+        set_library(&mut hz.state().doc, &library);
         hz.app().show_library();
         hz.frame();
         hz.frame();
@@ -1113,16 +1149,19 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
         let mut hz = Harness::new(1440.0, 900.0);
         hz.theme = Theme::high_contrast().with_text_scale(2.0);
         hz.app().open_path(&path);
-        let mut library = PhotosDoc::library(&hz.state().doc);
-        let seed = library.photos[0].clone();
+        let mut library = library(&hz.state().doc);
+        let seed = library.photos.values().next().unwrap().clone();
         for suffix in ["dusk", "trail", "museum", "market"] {
             let mut extra = seed.clone();
             extra.id = format!("{}:{suffix}", seed.id);
             extra.image.name = format!("{suffix}-photograph-with-a-long-name.png");
-            extra.tags = vec!["a deliberately long but bounded metadata label".into()];
+            extra.tags =
+                photos::model::labels(
+                    ["a deliberately long but bounded metadata label".to_owned()],
+                );
             library.add_photo(extra);
         }
-        PhotosDoc::set_library(&mut hz.state().doc, &library);
+        set_library(&mut hz.state().doc, &library);
         hz.app().show_library();
         hz.frame();
         hz.frame();

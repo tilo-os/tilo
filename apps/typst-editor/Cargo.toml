@@ -15,16 +15,20 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Link Typst from its engine library in the runtime bundle
+# (libtilo_typst_engine.so, crates/runtime/engines/typst) instead of the
+# executable. The release collection enables it (dist/apps/app-collections.toml);
+# a `thin` build without it (`tilo-app dev`) links Typst statically, because
+# the engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-typst-engine/thin"]
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-typst-engine = { path = "../../crates/runtime/engines/typst", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

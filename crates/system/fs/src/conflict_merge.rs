@@ -6,10 +6,10 @@
 //! the selected codec and every input version in a signed transaction before
 //! publishing the returned bytes.
 
-use automerge::Automerge;
-use collab_types::{FileVersionId, FileVersionV1};
+use fs_protocol::{FileVersionId, FileVersionV1};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
+use tilo_automerge_isolate::{Applied, Dependencies};
 
 /// Keep automatic conflict resolution bounded independently of hydration.
 pub const MAX_MERGE_INPUT_BYTES: usize = 16 * 1024 * 1024;
@@ -245,19 +245,30 @@ pub fn merge_exact(
 }
 
 fn merge_qdoc(first: &[u8], second: &[u8]) -> Result<Vec<u8>, DeterministicMergeError> {
-    // Loading through qdoc first rejects arbitrary Automerge documents that do
-    // not implement the canonical document schema.
-    tilo_doc::Document::load(first).map_err(|_| DeterministicMergeError::UnsupportedContent)?;
-    tilo_doc::Document::load(second).map_err(|_| DeterministicMergeError::UnsupportedContent)?;
-    let mut left = Automerge::load(first).map_err(|_| DeterministicMergeError::MalformedQdoc)?;
-    let mut right = Automerge::load(second).map_err(|_| DeterministicMergeError::MalformedQdoc)?;
-    left.merge(&mut right)
-        .map_err(|_| DeterministicMergeError::MalformedQdoc)?;
+    // Either version can come from a peer, so neither is decoded in this
+    // process: both load in `tilo_automerge_isolate`, and the merge is an
+    // isolated apply of the second onto the first. Opening each as a qdoc
+    // then rejects arbitrary Automerge documents that do not implement the
+    // canonical document schema.
+    let mut left = tilo_automerge_isolate::load(first)
+        .map_err(|_| DeterministicMergeError::UnsupportedContent)?;
+    let right = tilo_automerge_isolate::load(second)
+        .map_err(|_| DeterministicMergeError::UnsupportedContent)?;
+    tilo_doc::Document::from_automerge(left.clone())
+        .map_err(|_| DeterministicMergeError::UnsupportedContent)?;
+    tilo_doc::Document::from_automerge(right)
+        .map_err(|_| DeterministicMergeError::UnsupportedContent)?;
+    match tilo_automerge_isolate::apply(&mut left, second, Dependencies::RequireComplete) {
+        Ok(Applied::Changed(_)) => {}
+        Ok(Applied::MissingDependencies) | Err(_) => {
+            return Err(DeterministicMergeError::MalformedQdoc);
+        }
+    }
     let bytes = left.save();
     if bytes.len() > MAX_MERGE_INPUT_BYTES {
         return Err(DeterministicMergeError::OutputTooLarge);
     }
-    tilo_doc::Document::load(&bytes).map_err(|_| DeterministicMergeError::MalformedQdoc)?;
+    tilo_doc::Document::from_automerge(left).map_err(|_| DeterministicMergeError::MalformedQdoc)?;
     Ok(bytes)
 }
 
@@ -315,7 +326,7 @@ pub enum DeterministicMergeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{ContentHash, FileActor, FileProvenance, FileRecordId};
+    use fs_protocol::{ContentHash, FileActor, FileProvenance, FileRecordId};
     use tilo_doc::Document;
 
     fn version(value: u128) -> FileVersionId {
@@ -565,5 +576,63 @@ mod tests {
             let (a, b, base) = input();
             assert_eq!(first, merge_exact(a, b, base).unwrap());
         }
+    }
+
+    /// Either conflict member can come from a peer, so the qdoc codec decodes
+    /// both only in `tilo_automerge_isolate`: a version that crashes the
+    /// decoder, or a valid qdoc followed by a change with a bad checksum, is
+    /// refused while this process lives on and still merges valid qdocs.
+    #[test]
+    fn hostile_qdoc_versions_are_refused_by_the_isolate() {
+        let mut base = Document::new();
+        let block = base.insert_block(None, "paragraph");
+        base.splice_text(&block, 0, 0, "base");
+        let mut left = base.fork();
+        let mut right = base.fork();
+        left.splice_text(&block, 0, 0, "L");
+        right.splice_text(&block, 4, 0, "R");
+        let left = left.save();
+        let right = right.save();
+        // Checksum-valid document whose op actor index is past its actor
+        // table: stock Automerge panics on it (tilo-automerge-isolate's
+        // decoder cases).
+        let decoder_crash = hex::decode("856f4a833d51cb7a00f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e00017f000207000309010003070102090005050000017f00000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801").unwrap();
+        let known = automerge::AutoCommit::load(&right)
+            .unwrap()
+            .get_changes(&[])
+            .last()
+            .unwrap()
+            .clone();
+        let mut change = known.raw_bytes().to_vec();
+        change[4] ^= 0x01;
+        let mut bad_checksum = right.clone();
+        bad_checksum.extend_from_slice(&change);
+        let merge = |second: Vec<u8>| {
+            merge_exact(
+                ExactMergeInput {
+                    version_id: version(2),
+                    bytes: left.clone(),
+                },
+                ExactMergeInput {
+                    version_id: version(3),
+                    bytes: second,
+                },
+                None,
+            )
+        };
+        for (what, hostile) in [
+            ("decoder crash", decoder_crash),
+            ("bad checksum", bad_checksum),
+        ] {
+            assert_eq!(
+                merge(hostile),
+                Err(DeterministicMergeError::UnsupportedContent),
+                "{what}"
+            );
+        }
+        let merged = merge(right).unwrap();
+        assert_eq!(merged.codec, DeterministicMergeCodec::QdocAutomergeV1);
+        let merged = Document::load(&merged.bytes).unwrap();
+        assert_eq!(merged.block_text(&block).as_deref(), Some("LbaseR"));
     }
 }

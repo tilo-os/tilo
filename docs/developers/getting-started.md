@@ -28,8 +28,8 @@ Run `tilo-app --help` to see every command. Each one accepts `--json` and then
 writes exactly one JSON document to stdout, so scripts and agents can drive the
 tool as well as people can.
 
-For one task at a time, run `tilo-app guide`: `start`, `actions`, `verify` and
-`publish` are short workflows embedded in the CLI, available offline and
+For one task at a time, run `tilo-app guide`: `start`, `actions`, `collaborate`,
+`permissions`, `network`, `verify` and `publish` are short workflows embedded in the CLI, available offline and
 outside an app directory. `tilo-app guide actions --json` returns only that
 guide, without searching or reading the full manual.
 
@@ -54,10 +54,15 @@ To learn one idea at a time, start from an example instead: a complete,
 tested program such as `counter`, `shared-checklist`, `data-table` or
 `localized`. `tilo-app examples` lists them, and
 `tilo-app new my-list --from-example shared-checklist` copies one and renames
-it to your app. [Templates and examples](../examples.md) describes each.
+it to your app. To inspect its collaboration and undo tests without a checkout,
+run `tilo-app examples shared-checklist --file tests/app.rs --json`.
+[Templates and examples](../examples.md) describes each.
 
 The new directory is a complete Cargo project with its own git repository:
 
+- `AGENTS.md` is a compact guide for coding agents: where to start, how to
+  add a resource action, and which commands verify the result. It travels
+  with the app, including apps created from an example.
 - `src/` holds the app: a `#[derive(Model)]` resource, its `#[action]`
   methods, and a view whose controls invoke those actions.
 - `tilo-app.toml` is the package manifest: id, title, entrypoints and the

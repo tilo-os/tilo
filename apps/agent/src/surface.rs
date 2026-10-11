@@ -32,8 +32,8 @@ use std::fmt::Write as _;
 
 use automerge::AutoCommit;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
-use tilo_actions::{ActionContract, ActionRegistry, PermissionRequirement, Resource};
-use ui::permissions::{PermissionContext, PermissionScope, ResourceRef, Verb};
+use tilo_actions::{ActionContract, ActionKind, ActionParam, ActionRegistry, Resource};
+use ui::permissions::{Answer, PermissionContext, PermissionScope, TreePath};
 use ui::tilo_resource::ResourceKind;
 
 /// Separator between a resource id and an action id in an address.
@@ -124,6 +124,8 @@ pub struct AppContract {
     /// The namespace the app's nested resource ids start with, and the key
     /// the agent holds its document under.
     pub namespace: &'static str,
+    /// The app itself, whose view the agent holds each of its records in.
+    pub definition: fn() -> &'static ui::application::ApplicationDefinition,
 }
 
 impl AppContract {
@@ -133,36 +135,11 @@ impl AppContract {
     }
 }
 
-/// The word processor's contract, named on its own so a caller that needs
-/// exactly this app — [`crate::apply::Editor::empty`], the replica used
-/// where no peer snapshot exists — never has to index into [`CONTRACTS`].
-pub const WORD_PROCESSOR: AppContract = AppContract {
-    kind: ui::framework::resource_kind::<word_processor::framework::WordProcessorApp>(),
-    title: "the word processor",
-    namespace: "word-processor",
-};
-
-/// Every app the agent can speak to: a rich-text document, a conversation, a
-/// photograph — deliberately different shapes, and none special-cased past
-/// this point. Adding a fourth is one entry here.
+/// Every app the agent can speak to.
 ///
-/// The photo editor is what makes an instruction naming two apps worth
-/// having: a photograph is edited here to be put somewhere else. Chat is
-/// also the room people are already talking in, which is what makes
-/// [`crate::listen`] possible.
-pub static CONTRACTS: &[AppContract] = &[
-    WORD_PROCESSOR,
-    AppContract {
-        kind: ui::framework::resource_kind::<chat::ChatShell>(),
-        title: "the conversation",
-        namespace: "chat",
-    },
-    AppContract {
-        kind: ui::framework::resource_kind::<photos::PhotosShell>(),
-        title: "the photo editor",
-        namespace: "photos",
-    },
-];
+/// TODO: not implemented yet: the agent will act through apps' published
+/// surfaces via the broker instead of linking each app it speaks to.
+pub static CONTRACTS: &[AppContract] = &[];
 
 /// The contract whose resource ids start with `namespace`.
 pub fn for_namespace(namespace: &str) -> Option<&'static AppContract> {
@@ -251,7 +228,50 @@ impl Offer {
 
     /// Whether performing it requires a structured argument object.
     pub fn wants_arguments(&self) -> bool {
-        !self.descriptor.params.is_empty()
+        self.descriptor.params.iter().any(|param| param.required)
+    }
+
+    /// Whether every value it needs is one of a few words it names (an
+    /// alignment, a style), which an instruction says outright rather than
+    /// quotes.
+    pub fn wants_only_choices(&self) -> bool {
+        self.wants_arguments()
+            && self
+                .descriptor
+                .params
+                .iter()
+                .filter(|param| param.required)
+                .all(|param| !param.choices.is_empty())
+    }
+
+    /// The choices the instruction's own words name for each required
+    /// parameter that has them.
+    ///
+    /// # Errors
+    /// The choices of the first parameter the instruction names none, or
+    /// more than one, of.
+    pub fn arguments_from_choices(
+        &self,
+        instruction: &str,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, Vec<String>> {
+        let words: Vec<String> = keywords(instruction).iter().map(|w| spelled(w)).collect();
+        let mut arguments = serde_json::Map::new();
+        for param in self.descriptor.params.iter().filter(|param| param.required) {
+            let named: Vec<String> = param
+                .choices
+                .iter()
+                .map(ToString::to_string)
+                .filter(|choice| words.iter().any(|word| *word == choice.to_lowercase()))
+                .collect();
+            let [choice] = named.as_slice() else {
+                return Err(param.choices.iter().map(ToString::to_string).collect());
+            };
+            arguments.insert(
+                param.name.to_string(),
+                serde_json::Value::String(choice.clone()),
+            );
+        }
+        Ok(arguments)
     }
 
     /// Whether the text it wants is the address of content some other
@@ -262,7 +282,25 @@ impl Offer {
     /// content can only be performed as a step after something that
     /// produced some.
     pub fn wants_content(&self) -> bool {
-        self.descriptor.input.wants_content()
+        self.content_param().is_some()
+    }
+
+    /// The parameter content another operation produced is carried under:
+    /// its typed content parameter (`#[param(content)]`), or the one input of
+    /// an operation that collects only content.
+    pub fn content_param(&self) -> Option<String> {
+        if let Some(param) = self
+            .descriptor
+            .params
+            .iter()
+            .find(|param| param.is_content())
+        {
+            return Some(param.name.to_string());
+        }
+        self.descriptor
+            .input
+            .wants_content()
+            .then(|| tilo_actions::PROMPTED_PARAM.to_owned())
     }
 
     /// Whether performing it answers with content another operation takes:
@@ -426,35 +464,29 @@ fn catalogue_page_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec
         .collect()
 }
 
-/// The permission question performing `address` has to pass.
+/// Where `address` sits in the room, as the grants deciding it name it.
 ///
 /// Phrased about the app the resource id names (by its app id, as every
 /// grant names an app), not about the agent's own namespace: a room grants
-/// edit rights per app, so folding every app's
-/// operations under one name would make a grant in one of them a grant in
-/// all.
+/// per app, so folding every app's operations under one name would make a
+/// grant in one of them a grant in all.
 ///
-/// * `Scope::Action { app, action }` authorises one operation inside an app
-///   that is *already running*, and confers no ability to start one.
-/// * `Scope::App(app)` authorises this application: both its operations and
-///   opening it.
-/// * `Scope::Workspace` authorises any of them.
-///
-/// The verb stays `Write` throughout: a window appearing in the room is a
-/// change to the room.
+/// * An operation sits at its app, resource and action: a grant there
+///   authorises that one operation in an app that is *already running*, and
+///   confers no ability to start one.
+/// * Opening an application is an undoable change of the app itself (a
+///   window appearing in the room): a grant on the app authorises both its
+///   operations and opening it, a grant on the room any of them.
 pub fn scope_for(address: &ActionAddress) -> PermissionScope {
     if let Some(app) = opens(address) {
-        return PermissionScope {
-            resource: ResourceRef::App(app_id_of(app).to_string()),
-            op: Verb::Write,
-        };
+        return PermissionScope::app(app_id_of(app), ActionKind::Undoable);
     }
-    PermissionScope {
-        resource: ResourceRef::Action {
-            app: app_id_of(app_of(&address.resource)).to_string(),
-            action: address.action.clone(),
-        },
-        op: Verb::Write,
+    PermissionScope::Action {
+        node: TreePath::root()
+            .app(app_id_of(app_of(&address.resource)))
+            .resource(address.resource.clone())
+            .action(address.action.clone()),
+        kind: ActionKind::Undoable,
     }
 }
 
@@ -464,36 +496,48 @@ fn app_id_of(app: &str) -> &str {
     for_namespace(app).map_or(app, |contract| contract.app_id())
 }
 
-/// Whether the agent may perform `address`. Fail-closed: anything not
-/// affirmatively allowed is denied.
+/// Whether the agent may perform what `scope` names, without asking first.
+/// Fail-closed: anything not affirmatively allowed is refused; an agent
+/// never gets past a grant that asks first on its own.
+fn allowed(perms: &PermissionContext, scope: &PermissionScope) -> bool {
+    match scope {
+        PermissionScope::Action { node, kind } => perms.answer(node, *kind) == Answer::Allow,
+        PermissionScope::Sandbox { .. } => perms.check(scope),
+    }
+}
+
+/// Whether the agent may perform `address`.
 pub fn permitted(perms: &PermissionContext, address: &ActionAddress) -> bool {
-    perms.check(&scope_for(address))
+    allowed(perms, &scope_for(address))
 }
 
 /// Whether the agent may perform `descriptor`, published by the app
-/// `app_id`, with the authority the operation itself declares: a read-only
-/// view must not silently be upgraded to Write, and an administrative action
-/// must not be downgraded. The scope names the app that published it, as the
-/// app's own host does, so an invitation to one app is never leave to act in
-/// another.
+/// `app_id`, as the kind of action it declares: a read-only view is never
+/// upgraded, an outside effect never downgraded. The node names the app that
+/// published it, as the app's own host does, so an invitation to one app is
+/// never leave to act in another.
 pub(crate) fn permitted_descriptor(
     perms: &PermissionContext,
     app_id: &str,
     descriptor: &ActionDescriptor,
 ) -> bool {
-    let mut scope = if opens(&descriptor.address).is_some() {
-        scope_for(&descriptor.address)
-    } else {
-        PermissionScope::action(app_id, descriptor.address.action.clone(), Verb::Write)
-    };
-    scope.op = match descriptor.contract.permission {
-        PermissionRequirement::None | PermissionRequirement::Read => Verb::Read,
-        PermissionRequirement::Comment => Verb::Comment,
-        PermissionRequirement::Write => Verb::Write,
-        PermissionRequirement::Invite => Verb::Invite,
-        PermissionRequirement::Admin => Verb::Admin,
-    };
-    perms.check(&scope)
+    if opens(&descriptor.address).is_some() {
+        return permitted(perms, &descriptor.address);
+    }
+    allowed(
+        perms,
+        &PermissionScope::Action {
+            node: tilo_actions::action_node(
+                &TreePath::root(),
+                app_id,
+                &descriptor.resource_kind,
+                &descriptor.address.resource,
+                descriptor.contract.field.as_deref(),
+                &descriptor.address.action,
+            ),
+            kind: descriptor.contract.kind,
+        },
+    )
 }
 
 /// The tree `contract` publishes for `doc` as it stands: the one its kind
@@ -524,22 +568,30 @@ pub fn offers(
 ) -> Vec<Offer> {
     let mut out = Vec::new();
     for (contract, doc) in held {
-        for descriptor in tilo_actions::door::survey(&tree(contract, doc)) {
-            // Denied means absent, so nothing downstream can decide to
-            // perform an operation it may not.
-            if !permitted_descriptor(perms, contract.app_id(), &descriptor) {
-                continue;
-            }
-            out.push(Offer {
-                app: contract.namespace.to_string(),
-                broker_peer_id: None,
-                descriptor,
-            });
-        }
+        out.extend(offers_in(contract, &tree(contract, doc), perms));
     }
     let onto = out.iter().chain(beside).any(Offer::produces_content);
     out.extend(openable(held, onto, perms));
     out
+}
+
+/// What `contract`'s app publishes in `resources` that the agent may
+/// perform. Denied means absent, so nothing downstream can decide to
+/// perform an operation it may not.
+pub fn offers_in(
+    contract: &'static AppContract,
+    resources: &[Resource],
+    perms: &PermissionContext,
+) -> Vec<Offer> {
+    tilo_actions::door::survey(resources)
+        .into_iter()
+        .filter(|descriptor| permitted_descriptor(perms, contract.app_id(), descriptor))
+        .map(|descriptor| Offer {
+            app: contract.namespace.to_string(),
+            broker_peer_id: None,
+            descriptor,
+        })
+        .collect()
 }
 
 /// Whether the room holds `namespace`'s state **with something in it**.
@@ -749,39 +801,6 @@ pub fn label_of(offers: &[Offer], id: &str) -> Option<String> {
     find(offers, id).map(|o| o.descriptor.action_label.clone())
 }
 
-/// A short, human list of what is on offer.
-///
-/// De-duplicated by label and capped: a folder of fifty files exports fifty
-/// `Rename`s, and a refusal reciting all of them is a paragraph a person
-/// skims and learns nothing from.
-pub fn in_words(offers: &[Offer], most: usize) -> String {
-    let mut names: Vec<&str> = Vec::new();
-    for o in offers {
-        let label = o.descriptor.action_label.as_str();
-        if !names.iter().any(|n| n.eq_ignore_ascii_case(label)) {
-            names.push(label);
-        }
-    }
-    if names.is_empty() {
-        return String::new();
-    }
-    let shown: Vec<String> = names.iter().take(most).map(|n| n.to_lowercase()).collect();
-    let rest = names.len().saturating_sub(shown.len());
-    let mut s = match shown.split_last() {
-        Some((last, [])) => last.clone(),
-        Some((last, head)) => format!("{}, or {last}", head.join(", ")),
-        None => String::new(),
-    };
-    if rest > 0 {
-        let _ = write!(
-            s,
-            ", among {rest} other thing{}",
-            if rest == 1 { "" } else { "s" }
-        );
-    }
-    s
-}
-
 // ---------------------------------------------------------------------------
 // The deterministic floor
 // ---------------------------------------------------------------------------
@@ -799,6 +818,24 @@ fn significant(word: &str) -> bool {
 
 /// The instruction's words, lowercased, with punctuation dropped and the
 /// noise removed.
+/// `word` in the spelling apps name their choices in.
+fn spelled(word: &str) -> String {
+    match word {
+        "centre" | "centred" | "centered" => "center".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+/// Every word of `text`, lowercased and in the spelling apps name their
+/// choices in, noise and all.
+fn words_of(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(spelled)
+        .collect()
+}
+
 fn keywords(rest: &str) -> Vec<String> {
     rest.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
@@ -874,9 +911,17 @@ fn score(offer: &Offer, words: &[String]) -> usize {
         .filter(|w| {
             // The verb has to land on the operation. Matching only the
             // thing being acted on says which file, never what to do to it.
+            // A word naming one of its choices (an alignment) lands on it
+            // too.
             action.contains(w.as_str())
                 || resource.contains(w.as_str())
                 || kind.contains(w.as_str())
+                || offer.descriptor.params.iter().any(|param| {
+                    param
+                        .choices
+                        .iter()
+                        .any(|choice| choice.to_lowercase() == spelled(w))
+                })
         })
         .count()
 }
@@ -928,20 +973,7 @@ pub fn from_verbs<'a>(
     if words.is_empty() || offers.is_empty() {
         return Err(NoMatch::Nothing);
     }
-    let mut best: Vec<&Offer> = Vec::new();
-    let mut best_score = 0usize;
-    for offer in offers {
-        let s = score(offer, &words);
-        if s == 0 {
-            continue;
-        }
-        if s > best_score {
-            best_score = s;
-            best = vec![offer];
-        } else if s == best_score {
-            best.push(offer);
-        }
-    }
+    let mut best = best_scored(offers, &words);
     if best.is_empty() {
         return Err(NoMatch::Nothing);
     }
@@ -988,6 +1020,26 @@ pub fn from_verbs<'a>(
         }
     }
     if best.len() > 1 {
+        // Words too small to decide anything alone still tell two labels
+        // apart once they tie: "zoom in" is Zoom in, not Zoom out.
+        let said: std::collections::HashSet<String> = words_of(rest).into_iter().collect();
+        let echoed = |offer: &Offer| {
+            words_of(&offer.descriptor.action_label)
+                .iter()
+                .filter(|word| said.contains(*word))
+                .count()
+        };
+        let most = best.iter().map(|offer| echoed(offer)).max().unwrap_or(0);
+        let closer: Vec<&Offer> = best
+            .iter()
+            .copied()
+            .filter(|offer| echoed(offer) == most)
+            .collect();
+        if !closer.is_empty() {
+            best = closer;
+        }
+    }
+    if best.len() > 1 {
         return Err(NoMatch::Ambiguous(
             best.iter()
                 .take(4)
@@ -1001,13 +1053,181 @@ pub fn from_verbs<'a>(
     let Some(&chosen) = best.first() else {
         return Err(NoMatch::Nothing);
     };
+    if chosen.wants_only_choices() {
+        return chosen
+            .arguments_from_choices(rest)
+            .and_then(|arguments| with_place(chosen, rest, offers, arguments))
+            .map(|arguments| (chosen, arguments))
+            .map_err(|choices| {
+                NoMatch::Ambiguous(
+                    choices
+                        .iter()
+                        .take(4)
+                        .map(|choice| format!("{} {choice}", chosen.descriptor.action_label))
+                        .collect(),
+                )
+            });
+    }
     if !collects_a_value_said(chosen) {
-        return Ok((chosen, serde_json::Map::new()));
+        return with_place(chosen, rest, offers, serde_json::Map::new())
+            .map(|arguments| (chosen, arguments))
+            .map_err(NoMatch::Ambiguous);
     }
     match chosen.arguments_from_literal(rest) {
         Some(arguments) => Ok((chosen, arguments)),
         None => Err(NoMatch::NeedsText(chosen.descriptor.action_label.clone())),
     }
+}
+
+/// The offers that answer `words` best, all equally well.
+fn best_scored<'a>(offers: &'a [Offer], words: &[String]) -> Vec<&'a Offer> {
+    let places = place_rows(offers);
+    let mut best: Vec<&Offer> = Vec::new();
+    let mut best_score = 0usize;
+    for offer in offers {
+        // A paragraph published as a place answers by what it does, never
+        // by what it says: its words name where, not what to do.
+        if places.contains(offer.descriptor.address.resource.as_str())
+            && score_action(offer, words) == 0
+        {
+            continue;
+        }
+        let s = score(offer, words);
+        if s == 0 {
+            continue;
+        }
+        if s > best_score {
+            best_score = s;
+            best = vec![offer];
+        } else if s == best_score {
+            best.push(offer);
+        }
+    }
+    best
+}
+
+/// How many of `words` the operation's own label carries.
+fn score_action(offer: &Offer, words: &[String]) -> usize {
+    let action = offer.descriptor.action_label.to_lowercase();
+    words.iter().filter(|w| action.contains(w.as_str())).count()
+}
+
+/// The resources published as places inside another resource that offers
+/// an operation told where to act (`at`): the paragraphs of a document,
+/// each an item of it (`<resource>/<field>/<item>`), of the field the place
+/// names when it names one.
+pub(crate) fn place_rows(offers: &[Offer]) -> std::collections::HashSet<&str> {
+    let placed = placing(offers);
+    offers
+        .iter()
+        .map(|offer| offer.descriptor.address.resource.as_str())
+        .filter(|resource| place_in(&placed, resource).is_some())
+        .collect()
+}
+
+/// Each resource offering an operation told where to act, with the field
+/// its places are items of when the operation names it.
+fn placing(offers: &[Offer]) -> std::collections::HashMap<&str, Option<&str>> {
+    let mut placed = std::collections::HashMap::new();
+    for offer in offers {
+        if let Some(param) = offer
+            .descriptor
+            .params
+            .iter()
+            .find(|param| param.is_place())
+        {
+            placed.insert(
+                offer.descriptor.address.resource.as_str(),
+                param.place_field(),
+            );
+        }
+    }
+    placed
+}
+
+/// The resource `resource` is a place in, and the item it names there.
+fn place_in<'a>(
+    placed: &std::collections::HashMap<&str, Option<&str>>,
+    resource: &'a str,
+) -> Option<(&'a str, &'a str)> {
+    let (parent, rest) = resource.split_once('/')?;
+    let (field, item) = rest.split_once('/')?;
+    let named = placed.get(parent)?;
+    (named.is_none_or(|named| named == field) && !item.is_empty() && !item.contains('/'))
+        .then_some((parent, item))
+}
+
+/// The place inside `offer`'s resource that `rest` names, as the paragraphs
+/// it publishes word it: "the title" is the first, a quoted phrase is the
+/// paragraph that begins with it.
+///
+/// `Ok(None)` when the instruction names none: the operation acts at the
+/// agent's caret.
+///
+/// # Errors
+/// The labels of the paragraphs a quoted phrase begins more than one of.
+fn named_place(
+    offer: &Offer,
+    rest: &str,
+    offers: &[Offer],
+) -> Result<Option<serde_json::Value>, Vec<String>> {
+    let resource = offer.descriptor.address.resource.as_str();
+    let field = offer
+        .descriptor
+        .params
+        .iter()
+        .find(|param| param.is_place())
+        .and_then(ActionParam::place_field);
+    let parent = std::collections::HashMap::from([(resource, field)]);
+    let mut candidates: Vec<(&str, &str)> = Vec::new();
+    for candidate in offers {
+        if let Some((_, item)) = place_in(&parent, candidate.descriptor.address.resource.as_str())
+            && !candidates.iter().any(|(known, _)| *known == item)
+        {
+            candidates.push((item, candidate.descriptor.resource_label.as_str()));
+        }
+    }
+    let item = |item: &str| Some(serde_json::json!({ "item": item }));
+    if let Some(phrase) = quoted_literal(rest) {
+        let phrase = phrase.to_lowercase();
+        let said = |label: &str| {
+            let label = label.trim_end_matches('…').to_lowercase();
+            label.starts_with(&phrase) || phrase.starts_with(&label)
+        };
+        let named: Vec<&(&str, &str)> =
+            candidates.iter().filter(|(_, label)| said(label)).collect();
+        return match named.as_slice() {
+            [] => Ok(None),
+            [(id, _)] => Ok(item(id)),
+            many => Err(many.iter().map(|(_, label)| (*label).to_owned()).collect()),
+        };
+    }
+    if words_of(rest).iter().any(|word| word == "title") {
+        return Ok(candidates.first().and_then(|(id, _)| item(id)));
+    }
+    Ok(None)
+}
+
+/// `arguments` with the place `rest` names inside `offer`'s resource, when
+/// it takes one and the instruction names one.
+fn with_place(
+    offer: &Offer,
+    rest: &str,
+    offers: &[Offer],
+    mut arguments: serde_json::Map<String, serde_json::Value>,
+) -> Result<serde_json::Map<String, serde_json::Value>, Vec<String>> {
+    let Some(param) = offer
+        .descriptor
+        .params
+        .iter()
+        .find(|param| param.is_place())
+    else {
+        return Ok(arguments);
+    };
+    if let Some(place) = named_place(offer, rest, offers)? {
+        arguments.insert(param.name.to_string(), place);
+    }
+    Ok(arguments)
 }
 
 /// Whether performing `offer` needs a value the instruction could have said.
@@ -1021,7 +1241,7 @@ pub fn from_verbs<'a>(
 /// place. This is the question to ask of an instruction and an operation
 /// together — whether what the one said is what the other takes.
 fn collects_a_value_said(offer: &Offer) -> bool {
-    offer.wants_arguments() && !offer.wants_content()
+    offer.wants_arguments() && !offer.wants_content() && !offer.wants_only_choices()
 }
 
 #[cfg(test)]
@@ -1041,14 +1261,6 @@ mod tests {
         {
             assert_eq!(app_of("word-processor.document"), "word-processor");
             assert_eq!(app_of("files.entry:/var/workspace/plan.md"), "files");
-            // A framework app publishes its document under its resource kind,
-            // which names the app where the id does not.
-            let writer =
-                ui::framework::resource_kind::<word_processor::framework::WordProcessorApp>();
-            assert_eq!(
-                namespace_of(Some(writer.kind()), writer.kind()),
-                "word-processor"
-            );
             assert_eq!(namespace_of(None, "files.entry:/plan.md"), "files");
         }
 
@@ -1122,225 +1334,6 @@ mod tests {
             };
             let decoded = decode_address(&offer.id()).expect("broker offer id remains decodable");
             assert_eq!(opens(&decoded), Some("so.tilo.diffmerge"));
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each case keeps its original fixture and assertions"
-    )]
-    fn a_room_offers_what_held_documents_publish_and_opens_only_missing_granted_apps() {
-        // Case `a_document_with_no_blocks_is_still_something_to_act_on`.
-        {
-            let mut doc = AutoCommit::new();
-            tilo_doc::model::init(&mut doc, &automerge::ROOT);
-            doc.commit();
-            let c = tilo_doc::model::open(&doc, &automerge::ROOT).expect("the schema is there");
-            assert!(
-                tilo_doc::model::materialize(&doc, &c).blocks.is_empty(),
-                "this test is about a document with nothing in it",
-            );
-
-            let tree = tree(&WORD_PROCESSOR, &doc);
-            assert!(
-                !tree.is_empty(),
-                "an empty document reported nothing that could be done to it",
-            );
-            let inserts = tree[0].actions.iter().any(|a| a.id == "insert-block");
-            assert!(
-                inserts,
-                "the document exports {:?}, none of which inserts into it",
-                tree[0]
-                    .actions
-                    .iter()
-                    .map(|a| a.id.clone())
-                    .collect::<Vec<_>>(),
-            );
-        }
-
-        // Case `the_grants_that_open_an_application_and_the_one_that_does_not`.
-        {
-            let open = open_address("chat");
-            let post = ActionAddress::new("chat.channel:c1", "post");
-
-            assert_eq!(
-                scope_for(&open).resource,
-                ResourceRef::App("so.tilo.chat".to_string()),
-                "opening is asked about as the application itself"
-            );
-            assert_eq!(
-                scope_for(&post).resource,
-                ResourceRef::Action {
-                    app: "so.tilo.chat".to_string(),
-                    action: "post".to_string(),
-                },
-                "and an operation is still asked about as an operation"
-            );
-
-            let none = granting(Vec::new());
-            assert!(!permitted(&none, &open));
-
-            // "May do one thing inside an application that is already
-            // running." Not leave to start it.
-            let one_action = granting(vec![grant(Scope::Action {
-                app: "so.tilo.chat".to_string(),
-                action: "post".to_string(),
-            })]);
-            assert!(permitted(&one_action, &post));
-            assert!(
-                !permitted(&one_action, &open),
-                "leave to perform one operation in an app must not be leave to \
-                 start the app"
-            );
-
-            // "May open *this* application."
-            let this_app = granting(vec![grant(Scope::App("so.tilo.chat".to_string()))]);
-            assert!(permitted(&this_app, &open));
-            assert!(
-                !permitted(&this_app, &open_address("word-processor")),
-                "a grant naming one application must not open the catalogue"
-            );
-
-            // "May open applications."
-            let any = granting(vec![grant(Scope::Workspace)]);
-            assert!(permitted(&any, &open));
-            assert!(permitted(&any, &open_address("word-processor")));
-        }
-
-        // Case `an_open_takes_content_only_when_an_operation_produces_some`.
-        {
-            let perms = granting(vec![grant(Scope::Workspace)]);
-            let mut producer = openable(&[], false, &perms)
-                .into_iter()
-                .next()
-                .expect("an empty room offers an open");
-            assert!(!producer.produces_content());
-            assert!(
-                offers(&[], &[producer.clone()], &perms)
-                    .iter()
-                    .all(|o| !o.wants_content()),
-                "nothing in the room produces content to open onto"
-            );
-            producer.descriptor.contract.result = tilo_actions::ResultSpec::Resource {
-                resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_string(),
-            };
-            assert!(producer.produces_content());
-            let onto = offers(&[], &[producer], &perms);
-            assert!(
-                !onto.is_empty() && onto.iter().all(Offer::wants_content),
-                "an operation elsewhere in the room that produces content \
-                 makes every open take it as its typed input"
-            );
-        }
-
-        // Case `only_the_apps_this_room_is_missing_are_offered_as_openable`.
-        {
-            let perms = granting(vec![grant(Scope::Workspace)]);
-
-            let empty = openable(&[], false, &perms);
-            let missing: Vec<&str> = empty.iter().map(|o| o.app.as_str()).collect();
-            assert_eq!(
-                missing,
-                CONTRACTS.iter().map(|c| c.namespace).collect::<Vec<_>>(),
-                "an empty room is missing every app the agent speaks"
-            );
-            assert!(
-                empty.iter().all(|o| !o.wants_arguments()),
-                "opening an application takes no argument"
-            );
-
-            let chat = chat_contract();
-            let doc = empty_chat();
-            assert!(
-                chat.kind.holds(&doc),
-                "the fixture has to be a document of the app's kind"
-            );
-            let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
-            assert!(
-                !surveyable(&held, "chat"),
-                "this half is about an application with nothing open in it"
-            );
-            let empty_app = openable(&held, false, &perms);
-            assert!(
-                empty_app.iter().any(|o| o.app == "chat"),
-                "an application here but with nothing open exports no \
-                 operations, so the open must stay on offer"
-            );
-            assert_eq!(empty_app.len(), empty.len(), "and nothing else may change");
-
-            let mut doc = doc;
-            let _ = chat::doc::ChatDoc::create_workspace(&mut doc, "Test");
-            doc.commit();
-            let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
-            assert!(
-                surveyable(&held, "chat"),
-                "the fixture has to publish something, or this proves nothing"
-            );
-            let now = openable(&held, false, &perms);
-            assert!(
-                !now.iter().any(|o| o.app == "chat"),
-                "an app that is here *and* has something open must stop being \
-                 offered as something to open"
-            );
-            assert_eq!(now.len(), empty.len() - 1, "and nothing else may change");
-
-            let all = offers(&held, &[], &perms);
-            assert!(
-                all.iter().any(|o| opens(o.address()).is_some()),
-                "the survey has to carry the openable apps"
-            );
-        }
-
-        // Case `an_application_that_is_here_and_empty_is_not_yet_surveyable`.
-        {
-            let chat = chat_contract();
-
-            let doc = empty_chat();
-            assert!(
-                chat.kind.holds(&doc),
-                "this document is the app's own, so an agent holding it is \
-                 holding the app — which is all `holds` ever meant"
-            );
-            let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
-            assert!(
-                !surveyable(&held, "chat"),
-                "and it publishes nothing, so a step that followed an open here \
-                 would survey a room with no operation in it"
-            );
-
-            let mut doc = doc;
-            let _ = chat::doc::ChatDoc::create_workspace(&mut doc, "Test");
-            doc.commit();
-            let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
-            assert!(
-                surveyable(&held, "chat"),
-                "now it publishes its own operations, which is what the open \
-                 was for"
-            );
-            let perms = granting(vec![grant(Scope::Workspace)]);
-            assert!(
-                offers(&held, &[], &perms)
-                    .iter()
-                    .any(|o| o.id().ends_with("#new-channel")),
-                "and creating a channel is among them, or this proves nothing \
-                 about the step that wanted it"
-            );
-        }
-
-        // Case `no_app_publishes_an_address_that_reads_as_an_open`.
-        {
-            for contract in CONTRACTS {
-                let doc = automerge::AutoCommit::new();
-                for descriptor in tilo_actions::door::survey(&tree(contract, &doc)) {
-                    assert!(
-                        opens(&descriptor.address).is_none(),
-                        "{} publishes {:?}, which reads as an open",
-                        contract.namespace,
-                        descriptor.address,
-                    );
-                }
-            }
         }
     }
 
@@ -1433,6 +1426,33 @@ mod tests {
                 other => panic!("a genuine ambiguity must still be refused: {other:?}"),
             }
 
+            // A small word the instruction said still tells two labels apart
+            // once they tie: "zoom in" is Zoom in, never Zoom out.
+            let zooms = vec![
+                offer(
+                    "word-processor",
+                    "word-processor.document",
+                    "zoom-in",
+                    "Zoom in",
+                    tilo_actions::InputSpec::None,
+                ),
+                offer(
+                    "word-processor",
+                    "word-processor.document",
+                    "zoom-out",
+                    "Zoom out",
+                    tilo_actions::InputSpec::None,
+                ),
+            ];
+            let (chosen, _) = from_verbs("zoom in", &zooms).expect("zoom in names one operation");
+            assert_eq!(chosen.address().action, "zoom-in");
+            let (chosen, _) = from_verbs("zoom out please", &zooms).expect("so does zoom out");
+            assert_eq!(chosen.address().action, "zoom-out");
+            assert!(
+                matches!(from_verbs("zoom", &zooms), Err(NoMatch::Ambiguous(_))),
+                "zoom alone is still a question"
+            );
+
             // Nor is it dropped when the split would leave nothing: two tied
             // operations that both *want* a value are still ambiguous when the
             // instruction supplied none — narrowing must give up and leave the
@@ -1506,93 +1526,6 @@ mod tests {
                 input,
                 view: None,
             },
-        }
-    }
-
-    #[test]
-    fn contract_lookup_accepts_only_the_exact_app_id() {
-        assert_eq!(
-            for_app_id("so.tilo.photos")
-                .expect("Photos contract")
-                .namespace,
-            "photos"
-        );
-        assert!(for_app_id("dev.tilo.photos").is_none());
-        assert!(for_app_id("so.tilo.unknown").is_none());
-    }
-
-    // -- opening an application ------------------------------------------
-
-    use ui::permissions::{Actor, CapOverride, Scope, Subject};
-
-    fn granting(caps: Vec<CapOverride>) -> PermissionContext {
-        PermissionContext::from_capabilities(Actor::agent("Claude"), caps)
-    }
-
-    fn grant(scope: Scope) -> CapOverride {
-        CapOverride::grant(Subject::agent("Claude"), scope, Verb::Write).with_id("t")
-    }
-
-    /// A seeded chat document with no workspace in it — the state the
-    /// document is in the instant it exists and nothing more.
-    fn empty_chat() -> AutoCommit {
-        use automerge::transaction::Transactable;
-        let mut doc = AutoCommit::new();
-        let _ = doc.put(&automerge::ROOT, "seeded", true);
-        doc.commit();
-        doc
-    }
-
-    fn chat_contract() -> &'static AppContract {
-        CONTRACTS
-            .iter()
-            .find(|c| c.namespace == "chat")
-            .expect("the chat contract")
-    }
-
-    /// The agent publishes nothing of its own: what it can do is the tree each
-    /// contract builds from its headless view of a held document. Every
-    /// immediate action in that tree is one the agent may perform, so each
-    /// must honour the action contract through the agent's registry.
-    mod chat_contract {
-        use super::*;
-
-        fn seeded() -> AutoCommit {
-            let mut doc = AutoCommit::new();
-            chat::doc::ChatDoc::seed_if_empty(&mut doc);
-            doc
-        }
-
-        fn contract() -> &'static AppContract {
-            for_app_id("so.tilo.chat").expect("chat is a contract")
-        }
-
-        ui::action_contract_tests! {
-            seed: seeded(),
-            registry: registry(),
-            resources: |doc| tree(contract(), doc),
-            palette: ["New channel", "Rename channel"],
-        }
-    }
-
-    mod word_processor_contract {
-        use super::*;
-
-        /// A short document built through qdoc's own editing path.
-        fn seeded() -> AutoCommit {
-            let mut document = tilo_doc::Document::new();
-            let heading = document.insert_block(None, "heading");
-            document.splice_text(&heading, 0, 0, "Launch plan");
-            let body = document.insert_block(Some(&heading), "paragraph");
-            document.splice_text(&body, 0, 0, "Ship the beta on Friday.");
-            AutoCommit::load(&document.save()).expect("a saved document loads")
-        }
-
-        ui::action_contract_tests! {
-            seed: seeded(),
-            registry: registry(),
-            resources: |doc| tree(&WORD_PROCESSOR, doc),
-            palette: ["Set page margins"],
         }
     }
 }

@@ -120,81 +120,27 @@ impl EisTransport {
 #[derive(Clone, Debug)]
 enum PortalSignal {
     Activated {
-        #[cfg_attr(
-            not(target_os = "linux"),
-            expect(
-                dead_code,
-                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-            )
-        )]
         session: String,
-        #[cfg_attr(
-            not(target_os = "linux"),
-            expect(
-                dead_code,
-                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-            )
-        )]
         activation_id: u32,
-        #[cfg_attr(
-            not(target_os = "linux"),
-            expect(
-                dead_code,
-                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-            )
-        )]
         cursor: (f64, f64),
         barrier_id: u32,
     },
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     Deactivated {
         session: String,
         activation_id: u32,
         cursor: (f64, f64),
     },
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
-    Disabled { session: String },
+    Disabled {
+        session: String,
+    },
     ZonesChanged {
-        #[cfg_attr(
-            not(target_os = "linux"),
-            expect(
-                dead_code,
-                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-            )
-        )]
         session: String,
     },
 }
 #[derive(Clone)]
 struct CaptureSession {
     owner: String,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     app_id: String,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     caller: PortalCaller,
     started: bool,
     enabled: bool,
@@ -202,13 +148,6 @@ struct CaptureSession {
     /// Requested through Clipboard before Start. Access itself is live only
     /// while `active` has been armed by a barrier.
     clipboard_requested: bool,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     capabilities: u32,
     zone_set: u32,
     barriers: Vec<PointerBarrier>,
@@ -218,6 +157,11 @@ struct CaptureSession {
     cursor: (f64, f64),
 }
 impl CaptureSession {
+    /// Clipboard was requested before `Start` and the capture is running.
+    fn clipboard_live(&self) -> bool {
+        self.started && self.clipboard_requested && self.active
+    }
+
     fn new(owner: String, app_id: String, caller: PortalCaller) -> Self {
         Self {
             owner,
@@ -437,10 +381,10 @@ impl InputCaptureBackend {
     }
 }
 
-impl InputCaptureSessionHandle {
-    fn request_clipboard(&self, key: &str, owner: &str) -> bool {
+impl super::clipboard::ClipboardSessionProvider for InputCaptureSessionHandle {
+    fn request_clipboard(&self, session: &str, owner: &str) -> bool {
         self.state.lock().ok().is_some_and(|mut state| {
-            state.sessions.get_mut(key).is_some_and(|session| {
+            state.sessions.get_mut(session).is_some_and(|session| {
                 if session.owner != owner || session.started {
                     return false;
                 }
@@ -449,22 +393,10 @@ impl InputCaptureSessionHandle {
             })
         })
     }
-    fn clipboard_active(&self, key: &str, owner: &str) -> bool {
-        self.state.lock().ok().is_some_and(|state| {
-            state.sessions.get(key).is_some_and(|session| {
-                session.owner == owner
-                    && session.started
-                    && session.clipboard_requested
-                    && session.active
-            })
-        })
-    }
-    fn clipboard_live(&self, key: &str) -> bool {
-        self.state.lock().ok().is_some_and(|state| {
-            state.sessions.get(key).is_some_and(|session| {
-                session.started && session.clipboard_requested && session.active
-            })
-        })
+    fn clipboard_owner(&self, session: &str) -> Option<String> {
+        let state = self.state.lock().ok()?;
+        let session = state.sessions.get(session)?;
+        session.clipboard_live().then(|| session.owner.clone())
     }
     fn clipboard_sessions(&self) -> Vec<String> {
         self.state.lock().map_or_else(
@@ -473,28 +405,11 @@ impl InputCaptureSessionHandle {
                 state
                     .sessions
                     .iter()
-                    .filter(|(_, session)| {
-                        session.started && session.clipboard_requested && session.active
-                    })
+                    .filter(|(_, session)| session.clipboard_live())
                     .map(|(path, _)| path.clone())
                     .collect()
             },
         )
-    }
-}
-
-impl super::clipboard::ClipboardSessionProvider for InputCaptureSessionHandle {
-    fn request_clipboard(&self, session: &str, owner: &str) -> bool {
-        Self::request_clipboard(self, session, owner)
-    }
-    fn clipboard_active(&self, session: &str, owner: &str) -> bool {
-        Self::clipboard_active(self, session, owner)
-    }
-    fn clipboard_live(&self, session: &str) -> bool {
-        Self::clipboard_live(self, session)
-    }
-    fn clipboard_sessions(&self) -> Vec<String> {
-        Self::clipboard_sessions(self)
     }
 }
 
@@ -628,7 +543,7 @@ impl InputCaptureBackend {
         ) {
             return (2, HashMap::new());
         }
-        let allowed = flow::resolve_local(
+        let allowed = flow::resolve(
             &self.ctx,
             auth.caller.clone(),
             CapabilityKind::InputCapture,
@@ -1402,6 +1317,7 @@ fn send_eis_input(state: &mut EisState, input: CapturedInput) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::portal::clipboard::ClipboardSessionProvider as _;
 
     #[test]
     fn input_capture_persistence_and_clipboard_are_bound_to_active_capture() {
@@ -1431,15 +1347,14 @@ mod tests {
                 state: handle.state.clone(),
             };
             assert!(provider.request_clipboard(&session, owner));
-            assert!(!provider.clipboard_active(&session, owner));
+            assert_eq!(provider.clipboard_owner(&session), None);
             {
                 let mut state = handle.state.lock().unwrap();
                 let capture = state.sessions.get_mut(&session).unwrap();
                 capture.started = true;
                 capture.active = true;
             }
-            assert!(provider.clipboard_active(&session, owner));
-            assert!(provider.clipboard_live(&session));
+            assert_eq!(provider.clipboard_owner(&session).as_deref(), Some(owner));
             // v2 only permits the request before Start, so a capture cannot add
             // clipboard access after the user has already approved it.
             assert!(!provider.request_clipboard(&session, owner));
@@ -1511,12 +1426,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn idle_emitters_stay_asleep_until_a_signal_is_queued() {
-        use std::time::Duration;
         use tokio::net::UnixStream;
         use zbus::connection::Builder;
 
         const COMM: &str = "tilo-idle-emit";
-        let (runtime, tid) = crate::idle_thread_probe::spawned_thread(COMM, || {
+        let (runtime, tid) = tilo_test_env::idle::spawned_thread(COMM, || {
             tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(1)
                 .enable_all()
@@ -1560,14 +1474,12 @@ mod tests {
                 ),
             );
         });
-        crate::idle_thread_probe::assert_stays_asleep(&tid, "portal and notification emitters");
-        let parked = crate::idle_thread_probe::context_switches(&tid);
+        tilo_test_env::idle::assert_stays_asleep(&tid, "portal and notification emitters");
+        let parked = tilo_test_env::idle::context_switches(&tid);
         capture.wake.poke();
-        std::thread::sleep(Duration::from_millis(50));
-        let woke = crate::idle_thread_probe::context_switches(&tid).saturating_sub(parked);
-        assert!(
-            woke > 0,
-            "a queued input-capture signal must wake the emitter, woke {woke}"
+        tilo_test_env::hang::wait_until(
+            "a queued input-capture signal to wake the emitter",
+            || tilo_test_env::idle::context_switches(&tid) > parked,
         );
         drop(runtime);
     }

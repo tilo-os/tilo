@@ -27,6 +27,8 @@
 //! - [`hang`] waits for workers, daemons, sockets and events against one
 //!   workspace-wide bound that only catches a hang: [`wait_until`],
 //!   [`wait_for`], [`recv`] and [`within`].
+//! - [`idle`] counts how often idle threads wake: one thread of the test
+//!   process, or every thread of a process tree the test spawned.
 //! - [`require_isolated_desktop`] refuses to go on when a test binary was
 //!   started outside the test environment, where it could reach the caller's
 //!   session bus, portals, media players or display.
@@ -39,6 +41,7 @@ pub mod allocation;
 mod capability;
 mod desktop;
 pub mod hang;
+pub mod idle;
 
 pub use capability::{Capability, Probe, capability_unavailable};
 pub use desktop::{TEST_ENVIRONMENT, desktop_isolation, require_isolated_desktop};

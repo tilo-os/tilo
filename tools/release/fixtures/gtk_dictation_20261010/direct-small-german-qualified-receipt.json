@@ -1,0 +1,162 @@
+{
+  "source_head": "920cc7541449bdf53b557acf4939682bb1bdc47b",
+  "sources": {
+    "tools/release/prepare_speech_benchmark.py": "b3ff77f46049405ca13e02391cb5e893d75bb84e0f2c4e41302d1c8e2a51f50e",
+    "tools/release/summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7",
+    "crates/agent/local-model-service/native/speech.cpp": "9062e7d150e8dc39666e50a53ab91e08ab7ea4a8b7440af284d3d151c2b9f7e3",
+    "crates/agent/local-model-service/src/bin/tilo-speech-worker.rs": "ee0f3079e3386414be1b101ab4dfc7da269a39504542ec9b88e2a9e326fb6dbd",
+    "crates/agent/local-model-service/examples/speech_qualify.rs": "9d8cb20806e3272bdf73c75414090e2db316a3db9b9011117297eed65bd73817",
+    "Cargo.lock": "023d16ed242fc895baa74bd3942b41dd403a94d82af8016dff050ab1b2f6c2b6"
+  },
+  "binaries": {
+    "worker": {
+      "bytes": 25307488,
+      "sha256": "6e26b92fd741be01547bd9ceae9a52fab15f8860656ab6a44d98a107bcc1343e",
+      "path": "${BUILD_ROOT}/target/debug/tilo-speech-worker"
+    },
+    "witness": {
+      "bytes": 43769160,
+      "sha256": "9449a238331ee6da087a19ef570ae9a68c33b96beda5e9bef6343ef507e81a76",
+      "path": "${BUILD_ROOT}/target/debug/examples/speech_qualify"
+    }
+  },
+  "cases": [
+    {
+      "id": "de_de-0",
+      "language": "de",
+      "file": "de_de-0.wav",
+      "size": 574124,
+      "sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630",
+      "reference": "F\u00fcr die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegen\u00fcberliegenden Ufer von Kowloon fahren.",
+      "duration_seconds": 17.94,
+      "source_id": "2003",
+      "source_file": "10004059102127011984.wav",
+      "primary": true,
+      "source_sha256": "1603ed8fcea31a7f32f51d137eaa3516d15aca947898b81a136f4a9732f08ad2",
+      "transcription_sha256": "82fab72c58a347345675c238f2492bb997105a4ab45d69e2a2b34ed29082fa97",
+      "pcm_sha256": "fe4d2a3b4113fb327094d0628ff7ed07e40726c1ab20564d01d3a745cba349b0"
+    }
+  ],
+  "model": {
+    "file": "small-q5_1.bin",
+    "size": 190085487,
+    "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q5_1.bin",
+    "license": "MIT"
+  },
+  "live_microphone": false,
+  "installed": false,
+  "evidence_scope": "isolated production speech worker; no GTK/Qt or VM acceptance",
+  "dataset_revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+  "dataset_license": "CC-BY-4.0",
+  "dataset_attribution": "Google FLEURS; Conneau et al. (2022); https://huggingface.co/datasets/google/fleurs",
+  "model_license": "MIT",
+  "limits": {
+    "cpus": 2,
+    "memory_bytes": 3221225472,
+    "pids": 256,
+    "runtime_seconds": 240
+  },
+  "driver_hashes": {
+    "recorded-inner.py": "007747de565f2142425e3a5d20cd0be0fed48dc3d95d36c18745b0ed17f705bc",
+    "recorded-outer.py": "e7e34dc9890f603b0741a58246085c62b9f73f7cddc22453cce12733c5b4b5f1"
+  },
+  "cpu_affinity": [
+    0,
+    1
+  ],
+  "container_scope": {
+    "OciVersion": "1.2.1",
+    "Status": "running",
+    "Running": true,
+    "Paused": false,
+    "Restarting": false,
+    "OOMKilled": false,
+    "Dead": false,
+    "Pid": 285170,
+    "ConmonPid": 285092,
+    "ExitCode": 0,
+    "Error": "",
+    "StartedAt": "2026-10-09T22:54:03.981891375Z",
+    "FinishedAt": "0001-01-01T00:00:00Z",
+    "CgroupPath": "/user.slice/user-1000.slice/user@1000.service/user.slice/libpod-f917d24f6b763356ea419682a6b213376ba1575ec77389c5ebb083d85b707eca.scope",
+    "CheckpointedAt": "0001-01-01T00:00:00Z",
+    "RestoredAt": "0001-01-01T00:00:00Z"
+  },
+  "image": "a3f63d1003795b29af6e512fde6a3f37c7942b986d7a57e4fe4fd9f32c204d9e",
+  "observed_scope_controls": {
+    "memory.max": "3221225472",
+    "cpu.max": "200000 100000",
+    "pids.max": "256",
+    "memory.swap.max": "0"
+  },
+  "sampling_scope_removed_before_cli_exit": true,
+  "exit": 0,
+  "sampled_peak_memory_bytes": 903081984,
+  "sampled_peak_process_threads": 8,
+  "sampled_peak_anon_bytes": 392372224,
+  "sampled_peak_file_cache_bytes": 524521472,
+  "observed_cpu_affinity": [
+    0,
+    1
+  ],
+  "elapsed_seconds": 25.07870460601407,
+  "log_sha256": "0f5ccd0d328ea3796911bf29601594841c35463a1e853239e9cede5d4518194b",
+  "complete": true,
+  "results": [
+    {
+      "case": "de_de-0",
+      "language": "auto",
+      "ready_seconds": 0.25503352499799803,
+      "final_seconds": 10.853717356018024,
+      "audio_bytes": 574080,
+      "reply": {
+        "kind": "done",
+        "sequence": 11,
+        "text": "F\u00fcr die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegen\u00fcberliegenden Ufer von Kowloon fahren."
+      },
+      "worker_sampled_status_peak_bytes": {
+        "VmHWM": 368070656,
+        "VmRSS": 368070656,
+        "RssAnon": 359866368,
+        "RssFile": 8204288,
+        "RssShmem": 0
+      },
+      "sampling_errors": [],
+      "model_runtime_same_process": true,
+      "reference": "F\u00fcr die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegen\u00fcberliegenden Ufer von Kowloon fahren.",
+      "word_errors": 0,
+      "reference_word_count": 18,
+      "wer": 0.0
+    },
+    {
+      "case": "de_de-0",
+      "language": "de",
+      "ready_seconds": 0.31109018699498847,
+      "final_seconds": 6.09522192197619,
+      "audio_bytes": 574080,
+      "reply": {
+        "kind": "done",
+        "sequence": 11,
+        "text": "F\u00fcr die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegen\u00fcberliegenden Ufer von Kowloon fahren."
+      },
+      "worker_sampled_status_peak_bytes": {
+        "VmHWM": 368168960,
+        "VmRSS": 368168960,
+        "RssAnon": 359866368,
+        "RssFile": 8302592,
+        "RssShmem": 0
+      },
+      "sampling_errors": [],
+      "model_runtime_same_process": true,
+      "reference": "F\u00fcr die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegen\u00fcberliegenden Ufer von Kowloon fahren.",
+      "word_errors": 0,
+      "reference_word_count": 18,
+      "wer": 0.0
+    }
+  ],
+  "scoring": "NFKC/casefold/punctuation-to-space; no numeric/accent/script rewrite",
+  "qualification": "one fixed public utterance, model-only; no microphone, VM, GTK/Qt or general population acceptance",
+  "local_log_sha256": "cd1048ab2f6281daaa66e10ef717639e5e36ff73aba41552eabbd81ddc496000",
+  "superseded_prep_failure": "r1 compared WAV hash with PCM hash; no model execution; corrected distinct guards validated against historical receipts; failed log preserved"
+}

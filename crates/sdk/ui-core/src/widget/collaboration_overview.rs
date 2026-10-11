@@ -84,15 +84,6 @@ impl CollaborationOverview {
     pub fn experience(&self) -> &CollaborationExperience {
         &self.experience
     }
-    pub fn experience_mut(&mut self) -> &mut CollaborationExperience {
-        self.dirty = true;
-        &mut self.experience
-    }
-    pub fn set_digest(&mut self, digest: ActivityDigest) {
-        self.digest = digest;
-        self.expanded.clear();
-        self.dirty = true;
-    }
     pub fn take_action(&mut self) -> Option<CollaborationOverviewAction> {
         self.pending.take()
     }
@@ -669,13 +660,7 @@ impl Widget for CollaborationOverview {
         n
     }
     fn apply_layout(&mut self, t: &TaffyTree<()>, n: NodeId, o: Point) {
-        let l = t.layout(n).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            o.x + f64::from(l.location.x),
-            o.y + f64::from(l.location.y),
-            o.x + f64::from(l.location.x + l.size.width),
-            o.y + f64::from(l.location.y + l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(t, n, o);
         self.dirty = true;
     }
     fn draw(

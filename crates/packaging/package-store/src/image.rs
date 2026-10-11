@@ -22,8 +22,9 @@
 //! launches them, and two versions of one image id coexist for as long as
 //! environments use them.
 
+use std::collections::BTreeMap;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tilo_app_package::trust::{RevocationList, TrustedAttestor, TrustedAttestors};
@@ -41,6 +42,16 @@ use crate::store::{Admission, PackageStore};
 /// images this installation trusts, one hex Ed25519 key per line. The OS
 /// image and the host package write the publisher of the runtime they ship.
 pub const SYSTEM_IMAGE_PUBLISHERS_FILE: &str = "image-publishers";
+
+/// File, in a system image's metadata directory, naming the host files that
+/// carry bytes the image's tree leaves out: one `relative-path<TAB>/host/path`
+/// line each (a third field, the SHA-256 the image build checked, is ignored
+/// here). The OS image ships its env-runtime this way, because most of that
+/// userland is byte-identical to the host's own `/usr`, which a later OCI
+/// layer could otherwise only carry a second time (TIL-735). Nothing is
+/// trusted for being named here: every byte is checked against the image's
+/// signed hash as it is imported, exactly as a byte in the tree is.
+pub const HOST_SOURCES_FILE: &str = "host-sources";
 
 /// Why an image could not be turned into a tree.
 #[derive(Debug, thiserror::Error)]
@@ -204,13 +215,6 @@ impl ImageTrust {
     #[must_use]
     pub fn with_fleet(mut self, fleet: impl FleetSource + 'static) -> Self {
         self.fleet = Some(Arc::new(fleet));
-        self
-    }
-
-    /// Replace the trusted attestors.
-    #[must_use]
-    pub fn with_attestors(mut self, attestors: &TrustedAttestors) -> Self {
-        self.attestors = attestors.as_slice().to_vec();
         self
     }
 
@@ -469,19 +473,36 @@ impl Store {
         Ok(read_image(self.user.layout(), id)?.map(|meta| (meta, self.user.layout(), false)))
     }
 
-    /// The admitted metadata of image `id` and its tree, fetching and
-    /// materialising it into the user's store when no store holds it.
-    fn resolve(&self, id: PackageId) -> Result<(PackageMeta, PathBuf), MaterializeError> {
+    /// The admitted metadata of image `id`, its tree and, for a system image
+    /// shipped sparse, the host files holding the rest of its bytes; fetching
+    /// and materialising it into the user's store when no store holds it.
+    fn resolve(&self, id: PackageId) -> Result<Resolved, MaterializeError> {
         if let Some((meta, layout, placed)) = self.local(id)? {
             self.trust.admit(&meta, placed)?;
-            return Ok((meta, layout.payload(id)));
+            let host = if self.system.contains(layout) {
+                read_host_sources(layout, &meta)?
+            } else {
+                None
+            };
+            return Ok(Resolved {
+                tree: layout.payload(id),
+                meta,
+                host,
+            });
         }
         // The first source that has the package serves it; one that cannot
         // be asked does not hide the ones after it.
         let mut unreachable = None;
         for source in &self.sources {
             match source.fetcher.fetch_package(&id) {
-                Ok(Some(bytes)) => return self.install(id, source, &bytes),
+                Ok(Some(bytes)) => {
+                    let (meta, tree) = self.install(id, source, &bytes)?;
+                    return Ok(Resolved {
+                        meta,
+                        tree,
+                        host: None,
+                    });
+                }
                 Ok(None) => {}
                 Err(error) => {
                     unreachable.get_or_insert_with(|| MaterializeError::Fetch {
@@ -541,6 +562,72 @@ impl Store {
         };
         Ok((meta, self.user.layout().payload(id)))
     }
+}
+
+/// What [`Store::resolve`] found for an image.
+struct Resolved {
+    meta: PackageMeta,
+    tree: PathBuf,
+    /// Set for a system image whose tree leaves bytes to host files
+    /// ([`HOST_SOURCES_FILE`]); such a tree is never handed out as is.
+    host: Option<HostSources>,
+}
+
+/// The host files a sparse system image's tree points at, by the tree path
+/// they stand in for.
+#[derive(Debug, Default)]
+struct HostSources(BTreeMap<String, PathBuf>);
+
+/// The [`HOST_SOURCES_FILE`] of system image `meta` in `layout`, if it has
+/// one. Every line must name one of the image's signed files, once, and an
+/// absolute host path without `..`.
+fn read_host_sources(
+    layout: &Layout,
+    meta: &PackageMeta,
+) -> Result<Option<HostSources>, StoreError> {
+    let path = layout.meta_dir(meta.id).join(HOST_SOURCES_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let corrupt = |number: usize, detail: &str| {
+        StoreError::CorruptPackage(
+            meta.id.to_string(),
+            format!("{HOST_SOURCES_FILE} line {number}: {detail}"),
+        )
+    };
+    let mut sources = BTreeMap::new();
+    for (number, line) in (1usize..).zip(text.lines()) {
+        if line.is_empty() {
+            continue;
+        }
+        let mut fields = line.split('\t');
+        let (Some(relative), Some(host)) = (fields.next(), fields.next()) else {
+            return Err(corrupt(number, "expected a tree path and a host path"));
+        };
+        if !meta.collection.entries.contains_key(relative) {
+            return Err(corrupt(number, "names no signed file of the image"));
+        }
+        let host = Path::new(host);
+        let plain = host
+            .components()
+            .skip(1)
+            .all(|component| matches!(component, Component::Normal(_)));
+        if !host.is_absolute() || !plain || host.components().count() < 2 {
+            return Err(corrupt(
+                number,
+                "the host path is not a plain absolute path",
+            ));
+        }
+        if sources
+            .insert(relative.to_owned(), host.to_path_buf())
+            .is_some()
+        {
+            return Err(corrupt(number, "names a tree path twice"));
+        }
+    }
+    Ok(Some(HostSources(sources)))
 }
 
 /// Largest package a shelf hands over. A shelved image is whole, payload
@@ -642,7 +729,13 @@ impl BlobFetcher for ImageShelf {
 /// another kind, a trust error for an image whose publisher is not trusted
 /// or is revoked, or a fetch or store error.
 pub fn materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, MaterializeError> {
-    store.resolve(*id).map(|(_, tree)| tree)
+    let resolved = store.resolve(*id)?;
+    if resolved.host.is_some() {
+        // A sparse system tree is not the image: rebuild it whole, from the
+        // tree and the host files, each byte checked against the signed hash.
+        return local_materialized_tree(store, id);
+    }
+    Ok(resolved.tree)
 }
 
 /// Resolve an admitted image on the user's filesystem, suitable as an overlay lower.
@@ -654,7 +747,11 @@ pub fn materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, Mater
 /// # Errors
 /// Returns the ordinary image resolution errors, or an integrity/store error.
 pub fn local_materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, MaterializeError> {
-    let (meta, source) = store.resolve(*id)?;
+    let Resolved {
+        meta,
+        tree: source,
+        host,
+    } = store.resolve(*id)?;
     let local = store.user.layout().payload(*id);
     let _lock = store.user.lock()?;
     if read_image(store.user.layout(), *id)?.is_some() {
@@ -663,25 +760,53 @@ pub fn local_materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf,
     }
     let layout = store.user.layout();
     crate::content::session(&layout.content(), &layout.tmp(), |content| {
-        for (relative, expected) in &meta.collection.entries {
-            let path = source.join(relative);
-            if !std::fs::symlink_metadata(&path)?.is_file() {
-                return Err(StoreError::Payload(format!(
-                    "{relative}: image payload is not a regular file"
-                )));
-            }
-            let mut file = std::fs::File::open(&path)?;
-            let actual = content.ingest(file.metadata()?.len(), &mut file)?;
-            if actual != *expected {
-                return Err(StoreError::Payload(format!(
-                    "{relative}: image payload does not match its signed hash"
-                )));
-            }
-        }
+        // An image is thousands of files: one database sync for all of them,
+        // before the tree is materialised and published, not one per file.
+        content.deferred(|| import_image_payload(content, &meta, &source, host.as_ref()))?;
         store.user.materialise(content, &meta)
     })?;
     verify_local_tree(&meta, &local)?;
     Ok(local)
+}
+
+/// Ingest every file of the image tree at `source` into `content`, checking
+/// each against the hash `meta` signed. A file the tree leaves out is read
+/// from the host file `host` names for it.
+fn import_image_payload(
+    content: &crate::content::Content<'_>,
+    meta: &PackageMeta,
+    source: &std::path::Path,
+    host: Option<&HostSources>,
+) -> Result<(), StoreError> {
+    for (relative, expected) in &meta.collection.entries {
+        let mut path = source.join(relative);
+        if let Some(stand_in) = host.and_then(|host| host.0.get(relative.as_str()))
+            && matches!(std::fs::symlink_metadata(&path),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+        {
+            path.clone_from(stand_in);
+        }
+        if !std::fs::symlink_metadata(&path)?.is_file() {
+            return Err(StoreError::Payload(format!(
+                "{relative}: image payload is not a regular file"
+            )));
+        }
+        let mut file = std::fs::File::open(&path)?;
+        let len = file.metadata()?.len();
+        // A previous interrupted import may already hold this signed blob.
+        // Cache completeness selects reuse; it does not verify the source.
+        let actual = if content.len(expected)? == Some(len) {
+            BlobHash::of_reader(&mut file)?.0
+        } else {
+            content.ingest(len, &mut file)?
+        };
+        if actual != *expected {
+            return Err(StoreError::Payload(format!(
+                "{relative}: image payload does not match its signed hash"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn verify_local_tree(meta: &PackageMeta, root: &std::path::Path) -> Result<(), StoreError> {
@@ -752,7 +877,7 @@ fn verify_local_entries(
 /// Returns [`MaterializeError::NotATool`] when `tool` is not a tool image,
 /// or what [`materialized_tree`] returns.
 pub fn tool_runtime(store: &Store, tool: &PackageId) -> Result<PackageId, MaterializeError> {
-    let (meta, _) = store.resolve(*tool)?;
+    let Resolved { meta, .. } = store.resolve(*tool)?;
     match (&meta.manifest.package.kind, &meta.manifest.image) {
         (Kind::Tool, Some(image)) => image.runtime.ok_or(MaterializeError::NotATool(*tool)),
         _ => Err(MaterializeError::NotATool(*tool)),

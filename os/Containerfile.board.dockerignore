@@ -7,6 +7,7 @@
 !os/scripts/build-initramfs.sh
 !os/scripts/verify-board-initramfs.py
 !os/hardware/profiles
+!os/dev/uki-tools.packages
 !os/dev/uki.sh
 !os/dev/uki-hardware-profile.py
 !os/dev/make-boot-splash.py

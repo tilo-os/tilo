@@ -40,6 +40,7 @@ chat-call-issue-session-ended = Call ended
 chat-call-issue-stale = Call session expired
 
 chat-call-title = Call: { $channel }
+chat-call-no-workspace = Open a workspace to call in
 chat-call-open = Open call conversation
 chat-call-join = Join muted
 chat-call-leave-action = Leave call
@@ -105,3 +106,95 @@ chat-resource-copy-link = Copy resource link
 chat-resource-open-link = Open resource in browser
 chat-voice-unavailable = Voice calls are unavailable until a media service is connected.
 chat-attachment-import-unavailable = Attachment import is unavailable on this host.
+
+# "You" belongs to the current reader; shared/legacy names identify their person.
+chat-person-unnamed = Someone ({ $tag })
+chat-person-relative-name = { $name } ({ $tag })
+
+## History: what each change did, by verb and by field
+chat-begin-chat = Started the chat
+chat-introduce = Introduced themselves as { $name }
+chat-name-agent = Named an agent { $name }
+chat-create-workspace = Created the workspace { $name }
+chat-create-category = Created the category { $name } in { $item }
+chat-create-channel = Created the channel #{ $name } in { $item }
+chat-delete-category = Deleted the category { $item }
+chat-move-channel = { $up ->
+    [true] Moved #{ $item } up
+   *[false] Moved #{ $item } down
+}
+chat-delete-channel = Deleted the channel #{ $item }
+chat-start-draft = Started a draft
+chat-post = Posted: { $text }
+chat-share-resource = Shared a link in #{ $item }
+chat-edit-message = Edited a message: { $text }
+chat-delete-message = Deleted a message
+chat-react = Reacted with { $emoji }
+chat-unreact = Took back a { $emoji } reaction
+chat-mark-read = Marked #{ $item } read
+chat-record-work = Recorded what it is doing
+chat-submit-feedback = Filed feedback in #{ $item }
+chat-triage = Triaged feedback
+chat-chat-workspaces = { $op ->
+    [insert] Added a workspace
+    [remove] Removed a workspace
+   *[other] Reordered the workspaces
+}
+chat-chat-categories = { $op ->
+    [insert] Added a category
+    [remove] Removed a category
+   *[other] Reordered the categories
+}
+chat-chat-channels = { $op ->
+    [insert] Added a channel
+    [remove] Removed a channel
+   *[other] Reordered the channels
+}
+chat-chat-messages = { $op ->
+    [insert] Added a message
+    [remove] Removed a message
+   *[other] Moved a message
+}
+chat-chat-people = { $op ->
+    [insert] Added a person
+    [remove] Removed a person
+   *[other] Changed the people
+}
+chat-chat-feedback = { $op ->
+    [insert] Added a feedback report
+    [remove] Removed a feedback report
+   *[other] Changed the feedback reports
+}
+chat-chat-agent-names = Changed the agents' names
+chat-chat-read = Changed the read marks
+chat-chat-drafts = { $op ->
+    [splice] Typed in a draft
+    [mark] Formatted a draft
+    [replace] Cleared a draft
+   *[other] Edited a draft
+}
+chat-workspace-name = Renamed the workspace { $item } to { $new }
+chat-workspace-glyph = Changed the monogram of { $item } to { $new }
+chat-workspace-color = Changed the colour of { $item }
+chat-category-name = Renamed the category { $item } to { $new }
+chat-channel-name = Renamed #{ $item } to #{ $new }
+chat-channel-topic = Set the topic of #{ $item } to { $new }
+chat-channel-category = Moved #{ $item } to another category
+chat-channel-archived = { $new ->
+    [true] Archived #{ $item }
+   *[false] Restored #{ $item }
+}
+chat-message-pinned = { $new ->
+    [true] Pinned a message
+   *[false] Unpinned a message
+}
+chat-person-name = Changed their name to { $new }
+chat-person-initials = Changed their initials to { $new }
+chat-person-color = Changed their colour
+chat-person-status = Set their status to { $new ->
+    [online] online
+    [idle] away
+    [dnd] do not disturb
+    [offline] offline
+   *[other] { $new }
+}

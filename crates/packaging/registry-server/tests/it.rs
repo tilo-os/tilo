@@ -3,6 +3,8 @@
 // in as modules (`pub`, so what each file exported stays exported). nextest
 // still runs each test in its own process.
 
+#[path = "add_publisher_cli.rs"]
+pub mod add_publisher_cli;
 #[path = "application_review_cli.rs"]
 pub mod application_review_cli;
 #[path = "delegated_promotion_cli.rs"]

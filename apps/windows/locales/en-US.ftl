@@ -109,3 +109,14 @@ windows-suspend-starting = Suspending Windows…
 windows-resume-starting = Resuming Windows…
 windows-shutdown-starting = Shutting down Windows…
 windows-temporary-connection-starting = Connecting Windows temporarily and opening the recovery desktop…
+
+## History of the shared launch routes
+
+windows-windows-routes = { $op ->
+    [remove] Let an app open the way the catalogue recommends
+   *[set] Set an app to open { $new ->
+        [wine] with Wine
+        [proton] with Proton
+       *[vm] in the Windows VM
+    }
+}

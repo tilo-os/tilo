@@ -111,10 +111,13 @@ mod tests {
             person: person.into(),
             app_id: "so.tilo.shortcuts".into(),
             target_app: "so.tilo.agent".into(),
+            resource: "agent.transform:freeform".into(),
             action: "freeform".into(),
+            resource_label: "Agent".into(),
             action_label: "Draft with the agent".into(),
             risk: tilo_actions::RiskLevel::Low,
             needs_confirmation: false,
+            confirming: false,
         }
     }
 

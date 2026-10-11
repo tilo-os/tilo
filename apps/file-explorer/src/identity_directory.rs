@@ -8,19 +8,17 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use collab_types::Ed25519PublicKey;
+use fs_protocol::Ed25519PublicKey;
 use tilo_clock::try_unix_now_ns;
 use tilo_user_identity::{
     MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES, MAX_TRUSTED_IDENTITY_PROJECTION_BYTES,
-    MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS, TrustedIdentityProjectionV1,
-    TrustedIdentityProjectionV2,
+    TrustedIdentityProjectionV1, TrustedIdentityProjectionV2,
 };
 
 pub const TRUSTED_IDENTITIES_ENV: &str = "TILO_TRUSTED_IDENTITIES";
 pub const DEFAULT_TRUSTED_IDENTITIES_PATH: &str =
     "/run/tilo/identity-projection/trusted-identities.json";
 pub const MAX_TRUSTED_IDENTITIES_BYTES: u64 = MAX_TRUSTED_IDENTITY_PROJECTION_BYTES;
-pub const MAX_TRUSTED_IDENTITIES: usize = MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS;
 pub const MAX_IDENTITY_LABEL_BYTES: usize = MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,13 +98,18 @@ impl TrustedHumanDirectory {
     ///
     /// Returns the same read or validation errors as [`Self::load`].
     pub fn load_default() -> Result<Self, String> {
-        let path = std::env::var_os(TRUSTED_IDENTITIES_ENV)
+        Self::load(&Self::default_path())
+    }
+
+    /// The configured host projection's path, or the packaged default.
+    #[must_use]
+    pub fn default_path() -> PathBuf {
+        std::env::var_os(TRUSTED_IDENTITIES_ENV)
             .filter(|value| !value.is_empty())
             .map_or_else(
                 || PathBuf::from(DEFAULT_TRUSTED_IDENTITIES_PATH),
                 PathBuf::from,
-            );
-        Self::load(&path)
+            )
     }
 
     /// Convert and validate a legacy human-only projection.

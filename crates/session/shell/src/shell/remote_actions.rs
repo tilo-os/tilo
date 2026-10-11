@@ -56,6 +56,32 @@ impl BrokerActionHost {
         }
     }
 
+    /// Legacy source fixtures delegate into the production broker's native
+    /// authority checks. Live palette/control use maintained action sessions.
+    #[cfg(test)]
+    pub(crate) fn invoke_local_person_job(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
+        if self.own_peer.is_some() || self.launch.is_some() {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        let state = std::sync::Arc::clone(self.broker.state());
+        let origin = caller.clone();
+        let invocation = request.invocation;
+        state
+            .clone()
+            .action_invoke_local_person(caller, request)
+            .map(move |result| {
+                let receipt = result?;
+                let job = state
+                    .remote_job(&origin, &invocation)
+                    .ok_or(ActionHostError::UnknownInvocation)?;
+                Ok((job, receipt))
+            })
+    }
+
     /// [`ActionHost::invoke`], also naming the broker job once admitted —
     /// for an in-process caller, such as the palette, that lists jobs.
     #[must_use]
@@ -100,12 +126,26 @@ impl ActionHost for BrokerActionHost {
         self.broker.state().action_observe(caller, id)
     }
 
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        // Authorized as `observe` is: an invocation this caller did not
+        // admit has no change to wait for.
+        self.broker.state().action_next_change_after_now(caller, id)
+    }
+
     fn cancel(
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
         self.broker.state().action_cancel(caller, id)
+    }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+        self.broker.state().request_witness(caller, None, request)
     }
 }
 
@@ -196,7 +236,7 @@ mod tests {
                 action(
                     "rename",
                     tilo_actions::ActionContract {
-                        permission: tilo_actions::PermissionRequirement::Write,
+                        kind: tilo_actions::ActionKind::Undoable,
                         ..tilo_actions::ActionContract::default()
                     },
                 ),
@@ -222,6 +262,7 @@ mod tests {
             context: None,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         }
     }
 
@@ -270,8 +311,10 @@ mod tests {
                     ("7", "refresh"),
                     ("7", "erase"),
                     ("7", "rename"),
-                    ("workspace", "profile.save"),
-                    ("workspace", "profile.assign"),
+                    ("workspace", "grant"),
+                    ("workspace", "revoke"),
+                    ("workspace", "preset.save"),
+                    ("workspace", "preset.assign"),
                     ("workspace", "app-action.grant"),
                     ("workspace", "app-action.revoke"),
                     ("workspace", "create"),
@@ -405,6 +448,7 @@ mod tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             };
             match now(host.invoke(&caller, open)) {
                 Err(ActionHostError::Refused { reason }) => assert!(
@@ -443,10 +487,12 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 #[path = "shortcuts_door_tests.rs"]
 mod shortcuts_door_tests;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 #[path = "keyboard_shortcuts_door_tests.rs"]
 mod keyboard_shortcuts_door_tests;

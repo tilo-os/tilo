@@ -1,36 +1,28 @@
 //! Region & Formats pane — the editor for the person's **locale**.
 //!
-//! This panel edits [`crate::region::Locale`], the `locale` section of the
+//! This panel edits [`tilo_locale::Locale`], the `locale` section of the
 //! person's settings, which every app's toolkit follows. The Sheets app reads
 //! `locale.currency` / `locale.date_format` / `locale.time_format` for its
 //! cell formatting, and the Weather app reads `locale.measurement` for its
 //! °C/°F + km/h vs mph toggle. Editing here is the single source of truth
 //! those apps follow.
 //!
-//! Each control is a `Dropdown` bound to a [`RegionEffect`] that writes the
-//! section; the pane shows what the section holds, whoever changed it.
+//! Each control is a `Dropdown` bound to its field of the section, mapping the
+//! shown label to the stored value; the pane shows what the section holds,
+//! whoever changed it.
 
 use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx};
 use ui::theme::Theme;
-use ui::tilo_resource;
 use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
-use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::t;
-use crate::region::{
-    Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle, TimeStyle,
-};
-use crate::resource::Settings;
-use crate::settings_app::SettingsApp;
 use crate::widgets::{caption, card, rows};
+use tilo_locale::{Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle};
+use ui::clock::TimeStyle;
 
 fn date_label(style: DateStyle) -> String {
     t(match style {
@@ -91,92 +83,6 @@ fn weekday_from_shown(label: &str) -> Option<FirstDayOfWeek> {
         .find(|day| day.label() == label || weekday_label(*day) == label)
 }
 
-/// How amounts, dates, times, units and weeks read in every app.
-#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
-#[effect(operation = "settings.effect")]
-pub enum RegionEffect {
-    /// Set the currency amounts are shown in.
-    #[effect(idempotent)]
-    SetCurrency {
-        #[param("The ISO-4217 code", choices = Currency::ALL.map(Currency::code))]
-        currency: String,
-    },
-    /// Set how dates are written.
-    #[effect(idempotent)]
-    SetDateFormat {
-        #[param("The date format", choices = DateStyle::ALL.map(DateStyle::label))]
-        format: String,
-    },
-    /// Set how times are written.
-    #[effect(idempotent)]
-    SetTimeFormat {
-        #[param("The time format", choices = TimeStyle::ALL.map(TimeStyle::label))]
-        format: String,
-    },
-    /// Set the units of measurement.
-    #[effect(idempotent)]
-    SetMeasurement {
-        #[param("The units", choices = Measurement::ALL.map(Measurement::label))]
-        units: String,
-    },
-    /// Set how numbers are written.
-    #[effect(idempotent)]
-    SetNumberFormat {
-        #[param("The number format", choices = NumberStyle::ALL.map(NumberStyle::label))]
-        format: String,
-    },
-    /// Set the day weeks start on.
-    #[effect(idempotent)]
-    SetFirstDayOfWeek {
-        #[param("The day", choices = FirstDayOfWeek::ALL.map(FirstDayOfWeek::label))]
-        day: String,
-    },
-}
-
-/// The variant of `all` whose label is `value`.
-fn named<T: Copy>(all: &[T], label: fn(T) -> &'static str, value: &str) -> Result<T, String> {
-    all.iter()
-        .copied()
-        .find(|item| label(*item) == value)
-        .ok_or_else(|| format!("`{value}` is not offered"))
-}
-
-/// Answer `effect`.
-pub(crate) fn answer(
-    app: &SettingsApp,
-    effect: RegionEffect,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
-) -> EffectAnswer {
-    let host = app.host();
-    match effect {
-        RegionEffect::SetCurrency { currency } => {
-            let currency = Currency::from_code(&currency)
-                .ok_or_else(|| format!("`{currency}` is not offered"))?;
-            host.update(|locale: &mut Locale| locale.currency = currency)
-        }
-        RegionEffect::SetDateFormat { format } => {
-            let format = named(&DateStyle::ALL, DateStyle::label, &format)?;
-            host.update(|locale: &mut Locale| locale.date_format = format)
-        }
-        RegionEffect::SetTimeFormat { format } => {
-            let format = named(&TimeStyle::ALL, TimeStyle::label, &format)?;
-            host.update(|locale: &mut Locale| locale.time_format = format)
-        }
-        RegionEffect::SetMeasurement { units } => {
-            let units = named(&Measurement::ALL, Measurement::label, &units)?;
-            host.update(|locale: &mut Locale| locale.measurement = units)
-        }
-        RegionEffect::SetNumberFormat { format } => {
-            let format = named(&NumberStyle::ALL, NumberStyle::label, &format)?;
-            host.update(|locale: &mut Locale| locale.number_style = format)
-        }
-        RegionEffect::SetFirstDayOfWeek { day } => {
-            let day = named(&FirstDayOfWeek::ALL, FirstDayOfWeek::label, &day)?;
-            host.update(|locale: &mut Locale| locale.first_day_of_week = day)
-        }
-    }
-}
-
 /// What the pane's choosers show.
 struct Shown {
     currency: LocalState<String>,
@@ -217,9 +123,7 @@ pub struct RegionPane {
     cx: PaneCx,
     locale: Followed<Locale>,
     shown: Shown,
-    structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    composed: ui::widget::Composed,
 }
 
 impl RegionPane {
@@ -231,9 +135,7 @@ impl RegionPane {
             cx,
             locale,
             shown,
-            structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
+            composed: ui::widget::Composed::default(),
         }
     }
 
@@ -258,35 +160,40 @@ impl RegionPane {
         };
 
         // Currency dropdown — options are ISO codes (the stored form).
-        let currency = cx.bind(
+        let currency = cx.bind_field_with(
             dropdown(
                 Currency::ALL.iter().map(|c| c.code().to_string()).collect(),
                 &shown.currency,
                 "region.currency",
             ),
-            effect(RegionEffect::SET_CURRENCY),
+            Locale::paths().currency,
+            |code: String| {
+                Currency::from_code(&code).ok_or_else(|| format!("`{code}` is not offered"))
+            },
         );
-        let date = cx.bind(
+        let date = cx.bind_field_with(
             dropdown(
                 DateStyle::ALL.iter().copied().map(date_label).collect(),
                 &shown.date,
                 "region.date",
             ),
-            effect(RegionEffect::SET_DATE_FORMAT).map(|shown: String| {
-                date_from_shown(&shown).map_or(shown, |style| style.label().to_owned())
-            }),
+            Locale::paths().date_format,
+            |shown: String| {
+                date_from_shown(&shown).ok_or_else(|| format!("`{shown}` is not offered"))
+            },
         );
-        let time = cx.bind(
+        let time = cx.bind_field_with(
             dropdown(
                 TimeStyle::ALL.iter().copied().map(time_label).collect(),
                 &shown.time,
                 "region.time",
             ),
-            effect(RegionEffect::SET_TIME_FORMAT).map(|shown: String| {
-                time_from_shown(&shown).map_or(shown, |style| style.label().to_owned())
-            }),
+            Locale::paths().time_format,
+            |shown: String| {
+                time_from_shown(&shown).ok_or_else(|| format!("`{shown}` is not offered"))
+            },
         );
-        let units = cx.bind(
+        let units = cx.bind_field_with(
             dropdown(
                 Measurement::ALL
                     .iter()
@@ -296,11 +203,12 @@ impl RegionPane {
                 &shown.measurement,
                 "region.measurement",
             ),
-            effect(RegionEffect::SET_MEASUREMENT).map(|shown: String| {
-                measure_from_shown(&shown).map_or(shown, |measure| measure.label().to_owned())
-            }),
+            Locale::paths().measurement,
+            |shown: String| {
+                measure_from_shown(&shown).ok_or_else(|| format!("`{shown}` is not offered"))
+            },
         );
-        let number_style = cx.bind(
+        let number_style = cx.bind_field_with(
             dropdown(
                 NumberStyle::ALL
                     .iter()
@@ -309,9 +217,15 @@ impl RegionPane {
                 &shown.number_style,
                 "region.number_style",
             ),
-            effect(RegionEffect::SET_NUMBER_FORMAT),
+            Locale::paths().number_style,
+            |shown: String| {
+                NumberStyle::ALL
+                    .into_iter()
+                    .find(|style| style.label() == shown)
+                    .ok_or_else(|| format!("`{shown}` is not offered"))
+            },
         );
-        let first_day = cx.bind(
+        let first_day = cx.bind_field_with(
             dropdown(
                 FirstDayOfWeek::ALL
                     .iter()
@@ -321,9 +235,10 @@ impl RegionPane {
                 &shown.first_day,
                 "region.first_day",
             ),
-            effect(RegionEffect::SET_FIRST_DAY_OF_WEEK).map(|shown: String| {
-                weekday_from_shown(&shown).map_or(shown, |day| day.label().to_owned())
-            }),
+            Locale::paths().first_day_of_week,
+            |shown: String| {
+                weekday_from_shown(&shown).ok_or_else(|| format!("`{shown}` is not offered"))
+            },
         );
 
         let currency_title = t("settings-region-currency");
@@ -383,11 +298,9 @@ impl Widget for RegionPane {
         if self.locale.refresh() {
             self.shown.show(*self.locale.get());
             // The preview card follows the values.
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
     fn build_layout(
@@ -396,92 +309,17 @@ impl Widget for RegionPane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let composition = self.build_composition();
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
+        crate::panes::pane_node(taffy, child, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "RegionPane"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
-        own || child
     }
 }
 
@@ -492,14 +330,8 @@ fn preview_line(label: &str, value: &str) -> crate::widgets::El {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effects::SettingsEffect;
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
-
-    fn set(app: &mut TestApp<SettingsShell>, effect: RegionEffect) {
-        app.effect(&SettingsEffect::from(effect))
-            .expect("the region effect is answered");
-    }
 
     /// Each format is the person's `locale` section, written in the
     /// cross-app shape Sheets and Weather read; a value outside the offered
@@ -507,36 +339,14 @@ mod tests {
     #[test]
     fn region_effects_write_the_locale() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        set(
-            &mut app,
-            RegionEffect::SetCurrency {
-                currency: "JPY".into(),
-            },
-        );
-        set(
-            &mut app,
-            RegionEffect::SetDateFormat {
-                format: DateStyle::Eu.label().into(),
-            },
-        );
-        set(
-            &mut app,
-            RegionEffect::SetTimeFormat {
-                format: TimeStyle::H12.label().into(),
-            },
-        );
-        set(
-            &mut app,
-            RegionEffect::SetMeasurement {
-                units: Measurement::Imperial.label().into(),
-            },
-        );
-        set(
-            &mut app,
-            RegionEffect::SetFirstDayOfWeek {
-                day: "Sunday".into(),
-            },
-        );
+        let locale_field = |app: &mut TestApp<SettingsShell>, field: &str, value: &str| {
+            crate::host::testing::edit_field(app, "settings.locale", field, value)
+        };
+        locale_field(&mut app, "currency", "JPY").unwrap();
+        locale_field(&mut app, "date_format", "EU").unwrap();
+        locale_field(&mut app, "time_format", "H12").unwrap();
+        locale_field(&mut app, "measurement", "imperial").unwrap();
+        locale_field(&mut app, "first_day_of_week", "sunday").unwrap();
         let settings = app.settings::<Locale>();
         let locale = settings.get();
         assert_eq!(locale.currency, Currency::JPY);
@@ -549,10 +359,7 @@ mod tests {
         assert_eq!(section["date_format"], "EU");
         assert_eq!(section["time_format"], "H12");
 
-        let refused = RegionEffect::SetCurrency {
-            currency: "not-a-currency".into(),
-        };
-        assert!(app.effect(&SettingsEffect::from(refused)).is_err());
+        assert!(locale_field(&mut app, "currency", "not-a-currency").is_err());
         assert_eq!(app.settings::<Locale>().get(), locale);
     }
 

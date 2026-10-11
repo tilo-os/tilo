@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod appsets;
+mod artifact;
 pub mod build;
 pub mod builderapp;
 pub mod builderlayer;
@@ -12,9 +13,11 @@ pub mod cicache;
 pub mod cli;
 pub mod config;
 pub mod context;
+pub mod device_actions;
 pub mod disk;
 pub mod doctor;
 pub mod error;
+mod forwarded_port;
 pub mod guide;
 pub mod host;
 pub mod hypervisor;

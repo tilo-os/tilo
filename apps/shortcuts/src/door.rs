@@ -329,7 +329,7 @@ impl DoorCore {
                     shortcut_id: shortcut.to_owned(),
                     name,
                     status: RunStatus::Running,
-                    started: ui::clock::local_now().format("%H:%M").to_string(),
+                    started: ui::clock::time_of_day(&ui::clock::local_now()),
                 },
             );
         });

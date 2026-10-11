@@ -17,16 +17,13 @@ use ui::theme::Theme;
 use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{AppModel, Button, Dropdown, ModelPath, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{caption, card, choice_row_described, rows, value_row};
+use crate::widgets::{caption, card, rows, setting_row_described, value_row};
 
 /// The most kinds of file and link the published tree lists.
 const MAX_KIND_ROWS: usize = 256;
@@ -34,10 +31,15 @@ const MAX_KIND_ROWS: usize = 256;
 const MAX_APP_ROWS: usize = 128;
 
 /// The person's default apps, as their settings hold them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 pub struct DefaultApps {
+    /// The app each kind of file or link opens with, by the kind's id
+    /// (`ext:pdf`, `mime:text/html`, `scheme:https`).
     #[serde(default)]
-    pub handlers: BTreeMap<ResourceKind, String>,
+    #[model(readonly)]
+    pub handlers: BTreeMap<String, String>,
 }
 
 impl ui::storage::SettingsSchema for DefaultApps {
@@ -45,10 +47,17 @@ impl ui::storage::SettingsSchema for DefaultApps {
         ui::storage::Scope::Shared(desktop_policy::PERSONAL_DEFAULTS_SECTION);
 }
 
+#[ui::tilo_resource::resource(kind = "settings.default-apps", label = "Default apps")]
+impl DefaultApps {}
+
 impl DefaultApps {
     fn personal(&self) -> PersonalDefaults {
         PersonalDefaults {
-            handlers: self.handlers.clone(),
+            handlers: self
+                .handlers
+                .iter()
+                .filter_map(|(kind, app)| Some((stored_kind(kind)?, app.clone())))
+                .collect(),
         }
     }
 }
@@ -83,8 +92,17 @@ pub(crate) fn answer(
         .set(resource, package, &resolver)
         .map_err(|error| error.to_string())?;
     app.host().update(|stored: &mut DefaultApps| {
-        stored.handlers = defaults.handlers;
+        stored.handlers = defaults
+            .handlers
+            .into_iter()
+            .map(|(kind, app)| (kind.as_str().to_owned(), app))
+            .collect();
     })
+}
+
+/// The kind a stored handler names.
+fn stored_kind(kind: &str) -> Option<ResourceKind> {
+    serde_json::from_value(serde_json::Value::String(kind.to_owned())).ok()
 }
 
 /// The kind a published id names: `ext:pdf`, `mime:text/html`,
@@ -106,6 +124,9 @@ pub struct DefaultAppsArea {
     prefs: RefCell<Followed<DefaultApps>>,
     candidates: OnceCell<Vec<AppCandidate>>,
     sample: bool,
+    /// The installed apps, read off the UI thread after the window's first
+    /// frame ([`Self::start_read`]).
+    read: crate::device_read::DeviceRead<Vec<AppCandidate>>,
 }
 
 impl DefaultAppsArea {
@@ -116,17 +137,47 @@ impl DefaultAppsArea {
             prefs: RefCell::new(cx.follow::<DefaultApps>()),
             candidates: OnceCell::new(),
             sample: !cx.reaches_devices(),
+            read: crate::device_read::DeviceRead::default(),
         }
     }
 
     fn candidates(&self) -> &[AppCandidate] {
         self.candidates.get_or_init(|| {
-            if self.sample {
-                sample_candidates()
-            } else {
-                installed_candidates()
-            }
+            self.read
+                .take()
+                .unwrap_or_else(|| Self::read_candidates(self.sample))
         })
+    }
+
+    /// Every installed app's manifest claims, or the sample a capture lists.
+    fn read_candidates(sample: bool) -> Vec<AppCandidate> {
+        if sample {
+            sample_candidates()
+        } else {
+            installed_candidates()
+        }
+    }
+
+    /// Read the installed apps off the UI thread; `false` when they have
+    /// been read or are being read.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let sample = self.sample;
+        self.read.start(move || Self::read_candidates(sample))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.candidates.get().is_some()
     }
 
     /// One live row per kind of file or link, showing the app that opens it
@@ -240,8 +291,7 @@ pub struct PersonalAppsPane {
     prefs: Followed<DefaultApps>,
     /// The app each kind's chooser shows, by kind.
     shown: HashMap<ResourceKind, LocalState<String>>,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    composed: ui::widget::Composed,
 }
 
 impl PersonalAppsPane {
@@ -258,8 +308,7 @@ impl PersonalAppsPane {
             candidates,
             prefs,
             shown,
-            composed: None,
-            rect: Rect::ZERO,
+            composed: ui::widget::Composed::default(),
         };
         pane.show();
         pane
@@ -333,7 +382,7 @@ impl PersonalAppsPane {
                     (named.clone(), app)
                 }),
             );
-            file_rows.push(choice_row_described(
+            file_rows.push(setting_row_described(
                 &Self::resource_label(&kind),
                 &t("settings-personal-apps-choice-follows"),
                 Box::new(picker),
@@ -377,7 +426,7 @@ impl PersonalAppsPane {
 pub fn installed_candidates() -> Vec<AppCandidate> {
     let mut out = Vec::new();
     for entry in package_store::list_installed().unwrap_or_default() {
-        let Ok(manifest) = launcher::manifest::read_manifest(&entry.manifest_path) else {
+        let Ok(manifest) = tilo_app_package::view::read_manifest(&entry.manifest_path) else {
             continue;
         };
         if manifest.entrypoint.gui_bin().is_none() {
@@ -426,9 +475,7 @@ impl Widget for PersonalAppsPane {
         if self.prefs.refresh() {
             self.show();
         }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
     fn build_layout(
@@ -437,82 +484,16 @@ impl Widget for PersonalAppsPane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let node = taffy
-            .new_with_children(
-                taffy::Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::auto(),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let composition = self.build_composition();
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
+        crate::panes::pane_node(taffy, child, node_map, self)
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x + l.size.width),
-            origin.y + f64::from(l.location.y + l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+    ui::forward_to_composed!(composed);
+
     fn name(&self) -> &'static str {
         "PersonalAppsPane"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 
@@ -600,13 +581,15 @@ mod tests {
                 candidate("so.tilo.b", "pdf"),
             ]),
             sample: true,
+            read: crate::device_read::DeviceRead::default(),
         };
         let pdf = ResourceKind::extension("pdf").unwrap();
         let mut pane = PersonalAppsPane::new(cx.clone(), &area);
         assert_eq!(pane.shown[&pdf].get(), "so.tilo.a — so.tilo.a");
         cx.settings::<DefaultApps>()
             .update(|apps| {
-                apps.handlers.insert(pdf.clone(), "so.tilo.b".into());
+                apps.handlers
+                    .insert(pdf.as_str().to_owned(), "so.tilo.b".into());
             })
             .unwrap();
         let doc = ui::automerge::AutoCommit::new();

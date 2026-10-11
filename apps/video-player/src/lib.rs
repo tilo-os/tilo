@@ -23,11 +23,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -35,14 +31,16 @@
 
 pub mod actions;
 pub mod app;
+mod i18n;
 mod kept;
 mod preferences;
 pub mod resource;
 pub mod shared;
 pub use app::{PlayerApp, source_for_argument, source_for_path};
-pub use resource::{VideoPlayer, VideoPlayerShell};
+pub use resource::VideoPlayerShell;
+pub use shared::Library;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<VideoPlayerShell>()
+    ui::built_in_definition!(VideoPlayerShell)
 }

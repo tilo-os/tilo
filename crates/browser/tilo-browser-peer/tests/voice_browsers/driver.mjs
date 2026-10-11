@@ -71,6 +71,7 @@ async function webkitPage(who) {
 
 const open = webkit ? webkitPage : chromePage;
 const call = await fixture('/api/call');
+const channel = await fixture('/api/channel');
 const alice = await fixture('/api/alice');
 const pages = [];
 const participation = page => page.evaluate('window.voice.state.participants.find(p => p.self)?.namespace.split("/")[1] ?? null');
@@ -89,7 +90,7 @@ try {
   result.stage = 'call join';
   console.error('voice fixture', result.stage);
   const [bob, carol] = pages;
-  for (const page of pages) await page.evaluate('window.act({op: "join", channel_id: "standup"})');
+  for (const page of pages) await page.evaluate(`window.act({op: "join", channel_id: ${JSON.stringify(channel)}})`);
   for (const page of pages) await page.waitFor('window.voice.state.phase === "live" && window.voice.state.participants.length === 3', {timeout: 60_000});
   for (const page of pages) {
     assert.equal(await page.evaluate('window.voice.state.call'), call, 'shared controls joined the governed channel call');

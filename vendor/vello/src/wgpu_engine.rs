@@ -24,12 +24,123 @@ use crate::{
 };
 use vello_shaders::cpu::CpuBinding;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
 struct UninitialisedShader {
     wgsl: Cow<'static, str>,
     label: &'static str,
     entries: Vec<wgpu::BindGroupLayoutEntry>,
     shader_id: ShaderId,
+}
+
+/// What a compute pipeline is created from, created before the pipeline.
+struct ComputePipelineParts {
+    shader_module: wgpu::ShaderModule,
+    bind_group_layout: BindGroupLayout,
+    pipeline_layout: wgpu::PipelineLayout,
+    #[cfg(not(target_arch = "wasm32"))]
+    entries: Vec<wgpu::BindGroupLayoutEntry>,
+    #[cfg(not(target_arch = "wasm32"))]
+    source_len: usize,
+}
+
+impl ComputePipelineParts {
+    fn new(
+        device: &Device,
+        label: &str,
+        wgsl: Cow<'_, str>,
+        entries: Vec<wgpu::BindGroupLayoutEntry>,
+    ) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let source_len = wgsl.len();
+        // SAFETY: We only call this with trusted shaders (written by Vello developers)
+        let shader_module = unsafe {
+            device.create_shader_module_trusted(
+                wgpu::ShaderModuleDescriptor {
+                    label: Some(label),
+                    source: wgpu::ShaderSource::Wgsl(wgsl),
+                },
+                wgpu::ShaderRuntimeChecks::unchecked(),
+            )
+        };
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &entries,
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+        Self {
+            shader_module,
+            bind_group_layout,
+            pipeline_layout,
+            #[cfg(not(target_arch = "wasm32"))]
+            entries,
+            #[cfg(not(target_arch = "wasm32"))]
+            source_len,
+        }
+    }
+
+    fn descriptor<'a>(
+        &'a self,
+        label: &'a str,
+        cache: Option<&'a PipelineCache>,
+    ) -> wgpu::ComputePipelineDescriptor<'a> {
+        wgpu::ComputePipelineDescriptor {
+            label: Some(label),
+            layout: Some(&self.pipeline_layout),
+            module: &self.shader_module,
+            entry_point: None,
+            compilation_options: PipelineCompilationOptions {
+                zero_initialize_workgroup_memory: false,
+                ..Default::default()
+            },
+            cache,
+        }
+    }
+
+    fn into_shader(self, pipeline: ComputePipeline) -> WgpuShader {
+        WgpuShader {
+            pipeline: PipelineState::Compute(pipeline),
+            bind_group_layout: self.bind_group_layout,
+            #[cfg(not(target_arch = "wasm32"))]
+            entries: self.entries,
+            #[cfg(not(target_arch = "wasm32"))]
+            source_len: self.source_len,
+        }
+    }
+}
+
+/// Pipelines a renderer registered but did not build before its first frame
+/// (Tilo patch, `Renderer::new_deferring`).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct DeferredBuild {
+    /// Which registrations defer while `full_shaders` runs; `None` after.
+    mode: crate::PipelineDeferral,
+    /// Set by `full_shaders` around registrations a full frame on the
+    /// default path never dispatches.
+    unused: bool,
+    /// Every deferred registration, kept so one can still be built here when
+    /// no builder has it (not started, or stopped).
+    specs: Vec<UninitialisedShader>,
+    /// Deferred shaders whose pipeline is not installed yet.
+    pending: HashSet<usize>,
+    /// Pipelines the background builder finished, in its order.
+    built: Option<Receiver<(ShaderId, WgpuShader)>>,
+    started: bool,
+    /// Pipelines a dispatch needed before any builder had them.
+    built_inline: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn defers_registration(deferred: &DeferredBuild) -> bool {
+    match deferred.mode {
+        crate::PipelineDeferral::None => false,
+        crate::PipelineDeferral::Unused => deferred.unused,
+        crate::PipelineDeferral::All => true,
+    }
 }
 
 #[derive(Default)]
@@ -39,13 +150,20 @@ pub(crate) struct WgpuEngine {
     bind_map: BindMap,
     downloads: HashMap<ResourceId, Buffer>,
     bind_group_cache: HashMap<BindGroupKey, BindGroup>,
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Shaders registered but not yet compiled, while compilation is
+    /// deferred to [`Self::build_shaders_if_needed`] or
+    /// [`Self::build_shaders_async`].
     shaders_to_initialise: Option<Vec<UninitialisedShader>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    deferred: DeferredBuild,
     pub(crate) use_cpu: bool,
     /// Overrides from a specific `Image::data`'s [`id`](peniko::Blob::id) to a wgpu `Texture`.
     ///
     /// The `Texture` should have the same size as the `Image`.
     pub(crate) image_overrides: HashMap<u64, wgpu::TexelCopyTextureInfoBase<Texture>>,
+    /// Images drawn into the atlas from a texture through a render pass
+    /// (Tilo patch): any colour format, optionally opaque.
+    pub(crate) image_sources: crate::image_source::ImageSources,
     pipeline_cache: Option<PipelineCache>,
     /// Compute-pass batching policy: mode 2 (including deferred frees) is the
     /// production default; explicit modes 0 and 1 remain available for A/B runs.
@@ -628,8 +746,28 @@ struct BufferProperties {
 
 #[derive(Default)]
 struct ResourcePool {
-    bufs: HashMap<BufferProperties, Vec<Buffer>>,
+    /// Free buffers per size class, each with the recording that returned it.
+    bufs: HashMap<BufferProperties, Vec<(Buffer, u64)>>,
+    /// Recordings run so far: the clock free buffers are stamped with.
+    recordings: u64,
+    /// Destroy free buffers no recording has taken for this many recordings;
+    /// `None` keeps them until the pool is cleared (upstream).
+    keep: Option<u64>,
+    /// Recordings left in which [`POOL_KEEP_SOON`] applies instead.
+    soon: u64,
 }
+
+/// Recordings a free buffer may go untaken before it is destroyed, in an
+/// engine that opted in ([`WgpuEngine::set_pool_keep`]). A size class every
+/// frame asks for is taken every frame; one a larger scene asked for is not
+/// asked for again once the scene got smaller.
+pub(crate) const POOL_KEEP_RECORDINGS: u64 = 120;
+/// The same for the recordings after [`WgpuEngine::shrink_pool_soon`]: a
+/// window closed, and an idle desktop draws few frames after it. Still a few
+/// frames' worth: a frame may record a blur, a second pass and each output.
+const POOL_KEEP_SOON: u64 = 16;
+/// Recordings a soon request stays live for.
+const POOL_SOON_RECORDINGS: u64 = 64;
 
 /// The transient bind map contains short-lifetime resources.
 ///
@@ -1635,10 +1773,197 @@ impl WgpuEngine {
     /// Enable creating any remaining shaders in parallel
     #[cfg(not(target_arch = "wasm32"))]
     pub fn use_parallel_initialisation(&mut self) {
+        self.defer_shader_initialisation();
+    }
+
+    /// Register shaders without compiling them until a later build.
+    pub fn defer_shader_initialisation(&mut self) {
         if self.shaders_to_initialise.is_some() {
             return;
         }
         self.shaders_to_initialise = Some(Vec::new());
+    }
+
+    /// Compile every deferred shader through the device's asynchronous
+    /// pipeline creation (Tilo patch): every compile starts before the first
+    /// is awaited, so a WebGPU browser compiles them in parallel off its GPU
+    /// process's main thread. Elsewhere each is created synchronously.
+    pub async fn build_shaders_async(&mut self, device: &Device) {
+        let Some(new_shaders) = self.shaders_to_initialise.take() else {
+            return;
+        };
+        let pending = new_shaders
+            .into_iter()
+            .map(|it| {
+                let pipeline = Self::start_compute_pipeline(
+                    device,
+                    it.label,
+                    it.wgsl,
+                    it.entries,
+                    self.pipeline_cache.as_ref(),
+                );
+                (it.shader_id, pipeline)
+            })
+            .collect::<Vec<_>>();
+        for (id, pipeline) in pending {
+            self.shaders[id.0].wgpu = Some(pipeline.await);
+        }
+    }
+
+    /// Which registrations defer their pipeline (Tilo patch). `full_shaders`
+    /// runs between setting a mode and resetting it to `None`.
+    pub(crate) fn set_pipeline_deferral(&mut self, mode: crate::PipelineDeferral) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.deferred.mode = mode;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = mode;
+    }
+
+    /// Mark the registrations that follow as ones a full frame on the
+    /// default path never dispatches, until called with `false`.
+    pub(crate) fn defer_unused(&mut self, unused: bool) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.deferred.unused = unused;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = unused;
+    }
+
+    /// Build every deferred pipeline on one background thread, largest
+    /// first; frames install them as they arrive. `built` runs after the
+    /// last, or at once when none is pending. Once only.
+    pub(crate) fn start_deferred_pipelines(
+        &mut self,
+        device: &Device,
+        built: Box<dyn FnOnce() + Send>,
+    ) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.deferred.started {
+                return;
+            }
+            self.deferred.started = true;
+            if self.deferred.pending.is_empty() {
+                built();
+                return;
+            }
+            let mut work: Vec<UninitialisedShader> = self
+                .deferred
+                .specs
+                .iter()
+                .filter(|spec| self.deferred.pending.contains(&spec.shader_id.0))
+                .cloned()
+                .collect();
+            work.sort_by_key(|spec| std::cmp::Reverse(spec.wgsl.len()));
+            let (sender, receiver) = mpsc::channel();
+            let device = device.clone();
+            let pipeline_cache = self.pipeline_cache.clone();
+            let spawned = std::thread::Builder::new()
+                .name("vello-deferred-pipelines".into())
+                .spawn(move || {
+                    for spec in work {
+                        let shader = Self::create_compute_pipeline(
+                            &device,
+                            spec.label,
+                            spec.wgsl,
+                            spec.entries,
+                            pipeline_cache.as_ref(),
+                        );
+                        if sender.send((spec.shader_id, shader)).is_err() {
+                            return;
+                        }
+                    }
+                    built();
+                });
+            if spawned.is_ok() {
+                self.deferred.built = Some(receiver);
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = device;
+            built();
+        }
+    }
+
+    /// Deferred pipelines not installed yet, and how many a dispatch had to
+    /// build itself.
+    pub(crate) fn deferred_pipeline_counts(&mut self) -> (usize, u64) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.receive_deferred();
+            (self.deferred.pending.len(), self.deferred.built_inline)
+        }
+        #[cfg(target_arch = "wasm32")]
+        (0, 0)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_deferred(&mut self, id: ShaderId, shader: WgpuShader) {
+        if self.deferred.pending.remove(&id.0) {
+            self.shaders[id.0].wgpu = Some(shader);
+        }
+    }
+
+    /// Install whatever the builder has finished, without waiting.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn receive_deferred(&mut self) {
+        while let Some(built) = self.deferred.built.as_ref() {
+            match built.try_recv() {
+                Ok((id, shader)) => self.install_deferred(id, shader),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => self.deferred.built = None,
+            }
+        }
+    }
+
+    /// Every deferred GPU pipeline `recording` dispatches is installed before
+    /// it is encoded: from the builder (waiting for it when it is still
+    /// running), else built here. A dispatch never runs without its pipeline.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ensure_deferred(&mut self, device: &Device, recording: &Recording) {
+        if self.deferred.pending.is_empty() {
+            return;
+        }
+        self.receive_deferred();
+        for command in &recording.commands {
+            let (Command::Dispatch(id, ..) | Command::DispatchIndirect(id, ..)) = command else {
+                continue;
+            };
+            if self.shaders[id.0].cpu.is_some() || !self.deferred.pending.contains(&id.0) {
+                continue;
+            }
+            while self.deferred.pending.contains(&id.0) {
+                let Some(built) = self.deferred.built.as_ref() else {
+                    break;
+                };
+                match built.recv() {
+                    Ok((built_id, shader)) => self.install_deferred(built_id, shader),
+                    Err(_) => self.deferred.built = None,
+                }
+            }
+            if self.deferred.pending.contains(&id.0)
+                && let Some(spec) = self
+                    .deferred
+                    .specs
+                    .iter()
+                    .find(|spec| spec.shader_id.0 == id.0)
+                    .cloned()
+            {
+                let shader = Self::create_compute_pipeline(
+                    device,
+                    spec.label,
+                    spec.wgsl,
+                    spec.entries,
+                    self.pipeline_cache.as_ref(),
+                );
+                self.deferred.built_inline += 1;
+                self.install_deferred(*id, shader);
+            }
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1651,6 +1976,10 @@ impl WgpuEngine {
         use std::num::NonZeroUsize;
 
         if let Some(mut new_shaders) = self.shaders_to_initialise.take() {
+            // Longest source first: each worker takes the next one as it
+            // finishes, so the largest compiles (the fine stage, flatten,
+            // coarse) start at once instead of last.
+            new_shaders.sort_by_key(|shader| std::cmp::Reverse(shader.wgsl.len()));
             let num_threads = num_threads
                 .map(NonZeroUsize::get)
                 .unwrap_or_else(|| {
@@ -1788,6 +2117,23 @@ impl WgpuEngine {
             layout.iter().map(|b| (*b, wgpu::ShaderStages::COMPUTE)),
         );
         #[cfg(not(target_arch = "wasm32"))]
+        if defers_registration(&self.deferred) {
+            let id = add(Shader {
+                label,
+                wgpu: None,
+                cpu: None,
+                cpu_pathtag,
+                cpu_metadata,
+            });
+            self.deferred.pending.insert(id.0);
+            self.deferred.specs.push(UninitialisedShader {
+                wgsl,
+                label,
+                entries,
+                shader_id: id,
+            });
+            return id;
+        }
         if let Some(uninit) = self.shaders_to_initialise.as_mut() {
             let id = add(Shader {
                 label,
@@ -2259,6 +2605,8 @@ impl WgpuEngine {
         F: FnOnce(&mut CommandEncoder),
         G: FnOnce() -> bool,
     {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.ensure_deferred(device, recording);
         let cpu_pathtag_reuse_active = self.cpu_pathtag_reuse_active();
         let cpu_metadata_active = self.cpu_metadata_active();
         let cpu_draw_prefix_active = self.cpu_draw_prefix_active();
@@ -2379,7 +2727,19 @@ impl WgpuEngine {
                     let block_size = format
                         .block_copy_size(None)
                         .expect("ImageFormat must have a valid block size");
-                    if let Some(overrider) = self.image_overrides.get(&image.data.id()) {
+                    let drawn = self.image_sources.write(
+                        device,
+                        &mut encoder,
+                        image.data.id(),
+                        &crate::image_source::AtlasSlot {
+                            atlas: texture,
+                            at: [*x, *y],
+                            size: [image.width, image.height],
+                        },
+                    );
+                    if drawn {
+                        // Drawn from its `ImageSource`: the one copy.
+                    } else if let Some(overrider) = self.image_overrides.get(&image.data.id()) {
                         encoder.copy_texture_to_texture(
                             wgpu::TexelCopyTextureInfo {
                                 texture: &overrider.texture,
@@ -2768,7 +3128,7 @@ impl WgpuEngine {
                             usages: gpu_buf.usage(),
                             name: buf.label,
                         };
-                        self.pool.bufs.entry(props).or_default().push(gpu_buf);
+                        self.pool.put(props, gpu_buf);
                     }
                     MaterializedBuffer::Cpu(cpu_buf) => match buf.label {
                         CPU_PATHTAG_REDUCED_LABEL | CPU_PATHTAG_MONOID_LABEL
@@ -2805,7 +3165,40 @@ impl WgpuEngine {
                 texture.destroy();
             }
         }
+        self.release_unused_pool();
         Ok(submission)
+    }
+
+    /// Destroy the free buffers [`ResourcePool::end_recording`] found unused,
+    /// with the cached bind groups that name them.
+    fn release_unused_pool(&mut self) {
+        let unused = self.pool.end_recording();
+        if unused.is_empty() {
+            return;
+        }
+        self.bind_group_cache.retain(|key, _| {
+            !key.resources.iter().any(|resource| {
+                matches!(resource, BoundResource::Buffer(bound, _, _) if unused.contains(bound))
+            })
+        });
+        for buffer in unused {
+            buffer.destroy();
+        }
+    }
+
+    /// Destroy free buffers no recording has taken for `keep` recordings
+    /// (see [`POOL_KEEP_RECORDINGS`]); `None` keeps them until
+    /// [`Self::clear_pool`], as upstream does.
+    pub(crate) fn set_pool_keep(&mut self, keep: Option<u64>) {
+        self.pool.keep = keep;
+    }
+
+    /// The scene got smaller for good: for the next few recordings, free
+    /// buffers go after [`POOL_KEEP_SOON`] recordings untaken.
+    pub(crate) fn shrink_pool_soon(&mut self) {
+        if self.pool.keep.is_some() {
+            self.pool.soon = POOL_SOON_RECORDINGS;
+        }
     }
 
     pub fn get_download(&self, buf: BufferProxy) -> Option<&Buffer> {
@@ -2830,7 +3223,7 @@ impl WgpuEngine {
         // On WebGPU a dropped buffer lives until JavaScript collects it, so a
         // cleared pool would stay resident beside its replacements. destroy()
         // waits for submitted work that still uses the buffer.
-        for buffer in self.pool.bufs.drain().flat_map(|(_, buffers)| buffers) {
+        for (buffer, _) in self.pool.bufs.drain().flat_map(|(_, buffers)| buffers) {
             buffer.destroy();
         }
         self.cpu_pathtag_pool.clear();
@@ -2924,7 +3317,7 @@ impl WgpuEngine {
                 usages: buffer.usage(),
                 name: "download",
             };
-            self.pool.bufs.entry(props).or_default().push(buffer);
+            self.pool.put(props, buffer);
         }
     }
 
@@ -2987,47 +3380,24 @@ impl WgpuEngine {
         entries: Vec<wgpu::BindGroupLayoutEntry>,
         cache: Option<&PipelineCache>,
     ) -> WgpuShader {
-        #[cfg(not(target_arch = "wasm32"))]
-        let source_len = wgsl.len();
-        // SAFETY: We only call this with trusted shaders (written by Vello developers)
-        let shader_module = unsafe {
-            device.create_shader_module_trusted(
-                wgpu::ShaderModuleDescriptor {
-                    label: Some(label),
-                    source: wgpu::ShaderSource::Wgsl(wgsl),
-                },
-                wgpu::ShaderRuntimeChecks::unchecked(),
-            )
-        };
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &entries,
-        });
-        let compute_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[Some(&bind_group_layout)],
-                immediate_size: 0,
-            });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(label),
-            layout: Some(&compute_pipeline_layout),
-            module: &shader_module,
-            entry_point: None,
-            compilation_options: PipelineCompilationOptions {
-                zero_initialize_workgroup_memory: false,
-                ..Default::default()
-            },
-            cache,
-        });
-        WgpuShader {
-            pipeline: PipelineState::Compute(pipeline),
-            bind_group_layout,
-            #[cfg(not(target_arch = "wasm32"))]
-            entries,
-            #[cfg(not(target_arch = "wasm32"))]
-            source_len,
-        }
+        let parts = ComputePipelineParts::new(device, label, wgsl, entries);
+        let pipeline = device.create_compute_pipeline(&parts.descriptor(label, cache));
+        parts.into_shader(pipeline)
+    }
+
+    /// [`Self::create_compute_pipeline`] through the device's asynchronous
+    /// pipeline creation. The compile starts now, before the future is
+    /// polled.
+    fn start_compute_pipeline(
+        device: &Device,
+        label: &str,
+        wgsl: Cow<'_, str>,
+        entries: Vec<wgpu::BindGroupLayoutEntry>,
+        cache: Option<&PipelineCache>,
+    ) -> impl Future<Output = WgpuShader> + 'static {
+        let parts = ComputePipelineParts::new(device, label, wgsl, entries);
+        let pipeline = device.create_compute_pipeline_async(&parts.descriptor(label, cache));
+        async move { parts.into_shader(pipeline.await) }
     }
 
     /// The compute shaders [`Self::dispatch_empty`] can run, largest source first, so that
@@ -3233,7 +3603,10 @@ impl BindMap {
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
-                    usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+                    // Render attachment too: an `ImageSource` is drawn in.
+                    usage: TextureUsages::TEXTURE_BINDING
+                        | TextureUsages::COPY_DST
+                        | TextureUsages::RENDER_ATTACHMENT,
                     format,
                     view_formats: &[],
                 });
@@ -3272,7 +3645,7 @@ impl ResourcePool {
             name,
         };
         if let Some(buf_vec) = self.bufs.get_mut(&props)
-            && let Some(buf) = buf_vec.pop()
+            && let Some((buf, _)) = buf_vec.pop()
         {
             return buf;
         }
@@ -3282,6 +3655,41 @@ impl ResourcePool {
             usage,
             mapped_at_creation: false,
         })
+    }
+
+    /// Keep `buf` for reuse, stamped with the current recording.
+    fn put(&mut self, props: BufferProperties, buf: Buffer) {
+        self.bufs
+            .entry(props)
+            .or_default()
+            .push((buf, self.recordings));
+    }
+
+    /// A recording finished: take out every free buffer no recording has
+    /// taken within the keep window, for the caller to destroy. Buffers are
+    /// taken from the end of their list, so the ones left at its start are
+    /// the class's surplus and go first.
+    fn end_recording(&mut self) -> Vec<Buffer> {
+        self.recordings += 1;
+        let keep = if self.soon > 0 {
+            self.soon -= 1;
+            Some(POOL_KEEP_SOON)
+        } else {
+            self.keep
+        };
+        let Some(keep) = keep else {
+            return Vec::new();
+        };
+        let oldest = self.recordings.saturating_sub(keep);
+        let mut unused = Vec::new();
+        self.bufs.retain(|_, bufs| {
+            unused.extend(
+                bufs.extract_if(.., |(_, returned)| *returned < oldest)
+                    .map(|(buf, _)| buf),
+            );
+            !bufs.is_empty()
+        });
+        unused
     }
 
     /// Quantize a size up to the nearest size class.

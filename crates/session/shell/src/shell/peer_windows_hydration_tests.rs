@@ -83,7 +83,7 @@ fn a_continued_window_waits_for_its_record_then_reopens_on_it() {
     env.set("XDG_DATA_HOME", data.path());
 
     let mut ws = Workspace::new(WorkspaceId::from(next_id()), "shared");
-    ws.owner = Some("quinten".into());
+    ws.set_owner("quinten");
     let room = ws.room;
     let tab = next_id();
     let mut strip = Strip::new(StripId::from(next_id()), "Main");

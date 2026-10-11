@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use tilo_clock::unix_now;
 use ui::time::{Duration, Instant, SystemTime};
 
 use tilo_relay_protocol::config::CheckpointPrefixRecovery;
@@ -26,8 +25,8 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    StatusTone, caption, card, card_with_action, cards, choice_row_described, error_caption, rows,
-    semantic_status_pill, setting_row_described, value_row,
+    StatusTone, caption, card, card_with_action, cards, error_caption, rows, semantic_status_pill,
+    setting_row_described, value_row,
 };
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
 
@@ -68,18 +67,6 @@ fn role_from_label(label: &str) -> Option<DeviceRole> {
         Some(DeviceRole::AlwaysOnServer)
     } else {
         None
-    }
-}
-
-#[allow(
-    dead_code,
-    reason = "tests pin the persisted English replication identifiers"
-)]
-fn replication_label(intent: &ReplicationIntent) -> &'static str {
-    match intent {
-        ReplicationIntent::WorkspaceOnly => REPLICATION_WORKSPACE,
-        ReplicationIntent::FullWorkspace => REPLICATION_FULL,
-        ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => REPLICATION_ON_DEMAND,
     }
 }
 
@@ -262,16 +249,6 @@ pub enum DeviceMeshEffect {
         workspace: u64,
         on: bool,
     },
-    /// Allow continuing activities between the person's devices.
-    #[effect(idempotent)]
-    SetContinuity { on: bool },
-    /// Allow one kind of continuity: clipboard, notifications, media…
-    #[effect(idempotent)]
-    SetContinuityFacet {
-        #[param("The kind, by its key")]
-        facet: String,
-        on: bool,
-    },
     /// Look for a new home server nearby, then approve the one found.
     #[effect(label = "Pair home server")]
     PairHomeServer,
@@ -338,6 +315,9 @@ pub(crate) fn answer(
 pub struct DeviceMeshArea {
     cx: PaneCx,
     model: std::cell::OnceCell<Shared<DeviceMeshModel>>,
+    /// The relay's configuration and state and the device fleet, read off
+    /// the UI thread after the window's first frame ([`Self::start_read`]).
+    read: crate::device_read::DeviceRead<MeshRead>,
 }
 
 impl DeviceMeshArea {
@@ -345,24 +325,50 @@ impl DeviceMeshArea {
         Self {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
+            read: crate::device_read::DeviceRead::default(),
+        }
+    }
+
+    /// Where the relay configuration is read from, and whether what is
+    /// paired or discovered is: this device's, or, for a screenshot, an
+    /// unconfigured one with nothing paired.
+    fn source(&self) -> (PathBuf, bool) {
+        if self.cx.reaches_devices() {
+            (PathBuf::from(DEFAULT_CONFIG), true)
+        } else {
+            (PathBuf::from("/nonexistent/tilo/relay.toml"), false)
         }
     }
 
     /// The model, over this device's relay configuration, or, for a
-    /// screenshot, over an unconfigured one with nothing paired.
+    /// screenshot, over an unconfigured one with nothing paired: from the
+    /// read [`Self::start_read`] started, waiting for it if it still runs,
+    /// else read here.
     pub fn model(&self) -> &Shared<DeviceMeshModel> {
         self.model.get_or_init(|| {
-            let model = if self.cx.reaches_devices() {
-                DeviceMeshModel::from_path(self.cx.clone(), PathBuf::from(DEFAULT_CONFIG), true)
-            } else {
-                DeviceMeshModel::from_path(
-                    self.cx.clone(),
-                    PathBuf::from("/nonexistent/tilo/relay.toml"),
-                    false,
-                )
-            };
+            let read = self.read.take().unwrap_or_else(|| {
+                let (path, devices) = self.source();
+                MeshRead::of(path, devices, ui::time::wall())
+            });
+            let model = DeviceMeshModel::from_read(self.cx.clone(), read);
             Rc::new(std::cell::RefCell::new(model))
         })
+    }
+
+    /// Read the relay and the device fleet off the UI thread; `false` when
+    /// they have been read or are being read.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let (path, devices) = self.source();
+        let now = ui::time::wall();
+        self.read.start(move || MeshRead::of(path, devices, now))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
     }
 
     /// Take in finished background commands, if the model exists.
@@ -370,6 +376,13 @@ impl DeviceMeshArea {
         if let Some(model) = self.model.get() {
             model.borrow_mut().poll_background_tasks();
         }
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
     }
 
     /// One row per discovered workspace, personal device and home server.
@@ -444,7 +457,6 @@ pub struct DeviceMeshModel {
     /// holding them.
     continuity: ContinuityPrivacy,
     continuity_settings: Followed<ContinuityPrivacy>,
-    continuity_status: Option<String>,
     /// The name typed for each home server, by node id.
     peer_names: HashMap<String, Arc<Mutex<String>>>,
     roaming_provenance_path: Option<PathBuf>,
@@ -623,13 +635,17 @@ fn provenance_summaries(provenance: &RoamingProvenance) -> Vec<(String, String)>
         .collect()
 }
 
-fn load_roaming_provenance(
-    path: Option<&std::path::Path>,
-) -> (
+/// The roaming provenance at `path` as read: the projection or why it
+/// could not be read, and when the file was last written.
+type ProvenanceRead = (
     Option<RoamingProvenance>,
     Option<String>,
     Option<SystemTime>,
-) {
+);
+
+/// Read the roaming provenance at `path`; an error is left untranslated
+/// ([`shown_roaming_provenance`]), so this may run off the UI thread.
+fn read_roaming_provenance(path: Option<&std::path::Path>) -> ProvenanceRead {
     let Some(path) = path else {
         return (None, None, None);
     };
@@ -641,15 +657,20 @@ fn load_roaming_provenance(
     }
     match RoamingProvenance::load_at(path) {
         Ok(provenance) => (Some(provenance), None, stamp),
-        Err(error) => (
-            None,
-            Some(t_args(
-                "mesh-provenance-err",
-                &[("error", error.to_string().into())],
-            )),
-            stamp,
-        ),
+        Err(error) => (None, Some(error.to_string()), stamp),
     }
+}
+
+/// `read` as the pane shows it: the projection, the status saying why it
+/// could not be read, and its stamp.
+fn shown_roaming_provenance(read: ProvenanceRead) -> ProvenanceRead {
+    let (provenance, error, stamp) = read;
+    let status = error.map(|error| t_args("mesh-provenance-err", &[("error", error.into())]));
+    (provenance, status, stamp)
+}
+
+fn load_roaming_provenance(path: Option<&std::path::Path>) -> ProvenanceRead {
+    shown_roaming_provenance(read_roaming_provenance(path))
 }
 
 fn revocation_reason(label: &str) -> RevocationReason {
@@ -684,11 +705,7 @@ fn save_home_peer_last_seen(last_seen: &HashMap<String, u64>) {
 }
 
 fn last_seen_label(last_seen_ms: u64) -> String {
-    let now_ms = ui::time::wall()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        });
+    let now_ms = ui::time::unix_now_ms();
     let minutes = now_ms.saturating_sub(last_seen_ms) / 60_000;
     if minutes == 0 {
         t("mesh-last-seen-now")
@@ -748,11 +765,31 @@ fn command_error(stderr: &[u8], fallback: &str) -> String {
     }
 }
 
-impl DeviceMeshModel {
-    /// Load the relay configuration at `config_path`. Missing configuration
-    /// is a normal first-run state and starts from the daemon's defaults.
-    /// Without `devices`, nothing paired or discovered is read.
-    fn from_path(cx: PaneCx, config_path: PathBuf, devices: bool) -> Self {
+/// What the Devices & Sync area reads of the device: the relay's
+/// configuration and state, the workspaces and home servers it knows, and
+/// the device fleet, every certificate of which is verified. Read off the
+/// UI thread after the window's first frame; the model is built from it on
+/// the UI thread ([`DeviceMeshModel::from_read`]).
+pub(crate) struct MeshRead {
+    config_path: PathBuf,
+    config: RelayConfig,
+    load_status: String,
+    runtime_status: RelayRuntimeStatus,
+    discovered_workspaces: Vec<DiscoveredWorkspace>,
+    home_peers: Vec<tilo_relay_protocol::HomePeerRegistration>,
+    home_peer_last_seen: HashMap<String, u64>,
+    personal_devices: Vec<crate::device_fleet::DeviceView>,
+    personal_device_error: Option<String>,
+    roaming_provenance_path: Option<PathBuf>,
+    roaming_provenance: ProvenanceRead,
+}
+
+impl MeshRead {
+    /// Load the relay configuration at `config_path`, the relay's state as
+    /// of `now`, and, with `devices`, what is paired or discovered. Missing
+    /// configuration is a normal first-run state and starts from the
+    /// daemon's defaults.
+    fn of(config_path: PathBuf, devices: bool, now: SystemTime) -> Self {
         let (config, load_status) = match RelayConfig::load(&config_path) {
             Ok(config) => (config, "Configuration loaded".to_string()),
             Err(tilo_relay_protocol::config::ConfigError::Io(error))
@@ -794,7 +831,7 @@ impl DeviceMeshModel {
                 format!("Configuration could not be read: {error}"),
             ),
         };
-        let runtime_status = RelayRuntimeStatus::read(&config, ui::time::wall());
+        let runtime_status = RelayRuntimeStatus::read(&config, now);
         let discovered_workspaces = if devices {
             discover_workspaces(&config)
         } else {
@@ -814,24 +851,17 @@ impl DeviceMeshModel {
         } else {
             (Vec::new(), None)
         };
-        let continuity_settings = cx.follow::<ContinuityPrivacy>();
-        let continuity = continuity_settings.get().clone();
         let roaming_provenance_path = devices
             .then(settings_store::roaming_provenance::path)
             .flatten();
-        let (roaming_provenance, roaming_provenance_status, roaming_provenance_stamp) =
-            load_roaming_provenance(roaming_provenance_path.as_deref());
+        let roaming_provenance = read_roaming_provenance(roaming_provenance_path.as_deref());
         Self {
             config_path,
             config,
             load_status,
-            cx,
-            changed: false,
             runtime_status,
             discovered_workspaces,
-            registered_home_peers: home_peers.len(),
             home_peers,
-            home_peer_health: HashMap::new(),
             home_peer_last_seen: if devices {
                 load_home_peer_last_seen()
             } else {
@@ -839,11 +869,45 @@ impl DeviceMeshModel {
             },
             personal_devices,
             personal_device_error,
+            roaming_provenance_path,
+            roaming_provenance,
+        }
+    }
+}
+
+impl DeviceMeshModel {
+    /// Load the relay configuration at `config_path` here
+    /// ([`MeshRead::of`]). Without `devices`, nothing paired or discovered
+    /// is read.
+    #[cfg(test)]
+    fn from_path(cx: PaneCx, config_path: PathBuf, devices: bool) -> Self {
+        Self::from_read(cx, MeshRead::of(config_path, devices, ui::time::wall()))
+    }
+
+    /// The model over what `read` read of the device.
+    fn from_read(cx: PaneCx, read: MeshRead) -> Self {
+        let continuity_settings = cx.follow::<ContinuityPrivacy>();
+        let continuity = continuity_settings.get().clone();
+        let (roaming_provenance, roaming_provenance_status, roaming_provenance_stamp) =
+            shown_roaming_provenance(read.roaming_provenance);
+        Self {
+            config_path: read.config_path,
+            config: read.config,
+            load_status: read.load_status,
+            cx,
+            changed: false,
+            runtime_status: read.runtime_status,
+            discovered_workspaces: read.discovered_workspaces,
+            registered_home_peers: read.home_peers.len(),
+            home_peers: read.home_peers,
+            home_peer_health: HashMap::new(),
+            home_peer_last_seen: read.home_peer_last_seen,
+            personal_devices: read.personal_devices,
+            personal_device_error: read.personal_device_error,
             continuity,
             continuity_settings,
-            continuity_status: None,
             peer_names: HashMap::new(),
-            roaming_provenance_path,
+            roaming_provenance_path: read.roaming_provenance_path,
             roaming_provenance_stamp,
             roaming_provenance,
             roaming_provenance_status,
@@ -877,19 +941,6 @@ impl DeviceMeshModel {
         pane
     }
 
-    fn save_continuity(&mut self) {
-        let continuity = self.continuity.clone();
-        self.continuity_status = match self
-            .continuity_settings
-            .settings()
-            .update(|stored| *stored = continuity)
-        {
-            Ok(_) => None,
-            Err(error) => Some(format!("Continuity choices were not saved: {error}")),
-        };
-        self.continuity_settings.refresh();
-    }
-
     fn common_replication(&self) -> ReplicationIntent {
         self.config
             .workspaces
@@ -900,10 +951,6 @@ impl DeviceMeshModel {
     }
 
     /// Carry out `effect`.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one arm per effect, each a short configuration change"
-    )]
     fn apply(&mut self, effect: &DeviceMeshEffect) -> Result<(), String> {
         let configured = match effect {
             DeviceMeshEffect::SetDeviceRole { role } => {
@@ -964,22 +1011,6 @@ impl DeviceMeshModel {
                     self.config.remove_workspace(id);
                 }
                 true
-            }
-            DeviceMeshEffect::SetContinuity { on } => {
-                self.continuity.enabled = *on;
-                self.continuity.record(None, *on, unix_now());
-                self.save_continuity();
-                false
-            }
-            DeviceMeshEffect::SetContinuityFacet { facet, on } => {
-                let capability = Capability::ALL
-                    .into_iter()
-                    .find(|capability| capability.key() == facet)
-                    .ok_or_else(|| "unsupported Continuity capability".to_string())?;
-                self.continuity.set_allowed(capability, *on);
-                self.continuity.record(Some(capability), *on, unix_now());
-                self.save_continuity();
-                false
             }
             DeviceMeshEffect::PairHomeServer => {
                 self.approve_enrollment(PairingTarget::HomePeer);
@@ -1159,7 +1190,7 @@ impl DeviceMeshModel {
                 .cx
                 .bind(replication, effect(DeviceMeshEffect::SET_REPLICATION));
             let repl_desc = replication_description(&self.common_replication());
-            continuation_rows.push(choice_row_described(
+            continuation_rows.push(setting_row_described(
                 &files,
                 &repl_desc,
                 Box::new(replication),
@@ -1179,7 +1210,7 @@ impl DeviceMeshModel {
 
         let this_device = t("mesh-this-device");
         let this_device_desc = t("mesh-this-device-desc");
-        let mut availability_rows = vec![choice_row_described(
+        let mut availability_rows = vec![setting_row_described(
             &this_device,
             &this_device_desc,
             Box::new(role),
@@ -1388,18 +1419,16 @@ impl DeviceMeshModel {
                 )
             },
         );
-        let continuity_toggle = self.cx.bind(
-            Toggle::from_state(&ui::LocalState::new(self.continuity.enabled))
-                .with_id(CONTINUITY_ENABLED_KEY),
-            effect(DeviceMeshEffect::SET_CONTINUITY),
-        );
-        let allow = t("mesh-allow-continuity");
-        let allow_desc = t("mesh-allow-continuity-desc");
-        let mut privacy_rows = vec![setting_row_described(
-            &allow,
-            &allow_desc,
-            Box::new(continuity_toggle),
-        )];
+        let mut privacy_rows = vec![
+            self.cx
+                .row(t("mesh-allow-continuity"))
+                .described(t("mesh-allow-continuity-desc"))
+                .id(CONTINUITY_ENABLED_KEY)
+                .toggle_verb(
+                    &ui::LocalState::new(self.continuity.enabled),
+                    ContinuityPrivacy::ALLOW_CONTINUITY,
+                ),
+        ];
         for capability in Capability::ALL {
             let key = continuity_key(capability);
             let desc = capability.description();
@@ -1417,19 +1446,19 @@ impl DeviceMeshModel {
                 t_args("mesh-facet-off", &[("desc", desc.into())])
             };
             let facet = capability.key().to_owned();
-            let toggle = self.cx.bind(
-                Toggle::from_state(&ui::LocalState::new(self.continuity.allowed(capability)))
-                    .with_id(&key),
-                effect(DeviceMeshEffect::SET_CONTINUITY_FACET)
-                    .map(move |on: bool| (facet.clone(), on)),
+            privacy_rows.push(
+                self.cx
+                    .row(capability.label())
+                    .described(status)
+                    .id(key)
+                    .toggle_verb(
+                        &ui::LocalState::new(self.continuity.allowed(capability)),
+                        ContinuityPrivacy::ALLOW_CAPABILITY
+                            .map(move |on: bool| (facet.clone(), on)),
+                    ),
             );
-            let cap_label = capability.label();
-            privacy_rows.push(setting_row_described(&cap_label, &status, Box::new(toggle)));
         }
         privacy_rows.push(caption(&t("mesh-privacy-stay")));
-        if let Some(status) = &self.continuity_status {
-            privacy_rows.push(caption(status));
-        }
 
         let current_target_label = t("mesh-current-target");
         let source_label = t("mesh-source");
@@ -1570,53 +1599,36 @@ impl DeviceMeshModel {
             sections.push(card_with_action(&peer.label, remove, rows(peer_rows)));
         }
         if shows_advanced_services(self.config.device_role) {
-            let services_title = t("mesh-services-title");
-            let svc_relay = t("mesh-svc-relay");
-            let svc_relay_desc = t("mesh-svc-relay-desc");
-            let svc_remote = t("mesh-svc-remote");
-            let svc_remote_desc = t("mesh-svc-remote-desc");
-            let svc_apps = t("mesh-svc-apps");
-            let svc_apps_desc = t("mesh-svc-apps-desc");
-            let svc_jobs = t("mesh-svc-jobs");
-            let svc_jobs_desc = t("mesh-svc-jobs-desc");
             sections.push(card(
-                &services_title,
+                &t("mesh-services-title"),
                 rows(vec![
-                    setting_row_described(
-                        &svc_relay,
-                        &svc_relay_desc,
-                        Box::new(self.service_toggle(
-                            "inbound_relay",
-                            "device_mesh.inbound_relay",
-                            self.config.services.inbound_relay,
-                        )),
+                    self.service_row(
+                        "mesh-svc-relay",
+                        "mesh-svc-relay-desc",
+                        "inbound_relay",
+                        "device_mesh.inbound_relay",
+                        self.config.services.inbound_relay,
                     ),
-                    setting_row_described(
-                        &svc_remote,
-                        &svc_remote_desc,
-                        Box::new(self.service_toggle(
-                            "remote_control_relay",
-                            "device_mesh.remote_relay",
-                            self.config.services.remote_control_relay,
-                        )),
+                    self.service_row(
+                        "mesh-svc-remote",
+                        "mesh-svc-remote-desc",
+                        "remote_control_relay",
+                        "device_mesh.remote_relay",
+                        self.config.services.remote_control_relay,
                     ),
-                    setting_row_described(
-                        &svc_apps,
-                        &svc_apps_desc,
-                        Box::new(self.service_toggle(
-                            "app_serving",
-                            "device_mesh.app_serving",
-                            self.config.services.app_serving,
-                        )),
+                    self.service_row(
+                        "mesh-svc-apps",
+                        "mesh-svc-apps-desc",
+                        "app_serving",
+                        "device_mesh.app_serving",
+                        self.config.services.app_serving,
                     ),
-                    setting_row_described(
-                        &svc_jobs,
-                        &svc_jobs_desc,
-                        Box::new(self.service_toggle(
-                            "compute",
-                            "device_mesh.compute",
-                            self.config.services.compute,
-                        )),
+                    self.service_row(
+                        "mesh-svc-jobs",
+                        "mesh-svc-jobs-desc",
+                        "compute",
+                        "device_mesh.compute",
+                        self.config.services.compute,
                     ),
                 ]),
             ));
@@ -1625,12 +1637,24 @@ impl DeviceMeshModel {
         cards(sections)
     }
 
-    fn service_toggle(&self, service: &'static str, id: &str, on: bool) -> Toggle {
-        self.cx.bind(
-            Toggle::from_state(&ui::LocalState::new(on)).with_id(id),
-            effect(DeviceMeshEffect::SET_DEVICE_SERVICE)
-                .map(move |on: bool| (service.to_owned(), on)),
-        )
+    /// The row switching the mesh service `service` of this device.
+    fn service_row(
+        &self,
+        label: &str,
+        description: &str,
+        service: &'static str,
+        id: &str,
+        on: bool,
+    ) -> crate::widgets::El {
+        self.cx
+            .row(t(label))
+            .described(t(description))
+            .id(id)
+            .toggle_effect(
+                &ui::LocalState::new(on),
+                effect(DeviceMeshEffect::SET_DEVICE_SERVICE)
+                    .map(move |on: bool| (service.to_owned(), on)),
+            )
     }
 
     fn persist(&mut self) {
@@ -1986,11 +2010,7 @@ impl DeviceMeshModel {
                                 "Online. Syncing files".into()
                             },
                         );
-                        let now_ms = ui::time::wall()
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .map_or(0, |duration| {
-                                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-                            });
+                        let now_ms = ui::time::unix_now_ms();
                         self.home_peer_last_seen.insert(device, now_ms);
                         save_home_peer_last_seen(&self.home_peer_last_seen);
                         self.home_peers = registered_home_peers();
@@ -2143,7 +2163,7 @@ mod tests {
                 schema_version: SCHEMA_VERSION,
                 generated_unix_ms: 1,
                 settings: vec![SettingResolution {
-                    key: "tilo.appearance.theme".into(),
+                    key: "tilo.appearance.mode".into(),
                     winner: origin("b", "Laptop", 8),
                     alternatives: vec![origin("a", "Desktop", 7)],
                 }],
@@ -2160,7 +2180,7 @@ mod tests {
                 summaries,
                 vec![
                     (
-                        "tilo.appearance.theme".into(),
+                        "tilo.appearance.mode".into(),
                         "Resolved to Laptop at revision 8; differs from Desktop".into()
                     ),
                     (
@@ -2192,17 +2212,33 @@ mod tests {
 
         // Case `continuity_edits_persist_locally_and_append_redacted_audit_rows`.
         {
-            let dir = tempfile::tempdir().unwrap();
-            let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-            pane.apply(&DeviceMeshEffect::SetContinuity { on: true })
-                .unwrap();
-            pane.apply(&DeviceMeshEffect::SetContinuityFacet {
-                facet: "clipboard".into(),
-                on: true,
-            })
+            use crate::host::testing::{CONTINUITY, invoke_section};
+            let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+            invoke_section(
+                &mut app,
+                CONTINUITY,
+                "allow-continuity",
+                serde_json::json!({ "on": true }),
+            )
             .unwrap();
+            invoke_section(
+                &mut app,
+                CONTINUITY,
+                "allow-capability",
+                serde_json::json!({ "capability": "clipboard", "on": true }),
+            )
+            .unwrap();
+            assert!(
+                invoke_section(
+                    &mut app,
+                    CONTINUITY,
+                    "allow-capability",
+                    serde_json::json!({ "capability": "telepathy", "on": true }),
+                )
+                .is_err()
+            );
 
-            let saved = pane.cx.settings::<ContinuityPrivacy>().get();
+            let saved = app.settings::<ContinuityPrivacy>().get();
             assert!(saved.enabled);
             assert!(saved.effective(Capability::Clipboard));
             assert_eq!(saved.audit.len(), 2);
@@ -2215,10 +2251,6 @@ mod tests {
 
     /// Relay config shape, honest missing config, file policy intents and non-blocking coalesced applies.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
     fn relay_config_edits_are_real_honest_and_coalesced() {
         // Case `edits_write_the_real_relay_config_shape`.
         {
@@ -2293,14 +2325,6 @@ mod tests {
             assert_eq!(
                 replication_from_label(REPLICATION_FULL),
                 Some(ReplicationIntent::FullWorkspace)
-            );
-            assert_eq!(
-                replication_label(&ReplicationIntent::OnDemand),
-                REPLICATION_ON_DEMAND
-            );
-            assert_eq!(
-                replication_label(&ReplicationIntent::FullWorkspace),
-                REPLICATION_FULL
             );
             assert!(
                 replication_description(&ReplicationIntent::OnDemand)
@@ -2603,5 +2627,54 @@ mod tests {
             assert!(pane.pairing_child.is_some());
             pane.pairing_child = None;
         }
+    }
+
+    /// Wait for a background read to end, as the warm-up's wake would.
+    fn until_finished(finished: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !finished() {
+            assert!(std::time::Instant::now() < deadline, "the read ends");
+            std::thread::yield_now();
+        }
+    }
+
+    /// The warm-up reads the relay and the fleet off the UI thread once;
+    /// the model is built from that read, and nothing is read again.
+    #[test]
+    fn the_area_builds_its_model_from_the_read_it_started() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = DeviceMeshArea::new(&cx);
+        assert!(area.start_read(), "the first read starts");
+        assert!(!area.start_read(), "one read at a time");
+        assert!(!area.is_open(), "a running read publishes nothing yet");
+        until_finished(|| area.read_finished());
+        let model = area.model().borrow();
+        assert!(area.is_open());
+        assert_eq!(
+            model.config_path,
+            PathBuf::from("/nonexistent/tilo/relay.toml"),
+            "a test reads the stand-in configuration"
+        );
+        assert!(model.personal_devices.is_empty() && model.home_peers.is_empty());
+        drop(model);
+        assert!(!area.start_read(), "a built model is not read again");
+    }
+
+    /// A model built from a read shows what reading in place shows.
+    #[test]
+    fn a_read_builds_the_model_reading_in_place_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay.toml");
+        std::fs::write(&path, "device_role = \"interactive\"\n").unwrap();
+        let cx = PaneCx::in_file(dir.path().join("settings.json"));
+        let here = DeviceMeshModel::from_path(cx.clone(), path.clone(), false);
+        let read = MeshRead::of(path, false, ui::time::wall());
+        let there = DeviceMeshModel::from_read(cx, read);
+        assert_eq!(here.config_path, there.config_path);
+        assert_eq!(here.load_status, there.load_status);
+        assert_eq!(here.config.device_role, there.config.device_role);
+        assert_eq!(here.runtime_status, there.runtime_status);
+        assert_eq!(here.discovered_workspaces, there.discovered_workspaces);
     }
 }

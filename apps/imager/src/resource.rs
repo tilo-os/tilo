@@ -1,14 +1,18 @@
-//! Imager as a [`tilo_resource::Resource`].
+//! The imager's resource: what a person reviews and authors.
 //!
-//! The document holds what a person reviews and authors: the image to write,
-//! the images reviewed before it and the install profile. Its edits are
-//! [`ImagerAction`]s, offered by name for the source and profile that apply
-//! now ([`Resource::bound_declarations`]).
+//! The document holds the image to write, the images reviewed before it and
+//! the install profile. Profile fields change through the built-in field
+//! edits (`Imager::paths().profile.hostname.replace(..)`); reviewing an
+//! image is a verb, because it also remembers the image reviewed before it.
+//! The privileged writer re-validates the reviewed image at execution time:
+//! a collaborator's record is a claim, never trust.
 //!
 //! Everything else belongs to this machine: the drives the probe sees are
 //! [`LiveRow`]s beneath the resource, and writing one is the
 //! [`ImagerEffect::Write`] job, whose progress, cancellation and outcome
 //! reach whoever started it — the Write button, the palette or an agent.
+//! The Wi-Fi passphrase, credentials and the destructive confirmation never
+//! enter the document.
 
 use std::rc::Rc;
 
@@ -16,66 +20,106 @@ use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Fixture, Helper, LiveRow, ResourceApp, ResourceSurface,
     SurfaceCx, ViewCx,
 };
-use ui::tilo_resource::{self, ActionDecl, Doc, Effect, Invoke, ModelError, Resource};
+use ui::i18n::EmbeddedCatalog;
+use ui::tilo_resource::{self, Availability, Effect, Id, Invoke, Keyed, Model, resource};
 use ui::widget::Element;
 
-use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction, profile_declarations, register};
 use crate::app::ImagerApp;
-use crate::doc::ImagerDoc;
-use crate::model::{InstallProfile, Source};
+use crate::model::{InstallProfile, RecentSource, Source};
+
+/// The imager's Fluent catalog.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
+
+static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", LOCALES, "imager-setup-action-next").with_system_locale();
 
 /// The reviewed image, the images reviewed before it and the install
 /// profile: everything the imager keeps in its document.
-#[derive(Clone, Debug, Default)]
-pub struct ImagerState {
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct Imager {
+    /// Image to write. Only reviewing or clearing it changes it.
+    #[model(readonly)]
     pub source: Option<Source>,
-    /// Previously reviewed images, most recent first.
-    pub recent: Vec<Source>,
-    /// The rank a newly remembered image takes: before every recent one.
-    pub next_recent_rank: i64,
+    /// Images reviewed before, by source id.
+    #[model(readonly)]
+    pub recent: Keyed<RecentSource>,
+    /// Install profile
     pub profile: InstallProfile,
 }
 
-/// The disk-imager sources / write-plan resource.
-pub struct Imager;
-
-impl Resource for Imager {
-    const KIND: &'static str = "imager.sources";
-    const LABEL: &'static str = "Image sources";
-    const ACTION_TYPE: &'static str = IMAGER_ACTION_TYPE;
-
-    type State = ImagerState;
-    type Action = ImagerAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
+#[resource(
+    kind = "imager.sources",
+    label = "Image sources",
+    initialize = Imager::default,
+    available = Imager::available
+)]
+impl Imager {
+    /// Review an image to write.
+    ///
+    /// The image reviewed before it moves to the front of the recent ones.
+    #[action]
+    pub fn select_source(&mut self, #[param("The reviewed image")] source: Source) {
+        if let Some(previous) = self
+            .source
+            .take()
+            .filter(|previous| !previous.path.is_empty() && previous.id() != source.id())
+        {
+            self.remember(previous);
+        }
+        self.source = Some(source);
     }
 
-    fn read(doc: &Doc) -> Result<ImagerState, ModelError> {
-        Ok(ImagerState {
-            source: ImagerDoc::source(doc),
-            recent: ImagerDoc::recent(doc),
-            next_recent_rank: ImagerDoc::next_recent_rank(doc),
-            profile: ImagerDoc::profile(doc),
-        })
+    /// Clear the reviewed image; the images reviewed before it stay.
+    #[action]
+    pub fn clear_source(&mut self) {
+        self.source = None;
+    }
+}
+
+impl Imager {
+    /// Remember `source` as the most recent image reviewed before.
+    fn remember(&mut self, source: Source) {
+        let rank = self
+            .recent
+            .iter()
+            .map(|recent| recent.rank)
+            .min()
+            .unwrap_or(0)
+            .saturating_sub(1);
+        let id = Id::from_raw(source.id());
+        match self.recent.find_mut(&id) {
+            Some(recent) => {
+                recent.rank = rank;
+                recent.source = source;
+            }
+            None => self.recent.push(RecentSource { id, rank, source }),
+        }
+        self.recent.settle();
     }
 
-    /// An empty reviewed source, recent list and install profile.
-    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
-        ImagerDoc::seed(doc);
-        Ok(())
+    /// Previously reviewed images, most recent first.
+    pub fn recent_sources(&self) -> Vec<Source> {
+        let mut recent: Vec<&RecentSource> = self.recent.iter().collect();
+        recent.sort_by(|a, b| {
+            a.rank
+                .cmp(&b.rank)
+                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        });
+        recent
+            .into_iter()
+            .map(|recent| recent.source.clone())
+            .collect()
     }
 
-    /// Typing into one profile field is one step until the field changes.
-    fn coalesces(previous: &ImagerAction, next: &ImagerAction) -> bool {
-        previous.same_text_field(next)
-    }
-
-    /// Clearing the reviewed image, and the profile fields that image
-    /// carries: the media profile only for an authenticated Tilo image, the
-    /// on-write Wi-Fi and enrollment for any image.
-    fn bound_declarations(state: &ImagerState) -> Vec<ActionDecl<Self>> {
-        profile_declarations(state.source.as_ref())
+    /// Nothing to clear before an image is reviewed.
+    fn available(&self, verb: imager::Verb) -> Availability {
+        match verb {
+            imager::Verb::ClearSource if self.source.is_none() => Availability::Unavailable {
+                code: "no-source".into(),
+                reason: "No image is reviewed.".into(),
+            },
+            _ => Availability::Available,
+        }
     }
 }
 
@@ -86,7 +130,7 @@ impl Resource for Imager {
 #[effect(operation = "imager.write-plan")]
 pub enum ImagerEffect {
     /// Erase drive and write image.
-    #[effect(job, cancellable, permission = "admin")]
+    #[effect(job, cancellable)]
     Write {
         #[param("Device path of the reviewed target drive, e.g. /dev/sdb")]
         device: String,
@@ -94,10 +138,10 @@ pub enum ImagerEffect {
         confirmation: String,
     },
     /// Show image-write status.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     Status,
     /// Export headless configuration.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     ExportConfig,
     /// Set Wi-Fi password.
     SetWifiPsk {
@@ -107,16 +151,37 @@ pub enum ImagerEffect {
         )]
         value: String,
     },
+    /// Set the owner SSH public key for the next write on this machine.
+    SetSshKey {
+        #[param("OpenSSH public keys, one per line, without authorized_keys options")]
+        value: String,
+    },
+    /// Customize a regular raw image file through the installed-root path.
+    #[effect(job, returns)]
+    CustomizeImage {
+        #[param("Path to the regular raw disk image; devices and symlinks are refused")]
+        image: String,
+        #[param("Optional hostname for the image")]
+        hostname: Option<String>,
+        #[param("Optional Wi-Fi network name")]
+        wifi_ssid: Option<String>,
+        #[param("Path to a local file containing the Wi-Fi passphrase")]
+        wifi_psk_file: Option<String>,
+        #[param("Path to an owner public-key file, one OpenSSH key per line")]
+        ssh_keys_file: Option<String>,
+        #[param("Files to place in the image account's home")]
+        home_files: Vec<String>,
+    },
     /// Choose a disk image.
     #[effect(job)]
     ChooseImage,
     /// Cancel the installer download; what was verified is kept for resume.
     CancelDownload,
     /// Rescan drives.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Rescan,
     /// Choose target drive.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ChooseDrive {
         #[param("Kernel name of a removable drive, e.g. sdb")]
         drive: String,
@@ -190,26 +255,16 @@ fn sample_iso() -> Source {
 
 /// Review `sources` in order, each one remembering the one before it.
 fn review(sources: &[Source]) -> Vec<Invoke<Imager>> {
-    let mut previous: Option<&Source> = None;
-    let mut invokes = Vec::new();
-    for (rank, source) in sources.iter().enumerate() {
-        invokes.extend(
-            Invoke::apply(&ImagerAction::SelectSource {
-                source: Box::new(source.clone()),
-                previous: previous.cloned().map(Box::new),
-                recent_rank: -(rank as i64),
-            })
-            .ok(),
-        );
-        previous = Some(source);
-    }
-    invokes
+    sources
+        .iter()
+        .map(|source| Imager::SELECT_SOURCE.with(source.clone()))
+        .collect()
 }
 
 impl ResourceApp for ImagerShell {
     type Resource = Imager;
     const ID: &'static str = "so.tilo.imager";
-    const TITLE: &'static str = "Disk Imager";
+    const TITLE: &'static str = "Tilo Installer";
     const ICON: Option<&'static str> = Some("imager");
     const FLAGS: &'static [&'static str] = &["--setup", "--import-folders"];
     // Only hosts with a local workspace runtime can attach the imager.
@@ -220,6 +275,10 @@ impl ResourceApp for ImagerShell {
     /// runs before anything of the app does.
     fn helpers() -> &'static [Helper] {
         &crate::helpers::HELPERS
+    }
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -279,7 +338,7 @@ impl ResourceApp for ImagerShell {
 }
 
 impl ResourceSurface<Imager, ImagerEffect> for ImagerApp {
-    fn present(&mut self, state: &Rc<ImagerState>) {
+    fn present(&mut self, state: &Rc<Imager>) {
         self.present_state(state);
     }
 
@@ -310,7 +369,7 @@ impl ResourceSurface<Imager, ImagerEffect> for ImagerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::tilo_actions::Action as _;
+    use ui::tilo_resource::Resource as _;
 
     /// The wizard over the sample drives and releases, hosted as the live
     /// app hosts it.
@@ -335,15 +394,8 @@ mod tests {
     /// A hosted wizard on the Customize step of the sample Tilo image.
     fn customizing() -> ui::framework::testing::TestApp<SampleImager> {
         let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
-        app.invoke(
-            ui::tilo_resource::Invoke::apply(&ImagerAction::SelectSource {
-                source: Box::new(crate::model::sample_source()),
-                previous: None,
-                recent_rank: 0,
-            })
-            .unwrap(),
-        )
-        .unwrap();
+        app.invoke(Imager::SELECT_SOURCE.with(crate::model::sample_source()))
+            .unwrap();
         app.harness()
             .with_widget_mut(|wizard: &mut ImagerApp| wizard.show_customize_for_test())
             .expect("the hosted wizard");
@@ -396,13 +448,8 @@ mod tests {
     #[test]
     fn typing_a_hostname_is_one_undo_step_through_the_panel() {
         let mut app = customizing();
-        app.invoke(
-            ui::tilo_resource::Invoke::apply(&ImagerAction::SetHostname {
-                value: String::new(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
+        app.invoke(Invoke::edit(&Imager::paths().profile.hostname.replace("")).unwrap())
+            .unwrap();
         app.harness()
             .perform_named("imager.profile.hostname", &ui::a11y::Action::Focus)
             .unwrap();
@@ -419,9 +466,13 @@ mod tests {
 
         let previous_name = app.state().profile.user.full_name;
         app.invoke(
-            ui::tilo_resource::Invoke::apply(&ImagerAction::SetFullName {
-                value: "Second field".into(),
-            })
+            Invoke::edit(
+                &Imager::paths()
+                    .profile
+                    .user
+                    .full_name
+                    .replace("Second field"),
+            )
             .unwrap(),
         )
         .unwrap();
@@ -451,15 +502,16 @@ mod tests {
     fn a_collaborator_clearing_the_source_or_editing_any_field_is_shown() {
         let mut app = customizing();
         app.merge_peer_edit(|doc| {
-            ImagerAction::ClearSource.apply(doc).unwrap();
-            ImagerAction::SetWifiSsid {
-                value: "lab".into(),
+            let mut peer = Imager::read(doc).unwrap();
+            peer.clear_source();
+            ui::tilo_resource::Fields::write_fields(&peer, doc, &automerge::ROOT).unwrap();
+            let profile = Imager::paths().profile;
+            for edit in [
+                profile.wifi_ssid.replace("lab"),
+                profile.enroll_local_identity.set(true),
+            ] {
+                edit.apply_local(doc).unwrap();
             }
-            .apply(doc)
-            .unwrap();
-            ImagerAction::SetEnrollLocalIdentity { on: true }
-                .apply(doc)
-                .unwrap();
         });
         let shown = app
             .harness()
@@ -502,14 +554,15 @@ mod tests {
         let root = find(&resources, Imager::KIND).expect("the imager resource");
         let root_ids = ids(root);
         for id in [
+            "select-source",
             "clear-source",
-            "hostname",
-            "filesystem",
-            "wifi-ssid",
+            "field-edit",
             "write",
             "status",
             "export-config",
             "set-wifi-psk",
+            "set-ssh-key",
+            "customize-image",
             "rescan",
             "choose-drive",
             "choose-image",
@@ -559,15 +612,8 @@ mod tests {
     #[test]
     fn effects_choose_drives_report_status_and_export_the_plan() {
         let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
-        app.invoke(
-            ui::tilo_resource::Invoke::apply(&ImagerAction::SelectSource {
-                source: Box::new(crate::model::sample_source()),
-                previous: None,
-                recent_rank: 0,
-            })
-            .unwrap(),
-        )
-        .unwrap();
+        app.invoke(Imager::SELECT_SOURCE.with(crate::model::sample_source()))
+            .unwrap();
         assert!(
             app.effect(&ImagerEffect::ExportConfig).is_err(),
             "no plan without a drive"
@@ -619,23 +665,157 @@ mod tests {
     }
 
     #[test]
-    fn declared_profile_actions_check_their_arguments() {
+    fn owner_ssh_key_effect_validates_and_stays_on_the_setup_machine() {
         let mut app = customizing();
-        app.call("filesystem", serde_json::json!({ "filesystem": "xfs" }))
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA owner@example";
+        app.effect(&ImagerEffect::SetSshKey { value: key.into() })
             .unwrap();
+        app.harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| {
+                assert_eq!(wizard.ssh_key_for_test(), key);
+            })
+            .expect("the hosted wizard");
+        assert!(
+            app.effect(&ImagerEffect::SetSshKey {
+                value: "no-pty ssh-ed25519 invalid".into()
+            })
+            .is_err()
+        );
+        app.harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| {
+                assert_eq!(
+                    wizard.ssh_key_for_test(),
+                    key,
+                    "a rejected effect preserves the accepted key"
+                );
+            })
+            .expect("the hosted wizard");
+        assert!(app.read_document(|doc| {
+            !String::from_utf8_lossy(&doc.clone().save()).contains("owner@example")
+        }));
+    }
+
+    #[test]
+    fn profile_field_edits_check_their_values() {
+        let mut app = customizing();
+        let profile = Imager::paths().profile;
+        app.call(
+            "field-edit",
+            serde_json::json!({ "edit": profile.filesystem.set(crate::model::Filesystem::Xfs) }),
+        )
+        .unwrap();
         assert_eq!(
             app.state().profile.filesystem,
             crate::model::Filesystem::Xfs
         );
+        let mut fat =
+            serde_json::to_value(profile.filesystem.set(crate::model::Filesystem::Xfs)).unwrap();
+        let text = fat.to_string().replace("\"xfs\"", "\"fat\"");
+        fat = serde_json::from_str(&text).unwrap();
         assert!(
-            app.call("filesystem", serde_json::json!({ "filesystem": "fat" }))
-                .is_err()
+            app.call("field-edit", serde_json::json!({ "edit": fat }))
+                .is_err(),
+            "a filesystem the installer does not know is refused"
         );
-        app.call("enroll-identity", serde_json::json!({ "on": true }))
-            .unwrap();
+        app.call(
+            "field-edit",
+            serde_json::json!({ "edit": profile.enroll_local_identity.set(true) }),
+        )
+        .unwrap();
         assert!(app.state().profile.enroll_local_identity);
+        assert!(
+            app.call(
+                "field-edit",
+                serde_json::json!({ "edit": Imager::paths().source.set(None) })
+            )
+            .is_err(),
+            "only reviewing or clearing changes the image"
+        );
         app.call("clear-source", serde_json::json!({})).unwrap();
         assert!(app.state().source.is_none());
+        assert!(
+            app.call("clear-source", serde_json::json!({})).is_err(),
+            "nothing to clear"
+        );
+    }
+
+    #[test]
+    fn malformed_enrollment_calls_preserve_the_enabled_choice_and_document() {
+        let mut app = customizing();
+        let enroll = |on: bool| {
+            serde_json::to_value(Imager::paths().profile.enroll_local_identity.set(on))
+                .expect("an edit is JSON")
+        };
+        app.call("field-edit", serde_json::json!({ "edit": enroll(true) }))
+            .unwrap();
+        assert!(app.state().profile.enroll_local_identity);
+        let enabled_document = app.read_document(|doc| doc.clone().save());
+        // The edit turning enrollment off, with its value replaced.
+        let with_value = |value: serde_json::Value| {
+            fn replace(json: &mut serde_json::Value, value: &serde_json::Value) {
+                match json {
+                    serde_json::Value::Object(fields) => {
+                        for (key, field) in fields.iter_mut() {
+                            if key == "value" {
+                                *field = value.clone();
+                            } else {
+                                replace(field, value);
+                            }
+                        }
+                    }
+                    serde_json::Value::Array(items) => {
+                        for item in items {
+                            replace(item, value);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut edit = enroll(false);
+            replace(&mut edit, &value);
+            serde_json::json!({ "edit": edit })
+        };
+        for arguments in [
+            serde_json::json!({}),
+            with_value(serde_json::json!("maybe")),
+            with_value(serde_json::json!("false")),
+            with_value(serde_json::Value::Null),
+            with_value(serde_json::json!(0)),
+            with_value(serde_json::json!([])),
+            with_value(serde_json::json!({})),
+            serde_json::json!({ "edit": enroll(false), "unexpected": true }),
+        ] {
+            let Err(error) = app.call("field-edit", arguments.clone()) else {
+                panic!("{arguments}: invalid arguments must not create an enrollment edit");
+            };
+            // A malformed call is invalid arguments; a value of the wrong
+            // type is refused by the field it would set.
+            assert!(
+                matches!(
+                    error,
+                    ui::tilo_actions::DoorError::InvalidArguments(_)
+                        | ui::tilo_actions::DoorError::Failed(_)
+                ),
+                "{arguments}: {error}"
+            );
+            assert!(
+                app.state().profile.enroll_local_identity,
+                "{arguments}: rejected input turned enrollment off"
+            );
+            assert_eq!(
+                app.read_document(|doc| doc.clone().save()),
+                enabled_document,
+                "{arguments}: rejected input mutated the document"
+            );
+        }
+        app.call("field-edit", serde_json::json!({ "edit": enroll(false) }))
+            .unwrap();
+        assert!(!app.state().profile.enroll_local_identity);
+        assert_ne!(
+            app.read_document(|doc| doc.clone().save()),
+            enabled_document,
+            "an explicit Boolean false must still edit the choice"
+        );
     }
 
     #[test]
@@ -786,3 +966,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod model_tests;

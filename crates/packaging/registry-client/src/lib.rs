@@ -8,6 +8,7 @@ pub mod client;
 pub mod entry;
 pub mod key;
 pub mod publish;
+pub mod runtime_history;
 
 pub use client::{DEFAULT_REGISTRY, REGISTRY_ENV, RegistryClient};
 pub use entry::{

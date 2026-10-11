@@ -44,7 +44,7 @@ pub struct ImageSigningAuthorization {
     /// Mandatory expiry limits exposure of an unattended build signer.
     pub expires_at_ns: u64,
     /// Human-root Ed25519 signature over the domain-separated canonical view.
-    #[serde(with = "crate::cert::serde_bytes_64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 
@@ -82,7 +82,7 @@ pub struct ImageEndorsement {
     /// Separate root grant proving this device may endorse OS images.
     pub signing_authorization: ImageSigningAuthorization,
     /// Device Ed25519 signature over the domain-separated canonical view.
-    #[serde(with = "crate::cert::serde_bytes_64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 

@@ -121,6 +121,12 @@ impl Composer {
         self.reviewed.as_ref().map(|(_, _, preview)| preview)
     }
 
+    /// Closing a private presentation discards its unapproved text and pixels.
+    /// An already queued immutable report keeps its existing retry identity.
+    pub fn abandon_review(&mut self) {
+        self.reviewed = None;
+    }
+
     /// Hide a reviewed span without restoring the original text.
     ///
     /// # Errors

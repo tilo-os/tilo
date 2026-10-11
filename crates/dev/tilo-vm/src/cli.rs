@@ -120,6 +120,11 @@ pub enum Command {
     /// Manage slots: your user, session and layer stack inside a VM.
     #[command(subcommand)]
     Slot(SlotCommand),
+    /// Import an exact same-run layer artifact without invoking Cargo or a builder.
+    #[command(
+        after_help = "Examples:\n  tilo-vm swap-artifact shell --slot review-a --receipt layers/manifest.json --source <commit> --builder-image <immutable-image> --run-id <workflow-api-id> --run-attempt 1 --receipt-sha256 <upstream-manifest-sha256>\n\nSupply expected identities from the authenticated producer job. The daemon retains normal signed cohort validation; artifact failures never fall back to a build."
+    )]
+    SwapArtifact(ArtifactSwap),
     /// Put a build of a component (or an app) into a slot and restart what it needs.
     #[command(
         after_help = "Examples:\n  tilo-vm swap shell                      # your slot, built in the VM from this worktree\n  tilo-vm swap shell --profile dev        # faster compile, slower binary\n  tilo-vm swap --slot vm fs               # VM-wide component into the vm slot\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap shell --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap shell --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap shell --builder host       # build on this Linux host instead\n  tilo-vm swap --slot review-a launcher --from layer:3f9c...\n  tilo-vm swap kernel                     # build os/kernel incrementally, install VM-wide, reboot\n  tilo-vm swap kernel --jobs 4            # fewer parallel compile jobs (default: half the CPUs)\n  tilo-vm swap kernel --direct            # boot the host build directly (libvirt), install nothing\n  tilo-vm swap kernel --direct --cmdline 'root=UUID=... ro console=ttyS0'   # when the VM is not up\n  tilo-vm rollback --slot vm              # back to the previous kernel (or off the direct boot)\n\nKernel: the build reuses ~/.cache/tilo-kernel/, so after the first (long) build\nonly what changed recompiles; see tilo-vm guide kernel.\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
@@ -157,6 +162,9 @@ pub enum Command {
         /// VM's, read over SSH).
         #[arg(long, requires = "direct")]
         cmdline: Option<String>,
+        /// Shell only: record phase CPU timing at each stand-in slot startup.
+        #[arg(long)]
+        frame_cpu_trace: bool,
     },
     /// Keyboard, pointer, touch, pen and gamepad input on a headful slot's own seat (real kernel input path).
     #[command(
@@ -252,6 +260,12 @@ pub enum Command {
         /// Attested source inventory used to verify the builder inputs.
         #[arg(long)]
         source_inventory: Option<PathBuf>,
+        /// Content hashes the target has verified; at most eight.
+        #[arg(long)]
+        cached_layer: Vec<String>,
+        /// Stream bounded raw chunks with a verified footer instead of base64.
+        #[arg(long)]
+        binary: bool,
     },
     /// Package one app on the architecture-configured remote builder.
     #[command(
@@ -284,6 +298,34 @@ pub enum Command {
         #[arg(long)]
         keep_targets: Option<u32>,
     },
+}
+
+/// The expected identities come from the authenticated upstream job, not the downloaded receipt.
+#[derive(Debug, Args)]
+pub struct ArtifactSwap {
+    /// Session component to activate; apps+runtime requires the complete same-run cohort.
+    pub component: String,
+    /// The slot to update (default: your slot).
+    #[arg(long)]
+    pub slot: Option<String>,
+    /// Downloaded v1 artifact manifest; payload paths are relative to its directory.
+    #[arg(long)]
+    pub receipt: PathBuf,
+    /// Exact producing source commit, independently pinned by the upstream job.
+    #[arg(long)]
+    pub source: String,
+    /// Immutable producing builder image reference, independently pinned upstream.
+    #[arg(long)]
+    pub builder_image: String,
+    /// Producing Forgejo workflow API run ID, not its web run number.
+    #[arg(long)]
+    pub run_id: u64,
+    /// Producing workflow attempt, independently pinned upstream.
+    #[arg(long)]
+    pub run_attempt: u32,
+    /// SHA256 of the exact raw manifest bytes, supplied by the authenticated upstream job.
+    #[arg(long)]
+    pub receipt_sha256: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -674,6 +716,14 @@ pub enum GamepadCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum VmCommand {
+    /// Carry the canonical semantic action operations over the owner's authenticated device route.
+    Actions {
+        /// The registered device (default: the one this worktree uses).
+        #[arg(long = "device")]
+        name: Option<String>,
+        #[command(subcommand)]
+        command: DeviceActionCommand,
+    },
     /// List registered VMs and which one this worktree uses.
     #[command(after_help = "Examples:\n  tilo-vm vm list")]
     List,
@@ -842,6 +892,32 @@ pub enum VmCommand {
     },
 }
 
+/// Transport-only spelling of the existing console semantic operations.
+#[derive(Debug, Subcommand)]
+pub enum DeviceActionCommand {
+    /// List the device's declared actions and typed arguments.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm actions list\n  tilo-vm vm actions list enroll"
+    )]
+    List {
+        /// Filter declared actions by this query (default: list all actions).
+        query: Option<String>,
+    },
+    /// Invoke a declared action; private arguments come only from stdin.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm actions invoke device-unlock enroll --args-stdin < private-args.json\n\nRead the action's declared JSON arguments with vm actions list. Private\narguments are read from stdin and never placed in the command line."
+    )]
+    Invoke {
+        /// The provider returned by vm actions list.
+        provider: String,
+        /// The declared action ID returned by vm actions list.
+        id: String,
+        /// Read the action's JSON arguments from stdin, including private fields.
+        #[arg(long, required = true)]
+        args_stdin: bool,
+    },
+}
+
 #[derive(Debug, Args)]
 pub struct AddArgs {
     /// The name to register the device under.
@@ -919,7 +995,8 @@ pub struct CreateArgs {
     /// `[user@]host[:port]` when the adapter cannot discover it.
     #[arg(long)]
     pub ssh: Option<String>,
-    /// Host port forwarded to the guest's SSH (libvirt, qemu).
+    /// Host port forwarded to the guest's SSH (libvirt, qemu, whpx).
+    /// Defaults to the first unregistered, available port from 2222.
     #[arg(long)]
     pub ssh_port: Option<u16>,
     /// UTM VM to clone.
@@ -1124,6 +1201,26 @@ pub enum SeatCommand {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shell_swap_accepts_explicit_frame_cpu_recording() {
+        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell", "--frame-cpu-trace"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Swap {
+                frame_cpu_trace: true,
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Swap {
+                frame_cpu_trace: false,
+                ..
+            })
+        ));
+    }
+
     #[test]
     fn target_flag_works_before_and_after_swap() {
         use clap::Parser as _;
@@ -1427,7 +1524,7 @@ mod tests {
             .unwrap();
             assert!(cli.json);
             assert!(
-                matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None }) if component == "fs" && slot == "vm" && from == "layer:ab")
+                matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None, frame_cpu_trace: false }) if component == "fs" && slot == "vm" && from == "layer:ab")
             );
             assert!(Cli::try_parse_from(["tilo-vm", "swap", "vm", "fs"]).is_err());
             let cli =

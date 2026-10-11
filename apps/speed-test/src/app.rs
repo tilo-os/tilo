@@ -242,7 +242,7 @@ impl SpeedTestApp {
                 self.result = Some(result);
                 self.display_value = result.download;
                 self.phase = Phase::Complete;
-                cx.invoke(self.recorded(&result, &server));
+                cx.submit(self.recorded(&result, &server));
                 Ok(Effected::value(ui::serde_json::json!({
                     "ping_ms": result.ping,
                     "jitter_ms": result.jitter,
@@ -436,16 +436,6 @@ impl Widget for SpeedTestApp {
 
     fn accessibility(&self) -> Option<AccessNode> {
         None
-    }
-
-    fn perform_action_at(
-        &mut self,
-        _action: &ui::a11y::Action,
-        _path: &[u64],
-        _state: &mut ui::widget::Edits<'_>,
-        _model: &ui::widget::ModelPath,
-    ) -> bool {
-        false
     }
 
     fn name(&self) -> &'static str {

@@ -26,7 +26,7 @@ struct Sample {
 }
 
 impl Observer {
-    fn worker_id(&self) -> Option<u64> {
+    pub(crate) fn worker_id(&self) -> Option<u64> {
         Some(self.worker_id)
     }
 

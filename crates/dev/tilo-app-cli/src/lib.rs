@@ -25,19 +25,23 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 pub mod android;
 pub mod capability_usage;
 pub mod ci;
+pub mod contract;
 mod dev_reload;
 pub mod examples;
 mod font_assets;
 mod json;
 pub mod native_libs;
+pub mod native_sdk;
 mod pack;
 pub mod portability;
 mod resource_kinds;
 pub mod size;
 pub mod standalone;
+pub mod surface;
 pub mod targets;
 pub mod web;
 
+const APP_AGENT_GUIDE: &str = include_str!("../templates/AGENTS.md");
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
 const DOCUMENT_APP_TEMPLATE: &str = include_str!("../templates/document.rs");
 const COLLECTION_APP_TEMPLATE: &str = include_str!("../templates/collection.rs");
@@ -87,6 +91,15 @@ impl Template {
             Self::Document => "One collaborative document with a live preview",
             Self::Collection => "A list of items the user adds, edits, checks off and removes",
             Self::Graph => "Serialized, live-editable screens above controls bound to the resource",
+        }
+    }
+
+    fn surface(self) -> &'static str {
+        match self {
+            Self::Starter => include_str!("../templates/starter.surface.toml"),
+            Self::Document => include_str!("../templates/document.surface.toml"),
+            Self::Collection => include_str!("../templates/collection.surface.toml"),
+            Self::Graph => include_str!("../templates/graph.surface.toml"),
         }
     }
 
@@ -533,6 +546,8 @@ pub use dev_reload::run_as_build_tool_if_requested;
 
 #[derive(Debug)]
 pub struct PackageRequest {
+    /// Independently selected signed native SDK; never an authored runtime override.
+    pub sdk: Option<native_sdk::SdkSelection>,
     pub output: Option<PathBuf>,
     pub identity: Option<PathBuf>,
     /// `None` picks `thin-app` for a thin build and `release` for a static one.
@@ -633,7 +648,9 @@ impl PackagePlatform {
         Ok(())
     }
 
-    /// The registry's name for the platform family.
+    /// The registry's name for the platform family. The browser has no
+    /// registry family (its runtime compiles its apps in), so `web` is only
+    /// the platform's own name.
     #[must_use]
     pub const fn registry_name(self) -> &'static str {
         match self {
@@ -641,7 +658,7 @@ impl PackagePlatform {
             Self::Linux => registry_types::LINUX_PLATFORM,
             Self::Windows => registry_types::WINDOWS_PLATFORM,
             Self::Macos => registry_types::MACOS_PLATFORM,
-            Self::Web => registry_types::WEB_PLATFORM,
+            Self::Web => "web",
             Self::Android => registry_types::ANDROID_PLATFORM,
         }
     }
@@ -1119,6 +1136,7 @@ pub fn add_app_artifact(request: AddRequest) -> Result<AddOutcome> {
             (writes, Some("tilo-app dev".into()))
         }
     };
+    follow_source_catalog(&app_dir, &mut writes)?;
     format_pending_rust(&mut writes)?;
     let updated = writes
         .iter()
@@ -1182,12 +1200,15 @@ fn locale_artifact_writes(app_dir: &Path, locale: &str, force: bool) -> Result<V
     if !locales.iter().any(|locale| locale == "en-US") {
         bail!("generated locale registry is missing its en-US source catalog");
     }
-    let registry_source = rustfmt_source(&locale_registry_source(&locales), &registry_path)?;
     let source_path = app_dir.join("locales/en-US.ftl");
     let source_catalog = std::fs::read_to_string(&source_path)
         .with_context(|| format!("reading source catalog {}", source_path.display()))?;
-    parse_fluent_catalog(&source_catalog)
+    let source_contract = parse_fluent_catalog(&source_catalog)
         .with_context(|| format!("source catalog {} is invalid", source_path.display()))?;
+    let registry_source = rustfmt_source(
+        &locale_registry_source(&locales, &catalog_message_ids(&source_contract)),
+        &registry_path,
+    )?;
 
     let mut writes = vec![PendingWrite {
         path,
@@ -1305,6 +1326,7 @@ pub fn sync_locale_catalogs(request: &LocaleSyncRequest) -> Result<LocaleSyncOut
             });
         }
     }
+    writes.extend(registry_key_write(&app_dir, &source_contract)?);
     if !request.dry_run {
         write_batch(&writes)?;
     }
@@ -1315,6 +1337,76 @@ pub fn sync_locale_catalogs(request: &LocaleSyncRequest) -> Result<LocaleSyncOut
         unresolved,
         dry_run: request.dry_run,
     })
+}
+
+/// Keep a generated registry's label keys in step with a pending change of
+/// `locales/en-US.ftl` (a screen or component adding its messages).
+fn follow_source_catalog(app_dir: &Path, writes: &mut Vec<PendingWrite>) -> Result<()> {
+    let source_path = app_dir.join("locales/en-US.ftl");
+    let registry_path = app_dir.join("src/locales.rs");
+    let Some(source) = writes
+        .iter()
+        .find(|write| write.path == source_path)
+        .map(|write| write.source.clone())
+    else {
+        return Ok(());
+    };
+    let pending = writes.iter().position(|write| write.path == registry_path);
+    let registry = match pending.and_then(|index| writes.get(index)) {
+        Some(write) => write.source.clone(),
+        None => match std::fs::read_to_string(&registry_path) {
+            Ok(registry) => registry,
+            Err(_) => return Ok(()),
+        },
+    };
+    let ids = catalog_message_ids(&parse_fluent_catalog(&source)?);
+    let Some(rewritten) = registry_rewrite(&registry, &ids)? else {
+        return Ok(());
+    };
+    match pending.and_then(|index| writes.get_mut(index)) {
+        Some(write) => write.source = rewritten,
+        None => writes.push(PendingWrite {
+            path: registry_path,
+            source: rewritten,
+            description: "locale registry",
+        }),
+    }
+    Ok(())
+}
+
+/// The rewrite of a generated locale registry whose label keys differ from
+/// the source catalog's messages, if any.
+fn registry_key_write(
+    app_dir: &Path,
+    source: &FluentCatalogContract,
+) -> Result<Option<PendingWrite>> {
+    let registry_path = app_dir.join("src/locales.rs");
+    let Ok(registry) = std::fs::read_to_string(&registry_path) else {
+        return Ok(None);
+    };
+    let Some(rewritten) = registry_rewrite(&registry, &catalog_message_ids(source))? else {
+        return Ok(None);
+    };
+    Ok(Some(PendingWrite {
+        source: rustfmt_source(&rewritten, &registry_path)?,
+        path: registry_path,
+        description: "locale registry",
+    }))
+}
+
+/// A generated locale `registry` rewritten for the source catalog's message
+/// `ids`, when its label keys differ from them. An app-owned registry is
+/// never rewritten.
+fn registry_rewrite(registry: &str, ids: &[String]) -> Result<Option<String>> {
+    if !registry.starts_with(LOCALE_REGISTRY_HEADER)
+        || label_key_drift(registry, ids).is_ok_and(|drift| drift.is_empty())
+    {
+        return Ok(None);
+    }
+    Ok(Some(locale_registry_source(
+        &parse_locale_registry(registry)?,
+        ids,
+    )))
 }
 
 fn parse_editable_fluent(
@@ -1503,7 +1595,111 @@ fn parse_locale_registry(source: &str) -> Result<Vec<String>> {
     Ok(locales)
 }
 
-fn locale_registry_source(locales: &[String]) -> String {
+/// The constant `tilo-app` generates for the source catalog's message `id`:
+/// `notes-add` is `NOTES_ADD`.
+fn label_key_constant(id: &str) -> String {
+    let mut name: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if name.starts_with(|c: char| c.is_ascii_digit()) {
+        name.insert(0, '_');
+    }
+    name
+}
+
+/// The messages (not terms) of a source catalog, in catalog order of ids.
+pub(crate) fn catalog_message_ids(contract: &FluentCatalogContract) -> Vec<String> {
+    contract
+        .entries
+        .keys()
+        .filter(|id| !id.starts_with('-'))
+        .cloned()
+        .collect()
+}
+
+/// The label keys a generated registry declares, by constant name.
+fn registry_label_keys(registry: &str) -> Result<BTreeMap<String, String>> {
+    let file = syn::parse_file(registry).context("generated locale registry is not valid Rust")?;
+    let Some(keys) = file.items.iter().find_map(|item| match item {
+        syn::Item::Mod(module) if module.ident == "keys" => module.content.as_ref(),
+        _ => None,
+    }) else {
+        bail!("the registry has no `keys` module");
+    };
+    let mut declared = BTreeMap::new();
+    for item in &keys.1 {
+        let syn::Item::Const(constant) = item else {
+            continue;
+        };
+        let syn::Expr::Call(call) = constant.expr.as_ref() else {
+            bail!("key {} is not a LabelKey::new call", constant.ident);
+        };
+        let Some(syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(id),
+            ..
+        })) = call.args.first()
+        else {
+            bail!("key {} does not name its message", constant.ident);
+        };
+        declared.insert(constant.ident.to_string(), id.value());
+    }
+    Ok(declared)
+}
+
+/// Whether a generated registry's keys are exactly the source catalog's
+/// messages; the difference otherwise.
+fn label_key_drift(registry: &str, ids: &[String]) -> Result<Vec<String>> {
+    let declared = registry_label_keys(registry)?;
+    let expected: BTreeMap<String, String> = ids
+        .iter()
+        .map(|id| (label_key_constant(id), id.clone()))
+        .collect();
+    let mut drift = Vec::new();
+    for (name, id) in &expected {
+        match declared.get(name) {
+            Some(declared) if declared == id => {}
+            Some(declared) => drift.push(format!("{name} names {declared:?}, not {id:?}")),
+            None => drift.push(format!("missing {name} for {id:?}")),
+        }
+    }
+    for name in declared.keys() {
+        if !expected.contains_key(name) {
+            drift.push(format!("stale {name}"));
+        }
+    }
+    Ok(drift)
+}
+
+/// Rewrite a generated locale registry whose label keys no longer match
+/// `locales/en-US.ftl`: the build step that keeps `locales::keys` current.
+/// App-owned registries are left alone. Returns whether it was rewritten.
+///
+/// # Errors
+///
+/// Returns an error when the source catalog or registry cannot be read or
+/// the rewritten registry cannot be formatted or written.
+pub fn refresh_locale_registry(app_dir: &Path) -> Result<bool> {
+    let source_path = app_dir.join("locales/en-US.ftl");
+    let Ok(source) = std::fs::read_to_string(&source_path) else {
+        return Ok(false);
+    };
+    let source = parse_fluent_catalog(&source)
+        .with_context(|| format!("source catalog {} is invalid", source_path.display()))?;
+    let Some(write) = registry_key_write(app_dir, &source)? else {
+        return Ok(false);
+    };
+    write_batch(&[write])?;
+    Ok(true)
+}
+
+fn locale_registry_source(locales: &[String], keys: &[String]) -> String {
     let mut source = String::from(LOCALE_REGISTRY_HEADER);
     source.push_str("// Edit Fluent catalogs under locales/; tilo-app maintains this registry.\n");
     for locale in locales {
@@ -1529,6 +1725,17 @@ fn locale_registry_source(locales: &[String]) -> String {
     source.push_str(
         "        ],\n    ) {\n        eprintln!(\"localization catalog: {error}\");\n    }\n}\n",
     );
+    source.push_str(
+        "\n/// One constant per message of locales/en-US.ftl, for labels and placeholders.\npub mod keys {\n    use ui::i18n::LabelKey;\n",
+    );
+    for id in keys {
+        let _ = writeln!(
+            source,
+            "    pub const {}: LabelKey = LabelKey::new({id:?});",
+            label_key_constant(id)
+        );
+    }
+    source.push_str("}\n");
     source
 }
 
@@ -2727,7 +2934,7 @@ mod tests {{
     #[test]
     fn component_exposes_typed_props_and_stable_semantics() {{
         let props = {type_name}Props::new("Example title", "Example detail");
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new({module_name}("example", &props)),
             (480, 240),
@@ -2759,7 +2966,7 @@ mod tests {{
             &context,
         )
         .expect("registered component");
-        let mut app = ui::headless::Driver::new(ui::State::new(), widget, (480, 240));
+        let mut app = ui::headless::FrameHarness::new(ui::State::new(), widget, (480, 240));
         app.expect(
             &SemanticExpectation::named("example-title")
                 .role(Role::Heading {{ level: 2 }})
@@ -2833,7 +3040,7 @@ pub fn {module_name}(id: &str, state: &{type_name}State) -> ui::widget::Column {
 /// Build one `{name}` form for a serialized graph. The value is the graph's
 /// typed value at `value_path`, which the app reads when it acts on it; the
 /// checkbox shares the graph's checked value at `enabled_path`. The app routes
-/// that path through its resource action with `ViewCx::route_graph_bool` when
+/// that path to a field of its resource with `ViewCx::route_graph_bool` when
 /// the value belongs in the document.
 ///
 /// Reusing either path in another component or ordinary graph control creates
@@ -2898,7 +3105,7 @@ mod tests {{
     #[test]
     fn component_binds_typed_state_and_stable_semantics() {{
         let state = {type_name}State::default();
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new({module_name}("example", &state)),
             (480, 240),
@@ -2919,16 +3126,11 @@ mod tests {{
 
     #[derive(ui::prelude::Model, Default, Debug, Clone, PartialEq)]
     pub struct GraphFlags {{
-        flags: std::collections::BTreeMap<String, bool>,
+        enabled: bool,
     }}
 
     #[ui::prelude::resource(kind = "template.form-flags", label = "Form flags")]
-    impl GraphFlags {{
-        #[action]
-        fn set_enabled(&mut self, value: bool) {{
-            self.flags.insert("shared-enabled".into(), value);
-        }}
-    }}
+    impl GraphFlags {{}}
 
     struct GraphForm {{
         root: Element,
@@ -2961,7 +3163,7 @@ mod tests {{
 
         fn view(cx: &mut ui::prelude::ViewCx<GraphFlags>) -> Element {{
             let context = register_ui_graph(UiBuildContext::default());
-            cx.route_graph_bool(context.values(), "shared-enabled", |state| state.flags.get("shared-enabled").copied().unwrap_or(false), GraphFlags::SET_ENABLED);
+            cx.route_graph_bool(context.values(), "shared-enabled", GraphFlags::paths().enabled);
             let document = graph_document();
             let root = ui::UiDocumentExt::build_with(&document, &ui::Theme::default(), &context).expect("registered form component");
             cx.surface(GraphForm {{ root, values: context.values().clone() }})
@@ -2979,13 +3181,14 @@ mod tests {{
         let mut app = TestApp::<GraphApp>::new().expect("the graph app opens");
         app.harness().perform_named("ordinary-enabled", &Action::ToggleCheck)
             .expect("the ordinary graph toggle invokes the resource action");
-        assert_eq!(app.state().flags.get("shared-enabled"), Some(&true));
+        assert!(app.state().enabled);
         app.harness().expect(&SemanticExpectation::named("second-enabled").checked(true))
             .expect("the component follows the ordinary graph toggle");
         app.set_role(ui::Role::Viewer);
-        assert!(app.invoke(GraphFlags::SET_ENABLED.with(false)).is_err(), "a viewer cannot invoke the routed edit");
+        let off = Invoke::edit(&GraphFlags::paths().enabled.set(false)).expect("an edit");
+        assert!(app.invoke(off).is_err(), "a viewer cannot make the routed edit");
         let _ = app.harness().perform_named("ordinary-enabled", &Action::ToggleCheck);
-        assert_eq!(app.state().flags.get("shared-enabled"), Some(&true));
+        assert!(app.state().enabled);
         app.harness().expect(&SemanticExpectation::named("second-enabled").checked(true))
             .expect("refusal preserves the displayed resource value");
     }}
@@ -3025,7 +3228,7 @@ mod tests {{
         );
         let state = app.harness().dump_json();
         assert!(!state.contains("shared-value"), "typing never writes the document");
-        assert!(state.contains("shared-enabled"));
+        assert!(app.state().enabled, "the routed toggle writes the document");
 
         let context = register_ui_graph(UiBuildContext::default());
         let invalid = ui::UiDocument::from_json(
@@ -3150,7 +3353,7 @@ mod tests {{
                 ])
             }})
             .reorderable();
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(tree),
             (560, 360),
@@ -3298,7 +3501,7 @@ mod tests {{
             }},
             u64::to_string,
         );
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(list),
             (560, 360),
@@ -3467,7 +3670,7 @@ mod tests {{
             }},
             &config,
         );
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(table),
             (720, 420),
@@ -3609,7 +3812,7 @@ mod tests {{
             &props,
             RecordingLayout(Rc::clone(&measures)),
         );
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(text),
             (480, 240),
@@ -3639,7 +3842,7 @@ mod tests {{
         ])
         .expect("valid concave region");
         let text = {module_name}_in_region("polygon-text", &props, region);
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(text),
             (400, 220),
@@ -4117,9 +4320,10 @@ impl CargoPlan {
     ///
     /// Returns an error when Cargo cannot start or exits unsuccessfully.
     pub fn execute(&self) -> Result<()> {
-        let status = ProcessCommand::new(&self.program)
-            .args(&self.args)
-            .current_dir(&self.app_dir)
+        let mut command = ProcessCommand::new(&self.program);
+        command.args(&self.args).current_dir(&self.app_dir);
+        attach_surface_env(&mut command, &self.app_dir);
+        let status = command
             .status()
             .with_context(|| format!("starting {}", self.program.to_string_lossy()))?;
         if !status.success() {
@@ -4279,18 +4483,18 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
         code.contains("OperationKind::Effect") || code.contains("OperationKind::View");
     let toolkit_surface = toolkit_host && toolkit_descriptor;
     let custom_surface = custom_catalogue && (!custom_operation || custom_invocation);
-    // `#[resource]` turns `#[action]` methods into the published, replayable
-    // catalogue, and `ResourceApp` hosts it; a hand-written `impl Resource`
-    // (a custom storage layout) is the same contract.
-    let framework_surface = (code.contains("#[resource(") && code.contains("#[action"))
-        || code.contains("impl Resource for");
+    // `#[resource]` publishes the model's field edits and turns `#[action]`
+    // methods into verbs, the replayable catalogue `ResourceApp` hosts; a
+    // hand-written `impl Resource` (a custom storage layout) is the same
+    // contract.
+    let framework_surface = code.contains("#[resource(") || code.contains("impl Resource for");
     let framework_host = code.contains("impl ResourceApp for");
     let framework = framework_surface && framework_host;
     let (status, detail) = if framework || toolkit_surface || custom_surface {
         (
             DoctorStatus::Pass,
             if framework {
-                "the app framework publishes the resource's typed actions"
+                "the app framework publishes the resource's field edits and verbs"
             } else if toolkit_surface {
                 "native SDK host publishes a typed resource/action catalogue"
             } else if custom_operation {
@@ -4464,7 +4668,7 @@ fn char_literal_length(bytes: &[u8], index: usize) -> Option<usize> {
     (bytes.get(index + 1 + width) == Some(&b'\'')).then_some(width + 2)
 }
 
-fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
     let start = if start.is_file() {
         start.parent().unwrap_or(start)
     } else {
@@ -4488,6 +4692,7 @@ fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
 /// Returns an error when no app can be resolved or its doctor checks fail.
 pub fn plan_app_task(start: &Path, task: AppTask, forwarded: &[OsString]) -> Result<CargoPlan> {
     let app_dir = resolve_app_dir(start)?;
+    refresh_locale_registry(&app_dir)?;
     let report = doctor_resolved_app(app_dir.clone());
     if !report.is_ready() {
         bail!("app preflight failed\n\n{}", report.summary());
@@ -4946,7 +5151,9 @@ impl ScenarioSuitePlan {
                 .prefix("tilo-scenario-")
                 .tempdir()
                 .with_context(|| format!("creating isolated state for scenario {:?}", case.name))?;
-            let status = ProcessCommand::new(program)
+            let mut command = ProcessCommand::new(program);
+            attach_surface_env(&mut command, &self.app_dir);
+            let status = command
                 .args(&case.args)
                 .current_dir(&self.app_dir)
                 .env("XDG_DATA_HOME", state.path().join("data"))
@@ -4995,6 +5202,7 @@ struct AppPackageSpec {
 /// Returns an error when preflight, compilation, staging, packing, or
 /// verification fails, or when the destination exists without `force`.
 pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutcome> {
+    native_sdk::validate_request(request)?;
     if request.platform == PackagePlatform::Web {
         return web::package_web(start, request);
     }
@@ -5052,8 +5260,8 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
 
     let staged_package = staging.path().join("package.tapp");
     let identity = signing_identity(&spec.app_dir, request.identity.as_deref())?;
-    let resource_kinds = resource_kinds::declared_by_app(&spec.app_dir)?;
-    let manifest = signed_manifest(
+    let resource_kinds = package_resources(&spec, request, &built, triple.as_deref())?;
+    let mut manifest = signed_manifest(
         &spec,
         request,
         &manifest_source,
@@ -5061,6 +5269,14 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         triple.as_deref(),
         &shipped,
     )?;
+    if let Some(selection) = &request.sdk {
+        manifest.package.runtime = Some(native_sdk::bind_staged(
+            selection,
+            built,
+            (&payload, &shipped),
+            (&spec.app_dir, triple.as_deref()),
+        )?);
+    }
     let packed = pack::pack_manifest(
         manifest,
         resource_kinds,
@@ -5157,6 +5373,8 @@ pub struct NativeBuild {
     pub profile: String,
     /// Each Cargo binary built and where Cargo left it.
     pub executables: Vec<(String, PathBuf)>,
+    /// Exact toolkit path emitted by Cargo when using the canonical SDK graph.
+    pub sdk_toolkit: Option<PathBuf>,
     pub elapsed: Duration,
 }
 
@@ -5168,6 +5386,7 @@ impl NativeBuild {
             "platform": self.platform.cli_name(),
             "target": self.triple,
             "profile": self.profile,
+            "sdk_toolkit": self.sdk_toolkit,
             "executables": self
                 .executables
                 .iter()
@@ -5187,6 +5406,7 @@ impl NativeBuild {
 /// Returns an error for the web platform (see [`web::build_web`]), when
 /// preflight fails, or when Cargo does.
 pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuild> {
+    native_sdk::validate_request(request)?;
     if request.platform == PackagePlatform::Web {
         bail!("a web build is `tilo-app build --platform web`, not a native build");
     }
@@ -5221,6 +5441,7 @@ pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuil
         triple: target.triple,
         profile: target.profile,
         executables,
+        sdk_toolkit: built.get("sdk:runtime_dylib").cloned(),
         elapsed: started.elapsed(),
     })
 }
@@ -5228,6 +5449,18 @@ pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuil
 /// Where the package goes: `--output`, or `dist/<package>.tapp` (with the
 /// platform and architecture for a desktop build). Refuses to replace an
 /// existing file without `force`, and creates the directory.
+fn package_resources(
+    spec: &AppPackageSpec,
+    request: &PackageRequest,
+    built: &HashMap<String, PathBuf>,
+    triple: Option<&str>,
+) -> Result<Vec<String>> {
+    match request.sdk.as_ref().filter(|sdk| sdk.compiler.is_some()) {
+        Some(sdk) => native_sdk::compiler::declared_resources(sdk, built, &spec.app_dir, triple),
+        None => resource_kinds::declared_by_app(&spec.app_dir),
+    }
+}
+
 fn package_output(
     spec: &AppPackageSpec,
     request: &PackageRequest,
@@ -5283,7 +5516,8 @@ fn shipped_binaries(
     Ok(vec![(bin, path)])
 }
 
-/// Fill `payload` with the app's `payload/` tree and the built binaries.
+/// Fill `payload` with the app's `payload/` tree, its committed surface and
+/// the built binaries.
 fn stage_payload(
     spec: &AppPackageSpec,
     shipped: &[(String, PathBuf)],
@@ -5294,6 +5528,13 @@ fn stage_payload(
     let app_payload = spec.app_dir.join("payload");
     if app_payload.is_dir() {
         copy_payload_tree(&app_payload, payload)?;
+    }
+    // The committed public surface ships at the package root: what the OS
+    // offers of the app while it is not running.
+    let surface = spec.app_dir.join(surface::FILE);
+    if surface.is_file() {
+        std::fs::copy(&surface, payload.join(surface::FILE))
+            .with_context(|| format!("copying {}", surface.display()))?;
     }
     for (cargo_bin, payload_path) in shipped {
         let source = built
@@ -5552,6 +5793,13 @@ fn build_entrypoints(
     plan: &BuildPlan<'_>,
     request: &PackageRequest,
 ) -> Result<HashMap<String, PathBuf>> {
+    if request
+        .sdk
+        .as_ref()
+        .is_some_and(|sdk| sdk.compiler.is_some())
+    {
+        return native_sdk::compiler::build(spec, plan, request);
+    }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = ProcessCommand::new(&cargo);
     command
@@ -5567,7 +5815,21 @@ fn build_entrypoints(
         command.arg("--bin").arg(cargo_bin);
     }
     let mut features = request.features.clone();
-    if plan.thin {
+    if request.sdk.is_some() {
+        let root = find_repo_root(&spec.app_dir)
+            .filter(|_| app_is_workspace_member(&spec.app_dir))
+            .context("native SDK packaging requires a checkout workspace app; scaffold with tilo-app new in the SDK checkout")?;
+        features = native_sdk::configure_graph(
+            &mut command,
+            &root,
+            plan.profile,
+            &spec.cargo_package,
+            &features,
+        )?;
+        if let Some(target) = plan.triple {
+            command.arg("--target").arg(target);
+        }
+    } else if plan.thin {
         let triple = if let Some(target) = plan.triple {
             target.to_owned()
         } else {
@@ -5603,6 +5865,9 @@ fn build_entrypoints(
     for line in BufReader::new(stdout).lines() {
         let line = line.context("reading Cargo artifact stream")?;
         collect_cargo_message(&line, &expected_manifest, &mut artifacts);
+        if request.sdk.is_some() {
+            native_sdk::collect_toolkit(&line, &spec.app_dir, &mut artifacts)?;
+        }
     }
     let status = child.wait().context("waiting for Cargo build")?;
     if !status.success() {
@@ -6707,7 +6972,22 @@ fn dev_session_dir(app_dir: &Path) -> PathBuf {
 /// The environment of an app `dev` starts: its dev session, its runtime host,
 /// and inside a Tilo session the shell's file chooser. Returns this process's
 /// end of the chooser connection, to keep until the app has started.
+/// Name the app's committed `surface.toml` to the app, by path and hash, as
+/// its launcher names the one its package ships: the app reads it from there.
+fn attach_surface_env(command: &mut ProcessCommand, app_dir: &Path) {
+    let file = app_dir.join(surface::FILE);
+    let Ok(bytes) = std::fs::read(&file) else {
+        return;
+    };
+    let file = file.canonicalize().unwrap_or(file);
+    command.env("TILO_SURFACE", &file).env(
+        "TILO_SURFACE_HASH",
+        blake3::hash(&bytes).to_hex().to_string(),
+    );
+}
+
 fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) -> Option<DevChooser> {
+    attach_surface_env(command, app_dir);
     let dir = dev_session_dir(app_dir);
     if let Err(error) = std::fs::create_dir_all(&dir) {
         eprintln!(
@@ -8244,11 +8524,11 @@ struct FluentEntryContract {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct FluentCatalogContract {
+pub(crate) struct FluentCatalogContract {
     entries: BTreeMap<String, FluentEntryContract>,
 }
 
-fn parse_fluent_catalog(source: &str) -> Result<FluentCatalogContract> {
+pub(crate) fn parse_fluent_catalog(source: &str) -> Result<FluentCatalogContract> {
     use fluent_syntax::ast::Entry;
 
     let resource = fluent::FluentResource::try_new(source.to_owned())
@@ -8507,12 +8787,14 @@ fn check_locale_artifacts(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
             });
         }
     }
-    check_locale_registry(&registry_path, &catalog_ids, checks);
+    let source_ids = catalogs.get("en-US").map(catalog_message_ids);
+    check_locale_registry(&registry_path, &catalog_ids, source_ids.as_deref(), checks);
 }
 
 fn check_locale_registry(
     registry_path: &Path,
     catalog_ids: &[String],
+    source_ids: Option<&[String]>,
     checks: &mut Vec<DoctorCheck>,
 ) {
     let Ok(registry) = std::fs::read_to_string(registry_path) else {
@@ -8551,6 +8833,15 @@ fn check_locale_registry(
         }
         if !registry.contains("I18nManager::install_system") {
             bail!("locale installation is absent");
+        }
+        if let Some(source) = source_ids {
+            let drift = label_key_drift(&registry, source)?;
+            if !drift.is_empty() {
+                bail!(
+                    "label keys differ from locales/en-US.ftl ({}); any `tilo-app` build or `tilo-app locale sync` regenerates them",
+                    drift.join(", ")
+                );
+            }
         }
         for locale in &registered {
             if !catalog_ids.iter().any(|catalog| catalog == locale) {
@@ -9693,7 +9984,10 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
         (PathBuf::from("src/lib.rs"), app_lib(spec)),
         (
             PathBuf::from("src/locales.rs"),
-            locale_registry_source(&["en-US".to_owned()]),
+            locale_registry_source(
+                &["en-US".to_owned()],
+                &catalog_message_ids(&parse_fluent_catalog(&app_catalog(spec))?),
+            ),
         ),
         (PathBuf::from("src/main.rs"), app_main(spec)),
         (PathBuf::from("tests/app.rs"), app_test(spec)),
@@ -9703,7 +9997,9 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
         ),
         (PathBuf::from("tilo-app.toml"), app_manifest(spec)),
         (PathBuf::from("README.md"), app_readme(spec)),
+        (PathBuf::from("AGENTS.md"), APP_AGENT_GUIDE.to_owned()),
         (PathBuf::from("locales/en-US.ftl"), app_catalog(spec)),
+        (PathBuf::from(surface::FILE), app_surface(spec)),
     ];
     if spec.template == Template::Graph {
         files.push((PathBuf::from("ui/main.json"), graph_document()?));
@@ -9880,14 +10176,33 @@ fn headless_actions(spec: &AppSpec) -> String {
 /// The app's source catalog. A graph screen's static text is a message id
 /// too, so the graph template's catalog also names the screen it generates.
 fn app_catalog(spec: &AppSpec) -> String {
-    let catalog = spec.template.catalog();
+    // The templates key their history messages `generated-…`, as they name
+    // their kinds `generated.…`; the history looks them up under the app.
+    let prefix = format!("{}-", tilo_history::app_prefix(&spec.app_id));
+    let catalog: String = spec
+        .template
+        .catalog()
+        .lines()
+        .map(|line| {
+            line.strip_prefix("generated-")
+                .map_or_else(|| format!("{line}\n"), |rest| format!("{prefix}{rest}\n"))
+        })
+        .collect();
     if spec.template != Template::Graph {
-        return catalog.to_owned();
+        return catalog;
     }
     format!(
         "graph-title = {{ \"{}\" }}\ngraph-introduction = This screen is a serialized graph under ui/. Edit it while the app runs with tilo-app ui edit ui/main.json.\n{catalog}",
         escape_fluent_string(&spec.title)
     )
+}
+
+/// The app's committed public surface: what `tilo-app surface` writes for
+/// the template's code, under the app's own resource kinds.
+fn app_surface(spec: &AppSpec) -> String {
+    spec.template
+        .surface()
+        .replace("kind = \"generated.", &format!("kind = \"{}.", spec.app_id))
 }
 
 fn graph_document() -> Result<String> {
@@ -10067,14 +10382,14 @@ fn app_readme(spec: &AppSpec) -> String {
 /// arguments for it.
 fn readme_action_example(template: Template) -> (&'static str, &'static str, &'static str) {
     match template {
-        Template::Starter => ("greeting", "set-name", r#"{"name":"Ada"}"#),
+        Template::Starter => ("greeting", "clear", "{}"),
         Template::Document => (
             "document",
             "set-content",
             r#"{"title":"Plan","body":"Ship it"}"#,
         ),
-        Template::Collection => ("items", "set-draft", r#"{"draft":"Buy milk"}"#),
-        Template::Graph => ("graph-project", "set-draft", r#"{"draft":"Launch plan"}"#),
+        Template::Collection => ("items", "add", r#"{"title":"Buy milk"}"#),
+        Template::Graph => ("graph-project", "create", "{}"),
     }
 }
 

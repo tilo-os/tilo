@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="tilo_input_context_v1">
+  <copyright>Copyright 2026 Tilo contributors. SPDX-License-Identifier: MIT</copyright>
+  <interface name="tilo_input_context_manager_v1" version="1">
+    <description summary="field metadata, never invocation authority">
+      An application may declare canonical bound action references for its own surface.
+      Only the currently focused non-sensitive text field is eligible. The compositor
+      resolves every reference through the ordinary certified action catalogue.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <request name="get_field">
+      <arg name="id" type="new_id" interface="tilo_input_context_field_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+  </interface>
+  <interface name="tilo_input_context_field_v1" version="1">
+    <request name="destroy" type="destructor"/>
+    <request name="publish">
+      <description summary="replace this surface's bounded focused-field snapshot">
+        The JSON snapshot carries a private generation, route and canonical action
+        references with bound arguments. No text value is required. A newer snapshot
+        replaces the previous one; an empty snapshot clears it. It grants no permissions.
+      </description>
+      <arg name="snapshot" type="string"/>
+    </request>
+  </interface>
+  <interface name="tilo_input_context_keyboard_v1" version="1">
+    <description summary="private trusted keyboard presentation">
+      This global is visible only to the compositor-authenticated input-method owner.
+      The keyboard receives labels and opaque slots, never app addresses or arguments.
+      Invocation rechecks focus, sensitivity, generation and canonical owner admission.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <request name="invoke">
+      <arg name="generation" type="uint"/>
+      <arg name="slot" type="uint"/>
+    </request>
+    <event name="context">
+      <arg name="generation" type="uint"/>
+      <arg name="slots" type="string"/>
+    </event>
+    <event name="result">
+      <arg name="generation" type="uint"/>
+      <arg name="slot" type="uint"/>
+      <arg name="succeeded" type="uint"/>
+      <arg name="message" type="string"/>
+    </event>
+  </interface>
+</protocol>

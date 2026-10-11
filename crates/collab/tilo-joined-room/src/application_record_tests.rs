@@ -1,5 +1,6 @@
 use super::ApplicationRecord;
 use crate::{NativeWorkspaceOwner, VerifiedNativeEnrollmentIntent, open_file, testing};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
 use tilo_peer_state::join::{self, JoinTransportRequest, JoinTransportResponse};
@@ -147,6 +148,7 @@ fn creator_initialization_is_durable_and_compare_and_swaps_original_revision() {
     let mut doc = automerge::AutoCommit::load(&initial.bytes).unwrap();
     doc.put(automerge::ROOT, "structural_workspace", testing::ROOM)
         .unwrap();
+    doc.commit_edit("fixture", "structural_workspace");
     let bytes = doc.save();
     let declared = route();
     let initialized = fixture
@@ -219,6 +221,7 @@ fn initialization_failure_does_not_publish_ready_or_change_original_record() {
     let mut doc = automerge::AutoCommit::load(&initial.bytes).unwrap();
     doc.put(automerge::ROOT, "should_not_publish", true)
         .unwrap();
+    doc.commit_edit("fixture", "should_not_publish");
     let bytes = doc.save();
     let declared = route();
     let path = fixture.directory.path().join("owner.json");
@@ -276,6 +279,7 @@ fn initialization_preserves_unknown_objects_and_refuses_wrong_creator_key() {
     original
         .put(&extension, "retained", "opaque future schema")
         .unwrap();
+    original.commit_edit("fixture", "unknown_extension");
     let message = fixture
         .owner
         .with_current(room, |view| {
@@ -297,6 +301,7 @@ fn initialization_preserves_unknown_objects_and_refuses_wrong_creator_key() {
     supplied
         .put(automerge::ROOT, "workspace", testing::ROOM)
         .unwrap();
+    supplied.commit_edit("fixture", "workspace");
     let bytes = supplied.save();
     let declared = route();
     let initialization = || super::ApplicationInitialization {
@@ -460,6 +465,7 @@ fn existing_authored_record_is_not_overwritten_by_reopening_the_app() {
             document
                 .put(automerge::ROOT, "authored", "keep this user content")
                 .unwrap();
+            document.commit_edit("fixture", "authored");
             view.peer().clone().publish_document(
                 "so.tilo.chat",
                 "",

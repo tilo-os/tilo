@@ -14,7 +14,7 @@ fn kinds() -> Kinds {
 #[test]
 fn a_kind_reads_and_publishes_what_the_typed_resource_does() {
     let mut replica = Replica::<Board>::new();
-    replica.apply(Board::RENAME.with("Launch".into())).unwrap();
+    replica.apply(Board::RENAME.with("Launch")).unwrap();
     let kinds = kinds();
     let board = kinds.get("test.board").expect("registered by kind");
     assert_eq!(
@@ -49,7 +49,7 @@ fn a_kind_names_an_open_resource_from_its_state() {
             .map(|board| board.title.clone())
     }
     let mut replica = Replica::<Board>::new();
-    replica.apply(Board::RENAME.with("Roadmap".into())).unwrap();
+    replica.apply(Board::RENAME.with("Roadmap")).unwrap();
     let board = ResourceKind::of::<Board>().named(titled);
     assert_eq!(
         board.publish("test.board", replica.doc()).unwrap().label,
@@ -81,4 +81,41 @@ fn a_typed_action_built_by_kind_replays_through_the_registry() {
             .encode(serde_json::json!({"no": "such action"}))
             .is_err()
     );
+}
+
+#[test]
+fn typed_and_erased_publications_declare_the_original_resource_identity() {
+    let replica = Replica::<Board>::new();
+    let id = "opened-board";
+    let expected = tilo_actions::ResourceSemanticIdentity::new(Board::KIND, id);
+    let typed = tilo_resource::publish::<Board>(id, "Board", &replica.state().unwrap());
+    let erased = ResourceKind::of::<Board>()
+        .publish(id, replica.doc())
+        .unwrap();
+    assert_eq!(typed.semantic_identity, expected);
+    assert_eq!(erased.semantic_identity, expected);
+    assert_eq!(typed.id.as_str(), id);
+    assert_eq!(erased.id.as_str(), id);
+}
+
+#[test]
+fn stateless_typed_publication_preserves_identity_validation_bounds() {
+    let publish =
+        |id: &str| tilo_resource::publish_child::<Board, Board>(id, "Board", None, |action| action);
+    let maximum = "x".repeat(tilo_actions::ResourceSemanticIdentity::MAX_KEY_BYTES);
+    for id in ["stateless-board", maximum.as_str()] {
+        let published = publish(id);
+        assert_eq!(
+            published.semantic_identity,
+            tilo_actions::ResourceSemanticIdentity::new(Board::KIND, id)
+        );
+        assert!(published.semantic_identity.is_some());
+        assert_eq!(published.id.as_str(), id);
+    }
+    let oversized = "x".repeat(tilo_actions::ResourceSemanticIdentity::MAX_KEY_BYTES + 1);
+    for id in ["", "board\n", oversized.as_str()] {
+        let published = publish(id);
+        assert!(published.semantic_identity.is_none());
+        assert_eq!(published.id.as_str(), id);
+    }
 }

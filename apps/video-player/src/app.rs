@@ -49,11 +49,11 @@ use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LaunchInput, RunMode,
     Setting, SurfaceCx,
 };
-use ui::tilo_resource::ActionDecl;
+use ui::tilo_resource::{ActionDecl, Id};
 
 use crate::actions::VideoEffect;
 use crate::preferences::{PlayerSettings, RecentMedia};
-use crate::resource::VideoPlayer as PlayerResource;
+use crate::shared::{Library as PlayerResource, library as verbs};
 
 /// The playback preferences the player follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,9 +169,6 @@ impl LibraryTab {
             .find(|tab| tab.name() == name)
     }
 }
-
-/// The shared playlist the player's Watch later button adds to.
-const WATCH_LATER: &str = "watch-later";
 
 /// A player for a window built in `mode`: only a window someone uses
 /// decodes with the system's engine and announces itself to the session's
@@ -399,7 +396,7 @@ pub struct PlayerApp {
     /// the framework's door, handed over when the surface is attached.
     dispatcher: Option<Dispatcher<PlayerResource>>,
     /// The shared library as last presented.
-    shared_library: crate::shared::SharedLibrary,
+    shared_library: crate::shared::Library,
     /// What the window is built for: only a live one starts a decoder
     /// service, media controls or collaboration.
     mode: RunMode,
@@ -418,6 +415,9 @@ pub struct PlayerApp {
     /// painted in the no-frame state, preserving a successfully playing video
     /// when a later picker request fails.
     open_error: Option<String>,
+    missing_codec: Option<String>,
+    formats_focused: bool,
+    formats_label: String,
     /// Where files have no path: the kept copy (`crate::kept`) of each
     /// queue or recent entry opened by contents, by entry id.
     kept: HashMap<String, String>,
@@ -803,7 +803,7 @@ impl PlayerApp {
             shot_loading: false,
             pending_pip: None,
             dispatcher: None,
-            shared_library: crate::shared::SharedLibrary::default(),
+            shared_library: crate::shared::Library::default(),
             mode,
             capture_awaits: CaptureAwaits::Nothing,
             capture_launched: None,
@@ -812,6 +812,9 @@ impl PlayerApp {
             source_generation: 0,
             shown_metadata: DecoderMetadata::default(),
             open_error: None,
+            missing_codec: None,
+            formats_focused: false,
+            formats_label: crate::i18n::t("video-formats-title"),
             kept: HashMap::new(),
             kept_retained,
             kept_recall: None,
@@ -854,7 +857,7 @@ impl PlayerApp {
     pub(crate) fn stage_capture(&mut self, launched: Option<&str>, scenario: Option<&str>) {
         self.stage_shot_source(launched, scenario);
         self.stage_shot_scenario(scenario);
-        if !matches!(scenario, Some("empty" | "error")) {
+        if !matches!(scenario, Some("empty" | "error" | "missing-codec")) {
             self.player.reveal_controls();
         }
     }
@@ -873,7 +876,7 @@ impl PlayerApp {
     }
 
     fn stage_shot_source(&mut self, launched: Option<&str>, scenario: Option<&str>) {
-        if matches!(scenario, Some("empty" | "error")) {
+        if matches!(scenario, Some("empty" | "error" | "missing-codec")) {
             return;
         }
         if let Some(argument) = launched {
@@ -931,6 +934,10 @@ impl PlayerApp {
         match scenario {
             // Nothing opened: the open itself failed.
             Some("error") => self.fail_playback(),
+            Some("missing-codec") => {
+                self.fail_playback();
+                self.missing_codec = Some("HEVC".into());
+            }
             // A video opened and the decoder then gave up on it: the title
             // and the strip stay, the picture is the failure.
             Some("native-error") => {
@@ -1021,7 +1028,7 @@ impl PlayerApp {
     }
 
     /// Show the shared library the document holds.
-    pub(crate) fn present_library(&mut self, state: &crate::shared::SharedLibrary) {
+    pub(crate) fn present_library(&mut self, state: &crate::shared::Library) {
         if state != &self.shared_library {
             self.shared_library = state.clone();
             self.dirty = true;
@@ -1170,6 +1177,7 @@ impl PlayerApp {
             queue_id,
         });
         self.open_error = None;
+        self.missing_codec = None;
         self.dirty = true;
     }
 
@@ -1255,6 +1263,7 @@ impl PlayerApp {
         self.cancel_pending_portal("a direct video open replaced the file picker");
         self.fail_open("a newer video open replaced this decoder request".into());
         self.open_error = None;
+        self.missing_codec = None;
         self.title = title;
         self.current_queue_id = queue_id;
         self.player.open(source);
@@ -1388,6 +1397,7 @@ impl PlayerApp {
     }
 
     fn close_media(&mut self) {
+        self.missing_codec = None;
         self.fail_open("video was closed before decoding a first frame".into());
         let player = configured_player(
             self.mode,
@@ -1434,8 +1444,128 @@ impl PlayerApp {
         }
     }
 
+    fn formats_visible(&self) -> bool {
+        self.missing_codec.is_some() && self.open_error.is_some()
+    }
+
+    fn formats_access_index(&self) -> Option<usize> {
+        self.accessibility()?
+            .children
+            .iter()
+            .position(|node| node.action_target.as_deref() == Some("video-player.formats"))
+    }
+
+    fn focus_player_control(&mut self, path: &[usize]) -> bool {
+        match path {
+            [0] => {
+                self.open_focused = true;
+                self.library_focused = false;
+                self.player.reveal_controls();
+                self.dirty = true;
+                true
+            }
+            [1] => {
+                self.library_focused = true;
+                self.open_focused = false;
+                self.player.reveal_controls();
+                self.dirty = true;
+                true
+            }
+            [2] if self.library_visible => {
+                self.library_focus_id = Some("library-close".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [3] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-queue".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [4] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-recent".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [5] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-shared".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [6] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                self.library_focus_id = Some("shared-watch-later".into());
+                self.dirty = true;
+                true
+            }
+            [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                self.library_focus_id = Some("shared-bookmark".into());
+                self.dirty = true;
+                true
+            }
+            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                let Some((focus, _, _)) = shared_accessibility_targets(self)
+                    .get(index.saturating_sub(8))
+                    .cloned()
+                else {
+                    return false;
+                };
+                self.library_focus_id = Some(focus);
+                self.dirty = true;
+                true
+            }
+            [index] => {
+                let library_index = index.saturating_sub(6);
+                let play_count = self.library_row_hits.len();
+                self.library_focus_id = if let Some(row) = self.library_row_hits.get(library_index)
+                {
+                    Some(row.id.clone())
+                } else if self.library_tab == LibraryTab::Recent
+                    && !self.recent.is_empty()
+                    && library_index == play_count
+                {
+                    Some("library-clear".into())
+                } else {
+                    let remove_index = library_index.saturating_sub(
+                        play_count
+                            + usize::from(
+                                self.library_tab == LibraryTab::Recent && !self.recent.is_empty(),
+                            ),
+                    );
+                    self.library_row_hits
+                        .iter()
+                        .filter_map(|row| row.remove.as_ref().map(|_| row.id.as_str()))
+                        .nth(remove_index)
+                        .map(|id| format!("library-remove-{id}"))
+                };
+                if self.library_focus_id.is_none() {
+                    return false;
+                }
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn request_status_action(&self) {
+        if self.formats_visible() {
+            self.request(&VideoEffect::OpenFormats);
+        } else {
+            self.request_open_action();
+        }
+    }
+
     fn request_open_action(&self) {
-        self.request(&VideoEffect::Open { path: None });
+        self.request(&VideoEffect::OpenVideo { path: None });
     }
 
     fn request_library_play(&self, item_id: &str) {
@@ -1496,154 +1626,82 @@ impl PlayerApp {
         });
     }
 
-    /// Submit a shared library edit through the framework's door. The
-    /// library shown follows once the document presents the change.
-    fn dispatch_shared(&self, action: &crate::shared::SharedAction) {
+    /// Submit a shared library verb or field edit through the framework's
+    /// door. The library shown follows once the document presents the
+    /// change.
+    fn dispatch_shared(&self, submit: impl ui::framework::Submit<PlayerResource>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.submit(submit);
         }
     }
 
     fn delete_annotation(&self, id: &str) {
-        self.dispatch_shared(&crate::shared::SharedAction::DeleteAnnotation { id: id.into() });
+        self.dispatch_shared(PlayerResource::DELETE_ANNOTATION.with(Id::from_raw(id)));
     }
 
-    /// Delete playlist `id` with the items it held when the user chose to.
+    /// Delete playlist `id` with its videos.
     fn delete_playlist(&self, id: &str) {
-        self.dispatch_shared(&crate::shared::SharedAction::DeletePlaylist {
-            id: id.into(),
-            observed_item_ids: self
-                .shared_library
-                .items
-                .iter()
-                .filter(|item| item.playlist_id == id)
-                .map(|item| item.id.clone())
-                .collect(),
-        });
+        self.dispatch_shared(PlayerResource::DELETE_PLAYLIST.with(Id::from_raw(id)));
     }
 
-    /// The edits that add the open video to the shared Watch later playlist,
-    /// creating the playlist first when it is missing.
-    fn watch_later_actions(&self) -> Vec<crate::shared::SharedAction> {
-        let Some(media_ref) = self.current_media_ref.clone() else {
-            return Vec::new();
-        };
-        let library = &self.shared_library;
-        let playlist_id = WATCH_LATER.to_string();
-        if library
-            .items
-            .iter()
-            .any(|item| item.playlist_id == playlist_id && item.media_ref == media_ref)
-        {
-            return Vec::new();
-        }
-        let mut actions = Vec::new();
-        if !library
-            .playlists
-            .iter()
-            .any(|playlist| playlist.id == playlist_id)
-        {
-            actions.push(crate::shared::SharedAction::CreatePlaylist {
-                id: playlist_id.clone(),
-                name: "Watch later".into(),
-            });
-        }
-        let position = library
-            .items
-            .iter()
-            .filter(|item| item.playlist_id == playlist_id)
-            .map(|item| item.position)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1024);
-        actions.push(crate::shared::SharedAction::AddPlaylistItem {
-            id: format!(
-                "item-{}-{}",
-                crate::actions::identity_token_for_action(&media_ref),
-                unix_now_ms()
-            ),
-            playlist_id,
+    /// The open video, added to the shared Watch later playlist; `None`
+    /// without an open video or when it is already there.
+    fn watch_later(&self) -> Option<verbs::AddToWatchLater> {
+        let media_ref = self.current_media_ref.clone()?;
+        (!self.shared_library.on_watch_later(&media_ref)).then(|| verbs::AddToWatchLater {
             media_ref,
             title: self.title.clone(),
-            position,
-        });
-        actions
+        })
     }
 
     fn add_current_to_watch_later(&self) {
-        let actions = self.watch_later_actions();
-        if let Some(dispatcher) = &self.dispatcher {
-            // Creating the playlist and adding the video is one step.
-            dispatcher.group(|| {
-                for action in &actions {
-                    dispatcher.apply(action);
-                }
-            });
+        if let Some(add) = self.watch_later() {
+            self.dispatch_shared(PlayerResource::ADD_TO_WATCH_LATER.with(add));
         }
     }
 
     /// A bookmark of the moment the player shows, on the open video.
-    fn bookmark_action(&self) -> Option<crate::shared::SharedAction> {
-        let media_ref = self.current_media_ref.clone()?;
-        let time_ms = self.player.position_ms();
-        Some(crate::shared::SharedAction::CreateAnnotation {
-            id: format!(
-                "annotation-{}-{}-{time_ms}",
-                crate::actions::identity_token_for_action(&media_ref),
-                unix_now_ms()
-            ),
-            media_ref,
-            time_ms,
-            text: String::new(),
+    fn bookmark(&self) -> Option<verbs::AddAnnotation> {
+        Some(verbs::AddAnnotation {
+            media_ref: self.current_media_ref.clone()?,
+            time_ms: self.player.position_ms(),
+            text: None,
         })
     }
 
     fn bookmark_current_time(&self) {
-        if let Some(action) = self.bookmark_action() {
-            self.dispatch_shared(&action);
+        if let Some(bookmark) = self.bookmark() {
+            self.dispatch_shared(PlayerResource::ADD_ANNOTATION.with(bookmark));
         }
     }
 
-    /// The shared library edits bound to the playhead, for the palette and
+    /// The shared library verbs bound to the playhead, for the palette and
     /// agents: bookmark the moment shown, add the open video to Watch later.
     pub(crate) fn playhead_declarations(&self) -> Vec<ActionDecl<PlayerResource>> {
-        if self.current_media_ref.is_none() {
+        let Some(bookmark) = self.bookmark() else {
             return Vec::new();
-        }
-        let media_ref = self.current_media_ref.clone().unwrap_or_default();
-        let time_ms = self.player.position_ms();
-        let watch_later = self.watch_later_actions();
-        let mut declarations = vec![
-            ActionDecl::new(
-                "bookmark-current-time",
-                "Bookmark this moment",
-                Vec::new(),
-                move |_, now_ms| {
-                    Ok(crate::shared::SharedAction::CreateAnnotation {
-                        id: format!(
-                            "annotation-{}-{now_ms}-{time_ms}",
-                            crate::actions::identity_token_for_action(&media_ref)
-                        ),
-                        media_ref: media_ref.clone(),
-                        time_ms,
-                        text: String::new(),
-                    })
-                },
-            )
-            .describe("Add a shared bookmark at the playback time shown."),
-        ];
-        // Only the item when the playlist exists; a missing playlist is
-        // created by the button, which submits both as one step.
-        if let [crate::shared::SharedAction::AddPlaylistItem { .. }] = watch_later.as_slice() {
-            let add = watch_later.into_iter().next();
-            declarations.push(
-                ActionDecl::new(
-                    "add-to-watch-later",
-                    "Add to Watch later",
-                    Vec::new(),
-                    move |_, _| add.clone().ok_or_else(|| "nothing to add".to_owned()),
-                )
-                .describe("Add the open video to the shared Watch later playlist."),
+        };
+        let paths = verbs::AddAnnotation::paths();
+        let mut declarations: Vec<ActionDecl<PlayerResource>> = PlayerResource::ADD_ANNOTATION
+            .bind(paths.media_ref, bookmark.media_ref)
+            .and(paths.time_ms, bookmark.time_ms)
+            .declaration("bookmark-current-time", "Bookmark this moment")
+            .into_iter()
+            .map(|decl| decl.describe("Add a shared bookmark at the playback time shown."))
+            .collect();
+        if let Some(add) = self.watch_later() {
+            let paths = verbs::AddToWatchLater::paths();
+            declarations.extend(
+                PlayerResource::ADD_TO_WATCH_LATER
+                    .bind(paths.media_ref, add.media_ref)
+                    .and(paths.title, add.title)
+                    .declaration(
+                        "add-this-video-to-watch-later",
+                        "Add this video to Watch later",
+                    )
+                    .map(|decl| {
+                        decl.describe("Add the open video to the shared Watch later playlist.")
+                    }),
             );
         }
         declarations
@@ -1661,6 +1719,7 @@ impl PlayerApp {
         })?;
         self.portal_generation = generation;
         self.open_error = None;
+        self.missing_codec = None;
         self.portal_open = Some(PendingPortalOpen {
             channel: if tilo_paths::availability(tilo_paths::Feature::NativePaths)
                 == tilo_paths::Availability::Available
@@ -1732,7 +1791,7 @@ impl PlayerApp {
         {
             pending
                 .reply
-                .finish(outcome.map(|()| tilo_actions::ActionOutput::default()));
+                .finish(outcome.map(|()| ui::tilo_actions::ActionOutput::default()));
         }
     }
 
@@ -1754,11 +1813,11 @@ impl PlayerApp {
             return Err("open a video before using this playback control".into());
         }
         match effect {
-            VideoEffect::Open { path: None } => {
+            VideoEffect::OpenVideo { path: None } => {
                 self.trigger_open(Some(cx.reply()))?;
                 Ok(Effected::Pending)
             }
-            VideoEffect::Open { path: Some(path) } => {
+            VideoEffect::OpenVideo { path: Some(path) } => {
                 self.open_named(&path)?;
                 self.await_open_frame(cx.reply());
                 Ok(Effected::Pending)
@@ -1774,6 +1833,7 @@ impl PlayerApp {
 
     /// Open the video `path` names on this device: a file, or a stream's URL.
     fn open_named(&mut self, path: &str) -> Result<(), String> {
+        self.missing_codec = None;
         let source = source_for_argument(path);
         if let media::Source::LocalFile(file) | media::Source::Workspace(file) = &source
             && !file.is_file()
@@ -1792,6 +1852,13 @@ impl PlayerApp {
     /// controls need an open video, and clearing needs a recent one.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
+        if !self.formats_visible() {
+            statuses.push(EffectStatus::unavailable(
+                VideoEffect::OPEN_FORMATS,
+                "no_missing_decoder",
+                crate::i18n::t("video-formats-unavailable"),
+            ));
+        }
         if !self.player.has_media() {
             for effect in [
                 VideoEffect::CLOSE.id,
@@ -1832,8 +1899,14 @@ impl PlayerApp {
     )]
     fn perform(&mut self, effect: VideoEffect) -> Result<(), String> {
         match effect {
-            VideoEffect::Open { path: Some(path) } => self.open_named(&path)?,
-            VideoEffect::Open { path: None } => self.trigger_open(None)?,
+            VideoEffect::OpenFormats => {
+                if !self.formats_visible() {
+                    return Err(crate::i18n::t("video-formats-unavailable"));
+                }
+                ui::portal::open_uri_detached("settings://updates");
+            }
+            VideoEffect::OpenVideo { path: Some(path) } => self.open_named(&path)?,
+            VideoEffect::OpenVideo { path: None } => self.trigger_open(None)?,
             VideoEffect::PlayQueued { item } => self.open_local_entry(&item)?,
             VideoEffect::RemoveQueued { item } => self.remove_queue_entry(&item)?,
             VideoEffect::ClearRecent => self.clear_recent_history()?,
@@ -1942,8 +2015,7 @@ impl PlayerApp {
                 let time_ms = self
                     .shared_library
                     .annotations
-                    .iter()
-                    .find(|candidate| candidate.id == annotation)
+                    .get(&Id::from_raw(annotation))
                     .ok_or("the review note is gone")?;
                 if self.current_media_ref.as_deref() != Some(time_ms.media_ref.as_str()) {
                     return Err("this review note belongs to a different video".into());
@@ -2106,13 +2178,13 @@ impl PlayerApp {
                 self.dirty = true;
             }
             TogetherStep::Publish(state) if !dispatcher.read_only() => {
-                dispatcher.apply(&crate::shared::SharedAction::SetTransport {
+                dispatcher.submit(PlayerResource::SET_TRANSPORT.with(verbs::SetTransport {
                     media_ref,
                     playing: state.playing,
                     position_ms: state.position_ms,
                     rate: f64::from(state.rate),
                     epoch_ms: state.epoch_ms,
-                });
+                }));
             }
             TogetherStep::Publish(_) | TogetherStep::Stay => {}
         }
@@ -2181,26 +2253,34 @@ impl PlayerApp {
     /// file-open contract and the user-facing error copy.
     fn drain_player_media_events(&mut self) {
         for event in self.player.take_media_events() {
-            match event {
-                media::MediaEvent::Error(message) => {
-                    // The decoder's own wording is for logs and agents; the
-                    // person is told what it means for them.
-                    tracing::warn!(error = %message, "video player: the decoder reported an error");
-                    self.fail_playback();
-                    if let Some(pending) = self.media_open.take() {
-                        pending.reply.finish(Err(message));
-                    }
-                }
-                media::MediaEvent::Ended => {
-                    // Queue advancement belongs to the app, but remains gated
-                    // on a real engine end event rather than the current
-                    // playhead looking close to its duration.
-                    self.advance_after_engine_end();
-                }
-                media::MediaEvent::Buffering { .. }
-                | media::MediaEvent::Position { .. }
-                | media::MediaEvent::DurationKnown { .. } => {}
+            self.handle_media_event(event);
+        }
+    }
+
+    fn handle_media_event(&mut self, event: media::MediaEvent) {
+        match event {
+            media::MediaEvent::MissingDecoder { codec } => {
+                self.missing_codec = Some(codec);
+                self.dirty = true;
             }
+            media::MediaEvent::Error(message) => {
+                // The decoder's own wording is for logs and agents; the
+                // person is told what it means for them.
+                tracing::warn!(error = %message, "video player: the decoder reported an error");
+                self.fail_playback();
+                if let Some(pending) = self.media_open.take() {
+                    pending.reply.finish(Err(message));
+                }
+            }
+            media::MediaEvent::Ended => {
+                // Queue advancement belongs to the app, but remains gated
+                // on a real engine end event rather than the current
+                // playhead looking close to its duration.
+                self.advance_after_engine_end();
+            }
+            media::MediaEvent::Buffering { .. }
+            | media::MediaEvent::Position { .. }
+            | media::MediaEvent::DurationKnown { .. } => {}
         }
     }
 
@@ -2292,7 +2372,7 @@ impl PlayerApp {
             return true;
         }
         if self.status_action_rect.contains(self.last_cursor) {
-            self.request_open_action();
+            self.request_status_action();
             return true;
         }
         if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
@@ -2447,15 +2527,7 @@ impl Widget for PlayerApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         let Ok(children) = taffy.children(node) else {
             return;
@@ -2667,6 +2739,19 @@ impl Widget for PlayerApp {
             children.extend(local_library_accessibility_nodes(self));
         }
         children.extend(self.history.accessibility(self.history_button_rect));
+        if self.formats_visible() && self.status_action_rect.width() > 0.0 {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(self.formats_label.clone())
+                    .with_action_target("video-player.formats")
+                    .with_bounds(self.status_action_rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.formats_focused,
+                        ..Default::default()
+                    }),
+            );
+        }
         Some(
             AccessNode::new(Role::Group)
                 .with_name(if self.player.has_media() {
@@ -2679,6 +2764,11 @@ impl Widget for PlayerApp {
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        if let [index] = path
+            && self.formats_access_index() == Some(*index)
+        {
+            return Some(self.status_action_rect);
+        }
         match path {
             [0] => Some(self.open_target_rect()),
             [1] => Some(self.library_button_rect),
@@ -2725,104 +2815,17 @@ impl Widget for PlayerApp {
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        match path {
-            [0] => {
-                self.open_focused = true;
-                self.library_focused = false;
-                self.player.reveal_controls();
-                self.dirty = true;
-                true
-            }
-            [1] => {
-                self.library_focused = true;
-                self.open_focused = false;
-                self.player.reveal_controls();
-                self.dirty = true;
-                true
-            }
-            [2] if self.library_visible => {
-                self.library_focus_id = Some("library-close".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [3] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-queue".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [4] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-recent".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [5] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-shared".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [6] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                self.library_focus_id = Some("shared-watch-later".into());
-                self.dirty = true;
-                true
-            }
-            [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                self.library_focus_id = Some("shared-bookmark".into());
-                self.dirty = true;
-                true
-            }
-            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                let Some((focus, _, _)) = shared_accessibility_targets(self)
-                    .get(index.saturating_sub(8))
-                    .cloned()
-                else {
-                    return false;
-                };
-                self.library_focus_id = Some(focus);
-                self.dirty = true;
-                true
-            }
-            [index] => {
-                let library_index = index.saturating_sub(6);
-                let play_count = self.library_row_hits.len();
-                self.library_focus_id = if let Some(row) = self.library_row_hits.get(library_index)
-                {
-                    Some(row.id.clone())
-                } else if self.library_tab == LibraryTab::Recent
-                    && !self.recent.is_empty()
-                    && library_index == play_count
-                {
-                    Some("library-clear".into())
-                } else {
-                    let remove_index = library_index.saturating_sub(
-                        play_count
-                            + usize::from(
-                                self.library_tab == LibraryTab::Recent && !self.recent.is_empty(),
-                            ),
-                    );
-                    self.library_row_hits
-                        .iter()
-                        .filter_map(|row| row.remove.as_ref().map(|_| row.id.as_str()))
-                        .nth(remove_index)
-                        .map(|id| format!("library-remove-{id}"))
-                };
-                if self.library_focus_id.is_none() {
-                    return false;
-                }
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            _ => false,
+        if let [index] = path
+            && self.formats_access_index() == Some(*index)
+        {
+            self.formats_focused = true;
+            self.open_focused = false;
+            self.library_focused = false;
+            self.dirty = true;
+            return true;
         }
+        self.formats_focused = false;
+        self.focus_player_control(path)
     }
 
     fn perform_semantic_action(
@@ -2832,7 +2835,10 @@ impl Widget for PlayerApp {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if self.history.perform_semantic_action(target, action) {
+        if target == "video-player.formats" && matches!(action, ui::a11y::Action::Activate) {
+            self.request(&VideoEffect::OpenFormats);
+            true
+        } else if self.history.perform_semantic_action(target, action) {
             true
         } else if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {
             self.request_open_action();
@@ -2906,6 +2912,9 @@ impl Widget for PlayerApp {
     }
 
     fn tooltip(&self) -> Option<&str> {
+        if self.formats_visible() && self.status_action_rect.contains(self.last_cursor) {
+            return Some(self.formats_label.as_str());
+        }
         if (self.overlay_visible() && self.open_button_rect.contains(self.last_cursor))
             || self.status_action_rect.contains(self.last_cursor)
         {
@@ -3017,7 +3026,7 @@ impl Widget for PlayerApp {
 /// The top strip is the window's header row: it holds the History control
 /// the host offers, over the picture, hiding with the other controls.
 impl ui::widget::controls::ActionControls for PlayerApp {
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.history.take()
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
@@ -3041,6 +3050,100 @@ mod tests {
     use super::strip::TopStrip;
     use super::*;
     use ui::headless::Framed;
+
+    #[test]
+    fn a_missing_decoder_exposes_one_formats_action_and_clears_on_a_new_open() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let mut app = PlayerApp::new(RunMode::Capture);
+            app.handle_media_event(media::MediaEvent::MissingDecoder {
+                codec: "HEVC".into(),
+            });
+            assert!(
+                !app.formats_visible(),
+                "the decoder has not reported failure yet"
+            );
+            app.handle_media_event(media::MediaEvent::Error("decoder missing".into()));
+            let mut framed = Framed::new(
+                ui::State::new(),
+                app,
+                ui::headless::viewport((960.0, 640.0)),
+                theme,
+            );
+            assert!(
+                framed.open_button_rect.width() > 0.0,
+                "another video stays reachable"
+            );
+            let open = framed.open_button_rect;
+            let formats = framed.status_action_rect;
+            assert!(
+                open.x1 <= formats.x0
+                    || formats.x1 <= open.x0
+                    || open.y1 <= formats.y0
+                    || formats.y1 <= open.y0,
+                "Open and the formats remedy have distinct painted targets"
+            );
+            let root = framed.accessibility().expect("player accessibility");
+            let offers: Vec<_> = root
+                .children
+                .iter()
+                .filter(|node| node.action_target.as_deref() == Some("video-player.formats"))
+                .collect();
+            assert_eq!(offers.len(), 1, "one visible decoder remedy");
+            assert_eq!(
+                offers[0].name.as_deref(),
+                Some("Play more video and audio formats")
+            );
+            assert!(
+                framed.status_action_rect.width() > 0.0 && framed.status_action_rect.height() > 0.0
+            );
+            assert!(framed.effect_statuses().iter().all(|status| *status
+                != EffectStatus::unavailable(
+                    VideoEffect::OPEN_FORMATS,
+                    "no_missing_decoder",
+                    crate::i18n::t("video-formats-unavailable")
+                )));
+            let index = framed
+                .formats_access_index()
+                .expect("the formats control is addressable");
+            assert!(framed.focus_synthetic_accessibility(&[index]));
+            assert!(framed.formats_focused);
+            assert!(!framed.open_focused, "Formats focus excludes Open focus");
+            assert!(
+                framed.focus_synthetic_accessibility(&[0]),
+                "the original Open accessibility target keeps its index"
+            );
+            assert!(
+                framed.open_focused && !framed.formats_focused,
+                "returning to Open clears Formats focus"
+            );
+            let tree = framed
+                .accessibility()
+                .expect("focused player accessibility");
+            assert_eq!(
+                tree.children[0].action_target.as_deref(),
+                Some("video-player.open")
+            );
+            assert!(tree.children[0].state.focused);
+            assert!(!tree.children[index].state.focused);
+            assert_eq!(
+                framed.synthetic_accessibility_rect(&[index]),
+                Some(framed.status_action_rect)
+            );
+            framed
+                .open_named("/tilo-test-absent-video.mp4")
+                .expect_err("a new failed file open");
+            assert!(
+                !framed.formats_visible(),
+                "the prior decoder does not describe the new file"
+            );
+            assert!(framed.effect_statuses().iter().any(|status| *status
+                == EffectStatus::unavailable(
+                    VideoEffect::OPEN_FORMATS,
+                    "no_missing_decoder",
+                    crate::i18n::t("video-formats-unavailable")
+                )));
+        }
+    }
 
     #[test]
     fn opening_sources_sets_identity_without_exposing_paths() {
@@ -3228,23 +3331,24 @@ mod tests {
             app.open_path(Path::new("/tmp/review-cut.mp4"))
                 .expect("source identity");
             let media_ref = app.current_media_ref.clone().expect("durable media ref");
-            app.present_library(&crate::shared::SharedLibrary {
-                annotations: vec![
-                    crate::shared::TimestampAnnotation {
-                        id: "review-marker".into(),
-                        media_ref,
-                        time_ms: 12_500,
-                        text: "Tighten this cut".into(),
-                    },
-                    crate::shared::TimestampAnnotation {
-                        id: "elsewhere".into(),
-                        media_ref: "another-video".into(),
-                        time_ms: 30_000,
-                        text: String::new(),
-                    },
-                ],
-                ..crate::shared::SharedLibrary::default()
-            });
+            let mut library = crate::shared::Library::default();
+            library.annotations.push(
+                Id::from_raw("review-marker"),
+                crate::shared::TimestampAnnotation {
+                    media_ref,
+                    time_ms: 12_500,
+                    text: "Tighten this cut".into(),
+                },
+            );
+            library.annotations.push(
+                Id::from_raw("elsewhere"),
+                crate::shared::TimestampAnnotation {
+                    media_ref: "another-video".into(),
+                    time_ms: 30_000,
+                    text: String::new(),
+                },
+            );
+            app.present_library(&library);
             app.perform(VideoEffect::JumpToAnnotation {
                 annotation: "review-marker".into(),
             })
@@ -3437,7 +3541,7 @@ mod tests {
                 tracks.children.iter().all(|track| track
                     .actions
                     .iter()
-                    .all(|action| action.kind != tilo_actions::OperationKind::Document)),
+                    .all(|action| action.kind != ui::tilo_actions::OperationKind::Document)),
                 "a live row never changes the document"
             );
             let source_id = app.current_source_id.clone().unwrap();
@@ -3894,7 +3998,6 @@ mod tests {
 
     fn shared(state: media::TransportState) -> crate::shared::SharedTransport {
         crate::shared::SharedTransport {
-            media_ref: "clip".into(),
             playing: state.playing,
             position_ms: state.position_ms,
             rate: f64::from(state.rate),

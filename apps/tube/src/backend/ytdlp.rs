@@ -382,9 +382,7 @@ fn f64_field(v: &Value, key: &str) -> f64 {
 
 /// Today, as days since the civil epoch (UTC).
 fn today_days() -> i64 {
-    ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |d| (d.as_secs() / 86_400) as i64)
+    (ui::time::unix_now() / 86_400) as i64
 }
 
 const MONTHS: [&str; 12] = [

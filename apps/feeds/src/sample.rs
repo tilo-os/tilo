@@ -7,10 +7,10 @@
 //! live app never seeds this — it starts empty on the user's persisted
 //! subscriptions and fetches real feeds over HTTP once the user adds one.
 
-use uuid::Uuid;
+use ui::tilo_resource::Json;
 
 use crate::gemtext;
-use crate::model::{Article, BlockKind, ContentBlock, Feed, FeedKind, Folder, Id, Store};
+use crate::model::{Article, BlockKind, ContentBlock, Feed, FeedKind, Folder, Id, Library};
 
 fn para(s: &str) -> ContentBlock {
     ContentBlock::new(BlockKind::Paragraph, s)
@@ -38,32 +38,14 @@ const DAY: i64 = 24 * HOUR;
     reason = "one block of fixture literals per bundled article; splitting it would only \
               relocate the sample data, not shrink what a reader must trace for one entry"
 )]
-pub fn store() -> Store {
+pub fn store() -> Library {
     let now = ui::clock::local_now().timestamp();
-    let mut s = Store::new();
+    let mut s = Library::new();
 
     // --- folders ---------------------------------------------------------
-    let tech = Uuid::new_v4();
-    let science = Uuid::new_v4();
-    let design = Uuid::new_v4();
-    s.upsert_folder(Folder {
-        id: tech,
-        name: "Technology".into(),
-        order: 0,
-        collapsed: false,
-    });
-    s.upsert_folder(Folder {
-        id: science,
-        name: "Science".into(),
-        order: 1,
-        collapsed: false,
-    });
-    s.upsert_folder(Folder {
-        id: design,
-        name: "Design".into(),
-        order: 2,
-        collapsed: false,
-    });
+    let tech = folder(&mut s, "Technology");
+    let science = folder(&mut s, "Science");
+    let design = folder(&mut s, "Design");
 
     // --- feeds -----------------------------------------------------------
     let rust = feed(
@@ -71,7 +53,7 @@ pub fn store() -> Store {
         "Rust Blog",
         "https://blog.rust-lang.org/feed.xml",
         "https://blog.rust-lang.org",
-        Some(tech),
+        Some(tech.clone()),
         FeedKind::Atom,
     );
     let hn = feed(
@@ -79,7 +61,7 @@ pub fn store() -> Store {
         "Hacker News",
         "https://hnrss.org/frontpage",
         "https://news.ycombinator.com",
-        Some(tech),
+        Some(tech.clone()),
         FeedKind::Rss,
     );
     let lob = feed(
@@ -95,7 +77,7 @@ pub fn store() -> Store {
         "Quanta Magazine",
         "https://www.quantamagazine.org/feed/",
         "https://www.quantamagazine.org",
-        Some(science),
+        Some(science.clone()),
         FeedKind::Rss,
     );
     let nasa = feed(
@@ -127,7 +109,7 @@ pub fn store() -> Store {
     article(
         &mut s,
         SampleArticle::new(
-            rust,
+            rust.clone(),
             "Announcing Rust 1.96.1",
             "The Rust Release Team",
             "https://blog.rust-lang.org/2026/06/30/Rust-1.96.1/",
@@ -161,7 +143,7 @@ pub fn store() -> Store {
     article(
         &mut s,
         SampleArticle::new(
-            rust,
+            rust.clone(),
             "A new era for the borrow checker",
             "Niko Matsakis",
             "https://blog.rust-lang.org/2026/06/12/polonius.html",
@@ -201,7 +183,7 @@ pub fn store() -> Store {
     article(
         &mut s,
         SampleArticle::new(
-            hn,
+            hn.clone(),
             "Show HN: I built a spatial OS in Rust",
             "throwaway2026",
             "https://news.ycombinator.com/item?id=40000000",
@@ -223,7 +205,7 @@ pub fn store() -> Store {
     article(
         &mut s,
         SampleArticle::new(
-            hn,
+            hn.clone(),
             "The hidden cost of microservices",
             "patio11",
             "https://news.ycombinator.com/item?id=40000001",
@@ -237,7 +219,7 @@ pub fn store() -> Store {
     article(
         &mut s,
         SampleArticle::new(
-            hn,
+            hn.clone(),
             "SQLite is not a toy database",
             "dang",
             "https://news.ycombinator.com/item?id=40000002",
@@ -268,7 +250,7 @@ pub fn store() -> Store {
     article(
         &mut s,
         SampleArticle::new(
-            lob,
+            lob.clone(),
             "Writing a WASM runtime in 500 lines",
             "calvin",
             "https://lobste.rs/s/abc/wasm_runtime",
@@ -305,7 +287,7 @@ pub fn store() -> Store {
     article(
         &mut s,
         SampleArticle::new(
-            quanta,
+            quanta.clone(),
             "Mathematicians prove a long-standing knot conjecture",
             "Erica Klarreich",
             "https://www.quantamagazine.org/knot-2026",
@@ -345,7 +327,7 @@ pub fn store() -> Store {
     article(
         &mut s,
         SampleArticle::new(
-            nasa,
+            nasa.clone(),
             "Webb captures the deepest infrared image yet",
             "NASA",
             "https://www.nasa.gov/webb-deep-field",
@@ -380,7 +362,7 @@ pub fn store() -> Store {
     article(
         &mut s,
         SampleArticle::new(
-            smashing,
+            smashing.clone(),
             "Designing for the CRDT era",
             "Rachel Andrew",
             "https://www.smashingmagazine.com/2026/crdt-ux",
@@ -434,25 +416,33 @@ pub fn store() -> Store {
     s
 }
 
+/// A folder named `name`, under an id derived from it.
+fn folder(s: &mut Library, name: &str) -> Id {
+    let id = Id::from_raw(format!("sample-folder-{}", name.to_lowercase()));
+    s.folders.push(id.clone(), Folder::named(name));
+    id
+}
+
 fn feed(
-    s: &mut Store,
+    s: &mut Library,
     title: &str,
     url: &str,
     site: &str,
     folder: Option<Id>,
     kind: FeedKind,
 ) -> Id {
-    let id = Uuid::new_v4();
-    let order = s.next_feed_order(folder);
-    s.upsert_feed(Feed {
-        id,
-        title: title.into(),
-        url: url.into(),
-        site_url: site.into(),
-        folder,
-        order,
-        kind,
-    });
+    let id = Id::from_raw(format!("sample-feed-{}", s.feeds.len()));
+    s.feeds.push(
+        id.clone(),
+        Feed {
+            title: title.into(),
+            url: url.into(),
+            site_url: site.into(),
+            folder,
+            kind,
+            certificate_pin: None,
+        },
+    );
     id
 }
 
@@ -502,7 +492,7 @@ impl<'a> SampleArticle<'a> {
     }
 }
 
-fn article(s: &mut Store, fixture: SampleArticle<'_>) {
+fn article(s: &mut Library, fixture: SampleArticle<'_>) {
     let lower = fixture.title.to_lowercase();
     let tags = [
         lower.contains("rust").then_some("rust"),
@@ -514,19 +504,22 @@ fn article(s: &mut Store, fixture: SampleArticle<'_>) {
     .flatten()
     .map(str::to_string)
     .collect();
-    s.insert_article_dedup(Article {
-        id: Uuid::new_v4(),
-        feed_id: fixture.feed_id,
-        title: fixture.title.into(),
-        author: fixture.author.into(),
-        url: fixture.url.into(),
-        published: fixture.published,
-        summary: fixture.summary.into(),
-        blocks: fixture.blocks,
-        read: fixture.read,
-        starred: fixture.starred,
-        tags,
-    });
+    let id = Id::from_raw(format!("sample-article-{}", s.articles.len()));
+    s.articles.push(
+        id,
+        Article {
+            feed_id: fixture.feed_id,
+            title: fixture.title.into(),
+            author: fixture.author.into(),
+            url: fixture.url.into(),
+            published: fixture.published,
+            summary: fixture.summary.into(),
+            blocks: Json(fixture.blocks),
+            read: fixture.read,
+            starred: fixture.starred,
+            tags,
+        },
+    );
 }
 
 #[cfg(test)]
@@ -542,16 +535,16 @@ mod tests {
             assert_eq!(s.folders.len(), 3);
             assert_eq!(s.feeds.len(), 7);
             assert_eq!(s.articles.len(), 16);
-            assert!(s.feeds.iter().any(|f| f.kind == FeedKind::Gemini));
+            assert!(s.feeds.values().any(|f| f.kind == FeedKind::Gemini));
 
             // The gemini article has gemtext-derived blocks (incl. a link).
-            let gem_feed = s.feeds.iter().find(|f| f.kind == FeedKind::Gemini).unwrap();
+            let gem_feed = s.feed_rows().find(|f| f.kind == FeedKind::Gemini).unwrap();
             let gem_art = s
                 .articles
-                .iter()
-                .find(|a| a.feed_id == gem_feed.id)
+                .values()
+                .find(|a| &a.feed_id == gem_feed.id)
                 .unwrap();
-            assert!(gem_art.blocks.iter().any(|b| b.kind == BlockKind::Link));
+            assert!(gem_art.blocks.0.iter().any(|b| b.kind == BlockKind::Link));
         }
 
         // --- phase: sample_article_states_and_inferred_tags_are_preserved ---
@@ -559,7 +552,7 @@ mod tests {
             let s = store();
             let article = |title: &str| {
                 s.articles
-                    .iter()
+                    .values()
                     .find(|article| article.title == title)
                     .unwrap()
             };
@@ -567,7 +560,7 @@ mod tests {
             let release = article("Announcing Rust 1.96.1");
             assert!(!release.read);
             assert!(release.starred);
-            assert_eq!(release.tags, ["rust"]);
+            assert_eq!(release.tag_list(), ["rust"]);
 
             let borrow_checker = article("A new era for the borrow checker");
             assert!(borrow_checker.read);
@@ -577,10 +570,10 @@ mod tests {
             let knot = article("Mathematicians prove a long-standing knot conjecture");
             assert!(!knot.read);
             assert!(knot.starred);
-            assert_eq!(knot.tags, ["science"]);
+            assert_eq!(knot.tag_list(), ["science"]);
 
             let collaboration = article("Designing for the CRDT era");
-            assert_eq!(collaboration.tags, ["design"]);
+            assert_eq!(collaboration.tag_list(), ["design"]);
         }
     }
 }

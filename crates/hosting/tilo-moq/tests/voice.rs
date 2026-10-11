@@ -1,3 +1,8 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "fixture builders encode known-valid objects; a failure is the assertion"
+)]
+
 use tilo_moq::voice::{FRAME_SAMPLES, HEADER_BYTES, MAX_OBJECT_BYTES, VoiceObject};
 
 const GOLDEN: &[u8] = &[
@@ -102,4 +107,152 @@ fn datagram_bundles_hold_one_to_three_valid_objects() {
     corrupt[GOLDEN.len()] ^= 1;
     assert!(validate_bundle(&corrupt).is_err());
     assert!(validate_bundle(&[]).is_err());
+}
+
+fn frame(sequence: u64, payload: usize) -> Vec<u8> {
+    VoiceObject {
+        sequence,
+        timestamp: sequence.saturating_mul(u64::from(FRAME_SAMPLES)),
+        duration: FRAME_SAMPLES,
+        payload: vec![7; payload],
+    }
+    .encode()
+    .unwrap()
+}
+
+fn sequences(bundle: &[u8]) -> Vec<u64> {
+    tilo_moq::voice::bundle_objects(bundle)
+        .unwrap()
+        .into_iter()
+        .map(|object| VoiceObject::decode(object).unwrap().sequence)
+        .collect()
+}
+
+#[test]
+fn a_clean_hop_forwards_each_object_once_even_from_a_triple_redundant_publisher() {
+    use tilo_moq::voice::Rebundler;
+    let mut hop = Rebundler::default();
+    // An older browser publisher always bundles the two previous objects.
+    for sequence in 0..10_u64 {
+        let mut bundle = frame(sequence, 80);
+        for earlier in (sequence.saturating_sub(2)..sequence).rev() {
+            bundle.extend_from_slice(&frame(earlier, 80));
+        }
+        let out = hop.next(&bundle, 0).unwrap().expect("a new object");
+        assert_eq!(sequences(&out), vec![sequence], "one object per datagram");
+        assert_eq!(out.len(), HEADER_BYTES + 80);
+    }
+    // A copy that carries nothing new is not forwarded at all.
+    assert_eq!(hop.next(&frame(9, 80), 0).unwrap(), None);
+    // Objects the uplink lost but a later bundle recovered still go out.
+    let mut recovered = frame(12, 80);
+    recovered.extend_from_slice(&frame(11, 80));
+    recovered.extend_from_slice(&frame(10, 80));
+    assert_eq!(
+        sequences(&hop.next(&recovered, 0).unwrap().unwrap()),
+        vec![12, 11, 10]
+    );
+}
+
+#[test]
+fn a_lossy_hop_adds_the_frames_just_before_up_to_three_objects() {
+    use tilo_moq::voice::Rebundler;
+    let mut hop = Rebundler::default();
+    let mut next = |sequence, redundancy| {
+        sequences(&hop.next(&frame(sequence, 80), redundancy).unwrap().unwrap())
+    };
+    assert_eq!(next(0, 1), vec![0]);
+    assert_eq!(next(1, 1), vec![1, 0]);
+    assert_eq!(next(2, 2), vec![2, 1, 0]);
+    assert_eq!(next(3, 5), vec![3, 2, 1], "never more than three objects");
+    assert_eq!(next(4, 0), vec![4]);
+    // Redundant copies stay within one datagram's budget...
+    let mut big = Rebundler::default();
+    for sequence in 0..3 {
+        let _ = big.next(&frame(sequence, 600), 2).unwrap();
+    }
+    assert_eq!(
+        sequences(&big.next(&frame(3, 600), 2).unwrap().unwrap()),
+        vec![3]
+    );
+    // ...and never reach back across a DTX pause: those frames are long late.
+    let mut paused = Rebundler::default();
+    let _ = paused.next(&frame(0, 80), 2).unwrap();
+    let after_pause = VoiceObject {
+        sequence: 1,
+        timestamp: 20 * u64::from(FRAME_SAMPLES),
+        duration: FRAME_SAMPLES,
+        payload: vec![7; 30],
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(
+        sequences(&paused.next(&after_pause, 2).unwrap().unwrap()),
+        vec![1]
+    );
+    // A restarted publisher (sequence back at zero) is forwarded afresh.
+    let mut restarted = Rebundler::default();
+    let _ = restarted.next(&frame(5_000, 80), 0).unwrap();
+    assert_eq!(
+        sequences(&restarted.next(&frame(0, 80), 0).unwrap().unwrap()),
+        vec![0]
+    );
+    assert!(restarted.next(&[0; 40], 0).is_err());
+}
+
+#[test]
+fn redundancy_follows_measured_loss_up_at_once_and_down_after_a_calm_hold() {
+    use std::time::{Duration, Instant};
+    use tilo_moq::voice::{REDUNDANCY_HOLD, Redundancy};
+    let start = Instant::now();
+    let mut hop = Redundancy::default();
+    let (mut sent, mut lost) = (0_u64, 0_u64);
+    let mut window = |hop: &mut Redundancy, second: u64, packets: u64, losses: u64| {
+        sent = sent.saturating_add(packets);
+        lost = lost.saturating_add(losses);
+        hop.observe(start + Duration::from_secs(second), sent, lost)
+    };
+    assert_eq!(
+        window(&mut hop, 0, 0, 0),
+        0,
+        "the first sample is a baseline"
+    );
+    assert_eq!(window(&mut hop, 1, 100, 0), 0, "clean");
+    assert_eq!(
+        window(&mut hop, 2, 100, 1),
+        1,
+        "1% loss: repair isolated losses"
+    );
+    assert_eq!(
+        window(&mut hop, 3, 100, 6),
+        2,
+        "5% loss: repair 40 ms bursts"
+    );
+    assert_eq!(
+        window(&mut hop, 4, 3, 0),
+        2,
+        "a silent window measures nothing"
+    );
+    let mut levels = Vec::new();
+    let mut second = 5;
+    while second <= 5 + 3 * REDUNDANCY_HOLD.as_secs() {
+        levels.push(window(&mut hop, second, 100, 0));
+        second += 1;
+    }
+    assert_eq!(
+        levels.first(),
+        Some(&2),
+        "one calm window does not step down"
+    );
+    assert!(levels.contains(&1), "steps down one level at a time");
+    assert_eq!(
+        levels.last(),
+        Some(&0),
+        "a calm hop returns to no redundancy"
+    );
+    assert_eq!(
+        window(&mut hop, second, 100, 10),
+        2,
+        "loss returns: up at once"
+    );
 }

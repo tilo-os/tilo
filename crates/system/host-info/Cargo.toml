@@ -4,10 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Facts about the host operating system (processes, network) for portable Tilo apps"
-
-[target.'cfg(target_os = "linux")'.dependencies]
-bounded-command = { path = "../bounded-command" }
+description = "Facts about the host operating system (processes) for portable Tilo apps"
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

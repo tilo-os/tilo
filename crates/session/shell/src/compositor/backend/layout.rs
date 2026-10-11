@@ -7,12 +7,16 @@
 //! laptop panel beside a 1x monitor is 1280 logical pixels wide, and the
 //! pointer enters the monitor at the height it left the panel.
 //!
-//! The **scene** is the one texture the compositor paints, in physical
-//! pixels; each output presents the sub-rect at its scene position. A high-density
-//! output covers more pixels than logical units, so scene positions are
-//! derived from the logical layout by [`scene_positions`] rather than equal
-//! to it — keeping outputs from overlapping in the texture. For an
-//! arrangement where every scale is 1 the two spaces coincide.
+//! The **scene** is the desktop in physical pixels: the one scene the
+//! compositor builds each frame. Each output renders its own view of it,
+//! the sub-rect at its scene position, into a target of its own size; only
+//! the readback fallback rasterises the bounding box of every output. A
+//! high-density output covers more pixels than logical units, so scene
+//! positions are derived from the logical layout by [`scene_positions`]
+//! rather than equal to it — keeping outputs from overlapping in the scene,
+//! and every output's view at whole-pixel offsets, so a window spanning two
+//! outputs meets itself without a seam. For an arrangement where every scale
+//! is 1 the two spaces coincide.
 
 /// An output's extent in logical pixels: its mode over its scale, rotated.
 pub use settings_store::hardware::logical_extent;

@@ -1,10 +1,40 @@
-use super::{Role, StatePeer, SystemTime};
+use super::{StatePeer, SystemTime};
 use crate::workspace_task::{
     AdmittedTaskActor, AppliedTaskCommand, WorkspaceTaskAuthority, WorkspaceTaskCommand,
 };
-use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
+use tilo_action_policy::{ActionKind, TreePath};
 
 impl StatePeer {
+    /// Revalidate the assigned agent and the exact person's retained run approval.
+    /// This is a check on existing capabilities, not a run-created grant.
+    /// # Errors
+    /// An actor was removed/revoked, its certificate expired, or write approval ended.
+    pub fn check_task_execution_actor(
+        &self,
+        agent_id: &str,
+        approval: Option<&tilo_desktop_model::WorkspaceTaskApproval>,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let doc = self
+            .core
+            .room_doc
+            .as_deref()
+            .ok_or("admitted task document unavailable")?;
+        let policy = tilo_desktop_model::projection::room_policy_of(doc, &self.core.room);
+        if !super::agent_is_member(&policy, agent_id, now) {
+            return Err("assigned task agent is no longer admitted".into());
+        }
+        if let Some(approval) = approval {
+            let member = self.permissions(approval.device, now)?;
+            if member.person != approval.person
+                || !member.allows(&TreePath::room(&self.core.room), ActionKind::Undoable, now)
+            {
+                return Err("task run approval is no longer authorized".into());
+            }
+        }
+        Ok(())
+    }
+
     /// Apply one typed task command against the current admitted room document.
     /// The caller or host certificate is rechecked here, in the same serialized
     /// owner turn as the mutation; strings in the command confer no authority.
@@ -40,42 +70,25 @@ impl StatePeer {
             .room_doc
             .as_deref()
             .ok_or("workspace task room document is absent")?;
-        let (_, owner, caps) = crate::room::extract_governed_fields(room);
-        let agent_role = |agent: &str| {
-            let mut workspace = tilo_desktop_model::Workspace::new(
-                tilo_desktop_model::WorkspaceId(1),
-                "task authority",
-            );
-            workspace.owner.clone_from(&owner);
-            workspace.capabilities.clone_from(&caps);
-            workspace.role_of_agent_in_room_at(agent, &self.core.room, seconds)
-        };
+        let policy = tilo_desktop_model::projection::room_policy_of(room, &self.core.room);
+        let owner = policy.owner.clone();
+        let agent_member = |agent: &str| super::agent_is_member(&policy, agent, now);
         if let Some(agent) = command
             .agent()
             .map(str::to_owned)
             .or(direction_agent(command, room)?)
-            && agent_role(&agent).is_none_or(|role| role == Role::Denied)
+            && !agent_member(&agent)
         {
             return Err("workspace task agent is not a current room member".into());
         }
         let actor = match authority {
             WorkspaceTaskAuthority::Person { caller } => {
-                let (role, caps, person) = self.permissions(caller.device_public_key, now)?;
-                let actor =
-                    Actor::person(Some(role), person.clone()).in_room(self.core.room.clone());
-                if !matches!(role, Role::Owner | Role::Editor)
-                    || decide_capability(
-                        &actor,
-                        &ResourceRef::Workspace,
-                        Verb::Write,
-                        &caps,
-                        Some(seconds),
-                    ) != CapDecision::Allow
-                {
+                let member = self.permissions(caller.device_public_key, now)?;
+                if !member.allows(&TreePath::room(&self.core.room), ActionKind::Undoable, now) {
                     return Err("workspace task person lacks write authority".into());
                 }
                 AdmittedTaskActor::Person {
-                    id: person,
+                    id: member.person,
                     device: caller.device_public_key,
                 }
             }
@@ -92,7 +105,7 @@ impl StatePeer {
             WorkspaceTaskAuthority::Agent { attestor, agent_id } => {
                 if (!attestor.capabilities.can_act_as_host
                     && attestor.device_public_key != self.core.authority.device_public_key)
-                    || agent_role(agent_id).is_none_or(|role| role == Role::Denied)
+                    || !agent_member(agent_id)
                 {
                     return Err("workspace task agent lacks current host attestation".into());
                 }
@@ -102,6 +115,8 @@ impl StatePeer {
                 }
             }
         };
+        require_budget_owner(command, &actor, owner.as_ref())?;
+        self.check_agent_task_approval(&actor, command, room, now)?;
         let mut candidate = room.clone();
         let AppliedTaskCommand { changed, result } = crate::workspace_task::apply(
             &mut candidate,
@@ -116,6 +131,43 @@ impl StatePeer {
         }
         Ok((changed, result))
     }
+
+    fn check_agent_task_approval(
+        &self,
+        actor: &AdmittedTaskActor,
+        command: &WorkspaceTaskCommand,
+        room: &automerge::AutoCommit,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        if let AdmittedTaskActor::Agent { id, .. } = actor {
+            let task_id = match command {
+                WorkspaceTaskCommand::AppliedAck { task_id, .. }
+                | WorkspaceTaskCommand::Finish { task_id, .. }
+                | WorkspaceTaskCommand::ExecutionPhase { task_id, .. } => Some(task_id),
+                _ => None,
+            };
+            let state = crate::workspace_task::snapshot(room)?;
+            let approval = task_id
+                .and_then(|id| state.controls.get(id))
+                .and_then(|control| control.active_run.as_ref())
+                .and_then(|run| run.approval.as_ref());
+            self.check_task_execution_actor(id, approval, now)?;
+        }
+        Ok(())
+    }
+}
+
+fn require_budget_owner(
+    command: &WorkspaceTaskCommand,
+    actor: &AdmittedTaskActor,
+    owner: Option<&String>,
+) -> Result<(), String> {
+    if matches!(command, WorkspaceTaskCommand::SetExecutionBudget { .. })
+        && !matches!(actor, AdmittedTaskActor::Person { id, .. } if owner == Some(id))
+    {
+        return Err("only the current workspace owner may configure task execution budgets".into());
+    }
+    Ok(())
 }
 
 fn direction_agent(
@@ -138,8 +190,8 @@ fn direction_agent(
 mod tests {
     use super::*;
     use crate::{SeedState, seed_room};
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     use ed25519_dalek::SigningKey;
+    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
     use tilo_desktop_model::{WorkspaceTaskRoute, WorkspaceTaskStatus};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
     use web_time::Duration;
@@ -188,16 +240,53 @@ mod tests {
             now,
         )
         .unwrap();
-        peer.put_governed_capabilities(
-            &[
-                CapOverride::grant(Subject::agent("scribe"), Scope::Workspace, Verb::Write)
-                    .with_id("agent-scribe"),
-            ],
-            &governor_key,
+        peer.put_governed_grants(&[agent_grant("agent-scribe", ROOM)], &governor_key, now)
+            .unwrap();
+        (peer, governor, other, now)
+    }
+
+    fn agent_grant(id: &str, room: &str) -> Grant {
+        Grant::new(
+            id,
+            Subject::agent("scribe"),
+            TreePath::room(room),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            Subject::person("governor"),
+        )
+    }
+
+    /// Make the other person an editor who may only read the room.
+    fn read_only_member(peer: &mut StatePeer, other: &DeviceCert, now: SystemTime) {
+        let key = SigningKey::from_bytes(&[2; 32]);
+        let mut doc = peer.core.room_doc.clone().unwrap();
+        let before = doc.get_heads();
+        let members = automerge::ReadDoc::get(&*doc, automerge::ROOT, "members")
+            .unwrap()
+            .unwrap()
+            .1;
+        crate::state::put_member(
+            &mut doc,
+            &members,
+            other.user_public_key,
+            collab_types::Role::Editor,
+        )
+        .unwrap();
+        doc.commit();
+        peer.apply_governance_doc(doc, &before, &key, now).unwrap();
+        peer.put_governed_grants(
+            &[Grant::new(
+                "read-only-member",
+                Subject::person(hex::encode(other.user_public_key)),
+                TreePath::room(ROOM),
+                KindSet::UNDOABLE,
+                Answer::Deny,
+                Subject::person("governor"),
+            )],
+            &key,
             now,
         )
         .unwrap();
-        (peer, governor, other, now)
     }
 
     #[test]
@@ -213,17 +302,18 @@ mod tests {
             now,
         )
         .unwrap();
-        peer.put_governed_capabilities(
-            &[CapOverride::membership(
-                Subject::agent("scribe"),
-                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-                Verb::Write,
+        assert!(
+            peer.put_governed_grants(
+                &[agent_grant(
+                    "other-room-agent",
+                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+                )],
+                &key,
+                now,
             )
-            .with_id("other-room-agent")],
-            &key,
-            now,
-        )
-        .unwrap();
+            .is_err(),
+            "a grant on another room is not this room's policy"
+        );
         let command = WorkspaceTaskCommand::Queue {
             title: "Keep room boundaries".into(),
             assigned_agent: "scribe".into(),
@@ -243,15 +333,8 @@ mod tests {
             .is_err()
         );
         assert_eq!(peer.durable().unwrap(), before);
-        peer.put_governed_capabilities(
-            &[
-                CapOverride::membership(Subject::agent("scribe"), ROOM, Verb::Read)
-                    .with_id("actual-room-agent"),
-            ],
-            &key,
-            now,
-        )
-        .unwrap();
+        peer.put_governed_grants(&[agent_grant("actual-room-agent", ROOM)], &key, now)
+            .unwrap();
         assert!(
             peer.apply_workspace_task_command(
                 uuid::Uuid::from_u128(1),
@@ -262,6 +345,332 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    /// A grant given on another device reaches the room through its
+    /// governor, which decides it as it would for a person at its own
+    /// screen: only someone holding the grant action gives one.
+    #[test]
+    fn the_governor_records_a_grant_given_elsewhere_by_whoever_may_grant() {
+        use crate::workspace_membership::WorkspaceMembershipCommand;
+        let (mut peer, governor, other, now) = peer();
+        let key = SigningKey::from_bytes(&[2; 32]);
+        let reader = Grant::new(
+            "reader-mail",
+            Subject::agent("reader"),
+            TreePath::room(ROOM).app("so.tilo.mail"),
+            KindSet::READ,
+            Answer::Allow,
+            Subject::person("anyone"),
+        );
+        let give = WorkspaceMembershipCommand::Grant {
+            grant: reader.clone(),
+        };
+        let held = |peer: &StatePeer| {
+            peer.permissions(governor.device_public_key, now)
+                .unwrap()
+                .policy
+                .grants
+                .into_iter()
+                .find(|grant| grant.id == reader.id)
+        };
+        assert!(
+            peer.apply_workspace_membership_command(&other, &give, &key, now)
+                .is_err(),
+            "someone without the grant action gives nothing"
+        );
+        assert!(held(&peer).is_none());
+        assert!(
+            peer.apply_workspace_membership_command(&governor, &give, &key, now)
+                .unwrap()
+        );
+        let recorded = held(&peer).expect("recorded");
+        assert_eq!(recorded.kinds, KindSet::READ);
+        assert_ne!(
+            recorded.granted_by,
+            Subject::person("anyone"),
+            "the governor records who gave it, not what the request claimed"
+        );
+        peer.apply_workspace_membership_command(
+            &governor,
+            &WorkspaceMembershipCommand::Revoke {
+                grant: reader.id.clone(),
+            },
+            &key,
+            now,
+        )
+        .unwrap();
+        assert!(held(&peer).is_none(), "taken back");
+    }
+
+    /// A task carries its own grant set, changed as the room's governance
+    /// by someone who may work in the room, and ending with the task.
+    #[test]
+    fn a_tasks_grant_set_is_edited_through_commands_and_ends_with_the_task() {
+        use crate::workspace_membership::{WorkspaceMembershipCommand, task_grant_id};
+        let (mut peer, governor, _, now) = peer();
+        let key = SigningKey::from_bytes(&[2; 32]);
+        let authority = WorkspaceTaskAuthority::Person {
+            caller: governor.clone(),
+        };
+        peer.apply_workspace_task_command(
+            uuid::Uuid::from_u128(7),
+            [7; 32],
+            &authority,
+            &WorkspaceTaskCommand::Queue {
+                title: "Tidy the inbox".into(),
+                assigned_agent: "scribe".into(),
+                route: WorkspaceTaskRoute::Model,
+                resource: None,
+            },
+            now,
+        )
+        .unwrap();
+        let snapshot = |peer: &StatePeer| {
+            crate::workspace_task::snapshot(peer.core.room_doc.as_deref().unwrap())
+        };
+        let task = snapshot(&peer).unwrap().tasks[0].id.clone();
+        let mail = TreePath::root().app("so.tilo.mail");
+        let grant = |task: &str| WorkspaceMembershipCommand::GrantForTask {
+            task: task.into(),
+            node: mail.clone(),
+            kinds: KindSet::READ_UNDOABLE,
+            answer: Answer::Allow,
+        };
+        assert!(
+            peer.apply_workspace_membership_command(&governor, &grant("task:absent"), &key, now)
+                .is_err(),
+            "only an open task carries grants"
+        );
+        assert!(
+            peer.apply_workspace_membership_command(&governor, &grant(&task), &key, now)
+                .unwrap()
+        );
+        let held = snapshot(&peer).unwrap().grants;
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].subject, Subject::Task(task.clone()));
+        assert_eq!(held[0].node, TreePath::room(ROOM).join(&mail));
+        assert_eq!(
+            held[0].lifetime,
+            tilo_action_policy::Lifetime::Task(task.clone())
+        );
+        assert!(
+            peer.permissions(governor.device_public_key, now)
+                .unwrap()
+                .policy
+                .grants
+                .iter()
+                .any(|grant| grant.subject == Subject::Task(task.clone())),
+            "the task's grants are the room's while it is open"
+        );
+
+        peer.apply_workspace_membership_command(
+            &governor,
+            &WorkspaceMembershipCommand::RevokeForTask {
+                task: task.clone(),
+                grant: task_grant_id(&task, &mail),
+            },
+            &key,
+            now,
+        )
+        .unwrap();
+        assert!(snapshot(&peer).unwrap().grants.is_empty());
+
+        peer.apply_workspace_membership_command(&governor, &grant(&task), &key, now)
+            .unwrap();
+        peer.apply_workspace_task_command(
+            uuid::Uuid::from_u128(8),
+            [8; 32],
+            &authority,
+            &WorkspaceTaskCommand::CancelForRun {
+                task_id: task.clone(),
+                run_epoch: 0,
+                after_revision: 0,
+            },
+            now,
+        )
+        .unwrap();
+        assert!(
+            snapshot(&peer).unwrap().grants.is_empty(),
+            "the grant set ends with the task"
+        );
+        let room = peer.core.room_doc.as_deref().unwrap();
+        let policy = tilo_desktop_model::projection::room_policy_of(room, ROOM);
+        assert!(
+            !holds_task_grant(&policy, &task),
+            "and no longer counts as the room's"
+        );
+        let held = peer.permissions(governor.device_public_key, now).unwrap();
+        assert!(
+            !holds_task_grant(&held.policy, &task),
+            "a receiver deciding on the room's grants, as the relay does, no longer holds it"
+        );
+    }
+
+    fn holds_task_grant(policy: &tilo_action_policy::RoomPolicy, task: &str) -> bool {
+        policy
+            .grants
+            .iter()
+            .any(|grant| grant.subject == Subject::Task(task.to_owned()))
+    }
+
+    #[test]
+    fn task_execution_budget_requires_actual_owner_and_exact_inactive_frontier() {
+        use collab_types::task_budget::TaskExecutionBudget;
+        let (mut peer, governor, other, now) = peer();
+        let owner = WorkspaceTaskAuthority::Person {
+            caller: governor.clone(),
+        };
+        let (_, queued) = peer
+            .apply_workspace_task_command(
+                uuid::Uuid::from_u128(80),
+                [80; 32],
+                &owner,
+                &WorkspaceTaskCommand::Queue {
+                    title: "Bound coding work".into(),
+                    assigned_agent: "scribe".into(),
+                    route: WorkspaceTaskRoute::Model,
+                    resource: None,
+                },
+                now,
+            )
+            .unwrap();
+        let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = queued else {
+            panic!("queued task")
+        };
+        let budget = TaskExecutionBudget {
+            turn_ms: 900_000,
+            total_ms: 7_200_000,
+        };
+        let command = WorkspaceTaskCommand::SetExecutionBudget {
+            task_id: task_id.clone(),
+            expected_run_epoch: 0,
+            expected_budget: None,
+            budget: Some(budget),
+        };
+        let before = peer.durable().unwrap();
+        for authority in [
+            WorkspaceTaskAuthority::Person { caller: other },
+            WorkspaceTaskAuthority::Host {
+                attestor: governor.clone(),
+            },
+            WorkspaceTaskAuthority::Agent {
+                attestor: governor.clone(),
+                agent_id: "scribe".into(),
+            },
+        ] {
+            assert!(
+                peer.apply_workspace_task_command(
+                    uuid::Uuid::new_v4(),
+                    [1; 32],
+                    &authority,
+                    &command,
+                    now
+                )
+                .is_err()
+            );
+            assert_eq!(peer.durable().unwrap(), before);
+        }
+        let invocation = uuid::Uuid::from_u128(81);
+        let result = peer
+            .apply_workspace_task_command(invocation, [81; 32], &owner, &command, now)
+            .unwrap();
+        let saved = peer.durable().unwrap();
+        assert_eq!(
+            peer.apply_workspace_task_command(invocation, [81; 32], &owner, &command, now)
+                .unwrap(),
+            (false, result.1)
+        );
+        assert_eq!(peer.durable().unwrap(), saved);
+        assert!(
+            peer.apply_workspace_task_command(uuid::Uuid::new_v4(), [3; 32], &owner, &command, now)
+                .is_err()
+        );
+        assert_eq!(peer.durable().unwrap(), saved);
+        assert_eq!(
+            crate::workspace_task::controls_of(peer.core.room_doc.as_deref().unwrap()).unwrap()
+                [&task_id]
+                .execution_budget,
+            Some(budget)
+        );
+        peer.apply_workspace_task_command(
+            uuid::Uuid::from_u128(82),
+            [82; 32],
+            &WorkspaceTaskAuthority::Host { attestor: governor },
+            &WorkspaceTaskCommand::StartRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+            },
+            now,
+        )
+        .unwrap();
+        let active = peer.durable().unwrap();
+        let clear = WorkspaceTaskCommand::SetExecutionBudget {
+            task_id,
+            expected_run_epoch: 1,
+            expected_budget: Some(budget),
+            budget: None,
+        };
+        assert!(
+            peer.apply_workspace_task_command(uuid::Uuid::new_v4(), [4; 32], &owner, &clear, now)
+                .is_err()
+        );
+        assert_eq!(peer.durable().unwrap(), active);
+    }
+
+    #[test]
+    fn task_execution_budget_rejects_invalid_caps_without_mutation() {
+        use collab_types::task_budget::TaskExecutionBudget;
+        let (mut peer, governor, _, now) = peer();
+        let owner = WorkspaceTaskAuthority::Person { caller: governor };
+        let (_, queued) = peer
+            .apply_workspace_task_command(
+                uuid::Uuid::from_u128(90),
+                [90; 32],
+                &owner,
+                &WorkspaceTaskCommand::Queue {
+                    title: "Bound coding work".into(),
+                    assigned_agent: "scribe".into(),
+                    route: WorkspaceTaskRoute::Model,
+                    resource: None,
+                },
+                now,
+            )
+            .unwrap();
+        let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = queued else {
+            panic!("queued task")
+        };
+        let before = peer.durable().unwrap();
+        for invalid in [
+            TaskExecutionBudget {
+                turn_ms: 0,
+                total_ms: 1,
+            },
+            TaskExecutionBudget {
+                turn_ms: 900_001,
+                total_ms: 7_200_000,
+            },
+            TaskExecutionBudget {
+                turn_ms: 1,
+                total_ms: 7_200_001,
+            },
+            TaskExecutionBudget {
+                turn_ms: 101,
+                total_ms: 100,
+            },
+        ] {
+            let bad = WorkspaceTaskCommand::SetExecutionBudget {
+                task_id: task_id.clone(),
+                expected_run_epoch: 0,
+                expected_budget: None,
+                budget: Some(invalid),
+            };
+            assert!(
+                peer.apply_workspace_task_command(uuid::Uuid::new_v4(), [2; 32], &owner, &bad, now)
+                    .is_err()
+            );
+            assert_eq!(peer.durable().unwrap(), before);
+        }
     }
 
     #[test]
@@ -359,22 +768,42 @@ mod tests {
     }
 
     #[test]
-    fn current_owner_with_read_restriction_cannot_queue_a_task() {
-        let (mut peer, governor, _, now) = peer();
-        let restriction = CapOverride::new(
-            Subject::Role(Role::Owner),
-            Scope::Workspace,
-            collab_types::caps::Effect::Restrict,
-            Verb::Read,
-        )
-        .with_id("read-only-owner");
-        peer.put_governed_capabilities(&[restriction], &SigningKey::from_bytes(&[2; 32]), now)
-            .unwrap();
+    fn manual_creation_keeps_current_membership_write_admission() {
+        let (mut peer, _, other, now) = peer();
+        read_only_member(&mut peer, &other, now);
+        let before = peer.durable().unwrap();
+        let result = peer.apply_workspace_task_command(
+            uuid::Uuid::from_u128(81),
+            [81; 32],
+            &WorkspaceTaskAuthority::Person { caller: other },
+            &WorkspaceTaskCommand::CreateManual {
+                title: "Review mapped tile".into(),
+                resource: None,
+            },
+            now,
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "workspace task person lacks write authority"
+        );
+        assert_eq!(peer.durable().unwrap(), before);
+        assert!(
+            crate::workspace_task::snapshot(peer.admitted_room().unwrap())
+                .unwrap()
+                .tasks
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn current_member_with_read_restriction_cannot_queue_a_task() {
+        let (mut peer, _, other, now) = peer();
+        read_only_member(&mut peer, &other, now);
         let before = peer.durable().unwrap();
         let result = peer.apply_workspace_task_command(
             uuid::Uuid::from_u128(1),
             [1; 32],
-            &WorkspaceTaskAuthority::Person { caller: governor },
+            &WorkspaceTaskAuthority::Person { caller: other },
             &WorkspaceTaskCommand::Queue {
                 title: "Must not execute".into(),
                 assigned_agent: "scribe".into(),

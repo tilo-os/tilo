@@ -152,16 +152,16 @@ impl PersonRecords {
     pub fn open_record(
         &self,
         kind: RecordKind,
-        initialize: impl Fn(&mut AutoCommit) -> Result<(), String>,
+        initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<PersonRecord, RecordOpenError> {
         let checkout = RecordCheckout::new(record_id(&kind), kind);
-        match open_in(&self.store, &checkout, &initialize) {
+        match open_in(&self.store, &checkout, initialize) {
             Err(RecordOpenError::Store(app_state::StoreError::WriterBusy { .. }))
                 if !self.replica =>
             {
                 let (package, _) = self.store.package_and_home();
                 let replica = Self::replica(&package, self.author.clone())?;
-                open_in(&replica.store, &checkout, &initialize)?;
+                open_in(&replica.store, &checkout, initialize)?;
                 Ok(PersonRecord::new(
                     replica.store,
                     checkout,
@@ -175,6 +175,40 @@ impl PersonRecords {
                 self.author.clone(),
             )),
         }
+    }
+
+    /// The person's record of `kind` when it exists, without creating it:
+    /// what a reader opens, leaving creation to the first write
+    /// ([`Self::open_record`]).
+    ///
+    /// # Errors
+    /// The record could not be read or replicated.
+    pub fn open_existing_record(
+        &self,
+        kind: RecordKind,
+    ) -> Result<Option<PersonRecord>, RecordOpenError> {
+        let checkout = RecordCheckout::new(record_id(&kind), kind);
+        let store = match self.store.try_open_record(&checkout) {
+            Ok(_) => self.store.clone(),
+            Err(RecordOpenError::MissingRecord) => return Ok(None),
+            Err(RecordOpenError::Store(app_state::StoreError::WriterBusy { .. }))
+                if !self.replica =>
+            {
+                let (package, _) = self.store.package_and_home();
+                let replica = Self::replica(&package, self.author.clone())?;
+                match replica.store.try_open_record(&checkout) {
+                    Ok(_) => replica.store,
+                    Err(RecordOpenError::MissingRecord) => return Ok(None),
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(Some(PersonRecord::new(
+            store,
+            checkout,
+            self.author.clone(),
+        )))
     }
 
     /// Open the original writer for a host-owned canonical edit. Unlike the
@@ -270,7 +304,12 @@ impl PersonRecord {
             .with_history(&self.checkout.id, |doc, history| {
                 let before = doc.get_heads();
                 let value = edit(doc)?;
-                doc.commit();
+                // The closure writes the record directly, naming no finer
+                // action than an edit of the whole record.
+                doc.commit_with(
+                    automerge::transaction::CommitOptions::default()
+                        .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+                );
                 if undoable {
                     history.record_committed_action_authored(doc, before, None, None, Some(author));
                 } else {
@@ -285,12 +324,20 @@ impl PersonRecord {
 
     /// Undo the person's last edit of this record. Whether there was one.
     pub fn undo(&self) -> bool {
-        self.step(|doc, history, author| history.undo_for_author(doc, author, None, None).is_some())
+        self.step(|doc, history, author| {
+            history
+                .undo_as(doc, Some(author), None, None, None)
+                .is_some()
+        })
     }
 
     /// Redo the person's last undone edit of this record.
     pub fn redo(&self) -> bool {
-        self.step(|doc, history, author| history.redo_as(doc, Some(author), None, None).is_some())
+        self.step(|doc, history, author| {
+            history
+                .redo_as(doc, Some(author), None, None, None)
+                .is_some()
+        })
     }
 
     fn step(
@@ -372,5 +419,19 @@ impl PersonRecord {
                 &crate::collaboration::RouteSpec::record(package, room, self.checkout.id.as_str()),
             ),
         )
+    }
+}
+
+#[cfg(test)]
+mod record_id_tests {
+    /// Hosts name a person record by the id `collab_types` derives; it is
+    /// the one the record is opened under.
+    #[test]
+    fn a_person_record_has_the_id_hosts_derive() {
+        let kind = crate::record::RecordKind::new("terminal.history");
+        assert_eq!(
+            super::record_id(&kind).as_str(),
+            collab_types::person_record_id("terminal.history")
+        );
     }
 }

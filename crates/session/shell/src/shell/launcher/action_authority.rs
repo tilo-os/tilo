@@ -2,8 +2,8 @@
 //! This observer never creates or expands grants.
 use super::{InstalledApp, LaunchCommand, lock, runtime_dir};
 use crate::shell::state::RoomId;
-use collab_types::caps::action_authority::{AppActionAuthorityProjection, MAX_PROJECTION_BYTES};
-use collab_types::caps::{Actor, CapOverride, Scope, Subject};
+use collab_types::action_authority::{AppActionAuthorityProjection, MAX_PROJECTION_BYTES};
+use collab_types::caps::CapOverride;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
@@ -14,9 +14,8 @@ mod sandbox_revocation;
 
 #[derive(Clone)]
 struct RoomPolicy {
-    local_id: String,
-    owner: Option<String>,
-    capabilities: Vec<CapOverride>,
+    policy: tilo_action_policy::RoomPolicy,
+    sandbox: Vec<CapOverride>,
     runtime: crate::shell::native_workspace_owner::NativeStateWitness,
     authority: crate::shell::native_workspace_owner::NativeAuthorityStorage,
 }
@@ -51,9 +50,8 @@ impl Export {
                     (
                         workspace.room,
                         RoomPolicy {
-                            local_id: workspace.id.raw().to_string(),
-                            owner: workspace.owner.clone(),
-                            capabilities: workspace.capabilities.clone(),
+                            policy: workspace.policy.clone(),
+                            sandbox: workspace.sandbox.clone(),
                             runtime: tree.native_runtime.authority_witness(),
                             authority: tree.native_authority.clone(),
                         },
@@ -87,6 +85,68 @@ impl Export {
     }
 }
 
+/// Host-only backend admission over the accepted room policy. No projection
+/// bytes or caller-supplied roles participate. The real tree and writer stay
+/// borrowed until the typed operation finishes, serializing revocation.
+pub(crate) fn with_ordinary_person_admin<T>(
+    tree: &crate::shell::state::WorkspaceTreeHandle,
+    room: RoomId,
+    person: &str,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    with_ordinary_room_current(tree, room, |workspace| {
+        let now = tilo_clock::unix_now_ms() / 1000;
+        if workspace.answer_at(
+            person,
+            &workspace
+                .node()
+                .app(crate::shell::display_control::SETTINGS_APP_ID),
+            tilo_action_policy::ActionKind::Outside,
+            now,
+        ) != tilo_action_policy::Answer::Allow
+        {
+            return Err("The current owner policy does not permit display changes.".into());
+        }
+        operation()
+    })
+}
+
+/// Borrow accepted ordinary-room custody without assigning a role to the
+/// caller. Individual action contracts still apply their exact permissions.
+pub(crate) fn with_ordinary_room_current<T>(
+    tree: &crate::shell::state::WorkspaceTreeHandle,
+    room: RoomId,
+    operation: impl FnOnce(&crate::shell::state::Workspace) -> Result<T, String>,
+) -> Result<T, String> {
+    let tree = tree.read();
+    if tree.requires_native_owner(room) {
+        return Err("This room requires its current native owner.".into());
+    }
+    let workspace = tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .ok_or("The admitted Settings room is unavailable.")?;
+    let published = lock(&PUBLISHED);
+    let policy = published
+        .rooms
+        .get(&room)
+        .ok_or("The accepted Settings room policy is unavailable.")?;
+    if workspace.policy != policy.policy || workspace.sandbox != policy.sandbox {
+        return Err("The accepted Settings room policy has changed.".into());
+    }
+    let result = policy.runtime.with_current_ordinary(
+        &policy.authority,
+        &tree.native_authority,
+        room,
+        || operation(workspace),
+    );
+    drop(published);
+    drop(tree);
+    result
+}
+
 fn authority_root() -> PathBuf {
     runtime_dir().join("tilo").join("action-authority")
 }
@@ -101,47 +161,32 @@ fn binding_path(binding: &Binding) -> PathBuf {
 
 fn projection(published: &Published, binding: &Binding) -> AppActionAuthorityProjection {
     let room = binding.0.to_string();
-    let person_actor = Actor::person(None, &binding.2).in_room(&room);
-    let policy = published.rooms.get(&binding.0).filter(|policy| {
-        policy
-            .runtime
-            .authority_is_current(&policy.authority, binding.0)
+    let current = published
+        .rooms
+        .get(&binding.0)
+        .filter(|policy| {
+            policy
+                .runtime
+                .authority_is_current(&policy.authority, binding.0)
+        })
+        .map(|policy| policy.policy.clone());
+    // A room whose accepted policy is not current names nobody: the app's
+    // host decides every action against it, so it allows nothing.
+    let policy = current.unwrap_or_else(|| {
+        tilo_action_policy::RoomPolicy::unowned(
+            room,
+            &tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner),
+        )
     });
-    let capabilities = policy
-        .into_iter()
-        .flat_map(|policy| &policy.capabilities)
-        .filter(|capability| {
-            matches!(capability.subject, Subject::Role(_))
-                || capability.subject.matches_actor(&person_actor)
-        })
-        .filter_map(|capability| {
-            let mut current = capability.clone();
-            match &current.scope {
-                Scope::Workspace => {}
-                // Membership is owned by this accepted workspace vector;
-                // normalize its legacy local-handle spelling to the room.
-                Scope::Room(scope)
-                    if scope == &room || policy.is_some_and(|policy| scope == &policy.local_id) =>
-                {
-                    current.scope = Scope::Room(room.clone());
-                }
-                Scope::App(app) | Scope::Action { app, .. } if app == &binding.1 => {}
-                _ => return None,
-            }
-            Some(current)
-        })
-        .collect();
     let issued_at_unix_ms = tilo_clock::unix_now_ms();
-    AppActionAuthorityProjection {
-        schema_version: 1,
-        room,
-        app_id: binding.1.clone(),
-        person: binding.2.clone(),
-        owner: policy.and_then(|policy| policy.owner.clone()),
-        capabilities,
+    AppActionAuthorityProjection::project(
+        &policy,
+        &binding.1,
+        &binding.2,
+        false,
         issued_at_unix_ms,
-        valid_until_unix_ms: issued_at_unix_ms.saturating_add(3_000),
-    }
+        issued_at_unix_ms.saturating_add(3_000),
+    )
 }
 
 fn write_binding(
@@ -252,21 +297,36 @@ impl Lease {
 
     #[cfg(target_os = "linux")]
     pub(super) fn register_sandbox(&mut self, pid: u32) -> std::io::Result<()> {
+        self.register_in(pid, &PUBLISHED, crate::shell::durable_writer::global())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn register_in(
+        &mut self,
+        pid: u32,
+        accepted: &Mutex<Published>,
+        writer: &crate::shell::durable_writer::DurableWriter,
+    ) -> std::io::Result<()> {
+        let sandbox =
+            sandbox_revocation::Sandbox::capture(pid, self.binding.clone(), &self.capabilities)?;
         // Opening a document queues its grant on the existing state writer.
-        // Wait on this launch worker, before taking PUBLISHED or opening the
-        // child gate. A refused/superseded write still cannot authorize it.
-        if !self.capabilities.is_empty()
-            && !crate::shell::durable_writer::global().flush_timeout(Duration::from_secs(10))
-        {
+        // Unless the accepted policy already holds every captured grant, wait
+        // for that publication on this launch worker, before opening the
+        // child gate; waiting when it does would only wait for unrelated
+        // writes. A revocation still queued is enforced on its publication
+        // (`sandbox_revocation::reconcile`), as one queued after the launch.
+        // A refused/superseded write still cannot authorize it.
+        if !sandbox.authorized(&lock(accepted)) && !writer.flush_timeout(Duration::from_secs(10)) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "filesystem authority publication did not complete",
             ));
         }
-        let mut published = lock(&PUBLISHED);
-        let sandbox =
-            sandbox_revocation::Sandbox::capture(pid, self.binding.clone(), &self.capabilities)?;
-        if !sandbox.authorized(&published) {
+        let mut published = lock(accepted);
+        if let Err(reason) = sandbox.authorization_status(&published) {
+            // The reason is a static category: no path, peer or grant.
+            tracing::error!(room = %self.binding.0, package_id = %self.binding.1, authority_rejection = reason,
+                "application launch refused: its filesystem authority is not the accepted policy");
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "filesystem authority changed while the application launch was pending",
@@ -334,7 +394,75 @@ pub(crate) fn tick(now: Instant) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::caps::{Principal, Verb};
+    use tilo_action_policy::Subject;
+
+    #[test]
+    fn ordinary_display_backend_borrows_real_owner_policy_and_rejects_revocation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.workspaces[0].room;
+        tree.desktop.workspaces[0].set_owner("person-a");
+        tree.persist_path = Some(path);
+        let tree = tree.shared();
+        let owner = crate::shell::native_workspace_owner::open(tree.clone()).unwrap();
+        Export::of(&tree.read()).publish();
+        let source = settings_store::HostDocument::new(serde_json::Map::default(), |_| Ok(()));
+        let observed: settings_store::hardware::DisplayHardwareSnapshot = serde_json::from_value(serde_json::json!({
+            "outputs":[{"descriptor":{"connector":"eDP-1","modes":[{"width":2944,"height":1840,"refresh_mhz":59999},{"width":2944,"height":1840,"refresh_mhz":89999}],"hdr":false,"vrr":false,"color_profiles":[],"monitor":null},"current_mode":{"width":2944,"height":1840,"refresh_mhz":59999},"scale":2.0,"builtin":true,"sink_hdr":false,"hdr_unavailable_reason":null,"sink_vrr":false,"vrr_unavailable_reason":null,"color_profile_labels":{}}],
+            "layout":[{"connector":"eDP-1","x":0,"y":0,"width":1472,"height":920}]
+        })).unwrap();
+        let candidate: settings_store::hardware::DisplayConfig = serde_json::from_value(serde_json::json!({"outputs":{"eDP-1":{"mode":{"width":2944,"height":1840,"refresh_mhz":89999},"scale":2.0}}})).unwrap();
+        let command = settings_store::display_control::DisplayCommand::Apply {
+            observed_set: settings_store::hardware::DisplaySet::of_descriptors(&[observed.outputs
+                [0]
+            .descriptor
+            .clone()]),
+            candidate,
+        };
+        let reply = with_ordinary_person_admin(&tree, room, "person-a", || {
+            settings_store::display_control::execute(&source, observed.clone(), command)
+        })
+        .unwrap();
+        let transaction = reply.transaction.unwrap();
+        assert_eq!(
+            transaction.state,
+            settings_store::hardware::DisplayTransactionState::Requested
+        );
+        assert_eq!(
+            transaction.previous.outputs["eDP-1"]
+                .mode
+                .unwrap()
+                .refresh_mhz,
+            59999
+        );
+        let revert = || {
+            settings_store::display_control::execute(
+                &source,
+                observed.clone(),
+                settings_store::display_control::DisplayCommand::Revert {
+                    transaction: transaction.id,
+                },
+            )
+        };
+        assert!(with_ordinary_person_admin(&tree, room, "person-b", revert).is_err());
+        // Revocation before its queued publication must already fail closed;
+        // neither stale accepted cache nor a fabricated UI role grants access.
+        tree.write().desktop.workspaces[0].policy.owner = None;
+        assert!(with_ordinary_person_admin(&tree, room, "person-a", revert).is_err());
+        tree.read().queue_save();
+        crate::shell::persist::wait_for_saves();
+        assert!(with_ordinary_person_admin(&tree, room, "person-a", revert).is_err());
+        assert_eq!(
+            settings_store::SettingsSource::load(&source)["display_transaction"]["state"],
+            "requested"
+        );
+        tree.write().desktop.workspaces[0].set_owner("person-a");
+        tree.read().queue_save();
+        crate::shell::persist::wait_for_saves();
+        drop(owner);
+        assert!(with_ordinary_person_admin(&tree, room, "person-a", revert).is_err());
+    }
 
     #[test]
     fn action_authority_export_releases_file_custody_and_revokes_dropped_runtime() {
@@ -354,7 +482,7 @@ mod tests {
             ..Published::default()
         };
         assert_eq!(
-            projection(&published, &binding).owner.as_deref(),
+            projection(&published, &binding).policy.owner.as_deref(),
             Some("person-a")
         );
         drop(owner);
@@ -365,10 +493,20 @@ mod tests {
             .expect("cached policy must not retain the state-file lease after shutdown");
         let revoked = projection(&published, &binding);
         assert_eq!(
-            revoked.owner, None,
+            revoked.policy.owner, None,
             "a reopened owner cannot revive the old witness"
         );
-        assert!(revoked.capabilities.is_empty());
+        assert_eq!(
+            revoked
+                .authority(&[])
+                .decide(
+                    &revoked.app_node(),
+                    tilo_action_policy::ActionKind::Read,
+                    &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+                )
+                .answer,
+            tilo_action_policy::Answer::Deny
+        );
         drop(reopened);
     }
 
@@ -378,29 +516,38 @@ mod tests {
         let workspace = &mut tree.desktop.workspaces[0];
         let room = workspace.room;
         workspace.set_owner("person-a");
-        for (subject, scope) in [
+        let node = workspace.node();
+        for (id, subject, node) in [
             (
-                Subject::Principal(Principal::Person("person-a".into())),
-                Scope::App("so.tilo.store".into()),
+                "a-store",
+                Subject::person("person-a"),
+                node.clone().app("so.tilo.store"),
             ),
             (
-                Subject::Principal(Principal::Person("person-b".into())),
-                Scope::App("so.tilo.store".into()),
+                "b-store",
+                Subject::person("person-b"),
+                node.clone().app("so.tilo.store"),
+            ),
+            ("store-room", Subject::app("so.tilo.store"), node.clone()),
+            (
+                "a-settings",
+                Subject::person("person-a"),
+                node.app("so.tilo.settings"),
             ),
             (
-                Subject::Principal(Principal::App("so.tilo.store".into())),
-                Scope::Workspace,
-            ),
-            (
-                Subject::Principal(Principal::Person("person-a".into())),
-                Scope::App("so.tilo.settings".into()),
-            ),
-            (
-                Subject::Principal(Principal::Person("person-a".into())),
-                Scope::Room("foreign-room".into()),
+                "a-foreign",
+                Subject::person("person-a"),
+                tilo_action_policy::TreePath::room("foreign-room"),
             ),
         ] {
-            workspace.grant_capability(CapOverride::grant(subject, scope, Verb::Admin));
+            workspace.grant(tilo_action_policy::Grant::new(
+                id,
+                subject,
+                node,
+                tilo_action_policy::KindSet::ALL,
+                tilo_action_policy::Answer::Allow,
+                Subject::person("person-a"),
+            ));
         }
         let binding = (room, "so.tilo.store".into(), "person-a".into());
         let mut published = Published {
@@ -409,27 +556,32 @@ mod tests {
         };
         let allowed = projection(&published, &binding);
         allowed.validate().unwrap();
-        assert_eq!(allowed.owner.as_deref(), Some("person-a"));
-        assert_eq!(
-            allowed.capabilities.len(),
-            2,
-            "owner membership and exact app grant only"
-        );
-        assert!(allowed.capabilities.iter().all(
-            |cap| matches!(&cap.scope, Scope::Room(scope) if scope == &room.to_string())
-                || matches!(&cap.scope, Scope::App(app) if app == "so.tilo.store")
-        ));
+        assert_eq!(allowed.policy.owner.as_deref(), Some("person-a"));
+        let ids: Vec<&str> = allowed
+            .policy
+            .grants
+            .iter()
+            .map(|grant| grant.id.as_str())
+            .collect();
+        for kept in ["a-store", "b-store", "store-room"] {
+            assert!(ids.contains(&kept), "{kept} can decide the app's actions");
+        }
+        for dropped in ["a-settings", "a-foreign"] {
+            assert!(
+                !ids.contains(&dropped),
+                "{dropped} reaches no action of the app"
+            );
+        }
         published.rooms.remove(&room);
         let removed = projection(&published, &binding);
-        assert_eq!(removed.owner, None);
-        assert!(removed.capabilities.is_empty());
+        assert_eq!(removed.policy.owner, None);
     }
     #[test]
     fn action_authority_atomic_publication_revokes_live_projection_and_renews_lease() {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
         let workspace = &mut tree.desktop.workspaces[0];
         let room = RoomId::new();
-        workspace.room = room;
+        workspace.set_room(room);
         workspace.set_owner("person-a");
         let binding = (room, "so.tilo.store".into(), "person-a".into());
         let mut published = Published {
@@ -439,17 +591,15 @@ mod tests {
         let path = write_binding(&mut published, &binding, true).unwrap();
         let first: AppActionAuthorityProjection =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(first.owner.as_deref(), Some("person-a"));
+        assert_eq!(first.policy.owner.as_deref(), Some("person-a"));
         assert!(first.is_current_at(tilo_clock::unix_now_ms()));
         assert_eq!(path.file_name().unwrap(), "current.json");
-        tree.desktop.workspaces[0].owner = None;
-        tree.desktop.workspaces[0].capabilities.clear();
+        tree.desktop.workspaces[0].policy.owner = None;
         published.rooms = Export::of(&tree).0;
         write_binding(&mut published, &binding, false).unwrap();
         let revoked: AppActionAuthorityProjection =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(revoked.owner, None);
-        assert!(revoked.capabilities.is_empty());
+        assert_eq!(revoked.policy.owner, None);
         assert!(!first.same_policy(&revoked));
         write_binding(&mut published, &binding, true).unwrap();
         let renewed: AppActionAuthorityProjection =
@@ -492,7 +642,7 @@ mod tests {
         let before: AppActionAuthorityProjection =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(
-            before.owner, None,
+            before.policy.owner, None,
             "unknown room must have no management authority"
         );
         let second = attach(&app, room, &mut command).unwrap();
@@ -519,5 +669,88 @@ mod tests {
         }
         drop(published);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// A launch whose grants the accepted policy already holds does not wait
+    /// for the state writer, however busy it is with other writes; one whose
+    /// grant is still queued waits for that publication and then registers.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_launch_waits_on_the_state_writer_only_for_a_grant_not_yet_published() {
+        struct Process(std::process::Child);
+        impl Drop for Process {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let sleeper = || {
+            Process(
+                std::process::Command::new("sleep")
+                    .arg("60")
+                    .spawn()
+                    .unwrap(),
+            )
+        };
+        let app = "so.tilo.files";
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.workspaces[0].room;
+        let held = CapOverride::grant(
+            collab_types::Subject::Principal(collab_types::Principal::App(app.into())),
+            collab_types::Scope::FsPath("/disposable/held".into()),
+            collab_types::Access::Read,
+        )
+        .with_id("held");
+        tree.desktop.workspaces[0].sandbox.push(held.clone());
+        let accepted: &'static Mutex<Published> = Box::leak(Box::new(Mutex::new(Published {
+            rooms: Export::of(&tree).0,
+            ..Published::default()
+        })));
+        let writer = crate::shell::durable_writer::DurableWriter::spawn("register-sandbox-test");
+        let (release, busy) = std::sync::mpsc::channel::<()>();
+        writer.submit(PathBuf::from("unrelated"), move || {
+            let _ = busy.recv();
+        });
+        let lease = |capabilities: Vec<CapOverride>| Lease {
+            binding: (room, app.into(), "person".into()),
+            capabilities,
+            pid: None,
+            capabilities_file: None,
+        };
+
+        let first = sleeper();
+        let started = Instant::now();
+        let mut published_grant = lease(vec![held.clone()]);
+        published_grant
+            .register_in(first.0.id(), accepted, &writer)
+            .expect("a published grant registers");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a published grant must not wait for unrelated writes"
+        );
+        assert!(lock(accepted).sandboxes.contains_key(&first.0.id()));
+
+        let queued = CapOverride::grant(
+            collab_types::Subject::Principal(collab_types::Principal::App(app.into())),
+            collab_types::Scope::FsPath("/disposable/queued".into()),
+            collab_types::Access::Read,
+        )
+        .with_id("queued");
+        tree.desktop.workspaces[0].sandbox.push(queued.clone());
+        let rooms = Export::of(&tree).0;
+        writer.submit(PathBuf::from("publication"), move || {
+            lock(accepted).rooms = rooms;
+        });
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            release.send(()).unwrap();
+        });
+        let second = sleeper();
+        let mut queued_grant = lease(vec![held, queued]);
+        queued_grant
+            .register_in(second.0.id(), accepted, &writer)
+            .expect("a queued grant registers once published");
+        assert!(lock(accepted).sandboxes.contains_key(&second.0.id()));
+        releaser.join().unwrap();
     }
 }

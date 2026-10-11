@@ -172,7 +172,7 @@ impl super::super::InProcessApps {
         let Some(root) = self.native_messaging_root.clone() else {
             return;
         };
-        let Ok(accounts) = self.default_signal_accounts() else {
+        let Ok(accounts) = self.default_native_accounts("signal") else {
             return;
         };
         if accounts.is_empty() {
@@ -254,8 +254,9 @@ impl super::super::InProcessApps {
             );
         }
     }
-    fn default_signal_accounts(
+    pub(super) fn default_native_accounts(
         &mut self,
+        service: &str,
     ) -> Result<Vec<(String, accounts::person::PersonAccount)>, SendError> {
         use accounts::person::PersonAccounts;
         use tilo_resource::Resource as _;
@@ -277,7 +278,7 @@ impl super::super::InProcessApps {
         Ok(state
             .accounts
             .iter()
-            .filter(|(_, row)| row.enabled && row.type_id == "signal")
+            .filter(|(_, row)| row.enabled && row.type_id == service)
             .map(|(id, row)| (id.as_str().to_owned(), row.clone()))
             .collect())
     }

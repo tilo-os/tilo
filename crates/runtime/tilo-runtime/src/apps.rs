@@ -39,16 +39,10 @@ pub struct Apps {
     room: String,
     root: PathBuf,
     /// Where app containers live on macOS, beside the runtime profile.
-    #[cfg_attr(
-        not(target_os = "macos"),
-        expect(dead_code, reason = "macOS containers only")
-    )]
+    #[cfg(target_os = "macos")]
     data_home: PathBuf,
     /// Where `tilo-launcher` is looked for, in order.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(dead_code, reason = "Linux launcher only")
-    )]
+    #[cfg(target_os = "linux")]
     launcher_candidates: Vec<PathBuf>,
     launched: Arc<Launched>,
     /// Who may capture from which device, in `state/device-grants` of the
@@ -81,11 +75,18 @@ impl Apps {
         data_home: PathBuf,
         launcher_candidates: Vec<PathBuf>,
     ) -> Self {
+        // Each place only matters on the platform whose launch path reads it.
+        #[cfg(not(target_os = "macos"))]
+        drop(data_home);
+        #[cfg(not(target_os = "linux"))]
+        drop(launcher_candidates);
         Self {
             catalog,
             room: room.to_owned(),
             root: profile.to_path_buf(),
+            #[cfg(target_os = "macos")]
             data_home,
+            #[cfg(target_os = "linux")]
             launcher_candidates,
             launched: Arc::default(),
             #[cfg(target_os = "macos")]
@@ -164,6 +165,28 @@ impl Apps {
             )
     }
 
+    /// Run the package `app` with the surface its signed package ships, so
+    /// the records of the person's it declares there are kept in their room
+    /// as a built-in app's are. A package whose surface no longer matches its
+    /// signature declares none.
+    fn run_with_signed_surface(&self, app: &InstalledApp) {
+        let package = self
+            .catalog
+            .as_ref()
+            .and_then(|catalog| catalog.list().ok())
+            .and_then(|packages| {
+                packages
+                    .into_iter()
+                    .find(|package| package.manifest_path == app.manifest_path)
+            });
+        if let Some(surface) = package
+            .as_ref()
+            .and_then(package_store::integrity::signed_surface)
+        {
+            tilo_action_broker::register_package_surface(&app.package_id, &surface);
+        }
+    }
+
     /// The installed GUI app `app_id`.
     fn launchable(&self, app_id: &str) -> Result<InstalledApp, String> {
         let app = self
@@ -190,17 +213,18 @@ impl Apps {
             return Err(format!("workspace {room} is not served by this runtime"));
         }
         let app = self.launchable(app_id)?;
+        self.run_with_signed_surface(&app);
         let sockets = Sockets {
             collab: self.root.join(COLLAB_SOCKET),
             identity: self.root.join(IDENTITY_SOCKET),
             blobs: self.root.join(BLOB_SOCKET),
         };
         #[cfg(target_os = "linux")]
-        let launch = linux::launch(self, &app, &sockets)?;
+        let mut launch = linux::launch(self, &app, &sockets)?;
         #[cfg(target_os = "macos")]
-        let launch = macos::launch(self, &app, &sockets)?;
+        let mut launch = macos::launch(self, &app, &sockets)?;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let launch: Launch = {
+        let mut launch: Launch = {
             let _ = (&app, &sockets);
             return Err("refusing to launch: no app sandbox on this platform".into());
         };
@@ -209,6 +233,13 @@ impl Apps {
             return Err(format!(
                 "refusing to keep {app_id} running: its process could not be identified"
             ));
+        }
+        // Only now may the launcher go on and connect: the broker attests it
+        // once, against the record just made.
+        if let Err(error) = launch.release_registration() {
+            self.launched.forget(launch.pid);
+            launch.kill();
+            return Err(format!("could not let {app_id}'s launcher go on: {error}"));
         }
         Ok(launch)
     }
@@ -228,7 +259,15 @@ impl LauncherServices for Apps {
             .collect()
     }
 
-    fn launch(&self, app: &str, workspace: &tilo_desktop_model::Workspace) -> Result<(), String> {
+    /// A standalone runtime draws no desk, so there is no place to open at;
+    /// it opens the app's default record.
+    fn launch(
+        &self,
+        app: &str,
+        workspace: &tilo_desktop_model::Workspace,
+        _: Option<&str>,
+        _: &tilo_action_broker::services::LaunchPlace,
+    ) -> Result<(), String> {
         let launch = self.start(app, &workspace.room.to_string())?;
         let launched = Arc::clone(&self.launched);
         std::thread::Builder::new()
@@ -275,11 +314,25 @@ pub struct Launch {
     pid: u32,
     #[cfg(target_os = "linux")]
     child: std::process::Child,
+    /// Holds the launcher before it connects anywhere until the launch is
+    /// recorded; `None` once released.
+    #[cfg(target_os = "linux")]
+    registration: Option<launcher::registration_gate::RegistrationGate>,
     #[cfg(target_os = "macos")]
     app: launcher_macos::LaunchedApp,
 }
 
 impl Launch {
+    /// Let a launcher held at its registration gate go on. Call once the
+    /// launch is recorded for attestation.
+    fn release_registration(&mut self) -> std::io::Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(gate) = self.registration.take() {
+            return gate.release();
+        }
+        Ok(())
+    }
+
     /// Wait for the process to exit; its exit code, when it exited normally.
     pub fn wait(self) -> Option<i32> {
         #[cfg(target_os = "linux")]
@@ -421,7 +474,7 @@ fn data_home(home: &Path) -> PathBuf {
 /// sandbox.
 fn launcher_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if launcher::dev_env::DEV_ENV_OVERRIDES
+    if package_store::dev_env::DEV_ENV_OVERRIDES
         && let Some(explicit) = std::env::var_os("TILO_LAUNCHER_BIN").filter(|v| !v.is_empty())
     {
         out.push(PathBuf::from(explicit));

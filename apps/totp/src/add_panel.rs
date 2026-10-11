@@ -407,32 +407,21 @@ impl Widget for AddForm {
         // The form has a node of its own over the scroller's, so that the
         // window's focus order pairs each widget with its node.
         let child = self.tree.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Column,
-                size: taffy::Size {
-                    width: taffy::style_helpers::percent(1.0_f32),
-                    height: taffy::Dimension::auto(),
-                },
-                ..Style::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: taffy::Size {
+                width: taffy::style_helpers::percent(1.0_f32),
+                height: taffy::Dimension::auto(),
             },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Style::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let at = Point::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-        );
-        self.rect = Rect::from_origin_size(
-            at,
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        let at = self.rect.origin();
         let child = Self::child_node(taffy, node);
         self.tree.apply_layout(taffy, child, at);
         // A scroll bar takes room from the fields, so it shows only when the
@@ -1240,14 +1229,8 @@ pub(crate) mod tests {
         let _host = ui::host::enter(&services);
         let mut app = Hosted::new().unwrap();
         for account in &accounts {
-            app.invoke_confirmed(
-                ui::tilo_resource::Invoke::apply(&crate::actions::add_account_action(
-                    account,
-                    account.order,
-                ))
-                .unwrap(),
-            )
-            .unwrap();
+            let add = app.state().add(account).unwrap();
+            app.invoke_confirmed(add).unwrap();
         }
         app.harness().resize(viewport).unwrap();
         settle(&mut app);
@@ -1559,17 +1542,17 @@ pub(crate) mod tests {
         assert!(panel(&mut app, |p| p.build_account().is_err()));
         panel(&mut app, |p| p.values.secret.set("JBSWY3DPEHPK3PXP".into()));
         assert!(panel(&mut app, |p| p.build_account().is_ok()));
-        let count = app.state().len();
+        let count = app.state().list().len();
         app.harness().key("Enter");
         settle(&mut app);
         assert!(!panel(&mut app, |p| p.is_open()));
         assert_eq!(
-            app.state().len(),
+            app.state().list().len(),
             count + 1,
             "typed add persists actual account metadata"
         );
         assert!(
-            app.state().iter().all(|a| a.secret.is_empty()),
+            app.state().list().iter().all(|a| a.secret.is_empty()),
             "seeds never reach shared document"
         );
     }
@@ -1602,10 +1585,10 @@ pub(crate) mod tests {
         let account = panel(&mut app, |p| p.build_account().unwrap());
         assert_eq!(account.algorithm, Algorithm::Sha512);
         assert_eq!(account.digits, 8);
-        let count = app.state().len();
+        let count = app.state().list().len();
         click(&mut app, "Cancel");
         assert!(!panel(&mut app, |p| p.is_open()));
-        assert_eq!(app.state().len(), count, "cancel creates no account");
+        assert_eq!(app.state().list().len(), count, "cancel creates no account");
         app.effect(&TotpEffect::AddAccount).unwrap();
         settle(&mut app);
         type_into(&mut app, "totp-issuer", "Acme");
@@ -1613,7 +1596,7 @@ pub(crate) mod tests {
         click(&mut app, "Add account");
         assert!(!panel(&mut app, |p| p.is_open()));
         assert_eq!(
-            app.state().len(),
+            app.state().list().len(),
             count + 1,
             "pointer Save reaches typed metadata action"
         );

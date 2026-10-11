@@ -20,7 +20,8 @@ name = "tilo-runtime"
 path = "src/bin/tilo-runtime.rs"
 
 [dependencies]
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
@@ -31,6 +32,7 @@ channel-crypto = { path = "../../collab/channel-crypto" }
 blake3.workspace = true
 chrono = { workspace = true, features = ["std"] }
 collab-types = { path = "../../collab/collab-types" }
+fs-protocol = { path = "../../system/fs-protocol" }
 ed25519-dalek.workspace = true
 # The random key sealing the channel state.
 getrandom.workspace = true
@@ -71,11 +73,14 @@ tilo-installed-apps = { path = "../../packaging/installed-apps" }
 # Joined rooms: their enrolled replicas, invitation redemption and relay sessions.
 tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-tilo-relay = { path = "../../hosting/tilo-relay" }
+# The content store app surfaces are read from.
+tilo-content = { path = "../../system/content" }
+# The relay session a joined room syncs through; the daemon is a dev-dependency.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-rt.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-tokio = { workspace = true, features = ["net", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid.workspace = true
@@ -100,6 +105,8 @@ tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "mi
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 
 [dev-dependencies]
+# `standalone::joined` tests start a real relay.
+tilo-relay = { path = "../../hosting/tilo-relay" }
 # The steward channel fixtures owner tests seal writes with.
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 # The join protocol a runtime joins rooms over.

@@ -36,14 +36,22 @@ mod durable_local_matrix {
                 crate::test_support::WorkspaceId(84),
                 "Durable actual RPC",
             );
-            workspace.room = tilo_desktop_model::RoomId::parse(owner.peer().room()).unwrap();
-            workspace.set_owner(principal_id_for_root(cert.user_public_key));
-            workspace.owner = None;
-            workspace.capabilities = workspace
-                .capabilities
-                .into_iter()
-                .map(|cap| cap.with_expiry(start / 1_000_000_000 + 50))
-                .collect();
+            workspace.set_room(tilo_desktop_model::RoomId::parse(owner.peer().room()).unwrap());
+            // Someone the room grants everything until 50 seconds after the
+            // start, and nothing after.
+            let principal = principal_id_for_root(cert.user_public_key);
+            let changes = tilo_action_policy::Grant::new(
+                "changes-for-a-while",
+                tilo_action_policy::Subject::Person(principal.clone()),
+                workspace.node(),
+                tilo_action_policy::KindSet::ALL,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Subject::Person(principal),
+            )
+            .with_lifetime(tilo_action_policy::Lifetime::Until(
+                (start / 1_000_000_000 + 50) * 1000,
+            ));
+            workspace.grant(changes);
             let route = CrdtRoute::record(
                 "so.tilo.word-processor",
                 workspace.room.to_string(),
@@ -120,7 +128,7 @@ mod durable_local_matrix {
             let (worker, authorize) =
                 join_worker(&state, &directories, &env.route, &env.cert, &env.key, 903).await;
             let handle = &worker.handle;
-            publish(handle).await;
+            publish_for(handle, &env.route.app_id).await;
             let stream = handle.subscribe_stable_invocations().await.unwrap();
             let (_, binding) = handle
                 .resolve_published_action_for_invocation(
@@ -198,10 +206,16 @@ mod durable_local_matrix {
         }
     }
     async fn publish(handle: &runtime_collab::ChannelHandle) -> Rc<RefCell<TestActionDirectory>> {
+        publish_for(handle, "so.tilo.word-processor").await
+    }
+    async fn publish_for(
+        handle: &runtime_collab::ChannelHandle,
+        app: &str,
+    ) -> Rc<RefCell<TestActionDirectory>> {
         let state = directory_state("original-r1");
         handle
             .publish_action_directory(
-                "so.tilo.word-processor",
+                app,
                 capnp_rpc::new_client(DurableDirectory {
                     state: state.clone(),
                 }),
@@ -327,19 +341,14 @@ mod durable_local_matrix {
             .run_until(async {
                 let env = Environment::new();
                 let rig = Rig::new(&env).await;
-                let agent_grant = {
-                    let mut tree = env.membership.write();
-                    tree.workspaces[0].grant_capability(CapOverride::membership(
-                        Subject::agent("scribe"),
-                        env.route.cluster_id.clone(),
-                        Verb::Write,
-                    ))
-                };
-                env.membership.write().workspaces[0].grant_capability(CapOverride::grant(
-                    Subject::agent("scribe"),
-                    collab_types::Scope::App(env.route.app_id.clone()),
-                    Verb::Write,
-                ));
+                use crate::test_support::{Grants as _, KindSet};
+                let agent_grant =
+                    env.membership.write().workspaces[0].admit_agent("scribe", KindSet::READ);
+                env.membership.write().workspaces[0].allow_app(
+                    tilo_action_policy::Subject::agent("scribe"),
+                    &env.route.app_id,
+                    KindSet::ALL,
+                );
                 let person = rig.caller(&env, 904, None).await;
                 let agent = rig.caller(&env, 905, Some("scribe")).await;
                 let invocation = id(0xb001);
@@ -406,7 +415,7 @@ mod durable_local_matrix {
                     rig.state.invocation_statuses("agent:scribe").is_empty(),
                     "legacy actor-only status cannot disclose AuthenticatedLocal rows"
                 );
-                env.membership.write().workspaces[0].revoke_capability(&agent_grant);
+                env.membership.write().workspaces[0].revoke_grant(&agent_grant);
                 assert!(
                     agent
                         .handle
@@ -446,24 +455,20 @@ mod durable_local_matrix {
                 let env = Environment::new();
                 let rig = Rig::new(&env).await;
                 let room = env.route.cluster_id.clone();
-                for cap in [
-                    CapOverride::membership(Subject::agent("scribe"), room.clone(), Verb::Write),
-                    CapOverride::grant(
+                {
+                    use crate::test_support::{Grants as _, KindSet, Subject, TreePath};
+                    let workspace = &mut env.membership.write().workspaces[0];
+                    workspace.admit_agent("scribe", KindSet::READ);
+                    workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
+                    workspace.deny(
                         Subject::agent("scribe"),
-                        collab_types::Scope::App(env.route.app_id.clone()),
-                        Verb::Write,
-                    ),
-                    CapOverride::new(
-                        Subject::agent("scribe"),
-                        collab_types::Scope::Action {
-                            app: env.route.app_id.clone(),
-                            action: "erase".into(),
-                        },
-                        collab_types::Effect::Restrict,
-                        Verb::Read,
-                    ),
-                ] {
-                    env.membership.write().workspaces[0].grant_capability(cap);
+                        &TreePath::root()
+                            .app(env.route.app_id.clone())
+                            .any(tilo_action_policy::Level::Kind)
+                            .resource("document-1:body")
+                            .action("erase"),
+                        KindSet::ALL,
+                    );
                 }
                 let agent = rig.caller(&env, 905, Some("scribe")).await;
                 let invocation = id(0xc001);
@@ -520,6 +525,7 @@ mod durable_local_matrix {
                     context: None,
                     confirmation: None,
                     revision: None,
+                    wait_ms: None,
                 };
                 assert!(matches!(
                     rig.state
@@ -757,8 +763,10 @@ mod durable_local_matrix {
                     self.entered.send(()).unwrap();
                     self.release.notified().await;
                 }
-                write_directory_row(results.get().init_resolution().init_found(), &self.row);
-                Ok(())
+                runtime_collab::write_action_directory_row(
+                    results.get().init_resolution().init_found(),
+                    &self.row,
+                )
             })
         }
     }
@@ -1057,6 +1065,7 @@ mod durable_local_matrix {
                     confirmation: None,
                     revision: None,
                     on_behalf_of: None,
+                    wait_ms: None,
                 };
                 assert!(matches!(
                     rig.state
@@ -1091,6 +1100,7 @@ mod durable_local_matrix {
             .await;
     }
 
+    include!("display_control_tests.rs");
     include!("admitted_local_host_tests.rs");
     include!("certified_launch_tests.rs");
     include!("observed_launch_tests.rs");

@@ -307,7 +307,7 @@ async fn admitted(
         &hello.cert,
         &own.user_public_key,
         &revocations,
-        net::now_ns(),
+        tilo_clock::unix_now_ns(),
     ) {
         refused(reason);
         refuse(send, Answer::Refused(reason)).await;
@@ -364,6 +364,37 @@ pub fn method(line: &[u8]) -> Option<&str> {
     std::str::from_utf8(name).ok()
 }
 
+fn audited_method(method: &str) -> &'static str {
+    match method {
+        "device.actions" => "device.actions",
+        "device.unlock.enrol" => "device.unlock.enrol",
+        "hello" => "hello",
+        "status" => "status",
+        "slot.create" => "slot.create",
+        "slot.list" => "slot.list",
+        "slot.restart" => "slot.restart",
+        "slot.rm" => "slot.rm",
+        "slot.show" => "slot.show",
+        "layer.upload.begin" => "layer.upload.begin",
+        "layer.upload.chunk" => "layer.upload.chunk",
+        "layer.import" => "layer.import",
+        "layer.list" => "layer.list",
+        "swap" => "swap",
+        "rollback" => "rollback",
+        "logs" => "logs",
+        "seat.claim" => "seat.claim",
+        "seat.release" => "seat.release",
+        "shot" => "shot",
+        "control" => "control",
+        "gc" => "gc",
+        "input" => "input",
+        "app.install" => "app.install",
+        "boot.confirm" => "boot.confirm",
+        "awake" => "awake",
+        _ => "unsupported request",
+    }
+}
+
 async fn bridge(
     id: u64,
     mut child: tokio::process::Child,
@@ -378,9 +409,9 @@ async fn bridge(
     let requests = async move {
         let mut reader = BufReader::new(recv);
         let mut count = 0_u64;
-        let mut line = Vec::new();
+        let mut line = zeroize::Zeroizing::new(Vec::new());
         loop {
-            line.clear();
+            zeroize::Zeroize::zeroize(&mut *line);
             match (&mut reader)
                 .take(MAX_LINE as u64)
                 .read_until(b'\n', &mut line)
@@ -397,7 +428,7 @@ async fn bridge(
             match method(&line) {
                 // An upload is hundreds of chunks; its begin and import say enough.
                 Some("layer.upload.chunk") => {}
-                Some(name) => eprintln!("admin session {id}: {name}"),
+                Some(name) => eprintln!("admin session {id}: {}", audited_method(name)),
                 None => eprintln!("admin session {id}: a request without a method"),
             }
             if stdin.write_all(&line).await.is_err() || stdin.flush().await.is_err() {

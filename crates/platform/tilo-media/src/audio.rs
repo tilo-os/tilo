@@ -142,10 +142,6 @@ impl AudioGraph {
     pub fn sink_by_description(&self, desc: &str) -> Option<&AudioDevice> {
         self.sinks.iter().find(|d| d.description == desc)
     }
-    /// A source by human description.
-    pub fn source_by_description(&self, desc: &str) -> Option<&AudioDevice> {
-        self.sources.iter().find(|d| d.description == desc)
-    }
 
     /// A stable, cheap fingerprint of the graph's *topology* — the set of
     /// devices (by name) and streams (by id+app) present — deliberately
@@ -691,24 +687,13 @@ fn run(bin: &str, args: &[String]) -> Result<(), String> {
     if out.status.success() {
         Ok(())
     } else {
-        Err(sanitize_diagnostic(&out.stderr))
+        Err(out.stderr_diagnostic())
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 fn run(_: &str, _: &[String]) -> Result<(), String> {
     Err("PipeWire audio graph control is unsupported on this platform".to_owned())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn sanitize_diagnostic(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
-        .take(512)
-        .collect::<String>()
-        .trim()
-        .to_string()
 }
 
 /// Production [`GraphControl`]: `wpctl` for defaults + per-node volume/mute,
@@ -809,11 +794,6 @@ impl AudioEnumerator for RealEnumerator {
 /// Convenience: enumerate the live graph once via [`RealEnumerator`].
 pub fn enumerate() -> AudioGraph {
     RealEnumerator.enumerate()
-}
-
-/// Shorthand for the boxed enumerator the settings pane holds.
-pub fn real_enumerator() -> Arc<dyn AudioEnumerator> {
-    Arc::new(RealEnumerator)
 }
 
 /// Shorthand for the boxed control the settings pane holds.

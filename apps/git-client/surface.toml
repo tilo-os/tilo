@@ -1,0 +1,328 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "git_client.repo"
+label = "Repository"
+version = 1
+
+[[resources.fields]]
+owner = "git-client"
+path = "repository"
+stored = "value"
+title = "Repository"
+type = "Atom"
+
+[[resources.fields]]
+owner = "git-client"
+path = "shared"
+readonly = true
+stored = "value"
+title = "Shared history"
+type = "SharedRepo"
+
+[[resources.verbs]]
+description = "Its branches, history, remotes and identity, for collaborators and past versions. Read from the repository, nobody's edit."
+id = "record-repository"
+kind = "undoable"
+label = "Record what the repository on disk holds now"
+
+[[resources.verbs.params]]
+name = "shared"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "Branches, history, remotes and identity collaborators share. No staged / unstaged / untracked lists — those are live working-tree status."
+required = [
+    "name",
+    "head",
+    "workdir",
+    "commits",
+    "branches",
+    "tags",
+    "stashes",
+    "remotes",
+    "graph_width",
+    "author_name",
+    "author_email",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.author_email]
+type = "string"
+
+[resources.verbs.params.schema.properties.author_name]
+type = "string"
+
+[resources.verbs.params.schema.properties.branches]
+type = "array"
+
+[resources.verbs.params.schema.properties.branches.items]
+additionalProperties = false
+description = "One local or remote branch in the branches panel."
+required = [
+    "name",
+    "is_head",
+    "is_remote",
+    "ahead",
+    "behind",
+    "tip",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.branches.items.properties.ahead]
+description = "Commits ahead / behind the upstream."
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.branches.items.properties.behind]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.branches.items.properties.is_head]
+type = "boolean"
+
+[resources.verbs.params.schema.properties.branches.items.properties.is_remote]
+type = "boolean"
+
+[resources.verbs.params.schema.properties.branches.items.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.properties.branches.items.properties.tip]
+description = "Short id of the commit the branch points at."
+type = "string"
+
+[resources.verbs.params.schema.properties.branches.items.properties.upstream]
+description = 'Upstream tracking branch, if any (e.g. "origin/main").'
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.commits]
+type = "array"
+
+[resources.verbs.params.schema.properties.commits.items]
+additionalProperties = false
+description = "A node in the commit graph. `lane` is the horizontal column the node's dot sits in; `parents` index into the commit list (by id) for drawing the connecting edges."
+required = [
+    "id",
+    "summary",
+    "body",
+    "author_name",
+    "author_email",
+    "when",
+    "time",
+    "parents",
+    "refs",
+    "lane",
+    "files",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.commits.items.properties.author_email]
+type = "string"
+
+[resources.verbs.params.schema.properties.commits.items.properties.author_name]
+type = "string"
+
+[resources.verbs.params.schema.properties.commits.items.properties.body]
+description = "Full multi-paragraph message body (everything after the summary line)."
+type = "string"
+
+[resources.verbs.params.schema.properties.commits.items.properties.files]
+description = "The per-file diff summary for this commit (populated lazily / for the sample). Empty when not yet loaded."
+type = "array"
+
+[resources.verbs.params.schema.properties.commits.items.properties.files.items]
+additionalProperties = false
+description = "One entry in the changes lists."
+required = [
+    "path",
+    "area",
+    "kind",
+    "additions",
+    "deletions",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.commits.items.properties.files.items.properties.additions]
+description = "Lines added / removed across all hunks (for the per-row +/- counts)."
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.commits.items.properties.files.items.properties.area]
+description = "Where a changed file sits relative to the index."
+
+[[resources.verbs.params.schema.properties.commits.items.properties.files.items.properties.area.oneOf]]
+const = "Staged"
+description = "Difference between HEAD and the index — `git add`ed, ready to commit."
+type = "string"
+
+[[resources.verbs.params.schema.properties.commits.items.properties.files.items.properties.area.oneOf]]
+const = "Unstaged"
+description = "Difference between the index and the working tree — edited but not added."
+type = "string"
+
+[[resources.verbs.params.schema.properties.commits.items.properties.files.items.properties.area.oneOf]]
+const = "Untracked"
+description = "Present in the working tree, unknown to git."
+type = "string"
+
+[resources.verbs.params.schema.properties.commits.items.properties.files.items.properties.deletions]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.commits.items.properties.files.items.properties.kind]
+description = "The kind of change a file underwent, used for the leading status glyph and its colour."
+enum = [
+    "Added",
+    "Modified",
+    "Deleted",
+    "Renamed",
+    "Untracked",
+    "Conflicted",
+]
+type = "string"
+
+[resources.verbs.params.schema.properties.commits.items.properties.files.items.properties.old_path]
+description = "For renames: the previous path. `None` otherwise."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.commits.items.properties.files.items.properties.path]
+type = "string"
+
+[resources.verbs.params.schema.properties.commits.items.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.properties.commits.items.properties.lane]
+description = "Graph lane (column) assigned by the layout pass."
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.commits.items.properties.parents]
+description = "Parent commit ids. Two or more parents => a merge commit."
+type = "array"
+
+[resources.verbs.params.schema.properties.commits.items.properties.parents.items]
+type = "string"
+
+[resources.verbs.params.schema.properties.commits.items.properties.refs]
+description = "Refs that point directly at this commit (local branches, tags, remote-tracking branches, HEAD)."
+type = "array"
+
+[resources.verbs.params.schema.properties.commits.items.properties.refs.items]
+additionalProperties = false
+description = "A decorating ref drawn as a coloured pill next to a commit."
+required = [
+    "name",
+    "kind",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.commits.items.properties.refs.items.properties.kind]
+enum = [
+    "Head",
+    "LocalBranch",
+    "RemoteBranch",
+    "Tag",
+]
+type = "string"
+
+[resources.verbs.params.schema.properties.commits.items.properties.refs.items.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.properties.commits.items.properties.summary]
+type = "string"
+
+[resources.verbs.params.schema.properties.commits.items.properties.time]
+description = "Seconds since the epoch — for sorting and absolute-date tooltips."
+type = "integer"
+
+[resources.verbs.params.schema.properties.commits.items.properties.when]
+description = "Pretty, already-formatted relative or absolute timestamp."
+type = "string"
+
+[resources.verbs.params.schema.properties.graph_width]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.head]
+type = "string"
+
+[resources.verbs.params.schema.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.properties.remotes]
+type = "array"
+
+[resources.verbs.params.schema.properties.remotes.items]
+additionalProperties = false
+required = [
+    "name",
+    "url",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.remotes.items.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.properties.remotes.items.properties.url]
+type = "string"
+
+[resources.verbs.params.schema.properties.stashes]
+type = "array"
+
+[resources.verbs.params.schema.properties.stashes.items]
+additionalProperties = false
+required = [
+    "index",
+    "message",
+    "branch",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.stashes.items.properties.branch]
+type = "string"
+
+[resources.verbs.params.schema.properties.stashes.items.properties.index]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.stashes.items.properties.message]
+type = "string"
+
+[resources.verbs.params.schema.properties.tags]
+type = "array"
+
+[resources.verbs.params.schema.properties.tags.items]
+additionalProperties = false
+required = [
+    "name",
+    "target",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.tags.items.properties.message]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.tags.items.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.properties.tags.items.properties.target]
+type = "string"
+
+[resources.verbs.params.schema.properties.workdir]
+type = "string"

@@ -8,6 +8,10 @@
 //! request, the [`CertificationPolicy`] and the live revocation list before
 //! handing it on, so an approver bug cannot certify another key, escalate
 //! capabilities or resurrect a revoked device.
+//!
+//! The same approvers answer the questions the host's agents put to their
+//! person ([`CertificationProtocol::confirm`]): one invocation each, allowed
+//! once or denied, refused when nobody answers in time.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -21,13 +25,14 @@ use tilo_user_identity::{
 };
 use tokio::sync::watch;
 
-use crate::auth::{self, HelloAck2};
+use crate::auth::{self, HandshakeTrust};
 use crate::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, CertifyOpen, CertifyReply,
-    MAX_CERTIFY_FRAME_BYTES, MAX_PENDING_CERTIFICATIONS, PendingAgent, PendingCertification,
+    ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES, MAX_PENDING_CERTIFICATIONS, PendingAgent,
+    PendingCertification, PendingConfirmation,
 };
 use crate::frame::{read_frame, read_frame_or_eof, write_frame};
-use crate::policy::TrustPolicy;
+use crate::handshake::{EndpointTrust, LiveIdentity};
 use tilo_relay_protocol::agents::{AgentDelegation, AgentProposal};
 
 /// How long a final answer may wait for the requester to read it.
@@ -51,18 +56,28 @@ impl Pending {
     }
 }
 
+/// A question an agent waits on, and the person's answer once given.
+struct Asked {
+    question: PendingConfirmation,
+    answer: watch::Sender<Option<ConfirmationAnswer>>,
+}
+
+impl Asked {
+    fn open(&self, now_ns: u64) -> bool {
+        self.question.expires_at_ns > now_ns && self.answer.borrow().is_none()
+    }
+}
+
 /// A queued request: its digest, pairing code and a receiver of its answer.
 type Queued = ([u8; 32], String, watch::Receiver<Option<CertifyReply>>);
 
 /// The certification ALPN handler.
 #[derive(Clone)]
 pub struct CertificationProtocol {
-    own_user_pk: [u8; 32],
-    own_cert: DeviceCert,
-    own_sk: ed25519_dalek::SigningKey,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    identity: LiveIdentity,
     policy: CertificationPolicy,
     pending: Arc<Mutex<HashMap<[u8; 32], Pending>>>,
+    confirmations: Arc<Mutex<HashMap<[u8; 32], Asked>>>,
 }
 
 impl std::fmt::Debug for CertificationProtocol {
@@ -80,24 +95,18 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, AcceptError> {
 }
 
 impl CertificationProtocol {
-    pub(crate) fn new(
-        own_user_pk: [u8; 32],
-        own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
-        revocations: Arc<std::sync::RwLock<RevocationList>>,
-    ) -> Self {
+    pub(crate) fn new(identity: LiveIdentity) -> Self {
         Self {
-            own_user_pk,
-            own_cert,
-            own_sk,
-            revocations,
+            identity,
             policy: CertificationPolicy::browser(),
             pending: Arc::new(Mutex::new(HashMap::new())),
+            confirmations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     fn revocations(&self) -> RevocationList {
-        self.revocations
+        self.identity
+            .revocations
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -107,6 +116,48 @@ impl CertificationProtocol {
         self.pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn asked(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; 32], Asked>> {
+        self.confirmations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Put `question` to the person's approving devices and wait for the
+    /// answer to it, until it expires.
+    ///
+    /// # Errors
+    ///
+    /// Returns why there is no answer: the question could not be asked, or
+    /// nobody answered before it expired.
+    pub async fn confirm(
+        &self,
+        question: PendingConfirmation,
+    ) -> Result<ConfirmationAnswer, String> {
+        let now = unix_now_ns();
+        let id = question.id;
+        let wait = Duration::from_nanos(question.expires_at_ns.saturating_sub(now));
+        let mut receiver = {
+            let mut asked = self.asked();
+            asked.retain(|_, entry| entry.open(now));
+            if asked.contains_key(&id) {
+                return Err("this question is already asked".into());
+            }
+            if asked.len() >= MAX_PENDING_CERTIFICATIONS {
+                return Err("too many questions are waiting for an answer".into());
+            }
+            let (answer, receiver) = watch::channel(None);
+            asked.insert(id, Asked { question, answer });
+            receiver
+        };
+        let answered = tokio::time::timeout(wait, receiver.wait_for(Option::is_some))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|answer| *answer);
+        self.asked().remove(&id);
+        answered.ok_or_else(|| "nobody answered in time".into())
     }
 
     /// Admit a request into the pending set, or say why not. Returns its
@@ -179,7 +230,7 @@ impl CertificationProtocol {
         request
             .verify_at(now_ns)
             .map_err(|error| error.to_string())?;
-        if request.user_public_key != self.own_user_pk {
+        if request.user_public_key != self.identity.user_public_key {
             return Err("this host serves another user identity".into());
         }
         if self.revocations().is_revoked(&request.device_public_key) {
@@ -280,32 +331,17 @@ impl CertificationProtocol {
         mut recv: iroh::endpoint::RecvStream,
         hello: auth::Hello,
     ) -> Result<(), AcceptError> {
-        let peer = auth::accept_hello(
-            &hello,
-            &self.own_user_pk,
-            &TrustPolicy::AllowMatchingUser,
-            &self.revocations(),
-            unix_now_ns(),
-        )
-        .map_err(|error| io(&error))?;
-        if !peer.cert.capabilities.can_admit_devices {
-            return Err(io(&"device may not approve certifications"));
-        }
-        let mut nonce = [0; 32];
-        rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
-        let ack = auth::build_hello_ack(
-            self.own_cert.clone(),
-            &self.own_sk,
-            nonce,
-            &hello.client_nonce,
-        );
-        write_frame(&mut send, &encode(&ack)?)
+        // Only the owner's devices that may admit devices approve, checked
+        // before the relay signs anything for the approver.
+        self.identity
+            .authenticate_hello(
+                EndpointTrust::Fixed(HandshakeTrust::OwnerDeviceAdmitters),
+                &hello,
+                &mut recv,
+                &mut send,
+                MAX_CERTIFY_FRAME_BYTES,
+            )
             .await
-            .map_err(|error| io(&error))?;
-        let ack2: HelloAck2 =
-            postcard::from_bytes(&read_frame(&mut recv, MAX_CERTIFY_FRAME_BYTES).await?)
-                .map_err(|error| io(&error))?;
-        auth::verify_hello_ack2(&ack2, &peer.device_public_key, &nonce)
             .map_err(|error| io(&error))?;
         while let Some(frame) = read_frame_or_eof(&mut recv, MAX_CERTIFY_FRAME_BYTES)
             .await
@@ -319,6 +355,28 @@ impl CertificationProtocol {
                 .map_err(|error| io(&error))?;
         }
         finish(connection, send).await
+    }
+
+    /// Every question still waiting for its answer.
+    fn questions(&self, now_ns: u64) -> Vec<PendingConfirmation> {
+        self.asked()
+            .values()
+            .filter(|entry| entry.open(now_ns))
+            .map(|entry| entry.question.clone())
+            .collect()
+    }
+
+    /// Hand `answer` to the agent waiting on question `id`, once.
+    fn answer(&self, id: [u8; 32], answer: ConfirmationAnswer, now_ns: u64) -> ApproverReply {
+        let asked = self.asked();
+        let Some(entry) = asked.get(&id).filter(|entry| entry.open(now_ns)) else {
+            return ApproverReply::Refused {
+                reason: "no such question is waiting".into(),
+            };
+        };
+        entry.answer.send_replace(Some(answer));
+        drop(asked);
+        ApproverReply::Decided
     }
 
     fn decide(&self, request: ApproverRequest, now_ns: u64) -> ApproverReply {
@@ -345,6 +403,8 @@ impl CertificationProtocol {
                     })
                     .collect(),
             ),
+            ApproverRequest::Confirmations => ApproverReply::Confirmations(self.questions(now_ns)),
+            ApproverRequest::Answer { id, answer } => self.answer(id, answer, now_ns),
             ApproverRequest::Decide {
                 request_digest,
                 decision,
@@ -381,7 +441,9 @@ impl CertificationProtocol {
                         {
                             return refused("the delegation names another device");
                         }
-                        if let Err(error) = delegation.verify(&self.own_user_pk, now_ns) {
+                        if let Err(error) =
+                            delegation.verify(&self.identity.user_public_key, now_ns)
+                        {
                             return refused(&error.to_string());
                         }
                         if let Err(reason) = proposal.admits(&delegation) {
@@ -390,7 +452,7 @@ impl CertificationProtocol {
                         entry.delegation = Some(delegation);
                         CertifyReply::Issued {
                             cert,
-                            host_cert: self.own_cert.clone(),
+                            host_cert: self.identity.cert.clone(),
                         }
                     }
                     ApproverDecision::Issue(cert) => {
@@ -405,7 +467,7 @@ impl CertificationProtocol {
                         }
                         CertifyReply::Issued {
                             cert,
-                            host_cert: self.own_cert.clone(),
+                            host_cert: self.identity.cert.clone(),
                         }
                     }
                 };
@@ -450,5 +512,96 @@ async fn answered(
     match decided {
         Ok(Ok(reply)) => reply.clone().unwrap_or(CertifyReply::Expired),
         Ok(Err(_)) | Err(_) => CertifyReply::Expired,
+    }
+}
+
+#[cfg(test)]
+mod confirmation_tests {
+    #![allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
+
+    use super::*;
+    use tilo_user_identity::{DeviceCapabilities, UserIdentity, sign_device_cert};
+
+    fn protocol() -> CertificationProtocol {
+        let (root, _) = UserIdentity::generate("Ada", 1);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "home-server".into(),
+            capabilities: DeviceCapabilities::host(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        CertificationProtocol::new(LiveIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            cert,
+            signing_key: key,
+            revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
+        })
+    }
+
+    fn question(id: u8, wait: Duration) -> PendingConfirmation {
+        PendingConfirmation {
+            id: [id; 32],
+            agent_id: "careful".into(),
+            agent_label: "Careful".into(),
+            action_label: "Clear history".into(),
+            resource_label: "Calculator".into(),
+            risk: "destructive".into(),
+            room: "room".into(),
+            expires_at_ns: unix_now_ns().saturating_add(u64::try_from(wait.as_nanos()).unwrap()),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_question_nobody_answers_is_refused_when_it_expires() {
+        let protocol = protocol();
+        let answer = protocol
+            .confirm(question(1, Duration::from_millis(100)))
+            .await;
+        assert!(answer.is_err(), "{answer:?}");
+        assert_eq!(
+            protocol.decide(ApproverRequest::Confirmations, unix_now_ns()),
+            ApproverReply::Confirmations(Vec::new()),
+            "an expired question is no longer shown"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_approver_answers_each_question_once() {
+        let protocol = protocol();
+        let waiting = tokio::spawn({
+            let protocol = protocol.clone();
+            async move { protocol.confirm(question(2, Duration::from_secs(30))).await }
+        });
+        let shown = loop {
+            if let ApproverReply::Confirmations(shown) =
+                protocol.decide(ApproverRequest::Confirmations, unix_now_ns())
+                && !shown.is_empty()
+            {
+                break shown;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        assert_eq!(
+            shown[0].question(),
+            "Careful wants to Clear history: Calculator, for you"
+        );
+        let answer = |answer| ApproverRequest::Answer {
+            id: [2; 32],
+            answer,
+        };
+        assert_eq!(
+            protocol.decide(answer(ConfirmationAnswer::AllowOnce), unix_now_ns()),
+            ApproverReply::Decided
+        );
+        assert!(matches!(
+            protocol.decide(answer(ConfirmationAnswer::Deny), unix_now_ns()),
+            ApproverReply::Refused { .. }
+        ));
+        assert_eq!(waiting.await.unwrap(), Ok(ConfirmationAnswer::AllowOnce));
     }
 }

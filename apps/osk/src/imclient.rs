@@ -105,7 +105,8 @@ pub fn purpose_from_wire(wire: u32) -> InputPurpose {
         // `datetime` has no dedicated layout, so it borrows the date pad.
         cp::DATE | cp::DATETIME => InputPurpose::Date,
         cp::TIME => InputPurpose::Time,
-        // normal / alpha / name / terminal / anything unrecognised → plain text.
+        cp::TERMINAL => InputPurpose::Terminal,
+        // normal / alpha / name / anything unrecognised → plain text.
         _ => InputPurpose::Text,
     }
 }
@@ -267,6 +268,9 @@ mod wayland {
     };
 
     use super::ImEvent;
+    use tilo_input_context::client::tilo_input_context_keyboard_v1::{
+        self, TiloInputContextKeyboardV1,
+    };
 
     /// Input-method client holding its own connection + event queue, independent
     /// of the one winit owns.
@@ -280,6 +284,7 @@ mod wayland {
         queue: wayland_client::EventQueue<State>,
         state: State,
         input_method: ZwpInputMethodV2,
+        context: Option<TiloInputContextKeyboardV1>,
         rx: Receiver<ImEvent>,
     }
 
@@ -287,6 +292,7 @@ mod wayland {
     /// echo, and forwards decoded events to the channel.
     struct State {
         tx: Sender<ImEvent>,
+        contexts: Vec<crate::service::ContextTransition>,
         /// Number of `done` events received — the serial `commit` must carry.
         serial: u32,
         /// The compositor permits one input method per seat. A second client
@@ -372,6 +378,81 @@ mod wayland {
         }
     }
 
+    impl Dispatch<TiloInputContextKeyboardV1, ()> for State {
+        fn event(
+            state: &mut Self,
+            _: &TiloInputContextKeyboardV1,
+            event: tilo_input_context_keyboard_v1::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            use crate::service::ContextTransition;
+            match event {
+                tilo_input_context_keyboard_v1::Event::Context { generation, slots } => {
+                    let actions = if slots.len() <= tilo_input_context::MAX_SNAPSHOT_BYTES {
+                        serde_json::from_str::<Vec<tilo_input_context::ContextSlot>>(&slots)
+                            .ok()
+                            .filter(|slots| slots.len() <= tilo_input_context::MAX_ACTIONS)
+                            .filter(|slots| {
+                                slots.iter().enumerate().all(|(index, slot)| {
+                                    !slot.label.is_empty()
+                                        && slot.label.len() <= tilo_input_context::MAX_LABEL_BYTES
+                                        && !slot.label.chars().any(char::is_control)
+                                        && !slots
+                                            .iter()
+                                            .take(index)
+                                            .any(|old| old.slot == slot.slot)
+                                })
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    // Only the latest context can be invoked. Retire queued
+                    // contexts and receipts belonging to older generations.
+                    state.contexts.retain(|event| {
+                        matches!(event,
+                        ContextTransition::Result { generation: previous, .. }
+                            if *previous == generation)
+                    });
+                    state.contexts.push(ContextTransition::Context {
+                        generation,
+                        actions,
+                    });
+                }
+                tilo_input_context_keyboard_v1::Event::Result {
+                    generation,
+                    slot,
+                    succeeded,
+                    message,
+                } => {
+                    // The private compositor service never needs an unbounded
+                    // receipt backlog; retain the most recent bounded results.
+                    if state.contexts.len() >= tilo_input_context::MAX_ACTIONS * 2
+                        && let Some(index) = state
+                            .contexts
+                            .iter()
+                            .position(|event| matches!(event, ContextTransition::Result { .. }))
+                    {
+                        state.contexts.remove(index);
+                    }
+                    state.contexts.push(ContextTransition::Result {
+                        generation,
+                        slot,
+                        succeeded: succeeded != 0,
+                        message: message
+                            .chars()
+                            .filter(|ch| !ch.is_control())
+                            .take(512)
+                            .collect(),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
     impl InputMethodClient {
         /// Connect, bind the manager + a seat, and create the input method.
         /// Returns `None` (caller degrades) on any missing piece. Never panics.
@@ -385,11 +466,15 @@ mod wayland {
             let manager: ZwpInputMethodManagerV2 = globals.bind(&qh, 1..=1, ()).ok()?;
             let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=8, ()).ok()?;
 
+            let context = globals
+                .bind::<TiloInputContextKeyboardV1, _, _>(&qh, 1..=1, ())
+                .ok();
             let (tx, rx) = channel();
             let input_method = manager.get_input_method(&seat, &qh, ());
 
             let mut state = State {
                 tx,
+                contexts: Vec::new(),
                 serial: 0,
                 unavailable: false,
             };
@@ -406,8 +491,26 @@ mod wayland {
                 queue,
                 state,
                 input_method,
+                context,
                 rx,
             })
+        }
+
+        pub(crate) fn take_context_changes(&mut self) -> Vec<crate::service::ContextTransition> {
+            std::mem::take(&mut self.state.contexts)
+        }
+
+        /// Invoke only one opaque slot from the current trusted service context.
+        ///
+        /// # Errors
+        /// Refuses when the private extension is absent or its connection fails.
+        pub(crate) fn invoke_context(&self, generation: u32, slot: u32) -> Result<(), String> {
+            let context = self
+                .context
+                .as_ref()
+                .ok_or("contextual input actions are unavailable")?;
+            context.invoke(generation, slot);
+            self.queue.flush().map_err(|error| error.to_string())
         }
 
         /// Pump the Wayland connection without blocking, then drain every decoded
@@ -422,6 +525,22 @@ mod wayland {
             let _ = self.queue.dispatch_pending(&mut self.state);
             let _ = self.queue.flush();
             self.rx.try_iter().collect()
+        }
+
+        /// Where a thread sleeps until this connection has something to read,
+        /// without holding the client — the client is shared with the thread
+        /// that commits typed text, so it cannot block in
+        /// [`Self::blocking_dispatch`].
+        ///
+        /// # Errors
+        /// The socket cannot be duplicated or the nudge socket created.
+        pub fn connection_wait(
+            &self,
+        ) -> std::io::Result<(
+            tilo_input_context::wait::ConnectionWait,
+            tilo_input_context::wait::Nudge,
+        )> {
+            tilo_input_context::wait::ConnectionWait::for_connection(&self.conn)
         }
 
         /// Block until at least one event is available, dispatch it, and return
@@ -474,6 +593,9 @@ mod wayland {
 
     impl Drop for InputMethodClient {
         fn drop(&mut self) {
+            if let Some(context) = &self.context {
+                context.destroy();
+            }
             self.input_method.destroy();
             let _ = self.queue.flush();
         }
@@ -549,7 +671,7 @@ mod tests {
             assert_eq!(purpose_from_wire(cp::DATE), InputPurpose::Date);
             assert_eq!(purpose_from_wire(cp::TIME), InputPurpose::Time);
             assert_eq!(purpose_from_wire(cp::DATETIME), InputPurpose::Date);
-            assert_eq!(purpose_from_wire(cp::TERMINAL), InputPurpose::Text);
+            assert_eq!(purpose_from_wire(cp::TERMINAL), InputPurpose::Terminal);
         }
 
         eprintln!("phase purpose_from_wire_unknown_falls_back_to_text");

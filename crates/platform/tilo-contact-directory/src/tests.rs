@@ -94,7 +94,7 @@ fn email_hint_keys_reject_header_injection_and_do_not_guess_unsupported_mailboxe
 fn duplicate_names_and_cross_service_recipients_keep_distinct_people() {
     let mut record = fixture().expect("fixture operation succeeds");
     record
-        .apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
             first(),
             Id::from_raw("one"),
             "signal".into(),
@@ -102,7 +102,7 @@ fn duplicate_names_and_cross_service_recipients_keep_distinct_people() {
         )))
         .expect("fixture operation succeeds");
     record
-        .apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
             second(),
             Id::from_raw("two"),
             "sms".into(),
@@ -120,7 +120,7 @@ fn duplicate_names_and_cross_service_recipients_keep_distinct_people() {
 fn sequential_conflicting_confirmation_refuses_and_keeps_existing_mapping() {
     let mut record = fixture().expect("fixture operation succeeds");
     record
-        .apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
             first(),
             Id::from_raw("one"),
             "signal".into(),
@@ -129,7 +129,7 @@ fn sequential_conflicting_confirmation_refuses_and_keeps_existing_mapping() {
         .expect("fixture operation succeeds");
     assert!(
         record
-            .apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+            .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
                 second(),
                 Id::from_raw("two"),
                 "signal".into(),
@@ -150,7 +150,7 @@ fn sequential_conflicting_confirmation_refuses_and_keeps_existing_mapping() {
 fn concurrent_conflicting_confirmations_converge_without_choosing_recipient_owner() {
     let mut left = fixture().expect("fixture operation succeeds");
     let mut right = left.fork();
-    left.apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+    left.apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
         first(),
         Id::from_raw("one"),
         "signal".into(),
@@ -158,7 +158,7 @@ fn concurrent_conflicting_confirmations_converge_without_choosing_recipient_owne
     )))
     .expect("fixture operation succeeds");
     right
-        .apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
             second(),
             Id::from_raw("two"),
             "signal".into(),
@@ -190,7 +190,7 @@ fn concurrent_conflicting_confirmations_converge_without_choosing_recipient_owne
 fn deletion_blocks_delayed_projection_and_recipient_routing() {
     let mut record = fixture().expect("fixture operation succeeds");
     record
-        .apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
             first(),
             Id::from_raw("one"),
             "signal".into(),
@@ -212,7 +212,7 @@ fn deletion_blocks_delayed_projection_and_recipient_routing() {
     );
     assert!(
         record
-            .apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+            .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
                 first(),
                 Id::from_raw("fresh"),
                 "signal".into(),
@@ -227,7 +227,7 @@ fn revoked_association_ids_cannot_be_reused_or_retargeted() {
     let mut record = fixture().expect("fixture operation succeeds");
     let endpoint = Id::from_raw("old-association");
     record
-        .apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
             first(),
             endpoint.clone(),
             "sms".into(),
@@ -235,11 +235,11 @@ fn revoked_association_ids_cannot_be_reused_or_retargeted() {
         )))
         .expect("confirmation succeeds");
     record
-        .apply(ContactDirectory::FORGET_ENDPOINT.with((first(), endpoint.clone())))
+        .apply_confirmed(ContactDirectory::FORGET_ENDPOINT.with((first(), endpoint.clone())))
         .expect("revocation succeeds");
     assert!(
         record
-            .apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+            .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
                 first(),
                 endpoint.clone(),
                 "sms".into(),
@@ -249,7 +249,7 @@ fn revoked_association_ids_cannot_be_reused_or_retargeted() {
     );
     assert!(
         record
-            .apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+            .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
                 second(),
                 endpoint.clone(),
                 "sms".into(),
@@ -274,7 +274,7 @@ fn revoked_association_ids_cannot_be_reused_or_retargeted() {
 fn identity_revision_and_provider_scope_require_exact_confirmation() {
     let mut record = fixture().expect("fixture operation succeeds");
     record
-        .apply(ContactDirectory::CONFIRM_ACCOUNT.with((
+        .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
             first(),
             Id::from_raw("signal-key"),
             "signal".into(),
@@ -304,7 +304,7 @@ fn identity_revision_and_provider_scope_require_exact_confirmation() {
     );
     assert!(
         record
-            .apply(ContactDirectory::CONFIRM_ACCOUNT.with((
+            .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
                 first(),
                 Id::from_raw("new-key"),
                 "signal".into(),
@@ -316,10 +316,12 @@ fn identity_revision_and_provider_scope_require_exact_confirmation() {
         "identity changes require revocation"
     );
     record
-        .apply(ContactDirectory::FORGET_ENDPOINT.with((first(), Id::from_raw("signal-key"))))
+        .apply_confirmed(
+            ContactDirectory::FORGET_ENDPOINT.with((first(), Id::from_raw("signal-key"))),
+        )
         .expect("revocation succeeds");
     record
-        .apply(ContactDirectory::CONFIRM_ACCOUNT.with((
+        .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
             second(),
             Id::from_raw("new-key"),
             "signal".into(),
@@ -369,7 +371,7 @@ fn multiple_sender_accounts_require_a_choice_and_preserve_provenance() {
     use crate::routing::{AccountChoice, SenderAccount, routes, select_route};
     let mut record = fixture().expect("fixture operation succeeds");
     record
-        .apply(ContactDirectory::CONFIRM_ACCOUNT.with((
+        .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
             first(),
             Id::from_raw("signal-key"),
             "signal".into(),
@@ -422,7 +424,7 @@ fn same_person_can_map_to_tilo_and_external_services_without_combining_accounts(
         ("whatsapp", "business-a", "US.alice"),
     ] {
         record
-            .apply(ContactDirectory::CONFIRM_ACCOUNT.with((
+            .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
                 first(),
                 Id::from_raw(service),
                 service.into(),
@@ -457,7 +459,7 @@ fn association_ids_remain_reserved_after_person_deletion() {
     let mut record = fixture().expect("fixture operation succeeds");
     let endpoint = Id::from_raw("historical");
     record
-        .apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+        .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
             first(),
             endpoint.clone(),
             "sms".into(),
@@ -469,7 +471,7 @@ fn association_ids_remain_reserved_after_person_deletion() {
         .expect("deletion succeeds");
     assert!(
         record
-            .apply(ContactDirectory::CONFIRM_ENDPOINT.with((
+            .apply_confirmed(ContactDirectory::CONFIRM_ENDPOINT.with((
                 second(),
                 endpoint,
                 "sms".into(),
@@ -484,7 +486,7 @@ fn concurrent_revision_aware_confirmations_refuse_before_routing() {
     use crate::routing::{SenderAccount, routes};
     let mut left = fixture().expect("fixture operation succeeds");
     let mut right = left.fork();
-    left.apply(ContactDirectory::CONFIRM_ACCOUNT.with((
+    left.apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
         first(),
         Id::from_raw("first-link"),
         "signal".into(),
@@ -494,7 +496,7 @@ fn concurrent_revision_aware_confirmations_refuse_before_routing() {
     )))
     .expect("confirmation succeeds");
     right
-        .apply(ContactDirectory::CONFIRM_ACCOUNT.with((
+        .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
             second(),
             Id::from_raw("second-link"),
             "signal".into(),
@@ -528,7 +530,7 @@ fn reviewed_revision_replacement_is_atomic_and_keeps_old_attribution() {
     let mut record = fixture().expect("fixture operation succeeds");
     let old = Id::from_raw("old-reference");
     record
-        .apply(ContactDirectory::CONFIRM_ACCOUNT.with((
+        .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
             first(),
             old.clone(),
             "signal".into(),
@@ -540,7 +542,7 @@ fn reviewed_revision_replacement_is_atomic_and_keeps_old_attribution() {
     let before = record.state().expect("state loads");
     assert!(
         record
-            .apply(ContactDirectory::REPLACE_ACCOUNT.with((
+            .apply_confirmed(ContactDirectory::REPLACE_ACCOUNT.with((
                 first(),
                 old.clone(),
                 Id::from_raw("new-reference"),
@@ -557,7 +559,7 @@ fn reviewed_revision_replacement_is_atomic_and_keeps_old_attribution() {
         "refused replacement must not revoke the old route"
     );
     record
-        .apply(ContactDirectory::REPLACE_ACCOUNT.with((
+        .apply_confirmed(ContactDirectory::REPLACE_ACCOUNT.with((
             first(),
             old.clone(),
             Id::from_raw("new-reference"),
@@ -612,4 +614,72 @@ fn legacy_person_records_load_without_email_hints_or_identity_changes() {
     assert_eq!(person.phones, old.phones);
     assert!(person.emails.0.is_empty());
     assert!(person.endpoints.is_empty());
+}
+
+/// One projection of many people is what projecting each of them alone
+/// is: labels and hints land, a deleted person stays deleted, and the
+/// removed are tombstoned.
+#[test]
+fn one_projection_of_many_people_is_each_projected_alone() {
+    use super::Projected;
+    let third = Id::from_raw("00000000-0000-4000-8000-000000000003");
+    let mut batched = fixture().expect("fixture succeeds");
+    let mut single = fixture().expect("fixture succeeds");
+    for record in [&mut batched, &mut single] {
+        record
+            .apply(ContactDirectory::REMOVE_CONTACT.with(second()))
+            .expect("removing succeeds");
+    }
+    let people = [first(), second(), third.clone()].map(|person| Projected {
+        label: format!("Person {person}"),
+        phones: vec!["+12025550123".into()],
+        emails: vec![format!("{person}@example.test")],
+        person,
+    });
+    batched
+        .apply(ContactDirectory::PROJECT_CONTACTS.with((people.to_vec(), vec![first()])))
+        .expect("projecting succeeds");
+    for projected in &people {
+        let person = projected.person.clone();
+        single
+            .apply(
+                ContactDirectory::PROJECT_CONTACT.with((person.clone(), projected.label.clone())),
+            )
+            .expect("projecting succeeds");
+        if person != second() {
+            single
+                .apply(
+                    ContactDirectory::PROJECT_PHONES
+                        .with((person.clone(), projected.phones.clone())),
+                )
+                .expect("projecting succeeds");
+            single
+                .apply(ContactDirectory::PROJECT_EMAILS.with((person, projected.emails.clone())))
+                .expect("projecting succeeds");
+        }
+    }
+    single
+        .apply(ContactDirectory::REMOVE_CONTACT.with(first()))
+        .expect("removing succeeds");
+    let batched = batched.state().expect("readable");
+    assert_eq!(batched, single.state().expect("readable"));
+    assert!(batched.people.get(&first()).expect("projected").removed);
+    assert!(batched.people.get(&second()).expect("projected").removed);
+    assert_eq!(
+        batched.phone_candidates("+12025550123"),
+        vec![third],
+        "only a person still in the book is a candidate"
+    );
+
+    let mut record = fixture().expect("fixture succeeds");
+    let invalid = Projected {
+        person: Id::from_raw("not-a-uuid"),
+        ..Projected::default()
+    };
+    assert!(
+        record
+            .apply(ContactDirectory::PROJECT_CONTACTS.with((vec![invalid], Vec::new())))
+            .is_err(),
+        "a person is named by a Contacts UUID"
+    );
 }

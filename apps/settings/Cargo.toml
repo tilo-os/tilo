@@ -19,16 +19,20 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+# Shared platform layout data keeps Settings independent of the OSK app.
 tilo-keyboard-map = { version = "0.1.0", path = "../../crates/platform/tilo-keyboard-map" }
+tilo-locale = { path = "../../crates/platform/tilo-locale" }
 hex.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # One owner for ~/.config/tilo/settings.json.
-settings-store = { path = "../../crates/system/settings-store" }
+settings-store = { path = "../../crates/system/settings-store", features = ["model"] }
 desktop-policy = { path = "../../crates/system/desktop-policy" }
-launcher = { path = "../../crates/packaging/launcher" }
 package-store = { path = "../../crates/packaging/package-store" }
+# Installed manifests are read through the package format's one decoder,
+# not the sandbox launcher's library.
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 # The same freedesktop scanner the shell uses for host and Flatpak launches;
 # notification rules must be keyed by those canonical desktop identities.
 desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
@@ -68,7 +72,7 @@ accounts = { path = "../../crates/system/accounts", features = ["person"] }
 account-custody = { path = "../../crates/system/account-custody" }
 # Provider metadata is shared with the headless agent runner. This dependency
 # contains no HTTP client and no secret values.
-agent-provider-config = { path = "../../crates/agent/provider-config" }
+agent-provider-config = { path = "../../crates/agent/provider-config", features = ["model"] }
 # Settings uses this only over the launcher-passed service FD to put/remove a
 # key; no vault file or provider network capability is linked into the app.
 tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
@@ -126,6 +130,9 @@ cloud-source-gdrive = { path = "../../crates/system/cloud-source-gdrive", featur
 cloud-source-onedrive = { path = "../../crates/system/cloud-source-onedrive", features = ["fake-server"] }
 cloud-source-dropbox = { path = "../../crates/system/cloud-source-dropbox", features = ["fake-server"] }
 cloud-source-icloud = { path = "../../crates/system/cloud-source-icloud", features = ["fake-server"] }
+# The keyboard preview's confinement test runs it inside the launcher's real
+# read-only sandbox profile. The app itself never links the launcher.
+launcher = { path = "../../crates/packaging/launcher" }
 
 [[test]]
 name = "it"

@@ -134,7 +134,8 @@ pub fn contains(range: &ReconcileRangeV1, cursor: &RecordStreamCursor) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{Ed25519PublicKey, FileActor, FileRecordId};
+    use collab_types::Ed25519PublicKey;
+    use fs_protocol::{FileActor, FileRecordId};
 
     fn cursor(n: u32, sequence: u64) -> RecordStreamCursor {
         RecordStreamCursor {

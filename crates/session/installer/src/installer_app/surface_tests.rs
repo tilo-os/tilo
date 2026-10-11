@@ -122,6 +122,7 @@ fn the_published_surface_is_valid_and_offers_a_way_back_only_when_staged() {
             Step::Disk,
             Step::Account,
             Step::Options,
+            Step::Media,
             Step::Review,
             Step::Install,
         ] {
@@ -505,6 +506,22 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
         .get("answer")
         .is_some()
     );
+    assert_eq!(
+        invoke(&mut app, doc, "next@installer", &json!({}))["answer"]["step"],
+        "media"
+    );
+    // Media: the formats are off until asked for, and only on this step.
+    assert!(
+        invoke(
+            &mut app,
+            doc,
+            "set-media-codecs@installer.media",
+            &json!({"enabled": true})
+        )
+        .get("answer")
+        .is_some()
+    );
+    assert!(app.codecs);
     assert_eq!(
         invoke(&mut app, doc, "next@installer", &json!({}))["answer"]["step"],
         "review"

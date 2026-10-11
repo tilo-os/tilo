@@ -3,12 +3,13 @@ shortcuts, touch and touchpad gestures, animation pacing."""
 
 from __future__ import annotations
 
+import json
 import re
 import time
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
-from ..vm import VmError
+from ..vm import VmError, wait_until
 
 AREA = "window"
 
@@ -372,14 +373,53 @@ def _keyboard(st) -> dict:
     return st["chrome"].get("on_screen_keyboard") or {}
 
 
+# Where W20 may touch the empty workspace to plug the touchscreen in: low on the first
+# output, below the launchpad's card grid, as fractions of the output.
+_INERT_TOUCH = ((0.5, 0.88), (0.12, 0.88), (0.88, 0.88), (0.5, 0.96))
+
+
+def _inert_point(ctx, display) -> tuple[int, int]:
+    """A point on `display` inside no launchpad card or button. The empty workspace is the
+    launchpad, and a touch on a card activates it like a click: run 89618's W20 tapped
+    "Invite people" with its fixed 60 %/60 % point and left the Invite composer holding the
+    keyboard, so search never opened and A01 typed its Terminal command into the composer."""
+    cards = [r for n, r in core.target_map(ctx.vm.targets()).items() if n.startswith("launchpad:")]
+    for fx, fy in _INERT_TOUCH:
+        x, y = int(display[0] + display[2] * fx), int(display[1] + display[3] * fy)
+        if not any(core.rect_inside((x, y, 0, 0), r, slack=8.0) for r in cards):
+            return x, y
+    raise Unobservable(f"every touch point W20 tries on the first output is on a launchpad card ({cards})")
+
+
+def _close_search(ctx) -> None:
+    """Search closed again, whatever W20 got to: Escape while it shows (bounded)."""
+    for _ in range(3):
+        try:
+            if not (ctx.state()["chrome"].get("palette") or {}).get("visible"):
+                return
+            ctx.vm.key("Escape")
+        except (VmError, KeyError, TypeError):
+            return
+        ctx.settle(0.4)
+
+
 @check("W20", AREA, "On-screen keyboard in the shell: tapping the search field shows it, and its keys "
                     "type into the shell's own field")
 def on_screen_keyboard_in_the_shell(ctx, res):
     ctx.reset()
+    try:
+        _on_screen_keyboard_in_the_shell(ctx, res)
+    finally:
+        _close_search(ctx)
+
+
+def _on_screen_keyboard_in_the_shell(ctx, res):
     d0 = core.display_rects(ctx.state())[0]
     # The first touch plugs the touchscreen in; with one present the keyboard
-    # service runs in the default automatic mode.
-    ctx.vm.input("touch", "tap", str(int(d0[0] + d0[2] * 0.6)), str(int(d0[1] + d0[3] * 0.6)))
+    # service runs in the default automatic mode. It must activate nothing.
+    x, y = _inert_point(ctx, d0)
+    res.metrics["first_touch"] = [x, y]
+    ctx.vm.input("touch", "tap", str(x), str(y))
     ctx.wait_state(lambda s: _keyboard(s).get("connected"), 40,
                    "the on-screen keyboard service connected once a touchscreen is present")
     ctx.vm.key("super+space")
@@ -408,15 +448,63 @@ def on_screen_keyboard_in_the_shell(ctx, res):
     expect((st["chrome"].get("palette") or {}).get("visible"),
            "tapping the keyboard kept search open")
     ctx.shot("W20-typed")
-    ctx.vm.key("Escape")
 
 
 def _lock_auth(st) -> dict:
     return st["chrome"].get("lock_auth") or {}
 
 
-@check("W21", AREA, "Touch unlock: the lock screen draws its own keyboard on touch, and tapping the "
-                    "passcode on it unlocks the session")
+def _locked(ctx):
+    """Whether the session is locked: True or False, or None when no state dump answers."""
+    try:
+        return bool(ctx.state()["chrome"].get("session_locked"))
+    except (VmError, KeyError, TypeError):
+        return None
+
+
+def _expect_snapshot_refused_while_locked(ctx) -> None:
+    """A security property, not a picture: while locked the compositor refuses every
+    control-socket snapshot with `session_locked`, so no socket client reads the desktop the
+    lock hides. One attempt, no retry, to a scratch file that never becomes evidence and is
+    deleted whatever happened."""
+    probe = ctx.out / "scratch" / "W21-locked-snapshot.png"
+    try:
+        ctx.vm.snapshot_once(probe)
+    except VmError as exc:
+        if "session_locked" not in str(exc):
+            raise Unobservable("a snapshot while locked failed, but not as refused by the lock: "
+                               f"{exc.reason()}") from exc
+        return
+    finally:
+        probe.unlink(missing_ok=True)
+    raise CheckFailed("a control-socket snapshot succeeded while the session was locked: the lock "
+                      "screen lets a socket client read the desktop it hides")
+
+
+def _ensure_unlocked(ctx, passcode: str) -> str:
+    """Leave the session unlocked on every exit path, and say how. First the way a person
+    does it: clear the lock's field (Escape), type the passcode on the real keyboard, Return.
+    Still locked after that, restart the slot's session (a fresh compositor starts unlocked).
+    Never raises, so it cannot replace the failure that brought it here."""
+    if _locked(ctx) is False:
+        return "none"
+    try:
+        ctx.vm.key("Escape")
+        ctx.vm.input("type", passcode)
+        ctx.vm.key("Return")
+        if wait_until(lambda: _locked(ctx) is False, 20, interval=0.5):
+            return "passcode typed on the real keyboard"
+    except VmError:
+        pass
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        return f"failed: still locked, and restarting the slot session failed: {exc.reason()}"
+    return "slot session restarted" if _locked(ctx) is False else "failed: still locked after a slot restart"
+
+
+@check("W21", AREA, "Touch unlock: the lock screen draws its own keyboard on touch, refuses to be "
+                    "snapshotted, and tapping the passcode on it unlocks the session")
 def touch_unlock(ctx, res):
     ctx.reset()
     # The slot user's account password is what the lock verifies (PAM through
@@ -425,33 +513,43 @@ def touch_unlock(ctx, res):
     uid = ctx.vm.slot_uid()
     ctx.vm.root_exec(f'user=$(getent passwd {uid} | cut -d: -f1) && '
                      f'echo "$user:{passcode}" | chpasswd')
-    ctx.vm.key("super+l")
-    ctx.wait_state(lambda s: s["chrome"].get("session_locked"), 10, "the session locked")
-    expect(not _lock_auth(ctx.state()).get("keyboard"),
-           "no keyboard on the lock screen before a touch")
-    # A touch near the top wakes the lock screen and brings its keyboard up;
-    # that touch itself types nothing.
-    d0 = core.display_rects(ctx.state())[0]
-    ctx.vm.input("touch", "tap", str(int(d0[0] + d0[2] / 2)), str(int(d0[1] + d0[3] * 0.08)))
-    st = ctx.wait_state(lambda s: _lock_auth(s).get("keyboard"), 10,
-                        "the lock screen's keyboard shown after a touch")
-    expect(_lock_auth(st).get("password_len") == 0, "the touch that showed the keyboard typed nothing")
-    keys = {k["key"]: k for k in _lock_auth(st)["keyboard"]}
-    ctx.shot("W21-lock-keyboard")
+    # Every later check shares this session, so whatever fails in here, it ends unlocked
+    # (and run_check fails any check that leaves it locked, then restarts the session).
+    try:
+        ctx.vm.key("super+l")
+        ctx.wait_state(lambda s: s["chrome"].get("session_locked"), 10, "the session locked")
+        expect(not _lock_auth(ctx.state()).get("keyboard"),
+               "no keyboard on the lock screen before a touch")
+        # A touch near the top wakes the lock screen and brings its keyboard up;
+        # that touch itself types nothing.
+        d0 = core.display_rects(ctx.state())[0]
+        ctx.vm.input("touch", "tap", str(int(d0[0] + d0[2] / 2)), str(int(d0[1] + d0[3] * 0.08)))
+        st = ctx.wait_state(lambda s: _lock_auth(s).get("keyboard"), 10,
+                            "the lock screen's keyboard shown after a touch")
+        expect(_lock_auth(st).get("password_len") == 0,
+               "the touch that showed the keyboard typed nothing")
+        keys = {k["key"]: k for k in _lock_auth(st)["keyboard"]}
+        # No picture of a locked session may be taken, and the next line holds the lock to
+        # that; the evidence is the lock's own state: its keys and where they are.
+        _expect_snapshot_refused_while_locked(ctx)
+        ctx.write("W21-lock-keyboard.json", json.dumps(_lock_auth(st), indent=1))
 
-    def tap(name):
-        k = keys[name]
-        ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] / 2)), str(int(k["y"] + k["h"] / 2)))
-        ctx.settle(0.3)
+        def tap(name):
+            k = keys[name]
+            ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] / 2)), str(int(k["y"] + k["h"] / 2)))
+            ctx.settle(0.3)
 
-    for c in passcode:
-        tap(c)
-    ctx.wait_state(lambda s: _lock_auth(s).get("password_len") == len(passcode), 10,
-                   f"{len(passcode)} characters typed on the lock screen's keyboard")
-    tap("enter")
-    ctx.wait_state(lambda s: not s["chrome"].get("session_locked"), 20,
-                   "the session unlocked with the passcode typed by touch")
-    res.metrics["keys"] = len(keys)
+        for c in passcode:
+            tap(c)
+        ctx.wait_state(lambda s: _lock_auth(s).get("password_len") == len(passcode), 10,
+                       f"{len(passcode)} characters typed on the lock screen's keyboard")
+        tap("enter")
+        ctx.wait_state(lambda s: not s["chrome"].get("session_locked"), 20,
+                       "the session unlocked with the passcode typed by touch")
+        res.metrics["keys"] = len(keys)
+    finally:
+        res.metrics["unlock_recovery"] = _ensure_unlocked(ctx, passcode)
+    ctx.shot("W21-unlocked")
 
 
 def _strip_scroll(st, sid):
@@ -569,6 +667,32 @@ def _judge(name, st, b, hardware) -> tuple[list[str], list[str]]:
     return problems, unseen
 
 
+def judge_switch_lines(switches: list[dict], expected: int, b: dict, hardware: bool) -> list[str]:
+    """Problems in the compositor's own `WORKSPACE-SWITCH` timing of `expected` switches.
+
+    Everywhere: one line per switch, and a frame run rather than a jump. On real display
+    hardware also the first frame shown and the intervals without a new frame. A virtual
+    display presents on its own timer and holds frames back, so there its times are only
+    recorded; the trace-based judgement above takes the display's waits out instead."""
+    if len(switches) != expected:
+        return [f"{expected} workspace switches, {len(switches)} WORKSPACE-SWITCH lines in the session log"]
+    problems = []
+    for index, switch in enumerate(switches, 1):
+        name = f"switch {index}"
+        if switch["frames"] < b["animation_min_frames"]:
+            problems.append(f"{name}: {switch['frames']} frames in the switch's frame run "
+                            f"(want >= {b['animation_min_frames']})")
+        if not hardware:
+            continue
+        first = switch["first_shown_us"] / 1000
+        if first > b["input_first_frame_ms"]:
+            problems.append(f"{name}: first frame shown {first:.1f} ms after the chord "
+                            f"> {b['input_first_frame_ms']} ms")
+        if switch["dropped"]:
+            problems.append(f"{name}: {switch['dropped']} refresh intervals without a new frame")
+    return problems
+
+
 @check("W16", AREA, "Animations are paced: overview and workspace transitions paint many frames "
                     "with no stalls", needs=("workspaces",))
 def animations(ctx, res):
@@ -591,50 +715,57 @@ def animations(ctx, res):
     there, back = ("super+pagedown", "super+pageup")
     if ids.index(first) == len(ids) - 1:
         there, back = back, there
+    log_mark = core.session_log_mark(ctx)
     _transition(ctx, res, "workspace_switch", lambda: ctx.vm.key(there),
                 lambda s: s["workspace_tree"]["active"] != first)
     _transition(ctx, res, "workspace_back", lambda: ctx.vm.key(back),
                 lambda s: s["workspace_tree"]["active"] == first)
+    switches = core.switch_lines_after(ctx, log_mark)
+    res.metrics["workspace_switch_lines"] = switches
     b = ctx.config["budgets"]
     problems, unseen = [], []
     for name in ("overview_open", "overview_close", "workspace_switch", "workspace_back"):
         p, u = _judge(name, res.metrics[name], b, hardware)
         problems += p
         unseen += u
+    problems += judge_switch_lines(switches, 2, b, hardware)
     where = f" [renderer: {ctx.facts.get('renderer')}]"
     expect(not problems, "; ".join(problems + unseen) + where)
     if unseen:
         raise Unobservable("; ".join(unseen) + where)
 
 
-def _find_probe(ctx, name):
-    out = ctx.vm.exec(f'find "$HOME" /tmp -maxdepth 4 -name {name} 2>/dev/null | head -1; true')
-    return [l for l in out.splitlines() if l.strip() and not l.startswith("receipt:")]
-
-
 @check("W17", AREA, "Real keyboard: typed text, Space and Return reach the focused Terminal")
 def typing(ctx, res):
     ctx.reset()
+    shells = core.terminal_shells(ctx)
     ctx.new_terminal_window()
-    ctx.settle(2.0)
+    # Keys typed before the shell runs only echo; this check is about the keys.
+    ready = core.wait_new_terminal_shell(ctx, shells, core.TERMINAL_SHELL_S)
+    res.metrics["seconds_to_shell"] = ready
+    if ready is None:
+        ctx.write("W17-ush.txt", core.ush_diagnostics(ctx))
+        raise CheckFailed(f"no shell ran in the new Terminal within {core.TERMINAL_SHELL_S} s, "
+                          "so nothing could read the keys (W17-ush.txt shows the shell runtime)")
+    ctx.settle(1.0)
     probe = f"acc-kbd-{int(time.time())}"
     ctx.vm.input("type", f"echo ok > ~/{probe}")
     ctx.vm.key("Return")
-    time.sleep(2.0)
-    real = _find_probe(ctx, probe)
+    real = wait_until(lambda: core.terminal_probe(ctx, probe), 4, 0.5)
     ctx.shot("W17-typed")
     res.metrics["real_keyboard_ran_command"] = bool(real)
     if real:
+        core.assert_terminal_shell_performance(ready)
         return
     # Tell a product bug from a harness one: the same through the control socket.
     ctx.vm.key("ctrl+u")
     probe2 = probe + "-ctl"
     ctx.vm.control("type", f"echo ok > ~/{probe2}")
     ctx.vm.control("key", "Enter")
-    time.sleep(2.0)
-    synthetic = bool(_find_probe(ctx, probe2))
+    synthetic = bool(wait_until(lambda: core.terminal_probe(ctx, probe2), 4, 0.5))
     res.metrics["control_socket_ran_command"] = synthetic
     ctx.shot("W17-after-control")
+    ctx.write("W17-ush.txt", core.ush_diagnostics(ctx))
     ctx.close_overlays()
     raise CheckFailed("the command typed on the real keyboard never ran in Terminal "
                       "(W17-typed shows what arrived: spaces and Return are the usual casualties)"

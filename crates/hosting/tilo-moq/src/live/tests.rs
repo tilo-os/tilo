@@ -33,7 +33,6 @@ struct Session {
     publish: bool,
     subscribe: bool,
     active: Arc<AtomicBool>,
-    busy: Arc<AtomicBool>,
 }
 impl LiveSession for Session {
     fn room(&self) -> &str {
@@ -49,15 +48,10 @@ impl LiveSession for Session {
         self.subscribe
     }
     fn status(&self) -> AuthorizationStatus {
-        if !self.active.load(Ordering::SeqCst) {
-            AuthorizationStatus::Denied
-        } else if self.busy.load(Ordering::SeqCst) {
-            // Owner commit in progress: unobservable, bounded by the lease.
-            AuthorizationStatus::Unavailable {
-                expires_at: Instant::now() + Duration::from_secs(60),
-            }
-        } else {
+        if self.active.load(Ordering::SeqCst) {
             AuthorizationStatus::Current
+        } else {
+            AuthorizationStatus::Denied
         }
     }
 }
@@ -67,22 +61,20 @@ impl LiveSession for Session {
 struct Authority {
     a: Arc<AtomicBool>,
     b: Arc<AtomicBool>,
-    busy: Arc<AtomicBool>,
 }
 impl LiveAuthority for Authority {
-    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Admission> {
+    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Denied> {
         let (publisher, publish, subscribe, active) = match token {
             b"grant-a" => (A, true, true, self.a.clone()),
             b"grant-b" => (B, true, true, self.b.clone()),
             b"grant-viewer" => (C, false, true, Arc::new(AtomicBool::new(true))),
-            _ => return Err(Admission::Denied),
+            _ => return Err(Denied),
         };
         Ok(Arc::new(Session {
             publisher,
             publish,
             subscribe,
             active,
-            busy: self.busy.clone(),
         }))
     }
     fn presence_seq(&self, frame: &[u8]) -> Option<u64> {
@@ -98,26 +90,17 @@ struct Fixture {
     trust: carrier::Trust,
     a: Arc<AtomicBool>,
     b: Arc<AtomicBool>,
-    busy: Arc<AtomicBool>,
 }
 fn fixture() -> Fixture {
     let a = Arc::new(AtomicBool::new(true));
     let b = Arc::new(AtomicBool::new(true));
-    let busy = Arc::new(AtomicBool::new(false));
     let live = LoopbackLive::start(Arc::new(Authority {
         a: a.clone(),
         b: b.clone(),
-        busy: busy.clone(),
     }))
     .unwrap();
     let trust = carrier::Trust::Fingerprints(live.fingerprints.clone());
-    Fixture {
-        live,
-        trust,
-        a,
-        b,
-        busy,
-    }
+    Fixture { live, trust, a, b }
 }
 fn path(publisher: &str) -> String {
     namespace_path(ROOM, publisher).unwrap()
@@ -680,7 +663,9 @@ async fn loopback_presence_exchange_reaches_both_sides() {
         tail.extend_from_slice(&[0x5a; 48]);
         presence(seq, &tail)
     };
-    let receive = |mut subscriber: moq_net::track::Subscriber, count: usize| async move {
+    let receive = |mut subscriber: moq_net::track::Subscriber,
+                   count: usize,
+                   priming_sequence: u64| async move {
         let mut samples = Vec::new();
         while samples.len() < count {
             let Ok(Ok(Some(datagram))) =
@@ -688,17 +673,31 @@ async fn loopback_presence_exchange_reaches_both_sides() {
             else {
                 break;
             };
-            let sent = u64::from_le_bytes(datagram.payload[8..16].try_into().unwrap());
-            if sent == 0 {
+            let sequence = u64::from_le_bytes(
+                datagram
+                    .payload
+                    .get(..8)
+                    .expect("presence sequence")
+                    .try_into()
+                    .unwrap(),
+            );
+            // Subscription priming can leave delayed hello frames queued.
+            // Only the known earlier sequence range belongs to that phase.
+            if sequence <= priming_sequence {
+                assert_eq!(datagram.payload.get(8..), Some(b"hello".as_slice()));
                 continue;
             }
+            assert_eq!(datagram.payload.len(), 64, "timestamped measurement frame");
+            assert_eq!(datagram.payload.get(16..), Some([0x5a; 48].as_slice()));
+            let sent = u64::from_le_bytes(datagram.payload[8..16].try_into().unwrap());
+            assert_ne!(sent, 0, "measurement frame has a real timestamp");
             samples.push(epoch.elapsed().as_nanos() as u64 - sent);
         }
         samples
     };
     const FRAMES: usize = 200;
-    let rx_b = tokio::spawn(receive(a_at_b, FRAMES));
-    let rx_a = tokio::spawn(receive(b_at_a, FRAMES));
+    let rx_b = tokio::spawn(receive(a_at_b, FRAMES, sa));
+    let rx_a = tokio::spawn(receive(b_at_a, FRAMES, sb));
     // 100 Hz each way, under the 120/s ceiling.
     for _ in 0..FRAMES {
         sa += 1;
@@ -756,50 +755,6 @@ async fn inject_and_read(
     })
     .await
     .expect("injected frame delivered")
-}
-
-/// Regression: sustained owner commits make every authority
-/// observation Unavailable for seconds. That is contention, not revocation:
-/// the author's session must stay admitted and host injections for it must
-/// keep flowing throughout.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sustained_owner_contention_never_revokes_and_injection_keeps_flowing() {
-    let f = fixture();
-    let mut a = connect(&f, b"grant-a", A).await;
-    let b = connect(&f, b"grant-b", B).await;
-    let mut from_a = ops_subscriber(&b, A).await;
-    let mut presence_a = presence_subscriber(&b, A).await;
-    let mut seq = 0;
-    first_presence(&mut a, &mut presence_a, &mut seq).await;
-    f.busy.store(true, Ordering::SeqCst);
-    // Far longer than the former 900 ms outage fence.
-    let started = Instant::now();
-    let mut delivered = 0;
-    while started.elapsed() < Duration::from_millis(2500) {
-        let frame = format!("ok-{delivered}");
-        assert_eq!(
-            inject_and_read(&f, &mut from_a, A, frame.as_bytes()).await,
-            frame.as_bytes()
-        );
-        delivered += 1;
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    f.busy.store(false, Ordering::SeqCst);
-    assert!(delivered > 50, "{delivered}");
-    let counters = f.live.relay.counters();
-    assert_eq!(
-        counters.revoked, 0,
-        "busy owner revoked a session: {counters:?}"
-    );
-    assert_eq!(counters.injected_dropped, 0, "{counters:?}");
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), a.session().closed())
-            .await
-            .is_err()
-    );
-    first_presence(&mut a, &mut presence_a, &mut seq).await;
-    drop(a);
-    drop(b);
 }
 
 /// After an actual revocation the namespace is withdrawn; host injection must

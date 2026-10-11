@@ -1,8 +1,8 @@
 //! Native governance transactions. Public policy data is never an authority proof.
 use super::{
-    Actor, BTreeMap, CapDecision, DeviceCert, DurableV4, DurableV5, GovernedIdentity, NeighbourMsg,
-    ROOT, ReadDoc, ResourceRef, RevocationList, Role, Route, SigningKey, StatePeer, SystemTime,
-    Transactable, TransportOrigin, Verb, decide_capability, err, now_ns, now_secs, room,
+    BTreeMap, DeviceCert, DurableV4, DurableV5, GovernedIdentity, NeighbourMsg, ROOT, ReadDoc,
+    RevocationList, Role, Route, SigningKey, StatePeer, SystemTime, Transactable, TransportOrigin,
+    err, now_ns, room,
 };
 use room::media::{self, RoomMediaV1};
 
@@ -159,7 +159,9 @@ impl StatePeer {
                     && a.accepted_trust_roots == b.accepted_trust_roots
                     && a.artifacts == b.artifacts
                     && a.artifact_apps == b.artifact_apps
-                    && a.cap_overrides == b.cap_overrides
+                    && a.artifact_records == b.artifact_records
+                    && a.room == b.room
+                    && a.grants == b.grants
                     && a.artifact_classifications == b.artifact_classifications
                     && a.channel_min_clearance == b.channel_min_clearance
                     && a.last_seq_per_author == b.last_seq_per_author
@@ -226,7 +228,7 @@ impl StatePeer {
             .ok_or("missing identities")?
             .1;
         let mut rows = room::governance_of(Some(&doc))
-            .3
+            .identities
             .into_iter()
             .map(|(id, bytes)| {
                 serde_json::from_slice::<GovernedIdentity>(&bytes)
@@ -278,24 +280,23 @@ impl StatePeer {
 
     fn require_media_governor(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
         self.require_governance_writer(key, now)?;
-        let (role, caps, person) = self.permissions(self.core.authority.device_public_key, now)?;
-        if role != Role::Owner
+        let member = self.permissions(self.core.authority.device_public_key, now)?;
+        if member.role != Role::Owner
             || room::governance_of(self.core.room_doc.as_deref())
-                .0
+                .owner
                 .as_deref()
                 != Some(&hex::encode(self.core.authority.user_public_key))
         {
             return Err("media governor is not the structural owner".into());
         }
-        let actor = Actor::person(Some(role), &person).in_room(self.core.room.clone());
-        if decide_capability(
-            &actor,
-            &ResourceRef::Room(self.core.room.clone()),
-            Verb::Admin,
-            &caps,
-            Some(now_secs(now)),
-        ) != CapDecision::Allow
-        {
+        if !member.allows(
+            &tilo_action_policy::roles::governance_action(
+                &self.core.room,
+                tilo_action_policy::roles::governance::SETTINGS,
+            ),
+            tilo_action_policy::roles::GOVERNANCE_KIND,
+            now,
+        ) {
             return Err("media governor lacks exact room administration".into());
         }
         Ok(())
@@ -323,7 +324,7 @@ impl StatePeer {
         if document.encryption_required {
             return Err("exact admitted Chat is encrypted".into());
         }
-        media::resolve_chat_binding(app, record, channel, &document.doc).map_err(err)
+        media::resolve_chat_binding(app, record, channel, &*document.doc).map_err(err)
     }
 
     /// Author a room media policy as the governance writer.
@@ -410,7 +411,7 @@ impl StatePeer {
             return Err("certificate conflict".into());
         }
         if room::governance_of(self.core.room_doc.as_deref())
-            .0
+            .owner
             .as_deref()
             != Some(&hex::encode(self.core.authority.user_public_key))
         {
@@ -437,7 +438,7 @@ impl StatePeer {
             .map_err(err)?
             .ok_or("missing peers")?
             .1;
-        let rows = room::governance_of(Some(&doc)).3;
+        let rows = room::governance_of(Some(&doc)).identities;
         let authority_id = hex::encode(self.core.authority.device_public_key);
         let mut authority: GovernedIdentity =
             serde_json::from_slice(rows.get(&authority_id).ok_or("missing authority")?)
@@ -461,6 +462,7 @@ impl StatePeer {
                 admission: None,
                 admissions: vec![],
                 workspace_delegations: vec![],
+                agent: None,
             };
             doc.put(
                 &identities,

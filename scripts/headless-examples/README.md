@@ -52,13 +52,19 @@ have their own explicit external prerequisites.
 `airdrop-transfer-proof.py` boots its own isolated compositor, signed thin Files
 package and pinned OpenDrop loopback receiver. It exercises actual Files actions,
 trusted fingerprint entry, status/progress, cancellation and failure recovery.
-`cast-session-proof.py` drives the real prebuilt projector against a bounded TLS
-Cast receiver, checking media LOAD, tokenized HLS isolation and clean stop.
+`cast-session-proof.py` drives the real prebuilt projector service, through its
+control socket, against a bounded TLS Cast receiver, checking media LOAD,
+tokenized HLS isolation and clean stop.
 
 These proofs have explicit prerequisites and fail when they cannot observe the
 subject. They never build, configure radios or use the user's desktop/accounts.
 See [continuity interoperability](../../docs/architecture/continuity-interop.md#native-journey-evidence-and-reproduction)
 for build inputs, pinned external dependencies and qualification limits.
+
+`native-pair-journey.py --state-proof` isolates signed native app-state composition
+without an audio server. It requires late app hydration, concurrent semantic edits
+and local presentation on both compositors. See [native app-state acceptance](../../docs/native-app-state-acceptance.md)
+for the remote command, qualification boundaries and installed-device recipe.
 
 `native-pair-journey.py` checks two certified native Chat peers with private
 synthetic audio. It currently fails at governed app creation and writes an

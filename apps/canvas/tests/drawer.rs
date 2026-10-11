@@ -25,7 +25,7 @@ fn the_inspector_drawer_holds_its_controls_inside_the_window() {
         .expect("the toggle opens");
     assert!(
         app.harness()
-            .settle_for_capture(std::time::Duration::from_secs(2)),
+            .settle_for_capture(tilo_test_env::hang_bound()),
         "the drawer settles"
     );
     let targets = app.harness().targets();
@@ -50,7 +50,10 @@ fn blank_phone_welcome_and_header_controls_stay_inside_the_window() {
     let mut app = TestApp::<App>::capture_at(None, (390, 844)).expect("blank artwork");
     assert!(
         app.harness()
-            .settle_for_capture(std::time::Duration::from_secs(2))
+            .settle_for_capture(tilo_test_env::hang_bound()),
+        "blank window did not settle: {:?}; pending visuals: {}",
+        app.harness().frame_schedule(),
+        app.harness().root_widget().has_pending_visual_work()
     );
     let targets = app.harness().targets();
     let welcome = [
@@ -114,7 +117,7 @@ fn phone_tools_live_below_the_artwork_and_survive_rotation() {
         app.harness().resize(viewport).expect("rotation lays out");
         assert!(
             app.harness()
-                .settle_for_capture(std::time::Duration::from_secs(2))
+                .settle_for_capture(tilo_test_env::hang_bound())
         );
         let targets = app.harness().targets();
         let tools = targets.get("Tool").expect("the shared tool control");

@@ -399,7 +399,7 @@ fn provenance(record: &KnownRecord, here: Option<RoomId>, rooms: &[(RoomId, Stri
 
 /// `~`-shortened path for the subtitle.
 fn display_path(path: &std::path::Path) -> String {
-    if let Some(home) = xdg_paths::home()
+    if let Some(home) = tilo_paths::home()
         && let Ok(rest) = path.strip_prefix(&home)
     {
         return format!("~/{}", rest.display());
@@ -425,7 +425,7 @@ mod tests {
         let mut rooms = Vec::new();
         for name in names {
             let mut ws = Workspace::new(WorkspaceId::new(), *name);
-            ws.room = RoomId::new();
+            ws.set_room(RoomId::new());
             rooms.push(ws.room);
             tree.desktop.workspaces.push(ws);
         }

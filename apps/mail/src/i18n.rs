@@ -9,11 +9,10 @@ use ui::i18n::{ArgValue, EmbeddedCatalog};
 
 /// Loaded per thread on first use; a host's manager is joined, never replaced.
 /// The probe is a key every catalogue revision defines.
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "mail-setup-heading-add",
-);
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES, "mail-setup-heading-add");
+
+/// Mail's Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
 
 /// The catalogue, which every host mounting Mail loads before its view.
 pub fn catalog() -> &'static EmbeddedCatalog {
