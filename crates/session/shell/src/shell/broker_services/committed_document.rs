@@ -164,7 +164,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
                 &mut |envelope| {
                     self.history_keys
                         .as_ref()
-                        .and_then(|keys| keys.get())
+                        .and_then(tilo_action_broker::channel_encryption::ChannelKeyProvider::get)
                         .ok_or("committed history keys unavailable")?
                         .open_history_write(room, envelope)
                 },

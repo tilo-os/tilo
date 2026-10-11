@@ -1509,9 +1509,10 @@ fn native_document_reads(
     network: Option<Arc<super::network::ShellNetwork>>,
     history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 ) -> Arc<dyn NativeDocumentReads> {
-    let mut service = NativeOwnerCommitService::new(tree.clone(), network);
-    service.history_keys = history_keys;
-    Arc::new(service)
+    Arc::new(NativeOwnerCommitService {
+        history_keys,
+        ..NativeOwnerCommitService::new(tree.clone(), network)
+    })
 }
 
 fn native_workspace_memberships(
