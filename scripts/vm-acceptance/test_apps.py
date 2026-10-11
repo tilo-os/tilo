@@ -339,6 +339,36 @@ class LateWindowCloseTests(unittest.TestCase):
                 self.assertEqual(ctx.invoked, ["group.close:2"])
                 self.assertEqual([g["id"] for g in ctx.groups], [1, 3])
 
+    def test_invoked_close_keeps_title_while_foreign_group_removal_is_delayed(self):
+        class DelayedRemoval(CloseFixture):
+            def __init__(self):
+                super().__init__()
+                self.pending = None
+                self.reads_after_close = 0
+
+            def invoke(self, provider, action):
+                if action == "group.close:3":
+                    self.pending = self.groups[-1]
+                    self.toasts.append(undo_toast("Closed Wine Mono Installer"))
+                else:
+                    super().invoke(provider, action)
+
+            def state(self):
+                if self.pending:
+                    self.reads_after_close += 1
+                    if self.reads_after_close == 2:
+                        self.groups.remove(self.pending)
+                        self.pending = None
+                return super().state()
+
+            def exec(self, script):
+                return "" if self.pending else super().exec(script)
+
+        metrics = self.close(DelayedRemoval())
+        self.assertEqual(metrics["closed_titles"], ["Wine File", "Wine Mono Installer"])
+        self.assertEqual(len(metrics["undo_toasts"]), 2)
+        self.assertEqual(metrics["lingering_after_close"], [])
+
     def test_owned_multitab_group_uses_exact_localized_group_toast(self):
         for heading, body in [("Closed 2 tabs", "Select to undo"),
                               ("2 Tabs geschlossen", "Zum Rückgängigmachen auswählen oder später Strg+Umschalt+T drücken")]:
