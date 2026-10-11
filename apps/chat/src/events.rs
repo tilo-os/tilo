@@ -2216,6 +2216,37 @@ mod tests {
             .collect()
     }
 
+    fn detached_agent_tasks(
+        app: &ChatApp,
+        surface_id: &str,
+    ) -> std::rc::Rc<std::cell::RefCell<ui::agent_task_frontier::AgentTaskFrontiers>> {
+        app.agent_surfaces
+            .values()
+            .find(|surface| surface.id == surface_id)
+            .and_then(|surface| surface.view.direct_agent_tasks())
+            .expect("the child retains its displayed Queue offer")
+    }
+
+    fn route_floating_pointer_click(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        surface_id: &str,
+        center: Point,
+    ) {
+        for event in [
+            cursor_moved(center.x, center.y),
+            mouse(ElementState::Pressed, MouseButton::Left),
+            mouse(ElementState::Released, MouseButton::Left),
+        ] {
+            ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(
+                app,
+                Some(surface_id),
+            );
+            route_root_event(app, doc, &event, Modifiers::default());
+            ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(app, None);
+        }
+    }
+
     fn semantic_hit_index(app: &ChatApp, target: &str) -> Option<usize> {
         app.semantic_hits()
             .iter()
@@ -6479,6 +6510,103 @@ mod tests {
     }
 
     #[test]
+    fn detached_queue_button_routes_pointer_through_the_exact_child_surface() {
+        let clock = ui::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let (mut app, mut doc, host) = agent_task_control_app();
+        render_frame(&mut app, 800.0, 600.0);
+        app.on_hit(
+            Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Queue from the detached pointer");
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("Float requests one app-owned child");
+        let rect = request.initial_rect.expect("Float retains exact geometry");
+        adopt_agent_surface(&mut app, &request.id, rect);
+        draw_detached_agent_surface(&mut app, &request.id);
+
+        let accessible =
+            ui::widget::FloatingSurfaceWidgetExt::floating_surface_accessibility(&app, &request.id)
+                .expect("the child publishes its accessibility tree");
+        let buttons = accessible
+            .children
+            .iter()
+            .filter(|node| {
+                node.role == ui::a11y::Role::Button && node.name.as_deref() == Some("Queue task")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(buttons.len(), 1, "the child exposes one exact Queue button");
+        let button = buttons.first().expect("one Queue button");
+        let center = button
+            .bounds
+            .expect("the exact Queue button is painted")
+            .to_rect()
+            .center();
+        let tasks = detached_agent_tasks(&app, &request.id);
+        assert!(matches!(
+            app.agent_surfaces
+                .values()
+                .find(|surface| surface.id == request.id)
+                .and_then(|surface| surface.view.hit_at(center)),
+            Some(Hit::Send)
+        ));
+        let requests_before = host
+            .requests()
+            .iter()
+            .filter(|request| request.target.address.action == "queue")
+            .count();
+        let acceptances_before = app.agent_submission_acceptances.get();
+        let deadline = tasks
+            .borrow()
+            .next_refresh_deadline()
+            .expect("the painted Queue offer has a refresh deadline");
+        host.defer_current_reads();
+        clock.advance(
+            deadline
+                .saturating_duration_since(clock.background().now())
+                .saturating_add(std::time::Duration::from_millis(1)),
+        );
+        assert!(
+            tasks.borrow().can_queue(),
+            "without a new frame, the exact painted offer remains actionable"
+        );
+
+        route_floating_pointer_click(&mut app, &mut doc, &request.id, center);
+
+        let queue_requests = host
+            .requests()
+            .into_iter()
+            .filter(|request| request.target.address.action == "queue")
+            .collect::<Vec<_>>();
+        assert_eq!(queue_requests.len(), requests_before + 1);
+        assert_eq!(
+            json_argument(queue_requests.last().expect("new Queue request"))["agent"],
+            "scribe"
+        );
+        assert_eq!(
+            app.agent_submission_acceptances.get(),
+            acceptances_before + 1
+        );
+        assert!(std::rc::Rc::ptr_eq(
+            &tasks,
+            &detached_agent_tasks(&app, &request.id)
+        ));
+        assert_eq!(
+            app.agent_surfaces
+                .values()
+                .find(|surface| surface.id == request.id)
+                .expect("same retained child")
+                .view
+                .composer_main
+                .private_plain()
+                .as_deref(),
+            Some("")
+        );
+    }
+
+    #[test]
     fn queue_draft_becomes_read_only_when_async_revalidation_denies_authority() {
         let clock = ui::background::Pumped::new();
         let _entered = clock.background().enter();
@@ -10336,7 +10464,12 @@ mod tests {
 
     /// Route an event through the app root exactly as the native runner does.
     /// The root resolves the secondary event-source ID before forwarding it.
-    fn feed_root_mods(app: &mut ChatApp, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) {
+    fn route_root_event(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        ev: &WindowEvent,
+        m: Modifiers,
+    ) -> bool {
         let mut taffy = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         let mut handled = false;
@@ -10355,6 +10488,11 @@ mod tests {
                 taffy: &taffy,
             },
         );
+        handled
+    }
+
+    fn feed_root_mods(app: &mut ChatApp, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) {
+        let handled = route_root_event(app, doc, ev, m);
         assert!(handled, "the addressed floating surface handles {ev:?}");
     }
 

@@ -618,6 +618,68 @@ mod floating_source_focus_tests {
             ]
         );
     }
+
+    #[test]
+    fn reused_native_surface_restores_focus_without_a_new_focus_event() {
+        let probe = FocusProbe::default();
+        let events = std::rc::Rc::clone(&probe.events);
+        let mut root =
+            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
+        let mut lifecycle = NativeFloatingSurfaceLifecycle {
+            adopted: true,
+            suspended: false,
+            focused: true,
+        };
+        forward_native_surface_focus(&mut root, Some("a"), &WindowEvent::Focused(true));
+
+        for cycle in 1..=2 {
+            lifecycle.suspend(&mut root, "a");
+            assert!(lifecycle.suspended);
+            assert!(!lifecycle.focused);
+            assert!(!lifecycle.adopted);
+            assert_eq!(events.borrow().last(), Some(&(Some("a".into()), false)));
+
+            // The retained native window is still the seat's focus owner.
+            // There is no second Focused(true) edge for the runner to receive.
+            lifecycle.resume(&mut root, "a", true);
+            assert!(
+                lifecycle.focused,
+                "Float cycle {cycle} must reconcile the retained window's actual focus"
+            );
+            assert!(!lifecycle.suspended);
+            assert!(!lifecycle.adopted);
+            assert_eq!(
+                events.borrow().last(),
+                Some(&(Some("a".into()), true)),
+                "the retained editor must receive the same focus as its native window"
+            );
+            lifecycle.adopted = true;
+        }
+    }
+
+    #[test]
+    fn reused_native_surface_does_not_restore_focus_after_the_host_moves_it() {
+        let probe = FocusProbe::default();
+        let events = std::rc::Rc::clone(&probe.events);
+        let mut root =
+            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
+        let mut lifecycle = NativeFloatingSurfaceLifecycle {
+            focused: true,
+            ..Default::default()
+        };
+        lifecycle.suspend(&mut root, "a");
+        events.borrow_mut().clear();
+
+        lifecycle.resume(&mut root, "a", false);
+
+        assert!(!lifecycle.focused);
+        assert!(!lifecycle.suspended);
+        assert_eq!(
+            *events.borrow(),
+            vec![(Some("a".into()), false)],
+            "resume must report the host's current focus, even if the editor was previously focused"
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -761,13 +823,37 @@ struct NativeFloatingWindow {
     /// compositor proxy continue following the pointer during handoff.
     render_init: Option<mpsc::Receiver<Result<RenderThreadHandle, String>>>,
     prepared_at: Instant,
-    adopted: bool,
-    suspended: bool,
+    lifecycle: NativeFloatingSurfaceLifecycle,
     a11y_adapter: Option<PrimaryA11yAdapter>,
     ime_state: Option<NativeImeWindowState>,
-    focused: bool,
     preedit_active: bool,
     preedit_clear_pending: bool,
+}
+
+#[derive(Default)]
+struct NativeFloatingSurfaceLifecycle {
+    adopted: bool,
+    suspended: bool,
+    focused: bool,
+}
+
+impl NativeFloatingSurfaceLifecycle {
+    fn suspend(&mut self, root: &mut dyn Widget, id: &str) {
+        self.focused = false;
+        self.suspended = true;
+        self.adopted = false;
+        root.on_floating_surface_focus_changed(Some(id), false);
+    }
+
+    fn resume(&mut self, root: &mut dyn Widget, id: &str, native_focused: bool) {
+        self.adopted = false;
+        self.suspended = false;
+        // Hiding the retained surface clears its editor's focus, but the
+        // native seat may still own this exact window. Reconcile its current
+        // focus: resuming does not necessarily produce another focus edge.
+        self.focused = native_focused;
+        root.on_floating_surface_focus_changed(Some(id), native_focused);
+    }
 }
 
 /// Resolve the drawable presentation region inside a transparent native
@@ -1466,7 +1552,7 @@ impl AppHandler {
     }
     fn visible_auxiliary_needs_shared_root(&self) -> bool {
         self.floating_windows.iter().any(|surface| {
-            !surface.suspended
+            !surface.lifecycle.suspended
                 && surface
                     .render
                     .as_ref()
@@ -1831,7 +1917,10 @@ impl AppHandler {
         self.private_input.service(
             &self.app,
             window,
-            !self.floating_windows.iter().any(|surface| surface.focused),
+            !self
+                .floating_windows
+                .iter()
+                .any(|surface| surface.lifecycle.focused),
         );
         // Return keeps the real composer on its exact suspended child until
         // the input method finishes. The primary redraw has moved the editor's
@@ -1847,7 +1936,7 @@ impl AppHandler {
             && let Some(surface) = self
                 .floating_windows
                 .iter_mut()
-                .find(|surface| surface.id == id && surface.suspended && surface.preedit_active)
+                .find(|surface| surface.id == id && surface.lifecycle.suspended && surface.preedit_active)
         {
             let next = primary_ime_state_for_held_child(
                 self.app.ime_window_state(),
@@ -1876,7 +1965,11 @@ impl AppHandler {
             // caret while the exact retained editor still exports IME intent.
             // Destination routing starts only after the host authorises it.
             pending
-        } else if self.floating_windows.iter().any(|surface| surface.focused) {
+        } else if self
+            .floating_windows
+            .iter()
+            .any(|surface| surface.lifecycle.focused)
+        {
             None
         } else {
             self.app
@@ -1962,8 +2055,11 @@ impl AppHandler {
             existing.desktop_rect = rect;
             existing.coordinate_offset = coordinate_offset;
             existing.prepared_at = crate::time::now();
-            existing.adopted = false;
-            existing.suspended = false;
+            existing.lifecycle.resume(
+                self.app.root_widget.as_mut(),
+                &existing.id,
+                existing.window.has_focus(),
+            );
             existing.window.set_visible(true);
             existing.window.request_redraw();
             return Ok(());
@@ -2006,11 +2102,9 @@ impl AppHandler {
             render: None,
             render_init: None,
             prepared_at: crate::time::now(),
-            adopted: false,
-            suspended: false,
+            lifecycle: NativeFloatingSurfaceLifecycle::default(),
             a11y_adapter,
             ime_state: None,
-            focused: false,
             preedit_active: false,
             preedit_clear_pending: false,
         });
@@ -2034,12 +2128,7 @@ impl AppHandler {
         if !preserve_ime {
             apply_native_ime(&surface.window, None, &mut surface.ime_state);
         }
-        surface.focused = false;
-        surface.suspended = true;
-        surface.adopted = false;
-        self.app
-            .root_widget
-            .on_floating_surface_focus_changed(Some(id), false);
+        surface.lifecycle.suspend(self.app.root_widget.as_mut(), id);
         true
     }
 
@@ -2123,7 +2212,7 @@ impl AppHandler {
                             .iter_mut()
                             .find(|surface| surface.id == id)
                     {
-                        surface.adopted = true;
+                        surface.lifecycle.adopted = true;
                         surface.window.request_redraw();
                         changed = true;
                     }
@@ -2212,8 +2301,8 @@ impl AppHandler {
             .floating_windows
             .iter()
             .filter(|surface| {
-                !surface.suspended
-                    && !surface.adopted
+                !surface.lifecycle.suspended
+                    && !surface.lifecycle.adopted
                     && surface.prepared_at.elapsed() >= FIRST_BUFFER_DEADLINE
             })
             .map(|surface| surface.id.clone())
@@ -2269,7 +2358,7 @@ impl AppHandler {
             return false;
         };
         let capture_id = format!("floating:{}", surface.id);
-        if surface.suspended {
+        if surface.lifecycle.suspended {
             return true;
         }
         if surface.render.is_none() {
@@ -2404,7 +2493,7 @@ impl AppHandler {
             app.root_widget.as_ref(),
             &surface.id,
             surface.desktop_rect,
-            surface.focused,
+            surface.lifecycle.focused,
         );
         apply_native_ime(&surface.window, next, &mut surface.ime_state);
         app.capture_auxiliary_drawn(&capture_id, secrets.finish());
@@ -3203,7 +3292,7 @@ impl AppHandler {
             windows.push(("primary".to_owned(), window.clone()));
         }
         for surface in &self.floating_windows {
-            if !surface.suspended {
+            if !surface.lifecycle.suspended {
                 windows.push((surface.id.clone(), surface.window.clone()));
             }
         }
@@ -3858,7 +3947,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         for (aux_window, render) in self
             .floating_windows
             .iter()
-            .filter(|surface| !surface.suspended)
+            .filter(|surface| !surface.lifecycle.suspended)
             .map(|surface| (&surface.window, surface.render.as_ref()))
             .chain(
                 self.audience_presentation
@@ -3884,7 +3973,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             .flatten();
         let any_render_available = primary_blocked_until.is_none()
             || self.floating_windows.iter().any(|surface| {
-                !surface.suspended
+                !surface.lifecycle.suspended
                     && surface
                         .render
                         .as_ref()
@@ -3965,8 +4054,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // frames are cheap but essential: the first real buffer should take
         // ownership as soon as it is ready, without waiting for fresh input.
         for surface in &self.floating_windows {
-            if !surface.suspended
-                && !surface.adopted
+            if !surface.lifecycle.suspended
+                && !surface.lifecycle.adopted
                 && auxiliary_redraw_allowed(surface.render.as_ref())
             {
                 surface.window.request_redraw();
@@ -4203,8 +4292,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // this loop for each inbound event, directory request and freed
         // outbound slot.
         let awaiting_floating_pixels = self.floating_windows.iter().any(|surface| {
-            !surface.suspended
-                && !surface.adopted
+            !surface.lifecycle.suspended
+                && !surface.lifecycle.adopted
                 && surface
                     .render
                     .as_ref()
@@ -4317,7 +4406,7 @@ impl AppHandler {
         let Some(surface) = self.floating_windows.get(index) else {
             return;
         };
-        if surface.suspended {
+        if surface.lifecycle.suspended {
             return;
         }
         let id = surface.id.clone();
@@ -4392,9 +4481,9 @@ impl AppHandler {
             return;
         };
         let surface_id = surface.id.clone();
-        let reverse = surface.suspended
+        let reverse = surface.lifecycle.suspended
             && self.floating_ime_return_continuation.as_deref() == Some(surface_id.as_str());
-        if surface.suspended && !reverse {
+        if surface.lifecycle.suspended && !reverse {
             return;
         }
         if reverse {
@@ -4425,14 +4514,13 @@ impl AppHandler {
                     self.floating_ime_return_continuation = None;
                 }
             }
-            let exact_source_active = self
-                .floating_ime_return_continuation
-                .as_deref()
-                .is_some_and(|id| id == surface_id.as_str())
-                && self
-                    .floating_windows
-                    .get(index)
-                    .is_some_and(|surface| surface.suspended && surface.preedit_active);
+            let exact_source_active =
+                self.floating_ime_return_continuation
+                    .as_deref()
+                    .is_some_and(|id| id == surface_id.as_str())
+                    && self.floating_windows.get(index).is_some_and(|surface| {
+                        surface.lifecycle.suspended && surface.preedit_active
+                    });
             let projected = if exact_source_active {
                 self.floating_windows.get(index).and_then(|surface| {
                     primary_ime_state_for_held_child(
@@ -4458,7 +4546,7 @@ impl AppHandler {
             .on_floating_surface_event_source(Some(&surface_id));
         if let Some(surface) = self.floating_windows.get_mut(index) {
             if let WindowEvent::Focused(focused) = &event {
-                surface.focused = *focused;
+                surface.lifecycle.focused = *focused;
             }
             if let Some(adapter) = surface.a11y_adapter.as_mut() {
                 adapter.process_event(&window, &event);
@@ -4506,7 +4594,7 @@ impl AppHandler {
                 self.app.root_widget.as_ref(),
                 &surface.id,
                 surface.desktop_rect,
-                surface.focused,
+                surface.lifecycle.focused,
             );
             apply_native_ime(&surface.window, next, &mut surface.ime_state);
         }
