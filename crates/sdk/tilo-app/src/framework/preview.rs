@@ -244,42 +244,6 @@ impl<R: Resource> PastVersion<R> {
     }
 }
 
-/// Lay out and draw `A`'s view over `doc`, a frozen past version, in a
-/// `size` pane.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn render_past<A: ResourceApp>(
-    doc: AutoCommit,
-    size: (u32, u32),
-) -> Result<PastVersion<A::Resource>, String> {
-    let root = past_root::<A>(&doc)?;
-    let live = root
-        .typed::<A::Resource>()
-        .map(|typed| typed.live.clone())
-        .ok_or_else(|| format!("{} drew another resource", A::TITLE))?;
-    let bounds = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
-    let preview = ViewPreview::new(root, doc, PreviewView::default()).drawn(
-        bounds,
-        &mut Scene::new(),
-        Affine::IDENTITY,
-        &Theme::dark(),
-    )?;
-    Ok(PastVersion { preview, live })
-}
-
-/// Lay out `A`'s view over `doc`, a frozen past version, in `bounds` and
-/// draw it: what `render` answers for a version.
-#[cfg(not(target_family = "wasm"))]
-pub(crate) fn draw_past<A: ResourceApp>(
-    doc: AutoCommit,
-    bounds: Rect,
-    scene: &mut Scene,
-    transform: Affine,
-    theme: &Theme,
-) -> Result<(), String> {
-    let root = past_root::<A>(&doc)?;
-    ViewPreview::draw_once(root, doc, bounds, (scene, transform), theme)
-}
-
 struct ViewPreview {
     root: ResourceRoot,
     doc: Option<AutoCommit>,
@@ -301,36 +265,82 @@ impl ViewPreview {
     fn boxed(root: ResourceRoot, doc: AutoCommit, view: PreviewView) -> Box<dyn HistoryPreview> {
         Box::new(Self::new(root, doc, view))
     }
+}
 
-    /// This preview laid out in `bounds` and drawn into `scene`.
-    #[cfg(not(target_family = "wasm"))]
-    fn drawn(
-        mut self,
+/// Drawing a past version, which needs a renderer a browser host has not got.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) mod drawing {
+    use super::{
+        AutoCommit, HistoryPreview, PastVersion, PreviewView, Rect, ResourceApp, ResourceRoot,
+        Scene, TextRenderer, Theme, ViewPreview, past_root,
+    };
+    use ui_core::vello::kurbo::Affine;
+
+    /// Lay out and draw `A`'s view over `doc`, a frozen past version, in a
+    /// `size` pane.
+    pub(crate) fn render_past<A: ResourceApp>(
+        doc: AutoCommit,
+        size: (u32, u32),
+    ) -> Result<PastVersion<A::Resource>, String> {
+        let root = past_root::<A>(&doc)?;
+        let live = root
+            .typed::<A::Resource>()
+            .map(|typed| typed.live.clone())
+            .ok_or_else(|| format!("{} drew another resource", A::TITLE))?;
+        let bounds = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
+        let preview = ViewPreview::new(root, doc, PreviewView::default()).drawn(
+            bounds,
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &Theme::dark(),
+        )?;
+        Ok(PastVersion { preview, live })
+    }
+
+    /// Lay out `A`'s view over `doc`, a frozen past version, in `bounds` and
+    /// draw it: what `render` answers for a version.
+    pub(crate) fn draw_past<A: ResourceApp>(
+        doc: AutoCommit,
         bounds: Rect,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-    ) -> Result<Self, String> {
-        let mut text = TextRenderer::new();
-        self.layout(bounds, &mut text, theme)?;
-        self.draw(scene, transform, &mut text, theme);
-        Ok(self)
+    ) -> Result<(), String> {
+        let root = past_root::<A>(&doc)?;
+        ViewPreview::draw_once(root, doc, bounds, (scene, transform), theme)
     }
 
-    /// Lay out `root` over `doc` in `bounds` and draw it into `target`.
-    #[cfg(not(target_family = "wasm"))]
-    fn draw_once(
-        root: ResourceRoot,
-        doc: AutoCommit,
-        bounds: Rect,
-        (scene, transform): (&mut Scene, Affine),
-        theme: &Theme,
-    ) -> Result<(), String> {
-        Self::new(root, doc, PreviewView::default())
-            .drawn(bounds, scene, transform, theme)
-            .map(drop)
+    impl ViewPreview {
+        /// This preview laid out in `bounds` and drawn into `scene`.
+        fn drawn(
+            mut self,
+            bounds: Rect,
+            scene: &mut Scene,
+            transform: Affine,
+            theme: &Theme,
+        ) -> Result<Self, String> {
+            let mut text = TextRenderer::new();
+            self.layout(bounds, &mut text, theme)?;
+            self.draw(scene, transform, &mut text, theme);
+            Ok(self)
+        }
+
+        /// Lay out `root` over `doc` in `bounds` and draw it into the scene at
+        /// its transform.
+        fn draw_once(
+            root: ResourceRoot,
+            doc: AutoCommit,
+            bounds: Rect,
+            (scene, transform): (&mut Scene, Affine),
+            theme: &Theme,
+        ) -> Result<(), String> {
+            Self::new(root, doc, PreviewView::default())
+                .drawn(bounds, scene, transform, theme)
+                .map(drop)
+        }
     }
 }
+
 impl HistoryPreview for ViewPreview {
     #[allow(
         clippy::cast_possible_truncation,

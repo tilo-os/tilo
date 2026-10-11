@@ -1243,7 +1243,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .read(&self.checkout().id, |doc| doc.clone().fork_at(heads))
             .ok_or("the record is not open")?
             .map_err(|error| error.to_string())?;
-        super::preview::render_past::<A>(past, A::shot_viewport(None))
+        super::preview::drawing::render_past::<A>(past, A::shot_viewport(None))
     }
 
     /// A collaborator's edit arriving: `edit` writes on their own replica of
@@ -1334,7 +1334,7 @@ pub fn surface_in_root<A: ResourceApp, S: 'static>(
 }
 
 fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot) -> Option<&mut S> {
-    if !root.is_of::<A::Resource>() {
+    if root.typed::<A::Resource>().is_none() {
         return None;
     }
     root.content
@@ -1438,8 +1438,8 @@ pub fn resolve<R: Resource>(
     doc: &mut tilo_resource::Doc,
 ) -> Result<Vec<Vec<R::Action>>, String> {
     let mut applied = Vec::new();
-    while let Some((invocation, _)) = dispatcher.take_attributed() {
-        if invocation.address.resource != dispatcher.resource_id() {
+    while let Some((invocation, _)) = dispatcher.core().take_attributed() {
+        if invocation.address.resource != dispatcher.core().resource_id() {
             return Err(format!(
                 "`{}` on `{}` is not an action of {}",
                 invocation.address.action,
@@ -1466,7 +1466,7 @@ pub fn resolve<R: Resource>(
             }
         }
         match refused {
-            Some(reason) => dispatcher.refuse(&invocation.address.action, reason),
+            Some(reason) => dispatcher.core().refuse(&invocation.address.action, reason),
             None => applied.push(actions),
         }
     }

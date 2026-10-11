@@ -2009,7 +2009,7 @@ mod tests {
             std::thread::yield_now();
         }
         dispatch.effect(&Work::Ping);
-        let continues = std::iter::from_fn(|| dispatch.take_attributed())
+        let continues = std::iter::from_fn(|| dispatch.core().take_attributed())
             .map(|(_, on_behalf_of)| on_behalf_of)
             .collect::<Vec<_>>();
         assert_eq!(
