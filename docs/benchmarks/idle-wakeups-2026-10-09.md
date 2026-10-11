@@ -318,11 +318,13 @@ Focused runs, blocking (voluntary) switches per second:
 | desktop whose collaborator left, all threads | 0.60-0.65 | 0.05 |
 | desktop whose collaborator left, `tilo-net-rt` | 0.55-0.65 | 0.00 |
 | endpoint with its relays removed (`iroh_idle`, 30 s) | | 0.00 |
+| idle `fs serve` (ci-filesystem; main 96747-96779, branch 97069) | 0.65 | 0.30 |
 
 The rested desktop is now measured once gossip's caches have drained (100 s
 after its relays rest; a real desktop rests them five minutes after the last
 collaborator), and gated at 0.10/s instead of the lone budget plus 0.3/s of
-sweeps. The lone budget is 0.25/s (p95 0.20/s plus a quarter). What the lone
+sweeps. The lone budget is 0.25/s (p95 0.20/s plus a quarter), and an idle
+`fs serve`'s 0.5/s, between what it does now and what the iroh timers cost. What the lone
 desktop's network runtime still does 15 to 35 s after it starts is not
 periodic: the rested desktop, two minutes into its run, shows none.
 
