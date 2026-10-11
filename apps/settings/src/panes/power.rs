@@ -1112,6 +1112,40 @@ mod tests {
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
 
+    /// The pane and the session's system-settings actions offer the same
+    /// timeouts, so a value one accepts is never refused by the other.
+    #[test]
+    fn the_pane_offers_the_timeouts_the_system_actions_validate() {
+        let minutes = |options: &[(&str, u32)]| options.iter().map(|(_, m)| *m).collect::<Vec<_>>();
+        let sorted = |values: &[u32]| {
+            let mut values = values.to_vec();
+            values.sort_unstable();
+            values
+        };
+        let mut blank = minutes(BLANK_OPTIONS);
+        let mut lock = minutes(LOCK_OPTIONS);
+        let mut suspend = minutes(SUSPEND_OPTIONS);
+        blank.sort_unstable();
+        lock.sort_unstable();
+        suspend.sort_unstable();
+        assert_eq!(blank, sorted(settings_store::power::BLANK_CHOICES));
+        assert_eq!(lock, sorted(settings_store::power::LOCK_CHOICES));
+        assert_eq!(suspend, sorted(settings_store::power::SUSPEND_CHOICES));
+        let defaults = PowerPrefs::default();
+        assert_eq!(
+            defaults.lock_minutes,
+            settings_store::power::DEFAULT_LOCK_MINUTES
+        );
+        assert_eq!(
+            defaults.blank_minutes,
+            settings_store::power::DEFAULT_BLANK_MINUTES
+        );
+        assert_eq!(
+            defaults.suspend_minutes,
+            settings_store::power::DEFAULT_SUSPEND_MINUTES
+        );
+    }
+
     fn sample_battery() -> BatteryInfo {
         BatteryInfo {
             present: true,
