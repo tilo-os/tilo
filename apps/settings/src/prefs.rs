@@ -28,7 +28,7 @@
 //!   "locale":  { … },                       // owned by region.rs
 //!   "audio":   { "system_sounds": { "enabled": true, "volume": 0.7, … } },
 //!   "display": { "auto_brightness": false, "night_light": false },
-//!   "input":   { "natural_scroll": false, "tap_to_click": true,
+//!   "input":   { "touchpad_natural_scroll": true, "tap_to_click": true,
 //!                "pointer_speed": 0.5, "key_repeat": 0.5,
 //!                "keyboard_layout": "us" },
 //!   "updates": { "auto": true, "channel": "Stable", "last_checked": "Never" },
@@ -153,10 +153,8 @@ impl Default for DisplayPrefs {
               independently meaningful serialized setting, not a related toggle group"
 )]
 pub struct InputPrefs {
-    /// Compatibility fallback for pre per-device input documents.
-    pub natural_scroll: bool,
-    pub touchpad_natural_scroll: Option<bool>,
-    pub mouse_natural_scroll: Option<bool>,
+    pub touchpad_natural_scroll: bool,
+    pub mouse_natural_scroll: bool,
     pub tap_to_click: bool,
     /// 0.0..=1.0 pointer acceleration.
     pub pointer_speed: f64,
@@ -219,11 +217,8 @@ pub struct InputPrefs {
 impl Default for InputPrefs {
     fn default() -> Self {
         Self {
-            natural_scroll: false,
-            touchpad_natural_scroll: Some(
-                settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
-            ),
-            mouse_natural_scroll: Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL),
+            touchpad_natural_scroll: settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
+            mouse_natural_scroll: settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL,
             tap_to_click: true,
             pointer_speed: 0.5,
             touchpad_pointer_speed: None,
@@ -265,28 +260,10 @@ impl ui::storage::SettingsSchema for InputPrefs {
 }
 
 impl InputPrefs {
-    /// Decode the input object while preserving the pre-split global scrolling
-    /// preference. A missing document receives the independent touchpad and
-    /// mouse defaults shared with the compositor.
+    /// Decode the input object, clamping the scroll speed to the range the
+    /// compositor enforces.
     fn from_json_value(value: &serde_json::Value) -> Option<Self> {
-        let section = value.as_object()?;
         let mut input: InputPrefs = serde_json::from_value(value.clone()).ok()?;
-        let legacy_natural_scroll = section
-            .get("natural_scroll")
-            .and_then(serde_json::Value::as_bool);
-        input.natural_scroll = legacy_natural_scroll.unwrap_or(false);
-        input.touchpad_natural_scroll = section
-            .get("touchpad_natural_scroll")
-            .and_then(serde_json::Value::as_bool)
-            .or(legacy_natural_scroll)
-            .or(Some(
-                settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
-            ));
-        input.mouse_natural_scroll = section
-            .get("mouse_natural_scroll")
-            .and_then(serde_json::Value::as_bool)
-            .or(legacy_natural_scroll)
-            .or(Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL));
         input.scroll_speed = settings_store::hardware::clamp_scroll_speed(input.scroll_speed);
         Some(input)
     }
@@ -298,7 +275,6 @@ impl InputPrefs {
             pointer_speed: self.pointer_speed,
             touchpad_pointer_speed: self.touchpad_pointer_speed,
             mouse_pointer_speed: self.mouse_pointer_speed,
-            natural_scroll: self.natural_scroll,
             touchpad_natural_scroll: self.touchpad_natural_scroll,
             mouse_natural_scroll: self.mouse_natural_scroll,
             tap_to_click: self.tap_to_click,
@@ -1505,8 +1481,8 @@ mod tests {
         assert!(p.audio.system_sounds.enabled);
         assert!(!p.display.night_light);
         assert!(p.input.tap_to_click);
-        assert_eq!(p.input.touchpad_natural_scroll, Some(true));
-        assert_eq!(p.input.mouse_natural_scroll, Some(false));
+        assert!(p.input.touchpad_natural_scroll);
+        assert!(!p.input.mouse_natural_scroll);
         assert_eq!(p.input.keyboard_layout, "us");
         assert!(p.power.auto_suspend);
         assert_eq!(p.power.blank_minutes, 10);
@@ -1671,13 +1647,10 @@ mod tests {
         assert_eq!(prefs.input.keyboard_layout, "de");
         assert_eq!(prefs.input.keyboard_layouts, ["de"]);
 
-        // Scroll defaults are per device, but a legacy global value applies to both.
+        // Scroll defaults are per device.
         let empty = SystemPrefs::from_json(r#"{"input":{}}"#);
-        assert_eq!(empty.input.touchpad_natural_scroll, Some(true));
-        assert_eq!(empty.input.mouse_natural_scroll, Some(false));
-        let legacy = SystemPrefs::from_json(r#"{"input":{"natural_scroll":false}}"#);
-        assert_eq!(legacy.input.touchpad_natural_scroll, Some(false));
-        assert_eq!(legacy.input.mouse_natural_scroll, Some(false));
+        assert!(empty.input.touchpad_natural_scroll);
+        assert!(!empty.input.mouse_natural_scroll);
 
         // A settings file written before ui_scale existed must load with the
         // field defaulted to 1.0 rather than failing the appearance section.

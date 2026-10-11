@@ -1059,8 +1059,8 @@ fn apply(
         E::SetTouchpadOffWithMouse { on } => input.touchpad_disabled_on_external_mouse = on,
         E::SetTouchpadSpeed { speed } => input.touchpad_pointer_speed = Some(fraction(speed)?),
         E::SetMouseSpeed { speed } => input.mouse_pointer_speed = Some(fraction(speed)?),
-        E::SetTouchpadNaturalScroll { on } => input.touchpad_natural_scroll = Some(on),
-        E::SetMouseNaturalScroll { on } => input.mouse_natural_scroll = Some(on),
+        E::SetTouchpadNaturalScroll { on } => input.touchpad_natural_scroll = on,
+        E::SetMouseNaturalScroll { on } => input.mouse_natural_scroll = on,
         E::SetTapToClick { on } => input.tap_to_click = on,
         E::SetTapDrag { on } => input.tap_drag = on,
         E::SetTapDragLock { on } => input.tap_drag_lock = on,
@@ -2159,7 +2159,7 @@ impl MouseKeyboardPane {
                     "input-touchpad-natural-scroll-description",
                     InputEffect::SET_TOUCHPAD_NATURAL_SCROLL,
                     "input.touchpad_natural_scroll",
-                    last.touchpad_natural_scroll.unwrap_or(last.natural_scroll),
+                    last.touchpad_natural_scroll,
                 ),
                 self.bool_row(
                     "input-tap-to-click",
@@ -2258,7 +2258,7 @@ impl MouseKeyboardPane {
                     "input-mouse-natural-scroll-description",
                     InputEffect::SET_MOUSE_NATURAL_SCROLL,
                     "input.mouse_natural_scroll",
-                    last.mouse_natural_scroll.unwrap_or(last.natural_scroll),
+                    last.mouse_natural_scroll,
                 ),
             ]),
         )
@@ -3702,7 +3702,7 @@ mod tests {
         assert!(set(&mut app, InputEffect::SetSpellChecking { on: false }));
         let input = app.settings::<InputPrefs>().get();
         assert_eq!(input.touchpad_pointer_speed, Some(0.9));
-        assert_eq!(input.mouse_natural_scroll, Some(true));
+        assert!(input.mouse_natural_scroll);
         assert!(!input.touchpad_enabled);
         let active = settings_store::keyboard_sources::effective(
             &input.rich_input(),
