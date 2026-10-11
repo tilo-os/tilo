@@ -701,6 +701,13 @@ impl CaptureStudio {
                 taffy: &taffy,
             },
         );
+        // The menu leaves motion unhandled so presence can follow it; over
+        // the menu the motion is still the menu's, not the widgets below.
+        if matches!(e, WindowEvent::CursorMoved { .. })
+            && menu.contains([self.cursor.x, self.cursor.y])
+        {
+            handled = true;
+        }
         if let Some(index) = menu.take_selection() {
             self.choose_send_target(index);
         }
@@ -5510,6 +5517,20 @@ impl Widget for CaptureStudio {
                 rects.push(("capture.show-screenshot".into(), reveal));
             }
             rects.push(("capture.dismiss-screenshot".into(), dismiss));
+            // The open "Send…" picker's rows, so a pointer test can reach
+            // them by name like the receipt's own buttons.
+            if let Some(menu) = self.send_menu.as_ref().filter(|menu| menu.is_open()) {
+                for (index, target) in self.send_menu_targets.iter().enumerate() {
+                    let (Some(target), Some(rect)) = (target, menu.item_rect(index)) else {
+                        continue;
+                    };
+                    let name = match target {
+                        ScreenshotSendTarget::Workspace => "capture.send-to-workspace".into(),
+                        ScreenshotSendTarget::Device(id) => format!("capture.send-to-device.{id}"),
+                    };
+                    rects.push((name, rect));
+                }
+            }
             return rects;
         }
         if self.recording_finished_at.is_some() {

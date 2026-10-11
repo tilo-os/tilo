@@ -2674,12 +2674,20 @@ impl ShellOverlayHost {
     ///
     /// Capture Studio deliberately stops being modal after recording starts,
     /// so `capture_studio_open` is too broad for this boundary: the recording
-    /// pill must leave applications interactive. Screenshot markup and the
-    /// power confirmation remain modal for their whole lifetime.
+    /// pill must leave applications interactive. Screenshot markup remains
+    /// modal for its whole lifetime.
+    ///
+    /// Every shell-owned menu or flyout claims the seat while it is open,
+    /// as Quick Settings does: the stacked popovers (the tab menu, the power
+    /// menu) and the screenshot receipt's "Send…" picker. Each hangs over
+    /// application windows; were the window under it given the pointer, the
+    /// menu would show no hover and judge its next press against the last
+    /// pointer position the shell saw — outside the menu — and close.
     pub(crate) fn inner_surface_captures_input(&self) -> bool {
-        self.layers.power_menu.is_open()
+        self.layers.popover_open()
             || self.screenshot_markup.is_some()
             || self.capture_studio.modal_capture().is_some()
+            || self.capture_studio.send_menu_open()
     }
 
     /// Whether the pointer is over the shell-owned controls painted above a

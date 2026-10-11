@@ -342,6 +342,17 @@ impl OverlayStack {
                 .any(|layer| layer.id().band() == Some(band) && layer.is_open())
     }
 
+    /// Whether a menu or flyout ([`Band::Popover`]) is open. Such a layer
+    /// hangs over application windows and models its own hover, so while
+    /// it is up the shell must own the seat: otherwise motion over the part
+    /// covering a window goes to that window, and the menu's next press is
+    /// judged against a stale pointer.
+    pub(crate) fn popover_open(&self) -> bool {
+        self.layers()
+            .into_iter()
+            .any(|layer| layer.id().band() == Some(Band::Popover) && layer.is_open())
+    }
+
     /// Offer `event` to the open layers in `band`, topmost first. `true`
     /// when one of them resolved it; `cx.event.handled` is then set.
     pub(crate) fn route(
