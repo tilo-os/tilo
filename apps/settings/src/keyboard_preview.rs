@@ -11,7 +11,7 @@ struct Geometry {
     height: f64,
     keys: Vec<GeometryKey>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct GeometryKey {
     name: String,
     outline: Vec<[f64; 2]>,
@@ -41,6 +41,19 @@ pub(crate) fn map_with_options(
     label: String,
     options: Option<&str>,
 ) -> Result<KeyboardMap, String> {
+    map_for_form(source, model, label, options, false)
+}
+
+/// [`map_with_options`] for the keyboard in front of the person: the compact
+/// drawing (no navigation cluster or numpad) when `compact`, so a laptop's
+/// preview matches the laptop and every legend stays readable.
+pub(crate) fn map_for_form(
+    source: &str,
+    model: &str,
+    label: String,
+    options: Option<&str>,
+    compact: bool,
+) -> Result<KeyboardMap, String> {
     static GEOMETRIES: LazyLock<Result<BTreeMap<String, Geometry>, serde_json::Error>> =
         LazyLock::new(|| serde_json::from_str(include_str!("../data/pc-keyboard-geometry.json")));
     let source_id = source.to_owned();
@@ -52,16 +65,83 @@ pub(crate) fn map_with_options(
     let geometry = geometries
         .get(model)
         .ok_or("unknown physical keyboard model")?;
-    let keys = compile(&source, model, &geometry.keys, options)?;
+    let (width, keys) = if compact {
+        compact_geometry(geometry)
+    } else {
+        (geometry.width, geometry.keys.clone())
+    };
+    let keys = compile(&source, model, &keys, options)?;
     Ok(KeyboardMap::new(
         keys,
         taffy::Size {
-            width: geometry.width,
+            width,
             height: geometry.height,
         },
         label,
     )
     .with_configuration(source_id, model.to_owned()))
+}
+
+/// What the keyboard drawn for this device looks like: compact (a laptop's,
+/// with arrows in one row and no navigation cluster or numpad) unless the
+/// machine says it is a desktop or tower. Unknown is compact: it is what the
+/// machines Tilo runs on have.
+pub(crate) fn device_keyboard_is_compact() -> bool {
+    static COMPACT: LazyLock<bool> = LazyLock::new(|| {
+        chassis_is_compact(
+            std::fs::read_to_string("/sys/class/dmi/id/chassis_type")
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok()),
+        )
+    });
+    *COMPACT
+}
+
+/// SMBIOS chassis types of machines with a full-size keyboard of their own:
+/// desktop, low-profile desktop, pizza box, mini tower, tower, all in one,
+/// space-saving, lunch box, main server, expansion, sub chassis, bus
+/// expansion, peripheral, RAID, rack mount, sealed-case PC, multi-system.
+fn chassis_is_compact(chassis: Option<u32>) -> bool {
+    !matches!(chassis, Some(3..=7 | 13 | 15..=24))
+}
+
+/// The pc105 drawing without the Print/Scroll/Pause, navigation and numpad
+/// clusters, the Windows/Menu/right-Ctrl keys replaced by the arrows in one
+/// row: the main block a laptop keyboard is.
+fn compact_geometry(geometry: &Geometry) -> (f64, Vec<GeometryKey>) {
+    const DROPPED: [&str; 12] = [
+        "PRSC", "SCLK", "PAUS", "INS", "HOME", "PGUP", "DELE", "END", "PGDN", "NMLK", "RWIN",
+        "MENU",
+    ];
+    let arrows = [
+        ("LEFT", 230.0),
+        ("UP", 249.0),
+        ("DOWN", 268.0),
+        ("RGHT", 287.0),
+    ];
+    let mut keys = Vec::new();
+    for key in &geometry.keys {
+        if DROPPED.contains(&key.name.as_str())
+            || key.name.starts_with("KP")
+            || key.name == "RCTL"
+            || arrows.iter().any(|(name, _)| *name == key.name)
+        {
+            continue;
+        }
+        keys.push(key.clone());
+    }
+    for (name, x0) in arrows {
+        keys.push(GeometryKey {
+            name: name.to_owned(),
+            outline: vec![
+                [x0, 138.0],
+                [x0 + 19.0, 138.0],
+                [x0 + 19.0, 156.0],
+                [x0, 156.0],
+            ],
+        });
+    }
+    (327.0, keys)
 }
 
 #[cfg(test)]
@@ -70,6 +150,25 @@ thread_local! { static COMPILES: std::cell::Cell<usize> = const { std::cell::Cel
 #[cfg(test)]
 pub(crate) fn compilation_count() -> usize {
     COMPILES.with(std::cell::Cell::get)
+}
+
+/// Legends that would be unreadable at keycap size, spelled the way keycaps
+/// spell them.
+fn short_legend(keysym: &str) -> Option<&'static str> {
+    Some(match keysym {
+        "Print" | "Sys_Req" => "PrtSc",
+        "Scroll_Lock" => "ScrLk",
+        "Pause" | "Break" => "Pause",
+        "Num_Lock" => "Num",
+        "Prior" | "Page_Up" => "PgUp",
+        "Next" | "Page_Down" => "PgDn",
+        "Insert" => "Ins",
+        "Delete" => "Del",
+        "Caps_Lock" => "Caps",
+        "BackSpace" => "Bksp",
+        "Escape" => "Esc",
+        _ => return None,
+    })
 }
 
 fn compile(
@@ -105,7 +204,12 @@ fn compile(
                 .map(|symbols| {
                     symbols
                         .into_iter()
-                        .map(|symbol| caps.native_symbol(&symbol.name, &symbol.text))
+                        .map(|symbol| {
+                            short_legend(&symbol.name).map_or_else(
+                                || caps.native_symbol(&symbol.name, &symbol.text),
+                                str::to_owned,
+                            )
+                        })
                         .collect::<Vec<_>>()
                         .join(" ")
                 })
@@ -129,6 +233,29 @@ fn compile(
 mod tests {
     use super::*;
     use winit::keyboard::{KeyCode, PhysicalKey};
+    #[test]
+    fn the_compact_drawing_is_the_main_block_with_arrows_and_stays_inside_its_width() {
+        let geometry: BTreeMap<String, Geometry> =
+            serde_json::from_str(include_str!("../data/pc-keyboard-geometry.json")).unwrap();
+        let (width, keys) = compact_geometry(&geometry["pc105"]);
+        for gone in ["PRSC", "PGUP", "NMLK", "KP5", "RCTL", "MENU"] {
+            assert!(keys.iter().all(|key| key.name != gone), "{gone} stays out");
+        }
+        for kept in ["ESC", "AD06", "SPCE", "LEFT", "UP", "DOWN", "RGHT"] {
+            assert!(keys.iter().any(|key| key.name == kept), "{kept} stays in");
+        }
+        assert!(
+            keys.iter()
+                .flat_map(|key| key.outline.iter())
+                .all(|[x, _]| *x <= width - 20.0),
+            "every key sits inside the compact width"
+        );
+        assert!(!chassis_is_compact(Some(3)) && chassis_is_compact(Some(10)));
+        assert!(chassis_is_compact(None), "unknown is a laptop");
+        let map = map_for_form("de", "pc105", String::new(), Some(""), true).unwrap();
+        assert!(map.inspection_keys().iter().any(|(name, _)| name == "AD06"));
+    }
+
     #[test]
     fn jis_and_korean_models_preserve_the_native_language_key_positions() {
         let geometry: BTreeMap<String, Geometry> =
