@@ -28,7 +28,7 @@
 //!   "locale":  { … },                       // owned by region.rs
 //!   "audio":   { "system_sounds": { "enabled": true, "volume": 0.7, … } },
 //!   "display": { "auto_brightness": false, "night_light": false },
-//!   "input":   { "natural_scroll": false, "tap_to_click": true,
+//!   "input":   { "touchpad_natural_scroll": true, "tap_to_click": true,
 //!                "pointer_speed": 0.5, "key_repeat": 0.5,
 //!                "keyboard_layout": "us" },
 //!   "updates": { "auto": true, "channel": "Stable", "last_checked": "Never" },
@@ -144,65 +144,21 @@ impl Default for DisplayPrefs {
 }
 
 /// Pointer + keyboard behaviour the compositor's libinput/xkb configuration
-/// reads at session start.
+/// reads at session start: the shared [`RichInputConfig`] plus the touchpad
+/// switches and the keyboard inspector state only Settings writes.
+///
+/// [`RichInputConfig`]: settings_store::hardware::RichInputConfig
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
-              independently meaningful serialized setting, not a related toggle group"
-)]
 pub struct InputPrefs {
-    /// Compatibility fallback for pre per-device input documents.
-    pub natural_scroll: bool,
-    pub touchpad_natural_scroll: Option<bool>,
-    pub mouse_natural_scroll: Option<bool>,
-    pub tap_to_click: bool,
-    /// 0.0..=1.0 pointer acceleration.
-    pub pointer_speed: f64,
-    pub touchpad_pointer_speed: Option<f64>,
-    pub mouse_pointer_speed: Option<f64>,
-    /// 0.0..=1.0 key-repeat rate.
-    pub key_repeat: f64,
-    /// Exact host-imported repeat pair. A Tilo slider selection clears both.
-    pub key_repeat_delay_ms: Option<u32>,
-    pub key_repeat_rate_hz: Option<u32>,
-    /// xkb layout code, e.g. `"us"`, `"de"`.
-    pub keyboard_layout: String,
-    pub tap_drag: bool,
-    /// Keep a tap-and-drag going after the finger lifts, until the next tap.
-    pub tap_drag_lock: bool,
-    pub disable_while_typing: bool,
-    pub middle_emulation: bool,
-    pub left_handed: bool,
-    /// `adaptive` or `flat`; capability-gated by libinput.
-    pub accel_profile: String,
-    pub touchpad_gestures: bool,
+    #[serde(flatten)]
+    pub config: settings_store::hardware::RichInputConfig,
     /// Whether touchpads send events at all. The touchpad-toggle key writes
     /// the same key, so both stay in agreement.
     pub touchpad_enabled: bool,
     /// Switch touchpads off while an external mouse is connected;
     /// capability-gated by libinput.
     pub touchpad_disabled_on_external_mouse: bool,
-    /// Which button a clickpad press means; capability-gated by libinput.
-    pub touchpad_click_method: settings_store::hardware::TouchpadClickMethod,
-    /// Two-finger or edge scrolling; capability-gated by libinput.
-    pub touchpad_scroll_method: settings_store::hardware::TouchpadScrollMethod,
-    /// Scroll-distance multiplier for wheels and touchpads.
-    pub scroll_speed: f64,
-    /// XKB compose option (`ralt`, `menu`, …), or none.
-    pub compose_key: Option<String>,
-    /// What Caps Lock does (`ctrl`, `escape`, `backspace`), or none for
-    /// Caps Lock itself.
-    pub caps_lock: Option<String>,
-    /// Ordered XKB layouts. `keyboard_layout` remains the active first item
-    /// for backward compatibility with old sessions.
-    pub keyboard_layouts: Vec<String>,
-    /// Explicit physical model; no hardware detection is implied.
-    pub keyboard_model: String,
-    #[serde(deserialize_with = "settings_store::keyboard_sources::lenient_profiles")]
-    pub keyboard_assignments:
-        std::collections::BTreeMap<String, settings_store::keyboard_sources::KeyboardProfile>,
     /// Layout being inspected without changing the active input source.
     pub keyboard_preview: Option<String>,
     /// Inspect the higher native XKB levels without changing typed input.
@@ -211,49 +167,18 @@ pub struct InputPrefs {
     pub keyboard_preview_level: usize,
     /// Explicit physical position inspected; never follows or records key presses.
     pub keyboard_inspected_key: String,
-    /// Per-tablet mapping, pressure and buttons, keyed by device identity.
-    #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
-    pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
 }
 
 impl Default for InputPrefs {
     fn default() -> Self {
         Self {
-            natural_scroll: false,
-            touchpad_natural_scroll: Some(
-                settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
-            ),
-            mouse_natural_scroll: Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL),
-            tap_to_click: true,
-            pointer_speed: 0.5,
-            touchpad_pointer_speed: None,
-            mouse_pointer_speed: None,
-            key_repeat: 0.5,
-            key_repeat_delay_ms: None,
-            key_repeat_rate_hz: None,
-            keyboard_layout: "us".to_string(),
-            tap_drag: true,
-            tap_drag_lock: false,
-            disable_while_typing: true,
-            middle_emulation: true,
-            left_handed: false,
-            accel_profile: "adaptive".into(),
-            touchpad_gestures: true,
+            config: settings_store::hardware::RichInputConfig::default(),
             touchpad_enabled: true,
             touchpad_disabled_on_external_mouse: false,
-            touchpad_click_method: settings_store::hardware::TouchpadClickMethod::Default,
-            touchpad_scroll_method: settings_store::hardware::TouchpadScrollMethod::TwoFinger,
-            scroll_speed: 1.0,
-            compose_key: None,
-            caps_lock: None,
-            keyboard_layouts: vec!["us".into()],
-            keyboard_model: "pc105".into(),
-            keyboard_assignments: std::collections::BTreeMap::new(),
             keyboard_preview: None,
             keyboard_preview_extra_levels: false,
             keyboard_preview_level: 0,
             keyboard_inspected_key: "AD01".into(),
-            tablets: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -265,76 +190,13 @@ impl ui::storage::SettingsSchema for InputPrefs {
 }
 
 impl InputPrefs {
-    /// Decode the input object while preserving the pre-split global scrolling
-    /// preference. A missing document receives the independent touchpad and
-    /// mouse defaults shared with the compositor.
+    /// Decode the input object. The shared fields go through the same
+    /// per-field fallbacks and source normalisation the compositor uses.
     fn from_json_value(value: &serde_json::Value) -> Option<Self> {
         let section = value.as_object()?;
-        let mut input: InputPrefs = serde_json::from_value(value.clone()).ok()?;
-        let legacy_natural_scroll = section
-            .get("natural_scroll")
-            .and_then(serde_json::Value::as_bool);
-        input.natural_scroll = legacy_natural_scroll.unwrap_or(false);
-        input.touchpad_natural_scroll = section
-            .get("touchpad_natural_scroll")
-            .and_then(serde_json::Value::as_bool)
-            .or(legacy_natural_scroll)
-            .or(Some(
-                settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
-            ));
-        input.mouse_natural_scroll = section
-            .get("mouse_natural_scroll")
-            .and_then(serde_json::Value::as_bool)
-            .or(legacy_natural_scroll)
-            .or(Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL));
-        input.scroll_speed = settings_store::hardware::clamp_scroll_speed(input.scroll_speed);
+        let mut input: InputPrefs = serde_json::from_value(value.clone()).unwrap_or_default();
+        input.config = settings_store::hardware::RichInputConfig::from_section(section);
         Some(input)
-    }
-
-    /// Reconcile the legacy active layout with the ordered source list using
-    /// the same validation and bounds the compositor enforces.
-    pub fn rich_input(&self) -> settings_store::hardware::RichInputConfig {
-        settings_store::hardware::RichInputConfig {
-            pointer_speed: self.pointer_speed,
-            touchpad_pointer_speed: self.touchpad_pointer_speed,
-            mouse_pointer_speed: self.mouse_pointer_speed,
-            natural_scroll: self.natural_scroll,
-            touchpad_natural_scroll: self.touchpad_natural_scroll,
-            mouse_natural_scroll: self.mouse_natural_scroll,
-            tap_to_click: self.tap_to_click,
-            tap_drag: self.tap_drag,
-            tap_drag_lock: self.tap_drag_lock,
-            disable_while_typing: self.disable_while_typing,
-            middle_emulation: self.middle_emulation,
-            left_handed: self.left_handed,
-            accel_profile: if self.accel_profile == "flat" {
-                settings_store::hardware::AccelProfile::Flat
-            } else {
-                settings_store::hardware::AccelProfile::Adaptive
-            },
-            key_repeat: self.key_repeat,
-            key_repeat_delay_ms: self.key_repeat_delay_ms,
-            key_repeat_rate_hz: self.key_repeat_rate_hz,
-            keyboard_layout: self.keyboard_layout.clone(),
-            keyboard_layouts: self.keyboard_layouts.clone(),
-            keyboard_model: self.keyboard_model.clone(),
-            keyboard_assignments: self.keyboard_assignments.clone(),
-            compose_key: self.compose_key.clone(),
-            caps_lock: self.caps_lock.clone(),
-            touchpad_gestures: self.touchpad_gestures,
-            touchpad_click_method: self.touchpad_click_method,
-            touchpad_scroll_method: self.touchpad_scroll_method,
-            scroll_speed: self.scroll_speed,
-            tablets: self.tablets.clone(),
-        }
-    }
-
-    pub fn normalise_keyboard_sources(&mut self) {
-        let mut config = self.rich_input();
-        config.normalise_sources();
-        self.keyboard_model = config.keyboard_model;
-        self.keyboard_layout = config.keyboard_layout;
-        self.keyboard_layouts = config.keyboard_layouts;
     }
 }
 
@@ -1293,7 +1155,7 @@ impl SystemPrefs {
     pub fn from_json(text: &str) -> Self {
         let root: serde_json::Value = serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
         let section = |key: &str| root.get(key).cloned();
-        let mut prefs = Self {
+        Self {
             audio: section("audio")
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
@@ -1318,20 +1180,7 @@ impl SystemPrefs {
             accessibility: section("accessibility")
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
-        };
-        // `serde(default)` fills a missing multi-source field with `["us"]`.
-        // For an old document whose only field is `keyboard_layout: "de"`,
-        // that would invent an unwanted second source. Clear the synthetic
-        // list before normalisation when the key genuinely was absent.
-        let has_sources = root
-            .get("input")
-            .and_then(serde_json::Value::as_object)
-            .is_some_and(|input| input.contains_key("keyboard_layouts"));
-        if !has_sources {
-            prefs.input.keyboard_layouts.clear();
         }
-        prefs.input.normalise_keyboard_sources();
-        prefs
     }
 
     /// Serialize to pretty JSON, **merging** into `existing` so foreign
@@ -1504,10 +1353,10 @@ mod tests {
         let p = SystemPrefs::default();
         assert!(p.audio.system_sounds.enabled);
         assert!(!p.display.night_light);
-        assert!(p.input.tap_to_click);
-        assert_eq!(p.input.touchpad_natural_scroll, Some(true));
-        assert_eq!(p.input.mouse_natural_scroll, Some(false));
-        assert_eq!(p.input.keyboard_layout, "us");
+        assert!(p.input.config.tap_to_click);
+        assert!(p.input.config.touchpad_natural_scroll);
+        assert!(!p.input.config.mouse_natural_scroll);
+        assert_eq!(p.input.config.keyboard_layout, "us");
         assert!(p.power.auto_suspend);
         assert_eq!(p.power.blank_minutes, 10);
         assert_eq!(p.power.lock_minutes, 5);
@@ -1544,21 +1393,21 @@ mod tests {
         p.accessibility.bounce_keys_delay_ms = 500;
         p.accessibility.bounce_keys_alert = true;
         p.accessibility.mouse_keys = true;
-        p.input.touchpad_click_method = TouchpadClickMethod::Clickfinger;
-        p.input.touchpad_scroll_method = TouchpadScrollMethod::Edge;
-        p.input.scroll_speed = 2.0;
+        p.input.config.touchpad_click_method = TouchpadClickMethod::Clickfinger;
+        p.input.config.touchpad_scroll_method = TouchpadScrollMethod::Edge;
+        p.input.config.scroll_speed = 2.0;
         let json = p.to_json_merged("");
         let back = SystemPrefs::from_json(&json);
         assert_eq!(back.accessibility, p.accessibility);
         assert_eq!(
-            back.input.touchpad_click_method,
+            back.input.config.touchpad_click_method,
             TouchpadClickMethod::Clickfinger
         );
         assert_eq!(
-            back.input.touchpad_scroll_method,
+            back.input.config.touchpad_scroll_method,
             TouchpadScrollMethod::Edge
         );
-        assert_eq!(back.input.scroll_speed, 2.0);
+        assert_eq!(back.input.config.scroll_speed, 2.0);
 
         // The compositor reads the same document.
         let root: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -1616,9 +1465,9 @@ mod tests {
         p.audio.system_sounds.theme = Some("ocean".into());
         p.audio.system_sounds.events.error = false;
         p.display.night_light = true;
-        p.input.pointer_speed = 0.9;
-        p.input.keyboard_layout = "de".into();
-        p.input.keyboard_layouts = vec!["de".into()];
+        p.input.config.pointer_speed = 0.9;
+        p.input.config.keyboard_layout = "de".into();
+        p.input.config.keyboard_layouts = vec!["de".into()];
         p.power.auto_suspend = false;
         p.power.blank_minutes = 30;
         p.power.lock_minutes = 0;
@@ -1638,11 +1487,17 @@ mod tests {
 
         // Keyboard source order and the active source survive.
         let mut prefs = SystemPrefs::default();
-        prefs.input.keyboard_layouts = vec!["us".into(), "de:nodeadkeys".into()];
-        prefs.input.keyboard_layout = "de:nodeadkeys".into();
+        prefs.input.config.keyboard_layouts = vec!["us".into(), "de:nodeadkeys".into()];
+        prefs.input.config.keyboard_layout = "de:nodeadkeys".into();
         let back = SystemPrefs::from_json(&prefs.to_json_merged(""));
-        assert_eq!(back.input.keyboard_layouts, prefs.input.keyboard_layouts);
-        assert_eq!(back.input.keyboard_layout, prefs.input.keyboard_layout);
+        assert_eq!(
+            back.input.config.keyboard_layouts,
+            prefs.input.config.keyboard_layouts
+        );
+        assert_eq!(
+            back.input.config.keyboard_layout,
+            prefs.input.config.keyboard_layout
+        );
 
         for a in [
             PowerActionPref::Suspend,
@@ -1668,16 +1523,13 @@ mod tests {
 
         // An old single keyboard layout migrates without inventing `us`.
         let prefs = SystemPrefs::from_json(r#"{"input":{"keyboard_layout":"de"}}"#);
-        assert_eq!(prefs.input.keyboard_layout, "de");
-        assert_eq!(prefs.input.keyboard_layouts, ["de"]);
+        assert_eq!(prefs.input.config.keyboard_layout, "de");
+        assert_eq!(prefs.input.config.keyboard_layouts, ["de"]);
 
-        // Scroll defaults are per device, but a legacy global value applies to both.
+        // Scroll defaults are per device.
         let empty = SystemPrefs::from_json(r#"{"input":{}}"#);
-        assert_eq!(empty.input.touchpad_natural_scroll, Some(true));
-        assert_eq!(empty.input.mouse_natural_scroll, Some(false));
-        let legacy = SystemPrefs::from_json(r#"{"input":{"natural_scroll":false}}"#);
-        assert_eq!(legacy.input.touchpad_natural_scroll, Some(false));
-        assert_eq!(legacy.input.mouse_natural_scroll, Some(false));
+        assert!(empty.input.config.touchpad_natural_scroll);
+        assert!(!empty.input.config.mouse_natural_scroll);
 
         // A settings file written before ui_scale existed must load with the
         // field defaulted to 1.0 rather than failing the appearance section.
