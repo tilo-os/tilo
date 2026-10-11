@@ -31,15 +31,17 @@ and signed package. Synthetic identities and invitation material remain inside
 the private temporary profile and are removed, with owned processes, on exit.
 
 Run only in an owned disposable remote builder; keep the ordinary packager and
-process lifetime under the rcargo session lock:
+process lifetime under the selected cargo drop-in’s session lock. Set `CARGO`
+to any cargo drop-in that supports the remote execution and receipt retrieval
+options below:
 
 ```sh
-rcargo --no-fallback --no-fetch build --locked \
+"$CARGO" --no-fallback --no-fetch build --locked \
   -p shell --bin shell --example native_pair_host \
   -p tilo-control --bin tilo-control -p launcher --bin tilo-launcher \
   -p tilo-app-package-cli --bin tilo-app-package -p tilo-app-cli --bin tilo-app \
   -p install --bin tilo-install -p runtime-bundle --bin tilo-runtime-bundle
-rcargo --no-fallback --on-builder \
+"$CARGO" --no-fallback --on-builder \
   --fetch native-app-state-proof/journey.json \
   --fetch native-app-state-proof/alice-shared-state.png \
   --fetch native-app-state-proof/bob-shared-state.png \
