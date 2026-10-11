@@ -281,14 +281,18 @@ class LaunchLatencyTests(unittest.TestCase):
     def test_every_compositor_segment_of_one_open(self):
         log = "\n".join([
             "INFO tilo::launch_latency: application launcher spawned package_id=so.tilo.notes pid=9 "
-            "request_to_spawn_us=8400",
+            "request_to_spawn_us=8400 dispatch_phases=preflight:0.3,identity:1.2,command:0.9,worker:3.0,"
+            "spawned:1.5,registered:1.5",
             "INFO tilo::launch_latency: application toplevel mapped package_id=so.tilo.notes surface_id=3 "
             "request_to_map_us=610000 spawn_to_map_us=601600",
             self.LINE.format(pkg="so.tilo.notes"),
         ])
         self.assertEqual(parse_launch_latencies(log, "so.tilo.notes"),
                          {"request_to_spawn": 8.4, "spawn_to_map": 601.6,
-                          "request_to_first_present": 2140.0})
+                          "request_to_first_present": 2140.0,
+                          "dispatch_phase.preflight": 0.3, "dispatch_phase.identity": 1.2,
+                          "dispatch_phase.command": 0.9, "dispatch_phase.worker": 3.0,
+                          "dispatch_phase.spawned": 1.5, "dispatch_phase.registered": 1.5})
 
 
 class FirstFrameBudgetTests(unittest.TestCase):
