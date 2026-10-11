@@ -299,10 +299,9 @@ pub struct NotesApp {
     /// The note's save + page/word status, surfaced on the save status
     /// surface (see `save_status`) instead of a permanent strip.
     status: StatusModel,
-    /// The framework's save status surface: "Saving…" and "Saved" (with
-    /// the note's length) in a transient bubble in the bottom-trailing
-    /// corner, shown again on a page switch and while the pointer rests
-    /// there; a failed save as an error toast with "Try again".
+    /// The framework's save status surface: autosave shows nothing; a
+    /// failed save is an error toast with "Try again", and the save that
+    /// ends it a one-time "Saved" bubble in the bottom-trailing corner.
     save_surface: ui::SaveStatusSurface,
     /// "Try again" was chosen on a failed save; the host drains it.
     save_retry: bool,
@@ -686,9 +685,6 @@ impl NotesApp {
                 ui::record::RecordSaveStatus::Failed(_) => SaveStatus::Failed,
                 ui::record::RecordSaveStatus::MemoryOnly => SaveStatus::SessionOnly,
             });
-        let announce = self.status.state().save_status != save_status
-            || self.status.state().page_path != path
-            || self.status.state().page_count != self.workspace.pages().len();
         let save_problem = match &self.record_save_status {
             ui::record::RecordSaveStatus::Failed(reason) if self.shots_save_status.is_none() => {
                 Some(reason.clone())
@@ -702,15 +698,11 @@ impl NotesApp {
             page_count: self.workspace.pages().len(),
             word_count,
         });
-        // A failure stays on the surface until the note saves or it is
-        // dismissed; "Saving…" and "Saved" pass. Counts stay live while the
-        // bubble shows, but a new word must not reopen it.
-        let now = ui::time::now();
-        self.save_surface.set_detail(self.status_detail());
-        self.save_surface.set(self.save_state(), now);
-        if announce {
-            self.save_surface.poke(now);
-        }
+        // Autosave is the system's job and shows nothing: only a failure
+        // (until the note saves or it is dismissed) and the save that ends
+        // it reach the screen. The state and counts stay in the
+        // accessibility status.
+        self.save_surface.set(self.save_state(), ui::time::now());
     }
 
     /// The save state the surface reports.
@@ -724,17 +716,8 @@ impl NotesApp {
         }
     }
 
-    /// What the saved bubble adds: the note's length, where the window
-    /// has room for it. A phone keeps the bubble to the save state.
-    fn status_detail(&self) -> Option<String> {
-        if self.shell.geometry().sidebar != SidebarPlacement::Docked {
-            return None;
-        }
-        self.status.word_text()
-    }
-
-    /// `--shots`: stage the status bubble as a change just happened, so a
-    /// still frame captures the floating chip.
+    /// `--shots`: stage the save surface as a change just happened, so a
+    /// still frame captures what it shows (nothing, for autosave).
     pub fn stage_status_bubble(&mut self) {
         self.refresh_status();
         self.save_surface.poke(ui::time::now());
@@ -4089,6 +4072,15 @@ mod tests {
             app.refresh_status();
             assert_eq!(app.status.state().word_count, Some(3));
             assert_eq!(app.save_surface.failure(), None);
+            for status in [SaveStatus::Saving, SaveStatus::Saved].repeat(3) {
+                app.shots_save_status = Some(status);
+                app.refresh_status();
+                assert!(
+                    !app.save_surface.is_visible(ui::time::now()),
+                    "autosave must not flash a bubble while typing"
+                );
+            }
+            assert_eq!(app.save_surface.state(), Some(&ui::SaveState::Saved));
 
             app.shots_save_status = Some(SaveStatus::Failed);
             app.refresh_status();
@@ -4133,9 +4125,12 @@ mod tests {
         {
             let (mut app, state, _tmp, _) = app_seeded_into_doc();
             app.theme.reduce_motion = false;
+            // The only transient left: the save that ends a failure.
+            app.shots_save_status = Some(SaveStatus::Failed);
+            app.refresh_status();
             app.shots_save_status = Some(SaveStatus::Saved);
             app.refresh_status();
-            app.save_surface.poke(ui::time::now());
+            assert!(app.save_surface.is_visible(ui::time::now()));
             assert!(app.needs_animation_frame(), "normal fade requests frames");
 
             app.theme.reduce_motion = true;

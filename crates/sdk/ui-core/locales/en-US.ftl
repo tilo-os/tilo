@@ -409,7 +409,6 @@ history-day-yesterday = Yesterday
 history-day-this-week = This week
 history-day-earlier = Earlier
 
-save-status-saving = Saving…
 save-status-saved = Saved
 save-status-failed = Save failed
 save-status-retry = Try again

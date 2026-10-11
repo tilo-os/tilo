@@ -81,6 +81,18 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     // The first edit can change the shared save indicator. The subsequent
     // ordinary edit proves stable app chrome forwards the paragraph damage.
     driver.key("x");
+    // Autosave shows nothing, so no bubble keeps the window busy until the
+    // write lands: wait for it (debounce, then saved) before the baseline,
+    // or its completion would land in the typing measured below.
+    let written = std::time::Instant::now();
+    while written.elapsed() < std::time::Duration::from_secs(5)
+        && (written.elapsed() < std::time::Duration::from_millis(900)
+            || f.records.save_status(&checkout.id).ok()
+                != Some(ui::record::RecordSaveStatus::Saved))
+    {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        driver.settle_for_capture(ui::time::Duration::from_millis(100));
+    }
     let started = ui::time::now();
     let settled = driver.settle_for_capture(ui::time::Duration::from_secs(2));
     if !settled {
