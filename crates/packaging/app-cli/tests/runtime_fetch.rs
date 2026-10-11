@@ -42,12 +42,20 @@ const APP_ID: &str = "so.tilo.linked-e2e";
 
 /// What the stand-in registry serves, by request path.
 #[derive(Clone, Default)]
-struct Served(Arc<Mutex<BTreeMap<String, Vec<u8>>>>, Arc<Mutex<Vec<String>>>);
+struct Served(
+    Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    Arc<Mutex<Vec<String>>>,
+);
 
 impl Served {
     /// How many requests have asked for `path` so far.
     fn hits(&self, path: &str) -> usize {
-        self.1.lock().unwrap().iter().filter(|hit| *hit == path).count()
+        self.1
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|hit| *hit == path)
+            .count()
     }
 
     fn put(&self, path: &str, bytes: Vec<u8>) {

@@ -398,7 +398,7 @@ impl IdentityRegistryStore {
     /// the saved one. Reads only.
     fn reconcile(&self) -> io::Result<(IdentityRegistry, bool)> {
         #[cfg(test)]
-        RECONCILES_ON_THIS_THREAD.with(|count| count.set(count.get() + 1));
+        RECONCILES_ON_THIS_THREAD.with(|count| count.set(count.get().saturating_add(1)));
         let mut registry = self.load()?;
         let mut changed = false;
         for summary in runtime_identity::list_identities(&self.identity_dir)? {

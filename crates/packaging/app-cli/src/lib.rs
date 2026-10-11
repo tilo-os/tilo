@@ -262,6 +262,12 @@ pub fn runtime_offer(runtime: &str, registry_name: &str) -> Result<Option<Catalo
     // One verified snapshot answers for every runtime package; only the
     // per-package version indexes differ, and those are independent requests.
     let verified: Vec<Result<VerifiedEntry, String>> = std::thread::scope(|scope| {
+        // Every request is started before the first is awaited: iterating the
+        // joins lazily would run them one after another.
+        #[expect(
+            clippy::needless_collect,
+            reason = "collecting starts every worker before the first join"
+        )]
         let workers: Vec<_> = runtime_packages
             .iter()
             .map(|package_id| {

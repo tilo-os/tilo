@@ -1,8 +1,8 @@
 //! Loading and unloading extensions in the running engine, and reading their
-//! toolbar state, over the engine's DevTools bridge.
+//! toolbar state, over the engine's `DevTools` bridge.
 //!
 //! CEF's Chrome runtime has no extension API, but Chromium's `Extensions`
-//! DevTools domain loads and unloads an unpacked extension with no restart
+//! `DevTools` domain loads and unloads an unpacked extension with no restart
 //! (`Extensions.loadUnpacked` returns the identifier, `Extensions.uninstall`
 //! removes it; both are idempotent for our purposes). Everything is
 //! asynchronous: [`ExtensionHost`] queues requests, the caller sends them
@@ -38,7 +38,7 @@ enum Step {
     Targets,
     Attach { extension: String, target: String },
     Evaluate { extension: String, session: String },
-    Detach,
+    Detach { session: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,7 +113,10 @@ impl ExtensionHost {
                 let (method, params) = toolbar::evaluate_request();
                 (method, params, Some(session.clone()))
             }
-            Step::Detach => unreachable!("detach carries its session in `detach`"),
+            Step::Detach { session } => {
+                let (method, params) = toolbar::detach_request(session);
+                (method, params, None)
+            }
         };
         self.outbox.push(Request {
             id,
@@ -126,15 +129,12 @@ impl ExtensionHost {
     }
 
     fn detach(&mut self, session: &str, now: ui::time::Instant) {
-        self.next = self.next % (i32::MAX as u32 - 1) + 1;
-        let (method, params) = toolbar::detach_request(session);
-        self.outbox.push(Request {
-            id: self.next,
-            method,
-            params,
-            session: None,
-        });
-        self.pending.insert(self.next, (Step::Detach, now));
+        self.request(
+            Step::Detach {
+                session: session.to_owned(),
+            },
+            now,
+        );
     }
 
     /// Make the engine run exactly `wanted`, and stop `unwanted`: extensions
@@ -244,7 +244,7 @@ impl ExtensionHost {
                 self.detach(&session, now);
                 self.next_probe(now);
             }
-            Step::Detach => {}
+            Step::Detach { .. } => {}
         }
         update
     }

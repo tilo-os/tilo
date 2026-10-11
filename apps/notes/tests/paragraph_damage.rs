@@ -139,20 +139,24 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
         "ordinary stable paragraph input must not damage the whole app: {damage:?}"
     );
     if !advance_timestamp {
-        // One typed character repaints the edited line and nothing else: the
-        // caret is inside it.
-        let line = Rect::new(300.0, 270.0, 1200.0, 340.0);
-        assert!(
-            damage.iter().all(|rect| rect.intersect(line) == *rect),
-            "typing damages only the edited line: {damage:?}"
-        );
-        assert!(
-            damage.iter().map(Rect::area).sum::<f64>() <= 900.0 * 24.0,
-            "typing damages one line, not its section: {damage:?}"
-        );
+        assert_only_the_edited_line_is_damaged(&damage);
     }
     assert_sparse_pixels(&before, driver.scene(), &damage, background);
     close_driver(&mut driver);
+}
+
+/// One typed character repaints the edited line and nothing else: the caret
+/// is inside it.
+fn assert_only_the_edited_line_is_damaged(damage: &[Rect]) {
+    let line = Rect::new(300.0, 270.0, 1200.0, 340.0);
+    assert!(
+        damage.iter().all(|rect| rect.intersect(line) == *rect),
+        "typing damages only the edited line: {damage:?}"
+    );
+    assert!(
+        damage.iter().map(Rect::area).sum::<f64>() <= 900.0 * 24.0,
+        "typing damages one line, not its section: {damage:?}"
+    );
 }
 
 fn assert_sparse_pixels(before: &Scene, after: &Scene, damage: &[Rect], background: Color) {

@@ -223,7 +223,7 @@ fn list_in(root: &Path) -> Vec<ExtensionInfo> {
             if let Some(name) = entry.file_name().to_str()
                 && crate::crx::is_extension_id(name)
             {
-                info.id = name.to_owned();
+                name.clone_into(&mut info.id);
             }
             info.path = entry.path();
             Some(info)
@@ -429,7 +429,7 @@ mod tests {
             assert!(install_verified_crx(&package, root.path(), &info.id).is_ok());
 
             // An unsigned or tampered CRX never reaches the disk.
-            let mut tampered = package.clone();
+            let mut tampered = package;
             *tampered.last_mut().unwrap() ^= 1;
             let empty = tempfile::tempdir().unwrap();
             assert!(matches!(

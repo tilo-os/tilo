@@ -76,7 +76,13 @@ mod mwm {
 impl MotifHints {
     pub fn new() -> MotifHints {
         MotifHints {
-            hints: MwmHints { flags: 0, functions: 0, decorations: 0, input_mode: 0, status: 0 },
+            hints: MwmHints {
+                flags: 0,
+                functions: 0,
+                decorations: 0,
+                input_mode: 0,
+                status: 0,
+            },
         }
     }
 

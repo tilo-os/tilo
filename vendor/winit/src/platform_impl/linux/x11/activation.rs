@@ -106,9 +106,11 @@ impl XConnection {
             0,
             xproto::WindowClass::INPUT_OUTPUT,
             screen.root_visual,
-            &xproto::CreateWindowAux::new().override_redirect(1).event_mask(
-                xproto::EventMask::STRUCTURE_NOTIFY | xproto::EventMask::PROPERTY_CHANGE,
-            ),
+            &xproto::CreateWindowAux::new()
+                .override_redirect(1)
+                .event_mask(
+                    xproto::EventMask::STRUCTURE_NOTIFY | xproto::EventMask::PROPERTY_CHANGE,
+                ),
         )?;
 
         // Serialize the messages in 20-byte chunks.
@@ -129,7 +131,12 @@ impl XConnection {
             .try_for_each(|event| {
                 // Send each event in order.
                 self.xcb_connection()
-                    .send_event(false, screen.root, xproto::EventMask::PROPERTY_CHANGE, event)
+                    .send_event(
+                        false,
+                        screen.root,
+                        xproto::EventMask::PROPERTY_CHANGE,
+                        event,
+                    )
                     .map(VoidCookie::ignore_error)
             })?;
 

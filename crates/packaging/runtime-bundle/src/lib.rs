@@ -1210,7 +1210,9 @@ fn hash_payload_files<'a>(
                     loop {
                         let slot = next.fetch_add(1, Ordering::Relaxed);
                         let Some(&index) = order.get(slot) else { break };
-                        let Some((path, _)) = files.get(index) else { break };
+                        let Some((path, _)) = files.get(index) else {
+                            break;
+                        };
                         let digest = digest_file(path, false);
                         let failed = digest.is_err();
                         mine.push((index, digest));
@@ -1236,16 +1238,13 @@ fn hash_payload_files<'a>(
             *slot = Some(digest);
         }
     }
-    if let Some(error) = results
-        .iter_mut()
-        .find_map(|result| match result.take() {
-            Some(Err(error)) => Some(error),
-            other => {
-                *result = other;
-                None
-            }
-        })
-    {
+    if let Some(error) = results.iter_mut().find_map(|result| match result.take() {
+        Some(Err(error)) => Some(error),
+        other => {
+            *result = other;
+            None
+        }
+    }) {
         return Err(error);
     }
     files
@@ -1260,7 +1259,7 @@ fn hash_payload_files<'a>(
         .collect()
 }
 
-/// Most threads one verification hashes with: enough to saturate an NVMe
+/// Most threads one verification hashes with: enough to saturate an `NVMe`
 /// queue and several big cores, few enough not to starve the desktop.
 const MAX_HASH_WORKERS: usize = 8;
 

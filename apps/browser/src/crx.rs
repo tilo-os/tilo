@@ -78,7 +78,7 @@ pub fn is_crx(bytes: &[u8]) -> bool {
 
 /// The identifier Chromium derives from a public key (DER SPKI).
 pub fn extension_id(public_key: &[u8]) -> String {
-    id_from_crx_id(&Sha256::digest(public_key)[..16])
+    id_from_crx_id(Sha256::digest(public_key).split_at(16).0)
 }
 
 fn id_from_crx_id(crx_id: &[u8]) -> String {
@@ -123,8 +123,10 @@ pub fn verify(bytes: &[u8]) -> Result<VerifiedCrx<'_>, CrxError> {
     if header_len > MAX_HEADER_BYTES {
         return Err(CrxError::Header("header is too large"));
     }
-    let header = bytes.get(12..12 + header_len).ok_or(CrxError::Truncated)?;
-    let archive = &bytes[12 + header_len..];
+    let (header, archive) = bytes
+        .get(12..)
+        .and_then(|rest| rest.split_at_checked(header_len))
+        .ok_or(CrxError::Truncated)?;
     let (proofs, signed_data) = parse_header(header)?;
     let crx_id = parse_signed_data(signed_data)?;
 
@@ -138,7 +140,7 @@ pub fn verify(bytes: &[u8]) -> Result<VerifiedCrx<'_>, CrxError> {
     let mut identified = None;
     for proof in &proofs {
         verify_proof(proof, &message)?;
-        if Sha256::digest(proof.public_key)[..16] == *crx_id {
+        if Sha256::digest(proof.public_key).split_at(16).0 == crx_id {
             identified = Some(proof.public_key.to_vec());
         }
     }
@@ -176,10 +178,11 @@ fn der(tag: u8, input: &[u8]) -> Option<(&[u8], &[u8])> {
         if count == 0 || count > 4 || rest.len() < count {
             return None;
         }
-        let length = rest[..count]
+        let (length_bytes, after) = rest.split_at(count);
+        let length = length_bytes
             .iter()
             .fold(0usize, |acc, byte| (acc << 8) | usize::from(*byte));
-        (length, &rest[count..])
+        (length, after)
     };
     (rest.len() >= length).then(|| rest.split_at(length))
 }
@@ -207,7 +210,7 @@ enum Value<'a> {
     Bytes(&'a [u8]),
 }
 
-impl<'a> Fields<'a> {
+impl Fields<'_> {
     fn varint(&mut self) -> Result<u64, CrxError> {
         let mut value = 0u64;
         for shift in (0..70).step_by(7) {
@@ -247,7 +250,7 @@ impl<'a> Iterator for Fields<'a> {
                     if self.0.len() < size {
                         return Err(CrxError::Header("truncated fixed field"));
                     }
-                    self.0 = &self.0[size..];
+                    self.0 = self.0.split_at(size).1;
                     Value::Varint
                 }
                 2 => {
@@ -411,7 +414,7 @@ pub(crate) mod fixtures {
         }
     }
 
-    /// A CRX3 whose crx_id names `identity`, with each of `signers` proving.
+    /// A CRX3 whose `crx_id` names `identity`, with each of `signers` proving.
     pub fn crx(identity: &Signer, signers: &[&Signer], archive: &[u8]) -> Vec<u8> {
         let crx_id = &Sha256::digest(&identity.spki)[..16];
         let signed_data = field(1, crx_id);

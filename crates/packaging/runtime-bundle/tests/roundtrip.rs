@@ -353,16 +353,17 @@ fn a_bundle_of_many_files_is_hashed_whole_and_refuses_a_change_in_any_of_them() 
     )
     .unwrap();
     assert!(manifest.files.len() > 40);
-    let (_, check) = runtime_bundle::verify_bundle_verity_with(
-        out.path(),
-        &VerifyOptions::default(),
-    )
-    .unwrap();
+    let (_, check) =
+        runtime_bundle::verify_bundle_verity_with(out.path(), &VerifyOptions::default()).unwrap();
     assert_eq!(check.hashed, manifest.files.len(), "every file is hashed");
     let total: u64 = manifest.files.iter().map(|f| f.size).sum();
     assert_eq!(check.hashed_bytes, total, "every byte is read");
 
-    for victim in ["lib/libextra00.so", "lib/libextra20.so", "lib/libextra39.so"] {
+    for victim in [
+        "lib/libextra00.so",
+        "lib/libextra20.so",
+        "lib/libextra39.so",
+    ] {
         let path = out.path().join(victim);
         let original = fs::read(&path).unwrap();
         let mut changed = original.clone();

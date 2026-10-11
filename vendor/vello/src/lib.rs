@@ -108,9 +108,9 @@
 
 #[cfg(feature = "wgpu")]
 mod bump_budget;
+mod debug;
 #[cfg(feature = "wgpu")]
 mod image_source;
-mod debug;
 mod recording;
 mod render;
 mod scene;
@@ -179,8 +179,7 @@ use wgpu_profiler::{GpuProfiler, GpuProfilerSettings};
 pub type ExternalImageSource = fn(u64) -> Option<Vec<u8>>;
 
 #[cfg(feature = "wgpu")]
-static EXTERNAL_IMAGE_SOURCE: std::sync::OnceLock<ExternalImageSource> =
-    std::sync::OnceLock::new();
+static EXTERNAL_IMAGE_SOURCE: std::sync::OnceLock<ExternalImageSource> = std::sync::OnceLock::new();
 
 /// Install the process's [`ExternalImageSource`]. The first one installed stays.
 #[cfg(feature = "wgpu")]

@@ -32,7 +32,7 @@ fn named(name: &str) -> Option<Icon> {
         "contacts" => Icon::Users,
         "chat" | "messages" => Icon::MessageSquare,
         "calculator" => Icon::Hash,
-        "sheets" => Icon::Table,
+        "sheets" | "db-client" => Icon::Table,
         "slides" => Icon::PictureInPicture2,
         "pdf-viewer" | "ebook" | "publisher" => Icon::File,
         "typst-editor" | "code-editor" | "snippets" => Icon::Code,
@@ -61,7 +61,6 @@ fn named(name: &str) -> Option<Icon> {
         "containers" => Icon::Box,
         "diffmerge" | "git-client" => Icon::Columns2,
         "hex-editor" => Icon::FileCode,
-        "db-client" => Icon::Table,
         "windows" => Icon::LayoutGrid,
         _ => return None,
     })

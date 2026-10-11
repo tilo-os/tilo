@@ -65,10 +65,6 @@ pub enum PermissionsEffect {
 }
 
 /// Answer `effect` by opening the tool it names.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "every area answers through the effect vocabulary's one signature"
-)]
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: PermissionsEffect,
@@ -77,11 +73,12 @@ pub(crate) fn answer(
     match effect {
         PermissionsEffect::SetSecretsAccess { app, allowed } => {
             let verb = if allowed { "allow" } else { "revoke" };
-            secret_command(cx, vec!["apps".into(), verb.into(), app])
+            Ok(secret_command(cx, vec!["apps".into(), verb.into(), app]))
         }
-        PermissionsEffect::ForgetSecrets { app } => {
-            secret_command(cx, vec!["apps".into(), "forget".into(), app])
-        }
+        PermissionsEffect::ForgetSecrets { app } => Ok(secret_command(
+            cx,
+            vec!["apps".into(), "forget".into(), app],
+        )),
         PermissionsEffect::OpenWorkspacePrivacy => {
             if !app.host().reaches_devices() {
                 return Err("only a window someone uses opens workspace settings".into());
@@ -104,14 +101,14 @@ pub(crate) fn answer(
 /// application and records which applications used it.
 const SECRET_SERVICE: &str = "/usr/bin/tilo-secret-service";
 
-fn secret_command(cx: &mut EffectCx<Settings, SettingsApp>, args: Vec<String>) -> EffectAnswer {
-    Ok(cx.thread(
+fn secret_command(cx: &mut EffectCx<Settings, SettingsApp>, args: Vec<String>) -> Effected {
+    cx.thread(
         move |_| {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
             command_output(SECRET_SERVICE, &args).map(|_| ())
         },
         |_: &mut SettingsApp, done: Result<(), String>, _| done.map(|()| Effected::done()),
-    ))
+    )
 }
 
 /// One application the secret store recorded, as `apps list --json` says it.

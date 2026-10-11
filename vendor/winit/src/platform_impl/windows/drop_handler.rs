@@ -39,14 +39,18 @@ pub struct FileDropHandler {
 impl FileDropHandler {
     pub fn new(window: HWND, send_event: Box<dyn Fn(Event<()>)>) -> FileDropHandler {
         let data = Box::new(FileDropHandlerData {
-            interface: IDropTarget { lpVtbl: &DROP_TARGET_VTBL as *const IDropTargetVtbl },
+            interface: IDropTarget {
+                lpVtbl: &DROP_TARGET_VTBL as *const IDropTargetVtbl,
+            },
             refcount: AtomicUsize::new(1),
             window,
             send_event,
             cursor_effect: DROPEFFECT_NONE,
             hovered_is_valid: false,
         });
-        FileDropHandler { data: Box::into_raw(data) }
+        FileDropHandler {
+            data: Box::into_raw(data),
+        }
     }
 
     // Implement IUnknown
@@ -94,8 +98,11 @@ impl FileDropHandler {
             })
         };
         drop_handler.hovered_is_valid = hdrop.is_some();
-        drop_handler.cursor_effect =
-            if drop_handler.hovered_is_valid { DROPEFFECT_COPY } else { DROPEFFECT_NONE };
+        drop_handler.cursor_effect = if drop_handler.hovered_is_valid {
+            DROPEFFECT_COPY
+        } else {
+            DROPEFFECT_NONE
+        };
         unsafe {
             *pdwEffect = drop_handler.cursor_effect;
         }

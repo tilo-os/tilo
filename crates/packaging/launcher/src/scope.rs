@@ -138,7 +138,10 @@ pub fn request_args(unit: &str, pid: u32, description: &str) -> Vec<String> {
         crate::priority::Tier::Foreground,
         crate::priority::mem_total_bytes(),
     );
-    properties.extend(tier.iter().map(|p| crate::priority::dbus_property_args(p).to_vec()));
+    properties.extend(
+        tier.iter()
+            .map(|p| crate::priority::dbus_property_args(p).to_vec()),
+    );
     let description: String = description.chars().filter(|c| !c.is_control()).collect();
     if !description.trim().is_empty() {
         properties.push(vec!["Description".into(), "s".into(), description]);
@@ -184,7 +187,10 @@ mod tests {
             crate::priority::mem_total_bytes(),
         );
         let mut request = request;
-        let at = request.iter().position(|a| a == "Description").expect("description");
+        let at = request
+            .iter()
+            .position(|a| a == "Description")
+            .expect("description");
         let tier_args: Vec<String> = tier
             .iter()
             .flat_map(crate::priority::dbus_property_args)

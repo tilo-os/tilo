@@ -179,7 +179,11 @@ pub fn app_scope_of(cgroup: &str) -> Option<String> {
         let mut parts = path.split('/');
         parts.find(|part| *part == "app.slice")?;
         let scope = parts.next()?;
-        (scope.starts_with("app-") && scope.ends_with(".scope")).then(|| scope.to_string())
+        (scope.starts_with("app-")
+            && std::path::Path::new(scope)
+                .extension()
+                .is_some_and(|extension| extension == "scope"))
+        .then(|| scope.to_string())
     })
 }
 
@@ -340,7 +344,7 @@ impl<C: UnitControl> FocusBoost<C> {
         // tick, so demoting on it would only flicker the tier.
         let mut decided = false;
         for event in events {
-            self.seq += 1;
+            self.seq = self.seq.saturating_add(1);
             match event {
                 Event::Launch(pid) => self.launches.push(Launch {
                     pid,
@@ -400,7 +404,9 @@ impl<C: UnitControl> FocusBoost<C> {
         self.launches.retain(|launch| {
             control.app_scope_of_pid(launch.pid).as_deref() == Some(scope)
                 || launch.focused_at.as_deref() == Some(scope)
-                || window_seq.get(scope).is_some_and(|opened| *opened > launch.seq)
+                || window_seq
+                    .get(scope)
+                    .is_some_and(|opened| *opened > launch.seq)
         });
     }
 
@@ -408,8 +414,11 @@ impl<C: UnitControl> FocusBoost<C> {
         let control = &self.control;
         // A launch's scope is born in the foreground tier whether or not a
         // window ever follows; learn it so that it can be demoted.
-        self.foreground
-            .extend(self.launches.iter().filter_map(|launch| control.app_scope_of_pid(launch.pid)));
+        self.foreground.extend(
+            self.launches
+                .iter()
+                .filter_map(|launch| control.app_scope_of_pid(launch.pid)),
+        );
         self.launches.retain(|launch| control.pid_alive(launch.pid));
         if self.launches.is_empty() {
             self.window_seq.clear();
@@ -446,8 +455,7 @@ impl FocusWorker {
             .name("tilo-focus-boost".into())
             .spawn(move || {
                 let mut boost = FocusBoost::new(control, mem_total_bytes());
-                loop {
-                    let Ok(first) = rx.recv() else { break };
+                while let Ok(first) = rx.recv() {
                     let mut batch = vec![first];
                     batch.extend(rx.try_iter());
                     boost.handle(batch);
@@ -593,8 +601,13 @@ pub fn request_realtime(priority: i32) {
         sched_priority: priority,
     };
     // SAFETY: plain syscall on a stack struct; pid 0 is the calling thread.
-    let direct =
-        unsafe { libc::sched_setscheduler(0, libc::SCHED_RR | libc::SCHED_RESET_ON_FORK, &param) };
+    let direct = unsafe {
+        libc::sched_setscheduler(
+            0,
+            libc::SCHED_RR | libc::SCHED_RESET_ON_FORK,
+            &raw const param,
+        )
+    };
     if direct == 0 {
         return;
     }
@@ -629,11 +642,16 @@ static RT_DEMOTIONS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32
 /// an unprivileged thread clearing it.
 #[cfg(target_os = "linux")]
 extern "C" fn on_realtime_overrun(_signal: libc::c_int) {
-    const MESSAGE: &[u8] = b"tilo-priority: a realtime thread ran too long without blocking; demoted to SCHED_OTHER\n";
+    const MESSAGE: &[u8] =
+        b"tilo-priority: a realtime thread ran too long without blocking; demoted to SCHED_OTHER\n";
     let param = libc::sched_param { sched_priority: 0 };
     // SAFETY: both are async-signal-safe plain syscalls on valid memory.
     unsafe {
-        libc::sched_setscheduler(0, libc::SCHED_OTHER | libc::SCHED_RESET_ON_FORK, &param);
+        libc::sched_setscheduler(
+            0,
+            libc::SCHED_OTHER | libc::SCHED_RESET_ON_FORK,
+            &raw const param,
+        );
         libc::write(2, MESSAGE.as_ptr().cast(), MESSAGE.len());
     }
     RT_DEMOTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -732,59 +750,57 @@ pub fn request_main_loop_nice(nice: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
-    type Calls = Rc<RefCell<Vec<(String, Vec<Property>)>>>;
+    type Calls = Arc<Mutex<Vec<(String, Vec<Property>)>>>;
 
-    /// A recording stand-in for systemd. `Rc` is not `Send`, so the trait's
-    /// `Send` bound is satisfied by a wrapper that is only used in-thread.
+    /// A recording stand-in for systemd.
     struct Mock {
         scopes: HashMap<u32, String>,
-        dead: Rc<RefCell<Vec<u32>>>,
+        dead: Arc<Mutex<Vec<u32>>>,
         calls: Calls,
         fail: Option<String>,
     }
-    struct Unsend(Mock);
-    // SAFETY: the tests below never move a mock to another thread.
-    unsafe impl Send for Unsend {}
-    impl UnitControl for Unsend {
+    impl UnitControl for Mock {
         fn app_scope_of_pid(&self, pid: u32) -> Option<String> {
-            self.0.scopes.get(&pid).cloned()
+            self.scopes.get(&pid).cloned()
         }
         fn pid_alive(&self, pid: u32) -> bool {
-            !self.0.dead.borrow().contains(&pid)
+            !self.dead.lock().unwrap().contains(&pid)
         }
         fn set_properties(&self, unit: &str, props: &[Property]) -> Result<(), String> {
-            if self.0.fail.as_deref() == Some(unit) {
+            if self.fail.as_deref() == Some(unit) {
                 return Err("Unit not found".into());
             }
-            self.0.calls.borrow_mut().push((unit.into(), props.to_vec()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push((unit.into(), props.to_vec()));
             Ok(())
         }
     }
 
     struct Rig {
-        boost: FocusBoost<Unsend>,
+        boost: FocusBoost<Mock>,
         calls: Calls,
     }
 
     impl Rig {
         fn new(fail: Option<&str>) -> Self {
-            let calls: Calls = Rc::default();
+            let calls: Calls = Arc::default();
             let scopes = [(10, "a"), (20, "b"), (30, "c")]
                 .into_iter()
                 .map(|(p, s)| (p, format!("app-tilo-{s}-{p}.scope")))
                 .collect();
             let mock = Mock {
                 scopes,
-                dead: Rc::default(),
+                dead: Arc::default(),
                 calls: calls.clone(),
                 fail: fail.map(str::to_string),
             };
             Self {
-                boost: FocusBoost::new(Unsend(mock), Some(32 * GIB)),
+                boost: FocusBoost::new(mock, Some(32 * GIB)),
                 calls,
             }
         }
@@ -813,8 +829,10 @@ mod tests {
             ]
         );
         // An eighth of a small machine, not the cap.
-        assert!(tier_properties(Tier::Foreground, Some(4 * GIB))
-            .contains(&("MemoryLow", Value::U64(GIB / 2))));
+        assert!(
+            tier_properties(Tier::Foreground, Some(4 * GIB))
+                .contains(&("MemoryLow", Value::U64(GIB / 2)))
+        );
         let bg = tier_properties(Tier::Background, Some(32 * GIB));
         assert!(bg.contains(&("MemoryLow", Value::U64(0))));
         // Never a hard limit, in either direction.
@@ -828,13 +846,29 @@ mod tests {
         let mut rig = Rig::new(None);
         rig.send(&[Event::Focus(Some(10))]);
         rig.send(&[Event::Focus(Some(10))]);
-        assert_eq!(rig.calls.borrow().len(), 1, "refocusing the same app is free");
+        assert_eq!(
+            rig.calls.lock().unwrap().len(),
+            1,
+            "refocusing the same app is free"
+        );
         rig.send(&[Event::Focus(Some(20))]);
         assert_eq!(rig.boost.foreground(), [scope(20, "b")]);
-        let calls = rig.calls.borrow();
+        let calls = rig.calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 3);
-        assert_eq!(calls[1], (scope(20, "b"), tier_properties(Tier::Foreground, Some(32 * GIB))));
-        assert_eq!(calls[2], (scope(10, "a"), tier_properties(Tier::Background, Some(32 * GIB))));
+        assert_eq!(
+            calls[1],
+            (
+                scope(20, "b"),
+                tier_properties(Tier::Foreground, Some(32 * GIB))
+            )
+        );
+        assert_eq!(
+            calls[2],
+            (
+                scope(10, "a"),
+                tier_properties(Tier::Background, Some(32 * GIB))
+            )
+        );
     }
 
     #[test]
@@ -843,7 +877,7 @@ mod tests {
         rig.send(&[Event::Focus(Some(10))]);
         rig.send(&[Event::Focus(None), Event::Focus(Some(999))]);
         assert_eq!(rig.boost.foreground(), [scope(10, "a")]);
-        assert_eq!(rig.calls.borrow().len(), 1);
+        assert_eq!(rig.calls.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -868,8 +902,11 @@ mod tests {
         rig.send(&[Event::Launch(20), Event::Window(20), Event::Settle]);
         assert_eq!(rig.boost.foreground(), [scope(10, "a")]);
         assert_eq!(
-            rig.calls.borrow().last().unwrap(),
-            &(scope(20, "b"), tier_properties(Tier::Background, Some(32 * GIB)))
+            rig.calls.lock().unwrap().last().unwrap(),
+            &(
+                scope(20, "b"),
+                tier_properties(Tier::Background, Some(32 * GIB))
+            )
         );
     }
 
@@ -942,9 +979,16 @@ mod tests {
             for (step, pid) in pids.into_iter().enumerate() {
                 let choice = (choices / 4_u32.pow(u32::try_from(step).unwrap())) % 4;
                 rig.send(&[Event::Launch(pid), Event::Window(pid)]);
-                let focus = usize::try_from(choice).ok().and_then(|i| i.checked_sub(1)).map(|i| pids[i]);
+                let focus = usize::try_from(choice)
+                    .ok()
+                    .and_then(|i| i.checked_sub(1))
+                    .map(|i| pids[i]);
                 rig.send(&[Event::Focus(focus), Event::Settle]);
-                assert!(rig.boost.foreground().len() <= 1, "{choices} {step}: {:?}", rig.boost.foreground());
+                assert!(
+                    rig.boost.foreground().len() <= 1,
+                    "{choices} {step}: {:?}",
+                    rig.boost.foreground()
+                );
             }
         }
     }
@@ -960,7 +1004,7 @@ mod tests {
         assert_eq!(rig.boost.focused(), None);
         rig.send(&[Event::Focus(Some(20))]);
         assert_eq!(rig.boost.focused(), Some("app-tilo-b-20.scope"));
-        assert_eq!(rig.calls.borrow().len(), 1);
+        assert_eq!(rig.calls.lock().unwrap().len(), 1);
     }
 
     #[cfg(target_os = "linux")]
@@ -968,25 +1012,44 @@ mod tests {
     fn a_realtime_overrun_signal_drops_the_thread_to_the_normal_policy() {
         use std::sync::atomic::Ordering;
         assert!(install_realtime_guard());
-        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
         // SAFETY: plain syscall on a stack struct.
-        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_RTTIME, &raw mut limit) }, 0);
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_RTTIME, &raw mut limit) },
+            0
+        );
         assert!(limit.rlim_cur <= RT_SOFT_LIMIT_US && limit.rlim_cur < limit.rlim_max);
         assert!(limit.rlim_max <= RT_HARD_LIMIT_US);
         std::thread::spawn(|| {
             let before = RT_DEMOTIONS.load(Ordering::Relaxed);
-            let param = libc::sched_param { sched_priority: PRESENT_RT_PRIORITY };
+            let param = libc::sched_param {
+                sched_priority: PRESENT_RT_PRIORITY,
+            };
             // SAFETY: plain syscalls on this thread.
             let realtime = unsafe {
-                libc::sched_setscheduler(0, libc::SCHED_RR | libc::SCHED_RESET_ON_FORK, &param)
+                libc::sched_setscheduler(
+                    0,
+                    libc::SCHED_RR | libc::SCHED_RESET_ON_FORK,
+                    &raw const param,
+                )
             } == 0;
             // The kernel delivers the limit's signal to the offending thread.
             // SAFETY: signalling this very thread.
-            assert_eq!(unsafe { libc::pthread_kill(libc::pthread_self(), libc::SIGXCPU) }, 0);
+            assert_eq!(
+                unsafe { libc::pthread_kill(libc::pthread_self(), libc::SIGXCPU) },
+                0
+            );
             assert_eq!(RT_DEMOTIONS.load(Ordering::Relaxed), before + 1);
             // SAFETY: plain syscall.
             let policy = unsafe { libc::sched_getscheduler(0) } & !libc::SCHED_RESET_ON_FORK;
-            assert_eq!(policy, libc::SCHED_OTHER, "realtime was granted: {realtime}");
+            assert_eq!(
+                policy,
+                libc::SCHED_OTHER,
+                "realtime was granted: {realtime}"
+            );
         })
         .join()
         .expect("the process survives the signal and the thread is demoted");
@@ -994,24 +1057,39 @@ mod tests {
 
     #[test]
     fn scopes_are_found_by_cgroup_path() {
-        let app = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-tilo-a\\x2db-7.scope\n";
-        assert_eq!(app_scope_of(app).as_deref(), Some("app-tilo-a\\x2db-7.scope"));
-        let nested = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-x-1.scope/sub\n";
+        let app =
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-tilo-a\\x2db-7.scope\n";
+        assert_eq!(
+            app_scope_of(app).as_deref(),
+            Some("app-tilo-a\\x2db-7.scope")
+        );
+        let nested =
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-x-1.scope/sub\n";
         assert_eq!(app_scope_of(nested).as_deref(), Some("app-x-1.scope"));
         assert_eq!(
             app_scope_of("0::/user.slice/user-1000.slice/session-2.scope\n"),
             None
         );
         assert_eq!(
-            app_scope_of("0::/user.slice/user-1000.slice/user@1000.service/background.slice/app-x-1.scope\n"),
+            app_scope_of(
+                "0::/user.slice/user-1000.slice/user@1000.service/background.slice/app-x-1.scope\n"
+            ),
             None
         );
         assert_eq!(
             session_scope_of("0::/user.slice/user-1000.slice/session-2.scope\n").as_deref(),
             Some("session-2.scope")
         );
-        assert_eq!(session_scope_of("0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-x-1.scope\n"), None);
-        assert_eq!(parse_mem_total("MemTotal:       32213144 kB\n"), Some(32213144 * 1024));
+        assert_eq!(
+            session_scope_of(
+                "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-x-1.scope\n"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_mem_total("MemTotal:       32213144 kB\n"),
+            Some(32_213_144 * 1024)
+        );
     }
 
     #[test]
@@ -1027,15 +1105,41 @@ mod tests {
             assert!(props.contains(&expected), "{expected:?}");
         }
         assert_eq!(
-            set_properties_args(Bus::System, "session-2.scope", &[("CPUWeight", Value::U64(1000)), ("ManagedOOMPreference", Value::Str("avoid"))]),
+            set_properties_args(
+                Bus::System,
+                "session-2.scope",
+                &[
+                    ("CPUWeight", Value::U64(1000)),
+                    ("ManagedOOMPreference", Value::Str("avoid"))
+                ]
+            ),
             [
-                "--system", "--timeout=2", "call", "org.freedesktop.systemd1",
-                "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
-                "SetUnitProperties", "sba(sv)", "session-2.scope", "true", "2",
-                "CPUWeight", "t", "1000", "ManagedOOMPreference", "s", "avoid",
+                "--system",
+                "--timeout=2",
+                "call",
+                "org.freedesktop.systemd1",
+                "/org/freedesktop/systemd1",
+                "org.freedesktop.systemd1.Manager",
+                "SetUnitProperties",
+                "sba(sv)",
+                "session-2.scope",
+                "true",
+                "2",
+                "CPUWeight",
+                "t",
+                "1000",
+                "ManagedOOMPreference",
+                "s",
+                "avoid",
             ]
         );
-        assert_eq!(rtkit_args(77, 5)[6..], ["MakeThreadRealtime", "tu", "77", "5"]);
-        assert_eq!(rtkit_nice_args(77, -8)[6..], ["MakeThreadHighPriority", "ti", "77", "-8"]);
+        assert_eq!(
+            rtkit_args(77, 5)[6..],
+            ["MakeThreadRealtime", "tu", "77", "5"]
+        );
+        assert_eq!(
+            rtkit_nice_args(77, -8)[6..],
+            ["MakeThreadHighPriority", "ti", "77", "-8"]
+        );
     }
 }
