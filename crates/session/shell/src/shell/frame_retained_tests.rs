@@ -2142,6 +2142,23 @@ fn warm_at_rest(
     (pixels, layers)
 }
 
+/// Pan the strip a step and back, as a desktop has once it panned. Before
+/// its first pan this fixture draws something of each strip at another
+/// place in the pan's first frame than at rest (one transform of each
+/// strip's encoding moves, the still strip's too), whatever the layers
+/// hold; once a pan ended, a pan's first frame draws the strips as the
+/// rest before it.
+#[cfg(target_os = "linux")]
+fn settle_by_panning_once(frame: &mut FrameBuilder) {
+    frame.host_mut().update_active_strip_pan(0.0, true);
+    for travel in [23.7, 0.0] {
+        frame.host_mut().update_active_strip_pan(travel, false);
+        frame.relayout();
+        let _ = frame.paint_with_damage();
+    }
+    frame.host_mut().end_active_strip_pan(Instant::now());
+}
+
 /// Let the desktop rest as long as the session waits before it warms the
 /// layers (a second), then draw until it is at rest: two frames in a row
 /// that change nothing, with nothing animating. A window off screen asks
@@ -2296,6 +2313,7 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
             let mut frame = pan_fixture(desktop, theme.clone());
             frame.set_strip_pan_presenter(false, true);
             let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
+            settle_by_panning_once(&mut frame);
             rest_as_the_session_does(&mut frame);
             let mut layered = gpu_target(size);
             let mut dense = gpu_target(size);
