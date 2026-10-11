@@ -82,6 +82,27 @@ pub struct ParticipantConfig {
     pub room: String,
 }
 
+/// What performing a step came to.
+enum Performed {
+    Done(Result<Option<ActionOutput>, String>),
+    /// The person is asked to confirm it.
+    Asking,
+}
+
+/// A step waiting for the person to confirm it on their own device.
+struct Asking {
+    step: Step,
+    route: DocumentRoute,
+    address: ActionAddress,
+    arguments: serde_json::Map<String, serde_json::Value>,
+    /// The person's answer once it arrives; a host that went away without
+    /// one answers that confirmation is still required.
+    answer: Arc<std::sync::Mutex<Option<WitnessAnswer>>>,
+}
+
+type WitnessAnswer =
+    Result<tilo_actions::remote::Confirmation, tilo_actions::remote::ActionHostError>;
+
 struct Running {
     id: String,
     steps: VecDeque<Step>,
@@ -111,6 +132,8 @@ pub struct AgentParticipant {
     place: Option<(LiveAnchor, LiveAnchor)>,
     presence_at_ms: u64,
     running: Option<Running>,
+    /// The current task's step the person is asked to confirm.
+    asking: Option<Asking>,
     /// The host admitted the room; everything it replayed has arrived.
     ready: bool,
     left: bool,
@@ -175,6 +198,7 @@ impl AgentParticipant {
             place: None,
             presence_at_ms: 0,
             running: None,
+            asking: None,
             ready: false,
             left: false,
             generation: 0,
@@ -372,8 +396,35 @@ impl AgentParticipant {
         };
         if !self.control.is_running(&running.id) {
             self.running = None;
+            self.asking = None;
             return false;
         }
+        let id = running.id.clone();
+        if let Some(asking) = self.asking.take() {
+            let arrived = asking
+                .answer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            let Some(answer) = arrived else {
+                self.asking = Some(asking);
+                return false;
+            };
+            let outcome = match answer {
+                // The person's own device answered for this invocation.
+                Ok(tilo_actions::remote::Confirmation::Witnessed(_)) => self
+                    .invoke_as(&asking.route, &asking.address, &asking.arguments, true)
+                    .map_err(actions::Refusal::into_text),
+                Ok(_) | Err(_) => Err(format!(
+                    "{}: the person did not confirm",
+                    tilo_actions::door::DoorError::ConfirmationRequired.code()
+                )),
+            };
+            return self.conclude(&id, &asking.step, outcome);
+        }
+        let Some(running) = self.running.as_mut() else {
+            return false;
+        };
         let Some(step) = running.steps.pop_front() else {
             let (id, performed) = (running.id.clone(), running.performed);
             self.running = None;
@@ -387,7 +438,6 @@ impl AgentParticipant {
             self.publish_presence();
             return false;
         };
-        let id = running.id.clone();
         if let StepAction::Continue(rest) = &step.action {
             let rest = rest.clone();
             self.plan(id, &rest, true);
@@ -396,7 +446,21 @@ impl AgentParticipant {
         if let Some(ready_at) = self.plan_ready_at.take() {
             tracing::debug!(after = ?ready_at.elapsed(), "agent: a plan's first step starts");
         }
-        let outcome = self.perform(&step);
+        let outcome = match self.perform(&step) {
+            Performed::Done(outcome) => outcome,
+            Performed::Asking => return false,
+        };
+        self.conclude(&id, &step, outcome)
+    }
+
+    /// Record how `step` of task `id` went and carry on: returns whether
+    /// another step that plans nothing is ready.
+    fn conclude(
+        &mut self,
+        id: &str,
+        step: &Step,
+        outcome: Result<Option<ActionOutput>, String>,
+    ) -> bool {
         let (resource, action) = step.log_names();
         let record = AgentStep {
             app: step.app.clone(),
@@ -409,7 +473,7 @@ impl AgentParticipant {
             },
             error: outcome.as_ref().err().cloned(),
         };
-        self.control.record_step(&id, record);
+        self.control.record_step(id, record);
         match outcome {
             Ok(_) => {
                 let Some(running) = self.running.as_mut() else {
@@ -424,7 +488,7 @@ impl AgentParticipant {
             }
             Err(error) => {
                 self.running = None;
-                self.control.finish(&id, Err(error));
+                self.control.finish(id, Err(error));
                 false
             }
         }
@@ -441,18 +505,119 @@ impl AgentParticipant {
         })
     }
 
-    fn perform(&mut self, step: &Step) -> Result<Option<ActionOutput>, String> {
+    fn perform(&mut self, step: &Step) -> Performed {
         let route = match &step.record {
-            Some(record) => self.open(&step.app, Some(record))?,
+            Some(record) => self.open(&step.app, Some(record)),
             None => match self.apps.keys().find(|route| route.app_id == step.app) {
-                Some(route) => route.clone(),
-                None => self.open(&step.app, None)?,
+                Some(route) => Ok(route.clone()),
+                None => self.open(&step.app, None),
             },
         };
-        match &step.action {
-            StepAction::Invoke { address, arguments } => self.invoke(&route, address, arguments),
-            StepAction::Open | StepAction::Continue(_) => Ok(None),
+        let route = match route {
+            Ok(route) => route,
+            Err(error) => return Performed::Done(Err(error)),
+        };
+        let StepAction::Invoke { address, arguments } = &step.action else {
+            return Performed::Done(Ok(None));
+        };
+        match self.invoke_as(&route, address, arguments, false) {
+            Err(actions::Refusal::Door(tilo_actions::door::DoorError::ConfirmationRequired)) => {
+                self.ask(step, route, address, arguments)
+            }
+            outcome => Performed::Done(outcome.map_err(actions::Refusal::into_text)),
         }
+    }
+
+    /// Put `step` to the person through their own host, and show the agent
+    /// waiting on the record for them. Nobody to ask refuses the step.
+    fn ask(
+        &mut self,
+        step: &Step,
+        route: DocumentRoute,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Performed {
+        let refused = || {
+            Performed::Done(Err(format!(
+                "{}: nobody is there to confirm it",
+                tilo_actions::door::DoorError::ConfirmationRequired.code()
+            )))
+        };
+        let Some(witness) = self.control.witness() else {
+            return refused();
+        };
+        let caller = tilo_actions::remote::Caller::delegated_agent(
+            self.identity.delegation.agent_id.clone(),
+            self.identity.cert.user_public_key,
+            self.identity.cert.device_public_key,
+        )
+        .in_room(self.room.clone());
+        // The action as the record offers it: what the person is asked.
+        let offered = self.apps.get(&route).and_then(|app| {
+            app.survey()
+                .into_iter()
+                .find(|descriptor| descriptor.address == *address)
+        });
+        let context = offered.as_ref().map(|descriptor| {
+            tilo_actions::ActionContext::for_resource(
+                &address.resource,
+                &descriptor.resource_kind,
+                &descriptor.resource_label,
+            )
+            .with_app(&route.app_id, &route.app_id)
+            .with_purpose(&descriptor.action_label)
+            .with_facet(tilo_actions::ActionFacet::new(
+                tilo_actions::RISK_FACET,
+                descriptor.contract.risk.name(),
+            ))
+        });
+        let request = tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: actions::record_provider(&route),
+                address: address.clone(),
+            },
+            argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
+            context,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+        };
+        let answer = Arc::new(std::sync::Mutex::new(None));
+        let (arrived, control) = (Arc::clone(&answer), Arc::clone(&self.control));
+        witness.confirm(&caller, &request).then(move |given| {
+            *arrived
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(given.unwrap_or(Err(
+                tilo_actions::remote::ActionHostError::ConfirmationRequired,
+            )));
+            control.wake();
+        });
+        let label = offered.map_or_else(
+            || address.action.clone(),
+            |descriptor| {
+                format!(
+                    "{} · {}",
+                    descriptor.action_label, descriptor.resource_label
+                )
+            },
+        );
+        self.focus = Some(LiveRecord {
+            app: route.app_id.clone(),
+            record: route.record.clone(),
+        });
+        self.control
+            .set_activity(Some(format!("Waiting for confirmation: {label}")));
+        self.publish_presence();
+        self.asking = Some(Asking {
+            step: step.clone(),
+            route,
+            address: address.clone(),
+            arguments: arguments.clone(),
+            answer,
+        });
+        Performed::Asking
     }
 
     /// Commit whatever the open records changed since the last commit.
@@ -625,6 +790,7 @@ impl AgentParticipant {
         }
         self.apps.insert(route.clone(), app);
         self.generation = self.generation.wrapping_add(1);
+        self.show_on_desk(&route);
         self.focus = Some(LiveRecord {
             app: route.app_id.clone(),
             record: route.record.clone(),
@@ -656,17 +822,15 @@ impl AgentParticipant {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Option<ActionOutput>, String> {
-        let may_confirm = self.identity.delegation.scope.may_confirm;
-        self.invoke_as(route, address, arguments, may_confirm)
-            .map_err(|refusal| match refusal {
-                actions::Refusal::Door(error) => format!("{}: {error}", error.code()),
-                actions::Refusal::Agent(reason) => reason,
-            })
+        // The agent never confirms by its own word: an action that asks
+        // first is refused here; a task's step puts it to the person.
+        self.invoke_as(route, address, arguments, false)
+            .map_err(actions::Refusal::into_text)
     }
 
     /// [`Self::invoke`], with `confirmed` standing for whoever confirmed:
-    /// the delegation for the agent's own steps, the caller's explicit
-    /// confirmation for a remote invocation.
+    /// the person, on their own device, for the agent's own steps; a person
+    /// invoking it directly for a remote invocation.
     fn invoke_as(
         &mut self,
         route: &DocumentRoute,
@@ -710,11 +874,13 @@ impl AgentParticipant {
                 .publish(route.clone(), &mutation)
                 .map_err(Refusal::Agent)?;
         }
+        let place = app.presence();
+        self.show_on_desk(route);
         self.focus = Some(LiveRecord {
             app: route.app_id.clone(),
             record: route.record.clone(),
         });
-        self.place = app.presence();
+        self.place = place;
         self.control.set_activity(label);
         self.publish_presence();
         Ok(Some(output))
@@ -747,6 +913,62 @@ impl AgentParticipant {
                 }
                 activity.get(..end).unwrap_or_default().to_owned()
             }),
+        }
+    }
+
+    /// Put the view of the record at `route` on the room's shared desktop
+    /// when no tab shows it, beside the view the agent worked in last, so
+    /// the people see where it acts ([`crate::desk`]).
+    fn show_on_desk(&mut self, route: &DocumentRoute) {
+        let desktop = desktop_route(&self.room);
+        let Some(record) = self.apps.get(route).map(|app| app.record().to_owned()) else {
+            return;
+        };
+        let beside = self
+            .focus
+            .as_ref()
+            .map(|focus| DocumentRoute {
+                app_id: focus.app.clone(),
+                cluster_id: self.room.clone(),
+                record: focus.record.clone(),
+            })
+            .filter(|last| last != route)
+            .and_then(|last| self.apps.get(&last).map(|app| app.record().to_owned()));
+        let title = self
+            .catalogue
+            .get(&route.app_id)
+            .map_or(route.app_id.as_str(), |definition| definition.title);
+        let view = crate::desk::View {
+            app_id: &route.app_id,
+            title,
+            record: &record,
+            beside: beside.as_deref(),
+        };
+        let author = format!("agent:{}", self.identity.delegation.agent_id);
+        let place = |doc: &automerge::AutoCommit| crate::desk::place_view(doc, &author, &view);
+        let change = match self.unopened.desktop() {
+            Some(doc) => place(doc),
+            None => self
+                .apps
+                .get(&desktop)
+                .and_then(|app| app.read(place))
+                .flatten(),
+        };
+        let Some(change) = change else {
+            return;
+        };
+        let mutation = collab_types::DocumentMutation::Incremental(change.clone());
+        if let Err(error) = self.peer.publish(desktop.clone(), &mutation) {
+            tracing::warn!(%error, "agent: its view did not reach the desk");
+            return;
+        }
+        match self.apps.get(&desktop) {
+            Some(app) => {
+                if let Err(error) = app.apply(&mutation) {
+                    tracing::warn!(%error, "agent: the desk it holds did not take its view");
+                }
+            }
+            None => self.unopened.receive(desktop, change),
         }
     }
 

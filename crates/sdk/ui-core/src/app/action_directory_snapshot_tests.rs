@@ -323,10 +323,7 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
             tilo_actions::OperationKind::Effect
         );
         let contract = &root.rows[0].visibility.as_ref().unwrap().contract;
-        assert_eq!(
-            contract.permission,
-            tilo_actions::PermissionRequirement::Write
-        );
+        assert_eq!(contract.kind, tilo_actions::ActionKind::Undoable);
     }
 
     // Case `directory_snapshot_parent_merges_exact_provider_extensions_without_duplicates`.
@@ -359,10 +356,7 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         );
         assert_eq!(rows[0].resource_label, "Published label");
         let contract = &rows[0].visibility.as_ref().unwrap().contract;
-        assert_eq!(
-            contract.permission,
-            tilo_actions::PermissionRequirement::Read
-        );
+        assert_eq!(contract.kind, tilo_actions::ActionKind::Read);
         let revision = app.action_directory_revision();
         assert!(matches!(
             app.resolve_action_directory(&revision, "extended:parent", "tail"),
@@ -494,9 +488,8 @@ fn directory_snapshot_revision_evicts_on_every_semantic_change() {
             "discovery must not close the undo transaction"
         );
         app.actions.permission_generation.set(u64::MAX);
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
         assert_ne!(app.action_directory_revision(), revision);
         assert!(
@@ -611,7 +604,7 @@ impl ExtendedDirectory {
         );
         parent.children.push(inspect("extended:a", "A"));
         if extra {
-            parent.actions[0].contract.permission = tilo_actions::PermissionRequirement::Write;
+            parent.actions[0].contract.kind = tilo_actions::ActionKind::Undoable;
             parent.actions.push(
                 ActionSpec::operation(
                     "tail",

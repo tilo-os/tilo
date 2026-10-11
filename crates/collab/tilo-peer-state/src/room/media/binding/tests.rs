@@ -10,7 +10,10 @@ fn fixture() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(ActorId::from(vec![17; 32]));
     let channels = doc.put_object(ROOT, "channels", ObjType::Map).unwrap();
-    let voice = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
+    let voice = {
+        let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
+        doc.put_object(&entry, "v", ObjType::Map).unwrap()
+    };
     doc.put(&voice, "kind", "voice").unwrap();
     doc.put(&voice, "workspace", "main").unwrap();
     doc.commit();
@@ -35,7 +38,10 @@ fn media_binding_matches_original_archival_wrong_type_conflict_and_route_errors(
     for mode in 0..7 {
         let mut doc = fixture();
         let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-        let voice = doc.get(&channels, "voice").unwrap().unwrap().1;
+        let voice = {
+            let entry = doc.get(&channels, "voice").unwrap().unwrap().1;
+            doc.get(&entry, "v").unwrap().unwrap().1
+        };
         match mode {
             0 => {
                 doc.put(&voice, "archived", true).unwrap();
@@ -101,7 +107,10 @@ fn media_binding_active_exact_route_rejects_replaced_object_but_ignores_ended_un
         )]),
     };
     let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-    let voice = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
+    let voice = {
+        let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
+        doc.put_object(&entry, "v", ObjType::Map).unwrap()
+    };
     doc.put(&voice, "kind", "voice").unwrap();
     doc.put(&voice, "workspace", "main").unwrap();
     doc.commit();
@@ -125,7 +134,10 @@ fn media_binding_rejects_actual_native_orphan_history_before_channel_lookup() {
     let mut doc = fixture();
     let before = doc.get_heads();
     let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-    let voice = doc.get(&channels, "voice").unwrap().unwrap().1;
+    let voice = {
+        let entry = doc.get(&channels, "voice").unwrap().unwrap().1;
+        doc.get(&entry, "v").unwrap().unwrap().1
+    };
     doc.put(&voice, "workspace", "later").unwrap();
     doc.commit();
     let child = doc.get_changes(&before)[0].raw_bytes().to_vec();
@@ -149,7 +161,10 @@ fn media_binding_exact_object_limit_preserves_workspace_error_precedence() {
         let mut doc = AutoCommit::new();
         doc.set_actor(ActorId::from(vec![17; actor_bytes]));
         let channels = doc.put_object(ROOT, "channels", ObjType::Map).unwrap();
-        let voice = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
+        let voice = {
+            let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
+            doc.put_object(&entry, "v", ObjType::Map).unwrap()
+        };
         doc.put(&voice, "kind", "voice").unwrap();
         if wrong_workspace {
             doc.put(&voice, "workspace", true).unwrap();
@@ -191,7 +206,8 @@ fn historical_resolve(
         return Err(MediaPolicyError::Binding);
     }
     let channels = strict_map(candidate, &ROOT, "channels")?;
-    let object = strict_map(candidate, &channels, channel)?;
+    let entry = strict_map(candidate, &channels, channel)?;
+    let object = strict_map(candidate, &entry, "v")?;
     if strict_string(candidate, &object, "kind")? != "voice" {
         return Err(MediaPolicyError::Binding);
     }

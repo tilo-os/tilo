@@ -24,7 +24,7 @@ use vello::kurbo::{Affine, Point};
 
 use tilo_ui::TextRole;
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::{PermissionContext, PermissionScope, Verb};
+use tilo_ui::permissions::{ActionKind, PermissionContext, PermissionScope};
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -39,15 +39,12 @@ const COL_DENIED: f64 = 420.0;
 /// A scope nothing in `denying()` grants, so every control carrying it draws
 /// its denied state.
 fn locked() -> PermissionScope {
-    PermissionScope::app("locked.example", Verb::Write)
+    PermissionScope::app("locked.example", ActionKind::Undoable)
 }
 
 /// A context that grants nothing at all.
 fn denying() -> PermissionContext {
-    PermissionContext::from_capabilities(
-        tilo_ui::permissions::Actor::person(None, "nobody"),
-        vec![],
-    )
+    PermissionContext::stranger("nobody")
 }
 
 fn stamp(

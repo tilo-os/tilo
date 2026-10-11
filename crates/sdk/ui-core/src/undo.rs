@@ -232,7 +232,6 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     author: &crate::permissions::UserId,
 ) -> bool {
     let mut brackets: Vec<Vec<automerge::ChangeHash>> = Vec::new();
-    let mut revert = None;
     let mut visited = std::collections::HashSet::new();
     for w_ptr in std::iter::once(root).chain(node_map.values().copied()) {
         // SAFETY: see the function's safety note; the pointer is live.
@@ -244,9 +243,6 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
         let w = unsafe { &mut *w_ptr };
         if let Some(before) = crate::undo::take_committed_action(w) {
             brackets.push(before);
-            if revert.is_none() {
-                revert = w.take_action_revert();
-            }
         }
     }
     let Some(before) = earliest_bracket(state, brackets) else {
@@ -255,18 +251,7 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     if state.doc.get_heads() == before {
         return false;
     }
-    let (undo_via, redo_via) = match revert {
-        Some((undo, redo)) => (Some(undo), Some(redo)),
-        None => (None, None),
-    };
-    state.record_committed_action_authored_with_revert(
-        before,
-        None,
-        None,
-        Some(author.clone()),
-        undo_via,
-        redo_via,
-    );
+    state.record_committed_action_authored(before, None, None, Some(author.clone()));
     true
 }
 
@@ -913,22 +898,26 @@ pub(crate) fn status_snapshot(
     history: &crate::state::UndoLog,
     author: Option<&crate::permissions::UserId>,
 ) -> UndoStatus {
-    let undo = history.next_undo_as(author);
-    let redo = history.next_redo_as(author);
-    let mut snapshot = doc.clone();
+    let undo = history.next_undo_as(doc, author);
+    let redo = history.next_redo_as(doc, author);
+    // Copied only for an entry that names no step of its own.
+    let mut snapshot = None;
     // An entry an undo or redo already moved names the step it carries, not
     // the undo change that moved it last.
     let mut summary = |entry: &crate::state::UndoEntry, from: &[_], to: &[_]| {
         entry
             .step
             .as_ref()
-            .and_then(tilo_actions::ActionContext::summary)
-            .unwrap_or_else(|| crate::history_source::change_summary(&mut snapshot, from, to))
+            .and_then(crate::history_source::sentence::step_summary)
+            .unwrap_or_else(|| {
+                let snapshot = snapshot.get_or_insert_with(|| doc.clone());
+                crate::history_source::change_summary(snapshot, from, to)
+            })
     };
     UndoStatus {
         can_undo: undo.is_some(),
         can_redo: redo.is_some(),
-        undo_summary: undo.map(|entry| summary(entry, &entry.before, &entry.after)),
-        redo_summary: redo.map(|entry| summary(entry, &entry.after, &entry.before)),
+        undo_summary: undo.map(|entry| summary(&entry, &entry.before, &entry.after)),
+        redo_summary: redo.map(|entry| summary(&entry, &entry.after, &entry.before)),
     }
 }

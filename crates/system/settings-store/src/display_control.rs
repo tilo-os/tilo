@@ -32,13 +32,15 @@ impl DisplayCommand {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct DisplayReply {
     pub observed: DisplayHardwareSnapshot,
     pub transaction: Option<DisplayTransaction>,
     pub committed: DisplayConfig,
     pub identify: Option<crate::display_identify::IdentifyRequest>,
 }
+
+crate::read_through_json_value!(DisplayReply);
 
 fn transaction(
     document: &serde_json::Map<String, serde_json::Value>,

@@ -21,7 +21,6 @@ use crate::view::{DialogChoice, Request, Shared, queue};
 /// Which decision a dialog asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum DialogKey {
-    Delete(ContactId),
     Unsaved(ContactId),
     ImportConflict(uuid::Uuid),
     Duplicate(ContactId, ContactId),
@@ -223,15 +222,12 @@ impl ContactsApp {
         if self.export.is_some() {
             return Some(DialogKey::Export);
         }
-        if let Some(target) = self.pending_switch {
-            return Some(DialogKey::Unsaved(target));
-        }
-        self.confirm_delete.map(DialogKey::Delete)
+        self.pending_switch.map(DialogKey::Unsaved)
     }
 
     fn name_of(&self, id: ContactId) -> String {
         self.store
-            .get(id)
+            .contact(id)
             .map_or_else(|| "this contact".to_owned(), Contact::display_name)
     }
 
@@ -239,17 +235,6 @@ impl ContactsApp {
     pub(super) fn build_dialog(&self, key: &DialogKey) -> Option<Element> {
         let shared = &self.shared;
         let element: Element = match key {
-            DialogKey::Delete(id) => Box::new(
-                dialog(
-                    &format!("Delete {}?", self.name_of(*id)),
-                    body("The contact is removed from your address book."),
-                    shared,
-                    "Delete contact",
-                    "Cancel",
-                )
-                .with_destructive(true)
-                .with_test_id("contacts.delete-dialog"),
-            ),
             DialogKey::Unsaved(_) => {
                 let name = self
                     .form
@@ -370,7 +355,7 @@ impl ContactsApp {
             .store
             .filtered_sorted("", None, self.sort)
             .into_iter()
-            .filter_map(|id| self.store.get(id).cloned())
+            .filter_map(|id| self.store.contact(id).cloned())
             .collect();
         let check_state = export.selected.clone();
         let selected = export.selected.clone();
@@ -440,8 +425,6 @@ impl ContactsApp {
             return;
         };
         match (key, choice) {
-            (DialogKey::Delete(id), DialogChoice::Primary) => self.delete_selected(doc, id),
-            (DialogKey::Delete(_), _) => self.confirm_delete = None,
             (DialogKey::Unsaved(target), DialogChoice::Primary) => {
                 self.pending_switch = None;
                 self.save_edit(doc);
@@ -511,12 +494,12 @@ impl ContactsApp {
     ) -> Result<(), String> {
         let survivor = self
             .store
-            .get(survivor_id)
+            .contact(survivor_id)
             .cloned()
             .ok_or_else(|| "surviving contact no longer exists".to_string())?;
         let source = self
             .store
-            .get(source_id)
+            .contact(source_id)
             .cloned()
             .ok_or_else(|| "source contact no longer exists".to_string())?;
         let candidate = crate::actions::duplicate_candidate(&survivor, &source)
@@ -528,27 +511,21 @@ impl ContactsApp {
         Ok(())
     }
 
+    /// Merge as reviewed. The host asks the person to confirm; the review
+    /// stays up behind its question and closes once the book no longer
+    /// holds the merged-away contact, so a cancelled merge returns to it.
     pub(super) fn merge_duplicate_review(&mut self, state: &mut ui::widget::Edits<'_>) {
-        let Some(review) = self.duplicate_review.take() else {
+        let Some(review) = &self.duplicate_review else {
             return;
         };
-        let action = crate::actions::merge_contacts_action(
-            &review.survivor,
-            &review.source,
-            &review.take_from_source(),
+        let merge = crate::resource::Contacts::merge(
+            review.survivor.id,
+            review.source.id,
+            review.take_from_source(),
         );
-        match self.try_perform_action(state, &action) {
-            Ok(()) => {
-                self.selected = Some(review.survivor.id);
-                self.show_toast(format!(
-                    "Merged {} into {}",
-                    review.source.display_name(),
-                    review.survivor.display_name()
-                ));
-            }
-            Err(error) => self.show_toast(format!("Couldn't merge contacts: {error}")),
+        if let Err(error) = self.try_perform_action(state, merge) {
+            self.show_toast(format!("Couldn't merge contacts: {error}"));
         }
-        self.list_stale = true;
         self.dirty = true;
     }
 }

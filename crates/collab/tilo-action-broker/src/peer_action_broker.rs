@@ -144,6 +144,7 @@ impl CapnpBrokerState {
             network: Some(evidence.clone()),
             policy_time,
             admitted,
+            delegated: None,
         })
     }
 

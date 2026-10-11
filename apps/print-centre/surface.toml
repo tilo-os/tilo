@@ -1,0 +1,44 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "print-centre.defaults"
+label = "Print Centre"
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "print-defaults"
+path = "two_sided"
+stored = "value"
+title = "Print on both sides of the paper"
+type = "bool"
+
+[[resources.fields]]
+owner = "print-defaults"
+path = "scan_resolution"
+stored = "value"
+title = "Scan resolution, one of [`SCAN_RESOLUTIONS`]"
+type = "u16"
+
+[[resources.fields]]
+owner = "print-defaults"
+path = "scan_color"
+stored = "value"
+title = "Scan appearance, one of [`SCAN_COLORS`]"
+type = "Atom"
+
+[[resources.fields]]
+owner = "print-defaults"
+path = "scan_source"
+stored = "value"
+title = "Paper source, one of [`SCAN_SOURCES`]"
+type = "Atom"
+
+[[resources.fields]]
+owner = "print-defaults"
+path = "ocr_language"
+stored = "value"
+title = "Language text is recognized in, one of [`OCR_LANGUAGES`]"
+type = "Atom"

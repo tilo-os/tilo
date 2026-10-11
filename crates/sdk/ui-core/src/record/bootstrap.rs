@@ -38,6 +38,7 @@ fn actor(head: ChangeHash, domain: &[u8], address: &[u8]) -> ActorId {
 /// Construct a missing map or Text with one identity on every cold replica.
 /// Existing state is never replaced; a deleted canonical slot is never
 /// resurrected. Only identified records can use deterministic slots.
+/// `None` inside an action that already wrote: it makes the slot itself.
 pub fn object(doc: &mut AutoCommit, parent: &ObjId, key: &str, kind: ObjType) -> Option<ObjId> {
     if let Some((value, object)) = doc.get(parent, key).ok()? {
         return (value == Value::Object(kind)).then_some(object);
@@ -47,6 +48,9 @@ pub fn object(doc: &mut AutoCommit, parent: &ObjId, key: &str, kind: ObjType) ->
         ObjType::Text => b"text\0",
         _ => return None,
     };
+    if !between_changes(doc) {
+        return None;
+    }
     let head = creation(doc, parent)?;
     let address = format!("{parent}\0{key}");
     let actor = actor(head, domain, address.as_bytes());
@@ -65,9 +69,21 @@ pub fn object(doc: &mut AutoCommit, parent: &ObjId, key: &str, kind: ObjType) ->
         return None;
     }
     let object = made.put_object(parent, key, kind).ok()?;
-    made.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+    made.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Structure.change_message())
+            .with_time(0),
+    );
     doc.merge_incoming(&mut made).ok()?;
     Some(object)
+}
+
+/// Whether a slot can join as a change of its own: reading the change graph
+/// and merging would close an open transaction, splitting the action that
+/// holds it into two changes. Inside one that already wrote, the caller
+/// makes the slot in the action's own change instead.
+fn between_changes(doc: &AutoCommit) -> bool {
+    doc.pending_ops() == 0
 }
 
 /// Seed a newly constructed Text once for this exact initial byte sequence.
@@ -77,6 +93,9 @@ pub fn object(doc: &mut AutoCommit, parent: &ObjId, key: &str, kind: ObjType) ->
 pub fn seed_text(doc: &mut AutoCommit, object: &ObjId, seed: &str) -> Option<()> {
     if seed.is_empty() {
         return Some(());
+    }
+    if !between_changes(doc) {
+        return None;
     }
     let head = creation(doc, object)?;
     let digest = Sha256::digest(seed.as_bytes());
@@ -93,7 +112,11 @@ pub fn seed_text(doc: &mut AutoCommit, object: &ObjId, seed: &str) -> Option<()>
         return None;
     }
     made.splice_text(object, 0, 0, seed).ok()?;
-    made.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+    made.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Structure.change_message())
+            .with_time(0),
+    );
     doc.merge_incoming(&mut made).ok()?;
     Some(())
 }

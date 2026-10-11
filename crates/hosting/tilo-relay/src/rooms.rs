@@ -631,18 +631,18 @@ impl Rooms {
         room: &str,
         device: [u8; 32],
     ) -> Option<collab_types::role::Role> {
-        use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
         let governed = self.room(room).await.ok()?;
         let governed = governed.lock().await;
         let now = SystemTime::now();
-        let (role, caps, person) = governed.peer().permissions(device, now).ok()?;
+        let member = governed.peer().permissions(device, now).ok()?;
         drop(governed);
-        let actor = Actor::person(Some(role), person).in_room(room.to_owned());
-        let resource = ResourceRef::Room(room.to_owned());
-        let seconds = now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
-        (decide_capability(&actor, &resource, Verb::Write, &caps, Some(seconds))
-            == CapDecision::Allow)
-            .then_some(role)
+        member
+            .allows(
+                &member.policy.node(),
+                tilo_action_policy::ActionKind::Undoable,
+                now,
+            )
+            .then_some(member.role)
     }
 
     async fn room(&self, room: &str) -> Result<Arc<AsyncMutex<GovernedRoom>>, CollaborationError> {
@@ -793,8 +793,9 @@ impl Rooms {
             return Ok(());
         }
         let now = SystemTime::now();
-        let (role, ..) = room.peer().permissions(author, now)?;
-        if !crate::room_access::role_grants(role, collab_types::caps::Verb::Write) {
+        let member = room.peer().permissions(author, now)?;
+        let node = collab_types::validator::document_node(&member.policy.room, &app_id, &record_id);
+        if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
             return Err(format!(
                 "{app_id} record written by a device that may not edit"
             ));
@@ -905,6 +906,14 @@ impl Rooms {
         let readers = readers(&access);
         host.access
             .replace(room.workspace_id(), true, access)
+            .await
+            .map_err(|error| error.to_string())?;
+        host.access
+            .replace_standings(
+                room.workspace_id(),
+                true,
+                room.peer().governed_standings(SystemTime::now())?,
+            )
             .await
             .map_err(|error| error.to_string())?;
         while let Some(entry) = room.record.outgoing.get(room.record.published) {

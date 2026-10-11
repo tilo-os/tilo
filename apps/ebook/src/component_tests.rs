@@ -7,7 +7,7 @@ use ui::application::{
 use ui::application_view::InstanceViewStore;
 use ui::bound_dispatch::BoundActionAddress;
 use ui::headless::FrameHarness;
-use ui::permissions::{Actor, PermissionContext, Role, UserId};
+use ui::permissions::{PermissionContext, Role, UserId};
 use ui::portable_storage::PortableStorage;
 use ui::record::{RecordCheckout, RecordStore};
 
@@ -15,7 +15,6 @@ use ui::framework::{LaunchInput, ResourceApp, SeedCx, ViewCx};
 use ui::tilo_resource::Invoke;
 use ui::widget::Element;
 
-use crate::doc::BooksDoc;
 use crate::model::AnnoKind;
 use crate::resource::{Ebook, EbookShell};
 
@@ -66,9 +65,9 @@ impl Fixture {
                 .open(crate::definition().app_id, WORKSPACE)
                 .unwrap(),
             views: Rc::new(InstanceViewStore::portable(cache, WORKSPACE).unwrap()),
-            authority: Rc::new(RefCell::new(PermissionContext::from_capabilities(
-                Actor::person(Some(Role::Owner), "reader"),
-                vec![],
+            authority: Rc::new(RefCell::new(PermissionContext::member(
+                "reader",
+                Role::Owner,
             ))),
         }
     }
@@ -172,10 +171,20 @@ fn invoke(
 /// The library resource, which every edit is published on.
 const LIBRARY: &str = "ebook.library";
 
-/// Where the reader is in `book` (`ebook.book:…`): the resource its view
-/// operations (selecting, going to a passage) are published on.
+/// Where the reader is in `book` (its place in the library): the resource
+/// its view operations (selecting, going to a passage) are published on.
 fn reading(book: &str) -> String {
-    book.replacen("ebook.book:", "ebook.selection:", 1)
+    let id = book.rsplit_once("/book:").map_or(book, |(_, id)| id);
+    format!("ebook.selection:{id}")
+}
+
+/// The shelf rows of the library `doc` holds.
+fn shelf(doc: &ui::tilo_resource::Doc) -> Vec<crate::model::LibraryEntry> {
+    crate::resource::read_doc(doc)
+        .entries
+        .values()
+        .cloned()
+        .collect()
 }
 
 /// The library's actions, where its edits bound to where the reader is
@@ -208,10 +217,7 @@ fn child_labels(driver: &FrameHarness, book: &str) -> Vec<(String, String)> {
 fn a_native_new_library_starts_empty_on_the_shelf() {
     let fixture = Fixture::new("books-native-new");
     let (driver, checkout) = fixture.driver(crate::definition(), 1, LaunchTarget::New);
-    let shelf = fixture
-        .records
-        .read(&checkout.id, BooksDoc::read_library_entries)
-        .unwrap();
+    let shelf = fixture.records.read(&checkout.id, shelf).unwrap();
     assert!(shelf.is_empty(), "apps start empty: {shelf:?}");
     let book = driver.bound_resources(Some(&bundled_book())).unwrap();
     assert!(book.is_empty(), "the native shelf holds no bundled book");
@@ -273,7 +279,7 @@ fn the_browser_library_opens_the_bundled_book_and_annotates_it_through_actions()
     let annotations = fixture
         .records
         .read(&checkout.id, |doc| {
-            BooksDoc::annotations_for(doc, &crate::content::bundled_book_id())
+            crate::resource::read_doc(doc).annotations_for(&crate::content::bundled_book_id())
         })
         .unwrap();
     let highlights: Vec<_> = annotations
@@ -301,11 +307,13 @@ fn the_browser_library_opens_the_bundled_book_and_annotates_it_through_actions()
     // The annotations read back as the open book's resources.
     let children = child_labels(&first, &book);
     assert!(
-        children.contains(&("ebook.note".into(), "The keeper's debt".into())),
+        children.contains(&("ebook.library.note".into(), "The keeper's debt".into())),
         "{children:?}"
     );
     assert!(
-        children.iter().any(|(kind, _)| kind == "ebook.highlight"),
+        children
+            .iter()
+            .any(|(kind, _)| kind == "ebook.library.highlight"),
         "{children:?}"
     );
 
@@ -339,16 +347,13 @@ fn a_handed_epub_opens_into_the_library_and_a_second_mount_shows_it_and_its_high
             host.provide_open_file(file);
         });
 
-    let shelf = fixture
-        .records
-        .read(&checkout.id, BooksDoc::read_library_entries)
-        .unwrap();
+    let shelf = fixture.records.read(&checkout.id, shelf).unwrap();
     let hash = tilo_content::hash_bytes(&bytes);
     let handed = shelf
         .iter()
         .find(|entry| entry.id == book_id)
         .unwrap_or_else(|| panic!("the handed book joins the shelf: {shelf:?}"));
-    assert_eq!(handed.content.as_deref(), Some(hash.as_str()));
+    assert_eq!(handed.content_hash().as_deref(), Some(hash.as_str()));
     assert!(
         content.has(&hash),
         "the bytes live in the host's content store"
@@ -391,7 +396,7 @@ fn a_handed_epub_opens_into_the_library_and_a_second_mount_shows_it_and_its_high
     let highlight = resource[0]
         .children
         .iter()
-        .find(|child| child.kind == "ebook.highlight")
+        .find(|child| child.kind == "ebook.library.highlight")
         .unwrap_or_else(|| panic!("{:?}", child_labels(&laptop, &book)));
     assert!(
         highlight.label.contains("Book 20, paragraph 2"),
@@ -528,7 +533,9 @@ fn book_highlights(
 ) -> Vec<(usize, usize, String)> {
     fixture
         .records
-        .read(&record.id, |doc| BooksDoc::annotations_for(doc, book_id))
+        .read(&record.id, |doc| {
+            crate::resource::read_doc(doc).annotations_for(book_id)
+        })
         .unwrap()
         .into_iter()
         .filter(|a| a.kind == AnnoKind::Highlight)
@@ -576,10 +583,7 @@ fn a_file_books_does_not_open_is_refused_and_one_it_cannot_read_shelves_nothing(
         })
     });
     assert!(told, "the reader says why the book does not open");
-    let shelf = fixture
-        .records
-        .read(&checkout.id, BooksDoc::read_library_entries)
-        .unwrap();
+    let shelf = fixture.records.read(&checkout.id, shelf).unwrap();
     assert!(
         shelf
             .iter()

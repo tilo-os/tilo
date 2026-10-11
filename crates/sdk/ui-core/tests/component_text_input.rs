@@ -9,7 +9,7 @@ use tilo_ui::ui_graph::{UiDocument, UiDocumentExt as _, UiNode, UiTextRole, UiTe
 use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 use tilo_ui::winit::event::{ElementState, Ime, MouseButton, WindowEvent};
 
-use crate::support::application::{ProbeHost, definition, runner_inputs};
+use crate::support::application::{ProbeHost, definition, editor_permissions, runner_inputs};
 
 struct Page(tilo_ui::widget::Element);
 
@@ -262,8 +262,7 @@ fn locus_component_with_scroll(
             .initialize_new_record(|_| Ok(()))
             .map_err(LaunchError::Record)?;
     }
-    let mut resource = resource_actions::resource("locus", "Exact locus", "edit", "Edit");
-    resource.actions[0].contract.permission = tilo_actions::PermissionRequirement::None;
+    let resource = resource_actions::resource("locus", "Exact locus", "edit", "Edit");
     let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
     let mut column = Column::new();
     if let Some(gap) = scroll_gap {
@@ -319,7 +318,9 @@ fn component_publication_locus_respects_scrollable_clipping() {
     ] {
         let host = ProbeHost::new();
         let definition = definition(factory);
-        let context = host.prepare(&definition, 12, &LaunchTarget::New).unwrap();
+        let context = host
+            .prepare_with_permissions(&definition, 12, &LaunchTarget::New, editor_permissions())
+            .unwrap();
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
@@ -372,7 +373,9 @@ fn component_publication_locus_respects_scrollable_clipping() {
 fn component_publication_locus_checks_owner_record_and_lifetime_without_input() {
     let host = ProbeHost::new();
     let definition = definition(CREATE_LOCUS);
-    let context = host.prepare(&definition, 12, &LaunchTarget::New).unwrap();
+    let context = host
+        .prepare_with_permissions(&definition, 12, &LaunchTarget::New, editor_permissions())
+        .unwrap();
     let component = definition
         .instantiate(context, LaunchTarget::New, RestoreInput::None)
         .unwrap();
@@ -475,7 +478,9 @@ fn component_publication_locus_refuses_ambiguous_controls_and_replaced_mounts() 
     ] {
         let host = ProbeHost::new();
         let definition = definition(factory);
-        let context = host.prepare(&definition, 12, &LaunchTarget::New).unwrap();
+        let context = host
+            .prepare_with_permissions(&definition, 12, &LaunchTarget::New, editor_permissions())
+            .unwrap();
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
@@ -498,7 +503,9 @@ fn component_publication_locus_refuses_ambiguous_controls_and_replaced_mounts() 
         );
         frame.close_components();
         let target = crate::support::application::existing(&checkout);
-        let context = host.prepare(&definition, 12, &target).unwrap();
+        let context = host
+            .prepare_with_permissions(&definition, 12, &target, editor_permissions())
+            .unwrap();
         let replacement = definition
             .instantiate(context, target, RestoreInput::None)
             .unwrap();
@@ -609,12 +616,13 @@ fn component_publication_invocation_cannot_cross_same_instance_owners() {
     let mut column = Column::new();
     let mut owners = Vec::new();
     for _ in 0..2 {
-        let mut context = host.prepare(&definition, 12, &LaunchTarget::New).unwrap();
+        let mut context = host
+            .prepare_with_permissions(&definition, 12, &LaunchTarget::New, editor_permissions())
+            .unwrap();
         context.initialize_new_record(|_| Ok(())).unwrap();
         let published = Arc::new(AtomicBool::new(true));
         let calls = Arc::new(AtomicUsize::new(0));
-        let mut resource = resource_actions::resource("locus", "Exact locus", "edit", "Edit");
-        resource.actions[0].contract.permission = tilo_actions::PermissionRequirement::None;
+        let resource = resource_actions::resource("locus", "Exact locus", "edit", "Edit");
         let component = AppComponent::new(
             context,
             Box::new(WithdrawableResource {

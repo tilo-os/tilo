@@ -33,10 +33,9 @@
     )
 )]
 
-pub mod actions;
 pub mod app;
 pub mod backend;
-pub mod doc;
+pub mod locales;
 pub mod model;
 pub mod resource;
 pub mod sample;
@@ -47,5 +46,5 @@ pub use resource::{Firewall, FirewallShell};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<FirewallShell>()
+    ui::built_in_definition!(FirewallShell)
 }

@@ -888,11 +888,18 @@ package = "tilo-agent-participant"
 # the browser peer's relay test support.
 inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/browser/tilo-browser-peer/tests/support/"]
 readers = [
+  "crates/agent/agent-participant/tests/asking_first.rs",
   "crates/agent/agent-participant/tests/room_actions.rs",
   "crates/agent/agent-participant/tests/host_agents.rs",
   "crates/agent/agent-participant/tests/session_coverage.rs",
   "crates/agent/agent-participant/tests/shared_session.rs",
 ]
+
+[[cargo]]
+package = "collab-types"
+# Every app's committed surface must parse as a receiver reads it.
+inputs = ["apps/*/surface.toml"]
+readers = ["crates/collab/collab-types/src/surface.rs"]
 
 [[cargo]]
 package = "format-host"
@@ -943,11 +950,6 @@ readers = [
 
 
 
-
-[[cargo]]
-package = "tilo-relay-protocol"
-inputs = ["crates/hosting/tilo-relay/tests/fixtures/"]
-readers = ["crates/hosting/tilo-relay-protocol/src/config.rs"]
 
 [[cargo]]
 package = "tilo-browser-peer"

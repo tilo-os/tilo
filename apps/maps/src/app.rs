@@ -1,8 +1,8 @@
 //! Root widget for the Maps app.
 //!
 //! `MapsApp` owns the in-memory [`MapModel`] and the static vector [`Basemap`].
-//! [`crate::doc::MapsDoc`] synchronizes its explicitly durable resources; the
-//! rest is per-window presentation state. It
+//! [`crate::workspace::Workspace`] holds its explicitly durable resources;
+//! the rest is per-window presentation state. It
 //! is a single full-window custom widget: the map is full-bleed and the
 //! chrome (the places panel, the control column, the place card) floats on
 //! top as floating panels built from the toolkit's faces. Interaction —
@@ -42,7 +42,6 @@ use ui::widget::{
 };
 use ui::widget::{FloatingSurfaceProvider, Widget};
 
-use crate::actions::MapsAction;
 use crate::canvas::{self, MapPalette, MapView};
 use crate::draw;
 use crate::endpoint_editor::{Endpoint, EndpointEditor, EndpointEffect, EndpointFrame};
@@ -58,6 +57,7 @@ use crate::place_search::PlaceSearch;
 use crate::sample::{self, Basemap};
 use crate::tiles::{GeoBounds, TileFault, TileId, TileLayer, TileStyle};
 use crate::traffic::{Congestion, TrafficData};
+use crate::workspace::{Workspace, workspace};
 use ui::location::{self, LocationChannel, LocationOutcome};
 
 mod interaction;
@@ -190,7 +190,7 @@ pub struct MapsApp {
     /// route): one undo step each, replayed byte-identically on peers — the
     /// same path a Ctrl+K palette dispatch takes. `None` until the surface is
     /// attached; an unattached map only shows its edits.
-    dispatch: Option<ui::framework::Dispatcher<crate::resource::Maps>>,
+    dispatch: Option<ui::framework::Dispatcher<Workspace>>,
     /// This device's offline areas, as stored; `None` when the map has no
     /// host to keep them.
     offline_areas: Option<ui::framework::Setting<crate::offline_areas::OfflineAreas>>,
@@ -962,36 +962,53 @@ impl MapsApp {
     }
 
     // --- actions -----------------------------------------------------------
-    /// Submit one [`MapsAction`] through the framework's door, and show its
-    /// result in this window right away. The door checks, applies, records and
-    /// replicates it; the state it stores is presented back, so an edit the
-    /// door refuses is undone here too.
-    fn perform(&mut self, action: &MapsAction) {
-        action.apply_to_model(&mut self.model);
+    /// Submit one verb or field edit of the shared map through the
+    /// framework's door. Callers show its result in this window right away;
+    /// the door checks, applies, records and replicates it, and the state it
+    /// stores is presented back, so an edit the door refuses is undone here
+    /// too.
+    fn perform(&self, submit: impl ui::framework::Submit<Workspace>) {
         if let Some(dispatch) = &self.dispatch {
-            dispatch.apply(action);
+            dispatch.submit(submit);
         }
     }
 
+    /// Accept `places` into the shared map, and show them here.
+    fn accept_places(&mut self, places: Vec<Place>) {
+        for place in &places {
+            self.model.upsert_place(place.clone());
+        }
+        self.perform(Workspace::ACCEPT_PLACES.with(places));
+    }
+
+    /// Remember the search `query` in the shared history, and show it here.
+    fn commit_search(&mut self, query: &str) {
+        self.model.push_recent(query);
+        self.perform(Workspace::COMMIT_SEARCH.with(query));
+    }
+
+    /// Choose how directions travel, here and for everyone.
+    fn choose_mode(&mut self, mode: TravelMode) {
+        self.model.mode = mode;
+        self.perform(Workspace::paths().mode.set(mode));
+    }
+
+    /// Anchor the transit planner at `value`, here and for everyone.
+    fn set_transit_time(&mut self, value: crate::model::TransitTime) {
+        self.model.transit_time = value;
+        self.perform(Workspace::paths().transit_time.set(value));
+    }
+
     /// Show the places, searches and plans the framework resource holds.
-    pub(crate) fn adopt_resource_state(&mut self, state: &MapModel) {
-        self.model.places.clone_from(&state.places);
-        self.model.recents.clone_from(&state.recents);
-        self.model.route.clone_from(&state.route);
-        self.model.transit.clone_from(&state.transit);
-        self.model.mode = state.mode;
-        self.model.origin = state.origin;
-        self.model.origin_name.clone_from(&state.origin_name);
-        self.model.dest = state.dest;
-        self.model.dest_name.clone_from(&state.dest_name);
-        self.model.transit_time = state.transit_time;
+    pub(crate) fn adopt_resource_state(&mut self, state: &Workspace) {
+        state.show_in(&mut self.model);
     }
 
     /// Hosted as the resource's surface: edits go through `dispatch`, and the
     /// offline areas are this device's `offline_areas`.
     pub(crate) fn attach_framework(
         &mut self,
-        dispatch: ui::framework::Dispatcher<crate::resource::Maps>,
+        dispatch: ui::framework::Dispatcher<Workspace>,
         offline_areas: Option<ui::framework::Setting<crate::offline_areas::OfflineAreas>>,
     ) {
         self.dispatch = Some(dispatch);
@@ -1221,10 +1238,8 @@ impl MapsApp {
                 .geocoded(id)
                 .ok_or("Map place is no longer available")?;
             let query = place.name.clone();
-            self.perform(&MapsAction::UpsertPlaces {
-                places: vec![place],
-            });
-            self.perform(&MapsAction::CommitSearch { query });
+            self.accept_places(vec![place]);
+            self.commit_search(&query);
         }
         self.select_place(id);
         Ok(())
@@ -1256,7 +1271,7 @@ impl MapsApp {
         }
         self.model.results = results;
         if commit {
-            self.perform(&MapsAction::CommitSearch { query: q.clone() });
+            self.commit_search(&q);
         } else {
             self.model.push_recent(&q);
         }
@@ -1397,9 +1412,7 @@ impl MapsApp {
     /// and the `t` key land here.
     fn enter_transit(&mut self) {
         self.set_dest_to_selection();
-        self.perform(&MapsAction::SetTravelMode {
-            mode: TravelMode::Transit,
-        });
+        self.choose_mode(TravelMode::Transit);
         self.recompute_transit();
     }
 
@@ -1480,7 +1493,7 @@ impl MapsApp {
 
     fn set_mode(&mut self, mode: TravelMode) {
         if self.model.mode != mode {
-            self.perform(&MapsAction::SetTravelMode { mode });
+            self.choose_mode(mode);
             self.model.panel = Panel::Directions;
             // Transit plans a public-transport journey; the road modes route.
             if mode.is_transit() {
@@ -1498,10 +1511,17 @@ impl MapsApp {
             // replay.
             let now_saved = self.model.place(&id).is_some_and(|p| p.saved);
             let saved = !now_saved;
-            self.perform(&MapsAction::SetPlaceSaved {
-                id: id.clone(),
-                saved,
-            });
+            if self.model.places.iter().any(|place| place.id == id) {
+                self.perform(Workspace::save(&id, saved));
+            } else if let Some(found) = self.model.results.iter().find(|place| place.id == id) {
+                // A search result becomes a place of the shared map as it is
+                // saved.
+                let place = Place {
+                    saved,
+                    ..found.clone()
+                };
+                self.accept_places(vec![place]);
+            }
             // The selection is local; reflect the explicit action payload in
             // this window even when the selected search result is not yet a
             // durable bookmark row.
@@ -1512,7 +1532,9 @@ impl MapsApp {
     }
 
     fn clear_route(&mut self) {
-        self.perform(&MapsAction::ClearRoute);
+        if self.model.route.take().is_some() {
+            self.perform(Workspace::CLEAR_ROUTE.invoke());
+        }
         self.navigation_placement.reset_attached();
         self.navigation_drag_handle = Rect::ZERO;
         self.navigation_end_rect = Rect::ZERO;
@@ -1885,9 +1907,7 @@ impl MapsApp {
                 NetMsg::Search { query, results } => match results {
                     Ok(found) if !found.is_empty() => {
                         let mut ranked = found;
-                        self.perform(&MapsAction::UpsertPlaces {
-                            places: ranked.clone(),
-                        });
+                        self.accept_places(ranked.clone());
                         self.rank_results(&mut ranked, &query);
                         self.results_anchor = Some(self.search_anchor());
                         // A committed search: list the results in the panel
@@ -1913,9 +1933,7 @@ impl MapsApp {
                     results,
                 } => match results {
                     Ok(found) if !found.is_empty() => {
-                        self.perform(&MapsAction::UpsertPlaces {
-                            places: found.clone(),
-                        });
+                        self.accept_places(found.clone());
                         // Rank the From/To suggestions the same way a search
                         // is ranked — relevance first, nearest-first within a
                         // tier — so a distant namesake never sits above the
@@ -1944,14 +1962,15 @@ impl MapsApp {
                 }
                 NetMsg::Route(r) => match r {
                     Ok(route) => {
-                        self.perform(&MapsAction::SetRoute {
+                        self.model.route = Some(route.clone());
+                        self.perform(Workspace::ACCEPT_ROUTE.with(workspace::AcceptRoute {
                             route,
                             origin: self.model.origin,
                             origin_name: self.model.origin_name.clone(),
                             dest: self.model.dest,
                             dest_name: self.model.dest_name.clone(),
                             mode: self.model.mode,
-                        });
+                        }));
                         self.fit_route();
                         self.model.status = "Route updated".to_string();
                     }
@@ -1961,13 +1980,16 @@ impl MapsApp {
                 },
                 NetMsg::Transit(t) => match t {
                     Ok(j) if !j.is_empty() => {
-                        self.perform(&MapsAction::SetTransit {
+                        self.model.transit.clone_from(&j);
+                        self.model.route = None;
+                        self.model.mode = TravelMode::Transit;
+                        self.perform(Workspace::ACCEPT_TRANSIT.with(workspace::AcceptTransit {
                             transit: j,
                             origin: self.model.origin,
                             origin_name: self.model.origin_name.clone(),
                             dest: self.model.dest,
                             dest_name: self.model.dest_name.clone(),
-                        });
+                        }));
                         // Frame the map on the itinerary now that we have real
                         // leg geometry (the same courtesy the road route gets).
                         self.fit_current();
@@ -2161,7 +2183,10 @@ impl MapsApp {
                 self.search_opener
                     .open(ui::search::SearchRequest::this_app().with_query(q.clone()));
             }
-            Hit::ClearRecents => self.perform(&MapsAction::ClearRecents),
+            Hit::ClearRecents => {
+                self.model.recents.clear();
+                self.perform(Workspace::CLEAR_RECENTS.invoke());
+            }
             Hit::ToggleNav => {
                 self.nav_open = !self.nav_open;
             }
@@ -2176,19 +2201,17 @@ impl MapsApp {
             Hit::TransitTimeMode(m) => {
                 let mut value = self.model.transit_time;
                 value.mode = *m;
-                self.perform(&MapsAction::SetTransitTime { value });
+                self.set_transit_time(value);
                 self.replan_for_time();
             }
             Hit::TransitTimeDelta(d) => {
                 let mut value = self.model.transit_time;
                 value.offset_min = (value.offset_min + *d).clamp(0, 1440);
-                self.perform(&MapsAction::SetTransitTime { value });
+                self.set_transit_time(value);
                 self.replan_for_time();
             }
             Hit::TransitTimeNow => {
-                self.perform(&MapsAction::SetTransitTime {
-                    value: crate::model::TransitTime::default(),
-                });
+                self.set_transit_time(crate::model::TransitTime::default());
                 self.replan_for_time();
             }
             Hit::Journey(i) => {
@@ -5202,7 +5225,7 @@ impl Widget for MapsApp {
 impl ui::widget::controls::ActionControls for MapsApp {
     /// History opened from the control column; search opened from the
     /// painted search buttons and recent searches.
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.history.take().or_else(|| self.search_opener.take())
     }
 }

@@ -28,7 +28,7 @@
 //! admin's.
 //!
 //! Every invocation then passes the same capability gate as the palette
-//! (`CapabilityVisibility`), so the socket reaches exactly what the admin may
+//! (`PolicyVisibility`), so the socket reaches exactly what the admin may
 //! do at the keyboard. While locked, ordinary actions remain refused; the
 //! sole local owner action submits a private credential to the same PAM
 //! verification worker as the lock screen. Acceptance never clears the lock.

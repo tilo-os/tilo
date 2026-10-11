@@ -1,328 +1,166 @@
-//! Calculator as a [`tilo_resource::Resource`]: one action vocabulary, one
-//! publish path. Durable history and graph rows live in the document; mode,
-//! expression and cameras stay local presentation on the surface.
+//! Calculator as a resource: the evaluated history and the saved graphs
+//! are the [`Calculator`] model; mode, expression and cameras stay local
+//! presentation on the surface.
 
 use std::rc::Rc;
 
-use tilo_actions::{ActionParam, ParamType};
-use ui::framework::{Fixture, ResourceApp, ResourceSelection, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_resource::Effect as _;
-use ui::tilo_resource::items::{ItemAction, ItemCollection, item_children, item_resource_id};
-use ui::tilo_resource::{ActionDecl, Doc, Id, Invoke, ModelError, Resource};
+use ui::framework::{
+    Fixture, LiveRow, ResourceApp, ResourceSelection, ResourceSurface, SurfaceCx, ViewCx,
+};
+use ui::i18n::EmbeddedCatalog;
+use ui::tilo_resource::items::item_resource_id;
+use ui::tilo_resource::{self, ActionCx, Collection, Id, Invoke, Model, Refusal, resource};
 use ui::widget::Element;
 
-use crate::actions::{
-    CALCULATOR_ACTION_TYPE, CalculatorAction, CalculatorEffect, GraphKind, add_graph_action,
-    clear_history_ids_action, delete_graph_action, delete_history_entry_action,
-    set_graph_expr_action, toggle_graph_visible_action,
-};
+use crate::actions::{CalculatorEffect, GraphKind, HISTORY_CAP};
 use crate::app::CalculatorApp;
-use crate::doc::{self, FUNCS, HISTORY, SURFACES};
 use crate::model::{CalcModel, HistoryEntry, PlotFn};
 
-/// Durable calculator document state: history and saved graphs, each row
-/// with its stable id.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct CalculatorState {
-    pub history: Vec<(String, HistoryEntry)>,
-    pub funcs: Vec<(String, PlotFn)>,
-    pub surfaces: Vec<(String, PlotFn)>,
+/// Calculator's Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
+
+static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", LOCALES, "calculator-commit-history").with_system_locale();
+
+/// The calculator's record: its evaluated history, newest first, and its
+/// saved graphs, each row with its stable id. A formula merges per
+/// character; showing or hiding a row is written whole.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct Calculator {
+    /// History
+    ///
+    /// Only evaluating a calculation adds to it.
+    #[model(readonly)]
+    pub history: Collection<HistoryEntry>,
+    /// Functions
+    pub funcs: Collection<PlotFn>,
+    /// Surfaces
+    pub surfaces: Collection<PlotFn>,
 }
 
-impl CalculatorState {
-    fn load(doc: &Doc) -> Self {
-        let history = doc::visible_ids(doc, HISTORY)
-            .into_iter()
-            .zip(doc::load_history(doc))
-            .collect();
-        let funcs = doc::visible_ids(doc, FUNCS)
-            .into_iter()
-            .zip(doc::load_graph(doc, FUNCS))
-            .collect();
-        let surfaces = doc::visible_ids(doc, SURFACES)
-            .into_iter()
-            .zip(doc::load_graph(doc, SURFACES))
-            .collect();
-        Self {
-            history,
-            funcs,
-            surfaces,
-        }
-    }
-
+impl Calculator {
     /// The rows of one graph list.
-    pub fn graphs(&self, kind: GraphKind) -> &[(String, PlotFn)] {
+    pub fn graphs(&self, kind: GraphKind) -> &Collection<PlotFn> {
         match kind {
             GraphKind::Curve2d => &self.funcs,
             GraphKind::Surface3d => &self.surfaces,
         }
     }
 
+    fn graphs_mut(&mut self, kind: GraphKind) -> &mut Collection<PlotFn> {
+        match kind {
+            GraphKind::Curve2d => &mut self.funcs,
+            GraphKind::Surface3d => &mut self.surfaces,
+        }
+    }
+
     /// The id of the `index`-th row of one graph list.
-    pub fn graph_id(&self, kind: GraphKind, index: usize) -> Option<&str> {
-        self.graphs(kind).get(index).map(|(id, _)| id.as_str())
+    pub fn graph_id(&self, kind: GraphKind, index: usize) -> Option<&Id> {
+        self.graphs(kind).ids().nth(index)
+    }
+
+    fn add(&mut self, kind: GraphKind, id: Id, formula: &str) {
+        self.graphs_mut(kind).push(
+            id,
+            PlotFn {
+                expr: formula.trim().to_owned(),
+                visible: true,
+            },
+        );
+    }
+
+    fn remove(&mut self, kind: GraphKind, row: &Id) -> Result<(), Refusal> {
+        self.graphs_mut(kind)
+            .remove(row)
+            .map(drop)
+            .ok_or_else(|| Refusal::new("no such formula"))
     }
 }
 
-/// The item parameter of each row action, and the collection it names.
-const ENTRY: &str = "entry";
-const FUNCTION: &str = "function";
-const SURFACE: &str = "surface";
-const FORMULA: &str = "formula";
+#[resource(kind = "calculator.document", label = "Calculator")]
+impl Calculator {
+    /// Add an evaluated calculation to the front of the history, keeping the
+    /// newest [`HISTORY_CAP`].
+    #[action]
+    pub fn commit_history(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Calculation")] expr: String,
+        #[param("Result")] result: String,
+    ) {
+        self.history
+            .insert(0, cx.id(), HistoryEntry { expr, result });
+        let overflow: Vec<Id> = self.history.ids().skip(HISTORY_CAP).cloned().collect();
+        for id in overflow {
+            self.history.remove(&id);
+        }
+    }
+
+    /// Remove one calculation from the history.
+    #[action(destructive, item = history)]
+    pub fn delete_history_entry(&mut self, entry: &Id) -> Result<(), Refusal> {
+        self.history
+            .remove(entry)
+            .map(drop)
+            .ok_or_else(|| Refusal::new("no such calculation"))
+    }
+
+    /// Remove every history entry.
+    #[action(destructive)]
+    pub fn clear_history(&mut self) -> Result<(), Refusal> {
+        if self.history.is_empty() {
+            return Err(Refusal::new("the history is empty"));
+        }
+        self.history = Collection::default();
+        Ok(())
+    }
+
+    /// Add a 2D y = f(x) curve.
+    #[action]
+    pub fn add_function(&mut self, cx: &mut ActionCx, #[param("Formula")] formula: String) {
+        self.add(GraphKind::Curve2d, cx.id(), &formula);
+    }
+
+    /// Add a 3D z = f(x, y) surface.
+    #[action]
+    pub fn add_surface(&mut self, cx: &mut ActionCx, #[param("Formula")] formula: String) {
+        self.add(GraphKind::Surface3d, cx.id(), &formula);
+    }
+
+    /// Remove a function from the graph.
+    #[action(destructive, item = funcs)]
+    pub fn delete_function(&mut self, function: &Id) -> Result<(), Refusal> {
+        self.remove(GraphKind::Curve2d, function)
+    }
+
+    /// Remove a surface from the graph.
+    #[action(destructive, item = surfaces)]
+    pub fn delete_surface(&mut self, surface: &Id) -> Result<(), Refusal> {
+        self.remove(GraphKind::Surface3d, surface)
+    }
+}
 
 /// The published id of a history entry.
-pub fn history_entry_id(id: &str) -> String {
-    item_resource_id::<Calculator>(HISTORY, &Id::from_raw(id))
+pub fn history_entry_id(id: &Id) -> String {
+    item_resource_id::<Calculator>("history", id)
 }
 
 /// The published id of a graph row.
-pub fn graph_row_id(kind: GraphKind, id: &str) -> String {
-    item_resource_id::<Calculator>(kind_collection(kind), &Id::from_raw(id))
+pub fn graph_row_id(kind: GraphKind, id: &Id) -> String {
+    item_resource_id::<Calculator>(kind.field(), id)
 }
 
-fn kind_collection(kind: GraphKind) -> &'static str {
-    match kind {
-        GraphKind::Curve2d => FUNCS,
-        GraphKind::Surface3d => SURFACES,
-    }
-}
-
-/// Document resource — the calculator's record kind.
-pub struct Calculator;
-
-impl Resource for Calculator {
-    const KIND: &'static str = "calculator.document";
-    const LABEL: &'static str = "Calculator";
-    const ACTION_TYPE: &'static str = CALCULATOR_ACTION_TYPE;
-
-    type State = CalculatorState;
-    type Action = CalculatorAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        crate::actions::register(registry);
-    }
-
-    fn read(doc: &Doc) -> Result<CalculatorState, ModelError> {
-        Ok(CalculatorState::load(doc))
-    }
-
-    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
-        doc::initialize(doc).map_err(ModelError::invalid)
-    }
-
-    /// The keystrokes typed into one formula are one undo step, until the
-    /// field settles (a click, Enter, another row).
-    fn coalesces(previous: &CalculatorAction, next: &CalculatorAction) -> bool {
-        matches!(
-            (previous, next),
-            (
-                CalculatorAction::SetGraphExpr { kind: a, id: x, .. },
-                CalculatorAction::SetGraphExpr { kind: b, id: y, .. },
-            ) if a == b && x == y
-        )
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        let mut declarations = vec![
-            ActionDecl::new(
-                "add-function",
-                "Add function",
-                vec![ActionParam::required(
-                    tilo_actions::PROMPTED_PARAM,
-                    ParamType::Text,
-                    "Formula",
-                )],
-                |args, _| {
-                    let expr = args.text(tilo_actions::PROMPTED_PARAM).unwrap_or_default();
-                    Ok(add_graph_action(GraphKind::Curve2d, expr.trim()))
-                },
-            )
-            .describe("Add a 2D y = f(x) curve."),
-            ActionDecl::new(
-                "add-surface",
-                "Add surface",
-                vec![ActionParam::required(
-                    tilo_actions::PROMPTED_PARAM,
-                    ParamType::Text,
-                    "Formula",
-                )],
-                |args, _| {
-                    let expr = args.text(tilo_actions::PROMPTED_PARAM).unwrap_or_default();
-                    Ok(add_graph_action(GraphKind::Surface3d, expr.trim()))
-                },
-            )
-            .describe("Add a 3D z = f(x, y) surface."),
-            ActionDecl::new(
-                "delete-history-entry",
-                "Delete entry",
-                vec![item_param(ENTRY, "Calculation")],
-                |args, _| Ok(delete_history_entry_action(item(args, ENTRY)?)),
-            )
-            .describe("Remove one calculation from the history.")
-            .destructive(),
-        ];
-        for (kind, param, noun) in [
-            (GraphKind::Curve2d, FUNCTION, "function"),
-            (GraphKind::Surface3d, SURFACE, "surface"),
-        ] {
-            declarations.extend(graph_declarations(kind, param, noun));
-        }
-        declarations
-    }
-
-    fn bound_declarations(state: &CalculatorState) -> Vec<ActionDecl<Self>> {
-        if state.history.is_empty() {
-            return Vec::new();
-        }
-        let ids: Vec<String> = state.history.iter().map(|(id, _)| id.clone()).collect();
-        vec![
-            ActionDecl::new("clear-history", "Clear history", Vec::new(), move |_, _| {
-                Ok(clear_history_ids_action(ids.clone()))
-            })
-            .describe("Remove every history entry.")
-            .destructive(),
-        ]
-    }
-
-    /// Every history entry and graph row, with the row actions bound to it;
-    /// a history entry also recalls its calculation.
-    fn children(state: &CalculatorState) -> Vec<tilo_actions::Resource> {
-        let collections = [
-            ItemCollection {
-                field: HISTORY,
-                items: state
-                    .history
-                    .iter()
-                    .map(|(id, entry)| (Id::from_raw(id), history_label(entry)))
-                    .collect(),
-            },
-            ItemCollection {
-                field: FUNCS,
-                items: graph_items(GraphKind::Curve2d, &state.funcs),
-            },
-            ItemCollection {
-                field: SURFACES,
-                items: graph_items(GraphKind::Surface3d, &state.surfaces),
-            },
-        ];
-        let actions = [
-            ("delete-history-entry", ENTRY, HISTORY),
-            ("edit-function", FUNCTION, FUNCS),
-            ("toggle-function", FUNCTION, FUNCS),
-            ("delete-function", FUNCTION, FUNCS),
-            ("edit-surface", SURFACE, SURFACES),
-            ("toggle-surface", SURFACE, SURFACES),
-            ("delete-surface", SURFACE, SURFACES),
-        ]
-        .map(|(action, param, collection)| ItemAction {
-            action,
-            param,
-            collection: Some(collection),
-        });
-        let mut children = item_children::<Self>(&collections, &actions);
-        for child in &mut children {
-            let Some((HISTORY, id)) =
-                ui::tilo_resource::items::item_of_resource::<Self>(child.id.as_str())
-                    .map(|(field, id)| (field, id.as_str().to_owned()))
-            else {
-                continue;
-            };
-            child
-                .actions
-                .insert(0, CalculatorEffect::Open { entry: id }.bound());
-        }
-        children
-    }
-
-    fn search(state: &CalculatorState) -> Vec<ui::tilo_resource::SearchEntry> {
-        let history = state
-            .history
-            .iter()
-            .map(|(id, entry)| ui::tilo_resource::SearchEntry {
-                anchor: Some(history_entry_id(id)),
-                title: history_label(entry),
-                text: entry.expr.clone(),
-                action: None,
-                ..Default::default()
-            });
-        let graphs = [GraphKind::Curve2d, GraphKind::Surface3d]
-            .into_iter()
-            .flat_map(|kind| {
-                state
-                    .graphs(kind)
-                    .iter()
-                    .map(move |(id, plot)| ui::tilo_resource::SearchEntry {
-                        anchor: Some(graph_row_id(kind, id)),
-                        title: graph_label(kind, plot),
-                        text: plot.expr.clone(),
-                        action: None,
-                        ..Default::default()
-                    })
-            });
-        history.chain(graphs).collect()
-    }
-}
-
-fn item_param(name: &'static str, label: &'static str) -> ActionParam {
-    ActionParam::required(name, ParamType::Text, label)
-}
-
-fn item<'a>(args: &'a tilo_actions::ActionArgs, name: &str) -> Result<&'a str, String> {
-    args.text(name)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| format!("`{name}` names no row"))
-}
-
-/// Edit, show/hide and delete one row of a graph list.
-fn graph_declarations(
-    kind: GraphKind,
-    param: &'static str,
-    noun: &'static str,
-) -> [ActionDecl<Calculator>; 3] {
-    let (edit, toggle, delete) = match kind {
-        GraphKind::Curve2d => ("edit-function", "toggle-function", "delete-function"),
-        GraphKind::Surface3d => ("edit-surface", "toggle-surface", "delete-surface"),
-    };
-    let row = match kind {
-        GraphKind::Curve2d => "Function",
-        GraphKind::Surface3d => "Surface",
-    };
-    [
-        ActionDecl::new(
-            edit,
-            "Edit formula",
-            vec![
-                item_param(param, row),
-                ActionParam::required(FORMULA, ParamType::Text, "Formula"),
-            ],
-            move |args, _| {
-                let formula = args.text(FORMULA).unwrap_or_default().trim();
-                Ok(set_graph_expr_action(kind, item(args, param)?, formula))
-            },
-        )
-        .describe(format!("Replace the formula of a {noun}.")),
-        ActionDecl::new(
-            toggle,
-            "Show or hide",
-            vec![item_param(param, row)],
-            move |args, _| Ok(toggle_graph_visible_action(kind, item(args, param)?)),
-        )
-        .describe(format!("Show or hide a {noun} on the graph.")),
-        ActionDecl::new(
-            delete,
-            "Delete formula",
-            vec![item_param(param, row)],
-            move |args, _| Ok(delete_graph_action(kind, item(args, param)?)),
-        )
-        .describe(format!("Remove a {noun} from the graph."))
-        .destructive(),
-    ]
-}
-
-fn graph_items(kind: GraphKind, rows: &[(String, PlotFn)]) -> Vec<(Id, String)> {
-    rows.iter()
-        .map(|(id, plot)| (Id::from_raw(id), graph_label(kind, plot)))
-        .collect()
+/// What a history entry offers beside its verbs: recalling it, merged into
+/// its published item by id.
+pub(crate) fn history_row(id: &Id, entry: &HistoryEntry) -> LiveRow {
+    LiveRow::new(
+        history_entry_id(id),
+        "calculator.document.history",
+        history_label(entry),
+    )
+    .effect(&CalculatorEffect::Open {
+        entry: id.as_str().to_owned(),
+    })
 }
 
 fn history_label(entry: &HistoryEntry) -> String {
@@ -332,17 +170,6 @@ fn history_label(entry: &HistoryEntry) -> String {
         format!("{} = {}", entry.expr.trim(), entry.result.trim())
     };
     clip(&body, 48)
-}
-
-fn graph_label(kind: GraphKind, plot: &PlotFn) -> String {
-    let (lhs, empty) = match kind {
-        GraphKind::Curve2d => ("y", "Empty function"),
-        GraphKind::Surface3d => ("z", "Empty surface"),
-    };
-    if plot.expr.trim().is_empty() {
-        return empty.to_owned();
-    }
-    clip(&format!("{lhs} = {}", plot.expr.trim()), 48)
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -386,6 +213,10 @@ impl ResourceApp for CalculatorShell {
     const ID: &'static str = "so.tilo.calculator";
     const TITLE: &'static str = "Calculator";
     const ICON: Option<&'static str> = Some("calculator");
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
+    }
 
     fn view(cx: &mut ViewCx<Calculator>) -> Element {
         cx.surface(CalculatorApp::new())
@@ -431,55 +262,43 @@ impl ResourceApp for CalculatorShell {
             },
             _ => CalcModel::seeded(),
         };
-        scenario_actions(&model)
-            .iter()
-            .filter_map(|action| Invoke::apply(action).ok())
-            .collect()
+        scenario_edits(&model)
     }
 }
 
 /// A formula longer than its field, which scrolls within it.
 const LONG_FORMULA: &str = "sin(x)+cos(2*x)+sin(3*x)+cos(4*x)+sin(5*x)+cos(6*x)+sin(7*x)";
 
-fn scenario_row_id(kind: GraphKind, index: usize) -> String {
+fn scenario_row_id(kind: GraphKind, index: usize) -> Id {
     let slug = match kind {
         GraphKind::Curve2d => "curve2d",
         GraphKind::Surface3d => "surface3d",
     };
-    format!("{slug}-{}", index + 1)
+    Id::from_raw(format!("{slug}-{}", index + 1))
 }
 
-/// The actions that write `model`'s history and graphs, with fixed ids and
-/// ranks so every capture is the same document.
-fn scenario_actions(model: &CalcModel) -> Vec<CalculatorAction> {
-    let newest = model.history.len();
-    let history =
-        model
-            .history
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| CalculatorAction::CommitHistory {
-                id: format!("history-{}", index + 1),
-                rank: i64::try_from(newest - index).unwrap_or(i64::MAX),
-                expr: entry.expr.clone(),
-                result: entry.result.clone(),
-            });
+/// The calculations and edits that write `model`'s history and graphs,
+/// the graph rows with fixed ids so a collaborator's pointer finds its row.
+fn scenario_edits(model: &CalcModel) -> Vec<Invoke<Calculator>> {
+    // Each calculation lands at the front: commit the oldest first.
+    let history = model.history.iter().rev().map(|entry| {
+        Ok(Calculator::COMMIT_HISTORY.with((entry.expr.clone(), entry.result.clone())))
+    });
     let graphs = [
         (GraphKind::Curve2d, &model.funcs),
         (GraphKind::Surface3d, &model.surfaces),
     ]
     .into_iter()
     .flat_map(|(kind, rows)| {
-        rows.iter()
-            .enumerate()
-            .map(move |(index, row)| CalculatorAction::AddGraph {
-                kind,
-                id: scenario_row_id(kind, index),
-                rank: i64::try_from(index + 1).unwrap_or(i64::MAX),
-                expr: row.expr.clone(),
-            })
+        rows.iter().enumerate().map(move |(at, row)| {
+            let row = PlotFn {
+                visible: true,
+                ..row.clone()
+            };
+            Invoke::edit(&kind.rows().insert_as(&scenario_row_id(kind, at), at, &row))
+        })
     });
-    history.chain(graphs).collect()
+    history.chain(graphs).filter_map(Result::ok).collect()
 }
 
 impl ResourceSurface<Calculator, CalculatorEffect> for CalculatorApp {
@@ -492,7 +311,7 @@ impl ResourceSurface<Calculator, CalculatorEffect> for CalculatorApp {
         Ok(ui::framework::Effected::done())
     }
 
-    fn present(&mut self, state: &Rc<CalculatorState>) {
+    fn present(&mut self, state: &Rc<Calculator>) {
         self.adopt_resource_state(state);
     }
 
@@ -503,79 +322,364 @@ impl ResourceSurface<Calculator, CalculatorEffect> for CalculatorApp {
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
     }
+
+    /// Each history entry's recall, merged into its item.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.history_rows()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::Action;
     use ui::prelude::TestApp;
+    use ui::tilo_resource::{Edit, Replica, Resource as _};
 
-    fn published(doc: &Doc) -> tilo_actions::Resource {
-        let state = Calculator::read(doc).unwrap();
-        ui::tilo_resource::publish::<Calculator>(Calculator::KIND, "Calculator", &state)
+    fn edit(calculator: &mut Replica<Calculator>, edit: &Edit<Calculator>) {
+        calculator.apply(Invoke::edit(edit).unwrap()).unwrap();
     }
 
+    fn history(calculator: &Replica<Calculator>) -> Vec<(String, String)> {
+        calculator
+            .state()
+            .unwrap()
+            .history
+            .values()
+            .map(|entry| (entry.expr.clone(), entry.result.clone()))
+            .collect()
+    }
+
+    fn graph(calculator: &Replica<Calculator>, kind: GraphKind) -> Vec<(String, bool)> {
+        calculator
+            .state()
+            .unwrap()
+            .graphs(kind)
+            .values()
+            .map(|row| (row.expr.clone(), row.visible))
+            .collect()
+    }
+
+    fn commit(calculator: &mut Replica<Calculator>, expr: &str, result: &str) {
+        calculator
+            .apply(Calculator::COMMIT_HISTORY.with((expr.to_owned(), result.to_owned())))
+            .unwrap();
+    }
+
+    fn add(calculator: &mut Replica<Calculator>, kind: GraphKind, formula: &str) {
+        let verb = match kind {
+            GraphKind::Curve2d => Calculator::ADD_FUNCTION.with(formula),
+            GraphKind::Surface3d => Calculator::ADD_SURFACE.with(formula),
+        };
+        calculator.apply(verb).unwrap();
+    }
+
+    fn nth(calculator: &Replica<Calculator>, kind: GraphKind, n: usize) -> Id {
+        calculator
+            .state()
+            .unwrap()
+            .graph_id(kind, n)
+            .cloned()
+            .unwrap()
+    }
+
+    /// Committing pushes to the front and keeps the newest `HISTORY_CAP`;
+    /// deleting removes one entry, clearing empties it, and both ask first.
     #[test]
-    fn history_entries_are_published_items_that_recall_and_delete() {
-        let mut doc = ui::automerge::AutoCommit::new();
-        CalculatorAction::CommitHistory {
-            id: "h1".into(),
-            rank: 1,
-            expr: "1+1".into(),
-            result: "2".into(),
+    fn history_commits_capped_deletes_and_clears() {
+        let mut calculator = Replica::<Calculator>::new();
+        commit(&mut calculator, "2+3", "5");
+        commit(&mut calculator, "sqrt(2)", "1.41");
+        assert_eq!(
+            history(&calculator),
+            [
+                ("sqrt(2)".to_owned(), "1.41".to_owned()),
+                ("2+3".to_owned(), "5".to_owned())
+            ],
+            "newest is at the front"
+        );
+        for i in 0..(HISTORY_CAP + 10) {
+            commit(&mut calculator, &i.to_string(), &i.to_string());
         }
-        .apply(&mut doc)
+        let capped = history(&calculator);
+        assert_eq!(capped.len(), HISTORY_CAP, "history is capped");
+        assert_eq!(capped[0].0, (HISTORY_CAP + 10 - 1).to_string());
+        assert!(
+            calculator
+                .apply(
+                    Invoke::edit(
+                        &Calculator::paths()
+                            .history
+                            .remove(calculator.state().unwrap().history.ids().next().unwrap())
+                    )
+                    .unwrap()
+                )
+                .is_err(),
+            "only the verbs change the history"
+        );
+
+        let mut calculator = Replica::<Calculator>::new();
+        for i in 0..4 {
+            commit(&mut calculator, &format!("e{i}"), &i.to_string());
+        }
+        let e2 = calculator
+            .state()
+            .unwrap()
+            .history
+            .ids()
+            .nth(1)
+            .cloned()
+            .unwrap();
+        let delete = || Calculator::DELETE_HISTORY_ENTRY.with(e2.clone());
+        assert!(calculator.apply(delete()).is_err(), "deleting asks first");
+        calculator.apply_confirmed(delete()).unwrap();
+        assert_eq!(
+            history(&calculator)
+                .into_iter()
+                .map(|(expr, _)| expr)
+                .collect::<Vec<_>>(),
+            ["e3", "e1", "e0"]
+        );
+        assert!(calculator.apply_confirmed(delete()).is_err(), "it is gone");
+        calculator
+            .apply_confirmed(Calculator::CLEAR_HISTORY.with(()))
+            .unwrap();
+        assert!(history(&calculator).is_empty());
+        assert!(
+            calculator
+                .apply_confirmed(Calculator::CLEAR_HISTORY.with(()))
+                .is_err(),
+            "an empty history has nothing to clear"
+        );
+    }
+
+    /// Graph rows are added by verb, edited and shown or hidden at their
+    /// paths, and deleted by verb, the same for curves and surfaces.
+    #[test]
+    fn graph_rows_add_edit_toggle_and_delete() {
+        for kind in [GraphKind::Curve2d, GraphKind::Surface3d] {
+            let mut calculator = Replica::<Calculator>::new();
+            add(&mut calculator, kind, "");
+            add(&mut calculator, kind, "sin(x)");
+            assert_eq!(
+                graph(&calculator, kind),
+                [(String::new(), true), ("sin(x)".to_owned(), true)],
+                "{kind:?}: add"
+            );
+            let (first, second) = (nth(&calculator, kind, 0), nth(&calculator, kind, 1));
+            edit(
+                &mut calculator,
+                &kind.rows().item(&first).expr.replace("x^2"),
+            );
+            edit(
+                &mut calculator,
+                &kind.rows().item(&second).visible.set(false),
+            );
+            assert_eq!(
+                graph(&calculator, kind),
+                [("x^2".to_owned(), true), ("sin(x)".to_owned(), false)],
+                "{kind:?}: edit and toggle"
+            );
+            let delete = match kind {
+                GraphKind::Curve2d => Calculator::DELETE_FUNCTION.with(first),
+                GraphKind::Surface3d => Calculator::DELETE_SURFACE.with(first),
+            };
+            calculator.apply_confirmed(delete).unwrap();
+            assert_eq!(
+                graph(&calculator, kind),
+                [("sin(x)".to_owned(), false)],
+                "{kind:?}: delete"
+            );
+        }
+    }
+
+    /// Two people at once converge: formulas merge per character, a row
+    /// one deleted stays deleted whatever the other typed into it.
+    #[test]
+    fn concurrent_edits_converge_and_delete_wins() {
+        let mut ours = Replica::<Calculator>::new();
+        add(&mut ours, GraphKind::Curve2d, "x");
+        add(&mut ours, GraphKind::Curve2d, "sin(x)");
+        let (first, second) = (
+            nth(&ours, GraphKind::Curve2d, 0),
+            nth(&ours, GraphKind::Curve2d, 1),
+        );
+        let mut theirs = ours.fork();
+        let rows = GraphKind::Curve2d.rows();
+        edit(&mut ours, &rows.item(&second).expr.splice(0, 0, "2*"));
+        edit(&mut theirs, &rows.item(&second).expr.splice(6, 0, "+1"));
+        ours.apply_confirmed(Calculator::DELETE_FUNCTION.with(first.clone()))
+            .unwrap();
+        edit(&mut theirs, &rows.item(&first).expr.replace("x^2"));
+        ours.sync_with(&mut theirs).unwrap();
+        assert_eq!(ours.state().unwrap(), theirs.state().unwrap());
+        assert_eq!(
+            graph(&ours, GraphKind::Curve2d),
+            [("2*sin(x)+1".to_owned(), true)],
+            "the deleted row is not resurrected by a late edit"
+        );
+    }
+
+    /// Each history entry and graph row is a published item with its
+    /// verbs bound; a history entry also recalls its calculation.
+    #[test]
+    fn history_and_graph_rows_are_published_items() {
+        let mut app = TestApp::<CalculatorShell>::new().unwrap();
+        app.call(
+            "commit-history",
+            serde_json::json!({"expr": "1+1", "result": "2"}),
+        )
         .unwrap();
-        let root = published(&doc);
+        app.call("add-surface", serde_json::json!({"formula": "x*y"}))
+            .unwrap();
+        app.settle();
+        let id = app.state().history.ids().next().cloned().unwrap();
+        let resources = app.harness().resources();
+        let root = resources
+            .iter()
+            .find(|resource| resource.kind == Calculator::KIND)
+            .unwrap();
+        for id in ["add-function", "add-surface", "clear-history", "field-edit"] {
+            assert!(root.actions.iter().any(|action| action.id == id), "{id}");
+        }
         let entry = root
             .children
             .iter()
-            .find(|child| child.id.as_str() == history_entry_id("h1"))
+            .find(|child| child.id.as_str() == history_entry_id(&id))
             .expect("the history entry is a published item");
-        let ids: Vec<&str> = entry.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["open", "delete-history-entry"], "{ids:?}");
-        assert_eq!(
-            entry.actions[0].kind,
-            tilo_actions::OperationKind::View,
-            "recall is presentation"
+        let open = entry
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("an entry recalls its calculation");
+        assert_eq!(open.kind, ui::tilo_actions::OperationKind::View);
+        let delete = entry
+            .actions
+            .iter()
+            .find(|action| action.id == "delete-history-entry")
+            .unwrap();
+        assert_ne!(
+            delete.contract.confirmation,
+            ui::tilo_actions::ConfirmationPolicy::None
         );
+        let surface = app.state().surfaces.ids().next().cloned().unwrap();
+        let row = root
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == graph_row_id(GraphKind::Surface3d, &surface))
+            .expect("a surface row");
         assert!(
-            root.actions.iter().any(|a| a.id == "clear-history"),
-            "a non-empty history can be cleared"
+            row.actions
+                .iter()
+                .any(|action| action.id == "delete-surface")
         );
     }
 
+    /// The keystrokes typed into one formula are one undo step; editing
+    /// another row starts another.
     #[test]
     fn formula_keystrokes_coalesce_per_row() {
-        let set = |id: &str, expr: &str| set_graph_expr_action(GraphKind::Curve2d, id, expr);
-        assert!(Calculator::coalesces(&set("a", "x"), &set("a", "x+")));
-        assert!(!Calculator::coalesces(&set("a", "x"), &set("b", "x+")));
+        let rows = GraphKind::Curve2d.rows();
+        let action = |edit: &Edit<Calculator>| Invoke::edit(edit).unwrap().build(0).unwrap();
+        let (a, b) = (Id::from_raw("a"), Id::from_raw("b"));
+        let set = |row: &Id, expr: &str| action(&rows.item(row).expr.replace(expr));
+        assert!(Calculator::coalesces(&set(&a, "x"), &set(&a, "x+")));
+        assert!(!Calculator::coalesces(&set(&a, "x"), &set(&b, "x+")));
         assert!(!Calculator::coalesces(
-            &set("a", "x"),
-            &set_graph_expr_action(GraphKind::Surface3d, "a", "x+")
+            &set(&a, "x"),
+            &action(&GraphKind::Surface3d.rows().item(&a).expr.replace("x+"))
         ));
         assert!(!Calculator::coalesces(
-            &set("a", "x"),
-            &toggle_graph_visible_action(GraphKind::Curve2d, "a")
+            &set(&a, "x"),
+            &action(&rows.item(&a).visible.set(false))
         ));
     }
 
-    /// Every screenshot is the framework's capture: the scenario's actions
+    /// What an agent does in the calculator is history the person reads as
+    /// the app's own sentences.
+    #[test]
+    fn history_entries_render_as_the_apps_sentences() {
+        use ui::tilo_actions::{ActionInvoker, ActorKind};
+
+        let mut app = TestApp::<CalculatorShell>::new().unwrap();
+        let agent = ActionInvoker::actor("agent:claude")
+            .with_kind(ActorKind::Agent)
+            .acting_for("ada");
+        app.call_by(
+            agent.clone(),
+            Calculator::KIND,
+            "commit-history",
+            serde_json::json!({"expr": "6*7", "result": "42"}),
+        )
+        .unwrap();
+        app.call_by(
+            agent.clone(),
+            Calculator::KIND,
+            "add-function",
+            serde_json::json!({"formula": "sin(x)"}),
+        )
+        .unwrap();
+        let row = app.state().funcs.ids().next().cloned().unwrap();
+        for edit in [
+            GraphKind::Curve2d.rows().item(&row).visible.set(false),
+            GraphKind::Curve2d.rows().item(&row).expr.replace("cos(x)"),
+        ] {
+            app.call_by(
+                agent.clone(),
+                Calculator::KIND,
+                "field-edit",
+                serde_json::json!({ "edit": edit }),
+            )
+            .unwrap();
+        }
+        let catalogue = tilo_history::Catalogue::new("en-US", &[LOCALES[0].1]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let entries: Vec<_> = app
+            .versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .filter(|entry| {
+                entry
+                    .invoker
+                    .as_ref()
+                    .is_some_and(|invoker| invoker.actor == "agent:claude")
+            })
+            .collect();
+        let sentences: Vec<String> = entries.iter().map(|entry| reader.sentence(entry)).collect();
+        assert_eq!(
+            sentences,
+            [
+                "Calculated 6*7 = 42",
+                "Added the function y = sin(x)",
+                "Hid sin(x)",
+                "Changed the formula sin(x)",
+            ]
+        );
+        let invoker = entries[0].invoker.as_ref().unwrap();
+        assert_eq!(
+            (invoker.kind, invoker.on_behalf_of.as_deref()),
+            (ActorKind::Agent, Some("ada"))
+        );
+    }
+
+    /// Every screenshot is the framework's capture: the scenario's edits
     /// write the document.
     #[test]
-    fn captures_stage_through_actions() {
+    fn captures_stage_through_edits() {
         let mut graph = TestApp::<CalculatorShell>::capture(None).unwrap();
         let state = graph.state();
         assert_eq!(state.history.len(), crate::model::DEMO_HISTORY.len());
-        assert_eq!(state.history[0].1.expr, "12*(4+3)", "newest first");
+        assert_eq!(
+            state.history.values().next().unwrap().expr,
+            "12*(4+3)",
+            "newest first"
+        );
         assert_eq!(state.funcs.len(), crate::model::DEMO_CURVES.len());
         assert_eq!(state.surfaces.len(), crate::model::DEMO_SURFACES.len());
         let frame = graph.harness().inspection_json().unwrap();
         assert!(frame.contains("Functions"), "{frame}");
 
         let empty = TestApp::<CalculatorShell>::capture(Some("empty")).unwrap();
-        assert_eq!(empty.state(), CalculatorState::default());
+        assert_eq!(empty.state(), Calculator::default());
     }
 }
 

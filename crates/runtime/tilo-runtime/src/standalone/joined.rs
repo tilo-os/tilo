@@ -172,17 +172,17 @@ impl Joined {
             if view.continuity() != continuity || view.device() != &cert {
                 return Err("room identity changed while selecting the audience".into());
             }
-            let (_, _, principal) = view
+            let principal = view
                 .peer()
-                .permissions(cert.device_public_key, SystemTime::now())?;
+                .permissions(cert.device_public_key, SystemTime::now())?
+                .person;
             let document = view.peer().admitted_room().ok_or("no admitted room")?;
-            let (name, owner, capabilities) =
-                tilo_peer_state::room::extract_governed_fields(document);
+            let (name, policy) = tilo_peer_state::room::extract_governed_fields(document);
             let mut workspace =
                 Workspace::new(WorkspaceId(view.workspace()), name.unwrap_or_default());
-            workspace.room = room;
-            workspace.owner = owner;
-            workspace.capabilities = capabilities;
+            workspace.set_room(room);
+            workspace.policy = policy;
+            workspace.sandbox = view.peer().governed_sandbox()?;
             Ok((workspace, principal))
         })
     }
@@ -380,7 +380,9 @@ impl Joined {
         else {
             return;
         };
-        let Ok(role) = input.role() else { return };
+        let Ok(author_standing) = input.standing() else {
+            return;
+        };
         if cluster_id != &input.room().to_string() {
             return;
         }
@@ -392,7 +394,7 @@ impl Joined {
                 app_id: app_id.clone(),
                 cluster_id: cluster_id.clone(),
                 record_id: record_id.clone(),
-                role,
+                author: author_standing,
                 replayed: input.retained(),
                 envelope: (**envelope).clone(),
             },

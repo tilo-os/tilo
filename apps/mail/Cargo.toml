@@ -90,6 +90,7 @@ default = ["live"]
 live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
 
 [dev-dependencies]
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # Test-only self-signed certificates for local IMAP/SMTP TLS servers.
 rcgen.workspace = true

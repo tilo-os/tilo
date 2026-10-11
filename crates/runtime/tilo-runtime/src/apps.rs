@@ -165,6 +165,28 @@ impl Apps {
             )
     }
 
+    /// Run the package `app` with the surface its signed package ships, so
+    /// the records of the person's it declares there are kept in their room
+    /// as a built-in app's are. A package whose surface no longer matches its
+    /// signature declares none.
+    fn run_with_signed_surface(&self, app: &InstalledApp) {
+        let package = self
+            .catalog
+            .as_ref()
+            .and_then(|catalog| catalog.list().ok())
+            .and_then(|packages| {
+                packages
+                    .into_iter()
+                    .find(|package| package.manifest_path == app.manifest_path)
+            });
+        if let Some(surface) = package
+            .as_ref()
+            .and_then(package_store::integrity::signed_surface)
+        {
+            tilo_action_broker::register_package_surface(&app.package_id, &surface);
+        }
+    }
+
     /// The installed GUI app `app_id`.
     fn launchable(&self, app_id: &str) -> Result<InstalledApp, String> {
         let app = self
@@ -191,6 +213,7 @@ impl Apps {
             return Err(format!("workspace {room} is not served by this runtime"));
         }
         let app = self.launchable(app_id)?;
+        self.run_with_signed_surface(&app);
         let sockets = Sockets {
             collab: self.root.join(COLLAB_SOCKET),
             identity: self.root.join(IDENTITY_SOCKET),
@@ -236,7 +259,15 @@ impl LauncherServices for Apps {
             .collect()
     }
 
-    fn launch(&self, app: &str, workspace: &tilo_desktop_model::Workspace) -> Result<(), String> {
+    /// A standalone runtime draws no desk, so there is no place to open at;
+    /// it opens the app's default record.
+    fn launch(
+        &self,
+        app: &str,
+        workspace: &tilo_desktop_model::Workspace,
+        _: Option<&str>,
+        _: &tilo_action_broker::services::LaunchPlace,
+    ) -> Result<(), String> {
         let launch = self.start(app, &workspace.room.to_string())?;
         let launched = Arc::clone(&self.launched);
         std::thread::Builder::new()

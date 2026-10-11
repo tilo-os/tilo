@@ -11,12 +11,10 @@ pub use admit::{
     admit_room_changes,
 };
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
-use collab_types::Role;
-use collab_types::caps::CapOverride;
 use std::collections::BTreeMap;
 /// Every governed value a room document records, exactly as stored.
 ///
-/// Capability and identity rows are the raw blobs the document holds, not their
+/// Member, grant and identity rows are the raw blobs the document holds, not their
 /// decoded form: equality is the byte-exact comparison
 /// [`governance_unchanged`] needs, so a non-governor cannot slip a changed but
 /// undecodable (or re-encoded) row past it. Decoded views of the same document
@@ -25,8 +23,12 @@ use std::collections::BTreeMap;
 pub struct RoomGovernance {
     /// The structural owner's person key (`owner`).
     pub owner: Option<String>,
-    /// `capabilities.*`: JSON `CapOverride` blobs keyed by capability id.
-    pub capabilities: BTreeMap<String, Vec<u8>>,
+    /// `members.*`: JSON role blobs keyed by person.
+    pub members: BTreeMap<String, Vec<u8>>,
+    /// `grants.*`: JSON `Grant` blobs keyed by grant id.
+    pub grants: BTreeMap<String, Vec<u8>>,
+    /// `sandbox.*`: JSON sandbox `CapOverride` blobs keyed by id.
+    pub sandbox: BTreeMap<String, Vec<u8>>,
     /// `peers.*`: self-asserted display names keyed by device key.
     pub peers: BTreeMap<String, String>,
     /// `peer_identities_v1.*`: JSON `GovernedIdentity` blobs keyed by device key.
@@ -42,7 +44,9 @@ impl RoomGovernance {
     fn absent() -> Self {
         Self {
             owner: None,
-            capabilities: BTreeMap::new(),
+            members: BTreeMap::new(),
+            grants: BTreeMap::new(),
+            sandbox: BTreeMap::new(),
             peers: BTreeMap::new(),
             identities: BTreeMap::new(),
             coverage: None,
@@ -63,10 +67,14 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
     let result = read::visit_governance_entries(&read::LegacyRead(doc), |entry| {
         match entry {
             read::GovernanceEntry::Owner(value) => governance.owner = Some(value.to_owned()),
-            read::GovernanceEntry::Capability { key, bytes } => {
-                governance
-                    .capabilities
-                    .insert(key.to_owned(), bytes.to_vec());
+            read::GovernanceEntry::Grant { key, bytes } => {
+                governance.grants.insert(key.to_owned(), bytes.to_vec());
+            }
+            read::GovernanceEntry::Member { key, bytes } => {
+                governance.members.insert(key.to_owned(), bytes.to_vec());
+            }
+            read::GovernanceEntry::Sandbox { key, bytes } => {
+                governance.sandbox.insert(key.to_owned(), bytes.to_vec());
             }
             read::GovernanceEntry::Peer { key, name } => {
                 governance.peers.insert(key.to_owned(), name.to_owned());
@@ -117,39 +125,25 @@ pub(crate) fn invitation_receipts(
     }
     Ok(receipts)
 }
+/// The room's name and authority as `candidate` records them, for the room
+/// it declares. Rows that do not decode are skipped.
 pub fn extract_governed_fields(
     candidate: &AutoCommit,
-) -> (Option<String>, Option<String>, Vec<CapOverride>) {
-    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+) -> (Option<String>, tilo_action_policy::RoomPolicy) {
     #[cfg(test)]
     POLICY_READS.with(|count| count.set(count.get().saturating_add(1)));
-    let name = match candidate.get(&ROOT, "name").ok().flatten() {
+    let text = |key: &str| match candidate.get(&ROOT, key).ok().flatten() {
         Some((Value::Scalar(s), _)) => match s.as_ref() {
             ScalarValue::Str(v) => Some(v.to_string()),
             _ => None,
         },
         _ => None,
     };
-    let owner = match candidate.get(&ROOT, "owner").ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Str(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
-    };
-    let mut caps: Vec<CapOverride> = Vec::new();
-    if let Some((_, caps_id)) = candidate.get(&ROOT, "capabilities").ok().flatten() {
-        let keys: Vec<String> = candidate.keys(&caps_id).collect();
-        for key in keys {
-            if let Some((Value::Scalar(s), _)) = candidate.get(&caps_id, &key).ok().flatten()
-                && let ScalarValue::Bytes(blob) = s.as_ref()
-                && let Ok(cap) = serde_json::from_slice::<CapOverride>(blob)
-            {
-                caps.push(cap);
-            }
-        }
-    }
-    (name, owner, caps)
+    let room = text("room").unwrap_or_default();
+    (
+        text("name"),
+        tilo_desktop_model::projection::room_policy_of(candidate, &room),
+    )
 }
 /// Parse the complete batch and apply to a disposable candidate, never the owner.
 /// Changes with absent dependencies remain queued, as with `apply_changes`.
@@ -202,10 +196,6 @@ pub fn governance_unchanged(before: Option<&AutoCommit>, after: &AutoCommit) -> 
             == crate::durability::governed_bytes(after)
         && crate::document_import::governed_bytes(before)
             == crate::document_import::governed_bytes(Some(after))
-}
-/// Exact native membership capability projection; a certificate alone has no role.
-pub fn role_of(owner: Option<&str>, caps: &[CapOverride], user: &str, now: u64) -> Option<Role> {
-    tilo_desktop_model::Workspace::role_for_membership_at(owner, caps, user, now)
 }
 /// The governance key holding effect receipts: `{invocation id → JSON receipt}`.
 const EFFECT_RECEIPTS: &str = "effect_receipts_v1";

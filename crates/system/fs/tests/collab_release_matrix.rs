@@ -179,7 +179,7 @@ fn spawn_fs(
 ) -> MountProcess {
     std::fs::create_dir_all(cache).unwrap();
     std::fs::set_permissions(cache, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
-    let authority_sockets = cache.join("authority-sockets");
+    let authority_sockets = authority_sockets(cache);
     std::fs::create_dir_all(&authority_sockets).unwrap();
     let mut command = Command::new(binary);
     command
@@ -210,6 +210,17 @@ fn spawn_fs(
         logs,
         mount: mount.into(),
     }
+}
+
+/// The authority socket directory of the daemon caching in `cache`: a short
+/// sibling, because the socket path (this directory plus
+/// `workspace-authority-<uuid>.sock`) must stay under `SUN_LEN` wherever the
+/// temporary directory is.
+fn authority_sockets(cache: &Path) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    cache.hash(&mut hasher);
+    cache.with_file_name(format!("s{:04x}", hasher.finish() & 0xffff))
 }
 
 fn export_home_peer_bundle(
@@ -248,7 +259,7 @@ fn publish_authority(binary: &Path, identity: &Path, workspace_cache: &Path, acl
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
         .env(
             "TILO_AUTHORITY_SOCKET_DIR",
-            workspace_cache.join("authority-sockets"),
+            authority_sockets(workspace_cache),
         )
         .args(["publish-authority", "--acl", acl.to_str().unwrap()])
         .status()
@@ -667,22 +678,26 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
             collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
             collab_types::Scope::FsPath("/".into()),
             collab_types::Effect::Grant,
-            collab_types::Verb::Read,
+            collab_types::caps::Access::Read,
         ),
         collab_types::CapOverride::new(
             collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
             collab_types::Scope::FsPath("/".into()),
             collab_types::Effect::Grant,
-            collab_types::Verb::Write,
+            collab_types::caps::Access::Write,
         ),
         collab_types::CapOverride::new(
             collab_types::Subject::User(collab_types::Ed25519PublicKey(reader)),
             collab_types::Scope::FsPath("/".into()),
             collab_types::Effect::Grant,
-            collab_types::Verb::Read,
+            collab_types::caps::Access::Read,
         ),
     ];
-    std::fs::write(&acl, serde_json::to_vec(&caps).unwrap()).unwrap();
+    std::fs::write(
+        &acl,
+        serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
+    )
+    .unwrap();
 
     let host_mount = temp.path().join("host-mount");
     let peer_mount = temp.path().join("peer-mount");
@@ -950,28 +965,32 @@ macro_rules! run_nas_replica_lifecycle_scenario {
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Write,
+                collab_types::caps::Access::Write,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(reader)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(offline_reader)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
         ];
-        std::fs::write(&acl, serde_json::to_vec(&caps).unwrap()).unwrap();
+        std::fs::write(
+            &acl,
+            serde_json::to_vec(&collab_types::FsAuthority::from(caps.clone())).unwrap(),
+        )
+        .unwrap();
         let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
         let owner_mount = temp.path().join("owner-mount");
         std::fs::create_dir(&owner_mount).unwrap();
@@ -1119,22 +1138,26 @@ macro_rules! run_nas_replica_lifecycle_scenario {
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Write,
+                collab_types::caps::Access::Write,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(offline_reader)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
         ];
-        std::fs::write(&revoked_acl, serde_json::to_vec(&revoked_caps).unwrap()).unwrap();
+        std::fs::write(
+            &revoked_acl,
+            serde_json::to_vec(&collab_types::FsAuthority::from(revoked_caps.clone())).unwrap(),
+        )
+        .unwrap();
         publish_authority(binary, &owner_identity, &owner_cache, &revoked_acl);
         let replica_authority = replica_cache
             .join(original.workspace_id().to_string())

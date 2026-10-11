@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 use collab_types::Ed25519PublicKey;
 
 use super::channel_encryption::ChannelDirectory;
-use super::state::{CapRole, RoomAuthority, RoomId, WorkspaceTree, WorkspaceTreeHandle};
+use super::state::{RoomAuthority, RoomId, WorkspaceTree, WorkspaceTreeHandle};
 
 /// The devices of this machine's own identity in a room, as its fleet
 /// certifies them: `(certificate, revoked)`.
@@ -181,7 +181,7 @@ pub fn next_policy_change(
         .workspaces
         .iter()
         .find(|workspace| workspace.room == room)?
-        .next_capability_expiry_after(now);
+        .next_grant_expiry_after(now);
     let admitted = tree
         .room_peer_identities
         .get(&room)
@@ -211,11 +211,34 @@ pub fn allowed_devices(
     else {
         return BTreeSet::new();
     };
-    let readers: BTreeSet<String> = workspace
-        .roster_at(now)
+    // Members, and anyone a grant names (a share, a time-limited reader),
+    // who may read the room now.
+    let mut people: BTreeSet<String> = workspace
+        .roster()
         .into_iter()
-        .filter(|(_, role)| role_reads(*role))
         .map(|(person, _)| person)
+        .collect();
+    people.extend(
+        workspace
+            .policy
+            .grants
+            .iter()
+            .filter_map(|grant| match &grant.subject {
+                tilo_action_policy::Subject::Person(person) => Some(person.clone()),
+                _ => None,
+            }),
+    );
+    let room_node = workspace.node();
+    let readers: BTreeSet<String> = people
+        .into_iter()
+        .filter(|person| {
+            workspace.answer_at(
+                person,
+                &room_node,
+                tilo_action_policy::ActionKind::Read,
+                now,
+            ) == tilo_action_policy::Answer::Allow
+        })
         .collect();
     let now_ns = now.saturating_mul(1_000_000_000);
     let reads = |cert: &tilo_user_identity::DeviceCert| {
@@ -243,25 +266,18 @@ pub fn allowed_devices(
         }
     }
     for member in super::service_members::service_members(workspace, now) {
-        if member.verb.implies(collab_types::caps::Verb::Read) {
+        if member.kinds.contains(tilo_action_policy::ActionKind::Read) {
             allowed.insert(member.device);
         }
     }
     allowed
 }
 
-fn role_reads(role: CapRole) -> bool {
-    matches!(
-        role,
-        CapRole::Owner | CapRole::Editor | CapRole::Commenter | CapRole::Viewer
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::shell::state::GovernedPeerIdentity;
-    use collab_types::caps::{CapOverride, Principal, Subject, Verb};
+    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Role, Subject};
 
     fn cert(
         root: &ed25519_dalek::SigningKey,
@@ -328,10 +344,6 @@ mod tests {
         hex::encode(root.verifying_key().to_bytes())
     }
 
-    fn member(root: &ed25519_dalek::SigningKey) -> Subject {
-        Subject::Principal(Principal::Person(person(root)))
-    }
-
     fn endpoint(cert: &tilo_user_identity::DeviceCert) -> String {
         iroh::EndpointId::from_bytes(&cert.device_public_key)
             .unwrap()
@@ -368,14 +380,19 @@ mod tests {
             .find(|candidate| candidate.id == workspace)
             .unwrap();
         entry.set_owner(person(&owner));
-        entry.grant_capability(CapOverride::membership(
-            member(&bob),
-            room.to_string(),
-            Verb::Write,
-        ));
-        // Carol's grant runs out at 500.
-        entry.grant_capability(
-            CapOverride::membership(member(&carol), room.to_string(), Verb::Read).with_expiry(500),
+        entry.admit(person(&bob), Role::Editor);
+        // Carol may read until 500.
+        let node = entry.node();
+        entry.grant(
+            Grant::new(
+                "carol-reads",
+                Subject::person(person(&carol)),
+                node,
+                KindSet::READ,
+                Answer::Allow,
+                Subject::person(person(&owner)),
+            )
+            .with_lifetime(Lifetime::Until(500_000)),
         );
         admit(&mut tree, room, cert(&bob, 20, false), Vec::new());
         admit(&mut tree, room, cert(&bob, 21, false), Vec::new());
@@ -414,7 +431,7 @@ mod tests {
             .iter_mut()
             .find(|candidate| candidate.id == workspace)
             .unwrap()
-            .revoke_matching(|cap| cap.subject == member(&bob));
+            .dismiss(&person(&bob));
         assert_eq!(
             allowed_devices(&tree, room, 1_000, &own),
             BTreeSet::from([device_key(10)])
@@ -422,7 +439,7 @@ mod tests {
         assert!(allowed_devices(&tree, RoomId::new(), 1_000, &own).is_empty());
     }
 
-    /// TIL-707: stewards re-check at the first instant the readers change
+    /// Stewards re-check at the first instant the readers change
     /// by time alone, and that instant is exactly where the answer changes.
     #[test]
     fn the_next_policy_change_is_where_the_readers_change_by_time() {
@@ -440,14 +457,19 @@ mod tests {
             .unwrap();
         entry.set_owner(person(&owner));
         // Carol's grant runs out at 500; Dave's device certificate at 300.
-        entry.grant_capability(
-            CapOverride::membership(member(&carol), room.to_string(), Verb::Read).with_expiry(500),
-        );
-        entry.grant_capability(CapOverride::membership(
-            member(&dave),
-            room.to_string(),
-            Verb::Read,
-        ));
+        let node = entry.node();
+        let reads = |id: &str, root: &ed25519_dalek::SigningKey| {
+            Grant::new(
+                id,
+                Subject::person(person(root)),
+                node.clone(),
+                KindSet::READ,
+                Answer::Allow,
+                Subject::person(person(&owner)),
+            )
+        };
+        entry.grant(reads("carol-reads", &carol).with_lifetime(Lifetime::Until(500_000)));
+        entry.grant(reads("dave-reads", &dave));
         admit(&mut tree, room, cert(&carol, 30, false), Vec::new());
         let mut daves = cert(&dave, 40, false);
         daves.expires_at_ns = Some(299_999_999_999);

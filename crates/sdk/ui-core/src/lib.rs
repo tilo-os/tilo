@@ -116,7 +116,6 @@ pub mod table_model;
 pub use action_locus::ActionUiRoute;
 pub mod action_palette;
 pub mod agent_identity;
-pub mod agent_task_frontier;
 pub mod animation;
 #[cfg(test)]
 extern crate self as tilo_ui;
@@ -130,6 +129,7 @@ pub(crate) mod application_test_support;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app;
+pub mod app_surface;
 pub mod auth_backdrop;
 pub mod backdrop;
 pub mod caps_lock;
@@ -220,6 +220,7 @@ pub mod query_text;
 pub mod realtime_continuity;
 pub mod standalone_history_pane;
 pub mod storage;
+#[cfg(any(test, feature = "ux-bench"))]
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
 pub mod personal_dictionary;
@@ -329,7 +330,7 @@ pub use collection_transition::{
 };
 pub use color_compat::ColorCompat;
 pub use content_layout::{FocusedContentLane, ResponsiveControlBar};
-pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
+pub use doc::{TextEdit, put_text_diffed, splice_text_diffed};
 pub use i18n::{ArgValue, EmbeddedCatalog, I18nError, I18nManager, PseudoLocale};
 pub use image_store::{Fetcher, HostImageLoader, ImageStore};
 pub use input::{
@@ -342,7 +343,8 @@ pub use interaction::{
 };
 pub use keycaps::{KeycapLanguage, Keycaps};
 pub use local_state::{
-    LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion, TaskCompletion,
+    Intents, LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion,
+    TaskCompletion,
 };
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
@@ -419,8 +421,8 @@ pub use widget::{
 pub use widget::{NavItem, NavList, NavMode, NavPane, NavSection, NavShell};
 
 pub use widget::{RouteError, RouteHandle, Router};
-// Audit-timeline widgets + their shared types. The `collab_types::OpClass` /
-// `ArtifactKind` re-exports flow through these widgets, so callers can build
+// Audit-timeline widgets + their shared types. The `ArtifactKind`
+// re-export flows through these widgets, so callers can build
 // a `HistoryEntry` without a direct dependency on the collab-types crate.
 pub use history_mode::{
     HistoryController, HistoryError, HistoryResource, HistorySnapshot, PreviewSide, RestoreReview,
@@ -428,8 +430,8 @@ pub use history_mode::{
 pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
 pub use widget::collaboration_overview::{CollaborationOverview, CollaborationOverviewAction};
 pub use widget::history::{
-    HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
-    RedactionDisplay, format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
+    AuthorRelation, EntryKind, HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId,
+    HistoryFilter, RedactionDisplay, format_relative_time, hue_to_rgb,
 };
 pub use widget::history_group::{
     GroupNameRequest, GroupingConfig, HistoryGroup, MAX_GROUP_DEPTH, NamedRange, OpFamily,
@@ -507,8 +509,8 @@ pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};
 // `permissions/mod.rs`.
 pub use collaboration::PresencePayload;
 pub use permissions::{
-    Actor, CapDecision, CapOverride, PermissionContext, PermissionScope, ResourceRef, Role,
-    Scope as CapScope, Subject, UserId, Verb,
+    Access, ActionKind, Actor, CapDecision, CapOverride, PermissionContext, PermissionScope,
+    ResourceRef, Role, Scope as CapScope, Subject, UserId,
 };
 pub use widget::ParticipantPresence;
 

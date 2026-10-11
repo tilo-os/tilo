@@ -51,6 +51,7 @@ tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 serial_test.workspace = true
 tempfile.workspace = true
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
 # The compose probe example writes rendered frames for inspection.

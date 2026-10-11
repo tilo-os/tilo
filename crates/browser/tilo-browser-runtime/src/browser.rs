@@ -1084,9 +1084,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let definition = definition(config.app.as_deref())?;
     let store = crate::storage::load(&config.profile, &config.device, &hydrated)?;
     let dyn_store: Rc<dyn durable_store::DurableStore> = store.clone();
-    let permissions = Rc::new(RefCell::new(PermissionContext::from_capabilities(
-        collab_types::caps::Actor::person(Some(collab_types::role::Role::Owner), config.author()),
-        Vec::new(),
+    let permissions = Rc::new(RefCell::new(PermissionContext::member(
+        config.author(),
+        collab_types::role::Role::Owner,
     )));
     let Presentation {
         root,

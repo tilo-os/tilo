@@ -1,4 +1,5 @@
 //! Actual host-file launch reuses public import, inspection and history.
+use crate::tests::Parsed as _;
 use crate::{ChipDesignShell, VerificationRecord};
 use ui::application::OpenFile;
 use ui::framework::testing::TestApp;
@@ -13,12 +14,12 @@ fn handed_json_and_collected_binary_open_the_exact_undoable_report() {
     ] {
         let (file, _) = OpenFile::new(name, mime, raw.as_bytes().to_vec()).unwrap();
         let mut app = TestApp::<ChipDesignShell>::handed(file).unwrap();
-        assert_eq!(app.state().verifications.len(), 1);
-        assert!(app.state().verifications.contains_key(&identity));
+        assert_eq!(app.parsed().verifications.len(), 1);
+        assert!(app.parsed().verifications.contains_key(&identity));
         let read = app
             .call(
                 "read",
-                serde_json::json!({"item":format!("chip_design.verification:{identity}")}),
+                serde_json::json!({"item":crate::resource::verification_resource_id(&identity)}),
             )
             .unwrap()
             .unwrap();
@@ -35,7 +36,7 @@ fn handed_json_and_collected_binary_open_the_exact_undoable_report() {
             app.undo(),
             "host-file import must use ordinary attributed history"
         );
-        assert!(app.state().verifications.is_empty());
+        assert!(app.parsed().verifications.is_empty());
     }
 }
 
@@ -49,8 +50,8 @@ fn invalid_host_files_show_refusal_without_mutating_the_project() {
     ] {
         let (file, _) = OpenFile::new("untrusted.bin", "application/octet-stream", bytes).unwrap();
         let mut app = TestApp::<ChipDesignShell>::handed(file).unwrap();
-        assert!(app.state().verifications.is_empty());
-        assert!(app.state().reports.is_empty());
+        assert!(app.parsed().verifications.is_empty());
+        assert!(app.parsed().reports.is_empty());
         assert!(
             app.harness()
                 .inspection_json()
@@ -66,17 +67,17 @@ fn handed_analytical_report_uses_existing_storage_import() {
     let raw = include_bytes!("../fixtures/storage-report.json");
     let (file, _) = OpenFile::new("storage.json", "application/json", raw.to_vec()).unwrap();
     let mut app = TestApp::<ChipDesignShell>::handed(file).unwrap();
-    assert_eq!(app.state().reports.len(), 1);
-    assert!(app.state().verifications.is_empty());
+    assert_eq!(app.parsed().reports.len(), 1);
+    assert!(app.parsed().verifications.is_empty());
     assert!(app.undo());
-    assert!(app.state().reports.is_empty());
+    assert!(app.parsed().reports.is_empty());
 }
 
 #[test]
 fn launch_without_a_file_stays_empty_and_unsupported_media_is_refused() {
     let app = TestApp::<ChipDesignShell>::new().unwrap();
-    assert!(app.state().reports.is_empty());
-    assert!(app.state().verifications.is_empty());
+    assert!(app.parsed().reports.is_empty());
+    assert!(app.parsed().verifications.is_empty());
     let (file, _) = OpenFile::new(
         "photo.png",
         "image/png",

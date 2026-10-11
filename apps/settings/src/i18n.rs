@@ -7,6 +7,14 @@
 
 ui::embedded_catalog!(pub fn, "display-arrangement-title", ["en-US", "de-DE"]);
 
+/// The English names of a `(label, value)` table, as an effect's or verb's
+/// choices.
+pub(crate) fn english<T>(
+    table: &'static [(&'static str, T)],
+) -> impl Iterator<Item = &'static str> {
+    table.iter().map(|(label, _)| *label)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

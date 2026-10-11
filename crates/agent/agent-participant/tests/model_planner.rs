@@ -23,6 +23,7 @@ use tilo_browser_peer::DocumentRoute;
 
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const SCRATCHPAD: &str = "so.tilo.scratchpad";
+const NOTES: &str = "so.tilo.notes";
 
 /// Answers with whatever it was built with, unchecked.
 struct Canned(Answer);
@@ -33,29 +34,33 @@ impl PlanModel for Canned {
     }
 }
 
-fn context_with_scratchpad() -> (PlanContext, DocumentRoute, Replica) {
+fn context_with(app_id: &str) -> (PlanContext, DocumentRoute, Replica) {
     let catalogue = common::catalogue();
-    let app = Replica::open(&catalogue, SCRATCHPAD, ROOM, "agent", true, Seed::New).unwrap();
+    let app = Replica::open(&catalogue, app_id, ROOM, "agent", true, Seed::New).unwrap();
     let route = DocumentRoute {
-        app_id: SCRATCHPAD.into(),
+        app_id: app_id.into(),
         cluster_id: ROOM.into(),
         record: app.record().to_owned(),
     };
     let context = PlanContext {
         open: vec![(route.clone(), app.survey())],
         known: Vec::new(),
-        apps: vec![SCRATCHPAD.into(), "so.tilo.notes".into()],
+        apps: vec![SCRATCHPAD.into(), NOTES.into()],
     };
     (context, route, app)
 }
 
+fn context_with_scratchpad() -> (PlanContext, DocumentRoute, Replica) {
+    context_with(SCRATCHPAD)
+}
+
 #[test]
 fn a_natural_language_task_becomes_a_published_action_with_typed_arguments() {
-    let (context, route, mut app) = context_with_scratchpad();
+    let (context, route, mut app) = context_with(NOTES);
     let mut planner = ModelPlanner::new(Box::new(KeywordModel));
     let steps = planner
         .plan(
-            r#"Please edit the note to say "Hello from the model""#,
+            r#"Please add a new note titled "Hello from the model""#,
             &context,
         )
         .unwrap();
@@ -64,8 +69,7 @@ fn a_natural_language_task_becomes_a_published_action_with_typed_arguments() {
     let StepAction::Invoke { address, arguments } = &steps[0].action else {
         panic!("{:?}", steps[0]);
     };
-    assert_eq!(address.resource, "scratchpad.note");
-    assert_eq!(address.action, "edit");
+    assert_eq!(address.action, "new-note");
     // The door accepts what the planner produced.
     app.invoke(address, arguments, false).unwrap();
     let body = app
@@ -86,14 +90,14 @@ fn explicit_steps_still_bypass_the_model() {
     })));
     let steps = planner
         .plan(
-            &json!({"app": SCRATCHPAD, "resource": "scratchpad.note", "action": "edit"})
+            &json!({"app": SCRATCHPAD, "resource": "scratchpad.note", "action": "field-edit"})
                 .to_string(),
             &context,
         )
         .unwrap();
     assert!(matches!(
         &steps[0].action,
-        StepAction::Invoke { address, .. } if address.action == "edit"
+        StepAction::Invoke { address, .. } if address.action == "field-edit"
     ));
 }
 

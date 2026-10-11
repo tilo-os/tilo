@@ -303,7 +303,6 @@ mod tests {
 
     use super::*;
     use crate::network::hub::Hub;
-    use crate::shell::state::WorkspaceAuthority as _;
     use automerge::{ROOT, ReadDoc, ScalarValue};
 
     /// Proxy that forwards `TopicSubscriber` calls into a shared replica
@@ -328,7 +327,7 @@ mod tests {
 
     use crate::network::invite::{accept_invite_into, make_invite_token};
     use crate::shell::state::WorkspaceId;
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+    use collab_types::caps::{Access, CapOverride, Scope, Subject};
 
     /// Room A's distinguishing strings, chosen so a substring search can't match them by accident.
     const ROOM_A_NAME: &str = "Design review";
@@ -349,26 +348,26 @@ mod tests {
         // Re-point each room at its own owner so the two are distinguishable on the wire.
         tree.adopt_ownerless_workspaces(&ROOM_A_OWNER.to_string());
         if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == b) {
-            ws.owner = Some(ROOM_B_OWNER.to_string());
+            ws.set_owner(ROOM_B_OWNER.to_string());
         }
 
-        tree.grant_in_workspace(
+        tree.grant_sandbox_in_workspace(
             a,
             &ROOM_A_OWNER.to_string(),
             CapOverride::grant(
                 Subject::app("files"),
                 Scope::FsPath(ROOM_A_PATH.to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("the owner may grant in room A");
-        tree.grant_in_workspace(
+        tree.grant_sandbox_in_workspace(
             b,
             &ROOM_B_OWNER.to_string(),
             CapOverride::grant(
                 Subject::app("files"),
                 Scope::FsPath(ROOM_B_PATH.to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("the owner may grant in room B");
@@ -502,7 +501,7 @@ mod tests {
                 .find(|w| w.id == workspace)
                 .expect("workspace");
             let name = workspace.name.clone();
-            let owner = workspace.owner.clone();
+            let owner = workspace.owner().cloned();
             drop(tree);
             assert_eq!(name, "Renamed locally");
             assert_eq!(owner.as_deref(), Some(ROOM_A_OWNER));
@@ -719,13 +718,13 @@ mod tests {
                 .expect("the guest's workspace")
                 .set_owner(ROGUE_OWNER.to_string());
             guest
-                .grant_in_workspace(
+                .grant_sandbox_in_workspace(
                     guest_ws,
                     &ROGUE_OWNER.to_string(),
                     CapOverride::grant(
                         Subject::app("rogue"),
                         Scope::FsPath(ROGUE_PATH.to_string()),
-                        Verb::Write,
+                        Access::Write,
                     ),
                 )
                 .expect("the guest grants in its own copy");
@@ -749,18 +748,18 @@ mod tests {
                 .find(|w| w.id == a)
                 .expect("the host keeps room A's workspace");
             assert_eq!(
-                ws.owner.as_deref(),
+                ws.owner().map(String::as_str),
                 Some(ROOM_A_OWNER),
                 "a guest's SyncResp took ownership of the host's room",
             );
             assert!(
-                ws.capabilities
+                ws.sandbox
                     .iter()
                     .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROOM_A_PATH)),
                 "the owner's own grant was replaced by the guest's list",
             );
             assert!(
-                !ws.capabilities
+                !ws.sandbox
                     .iter()
                     .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROGUE_PATH)),
                 "the guest's grant entered the host's capability list",
@@ -862,7 +861,7 @@ mod tests {
                 .expect("the guest keeps its own workspace");
             assert_eq!(ws.name, ROOM_A_NAME, "the room's name arrived");
             assert!(
-                ws.capabilities
+                ws.sandbox
                     .iter()
                     .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROOM_A_PATH)),
                 "the room's capabilities arrived"
@@ -879,26 +878,20 @@ mod tests {
             let owner = ROOM_A_OWNER.to_string();
             let bob = "bob-device-root".to_string();
             let carol = "carol-device-root".to_string();
-            let bob_cap = host_tree
-                .grant_in_workspace(
+            host_tree
+                .admit_in_workspace(
                     host_workspace,
                     &owner,
-                    CapOverride::membership(
-                        Subject::person(bob.clone()),
-                        room.to_string(),
-                        Verb::Write,
-                    ),
+                    &bob,
+                    tilo_action_policy::Role::Editor,
                 )
                 .expect("owner admits Bob");
             host_tree
-                .grant_in_workspace(
+                .admit_in_workspace(
                     host_workspace,
                     &owner,
-                    CapOverride::membership(
-                        Subject::person(carol.clone()),
-                        room.to_string(),
-                        Verb::Comment,
-                    ),
+                    &carol,
+                    tilo_action_policy::Role::Commenter,
                 )
                 .expect("owner admits Carol");
             host_tree.sync_room_doc(room);
@@ -949,7 +942,7 @@ mod tests {
             assert!(
                 host_tree
                     .write()
-                    .revoke_in_workspace(host_workspace, &owner, &bob_cap)
+                    .remove_from_workspace(host_workspace, &owner, &bob)
             );
 
             // Carol stays online; Bob's replica is reconstructed to model a

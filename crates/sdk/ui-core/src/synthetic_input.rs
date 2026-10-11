@@ -122,6 +122,17 @@ pub fn mouse_input(state: ElementState, button: MouseButton) -> WindowEvent {
     }
 }
 
+/// A wheel turn of `x` and `y` lines (positive `y` is up, away from the
+/// person).
+#[must_use]
+pub fn mouse_wheel(x: f32, y: f32) -> WindowEvent {
+    WindowEvent::MouseWheel {
+        device_id: DeviceId::dummy(),
+        delta: winit::event::MouseScrollDelta::LineDelta(x, y),
+        phase: winit::event::TouchPhase::Moved,
+    }
+}
+
 /// The left button going down.
 #[must_use]
 pub fn mouse_press() -> WindowEvent {

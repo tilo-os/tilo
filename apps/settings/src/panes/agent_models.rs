@@ -35,9 +35,12 @@ use crate::widgets::{
 
 /// The person's agent providers, as their settings hold them: the hosted
 /// ones roam with the person, those on this device or its network stay.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(from = "StoredProviders", into = "StoredProviders")]
 pub struct AgentProviders {
+    #[model(readonly)]
     pub config: ProviderConfig,
 }
 
@@ -68,6 +71,9 @@ impl ui::storage::SettingsSchema for AgentProviders {
     const SCOPE: ui::storage::Scope =
         ui::storage::Scope::Shared(agent_provider_config::SETTINGS_SECTION);
 }
+
+#[ui::tilo_resource::resource(kind = "settings.agent-providers", label = "Agent model providers")]
+impl AgentProviders {}
 
 /// Local models on this device and the person's model providers.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -171,7 +177,7 @@ pub enum AgentModelsEffect {
         plan_timeout_ms: Option<u32>,
     },
     /// Read source context and this model's configured deployment limits.
-    #[effect(row, returns, permission = "read")]
+    #[effect(row, returns, kind = "read")]
     InspectModelRequestLimits { provider: String, model: String },
     /// Make a provider the one agents use unless told otherwise.
     #[effect(row, idempotent, label = "Use by default")]
@@ -1496,21 +1502,21 @@ impl AgentModelsModel {
                     .with_id(&format!("agent-models-label-{profile_id}"))
                     .with_external_buffer(Arc::clone(&fields.label))
                     .with_initial_value(&label)
-                    .with_placeholder(&t("agent-placeholder-name")),
+                    .with_placeholder(t("agent-placeholder-name")),
             ));
             body.push(Box::new(
                 TextInput::local()
                     .with_id(&format!("agent-models-url-{profile_id}"))
                     .with_external_buffer(Arc::clone(&fields.endpoint))
                     .with_initial_value(&endpoint)
-                    .with_placeholder(&t("agent-placeholder-url")),
+                    .with_placeholder(t("agent-placeholder-url")),
             ));
             body.push(Box::new(
                 TextInput::local()
                     .with_id(&format!("agent-models-model-{profile_id}"))
                     .with_external_buffer(Arc::clone(&fields.model))
                     .with_initial_value(&model)
-                    .with_placeholder(&t("agent-placeholder-model")),
+                    .with_placeholder(t("agent-placeholder-model")),
             ));
             let alternate_protocol = match profile.protocol {
                 ProviderProtocol::Anthropic => ProviderProtocol::OpenAiCompatible,
@@ -1603,7 +1609,7 @@ impl AgentModelsModel {
                             .with_external_buffer(buffer)
                             .with_initial_value(&initial)
                             .with_secret(true)
-                            .with_placeholder(&t("agent-placeholder-key")),
+                            .with_placeholder(t("agent-placeholder-key")),
                     ))
                     .push(Box::new(self.cx.bind_invocation(
                         Button::new(
@@ -1741,7 +1747,7 @@ impl AgentModelsModel {
                             .with_accessible_name(t(label))
                             .with_external_buffer(buffer)
                             .with_initial_value(&initial)
-                            .with_placeholder(&t("agent-context-unknown")),
+                            .with_placeholder(t("agent-context-unknown")),
                     ));
                 }
                 let provider = profile.id.clone();
@@ -2974,9 +2980,12 @@ mod tests {
             .model()
             .borrow_mut()
             .follow_local_profile = false;
-        let open = crate::effects::open_pane_address(crate::categories::Category::AgentModels);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .unwrap();
+        let open = crate::categories::Category::AgentModels;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .unwrap();
         app.settle();
         let resource = format!(
             "settings.agent-provider-model:{}:{}",

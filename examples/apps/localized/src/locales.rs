@@ -16,3 +16,22 @@ pub fn install() {
         eprintln!("localization catalog: {error}");
     }
 }
+
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const LOCALIZED_ADD: LabelKey = LabelKey::new("localized-add");
+    pub const LOCALIZED_ADD_BOOK: LabelKey = LabelKey::new("localized-add-book");
+    pub const LOCALIZED_BOOKS: LabelKey = LabelKey::new("localized-books");
+    pub const LOCALIZED_GREETING: LabelKey = LabelKey::new("localized-greeting");
+    pub const LOCALIZED_GREETING_ANONYMOUS: LabelKey =
+        LabelKey::new("localized-greeting-anonymous");
+    pub const LOCALIZED_HINT: LabelKey = LabelKey::new("localized-hint");
+    pub const LOCALIZED_READER_LABEL: LabelKey = LabelKey::new("localized-reader-label");
+    pub const LOCALIZED_READER_PLACEHOLDER: LabelKey =
+        LabelKey::new("localized-reader-placeholder");
+    pub const LOCALIZED_REMOVE: LabelKey = LabelKey::new("localized-remove");
+    pub const LOCALIZED_REMOVE_BOOK: LabelKey = LabelKey::new("localized-remove-book");
+    pub const LOCALIZED_SHELF_READER: LabelKey = LabelKey::new("localized-shelf-reader");
+    pub const LOCALIZED_TITLE: LabelKey = LabelKey::new("localized-title");
+}

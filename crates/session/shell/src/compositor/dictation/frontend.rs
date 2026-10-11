@@ -45,8 +45,7 @@ pub(crate) fn service(
                 }
             }
             Request::Consent(id) if surface.session() == Some(id) && surface.is_consent() => {
-                let language =
-                    settings_store::accessibility::AccessibilitySettings::load().dictation_language;
+                let language = settings_store::dictation::DictationLanguage::load();
                 state
                     .start_dictation_after_field_ack(id, language.code(), now, field_start)
                     .map(|()| {

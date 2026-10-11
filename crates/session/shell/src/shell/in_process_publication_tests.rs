@@ -1,27 +1,14 @@
-// Native publication with matching certified room scope. This intentionally
-// does not model an app spanning a workspace and its separate person room.
+// Native publication in the session's workspace room, with the person's own
+// records (Browser's history and address book) in the person's own room: the
+// identity host signs the launch room, and the person room only for the
+// person records the launched app's surface declares.
 
 fn authorized_person_session(
     profile: &std::path::Path,
 ) -> (crate::runtime_host::Session, InProcessApps, String) {
     std::fs::create_dir_all(profile).unwrap();
-    let mut session = crate::runtime_host::Session::start(profile).unwrap();
-    let selected = crate::identity_registry::selected_identity_profile(&session.room)
-        .unwrap()
-        .unwrap();
-    let room = collab_types::person_room(&selected.user_public_key).to_string();
-    // Only the isolated fixture's test membership changes. The real identity
-    // broker signs this exact room; the collaboration broker still validates
-    // the selected root/device chain and the person-room derivation.
-    session
-        .workspace_tree()
-        .write()
-        .desktop
-        .workspaces
-        .first_mut()
-        .unwrap()
-        .room = crate::shell::state::RoomId::parse(&room).unwrap();
-    session.room = room.clone();
+    let session = crate::runtime_host::Session::start(profile).unwrap();
+    let room = session.room.clone();
     let socket = session.broker.capnp_socket().to_path_buf();
     let identity = session.identity_socket().to_path_buf();
     let apps = InProcessApps::at(&profile.join("apps"), &session.actor)

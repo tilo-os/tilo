@@ -1,6 +1,6 @@
 //! Interactive and headless visual fixture for the universal collaboration rail.
 
-use collab_types::{ArtifactKind, OpClass};
+use collab_types::ArtifactKind;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -25,7 +25,7 @@ fn entry(id: u8, author: &str, at: u64, summary: &str) -> HistoryEntry {
     HistoryEntry {
         id: HistoryEntryId(bytes),
         author: HistoryAuthor::new(author, f32::from(id) * 61.0, format!("person-{id}")),
-        op_class: OpClass::Splice,
+        entry_kind: tilo_ui::widget::EntryKind::Text,
         artifact_kind: ArtifactKind::File,
         timestamp: SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_secs(at))
@@ -35,14 +35,9 @@ fn entry(id: u8, author: &str, at: u64, summary: &str) -> HistoryEntry {
         diff_payload: None,
         redaction: None,
         context: Some(
-            ActionContext::for_resource(
-                "Edit",
-                "finance:q2",
-                "finance.report",
-                "Q2 finance report",
-            )
-            .with_app("org.tilo.Sheets", "Sheets")
-            .with_group("q2-close", "Prepare Q2 close", "project"),
+            ActionContext::for_resource("finance:q2", "finance.report", "Q2 finance report")
+                .with_app("org.tilo.Sheets", "Sheets")
+                .with_group("q2-close", "Prepare Q2 close", "project"),
         ),
     }
 }

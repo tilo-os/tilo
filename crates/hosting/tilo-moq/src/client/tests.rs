@@ -115,6 +115,12 @@ fn a_dtx_pause_is_silence_not_loss() {
     // A whole group missing in between is still loss, at most the media gap.
     assert_eq!(at(12, 0).skipped(&object(20, 100), true), 5);
     assert_eq!(at(12, 0).skipped(&object(20, 3), true), 2);
+    // A group tail lost on the way keeps media time and sequence numbers in
+    // step: the receiver's read budget ran out before frame 14, or the
+    // publisher expired that group before the transport drained it.
+    assert_eq!(at(13, 13).skipped(&object(15, 15), true), 1);
+    assert_eq!(at(11, 11).skipped(&object(15, 15), true), 3);
+    assert_eq!(at(13, 13).skipped(&object(20, 20), true), 6);
 }
 
 struct CurrentOwner;
@@ -179,6 +185,29 @@ async fn a_two_second_dtx_pause_counts_no_dropped_frames_on_either_carrier_form(
     assert_eq!(counters.received, 14);
     assert_eq!(counters.late_dropped, 0, "DTX pauses are not loss");
     assert_eq!(counters.duplicate_dropped, 0);
+}
+
+#[tokio::test]
+async fn a_grouped_frame_past_its_read_budget_is_counted_once() {
+    let shared = live_shared();
+    let last = Mutex::new(None);
+    for sequence in 10..14 {
+        assert!(deliver(
+            &shared,
+            NAME,
+            2,
+            true,
+            object(sequence, sequence),
+            &last
+        ));
+    }
+    // Frame 14 arrives after its group's budget; frame 15 opens the next
+    // group. The late frame is one drop, not also a gap before frame 15.
+    assert!(drop_late(&shared, &object(14, 14), &last));
+    assert!(deliver(&shared, NAME, 3, true, object(15, 15), &last));
+    let counters = shared.state.lock().unwrap().counters;
+    assert_eq!(counters.received, 5);
+    assert_eq!(counters.late_dropped, 1);
 }
 
 fn write_group_frame(group: &mut moq_net::group::Producer, frame: u64) {

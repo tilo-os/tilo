@@ -34,10 +34,10 @@ fn guarded_json_signed_identity_escaped_keys_and_values_preserve_canonical_data(
 }
 
 #[test]
-fn guarded_json_capability_round_trips_to_identical_bytes() {
-    let capability = capability_fixture();
+fn guarded_json_grant_round_trips_to_identical_bytes() {
+    let capability = grant_fixture();
     let wire = serde_json::to_vec(&capability).unwrap();
-    let decoded = decode::<collab_types::caps::CapOverride>(&wire, limits()).unwrap();
+    let decoded = decode::<tilo_action_policy::Grant>(&wire, limits()).unwrap();
     assert_eq!(serde_json::to_vec(&decoded).unwrap(), wire);
 }
 
@@ -247,30 +247,20 @@ fn guarded_json_long_escaped_input_round_trips_and_invalid_forms_are_malformed()
 }
 
 #[test]
-fn guarded_json_owned_string_limit_aggregates_across_capability_fields() {
-    let mut one = capability_fixture();
-    one.id = "x".repeat(4096);
+fn guarded_json_owned_string_limit_aggregates_across_grant_fields() {
+    let mut one = grant_fixture();
+    one.id = tilo_action_policy::GrantId::new("x".repeat(4096));
     let mut many = one.clone();
-    many.subject = collab_types::caps::Subject::Principal(collab_types::caps::Principal::Person(
-        "x".repeat(4096),
-    ));
-    many.scope = collab_types::caps::Scope::Action {
-        app: "a".repeat(4096),
-        resource: "r".into(),
-        action: "b".repeat(4096),
-    };
-    many.granted_by = Some(collab_types::caps::Principal::Person("x".repeat(4096)));
+    many.subject = tilo_action_policy::Subject::Person("x".repeat(4096));
+    many.granted_by = tilo_action_policy::Subject::Person("x".repeat(4096));
     let limit = JsonLimits {
         allocation_bytes: 12 * 1024,
         ..limits()
     };
-    assert!(
-        decode::<collab_types::caps::CapOverride>(&serde_json::to_vec(&one).unwrap(), limit)
-            .is_ok()
-    );
+    assert!(decode::<tilo_action_policy::Grant>(&serde_json::to_vec(&one).unwrap(), limit).is_ok());
     let wire = serde_json::to_vec(&many).unwrap();
     assert_eq!(
-        error(decode::<collab_types::caps::CapOverride>(&wire, limit)),
+        error(decode::<tilo_action_policy::Grant>(&wire, limit)),
         PeerResourceError::Capacity
     );
 }

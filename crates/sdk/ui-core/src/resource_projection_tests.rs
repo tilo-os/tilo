@@ -55,9 +55,8 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
         let (mut app, counts, visible) = counted_control_app(false);
         app.refresh_control_action_availability();
         app.actions.permission_generation.set(u64::MAX);
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
         assert!(!app.root_widget.children()[0].is_enabled());
         app.set_permission_ctx(PermissionContext::permissive());
@@ -268,9 +267,8 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
             app.action_registry_mut().register::<Flip>(FLIP_TYPE);
             app.refresh_control_action_availability();
             assert!(enabled.get(), "wrapper {wrapper}");
-            app.set_permission_ctx(PermissionContext::from_capabilities(
-                collab_types::caps::Actor::person(None, "restricted"),
-                Vec::new(),
+            app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+                "restricted",
             ));
             assert!(
                 !enabled.get(),

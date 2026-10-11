@@ -107,12 +107,13 @@ fn variables(snippet: &Snippet) -> Option<String> {
 }
 
 fn uses(snippet: &Snippet) -> String {
-    crate::tr_count("snippets-uses", snippet.uses as usize)
+    crate::tr_count("snippets-uses", snippet.use_count())
 }
 
 impl Core {
     fn row_face<'a>(
         &self,
+        id: &SnippetId,
         snippet: &'a Snippet,
         meta: Option<&'a str>,
         column: f64,
@@ -123,7 +124,7 @@ impl Core {
             .leading_column(column)
             .secondary(secondary(snippet))
             .two_line_secondary()
-            .selected(self.open == Some(snippet.id))
+            .selected(self.open.as_ref() == Some(id))
             .interaction(interaction);
         let face = if snippet.favorite {
             face.mark(Icon::Star)
@@ -140,7 +141,7 @@ impl Core {
         let badges: Vec<&str> = self
             .visible
             .iter()
-            .filter_map(|id| self.library.get(*id))
+            .filter_map(|id| self.library.get(id))
             .map(|s| s.language.badge())
             .collect();
         badge_column_width(text, theme, &badges)
@@ -176,17 +177,19 @@ impl Core {
         let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
         let column = self.badge_column(text, theme);
 
-        let snippets: Vec<Snippet> = self
+        // The rows read the presented library, which this frame keeps alive.
+        let library = std::rc::Rc::clone(&self.library);
+        let snippets: Vec<(SnippetId, &Snippet)> = self
             .visible
             .iter()
-            .filter_map(|id| self.library.get(*id).cloned())
+            .filter_map(|id| library.get(id).map(|s| (id.clone(), s)))
             .collect();
-        let metas: Vec<Option<String>> = snippets.iter().map(variables).collect();
+        let metas: Vec<Option<String>> = snippets.iter().map(|(_, s)| variables(s)).collect();
         let heights: Vec<f64> = snippets
             .iter()
             .zip(&metas)
-            .map(|(s, meta)| {
-                self.row_face(s, meta.as_deref(), column, Interaction::default())
+            .map(|((id, s), meta)| {
+                self.row_face(id, s, meta.as_deref(), column, Interaction::default())
                     .height(text, theme)
             })
             .collect();
@@ -195,7 +198,9 @@ impl Core {
             .scroller
             .set_content_size(area.width(), heights.iter().sum::<f64>() + inset * 2.0);
         if (std::mem::take(&mut self.list.reveal) || resized)
-            && let Some(index) = snippets.iter().position(|s| Some(s.id) == self.open)
+            && let Some(index) = snippets
+                .iter()
+                .position(|(id, _)| self.open.as_ref() == Some(id))
         {
             self.list.reveal_row(&heights, index, inset);
         }
@@ -206,7 +211,7 @@ impl Core {
         };
         let mut y = area.y0 + inset - self.list.scroller.offset().y;
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &area);
-        for (i, (snippet, meta)) in snippets.iter().zip(&metas).enumerate() {
+        for (i, ((id, snippet), meta)) in snippets.iter().zip(&metas).enumerate() {
             let h = heights.get(i).copied().unwrap_or_default();
             let rect = Rect::new(area.x0 + edge, y, x1, y + h);
             y += h;
@@ -216,13 +221,13 @@ impl Core {
             let hovered = rect.contains(self.pointer) && area.contains(self.pointer);
             let interaction = Interaction {
                 hovered,
-                pressed: self.list.pressed == Some(snippet.id) && hovered,
-                focused: self.list.focused && self.open == Some(snippet.id),
+                pressed: self.list.pressed.as_ref() == Some(id) && hovered,
+                focused: self.list.focused && self.open.as_ref() == Some(id),
                 disabled: false,
             };
-            let face = self.row_face(snippet, meta.as_deref(), column, interaction);
+            let face = self.row_face(id, snippet, meta.as_deref(), column, interaction);
             let face = match snippets.get(i + 1) {
-                Some(next) => face.separator(self.open == Some(next.id)),
+                Some((next, _)) => face.separator(self.open.as_ref() == Some(next)),
                 None => face,
             };
             let lead = face.leading_rect(rect, text, theme);
@@ -231,10 +236,10 @@ impl Core {
             let shown = rect.intersect(area);
             self.list
                 .rows
-                .push((shown, lead.intersect(area), snippet.id));
+                .push((shown, lead.intersect(area), id.clone()));
             self.list
                 .hits
-                .push((shown, Action::OpenSnippet(snippet.id)));
+                .push((shown, Action::OpenSnippet(id.clone())));
         }
         scene.pop_layer();
         self.list.scroller.paint_bars(scene, t, theme);
@@ -251,7 +256,7 @@ impl Core {
         area: Rect,
     ) {
         let title = crate::tr(match &self.selection {
-            _ if self.library.snippets.is_empty() => "snippets-empty-library",
+            _ if self.library.is_empty() => "snippets-empty-library",
             Selection::Smart(SmartFolder::Favorites) => "snippets-empty-favorites",
             Selection::Smart(SmartFolder::MostUsed) => "snippets-empty-most-used",
             _ => "snippets-empty-place",
@@ -280,13 +285,14 @@ impl Core {
         };
         let current = self
             .open
-            .and_then(|id| self.visible.iter().position(|v| *v == id));
+            .as_ref()
+            .and_then(|id| self.visible.iter().position(|v| v == id));
         let next = match (current, step) {
             (None, _) => 0,
             (Some(i), isize::MIN..=-1) => i.saturating_sub(step.unsigned_abs()),
             (Some(i), _) => i.saturating_add(step.unsigned_abs()).min(last),
         };
-        if let Some(id) = self.visible.get(next).copied() {
+        if let Some(id) = self.visible.get(next).cloned() {
             self.open = Some(id);
             self.list.reveal = true;
         }
@@ -302,7 +308,7 @@ impl Core {
             Key::Named(NamedKey::PageUp) => self.step_open(-page),
             Key::Named(NamedKey::Home) => self.step_open(isize::MIN),
             Key::Named(NamedKey::End) => self.step_open(isize::MAX),
-            Key::Named(NamedKey::Enter | NamedKey::Space) => match self.open {
+            Key::Named(NamedKey::Enter | NamedKey::Space) => match self.open.clone() {
                 Some(id) => self.open_snippet(id),
                 None => return false,
             },
@@ -330,7 +336,7 @@ impl Core {
                 .rev()
                 .find(|(rect, _)| rect.contains(point))
                 .and_then(|(_, action)| match action {
-                    Action::OpenSnippet(id) => Some(*id),
+                    Action::OpenSnippet(id) => Some(id.clone()),
                     _ => None,
                 })
         };
@@ -349,7 +355,7 @@ impl Core {
             } if inside => {
                 self.list.pressed = row_at(&self.list, self.pointer);
                 if self.list.pressed.is_some() {
-                    self.body_editor.set_focused(false);
+                    self.body.control_mut().set_focused(false);
                     *ctx.focus_target = Some(ctx.node_id);
                 }
                 true
@@ -360,11 +366,11 @@ impl Core {
                 ..
             } => {
                 let pressed = self.list.pressed.take();
-                if let Some(id) = pressed
+                if let Some(id) = &pressed
                     && inside
-                    && row_at(&self.list, self.pointer) == Some(id)
+                    && row_at(&self.list, self.pointer).as_ref() == Some(id)
                 {
-                    self.apply(Action::OpenSnippet(id));
+                    self.apply(Action::OpenSnippet(id.clone()));
                 }
                 pressed.is_some()
             }
@@ -381,13 +387,13 @@ impl Core {
             .hits
             .iter()
             .filter_map(|(rect, action)| match action {
-                Action::OpenSnippet(id) => self.library.get(*id).map(|snippet| {
+                Action::OpenSnippet(id) => self.library.get(id).map(|snippet| {
                     let meta = variables(snippet);
                     let face = ListRowFace::new(&snippet.title)
                         .secondary(secondary(snippet))
-                        .selected(self.open == Some(*id))
+                        .selected(self.open.as_ref() == Some(id))
                         .interaction(Interaction {
-                            focused: self.list.focused && self.open == Some(*id),
+                            focused: self.list.focused && self.open.as_ref() == Some(id),
                             ..Interaction::default()
                         });
                     let face = if snippet.favorite {
@@ -416,7 +422,7 @@ impl Core {
             .rows
             .iter()
             .find(|(row, _, _)| row.contains(point))?;
-        let snippet = self.library.get(*id)?;
+        let snippet = self.library.get(id)?;
         if lead.contains(point) {
             Some((*lead, snippet.language.name()))
         } else {
@@ -511,8 +517,8 @@ impl Widget for ListPane {
             };
             (candidate.semantic_id() == target
                 && core.visible.contains(id)
-                && core.library.get(*id).is_some())
-            .then_some(*id)
+                && core.library.get(id).is_some())
+            .then(|| id.clone())
         });
         let Some(selected) = selected else {
             return false;

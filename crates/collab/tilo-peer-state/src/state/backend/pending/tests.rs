@@ -6,6 +6,7 @@ use automerge::AutoCommit;
 use automerge::ROOT;
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
+use collab_types::CommitNamed as _;
 use tilo_user_identity::RevocationList;
 use web_time::SystemTime;
 
@@ -15,13 +16,13 @@ fn deferred() -> (StatePeer, NeighbourMsg, SystemTime) {
     let mut doc = AutoCommit::load(&source.document("test.app", "tab:1").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "pending-predecessor", true).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "pending-predecessor");
     let predecessor = source
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "pending-descendant", true).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "pending-descendant");
     let descendant = source
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();

@@ -425,6 +425,13 @@ client frames on the GPU and draws them on its presenting renderer from
 their textures; screenshots, recordings and renderers on other devices
 reach the same frames through the source, which reads them back on demand.
 
+## `vendor/automerge`: parse changes without applying them
+
+`Automerge::parse_changes(data)` parses and checksums the change chunks of an
+incremental save without applying them to a document, so a receiver reads
+each change's hash, message and dependencies (the signed claim of what each
+change is) before it decides to merge them.
+
 ## `vendor/vello/src/image_source.rs` (new), `lib.rs`, `wgpu_engine.rs`: images drawn from a texture
 
 `Renderer::draw_image_from(image, Some(ImageSource { texture, origin,

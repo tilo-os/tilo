@@ -101,6 +101,8 @@ impl CardMetrics {
         let width = f64::from(theme.tokens.metrics.panel_width_utility)
             * f64::from(ui::tokens::Metrics::text_growth(theme.text_scale));
         let face = CardFace::new().title("Ag");
+        // The plot gives the type picker's row its height, so a chart card
+        // stands no taller than one with a single row of actions.
         let chart_h = face.height_for_body(tr, theme, width, m.plot_h() + m.s2 + m.control_h);
         let comment_h = face.height_for_body(tr, theme, width, m.comment_rows().height);
         let pad = face
@@ -117,7 +119,7 @@ impl CardMetrics {
                 .sum();
             buttons + m.s1 * f64_of_usize(labels.len().saturating_sub(1)) + 2.0 * pad
         };
-        let chart_min_w = row(&["Open", "Edit", "Delete"]);
+        let chart_min_w = row(&["Open", "Rename", "Delete"]).max(row(&["Column", "Line", "Cells"]));
         let comment_min_w = row(&["Reply", "Edit", "Resolve", "Delete"])
             .max(row(&["Reply", "Edit", "Reopen", "Delete"]));
         Self {
@@ -258,12 +260,13 @@ impl SheetsApp {
     }
 
     /// Paint a row of small buttons from `x0` along `y`, registering each as a
-    /// click target.
+    /// click target; the one choosing `picked` shows on.
     fn draw_card_actions(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         origin: (f64, f64),
         actions: Vec<(&'static str, ButtonRole, AnnotationClick)>,
+        picked: Option<ChartKind>,
     ) {
         let (mut x, y) = origin;
         let gap = self.metrics.s1;
@@ -274,9 +277,14 @@ impl SheetsApp {
                 .control_size(ControlSize::Small);
             let w = probe.intrinsic_width(ctx.text, ctx.theme);
             let rect = Rect::new(x, y, x + w, y + h);
+            let on = matches!(
+                (&action, picked),
+                (AnnotationClick::SetChartKind(_, kind), Some(current)) if *kind == current
+            );
             let face = ButtonFace::new(rect, label)
                 .role(role)
                 .control_size(ControlSize::Small)
+                .toggled(on)
                 .hovered(rect.contains(self.last_mouse));
             Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
             self.annotation_clicks
@@ -357,8 +365,8 @@ impl SheetsApp {
         );
     }
 
-    /// One chart card: its title, its plot in the room above the action row,
-    /// and Open, Edit and Delete.
+    /// One chart card: its title, its plot in the room above its two rows of
+    /// controls, the type picker and Cells, then Open, Rename and Delete.
     fn draw_chart_card(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -370,11 +378,12 @@ impl SheetsApp {
         let face = CardFace::new().title(&chart.title);
         face.paint(ctx, card);
         let body = face.body_rect(ctx.text, ctx.theme, card);
+        let rows = self.metrics.control_h * 2.0 + self.metrics.s1;
         let plot = Rect::new(
             body.x0,
             body.y0,
             body.x1,
-            (body.y1 - gap - self.metrics.control_h).max(body.y0),
+            (body.y1 - gap - rows).max(body.y0),
         );
         Self::draw_plot(ctx, plot, chart.kind, series);
         self.draw_card_actions(
@@ -382,12 +391,37 @@ impl SheetsApp {
             (body.x0, plot.y1 + gap),
             vec![
                 (
+                    ChartKind::Column.label(),
+                    ButtonRole::Secondary,
+                    AnnotationClick::SetChartKind(chart.id.clone(), ChartKind::Column),
+                ),
+                (
+                    ChartKind::Line.label(),
+                    ButtonRole::Secondary,
+                    AnnotationClick::SetChartKind(chart.id.clone(), ChartKind::Line),
+                ),
+                (
+                    "Cells",
+                    ButtonRole::Secondary,
+                    AnnotationClick::ChartCells(chart.id.clone()),
+                ),
+            ],
+            Some(chart.kind),
+        );
+        self.draw_card_actions(
+            ctx,
+            (
+                body.x0,
+                plot.y1 + gap + self.metrics.control_h + self.metrics.s1,
+            ),
+            vec![
+                (
                     "Open",
                     ButtonRole::Secondary,
                     AnnotationClick::Open(chart.start),
                 ),
                 (
-                    "Edit",
+                    "Rename",
                     ButtonRole::Secondary,
                     AnnotationClick::EditChart(chart.id.clone()),
                 ),
@@ -397,6 +431,7 @@ impl SheetsApp {
                     AnnotationClick::DeleteChart(chart.id.clone()),
                 ),
             ],
+            None,
         );
     }
 
@@ -708,6 +743,7 @@ impl SheetsApp {
                     AnnotationClick::DeleteComment(thread.id.clone()),
                 ),
             ],
+            None,
         );
         // The rest of the card opens the thread's range. Registered after the
         // buttons, so a button wins where they overlap.
