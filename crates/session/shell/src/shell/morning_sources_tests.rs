@@ -169,6 +169,30 @@ fn morning_payload_queries_only_explicit_choice_and_loses_revoked_or_foreign_evi
     );
 }
 #[test]
+fn morning_prompted_refresh_is_not_offered_or_invoked_without_its_input() {
+    let (native, host, source) = fixture();
+    host.rows.lock().unwrap()[0].action.as_mut().unwrap().input = tilo_actions::InputSpec::Text {
+        prompt: "Choose refresh scope".into(),
+        placeholder: String::new(),
+        collects: tilo_actions::Collects::Words,
+    };
+    native.payload(&host.room, &source);
+    let payload = native.payload(&host.room, &source).unwrap();
+    assert!(!payload.refreshable, "a prompted action is not nullary");
+    assert!(
+        native
+            .submit(&host.room, &source, MorningCommand::Refresh)
+            .is_err()
+    );
+    assert!(
+        native
+            .submit(&host.room, &source, MorningCommand::DraftRefresh)
+            .is_err()
+    );
+    assert!(host.commands.lock().unwrap().is_empty());
+}
+
+#[test]
 fn morning_refresh_and_scheduling_draft_use_existing_room_bound_door_and_grant_nothing() {
     let (native, host, source) = fixture();
     native.payload(&host.room, &source);
