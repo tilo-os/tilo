@@ -1978,8 +1978,13 @@ mod tests {
             assert_eq!(response["environment"], environment);
             assert_eq!(response["protocol"], SERVICE_PROTOCOL);
             assert_eq!(rights.len(), 2);
-            let lease = UnixStream::from(rights.pop().unwrap());
-            let reader_clone = lease.try_clone().unwrap();
+            // Terminal holds the lease as a `SessionLifetime`, whose drop
+            // shuts the connection down even while a reader's duplicate of
+            // it is still open.
+            let lease = runtime_portal::pending_connection::SessionLifetime::new(UnixStream::from(
+                rights.pop().unwrap(),
+            ));
+            let reader_clone = lease.clone_for_reader().unwrap();
             let terminal = std::fs::File::from(rights.pop().unwrap());
             // SAFETY: terminal is an owned live PTY descriptor. isatty reads no user memory.
             assert_eq!(unsafe { libc::isatty(terminal.as_raw_fd()) }, 1);
