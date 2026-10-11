@@ -49,7 +49,6 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
-tilo-history = { path = "../../crates/sdk/tilo-history" }
 # Serialises the tests that touch the shared system clipboard / primary
 # selection so they don't race each other under the default parallel runner
 # (selecting text sets the primary selection, which a middle-click paste test

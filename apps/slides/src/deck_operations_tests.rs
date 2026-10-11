@@ -448,21 +448,12 @@ fn an_agents_changes_read_as_sentences() {
         json!({ "edit": Deck::paths().title.replace("Plan") }),
     );
 
-    let english = include_str!("../locales/en-US.ftl");
-    let catalogue = tilo_history::Catalogue::new("en-US", &[english]);
-    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
-    let sentences: Vec<String> = app
-        .versions()
-        .into_iter()
-        .filter_map(|version| version.context)
-        .filter(|entry| {
-            entry
-                .invoker
-                .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
-        })
-        .map(|entry| reader.sentence(&entry))
-        .collect();
+    let sentences = app.sentences(app.history().iter().filter(|entry| {
+        entry
+            .invoker
+            .as_ref()
+            .is_some_and(|invoker| invoker.actor == "agent:claude")
+    }));
     assert_eq!(
         sentences,
         [
@@ -477,9 +468,8 @@ fn an_agents_changes_read_as_sentences() {
     // An element's edits and its item verbs are about the element, named by
     // its rich-text body's first line, not by its id or its slide's.
     let named: Vec<(String, String)> = app
-        .versions()
+        .history()
         .into_iter()
-        .filter_map(|version| version.context)
         .filter(|entry| {
             entry
                 .invoker

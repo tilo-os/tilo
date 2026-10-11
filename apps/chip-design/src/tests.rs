@@ -1174,20 +1174,12 @@ fn an_agent_designs_operators_one_call_each_and_history_reads_it() {
     assert_eq!(state.operator_graph.nodes["y"].x, 280);
     assert!(!state.operator_graph.nodes.contains_key("x"));
 
-    let catalogue = tilo_history::Catalogue::new("en-US", &[crate::view::LOCALES[0].1]);
-    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
-    let sentences: Vec<String> = app
-        .versions()
-        .into_iter()
-        .filter_map(|version| version.context)
-        .filter(|entry| {
-            entry
-                .invoker
-                .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
-        })
-        .map(|entry| reader.sentence(&entry))
-        .collect();
+    let sentences = app.sentences(app.history().iter().filter(|entry| {
+        entry
+            .invoker
+            .as_ref()
+            .is_some_and(|invoker| invoker.actor == "agent:claude")
+    }));
     assert_eq!(
         sentences,
         [

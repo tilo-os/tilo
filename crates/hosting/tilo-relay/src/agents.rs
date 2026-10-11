@@ -72,7 +72,7 @@ impl Relay {
     pub fn agent_link(&self) -> RelayAgentLink {
         let web = self.web_context();
         RelayAgentLink {
-            user_public_key: web.relay.own_user_pk,
+            user_public_key: web.relay.identity.user_public_key,
             certification: web.certification.clone(),
             agents: web.relay.agents.clone(),
             rooms: self.rooms().cloned(),

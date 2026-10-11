@@ -1697,9 +1697,8 @@ mod tests {
             app.harness().type_text("Hi there");
             assert_eq!(body(&app), ["Hi there"]);
             let edits = app
-                .versions()
+                .history()
                 .into_iter()
-                .filter_map(|version| version.context)
                 .filter(|context| {
                     matches!(&context.what, Some(tilo_actions::Did::Edit(edit))
                         if edit.field == "rich_body")

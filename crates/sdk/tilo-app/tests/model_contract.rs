@@ -290,9 +290,9 @@ fn a_second_replica_applying_the_same_action_converges() {
 
 fn version_summaries(app: &TestApp<JobApp>) -> Vec<String> {
     let reader = tilo_history::Reader::new("en-US");
-    app.versions()
-        .into_iter()
-        .filter_map(|version| version.context.map(|context| reader.sentence(&context)))
+    app.history()
+        .iter()
+        .map(|context| reader.sentence(context))
         .collect()
 }
 

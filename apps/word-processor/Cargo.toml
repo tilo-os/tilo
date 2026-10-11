@@ -66,7 +66,6 @@ path = "tests/it.rs"
 [dev-dependencies]
 settings-store = { path = "../../crates/system/settings-store" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
-tilo-history = { path = "../../crates/sdk/tilo-history" }
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 

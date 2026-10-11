@@ -794,6 +794,15 @@ impl EmbeddedCatalog {
         }
     }
 
+    /// The Fluent source of the source locale's catalogue.
+    #[must_use]
+    pub fn source(&self) -> Option<&'static str> {
+        self.catalogs
+            .iter()
+            .find(|(locale, _)| *locale == self.source_locale)
+            .map(|(_, source)| *source)
+    }
+
     /// A thread with no manager gets one selecting the user's locale from the
     /// environment (see [`I18nManager::install_system`]).
     #[must_use]
