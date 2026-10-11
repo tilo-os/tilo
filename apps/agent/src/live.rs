@@ -499,33 +499,14 @@ impl PlanStream {
 }
 
 /// Text the agent may write in parts: the parameter that carries it and the
-/// action each later part goes through, on the same resource, when
-/// `descriptor` is one of the word processor's writing operations — adding
-/// a paragraph, or typing at the caret. Named by the word processor's typed
-/// references: each later part is typed at the caret the part before it
-/// left (an added paragraph lands the agent's caret at its end).
+/// action each later part goes through, on the same resource.
+///
+/// TODO: not implemented yet: the agent will act through apps' published
+/// surfaces via the broker, where an app declares which of its writing
+/// operations continue by typing at the caret.
 #[must_use]
-pub fn continuation(descriptor: &tilo_actions::ActionDescriptor) -> Option<(String, String)> {
-    writing(&descriptor.resource_kind, &descriptor.address.action)
-}
-
-/// [`continuation`] for the operation `action` on a resource of `kind`.
-fn writing(kind: &str, action: &str) -> Option<(String, String)> {
-    use ui::tilo_resource::{Effect as _, Resource as _};
-    use word_processor::effects::WordProcessorEffect;
-    use word_processor::framework::Document;
-    if kind != Document::KIND {
-        return None;
-    }
-    let typing = WordProcessorEffect::TypeText {
-        text: String::new(),
-        at: None,
-    };
-    let param = typing.arguments().keys().next()?.clone();
-    // Whether the operation takes that parameter is the descriptor's to
-    // say; the caller checks it on both ends.
-    let writes = action == typing.id() || action == Document::APPEND_PARAGRAPH.id;
-    writes.then(|| (param, typing.id().to_owned()))
+pub fn continuation(_descriptor: &tilo_actions::ActionDescriptor) -> Option<(String, String)> {
+    None
 }
 
 /// Text in parts ([`continuation`]) longer than this is written with a live
@@ -727,31 +708,6 @@ mod tests {
         assert!(
             chunks.last().unwrap().len() >= CHUNK_TARGET / 3,
             "{chunks:?}"
-        );
-    }
-
-    #[test]
-    fn the_word_processors_writing_continues_by_typing_at_the_caret() {
-        use ui::tilo_resource::{Effect as _, Resource as _};
-        use word_processor::effects::WordProcessorEffect;
-        use word_processor::framework::Document;
-        let typing = WordProcessorEffect::TypeText {
-            text: String::new(),
-            at: None,
-        }
-        .id();
-        let expected = Some(("text".to_owned(), typing.to_owned()));
-        assert_eq!(
-            writing(Document::KIND, Document::APPEND_PARAGRAPH.id),
-            expected,
-            "a paragraph is added, then typed on"
-        );
-        assert_eq!(writing(Document::KIND, typing), expected);
-        assert_eq!(writing(Document::KIND, Document::INSERT_TABLE.id), None);
-        assert_eq!(
-            writing("notes.note", Document::APPEND_PARAGRAPH.id),
-            None,
-            "only the word processor's own writing"
         );
     }
 

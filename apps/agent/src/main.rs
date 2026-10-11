@@ -27,8 +27,7 @@ use clap::Parser;
 use tilo_agent::{Config, Session};
 
 /// A participant without a window: joins the session's collaboration broker
-/// and handles addressed document instructions or canonical package-primary
-/// Chat summons (`--app so.tilo.chat`, no `--record`).
+/// and carries out broker-leased tasks (`--task-runs`).
 #[derive(Parser, Debug)]
 #[command(name = "tilo-agent")]
 struct Cli {
@@ -112,6 +111,10 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let mut cli = Cli::parse();
+    anyhow::ensure!(
+        cli.task_runs,
+        tilo_agent::session::DOCUMENT_MODE_UNAVAILABLE
+    );
     let managed = std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some();
     let model_timeout_ms = cli.model_timeout_ms.unwrap_or(if managed {
         MANAGED_MODEL_TIMEOUT_MS
@@ -153,12 +156,7 @@ fn main() -> anyhow::Result<()> {
         permissions,
         content: device_content(),
     };
-    let mut session = Session::connect(cfg)?;
-    if cli.task_runs {
-        session.run_task_runs()
-    } else {
-        session.run()
-    }
+    Session::connect(cfg)?.run_task_runs()
 }
 
 /// The device content store the launcher handed this agent: where the
