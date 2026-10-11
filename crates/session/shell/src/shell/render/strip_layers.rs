@@ -539,7 +539,7 @@ enum Change {
 }
 
 /// Vello rasterises in tiles of this many device pixels a side
-/// (`TILE_WIDTH`/`TILE_HEIGHT` in vello_encoding's config); a changed edge can
+/// (`TILE_WIDTH`/`TILE_HEIGHT` in `vello_encoding`'s config); a changed edge can
 /// round its tile's other pixels by a unit, so a change is repaired in whole
 /// tiles. A raster unit, not a spacing.
 const TILE_EDGE: u32 = 16;
