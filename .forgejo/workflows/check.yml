@@ -1032,8 +1032,12 @@ jobs:
           # checkout keeps the write-capable repository token. Every other
           # checkout reads this public repository with the job token.
           token: ${{ secrets.REGISTRY_TOKEN }}
-          fetch-depth: 0
-          filter: blob:none
+          # Recording needs the tested commit and the receipt script, not
+          # ancestry or other branches. receipt.sh fetches its notes ref.
+          fetch-depth: 1
+          fetch-tags: false
+          sparse-checkout: tools/ci/receipt.sh
+          sparse-checkout-cone-mode: false
       - name: Record an observable CI receipt without touching a branch
         if: always() && steps.receipt-checkout.outcome == 'success'
         continue-on-error: true
