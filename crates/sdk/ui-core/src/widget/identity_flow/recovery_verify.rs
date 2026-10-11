@@ -18,6 +18,7 @@
 //! reader hears "Word 12" rather than "text input".
 
 use crate::widget::{AppModel, ModelPath};
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
@@ -33,14 +34,15 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::ScreenOutcome;
 use crate::widget::identity_flow::sheet::{
-    Align, BodyScroll, GRID_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, WordGrid, edited,
-    field_leaf, paint_text, paragraph_height, place_field, resolve, screen_style,
-    with_layout_renderer,
+    Align, BodyScroll, GRID_SHEET_WIDTH, Resolved, Role, Rows, SheetFrame, SheetScreen, WordGrid,
+    draw_screen, edited, field_leaf, layout_screen, paint_text, paragraph_height, place_field,
+    screen_style,
 };
-use crate::widget::identity_flow::{RecoveryChallenge, ScreenOutcome};
 use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
+use tilo_identity_ceremony::RecoveryChallenge;
 
 const TITLE: &str = "Confirm your recovery words";
 const EXPLANATION: &str =
@@ -81,7 +83,7 @@ fn blank_inputs(challenge: Option<&RecoveryChallenge>) -> [TextInput; 3] {
 
 /// Every rect the screen paints and hit-tests, from one pass over the rows.
 #[derive(Clone, Debug, Default)]
-struct Plan {
+pub(super) struct Plan {
     explanation: Rect,
     grid: Rect,
     /// One editable cell per challenge slot, in storage order.
@@ -92,7 +94,7 @@ struct Plan {
 
 /// Screen 2b: type-3-words verification.
 pub struct RecoveryVerifyScreen {
-    rect: Rect,
+    frame: SheetFrame,
     mnemonic: String,
     challenge: Option<RecoveryChallenge>,
     /// One shared text input per slot, in storage order, so the user gets
@@ -110,11 +112,6 @@ pub struct RecoveryVerifyScreen {
     continue_rect: Rect,
     reseed_rect: Rect,
     last_cursor: Point,
-    /// The theme `build_layout` saw, so `apply_layout` can resolve the rows
-    /// without waiting for a paint.
-    layout_theme: Option<Theme>,
-    scroll: BodyScroll,
-    body_height: f64,
 }
 
 impl Default for RecoveryVerifyScreen {
@@ -126,7 +123,7 @@ impl Default for RecoveryVerifyScreen {
 impl RecoveryVerifyScreen {
     pub fn new() -> Self {
         Self {
-            rect: Rect::ZERO,
+            frame: SheetFrame::default(),
             mnemonic: String::new(),
             challenge: None,
             editors: blank_inputs(None),
@@ -137,9 +134,6 @@ impl RecoveryVerifyScreen {
             continue_rect: Rect::ZERO,
             reseed_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
-            layout_theme: None,
-            scroll: BodyScroll::default(),
-            body_height: 0.0,
         }
     }
 
@@ -306,7 +300,7 @@ impl RecoveryVerifyScreen {
                 None,
             ),
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.scroll.wheel(delta) {
+                if self.frame.wheel(delta) {
                     *ctx.handled = true;
                 }
                 (Some(ScreenOutcome::Stay), None)
@@ -369,7 +363,7 @@ impl RecoveryVerifyScreen {
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
     ) -> Option<ScreenOutcome> {
-        if self.scroll.key(logical_key, self.body_height) {
+        if self.frame.key(logical_key) {
             *handled = true;
             return Some(ScreenOutcome::Stay);
         }
@@ -395,107 +389,6 @@ impl RecoveryVerifyScreen {
                 Some(ScreenOutcome::Stay)
             }
             _ => None,
-        }
-    }
-
-    /// One geometry pass for both `apply_layout` and `draw`; the blanks'
-    /// targets are the parts of them inside the visible body.
-    fn resolve(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) -> Resolved<Plan> {
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: TITLE,
-            max_width: GRID_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let mut scroll = self.scroll;
-        let resolved = resolve(
-            self.rect,
-            &spec,
-            &mut scroll,
-            text_renderer,
-            theme,
-            |rows, control_h, tr, theme| {
-                let plan = self.plan(rows, control_h, tr, theme);
-                let bottom = plan.bottom;
-                (plan, bottom)
-            },
-        );
-        self.scroll = scroll;
-        let body = resolved.sheet.body();
-        self.body_height = body.height();
-        // An accessibility `SetValue` lands outside the event path; the
-        // layout pass that follows it is where the edit is noticed.
-        self.note_edits();
-        // Each blank takes its whole grid cell (the body clip trims its
-        // paint); its pointer target is the part inside the visible body.
-        for (editor, rect) in self.editors.iter_mut().zip(resolved.plan.slots.iter()) {
-            place_field(editor, *rect);
-        }
-        for (slot, rect) in self.slot_rects.iter_mut().zip(resolved.plan.slots.iter()) {
-            *slot = BodyScroll::visible(body, *rect);
-        }
-        self.reseed_rect = resolved.sheet.action(ACTION_RESEED);
-        self.continue_rect = resolved.sheet.action(ACTION_FINISH);
-        resolved
-    }
-
-    fn actions(&self) -> [ModalAction<'static>; 2] {
-        [
-            ModalAction::secondary(RESEED_LABEL)
-                .hovered(self.reseed_rect.contains(self.last_cursor)),
-            ModalAction::primary(FINISH_LABEL)
-                .enabled(self.is_correct())
-                .hovered(self.continue_rect.contains(self.last_cursor)),
-        ]
-    }
-
-    /// Walk the body rows once: explanation, the same six control-tall
-    /// grid rows the share screen lays out (so the two read as one surface
-    /// with three blanks punched in), then the mismatch line if any.
-    fn plan(
-        &self,
-        mut rows: Rows,
-        control_h: f64,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Plan {
-        let sp = &theme.tokens.spacing;
-        let width = rows.width();
-        let explanation = rows.row(paragraph_height(
-            text_renderer,
-            theme,
-            Role::Body,
-            EXPLANATION,
-            width,
-        ));
-        rows.gap(sp.s6);
-        let grid = rows.row(WordGrid::height(WORD_COUNT, control_h));
-        let cells = WordGrid::new(grid, control_h, text_renderer, theme);
-        let mut slots = [Rect::ZERO; 3];
-        if let Some(c) = &self.challenge {
-            for (slot, pos1) in slots.iter_mut().zip(c.positions.iter()) {
-                // Positions are one-based; the editable blank is the word
-                // column of its cell.
-                let (_, word) = cells.cell(pos1.saturating_sub(1), theme);
-                *slot = word;
-            }
-        }
-        let error = self.last_attempt_failed.then(|| {
-            rows.gap(sp.s4);
-            rows.row(paragraph_height(
-                text_renderer,
-                theme,
-                Role::Error,
-                MISMATCH,
-                width,
-            ))
-        });
-        Plan {
-            explanation,
-            grid,
-            slots,
-            error,
-            bottom: rows.bottom(),
         }
     }
 
@@ -642,6 +535,141 @@ pub fn next_slot_in_visual_order(slot: usize, positions: &[usize; 3], backward: 
     }
 }
 
+impl SheetScreen for RecoveryVerifyScreen {
+    type Plan = Plan;
+    type Actions = [ModalAction<'static>; 2];
+
+    fn frame(&self) -> &SheetFrame {
+        &self.frame
+    }
+
+    fn frame_mut(&mut self) -> &mut SheetFrame {
+        &mut self.frame
+    }
+
+    fn title(&self) -> Cow<'static, str> {
+        TITLE.into()
+    }
+    fn max_width(&self) -> f64 {
+        GRID_SHEET_WIDTH
+    }
+
+    fn actions(&self) -> [ModalAction<'static>; 2] {
+        [
+            ModalAction::secondary(RESEED_LABEL)
+                .hovered(self.reseed_rect.contains(self.last_cursor)),
+            ModalAction::primary(FINISH_LABEL)
+                .enabled(self.is_correct())
+                .hovered(self.continue_rect.contains(self.last_cursor)),
+        ]
+    }
+    /// Walk the body rows once: explanation, the same six control-tall
+    /// grid rows the share screen lays out (so the two read as one surface
+    /// with three blanks punched in), then the mismatch line if any.
+    fn plan(
+        &self,
+        mut rows: Rows,
+        control_h: f64,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Plan {
+        let sp = &theme.tokens.spacing;
+        let width = rows.width();
+        let explanation = rows.row(paragraph_height(
+            text_renderer,
+            theme,
+            Role::Body,
+            EXPLANATION,
+            width,
+        ));
+        rows.gap(sp.s6);
+        let grid = rows.row(WordGrid::height(WORD_COUNT, control_h));
+        let cells = WordGrid::new(grid, control_h, text_renderer, theme);
+        let mut slots = [Rect::ZERO; 3];
+        if let Some(c) = &self.challenge {
+            for (slot, pos1) in slots.iter_mut().zip(c.positions.iter()) {
+                // Positions are one-based; the editable blank is the word
+                // column of its cell.
+                let (_, word) = cells.cell(pos1.saturating_sub(1), theme);
+                *slot = word;
+            }
+        }
+        let error = self.last_attempt_failed.then(|| {
+            rows.gap(sp.s4);
+            rows.row(paragraph_height(
+                text_renderer,
+                theme,
+                Role::Error,
+                MISMATCH,
+                width,
+            ))
+        });
+        Plan {
+            explanation,
+            grid,
+            slots,
+            error,
+            bottom: rows.bottom(),
+        }
+    }
+
+    fn bottom(plan: &Plan) -> f64 {
+        plan.bottom
+    }
+
+    fn place(
+        &mut self,
+        resolved: &Resolved<Plan>,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+    ) {
+        let body = resolved.sheet.body();
+        // An accessibility `SetValue` lands outside the event path; the
+        // layout pass that follows it is where the edit is noticed.
+        self.note_edits();
+        // Each blank takes its whole grid cell (the body clip trims its
+        // paint); its pointer target is the part inside the visible body.
+        for (editor, rect) in self.editors.iter_mut().zip(resolved.plan.slots.iter()) {
+            place_field(editor, *rect);
+        }
+        for (slot, rect) in self.slot_rects.iter_mut().zip(resolved.plan.slots.iter()) {
+            *slot = BodyScroll::visible(body, *rect);
+        }
+        self.reseed_rect = resolved.sheet.action(ACTION_RESEED);
+        self.continue_rect = resolved.sheet.action(ACTION_FINISH);
+    }
+
+    fn paint_body(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        presence: &PresenceCtx,
+        resolved: &Resolved<Plan>,
+    ) {
+        let plan = &resolved.plan;
+        let control_h = resolved.sheet.control_height(ctx.theme);
+        paint_text(
+            ctx,
+            plan.explanation,
+            EXPLANATION,
+            Role::Body,
+            Align::Start,
+            true,
+        );
+        self.draw_word_grid(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            presence,
+            plan,
+            control_h,
+        );
+        if let Some(rect) = plan.error {
+            paint_text(ctx, rect, MISMATCH, Role::Error, Align::Start, true);
+        }
+    }
+}
+
 impl Widget for RecoveryVerifyScreen {
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
 
@@ -651,7 +679,7 @@ impl Widget for RecoveryVerifyScreen {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.layout_theme = Some(theme.clone());
+        self.frame.layout_theme = Some(theme.clone());
         // One child node per blank, in reading order, so the host's Tab
         // walks the grid the way the eye does; placed by the sheet, not by
         // taffy (`Display::None`), but present so focus and accessibility
@@ -672,12 +700,7 @@ impl Widget for RecoveryVerifyScreen {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-        if let Some(theme) = self.layout_theme.clone() {
-            with_layout_renderer(&theme, |tr| {
-                self.resolve(&theme, tr);
-            });
-        }
+        layout_screen(self, taffy, node, origin);
     }
 
     fn draw(
@@ -688,52 +711,7 @@ impl Widget for RecoveryVerifyScreen {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Identity ceremonies, invites and joins are security surfaces:
-        // every look-alike letter is set apart.
-        text_renderer.security_surface(|text_renderer| {
-            let resolved = self.resolve(theme, text_renderer);
-            let actions = self.actions();
-            let spec = SheetSpec {
-                title: TITLE,
-                max_width: GRID_SHEET_WIDTH,
-                actions: &actions,
-            };
-            let sheet = &resolved.sheet;
-            let plan = &resolved.plan;
-            let control_h = sheet.control_height(theme);
-
-            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-            sheet.clip_body(scene, transform);
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                plan.explanation,
-                EXPLANATION,
-                Role::Body,
-                Align::Start,
-                true,
-            );
-            self.draw_word_grid(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                plan,
-                control_h,
-            );
-            if let Some(rect) = plan.error {
-                paint_text(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    rect,
-                    MISMATCH,
-                    Role::Error,
-                    Align::Start,
-                    true,
-                );
-            }
-            scene.pop_layer();
-            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-        });
+        draw_screen(self, scene, transform, text_renderer, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -774,7 +752,7 @@ impl Widget for RecoveryVerifyScreen {
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.frame.rect
     }
 
     fn needs_redraw(&self) -> bool {

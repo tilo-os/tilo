@@ -1268,11 +1268,10 @@ impl Drop for SystemSink {
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "decode")]
-    #[allow(dead_code, reason = "only the media-stack check is used here")]
-    mod generated_clip {
+    mod media_stack {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/support/generated_clip.rs"
+            "/tests/support/media_stack.rs"
         ));
     }
 
@@ -1370,7 +1369,7 @@ mod tests {
         // has to come back with it. A decoder that returned `None` here would
         // make every "the export is silent" assertion in this crate vacuous.
         'case: {
-            if !generated_clip::media_stack() {
+            if !media_stack::media_stack() {
                 break 'case;
             }
             let uri = crate::media::engine_source(&sample("Ambient_Pad.wav"))

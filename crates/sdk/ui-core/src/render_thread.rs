@@ -120,9 +120,9 @@ pub(crate) fn take_surface_loss() -> Option<String> {
 
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "only the native event-loop runner takes a renderer back to reuse"
+        reason = "only the native event-loop runner takes a renderer back to reuse; the worker still hands it back so GPU resources drop on the caller"
     )
 )]
 pub(crate) struct PreparedRenderer {
@@ -167,9 +167,9 @@ pub enum FrameOutcome {
 
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "the native event-loop runner alone reads these; the handle still owns the buffer pool and repaint flag the worker shares"
     )
 )]
 pub struct RenderThreadHandle {
@@ -186,9 +186,9 @@ pub struct RenderThreadHandle {
 /// One atomic reservation preserves both buffers across an aborted redraw.
 #[cfg_attr(
     not(feature = "native"),
-    allow(
+    expect(
         dead_code,
-        reason = "some fields are read only by the native event-loop runner"
+        reason = "the native event-loop runner alone reads the pool; its receiver stays open so the worker can return buffers"
     )
 )]
 pub(crate) struct BufferPool<T> {

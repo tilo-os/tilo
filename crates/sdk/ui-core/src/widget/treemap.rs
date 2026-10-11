@@ -5,10 +5,7 @@
     reason = "treemap partitioning is bounded floating-point geometry"
 )]
 
-use std::collections::HashMap;
-
 use crate::widget::ModelPath;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -19,10 +16,11 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::Widget;
+use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
 };
-use crate::widget::{TaffyTreeExt, Widget};
 
 #[derive(Clone, Debug)]
 pub struct TreemapItem {
@@ -323,24 +321,8 @@ impl InteractiveChart for Treemap {
 }
 
 impl Widget for Treemap {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::widget::chart_navigation::chart_leaf!();
+
     #[allow(
         clippy::too_many_lines,
         reason = "tiles, responsive labels and inspector share one paint pass"
@@ -496,26 +478,8 @@ impl Widget for Treemap {
     fn name(&self) -> &'static str {
         "Treemap"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
-    }
-}
-
-fn format_compact(value: f64) -> String {
-    if value.abs() >= 1_000_000_000.0 {
-        format!("{:.1}B", value / 1_000_000_000.0)
-    } else if value.abs() >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if value.abs() >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
-    } else {
-        format!("{value:.1}")
     }
 }
 

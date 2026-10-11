@@ -448,29 +448,6 @@ impl NativeRedrawReasons {
             || (!session_locked && self.keepalive)
             || (session_locked && (self.lock_clock || self.lock_animation || self.lock_osd))
     }
-
-    /// The edges that hold, as bits of [`super::metrics::REDRAW_REASONS`].
-    fn bits(self, session_locked: bool) -> u32 {
-        [
-            self.force,
-            self.backend_event,
-            self.visible_input,
-            self.session,
-            self.revision,
-            !session_locked && self.hidden_desktop_animation,
-            !session_locked && self.apps,
-            !session_locked && self.peers,
-            !session_locked && self.presentation,
-            !session_locked && self.capture,
-            session_locked && self.lock_clock,
-            session_locked && self.lock_animation,
-            session_locked && self.lock_osd,
-            !session_locked && self.keepalive,
-        ]
-        .into_iter()
-        .enumerate()
-        .fold(0, |bits, (bit, held)| bits | (u32::from(held) << bit))
-    }
 }
 
 /// An animation's resting frame is owed after its demand clears. The last
@@ -501,6 +478,13 @@ impl AnimationSettle {
 
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
+
+/// Loop iterations of work after which a quiet park asks for a heap trim: startup
+/// or a burst of input, not the one tick of a minute's clock repaint.
+const QUIET_TRIM_AFTER_TICKS: u32 = 30;
+
+/// A park at least this long (or one only an fd ends) is the loop going quiet.
+const QUIET_PARK: Duration = Duration::from_secs(1);
 const WAYLAND_CLIENT_SERVICE_FALLBACK: Duration = Duration::from_millis(4);
 const WAYLAND_REQUESTS_PER_CLIENT_PER_TICK: usize = 64;
 const WAYLAND_PENDING_RETRY_FLOOR: Duration = Duration::from_millis(1);
@@ -5844,6 +5828,27 @@ struct SpatialControlSession {
     nearby_drop: Option<std::path::PathBuf>,
 }
 
+/// Apply a production native-seat batch; the runtime drains revocation barriers
+/// before surviving input. Both phases keep their existing timing/count names.
+pub(crate) fn dispatch_spatial_input_batch(
+    state: &mut State,
+    batch: crate::shell::device_fabric_runtime::SpatialInputBatch,
+) {
+    use crate::shell::device_fabric_runtime::SpatialInputBatch;
+    match batch {
+        SpatialInputBatch::Releases(controllers) => {
+            for controller in controllers {
+                let _ = state.release_personal_fabric_input(&controller);
+            }
+        }
+        SpatialInputBatch::Inputs(events) => {
+            for (controller, event) in events {
+                let _ = state.apply_personal_fabric_input(&controller, event);
+            }
+        }
+    }
+}
+
 fn end_spatial_control(
     network: &crate::shell::network::ShellNetwork,
     active: &mut Option<SpatialControlSession>,
@@ -7684,11 +7689,9 @@ struct PortalBackend {
     /// The on-screen file chooser's queue, shared with the chooser service
     /// that apps without a portal reach.
     pickers: crate::portal::FilePickerQueue,
-    #[allow(
-        dead_code,
-        reason = "Retaining the registration keeps its D-Bus connection, bus name, and object server alive once registered."
-    )]
-    server: crate::session_runtime::Registration<crate::portal::ServerHandle>,
+    /// Never read: retaining the registration keeps its D-Bus connection, bus
+    /// name, and object server alive once registered.
+    _server: crate::session_runtime::Registration<crate::portal::ServerHandle>,
     remote_input: std::sync::mpsc::Receiver<crate::network::streaming::RemoteAction>,
     input_capture: crate::portal::InputCaptureCompositorHandle,
     screencast: crate::portal::ScreenCastStreamProvisionerHandle,
@@ -8015,7 +8018,7 @@ fn start_portal_backend(
         media_grants: grants,
         media_prompts: prompts,
         pickers,
-        server,
+        _server: server,
         remote_input: remote_input_rx,
         input_capture,
         screencast,
@@ -8233,6 +8236,9 @@ pub fn run() {
         eprintln!("tilo compositor: cannot establish session lock recovery: {error}");
         std::process::exit(1);
     });
+    // Startup frees its scratch (renderer warm-up, identity, network, search) over its first
+    // seconds, never all at once, and glibc keeps it: one trim once it is over.
+    crate::shell::heap_trim::request_after(crate::shell::heap_trim::STARTUP_SETTLED);
     // Calloop drives the whole compositor; smithay is callback-oriented and
     // expects every wakeup to fan out from a single `EventLoop::<State>`.
     let mut event_loop: EventLoop<'static, State> = match EventLoop::try_new() {
@@ -8544,15 +8550,22 @@ pub fn run() {
     // Point `ui`'s clipboard at the compositor's selection mirror — everything
     // hosted here isn't a Wayland client, so without this they'd share no buffer.
     crate::compositor::selection::install_host_services(state.selection_store());
+    // Building the desktop mounts the hosted tabs it restores, which connect
+    // to the collaboration broker and identity service bound below: they
+    // wait for them rather than find no socket and stay offline.
+    crate::shell::in_process::set_session_services(
+        crate::shell::in_process::SessionServices::Starting,
+    );
     let mut frame_builder = FrameBuilder::with_handle_and_records(
         tree_handle.clone(),
         enable_peer_sync,
         initial_size,
         crate::shell::session_record_store(),
     );
-    frame_builder
-        .host_mut()
-        .set_pixel_aligned_strip_pan(backend.pixel_aligned_strip_pan());
+    frame_builder.set_strip_pan_presenter(
+        backend.pixel_aligned_strip_pan(),
+        backend.composites_strip_layers(),
+    );
     let clipboard_store = state.selection_store();
     frame_builder
         .host_mut()
@@ -8667,6 +8680,8 @@ pub fn run() {
     });
     let mut spatial_control: Option<SpatialControlSession> = None;
     let mut spatial_pointer_parked = false;
+    // Loop iterations since the last quiet trim was asked for.
+    let mut ticks_since_trim: u32 = 0;
     // The session's CRDT fan-out broker, bound before the wayland socket is
     // published (before any app launches) — an app resolves its collab
     // descriptor once at spawn, so a broker arriving later is one it never gets.
@@ -8722,6 +8737,12 @@ pub fn run() {
         }
     }
     let identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
+    // Onboarding defers the broker; its start below says so then.
+    if !deferred_peer_sync && !deferred_local_broker {
+        crate::shell::in_process::set_session_services(
+            crate::shell::in_process::SessionServices::Listening,
+        );
+    }
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
     // failure only removes the advanced handoff, never core Settings controls.
@@ -9011,6 +9032,7 @@ pub fn run() {
             apps.bind_messaging_record_wake(Arc::clone(&session_wake));
             if let Some(network) = peer_sync.as_ref() {
                 apps.bind_private_messages_network(network);
+                apps.bind_feedback_network(Arc::clone(network));
             }
         }
     });
@@ -9390,6 +9412,13 @@ pub fn run() {
     let mut watched_for_host = false;
     // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
     let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
+    // `TILO_PAINT_STATS=ticks` also prints a `paint-tick:` line on every
+    // iteration, so a reader can tell when each one ran: a summary covers
+    // everything since the previous one, which may lie long before the
+    // period the reader measures (the idle gate counts only its window).
+    let paint_ticks = std::env::var("TILO_PAINT_STATS").is_ok_and(|value| value.trim() == "ticks");
+    // What ended the park before this iteration, for `paint-tick:`.
+    let mut last_wake: &'static str = "start";
     // Slow iterations are exceptional and always worth preserving in the
     // session flight record: a compositor that stops pumping input for 100 ms
     // is already visibly broken. `TILO_LOOP_TIMING` additionally enables the
@@ -9471,9 +9500,6 @@ pub fn run() {
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
     let mut animation_sources_seen = crate::shell::frame::AnimationDemand::default();
     let mut animating_content_leaves: Vec<String> = Vec::new();
-    // Widgets that asked for a still frame (no animation running): what
-    // repaints an idle desktop.
-    let mut redraw_content_leaves: Vec<String> = Vec::new();
     let mut wakes_seen = WakeTally::default();
     let mut widget_wake_owner: Option<String> = None;
     // Test-control commands are intentionally serviced after this tick's
@@ -11600,25 +11626,33 @@ pub fn run() {
             if let Some(bridge) = realtime_fabric_bridge.as_ref() {
                 pump_phase!("realtime-app-events", bridge.pump_app_events());
             }
-            let spatial_input = crate::shell::device_fabric_runtime::take_spatial_input();
-            let spatial_input_count = spatial_input.len();
-            pump_phase!(
-                "spatial-input",
-                spatial_input_count,
-                for (controller, event) in spatial_input {
-                    let _ = state.apply_personal_fabric_input(&controller, event);
+            for batch in crate::shell::device_fabric_runtime::take_spatial_input_batches() {
+                use crate::shell::device_fabric_runtime::SpatialInputBatch;
+                match batch {
+                    SpatialInputBatch::Releases(controllers) => {
+                        let count = controllers.len();
+                        pump_phase!(
+                            "spatial-input-releases",
+                            count,
+                            dispatch_spatial_input_batch(
+                                &mut state,
+                                SpatialInputBatch::Releases(controllers),
+                            )
+                        );
+                    }
+                    SpatialInputBatch::Inputs(events) => {
+                        let count = events.len();
+                        pump_phase!(
+                            "spatial-input",
+                            count,
+                            dispatch_spatial_input_batch(
+                                &mut state,
+                                SpatialInputBatch::Inputs(events)
+                            )
+                        );
+                    }
                 }
-            );
-            let spatial_releases =
-                crate::shell::device_fabric_runtime::take_spatial_input_releases();
-            let spatial_release_count = spatial_releases.len();
-            pump_phase!(
-                "spatial-input-releases",
-                spatial_release_count,
-                for controller in spatial_releases {
-                    let _ = state.release_personal_fabric_input(&controller);
-                }
-            );
+            }
             let nearby_drop_events = crate::shell::device_fabric_runtime::take_nearby_drop_events();
             let nearby_drop_event_count = nearby_drop_events.len();
             pump_phase!(
@@ -11666,7 +11700,8 @@ pub fn run() {
                     });
                 }
             );
-            let personal_viewers = crate::shell::device_fabric_runtime::window_viewers();
+            let personal_viewers =
+                crate::shell::device_fabric_runtime::window_viewers(continuity_policy.current());
             let viewer_hosts = if backend_kind == BackendKind::Headless {
                 let active_room = {
                     let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
@@ -11909,7 +11944,11 @@ pub fn run() {
                 let tree = tree_handle.read();
                 shown_hosted_windows(&tree, &tiles)
             };
-            crate::shell::device_fabric_runtime::publish_window_views(net, window_views);
+            crate::shell::device_fabric_runtime::publish_window_views(
+                net,
+                window_views,
+                continuity_policy.current(),
+            );
         }
         pump_checkpoint!("device-fabric-and-network");
         // Keep the presence relay current, then fold in what peers sent. Pointer
@@ -12015,7 +12054,9 @@ pub fn run() {
                         net.set_wake(Arc::clone(&session_wake));
                         frame_builder.with_chrome(|chrome| {
                             if let Some(apps) = chrome.hosted_inputs.in_process() {
-                                apps.borrow_mut().bind_private_messages_network(net);
+                                let mut apps = apps.borrow_mut();
+                                apps.bind_private_messages_network(net);
+                                apps.bind_feedback_network(Arc::clone(net));
                             }
                         });
                     }
@@ -12028,6 +12069,9 @@ pub fn run() {
             };
             collab_broker =
                 spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
+            crate::shell::in_process::set_session_services(
+                crate::shell::in_process::SessionServices::Listening,
+            );
             if let Some(broker) = collab_broker.as_ref() {
                 local_session_lifecycle = Some(install_native_session_lifecycle(
                     broker,
@@ -12170,7 +12214,7 @@ pub fn run() {
         }
         // Is there anything new to show? This redraw gating lets a static desktop
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
-        let redraw_reasons = NativeRedrawReasons {
+        let content_changed = NativeRedrawReasons {
             force: force_first_paint,
             backend_event: had_backend_events,
             visible_input: visible_input_changed,
@@ -12204,8 +12248,8 @@ pub fn run() {
             )
             .is_some_and(|deadline| iter_t0 >= deadline),
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
-        };
-        let content_changed = redraw_reasons.content_changed(session.is_locked());
+        }
+        .content_changed(session.is_locked());
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
@@ -12228,12 +12272,6 @@ pub fn run() {
             metrics.mark_backpressured();
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
-        if should_paint && metrics.is_enabled() {
-            metrics.mark_redraw(
-                redraw_reasons.bits(session.is_locked()),
-                frame_builder.host().last_update_sources(),
-            );
-        }
         animation_settle.after_tick(still_moving, should_paint);
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
@@ -12256,6 +12294,9 @@ pub fn run() {
         // vs idled and why, confirming the loop actually idles without guessing.
         if paint_stats {
             frames_total = frames_total.saturating_add(1);
+            if paint_ticks {
+                eprintln!("paint-tick: painted={should_paint} woke={last_wake}");
+            }
             if should_paint {
                 frames_painted = frames_painted.saturating_add(1);
                 if had_backend_events {
@@ -12282,13 +12323,6 @@ pub fn run() {
                     && !(had_backend_events || session_changed || revision_changed || animating)
                 {
                     cause_keepalive = cause_keepalive.saturating_add(1);
-                }
-                if !session.is_locked()
-                    && !animating
-                    && frame_builder.host().last_update_sources() & 1 != 0
-                    && redraw_content_leaves.is_empty()
-                {
-                    redraw_content_leaves = frame_builder.content_redrawing_leaves();
                 }
             }
             if stats_since.elapsed() >= Duration::from_secs(2) {
@@ -12327,12 +12361,10 @@ pub fn run() {
                 cause_session = 0;
                 cause_keepalive = 0;
                 eprintln!(
-                    "paint-stats: wakes {} | widget-deadline owner {:?} | still redraw {:?}",
+                    "paint-stats: wakes {} | widget-deadline owner {:?}",
                     wakes_seen.take_summary(),
                     widget_wake_owner.take().unwrap_or_default(),
-                    redraw_content_leaves.join(","),
                 );
-                redraw_content_leaves.clear();
                 animation_sources_seen = crate::shell::frame::AnimationDemand::default();
                 animating_content_leaves.clear();
                 stats_since = Instant::now();
@@ -12752,6 +12784,14 @@ pub fn run() {
                 crate::compositor::screen_dim::paint_overlay(&mut frame_paint.scene, rect, alpha);
                 frame_paint.force_full();
             }
+            // The scene is final: whatever was appended above has voided the
+            // candidate if it covers it. The fullscreen client learns what
+            // the display would scan out, or that it no longer would.
+            state.update_scanout_feedback(crate::compositor::scanout_feedback::offer(
+                frame_paint.scanout_candidate(),
+                backend.outputs(),
+                |output| backend.scanout_plane(output),
+            ));
             let feedback_output = (backend.outputs().len() == 1)
                 .then(|| {
                     backend
@@ -13252,6 +13292,15 @@ pub fn run() {
                 ("control-followup", control_followup.then_some(park_now)),
             ],
         );
+        // Work (startup, a burst of input, windows closing) leaves freed heap glibc keeps. A
+        // loop going to sleep for a while after it asks for one trim once it stays quiet; a
+        // minute's clock repaint is not work enough to ask.
+        ticks_since_trim = ticks_since_trim.saturating_add(1);
+        if ticks_since_trim >= QUIET_TRIM_AFTER_TICKS && park.is_none_or(|park| park >= QUIET_PARK)
+        {
+            crate::shell::heap_trim::request_when_quiet();
+            ticks_since_trim = 0;
+        }
         let t_sleep_start = Instant::now();
         if let Err(err) = event_loop.dispatch(park, &mut state) {
             eprintln!("tilo compositor: event loop dispatch error: {err}");
@@ -13266,6 +13315,7 @@ pub fn run() {
         metrics.mark_wake(wake);
         if paint_stats {
             wakes_seen.note(wake);
+            last_wake = wake;
             if wake == "widget" && widget_wake_owner.is_none() {
                 widget_wake_owner = Some(frame_builder.wake_deadline_owners().join(","));
             }
@@ -14309,12 +14359,6 @@ mod tests {
             },
         ] {
             assert!(!hidden.content_changed(true));
-            assert_eq!(
-                hidden.bits(true),
-                0,
-                "hidden work must not be attributed to a lock frame"
-            );
-            assert_ne!(hidden.bits(false), 0);
             assert!(
                 hidden.content_changed(false),
                 "unlocked redraw behaviour must remain unchanged"
@@ -14340,7 +14384,6 @@ mod tests {
             },
         ] {
             assert!(visible_lock_edge.content_changed(true));
-            assert_ne!(visible_lock_edge.bits(true), 0);
         }
         // Phase `due_lock_animation_waits_for_cadence_or_presenter_instead_of_spinning`.
         {

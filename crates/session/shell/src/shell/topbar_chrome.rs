@@ -194,6 +194,10 @@ impl DesktopChromeSource for NativeChrome {
         self.chrome.borrow().tree().desktop.clone()
     }
 
+    fn take_topbar_editor_request(&self) -> bool {
+        self.chrome.borrow_mut().take_topbar_editor_request()
+    }
+
     fn snapshot(&self) -> DesktopChromeSnapshot {
         let mut state = self.chrome.borrow_mut();
         refresh_clock_activity(&mut state, &mut self.clock.borrow_mut());

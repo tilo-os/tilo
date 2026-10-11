@@ -19,7 +19,8 @@ use crate::actions::{
 };
 use crate::app::SheetsApp;
 use crate::doc::{ChartSnapshot, CommentThread, SheetSnapshot, SheetsDoc};
-use crate::model::{CellFormat, Currency, format_value};
+use crate::model::{CellFormat, format_value};
+use tilo_locale::Currency;
 
 /// The currency a stored currency format without its own reads as.
 const READ_CURRENCY: Currency = Currency::USD;
@@ -413,7 +414,7 @@ impl ResourceSurface<SheetsWorkbook, SheetsEffect> for SheetsApp {
 
     fn attach(&mut self, cx: SurfaceCx<SheetsWorkbook>) {
         self.attach_framework(cx.dispatcher());
-        self.follow_locale(cx.settings::<crate::settings::Locale>());
+        self.follow_locale(cx.settings::<tilo_locale::Locale>());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {

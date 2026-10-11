@@ -313,11 +313,6 @@ pub struct CameraApp {
     /// Where capture bytes live; documents carry only their `media_id`. The
     /// worker holds a clone.
     content: tilo_content::ContentStore,
-    #[allow(
-        dead_code,
-        reason = "seed for screen; kept for restore after framework cutover"
-    )]
-    initial_screen: Screen,
 
     screen: Screen,
     mode: CaptureMode,
@@ -506,7 +501,6 @@ impl CameraApp {
             storage,
             worker: crate::worker::CameraWorker::new(content.clone()),
             content,
-            initial_screen,
             screen: initial_screen,
             mode: CaptureMode::Photo,
             facing: Facing::Back,

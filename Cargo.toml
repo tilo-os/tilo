@@ -5,6 +5,7 @@
 # `.cargo/config.toml` applies:
 # `crates/doc/tilo-doc-codec-markdown-wasm/build.sh`.
 exclude = [
+    "vendor/buffa-build",
     "fuzz",
     "crates/doc/tilo-doc-codec-markdown-wasm",
     "vendor/vello",
@@ -46,6 +47,7 @@ members = [
     "crates/dev/registry-review",
     "apps/canvas",
     "crates/collab/tilo-action-broker",
+    "crates/collab/tilo-identity-ceremony",
     "crates/session/desktop",
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
@@ -246,8 +248,10 @@ members = [
     "crates/platform/tilo-location",
     "crates/platform/tilo-image-codec",
     "crates/platform/tilo-keyboard-map",
+    "crates/platform/tilo-locale",
     "crates/platform/tilo-media",
     "crates/platform/tilo-spotify",
+    "crates/platform/tilo-invidious",
     "crates/platform/tilo-net",
     "crates/platform/tilo-host-search",
     "crates/platform/tilo-notify",
@@ -672,6 +676,9 @@ opt-level = 3
 opt-level = 3
 [profile.test.package.hexane]
 opt-level = 3
+# crates.io automerge, the reference tilo-automerge's tests compare the fork to.
+[profile.test.package.automerge]
+opt-level = 3
 
 # The wet-media simulations re-run on every edit of a painted layer; unoptimised
 # they take seconds per stroke, and the canvas app is unusable in a dev build.
@@ -923,6 +930,8 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
+buffa-build = { path = "vendor/buffa-build" }
 # Verify Cast TLS handshake signatures and bound cancellation; identity
 # authentication remains a separate explicit trust decision. See provenance.
 fcast-sender-sdk = { path = "vendor/fcast-sender-sdk" }

@@ -58,7 +58,7 @@ pub const MAX_PORTABLE_COVER_BYTES: usize = 256 * 1024;
 pub const MAX_PORTABLE_COVER_EDGE: u32 = 512;
 /// The contextual Ctrl+K snapshot is deliberately small. The full library is
 /// still discoverable through the paged search provider and every returned
-/// canonical address is resolved through [`ResourceProvider::resource`].
+/// canonical address is resolved through `PublishesResources::resource`.
 /// Keeping this bounded prevents opening the palette from cloning a large
 /// library (or every membership in every long playlist) on the UI thread.
 pub const OPEN_RESOURCE_CATEGORY_LIMIT: usize = 16;
@@ -535,12 +535,12 @@ pub enum MusicAction {
 fn recommendation_history(action: &MusicAction) -> Option<tilo_actions::ActionContext> {
     let (label, id, kind) = match action {
         MusicAction::SetRecommendationInput { .. } => (
-            ui::i18n!("music-recommendations-change-inputs"),
+            crate::i18n::t("music-recommendations-change-inputs"),
             "library",
             "music.recommendation-preferences",
         ),
         MusicAction::SetRecommendationDismissed { track, dismissed } => (
-            ui::i18n!(if *dismissed {
+            crate::i18n::t(if *dismissed {
                 "music-recommendations-dismiss"
             } else {
                 "music-recommendations-restore"
@@ -549,7 +549,7 @@ fn recommendation_history(action: &MusicAction) -> Option<tilo_actions::ActionCo
             "music.recommendation",
         ),
         MusicAction::SetRecommendationArtist { artist, preferred } => (
-            ui::i18n!(if *preferred {
+            crate::i18n::t(if *preferred {
                 "music-recommendations-prefer"
             } else {
                 "music-recommendations-unprefer"
@@ -565,7 +565,7 @@ fn recommendation_history(action: &MusicAction) -> Option<tilo_actions::ActionCo
         id: format!("{kind}:{id}"),
         kind: kind.to_owned(),
         label: if id == "library" {
-            ui::i18n!("music-recommendations-title")
+            crate::i18n::t("music-recommendations-title")
         } else {
             id.to_owned()
         },

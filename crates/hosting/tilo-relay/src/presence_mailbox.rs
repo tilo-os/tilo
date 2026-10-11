@@ -22,6 +22,23 @@
 //!   arrivals, identity) is never coalesced, and is delivered after the
 //!   presence posted before it: when one is due, everything pending goes with
 //!   it, in posting order.
+//! - **Presence rides along (TIL-776).** A 27-byte batch costs about 35 bytes
+//!   of QUIC packet on top, so presence that may go early goes with whatever
+//!   the connection writes next: a delta, or a batch that fell due
+//!   ([`PresenceMailbox::take`] with `ride`). Carets, selections, typing and
+//!   events may always ride (their window only exists to share a frame); a
+//!   pointer rides once [`RIDE_GAP`] has passed since it last went, so it is
+//!   never sent later than its pace allows and never more often than twice
+//!   that pace.
+//! - **A keystroke's presence waits for its delta.** The toolkit sends a
+//!   keystroke's delta and then its `Typing` and `Caret`; the relay admits the
+//!   delta and fans the presence out while the delta is still being
+//!   committed. Caret, selection and typing posted while a delta of the same
+//!   author is still unpublished
+//!   (`WorkspaceRuntime::note_delta`) are posted *held*: due after
+//!   [`DELTA_HOLD`] rather than [`BATCH_WINDOW`], and taken with the delta
+//!   when it is written, so the caret arrives with the character it follows,
+//!   in one packet. The delta itself never waits.
 //!
 //! Each payload is shared, not copied, between the connections it is posted
 //! to. Deltas never pass through here, so edit delivery never waits for
@@ -40,6 +57,12 @@ use tokio::time::Instant;
 pub const MOTION_GAP: Duration = Duration::from_millis(50);
 /// How long presence waits for more to travel in the same frame.
 pub const BATCH_WINDOW: Duration = Duration::from_millis(5);
+/// The shortest gap after which a pointer slot may ride along with
+/// something else written to its connection.
+pub const RIDE_GAP: Duration = Duration::from_millis(25);
+/// The longest a held caret, selection or typing range waits for the delta
+/// of the same author it follows.
+pub const DELTA_HOLD: Duration = Duration::from_millis(20);
 /// Pending slots one connection holds at most; a new slot beyond it is
 /// dropped, as a full queue drops presence. A slot's newer value always fits.
 const MAX_PENDING: usize = 1024;
@@ -86,6 +109,8 @@ struct State {
 struct Pending {
     payload: Arc<[u8]>,
     motion: bool,
+    /// Waits for a delta of the same author (never a motion slot).
+    held: bool,
     /// When the slot became pending.
     since: Instant,
     /// Posting order of the newest payload.
@@ -104,19 +129,38 @@ fn later(at: Instant, by: Duration) -> Instant {
     at.checked_add(by).unwrap_or(at)
 }
 
-/// When presence pending since `since` in slot `key` falls due.
+/// When `pending` presence in slot `key` falls due.
 fn due_at(
     sent: &HashMap<PresenceSlotKey, Instant>,
     key: &PresenceSlotKey,
-    since: Instant,
-    motion: bool,
+    pending: &Pending,
 ) -> Instant {
-    let batched = later(since, BATCH_WINDOW);
-    if !motion {
+    let window = if pending.held {
+        DELTA_HOLD
+    } else {
+        BATCH_WINDOW
+    };
+    let batched = later(pending.since, window);
+    if !pending.motion {
         return batched;
     }
     sent.get(key)
         .map_or(batched, |sent| batched.max(later(*sent, MOTION_GAP)))
+}
+
+/// Whether `pending` presence in slot `key` may go now with something else:
+/// a change slot always, a pointer once [`RIDE_GAP`] has passed since it
+/// last went (`sent` forgets a pointer [`MOTION_GAP`] after it went).
+fn may_ride(
+    sent: &HashMap<PresenceSlotKey, Instant>,
+    key: &PresenceSlotKey,
+    pending: &Pending,
+    now: Instant,
+) -> bool {
+    !pending.motion
+        || sent
+            .get(key)
+            .is_none_or(|sent| now.saturating_duration_since(*sent) >= RIDE_GAP)
 }
 
 impl State {
@@ -128,7 +172,7 @@ impl State {
         let slotted = self
             .slotted
             .iter()
-            .map(|(key, pending)| due_at(&self.sent, key, pending.since, pending.motion))
+            .map(|(key, pending)| due_at(&self.sent, key, pending))
             .min();
         match (event, slotted) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -143,8 +187,10 @@ impl PresenceMailbox {
     }
 
     /// Post `payload`, which `author` sent to room `workspace_id` in `slot`
-    /// (or unslotted). Returns whether it was taken: only a mailbox at its
-    /// bound refuses.
+    /// (or unslotted). `held` marks presence that follows a delta of the
+    /// same author: a caret, selection or typing range then waits up to
+    /// [`DELTA_HOLD`] to go with that delta. Returns whether it was taken:
+    /// only a mailbox at its bound refuses.
     pub fn post(
         &self,
         workspace_id: u64,
@@ -152,6 +198,7 @@ impl PresenceMailbox {
         slot: Option<PresenceSlot>,
         payload: Arc<[u8]>,
         now: Instant,
+        held: bool,
     ) -> bool {
         let mut state = self.state();
         state.seq = state.seq.saturating_add(1);
@@ -172,17 +219,20 @@ impl PresenceMailbox {
             {
                 return false;
             }
+            let held = held && !slot.motion;
             let pending = state.slotted.entry(key).or_insert_with(|| Pending {
                 payload: Arc::clone(&payload),
                 motion: slot.motion,
+                held,
                 since: now,
                 seq,
             });
             pending.payload = payload;
             pending.motion = slot.motion;
+            pending.held = held;
             pending.seq = seq;
-            let since = pending.since;
-            due_at(&state.sent, &key, since, slot.motion)
+            let pending = state.slotted.get(&key);
+            pending.map_or(now, |pending| due_at(&state.sent, &key, pending))
         } else {
             if state.events.len() >= MAX_PENDING_EVENTS {
                 return false;
@@ -230,21 +280,25 @@ impl PresenceMailbox {
         }
     }
 
-    /// Take everything due at `now`, in posting order. When unslotted
-    /// presence is due, everything pending is taken with it, so it never
-    /// overtakes presence posted before it.
-    pub fn take_due(&self, now: Instant) -> Vec<DuePresence> {
+    /// Take everything due at `now`, in posting order; with `ride`, also
+    /// everything that may go early because something is being written to
+    /// the connection anyway (see [`may_ride`]). When unslotted presence is
+    /// taken, everything pending is taken with it, so it never overtakes
+    /// presence posted before it.
+    pub fn take(&self, now: Instant, ride: bool) -> Vec<DuePresence> {
         let mut state = self.state();
         state.armed = None;
         let everything = state
             .events
             .front()
-            .is_some_and(|event| later(event.since, BATCH_WINDOW) <= now);
+            .is_some_and(|event| ride || later(event.since, BATCH_WINDOW) <= now);
         let keys: Vec<PresenceSlotKey> = state
             .slotted
             .iter()
             .filter(|(key, pending)| {
-                everything || due_at(&state.sent, key, pending.since, pending.motion) <= now
+                everything
+                    || due_at(&state.sent, key, pending) <= now
+                    || (ride && may_ride(&state.sent, key, pending, now))
             })
             .map(|(key, _)| *key)
             .collect();
@@ -317,15 +371,18 @@ mod tests {
     fn the_latest_state_of_each_slot_goes_out_once_the_window_passes() {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
-        assert!(mailbox.post(ROOM, ALICE, Some(caret(1)), bytes("caret 1"), t0));
-        assert!(mailbox.post(ROOM, ALICE, Some(caret(1)), bytes("caret 2"), t0));
-        assert!(mailbox.post(ROOM, ALICE, Some(caret(2)), bytes("typing"), t0));
-        assert!(mailbox.post(ROOM, BOB, Some(caret(1)), bytes("bob caret"), t0));
-        assert!(mailbox.take_due(t0).is_empty(), "the batch window is open");
-        let due = mailbox.take_due(t0 + BATCH_WINDOW);
+        assert!(mailbox.post(ROOM, ALICE, Some(caret(1)), bytes("caret 1"), t0, false));
+        assert!(mailbox.post(ROOM, ALICE, Some(caret(1)), bytes("caret 2"), t0, false));
+        assert!(mailbox.post(ROOM, ALICE, Some(caret(2)), bytes("typing"), t0, false));
+        assert!(mailbox.post(ROOM, BOB, Some(caret(1)), bytes("bob caret"), t0, false));
+        assert!(
+            mailbox.take(t0, false).is_empty(),
+            "the batch window is open"
+        );
+        let due = mailbox.take(t0 + BATCH_WINDOW, false);
         assert_eq!(texts(&due), ["caret 2", "typing", "bob caret"]);
         assert!(due.iter().all(|presence| presence.key.is_some()));
-        assert!(mailbox.take_due(t0 + BATCH_WINDOW).is_empty());
+        assert!(mailbox.take(t0 + BATCH_WINDOW, false).is_empty());
         assert_eq!(mailbox.next_due(), None);
     }
 
@@ -346,13 +403,14 @@ mod tests {
                 Some(pointer(1)),
                 bytes(&format!("move {step}")),
                 *at,
+                false,
             );
             let next_post = posts
                 .get(step + 1)
                 .copied()
                 .unwrap_or(t0 + Duration::from_secs(2));
             while let Some(due) = mailbox.next_due().filter(|due| *due < next_post) {
-                sent.extend(texts(&mailbox.take_due(due)));
+                sent.extend(texts(&mailbox.take(due, false)));
             }
         }
         assert!(
@@ -373,14 +431,14 @@ mod tests {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
         // A pointer that has just moved is held for its gap...
-        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 1"), t0);
-        assert_eq!(texts(&mailbox.take_due(t0 + BATCH_WINDOW)), ["move 1"]);
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 1"), t0, false);
+        assert_eq!(texts(&mailbox.take(t0 + BATCH_WINDOW, false)), ["move 1"]);
         let t1 = t0 + Duration::from_millis(10);
-        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 2"), t1);
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 2"), t1, false);
         // ...until an event follows it, which must not overtake it.
-        mailbox.post(ROOM, ALICE, None, bytes("cleared"), t1);
-        mailbox.post(ROOM, BOB, None, bytes("heartbeat"), t1);
-        let due = mailbox.take_due(t1 + BATCH_WINDOW);
+        mailbox.post(ROOM, ALICE, None, bytes("cleared"), t1, false);
+        mailbox.post(ROOM, BOB, None, bytes("heartbeat"), t1, false);
+        let due = mailbox.take(t1 + BATCH_WINDOW, false);
         assert_eq!(texts(&due), ["move 2", "cleared", "heartbeat"]);
         assert!(due[1].key.is_none());
     }
@@ -392,24 +450,24 @@ mod tests {
         let per_author = u64::try_from(MAX_SLOTS_PER_AUTHOR).unwrap();
         // One author is held to its share...
         for slot in 0..per_author {
-            assert!(mailbox.post(ROOM, ALICE, Some(caret(slot)), bytes("x"), t0));
+            assert!(mailbox.post(ROOM, ALICE, Some(caret(slot)), bytes("x"), t0, false));
         }
-        assert!(!mailbox.post(ROOM, ALICE, Some(caret(per_author)), bytes("x"), t0));
-        assert!(mailbox.post(ROOM, ALICE, Some(caret(0)), bytes("newer"), t0));
+        assert!(!mailbox.post(ROOM, ALICE, Some(caret(per_author)), bytes("x"), t0, false));
+        assert!(mailbox.post(ROOM, ALICE, Some(caret(0)), bytes("newer"), t0, false));
         // ...and everybody together to the connection's.
         let authors = MAX_PENDING / MAX_SLOTS_PER_AUTHOR;
         for author in 1..authors {
             let author = [u8::try_from(author).unwrap().saturating_add(10); 32];
             for slot in 0..per_author {
-                assert!(mailbox.post(ROOM, author, Some(caret(slot)), bytes("x"), t0));
+                assert!(mailbox.post(ROOM, author, Some(caret(slot)), bytes("x"), t0, false));
             }
         }
-        assert!(!mailbox.post(ROOM, BOB, Some(caret(0)), bytes("x"), t0));
+        assert!(!mailbox.post(ROOM, BOB, Some(caret(0)), bytes("x"), t0, false));
         for _ in 0..MAX_PENDING_EVENTS {
-            assert!(mailbox.post(ROOM, BOB, None, bytes("event"), t0));
+            assert!(mailbox.post(ROOM, BOB, None, bytes("event"), t0, false));
         }
-        assert!(!mailbox.post(ROOM, BOB, None, bytes("event"), t0));
-        let due = mailbox.take_due(t0 + BATCH_WINDOW);
+        assert!(!mailbox.post(ROOM, BOB, None, bytes("event"), t0, false));
+        let due = mailbox.take(t0 + BATCH_WINDOW, false);
         assert_eq!(due.len(), MAX_PENDING + MAX_PENDING_EVENTS);
     }
 
@@ -418,11 +476,98 @@ mod tests {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
         let large: Arc<[u8]> = Arc::from(vec![7; MAX_SLOTTED_PRESENCE_BYTES + 1]);
-        mailbox.post(ROOM, ALICE, Some(caret(1)), large.clone(), t0);
-        mailbox.post(ROOM, ALICE, Some(caret(1)), large, t0);
-        let due = mailbox.take_due(t0 + BATCH_WINDOW);
+        mailbox.post(ROOM, ALICE, Some(caret(1)), large.clone(), t0, false);
+        mailbox.post(ROOM, ALICE, Some(caret(1)), large, t0, false);
+        let due = mailbox.take(t0 + BATCH_WINDOW, false);
         assert_eq!(due.len(), 2, "neither copy is held by slot");
         assert!(due.iter().all(|presence| presence.key.is_none()));
+    }
+
+    #[test]
+    fn a_held_caret_waits_for_its_delta_up_to_the_hold() {
+        let mailbox = PresenceMailbox::default();
+        let t0 = Instant::now();
+        assert!(mailbox.post(ROOM, ALICE, Some(caret(2)), bytes("typing"), t0, true));
+        assert!(mailbox.post(ROOM, ALICE, Some(caret(1)), bytes("caret"), t0, true));
+        assert_eq!(mailbox.next_due(), Some(t0 + DELTA_HOLD));
+        assert!(
+            mailbox.take(t0 + BATCH_WINDOW, false).is_empty(),
+            "held past the batch window"
+        );
+        // The delta is written: the held presence goes with it.
+        let t1 = t0 + Duration::from_millis(7);
+        assert_eq!(texts(&mailbox.take(t1, true)), ["typing", "caret"]);
+        // A delta that never comes: the hold ends on its own.
+        assert!(mailbox.post(ROOM, ALICE, Some(caret(1)), bytes("later"), t1, true));
+        assert!(
+            mailbox
+                .take(t1 + DELTA_HOLD - Duration::from_millis(1), false)
+                .is_empty()
+        );
+        assert_eq!(texts(&mailbox.take(t1 + DELTA_HOLD, false)), ["later"]);
+    }
+
+    #[test]
+    fn a_pointer_is_never_held() {
+        let mailbox = PresenceMailbox::default();
+        let t0 = Instant::now();
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move"), t0, true);
+        assert_eq!(mailbox.next_due(), Some(t0 + BATCH_WINDOW));
+    }
+
+    #[test]
+    fn a_newer_unheld_caret_is_due_after_the_batch_window() {
+        let mailbox = PresenceMailbox::default();
+        let t0 = Instant::now();
+        mailbox.post(ROOM, ALICE, Some(caret(1)), bytes("held"), t0, true);
+        mailbox.post(ROOM, ALICE, Some(caret(1)), bytes("moved"), t0, false);
+        assert_eq!(texts(&mailbox.take(t0 + BATCH_WINDOW, false)), ["moved"]);
+    }
+
+    #[test]
+    fn riding_takes_change_slots_before_their_window() {
+        let mailbox = PresenceMailbox::default();
+        let t0 = Instant::now();
+        mailbox.post(ROOM, ALICE, Some(caret(1)), bytes("caret"), t0, false);
+        mailbox.post(ROOM, BOB, Some(caret(1)), bytes("bob caret"), t0, false);
+        assert!(mailbox.take(t0, false).is_empty());
+        assert_eq!(texts(&mailbox.take(t0, true)), ["caret", "bob caret"]);
+        assert_eq!(mailbox.next_due(), None);
+    }
+
+    #[test]
+    fn a_pointer_rides_only_after_half_its_gap() {
+        let mailbox = PresenceMailbox::default();
+        let t0 = Instant::now();
+        // A first move rides at once: nothing paces it yet.
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 1"), t0, false);
+        assert_eq!(texts(&mailbox.take(t0, true)), ["move 1"]);
+        let t1 = t0 + RIDE_GAP - Duration::from_millis(1);
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 2"), t1, false);
+        assert!(
+            mailbox.take(t1, true).is_empty(),
+            "a pointer that went under the ride gap ago stays paced"
+        );
+        let t2 = t0 + RIDE_GAP;
+        assert_eq!(texts(&mailbox.take(t2, true)), ["move 2"]);
+        // Riding restarts its pace: the next move is due a gap later.
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 3"), t2, false);
+        assert_eq!(mailbox.next_due(), Some(t2 + MOTION_GAP));
+    }
+
+    #[test]
+    fn a_riding_event_brings_everything_posted_before_it() {
+        let mailbox = PresenceMailbox::default();
+        let t0 = Instant::now();
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 1"), t0, false);
+        assert_eq!(texts(&mailbox.take(t0 + BATCH_WINDOW, false)), ["move 1"]);
+        let t1 = t0 + Duration::from_millis(10);
+        // Paced, and too recent to ride on its own...
+        mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 2"), t1, false);
+        assert!(mailbox.take(t1, true).is_empty());
+        // ...but an event after it must not overtake it.
+        mailbox.post(ROOM, ALICE, None, bytes("cleared"), t1, false);
+        assert_eq!(texts(&mailbox.take(t1, true)), ["move 2", "cleared"]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -437,9 +582,9 @@ mod tests {
         });
         tokio::task::yield_now().await;
         let posted = Instant::now();
-        mailbox.post(ROOM, ALICE, Some(caret(1)), bytes("caret"), posted);
+        mailbox.post(ROOM, ALICE, Some(caret(1)), bytes("caret"), posted, false);
         let woke = waiter.await.unwrap();
         assert!(woke >= posted + BATCH_WINDOW);
-        assert_eq!(texts(&mailbox.take_due(woke)), ["caret"]);
+        assert_eq!(texts(&mailbox.take(woke, false)), ["caret"]);
     }
 }

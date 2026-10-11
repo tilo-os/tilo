@@ -326,6 +326,9 @@ pub struct AvailabilityRegistry {
     /// Bumped by every commit that changes what pinned hydration acts on;
     /// see [`Self::hydration_generation`].
     hydration_generation: u64,
+    /// Announces each bump of `hydration_generation`, so the pinned
+    /// hydration worker waits for one instead of polling (TIL-750).
+    hydration_watch: tokio::sync::watch::Sender<u64>,
     #[cfg(test)]
     persists: std::sync::atomic::AtomicU64,
 }
@@ -367,6 +370,7 @@ impl AvailabilityRegistry {
                 records: BTreeMap::new(),
                 deferred: false,
                 hydration_generation: 0,
+                hydration_watch: tokio::sync::watch::Sender::new(0),
                 #[cfg(test)]
                 persists: std::sync::atomic::AtomicU64::new(0),
             });
@@ -391,6 +395,7 @@ impl AvailabilityRegistry {
             records,
             deferred: false,
             hydration_generation: 0,
+            hydration_watch: tokio::sync::watch::Sender::new(0),
             #[cfg(test)]
             persists: std::sync::atomic::AtomicU64::new(0),
         })
@@ -412,6 +417,19 @@ impl AvailabilityRegistry {
     #[must_use]
     pub fn hydration_generation(&self) -> u64 {
         self.hydration_generation
+    }
+
+    /// A receiver that sees every later change of
+    /// [`Self::hydration_generation`]: a pin, an unpin, a new version or a
+    /// residency change, from any writer of this registry.
+    #[must_use]
+    pub fn subscribe_hydration(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.hydration_watch.subscribe()
+    }
+
+    fn bump_hydration_generation(&mut self) {
+        self.hydration_generation = self.hydration_generation.wrapping_add(1);
+        self.hydration_watch.send_replace(self.hydration_generation);
     }
 
     /// Durable writes of the whole registry so far.
@@ -562,7 +580,7 @@ impl AvailabilityRegistry {
                     .is_none_or(|previous| hydration_view(previous) != hydration_view(record))
             });
         if hydration_changed {
-            self.hydration_generation = self.hydration_generation.wrapping_add(1);
+            self.bump_hydration_generation();
         }
         Ok(value)
     }
@@ -597,7 +615,7 @@ impl AvailabilityRegistry {
             return Err(error);
         }
         if previous.as_ref().map(hydration_view) != self.records.get(&id).map(hydration_view) {
-            self.hydration_generation = self.hydration_generation.wrapping_add(1);
+            self.bump_hydration_generation();
         }
         Ok(())
     }
@@ -761,6 +779,29 @@ impl AvailabilityRegistry {
         tilo_files::native::atomic::write_creating_parent(&self.path, &bytes)?;
         Ok(())
     }
+}
+
+/// Whether `record_id` is pinned, itself or through a stable ancestor, in a
+/// captured snapshot of `records`. Missing or cyclic ancestry is invalid
+/// durable state and counts as pinned, so it can never become permission to
+/// release local data.
+pub(crate) fn pinned_in_snapshot(records: &[RecordAvailability], record_id: FileRecordId) -> bool {
+    let mut current = Some(record_id);
+    let mut remaining = records.len().saturating_add(1);
+    while let Some(record_id) = current {
+        if remaining == 0 {
+            return true;
+        }
+        remaining = remaining.saturating_sub(1);
+        let Some(record) = records.iter().find(|record| record.record_id == record_id) else {
+            return true;
+        };
+        if record.policy == AvailabilityPolicy::Pinned {
+            return true;
+        }
+        current = record.parent;
+    }
+    false
 }
 
 fn refresh_replica_projection(record: &mut RecordAvailability, now_ms: u64) {

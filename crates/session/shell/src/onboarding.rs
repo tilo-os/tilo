@@ -360,7 +360,7 @@ fn read_fingerprint(path: &Path) -> Result<String, String> {
 /// no key operation is needed.
 pub(crate) fn existing_identity_at(path: &Path) -> Result<MintedIdentity, String> {
     use crate::shell::identity_provisioning::DiskIdentityStore;
-    use ui::widget::identity_flow::IdentityStore as _;
+    use tilo_identity_ceremony::IdentityStore as _;
 
     let record = DiskIdentityStore::at(path)
         .load()

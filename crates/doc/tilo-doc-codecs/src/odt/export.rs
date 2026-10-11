@@ -990,8 +990,8 @@ impl ContentHead {
         };
         let agrees = self.automatic_names.contains(style)
             && !b.attrs.contains_key("style")
-            && self.registry.para_align(style) == align
-            && self.registry.para_line_height(style) == line;
+            && self.registry.table.para_align(style) == align
+            && self.registry.table.para_line_height(style) == line;
         agrees.then_some(style.as_str())
     }
 

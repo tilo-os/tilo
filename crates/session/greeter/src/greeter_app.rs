@@ -308,22 +308,8 @@ impl Widget for Stack {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) else {
-            return;
-        };
-        if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
-            if let Some(&cnode) = child_nodes.get(idx)
-                && let Some(child) = self.children.get_mut(idx)
-            {
-                child.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
-            }
-            return;
-        }
-        for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
-            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            if *ctx.handled {
-                break;
-            }
+        if let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) {
+            ui::widget::route_to_children(&mut self.children, &child_nodes, event, ctx);
         }
     }
 

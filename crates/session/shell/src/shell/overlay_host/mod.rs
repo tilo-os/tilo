@@ -421,28 +421,6 @@ struct OverlayInputs {
     now_playing: std::rc::Rc<dyn crate::shell::now_playing::NowPlayingSource>,
 }
 
-/// The parts of the shell's per-frame update that can ask for a redraw, in
-/// the bit order of [`ShellOverlayHost::last_update_sources`].
-pub(crate) const UPDATE_SOURCE_NAMES: [&str; 18] = [
-    "content",
-    "pairing",
-    "tab-close",
-    "search",
-    "sidebar",
-    "notification-expired",
-    "launch",
-    "session-action",
-    "chrome",
-    "portal",
-    "file-picker",
-    "dialog",
-    "capture-mirror",
-    "presence",
-    "follow",
-    "quick-settings",
-    "radio",
-    "display-storage",
-];
 /// How long a launchpad app card waits for the Applications index to take
 /// in the installed apps after boot before falling back to the launcher.
 const LAUNCHPAD_APP_RESOLVE_WINDOW: Duration = Duration::from_secs(5);
@@ -501,10 +479,6 @@ pub struct ShellOverlayHost {
     shortcut_rebind: Option<settings_store::hardware::ShortcutAction>,
     shortcut_rebind_message: Option<String>,
     shortcut_guide_focus: Option<ShortcutGuideFocus>,
-    /// What asked for a redraw on the last `update`, one bit per
-    /// [`UPDATE_SOURCE_NAMES`] entry: the frame trace names why an idle
-    /// desktop painted.
-    last_update_sources: u32,
     desktop_controls: DesktopControlsSource,
     shortcut_help_drawn_rect: Rect,
     /// The effective shortcut table for this compositor session.  Input is
@@ -1725,18 +1699,8 @@ const fn ui_power_profile(
 
 type AppLauncher = std::rc::Rc<dyn Fn(&Chrome, &str, &str)>;
 impl ShellOverlayHost {
-    /// What asked for a redraw on the last update, as bits of
-    /// [`UPDATE_SOURCE_NAMES`]; zero when nothing did.
-    pub(crate) fn last_update_sources(&self) -> u32 {
-        self.last_update_sources
-    }
-
     pub(crate) fn content_animating_leaves(&self) -> Vec<String> {
         crate::shell::animation_diagnostics::animating_leaves(self.content.as_ref())
-    }
-
-    pub(crate) fn content_redrawing_leaves(&self) -> Vec<String> {
-        crate::shell::animation_diagnostics::redrawing_leaves(self.content.as_ref())
     }
 
     /// Stable, allocation-free diagnostics for animation demand. Each bit is
@@ -1908,43 +1872,62 @@ impl ShellOverlayHost {
             .into_iter()
             .chain(self.strip_chrome_bounds(flags, quick_settings_transition_visible))
             .reduce(|current, rect| current.union(rect));
+        // Every overlay above Quick Settings is a damage part of its own,
+        // there whether or not the overlay is open: opening, animating or
+        // closing one repaints that overlay, not the desktop.
+        let desktop = transform.transform_rect_bbox(self.rect);
         let outputs = self.layer_outputs();
-        self.layers.draw(
-            LayerId::PowerMenu,
-            &mut LayerPaint {
-                scene: above_quick_settings,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                geometry: self.layer_geometry(&outputs),
-                thumbnails: &mut self.window_previews,
+        overlay_part(above_quick_settings, "shell.power-menu", desktop, |scene| {
+            self.layers.draw(
+                LayerId::PowerMenu,
+                &mut LayerPaint {
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                    geometry: self.layer_geometry(&outputs),
+                    thumbnails: &mut self.window_previews,
+                },
+            );
+            None
+        });
+        overlay_part(
+            above_quick_settings,
+            "shell.collaborators",
+            desktop,
+            |scene| {
+                self.draw_collaborators_dropdown(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                    flags,
+                );
+                None
             },
         );
-        self.draw_collaborators_dropdown(
+        overlay_part(
             above_quick_settings,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            flags,
+            "shell.room-activity",
+            desktop,
+            |scene| {
+                self.draw_room_activity_sheet(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                    flags,
+                );
+                None
+            },
         );
-        self.draw_room_activity_sheet(
-            above_quick_settings,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            flags,
-        );
-        self.draw_projection_sheet(
-            above_quick_settings,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            flags,
-        );
+        overlay_part(above_quick_settings, "shell.projection", desktop, |scene| {
+            self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
+            None
+        });
         self.draw_top_overlays(
             above_quick_settings,
             transform,
@@ -1952,33 +1935,46 @@ impl ShellOverlayHost {
             theme,
             presence,
         );
-        if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
-            onboarding.draw(
-                above_quick_settings,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
-            self.draw_portal_dialog_sheet(above_quick_settings, transform, text_renderer, theme);
-        }
-        self.pairing.draw(
+        overlay_part(above_quick_settings, "shell.tour", desktop, |scene| {
+            if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
+                onboarding.draw(scene, transform, text_renderer, theme, presence);
+                self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
+            }
+            None
+        });
+        overlay_part(above_quick_settings, "shell.pairing", desktop, |scene| {
+            self.pairing
+                .draw(scene, transform, text_renderer, theme, presence);
+            None
+        });
+        overlay_part(
             above_quick_settings,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-        );
-        self.capture_studio.draw(
-            above_quick_settings,
-            transform,
-            text_renderer,
-            theme,
-            presence,
+            "shell.capture-studio",
+            desktop,
+            |scene| {
+                self.capture_studio
+                    .draw(scene, transform, text_renderer, theme, presence);
+                None
+            },
         );
         sections.topbar_bounds = topbar_bounds;
         sections.quick_settings_bounds = quick_settings_bounds;
         sections
+    }
+
+    /// Whether overlay `id` is on screen, for a test reading the host.
+    #[cfg(test)]
+    pub(crate) fn overlay_shown_for_test(&self, id: LayerId) -> bool {
+        self.overlay_is_open(id, self.overlay_flags())
+    }
+
+    /// Open the palette empty and focused, as its chord does.
+    #[cfg(test)]
+    pub(crate) fn open_palette_for_test(&mut self) {
+        self.palette_visible = true;
+        self.palette.set_focus(true);
+        self.palette.set_query("");
+        self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
     }
 
     /// The open overlays, topmost first — the order the synthetic
@@ -2312,7 +2308,6 @@ impl ShellOverlayHost {
             shortcut_rebind: None,
             shortcut_rebind_message: None,
             shortcut_guide_focus: None,
-            last_update_sources: 0,
             shortcut_config: inputs.shortcut_config,
             shortcut_triggers: shortcut_triggers::ShortcutTriggerState::new(
                 inputs.shortcut_triggers,
@@ -17684,9 +17679,7 @@ impl Widget for ShellOverlayHost {
                 .onboarding
                 .as_mut()
                 .is_some_and(|onboarding| onboarding.update(doc, path));
-            self.last_update_sources =
-                u32::from(onboarding_dirty) | (u32::from(dialog_dirty) << 11);
-            return self.last_update_sources != 0;
+            return onboarding_dirty || dialog_dirty;
         }
         let pairing_dirty = self.pairing.pump(doc, path);
         let radio_dirty = self.poll_quick_settings_radio();
@@ -17843,30 +17836,24 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow().tree_mut().commit_room_change();
         }
-        self.last_update_sources = [
-            content_dirty,
-            pairing_dirty,
-            close_dirty,
-            palette_dirty,
-            sidebar_dirty,
-            notifications_dropped,
-            launch_dirty,
-            session_action_dirty,
-            chrome_dirty,
-            portal_dirty,
-            picker_dirty,
-            dialog_dirty,
-            mirror_dirty,
-            presence_dirty,
-            follow_dirty,
-            quick_settings_dirty,
-            radio_dirty,
-            display_storage_dirty,
-        ]
-        .into_iter()
-        .enumerate()
-        .fold(0, |bits, (bit, dirty)| bits | (u32::from(dirty) << bit));
-        self.last_update_sources != 0
+        content_dirty
+            || quick_settings_dirty
+            || radio_dirty
+            || display_storage_dirty
+            || pairing_dirty
+            || close_dirty
+            || palette_dirty
+            || sidebar_dirty
+            || notifications_dropped
+            || launch_dirty
+            || session_action_dirty
+            || chrome_dirty
+            || portal_dirty
+            || picker_dirty
+            || dialog_dirty
+            || mirror_dirty
+            || presence_dirty
+            || follow_dirty
     }
 
     #[allow(
@@ -20640,6 +20627,30 @@ fn app_kind_filter() -> Vec<crate::shell::search::ResourceKind> {
 
 /// The modal scrim, scaled by `openness` in `0.0..=1.0` so it fades in
 /// with the modal opening and out with it closing.
+/// Draw one overlay of a damage-tracked section as a keyed part
+/// ([`ui::scene_parts`]) that is there every frame, so opening, animating
+/// or closing the overlay changes that part alone. `draw` paints the
+/// overlay and returns the bounds, in scene coordinates, of everything it
+/// painted (shadows and antialiasing included), or `None` when it cannot
+/// bound them, which claims all of `desktop`. A draw that painted nothing
+/// claims nothing.
+pub(crate) fn overlay_part(
+    scene: &mut Scene,
+    kind: &'static str,
+    desktop: Rect,
+    draw: impl FnOnce(&mut Scene) -> Option<Vec<Rect>>,
+) {
+    ui::scene_parts::part_drawn(scene, ui::scene_parts::PartKey::new(kind, ()), |scene| {
+        let before = scene.encoding().draw_tags.len();
+        let bounds = draw(scene);
+        if scene.encoding().draw_tags.len() == before {
+            Vec::new()
+        } else {
+            bounds.unwrap_or_else(|| vec![desktop])
+        }
+    });
+}
+
 fn draw_modal_scrim_at(
     scene: &mut Scene,
     transform: Affine,
@@ -20887,22 +20898,26 @@ impl ShellOverlayHost {
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
         let area = self.overlay_area();
-        if self.permission_prompt.is_some() {
-            let surface = self.permission_prompt_surface();
-            if let Some(prompt) = self.permission_prompt.as_mut() {
-                prompt.set_rect(surface);
-                prompt.draw(scene, transform, text_renderer, theme, presence);
+        let desktop = transform.transform_rect_bbox(self.rect);
+        overlay_part(scene, "shell.permission-prompt", desktop, |scene| {
+            if self.permission_prompt.is_some() {
+                let surface = self.permission_prompt_surface();
+                if let Some(prompt) = self.permission_prompt.as_mut() {
+                    prompt.set_rect(surface);
+                    prompt.draw(scene, transform, text_renderer, theme, presence);
+                }
+                // The seal is shell chrome. `PermissionPrompt` itself cannot
+                // paint it, so an app that builds that widget does not get the frame.
+                crate::shell::trusted_ui::paint_seal(
+                    scene,
+                    transform,
+                    surface,
+                    theme,
+                    f64::from(theme.tokens.radii.control),
+                );
             }
-            // The seal is shell chrome. `PermissionPrompt` itself cannot
-            // paint it, so an app that builds that widget does not get the frame.
-            crate::shell::trusted_ui::paint_seal(
-                scene,
-                transform,
-                surface,
-                theme,
-                f64::from(theme.tokens.radii.control),
-            );
-        }
+            None
+        });
 
         // Above desktop content, below modal overlays and the permission
         // prompt, so a prompt always wins focus. Top inset keeps toasts
@@ -20946,21 +20961,24 @@ impl ShellOverlayHost {
                 .borrow()
                 .visual_alert_active(std::time::Instant::now())
         });
-        if visual_alert {
-            let edge = Rect::new(
-                self.rect.x0 + 4.0,
-                self.rect.y0 + 4.0,
-                self.rect.x1 - 4.0,
-                self.rect.y1 - 4.0,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(7.0),
-                transform,
-                theme.tokens.colors.intent.inverted,
-                None,
-                &edge,
-            );
-        }
+        overlay_part(scene, "shell.visual-alert", desktop, |scene| {
+            if visual_alert {
+                let edge = Rect::new(
+                    self.rect.x0 + 4.0,
+                    self.rect.y0 + 4.0,
+                    self.rect.x1 - 4.0,
+                    self.rect.y1 - 4.0,
+                );
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(7.0),
+                    transform,
+                    theme.tokens.colors.intent.inverted,
+                    None,
+                    &edge,
+                );
+            }
+            None
+        });
     }
 
     /// The production root has no painting container of its own, so its three typed children
@@ -22644,31 +22662,28 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
     ) {
         self.draw_top_overlays_below_switcher(scene, transform, text_renderer, theme, presence);
+        let desktop = transform.transform_rect_bbox(self.rect);
         let outputs = self.layer_outputs();
-        self.layers.draw(
-            LayerId::Dictation,
-            &mut LayerPaint {
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                geometry: self.layer_geometry(&outputs),
-                thumbnails: &mut self.window_previews,
-            },
-        );
-        self.layers.draw(
-            LayerId::WindowSwitcher,
-            &mut LayerPaint {
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                geometry: self.layer_geometry(&outputs),
-                thumbnails: &mut self.window_previews,
-            },
-        );
+        for (kind, id) in [
+            ("shell.dictation", LayerId::Dictation),
+            ("shell.window-switcher", LayerId::WindowSwitcher),
+        ] {
+            overlay_part(scene, kind, desktop, |scene| {
+                self.layers.draw(
+                    id,
+                    &mut LayerPaint {
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        presence,
+                        geometry: self.layer_geometry(&outputs),
+                        thumbnails: &mut self.window_previews,
+                    },
+                );
+                None
+            });
+        }
         // The last pass: every preview on hand has now been painted.
         self.window_previews.mark_painted();
     }
@@ -22692,105 +22707,172 @@ impl ShellOverlayHost {
             ui::Curve::EaseOut,
         );
         let palette_now = Instant::now();
-        if self.palette_transition.is_visible(palette_now) {
-            let openness = self.palette_transition.value(palette_now);
-            draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
-            let (alpha, dy, scale) = self.palette_transition.modal_curve(palette_now, 0.96);
-            let in_flight = alpha < 1.0;
-            let palette_rect = self.palette.get_rect();
-            if in_flight {
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    BlendMode::default(),
-                    alpha,
-                    transform,
-                    &self.rect,
-                );
+        let palette_shown = self.palette_transition.is_visible(palette_now);
+        let desktop = transform.transform_rect_bbox(self.rect);
+        // The scrim dims the whole desktop and the card floats over it: two
+        // parts, so a keystroke in the open palette repaints the card alone.
+        overlay_part(scene, "shell.palette-scrim", desktop, |scene| {
+            if palette_shown {
+                let openness = self.palette_transition.value(palette_now);
+                draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
             }
-            let palette_xform = if dy.abs() > f64::EPSILON || (scale - 1.0).abs() > f64::EPSILON {
-                let cx = palette_rect.center().x;
-                let cy = palette_rect.center().y;
-                transform
-                    .pre_translate((cx, cy + dy).into())
-                    .pre_scale(scale)
-                    .pre_translate((-cx, -cy).into())
-            } else {
-                transform
-            };
-            // A Panel casts `e4` (HIG §9.1): the token's own offset, blur
-            // and strength, following the card's rounded outline. While
-            // the palette is still arriving the shadow fades in with it.
-            let mut shadow = theme.tokens.elevation.floating;
-            shadow.color = shadow.color.with_alpha_factor(alpha);
-            ui::surface::shadow(
-                scene,
-                palette_xform,
-                palette_rect,
-                ui::widget::command_palette::CommandPalette::surface_radius_px(theme),
-                &shadow,
-            );
-            // A cloned theme with `surfaces.raised` pre-tinted, since
-            // `CommandPalette` (in `quick-ui`) paints its own surface from
-            // there and has no override plumbed in.
-            let palette_theme = palette_surface_theme(theme);
-            self.palette.draw(
-                scene,
-                palette_xform,
-                text_renderer,
-                &palette_theme,
-                presence,
-            );
-            self.draw_search_banner(scene, palette_xform, text_renderer, &palette_theme);
-            if in_flight {
-                scene.pop_layer();
-            }
-        }
+            None
+        });
+        overlay_part(scene, "shell.palette", desktop, |scene| {
+            palette_shown
+                .then(|| self.draw_palette_card(scene, transform, text_renderer, theme, presence))
+                .flatten()
+        });
 
         // The tab menu: above the windows and the strip chrome it was
         // opened from, below the sheets that follow (a portal answer or a
         // token prompt is modal; a menu is not).
         let outputs = self.layer_outputs();
-        self.layers.draw(
-            LayerId::TabContextMenu,
-            &mut LayerPaint {
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                geometry: self.layer_geometry(&outputs),
-                thumbnails: &mut self.window_previews,
-            },
-        );
+        overlay_part(scene, "shell.tab-menu", desktop, |scene| {
+            self.layers.draw(
+                LayerId::TabContextMenu,
+                &mut LayerPaint {
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                    geometry: self.layer_geometry(&outputs),
+                    thumbnails: &mut self.window_previews,
+                },
+            );
+            Some(
+                self.layers
+                    .tab_menu
+                    .painted_bounds(theme)
+                    .into_iter()
+                    .map(|rect| transform.transform_rect_bbox(rect))
+                    .collect(),
+            )
+        });
 
         // Owns the keyboard while up, so it must sit above the palette
         // that opened it.
-        self.draw_peer_sync(scene, transform, text_renderer, theme);
+        overlay_part(scene, "shell.peer-sync", desktop, |scene| {
+            self.draw_peer_sync(scene, transform, text_renderer, theme);
+            None
+        });
 
-        if self.overlay_flags().shortcut_help {
-            self.draw_shortcut_help(scene, transform, text_renderer, theme);
-        }
+        overlay_part(scene, "shell.shortcut-help", desktop, |scene| {
+            if self.overlay_flags().shortcut_help {
+                self.draw_shortcut_help(scene, transform, text_renderer, theme);
+            }
+            None
+        });
 
         // Above every other overlay, including the sidebar wheel — it's
         // genuinely modal (an app in another process is blocked on the
         // answer, and `handle_event` absorbs every event), and drawn by
         // the compositor rather than the requesting app so it can't be
         // drawn over, read, or dismissed by that app.
-        self.file_picker_overlay
-            .draw(self.rect, scene, transform, text_renderer, theme, presence);
+        overlay_part(scene, "shell.file-picker", desktop, |scene| {
+            self.file_picker_overlay.draw(
+                self.rect,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+            None
+        });
 
         // The contextual tour paints after this pass; it draws the sheet
         // itself, above the tour, so the sheet is never covered.
-        if self.onboarding.is_none() {
-            self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
-        }
+        overlay_part(scene, "shell.portal-sheet", desktop, |scene| {
+            if self.onboarding.is_none() {
+                self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
+            }
+            None
+        });
 
         // A held pad button works over modals too, like the keys below.
-        self.draw_pad_map(scene, transform, text_renderer, theme);
+        overlay_part(scene, "shell.pad-map", desktop, |scene| {
+            self.draw_pad_map(scene, transform, text_renderer, theme);
+            None
+        });
 
         // Above everything, including modals — a physical key works
         // while a modal is up, so its readout must too.
-        self.draw_osd(scene, transform, text_renderer, theme);
+        overlay_part(scene, "shell.osd", desktop, |scene| {
+            self.draw_osd(scene, transform, text_renderer, theme);
+            None
+        });
+    }
+
+    /// The command palette's card while it is shown, arriving or leaving,
+    /// and the bounds of everything it painted in scene coordinates: the
+    /// card, its edge and its `e4` shadow. `None` when the search filters'
+    /// "More" list is open, which may hang past the card.
+    fn draw_palette_card(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Option<Vec<Rect>> {
+        let palette_now = Instant::now();
+        let (alpha, dy, scale) = self.palette_transition.modal_curve(palette_now, 0.96);
+        let in_flight = alpha < 1.0;
+        let palette_rect = self.palette.get_rect();
+        if in_flight {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                BlendMode::default(),
+                alpha,
+                transform,
+                &self.rect,
+            );
+        }
+        let palette_xform = if dy.abs() > f64::EPSILON || (scale - 1.0).abs() > f64::EPSILON {
+            let cx = palette_rect.center().x;
+            let cy = palette_rect.center().y;
+            transform
+                .pre_translate((cx, cy + dy).into())
+                .pre_scale(scale)
+                .pre_translate((-cx, -cy).into())
+        } else {
+            transform
+        };
+        // A Panel casts `e4` (HIG §9.1): the token's own offset, blur
+        // and strength, following the card's rounded outline. While
+        // the palette is still arriving the shadow fades in with it.
+        let mut shadow = theme.tokens.elevation.floating;
+        shadow.color = shadow.color.with_alpha_factor(alpha);
+        ui::surface::shadow(
+            scene,
+            palette_xform,
+            palette_rect,
+            ui::widget::command_palette::CommandPalette::surface_radius_px(theme),
+            &shadow,
+        );
+        // A cloned theme with `surfaces.raised` pre-tinted, since
+        // `CommandPalette` (in `quick-ui`) paints its own surface from
+        // there and has no override plumbed in.
+        let palette_theme = palette_surface_theme(theme);
+        self.palette.draw(
+            scene,
+            palette_xform,
+            text_renderer,
+            &palette_theme,
+            presence,
+        );
+        self.draw_search_banner(scene, palette_xform, text_renderer, &palette_theme);
+        if in_flight {
+            scene.pop_layer();
+        }
+        // The card snaps and strokes its edge on its outline: two pixels
+        // cover both, antialiasing included.
+        let card = palette_rect.inflate(2.0, 2.0);
+        let painted = ui::surface::shadow_bounds(palette_rect, &shadow)
+            .map_or(card, |shadow| shadow.union(card));
+        (!self.search_filters.more_open).then(|| vec![palette_xform.transform_rect_bbox(painted)])
     }
 
     /// Draw an OS-owned review sheet. The requesting application controls

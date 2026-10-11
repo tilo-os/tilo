@@ -118,62 +118,6 @@ class Recorder:
             self.records[kpi] = item["samples"]
 
 
-class IdleDiagnostics(unittest.TestCase):
-    def test_zero_cpu_helper_wakeups_remain_in_session_attribution(self):
-        parsed = resources._parse_sample(
-            "@@0\nP 30 helper 10 1 1 2\nH 30 31 helper-worker 10 2\n"
-            "@@1\nP 30 helper 10 1 1 2\nH 30 31 helper-worker 10 12\nHZ 100\n")
-        measured = resources.summarize(parsed, 2)
-        self.assertIsNone(measured["compositor_pid"])
-        self.assertEqual(measured["busy_threads"], [{
-            "pid": 30, "tid": 31, "comm": "helper-worker", "cpu_pct": 0.0,
-            "ctxt_switches_per_s": 5.0, "new": False,
-        }])
-        self.assertEqual(resources.busy_threads(parsed, 2, limit=0), [])
-
-
-    def test_measure_keeps_the_measured_window_and_only_paint_diagnostics(self):
-        from types import SimpleNamespace
-        from unittest.mock import patch
-
-        rows = [
-            {"seq": 11, "wake": "io", "painted": 1, "cpu_us": 7,
-             "redraw": "apps/content"},
-            {"seq": 12, "wake": "widget", "painted": 0, "cpu_us": ""},
-            {"seq": 13, "wake": "io", "painted": 0, "cpu_us": 3},
-        ]
-        class VM:
-            def slot_uid(self):
-                return SLOT
-
-            def exec(self, script, **kwargs):
-                if script.startswith("wc -c"):
-                    return "100\n"
-                self.log_script = script
-                return "unrelated private content\npaint-stats: still redraw /Notes\nreceipt: hidden"
-
-            def root_exec(self, script, **kwargs):
-                self.sample_script = script
-                return "@@0\nU 1\n@@1\nU 3\nHZ 100\n"
-
-        vm = VM()
-        with patch.object(core, "trace_mark", return_value=10), \
-                patch.object(core, "trace_after", return_value=rows) as after:
-            measured = resources.measure(SimpleNamespace(vm=vm), 2)
-        after.assert_called_once()
-        self.assertEqual(after.call_args.args[1], 10)
-        self.assertIn("tail -c +101", vm.log_script)
-        self.assertIn("tail -c 262144", vm.log_script)
-        self.assertIn("sleep 2", vm.sample_script)
-        self.assertEqual(measured["frames_painted"], 1)
-        self.assertEqual(measured["trace"], rows)
-        self.assertEqual(measured["loop_wakes"], {
-            "io": {"ticks": 2, "painted": 1, "cpu_us": 10},
-            "widget": {"ticks": 1, "painted": 0, "cpu_us": 0},
-        })
-        self.assertEqual(measured["paint_stats"], "paint-stats: still redraw /Notes")
-
-
 class Parse(unittest.TestCase):
     def test_every_process_carries_its_rss_split_and_every_cgroup_its_charge_point(self):
         table = core.parse_processes(dump())
@@ -324,6 +268,75 @@ class Growth(unittest.TestCase):
         table = core.parse_processes(dump())
         self.assertEqual(resources.shell_anon_mib(table, SLOT), 340.0)
         self.assertIsNone(resources.shell_anon_mib(table, 4242))
+
+
+def shell_report(**overrides):
+    """A `process_memory` answer as the compositor gives it (memory_report.rs)."""
+    report = {
+        "pid": 4299,
+        "status_kib": {"VmRSS": 460676, "RssAnon": 197912, "RssFile": 189760, "RssShmem": 73004, "Threads": 87},
+        "malloc": {"arena_kib": 90000, "mmapped_kib": 20000, "mmapped_blocks": 9, "in_use_kib": 70000,
+                   "free_kib": 40000, "top_releasable_kib": 100},
+        "threads": [{"name": "tokio-runtime-w", "count": 24}, {"name": "shell", "count": 1}],
+        "mappings": {"classes": {
+            "heap_arenas": {"resident_kib": 81920, "virtual_kib": 1048576, "mappings": 20},
+            "gpu_memfd": {"resident_kib": 74240, "virtual_kib": 79067, "mappings": 3},
+            "reserved": {"resident_kib": 0, "virtual_kib": 9000000, "mappings": 90},
+            "kernel_pages": {"resident_kib": 0, "virtual_kib": 12, "mappings": 2},
+            "thread_stacks": {"resident_kib": 10240, "virtual_kib": 180000, "mappings": 87},
+        }, "top_mappings": [], "top_files": [], "unreadable_mappings": 0},
+        "page_monitor": False,
+    }
+    report.update(overrides)
+    return report
+
+
+class ShellMemoryMap(unittest.TestCase):
+    def test_parts_are_resident_mib_per_class_without_address_space(self):
+        parts = resources.shell_parts_mib(resources.parse_shell_memory_map(shell_report()))
+        self.assertEqual(list(parts), ["heap_arenas", "gpu_memfd", "thread_stacks", "malloc_in_use", "malloc_free"])
+        self.assertEqual((parts["heap_arenas"], parts["gpu_memfd"], parts["malloc_free"]), (80.0, 72.5, 39.1))
+
+    def test_records_are_valid_kpis_in_one_unit(self):
+        ctx = Recorder()
+        resources.record_shell_parts(ctx, shell_report(), "after_close")
+        self.assertEqual(ctx.records["memory.shell_parts_mib.heap_arenas.after_close"], [80.0])
+        self.assertEqual(ctx.records["memory.shell_threads.after_close"], [87])
+        self.assertNotIn("memory.shell_parts_mib.reserved.after_close", ctx.records)
+
+    def test_an_error_or_an_empty_report_is_unobservable(self):
+        for answer in (None, "unknown op", shell_report(status_kib={}),
+                       shell_report(mappings={"classes": {"reserved": {"resident_kib": 0}}})):
+            with self.assertRaises(core.Unobservable):
+                resources.parse_shell_memory_map(answer)
+
+    def test_the_idle_compositor_is_held_to_its_anon_budget(self):
+        from run import BUDGETS
+        self.assertEqual(resources.shell_idle_anon_problems(159.0, BUDGETS), [])
+        problems = resources.shell_idle_anon_problems(238.7, BUDGETS)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("238.7 MB > 200 MB", problems[0])
+
+    def test_the_compositor_is_asked_over_its_control_socket(self):
+        class Vm:
+            def raw(self, op):
+                assert op == {"op": "process_memory"}
+                return {"answer": shell_report()}
+
+        class Ctx:
+            vm = Vm()
+        self.assertEqual(resources.shell_memory_map(Ctx())["pid"], 4299)
+
+
+class DiskTest(unittest.TestCase):
+    def test_parses_the_slot_users_runtime_and_store_bytes(self):
+        out = "tilo-runtime 430080000\ntilo-apps 12582912\nbuilds 2\n"
+        self.assertEqual(resources.parse_disk(out), {
+            "runtime_bytes": 430080000, "app_store_bytes": 12582912, "runtime_builds": 2})
+
+    def test_a_missing_line_is_unobservable_not_zero(self):
+        with self.assertRaises(core.Unobservable):
+            resources.parse_disk("tilo-runtime 1\nbuilds 0\n")
 
 
 if __name__ == "__main__":

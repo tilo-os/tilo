@@ -19,6 +19,8 @@ use ui_core::winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use ui_core::winit::keyboard::{Key, NamedKey};
 use ui_core::{Theme, taffy};
 
+use tilo_resource::Membership;
+
 use super::dispatch::Dispatcher;
 use super::live::Live;
 use super::view::Updaters;
@@ -41,8 +43,20 @@ struct RowMenu {
     palette: Option<tilo_actions::ActionAddress>,
 }
 
+/// One item of the list: its id and where it sits, and its row once built.
+/// Most items of a long list are never shown, and never build a row.
 struct Row<R: Resource> {
     id: Id,
+    /// Height measured the last time the row was laid out at the list's
+    /// current width. Rows not measured yet take the measured average.
+    height: Option<f64>,
+    /// The row's view, from the first time it was mounted for as long as
+    /// its item exists.
+    view: Option<Box<RowView<R>>>,
+}
+
+/// A built row: its widgets and what keeps them in step with its item.
+struct RowView<R: Resource> {
     /// Dropping it retires every binding the row registered.
     _alive: Rc<()>,
     /// What keeps the row's bound controls in step with its item. They run
@@ -51,25 +65,72 @@ struct Row<R: Resource> {
     /// The live revision the followers last ran at.
     followed: u64,
     widget: Element,
-    /// Height measured the last time the row was laid out at the list's
-    /// current width. Rows not measured yet take the measured average.
-    height: Option<f64>,
     /// Layout node while the row is mounted.
     node: Option<NodeId>,
 }
 
-/// Shows `visit` the ids of the items, in order, without copying them.
-pub(crate) type Ids<R> =
-    Box<dyn Fn(&<R as Resource>::State, &mut dyn FnMut(&mut dyn ExactSizeIterator<Item = &Id>))>;
+/// Shows `visit` the ids of the items, in order, without copying them, and
+/// the collection's [`Membership`]: the same one means the same ids.
+pub(crate) type Ids<R> = Box<
+    dyn Fn(
+        &<R as Resource>::State,
+        &mut dyn FnMut(Option<Membership>, &mut dyn ExactSizeIterator<Item = &Id>),
+    ),
+>;
 type BuildRow<R> = Box<dyn Fn(&Id, &Rc<()>, &Updaters<R>) -> Element>;
 
 impl<R: Resource> Row<R> {
+    fn node(&self) -> Option<NodeId> {
+        self.view.as_ref().and_then(|view| view.node)
+    }
+
+    fn widget(&self) -> Option<&dyn Widget> {
+        self.view.as_ref().map(|view| view.widget.as_ref())
+    }
+}
+
+impl<R: Resource> RowView<R> {
     /// Bring the row's bound controls up to `state` at `revision`, when
     /// they are behind it.
     fn follow(&mut self, state: &R::State, revision: u64) {
         if self.followed != revision {
             self.followed = revision;
             self.followers.run(state);
+        }
+    }
+}
+
+/// Which rows a list builds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Builds {
+    /// No row was built yet, so it is not known whether rows read their
+    /// local state from outside.
+    Unknown,
+    /// The rows it mounts, each the first time.
+    OnMount,
+    /// Every row: one reads its local state from outside the row, so all
+    /// of them may.
+    Every,
+}
+
+/// What the tree pushed down to the list last, for rows built later.
+#[derive(Default)]
+struct Pushed {
+    conventions: Option<ui_core::platform::PlatformConventions>,
+    environment: Option<ui_core::interaction::InteractionEnvironment>,
+    motion_reduced: Option<bool>,
+}
+
+impl Pushed {
+    fn apply(&self, widget: &mut dyn Widget) {
+        if let Some(conventions) = self.conventions {
+            widget.set_platform_conventions(conventions);
+        }
+        if let Some(environment) = self.environment {
+            widget.set_interaction_environment(environment);
+        }
+        if let Some(reduced) = self.motion_reduced {
+            widget.set_motion_reduced(reduced);
         }
     }
 }
@@ -86,13 +147,14 @@ const MIN_OVERSCAN: f64 = 160.0;
 const MAX_REMOUNTS_PER_FRAME: u8 = 3;
 
 /// Rows for the items of a collection, in collection order, built by
-/// [`ViewCx::each`](super::ViewCx::each). A row is kept for as long as its
-/// item exists; only added items build rows and only removed items drop them.
+/// [`ViewCx::each`](super::ViewCx::each).
 ///
-/// Every row stays built — its bindings, followers and local state live as
-/// long as its item — but inside a scroll view only the rows near what the
-/// view shows are *mounted*: laid out, synced, drawn and given events. The
-/// list places its rows at measured offsets (estimated for rows never
+/// A row is built the first time it is mounted, and then stays built — its
+/// bindings, followers and local state live as long as its item — so
+/// opening a list of any length builds the rows it shows, and only removed
+/// items drop rows. Inside a scroll view only the rows near what the view
+/// shows are *mounted*: laid out, synced, drawn and given events. The list
+/// places its rows at measured offsets (estimated for rows never
 /// mounted), so it keeps its whole height and a scroll position keeps its
 /// meaning. Adding or removing an item away from the shown rows changes the
 /// list's geometry, not the window's widget tree. The row holding focus
@@ -105,7 +167,9 @@ const MAX_REMOUNTS_PER_FRAME: u8 = 3;
 /// item as it is then. A change costs the rows shown, not the rows held.
 /// A row whose local state something else reads — an edit it binds into
 /// the published tree, an effect it answers — keeps following while out of
-/// view.
+/// view. Such a row is published whether or not anyone looked at it, so a
+/// list whose rows do that builds every row, as soon as one of them shows
+/// it does (the first row is built with the list to find out).
 ///
 /// Agents and assistive technology reach every item regardless: the items
 /// are published from the resource, not from the rows, and the list's
@@ -118,11 +182,19 @@ pub struct Each<R: Resource> {
     build: BuildRow<R>,
     rows: Vec<Row<R>>,
     built: u64,
+    /// The membership of the collection `rows` follows, when it has one.
+    membership: Option<Membership>,
+    builds: Builds,
+    pushed: Pushed,
     /// Indices into `rows` of the mounted rows, ascending.
     mounted: Vec<usize>,
     /// Top of each row in list coordinates, and the list's whole height.
     tops: Vec<f64>,
     total: f64,
+    /// The sum and count of the measured heights, and the estimate the
+    /// tops were laid out with.
+    measured: (f64, u32),
+    estimated: f64,
     gap: f64,
     /// Width the measured heights hold for.
     width: f64,
@@ -152,9 +224,14 @@ impl<R: Resource> Each<R> {
             ids,
             build,
             rows: Vec::new(),
+            membership: None,
+            builds: Builds::Unknown,
+            pushed: Pushed::default(),
             mounted: Vec::new(),
             tops: Vec::new(),
             total: 0.0,
+            measured: (0.0, 0),
+            estimated: ESTIMATED_ROW_HEIGHT,
             gap: 0.0,
             width: 0.0,
             node: None,
@@ -171,21 +248,27 @@ impl<R: Resource> Each<R> {
 
     fn reconcile(&mut self) {
         let rows = &self.rows;
-        let ids = self.live.with(|state| {
-            // Most changes leave the items as they were: compare in place,
-            // and copy the ids only when they differ.
+        let known = self.membership;
+        let (membership, ids) = self.live.with(|state| {
+            // Most changes leave the items as they were. The same
+            // membership says so outright; else compare in place, and copy
+            // the ids only when they differ.
+            let mut membership = None;
             let mut unchanged = false;
-            (self.ids)(state, &mut |current| {
-                unchanged =
-                    current.len() == rows.len() && current.zip(rows).all(|(id, row)| *id == row.id);
+            (self.ids)(state, &mut |current_membership, current| {
+                membership = current_membership;
+                unchanged = (membership.is_some() && membership == known)
+                    || (current.len() == rows.len()
+                        && current.zip(rows).all(|(id, row)| *id == row.id));
             });
             if unchanged {
-                return None;
+                return (membership, None);
             }
             let mut ids = Vec::new();
-            (self.ids)(state, &mut |current| ids = current.cloned().collect());
-            Some(ids)
+            (self.ids)(state, &mut |_, current| ids = current.cloned().collect());
+            (membership, Some(ids))
         });
+        self.membership = membership;
         let Some(ids) = ids else {
             return;
         };
@@ -200,24 +283,14 @@ impl<R: Resource> Each<R> {
             .drain(..)
             .map(|row| (row.id.clone(), row))
             .collect();
-        let revision = self.live.revision();
+        // An added item's row is built when it is first mounted.
         self.rows = ids
             .into_iter()
             .map(|id| {
-                old.remove(&id).unwrap_or_else(|| {
-                    let alive = Rc::new(());
-                    let followers = Updaters::new();
-                    let widget = (self.build)(&id, &alive, &followers);
-                    Row {
-                        id,
-                        _alive: alive,
-                        followers,
-                        // Built from the state as it is now.
-                        followed: revision,
-                        widget,
-                        height: None,
-                        node: None,
-                    }
+                old.remove(&id).unwrap_or(Row {
+                    id,
+                    height: None,
+                    view: None,
                 })
             })
             .collect();
@@ -229,15 +302,60 @@ impl<R: Resource> Each<R> {
             .rows
             .iter()
             .enumerate()
-            .filter(|(_, row)| row.node.is_some())
+            .filter(|(_, row)| row.node().is_some())
             .map(|(index, _)| index)
             .collect();
-        let still_mounted = self.mounted().map(|row| &row.id);
+        let still_mounted = self.mounted().map(|(id, _)| id);
         if !still_mounted.eq(was_mounted.iter()) {
             self.structure_dirty = true;
         }
-        self.relayout_tops();
+        if self.builds == Builds::Every {
+            self.build_all();
+        } else if self.builds == Builds::Unknown && !self.rows.is_empty() {
+            // Whether rows read their local state from outside, which
+            // makes every row's view part of the published tree.
+            self.ensure_built(0);
+        }
+        self.recount();
+        self.relayout_tops(0);
         self.geometry_dirty = true;
+    }
+
+    /// Build the row at `index` if it is not built yet, from the state as
+    /// it is now. A row that reads its local state from outside makes the
+    /// list build every row.
+    fn ensure_built(&mut self, index: usize) {
+        let revision = self.live.revision();
+        let Some(row) = self.rows.get_mut(index) else {
+            return;
+        };
+        if row.view.is_some() {
+            return;
+        }
+        let alive = Rc::new(());
+        let followers = Updaters::new();
+        let mut widget = (self.build)(&row.id, &alive, &followers);
+        self.pushed.apply(widget.as_mut());
+        let reads_unmounted = followers.read_unmounted();
+        row.view = Some(Box::new(RowView {
+            _alive: alive,
+            followers,
+            followed: revision,
+            widget,
+            node: None,
+        }));
+        if reads_unmounted && self.builds != Builds::Every {
+            self.builds = Builds::Every;
+            self.build_all();
+        } else if self.builds == Builds::Unknown {
+            self.builds = Builds::OnMount;
+        }
+    }
+
+    fn build_all(&mut self) {
+        for index in 0..self.rows.len() {
+            self.ensure_built(index);
+        }
     }
 
     /// Bring the bound controls of the mounted rows up to the live state,
@@ -247,22 +365,26 @@ impl<R: Resource> Each<R> {
     fn follow_rows(&mut self) {
         let revision = self.live.revision();
         let state = self.live.get();
-        for row in &mut self.rows {
-            if row.node.is_some() || row.followers.read_unmounted() {
-                row.follow(&state, revision);
+        if self.builds == Builds::Every {
+            for view in self.rows.iter_mut().filter_map(|row| row.view.as_mut()) {
+                if view.node.is_some() || view.followers.read_unmounted() {
+                    view.follow(&state, revision);
+                }
+            }
+            return;
+        }
+        // Only a list that builds every row holds rows that follow while
+        // unmounted.
+        for &index in &self.mounted {
+            if let Some(view) = self.rows.get_mut(index).and_then(|row| row.view.as_mut()) {
+                view.follow(&state, revision);
             }
         }
     }
 
     /// Height assumed for rows not measured yet: the measured average.
     fn estimate(&self) -> f64 {
-        let (sum, count) = self
-            .rows
-            .iter()
-            .filter_map(|row| row.height)
-            .fold((0.0, 0_u32), |(sum, count), height| {
-                (sum + height, count.saturating_add(1))
-            });
+        let (sum, count) = self.measured;
         if count == 0 {
             ESTIMATED_ROW_HEIGHT
         } else {
@@ -270,11 +392,39 @@ impl<R: Resource> Each<R> {
         }
     }
 
-    fn relayout_tops(&mut self) {
+    /// Sum the measured heights again, after rows came or went.
+    fn recount(&mut self) {
+        self.measured = self
+            .rows
+            .iter()
+            .filter_map(|row| row.height)
+            .fold((0.0, 0_u32), |(sum, count), height| {
+                (sum + height, count.saturating_add(1))
+            });
+    }
+
+    /// Place the rows from `from` on; all of them when the estimate the
+    /// others were placed with moved.
+    fn relayout_tops(&mut self, from: usize) {
         let estimate = self.estimate();
-        self.tops.clear();
-        let mut y = 0.0;
-        for (index, row) in self.rows.iter().enumerate() {
+        let from = if (estimate - self.estimated).abs() > f64::EPSILON
+            || self.tops.len() != self.rows.len()
+        {
+            0
+        } else {
+            from.min(self.rows.len())
+        };
+        self.estimated = estimate;
+        self.tops.truncate(from);
+        let mut y = from
+            .checked_sub(1)
+            .and_then(|last| {
+                let top = self.tops.get(last)?;
+                let row = self.rows.get(last)?;
+                Some(top + row.height.unwrap_or(estimate))
+            })
+            .unwrap_or(0.0);
+        for (index, row) in self.rows.iter().enumerate().skip(from) {
             if index > 0 {
                 y += self.gap;
             }
@@ -307,7 +457,8 @@ impl<R: Resource> Each<R> {
         self.mounted.iter().copied().find(|&index| {
             self.rows
                 .get(index)
-                .is_some_and(|row| holds_focus(row.widget.as_ref()))
+                .and_then(Row::widget)
+                .is_some_and(holds_focus)
         })
     }
 
@@ -336,9 +487,12 @@ impl<R: Resource> Each<R> {
             .collect();
         window.extend(self.around_focus());
         window.extend(self.mounted.iter().copied().filter(|&index| {
-            self.rows.get(index).is_some_and(|row| {
-                row.widget.wants_pointer_capture() || row.widget.modal_capture().is_some()
-            })
+            self.rows
+                .get(index)
+                .and_then(Row::widget)
+                .is_some_and(|widget| {
+                    widget.wants_pointer_capture() || widget.modal_capture().is_some()
+                })
         }));
         window.sort_unstable();
         window.dedup();
@@ -378,16 +532,18 @@ impl<R: Resource> Each<R> {
         self.mounted.len()
     }
 
-    fn mounted(&self) -> impl Iterator<Item = &Row<R>> {
-        self.mounted
-            .iter()
-            .filter_map(|&index| self.rows.get(index))
+    /// The mounted rows, each with its item's id. A mounted row is built.
+    fn mounted(&self) -> impl Iterator<Item = (&Id, &RowView<R>)> {
+        self.mounted.iter().filter_map(|&index| {
+            let row = self.rows.get(index)?;
+            Some((&row.id, row.view.as_deref()?))
+        })
     }
 
-    fn for_each_mounted(&mut self, mut visit: impl FnMut(&mut Row<R>)) {
+    fn for_each_mounted(&mut self, mut visit: impl FnMut(&mut RowView<R>)) {
         for &index in &self.mounted {
-            if let Some(row) = self.rows.get_mut(index) {
-                visit(row);
+            if let Some(view) = self.rows.get_mut(index).and_then(|row| row.view.as_mut()) {
+                visit(view);
             }
         }
     }
@@ -405,7 +561,7 @@ impl<R: Resource> Each<R> {
             changed |= taffy.set_style(node, style).is_ok();
         }
         for &index in &self.mounted {
-            let Some(child) = self.rows.get(index).and_then(|row| row.node) else {
+            let Some(child) = self.rows.get(index).and_then(Row::node) else {
                 continue;
             };
             let top = length(px(self.tops.get(index).copied().unwrap_or_default()));
@@ -474,8 +630,9 @@ impl<R: Resource> Each<R> {
     }
 
     /// The row holding keyboard focus.
-    fn focused_row(&self) -> Option<&Row<R>> {
-        self.focused_index().and_then(|index| self.rows.get(index))
+    fn focused_row(&self) -> Option<(&Id, &dyn Widget)> {
+        let row = self.rows.get(self.focused_index()?)?;
+        Some((&row.id, row.widget()?))
     }
 
     /// Route an event to the row menu. Returns whether it was consumed.
@@ -498,8 +655,8 @@ impl<R: Resource> Each<R> {
                 ..
             } => self
                 .mounted()
-                .find(|row| row.widget.get_rect().contains(self.menu.cursor))
-                .map(|row| (row.id.clone(), self.menu.cursor)),
+                .find(|(_, view)| view.widget.get_rect().contains(self.menu.cursor))
+                .map(|(id, _)| (id.clone(), self.menu.cursor)),
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -512,9 +669,9 @@ impl<R: Resource> Each<R> {
                 || (matches!(logical_key, Key::Named(NamedKey::F10))
                     && ctx.modifiers.state().shift_key()) =>
             {
-                self.focused_row().map(|row| {
-                    let rect = row.widget.get_rect();
-                    (row.id.clone(), Point::new(rect.x0, rect.y1))
+                self.focused_row().map(|(id, widget)| {
+                    let rect = widget.get_rect();
+                    (id.clone(), Point::new(rect.x0, rect.y1))
                 })
             }
             _ => None,
@@ -555,7 +712,7 @@ impl<R: Resource> Widget for Each<R> {
         }
         // A row synced again when it is next mounted: that rebuild syncs
         // the whole tree.
-        self.for_each_mounted(|row| row.widget.sync(state, path));
+        self.for_each_mounted(|view| view.widget.sync(state, path));
     }
 
     // The per-frame update pass drives retained models; every mounted row
@@ -563,15 +720,17 @@ impl<R: Resource> Widget for Each<R> {
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.remounts = 0;
         let mut changed = false;
-        self.for_each_mounted(|row| changed |= row.widget.update(state, path));
+        self.for_each_mounted(|view| changed |= view.widget.update(state, path));
         changed
     }
 
-    // Inputs pushed down the tree reach every row, mounted or not, so a row
-    // mounted later shows the same as one that always was.
+    // Inputs pushed down the tree reach every built row, mounted or not,
+    // and rows built later, so a row mounted later shows the same as one
+    // that always was.
     fn set_platform_conventions(&mut self, conventions: ui_core::platform::PlatformConventions) {
-        for row in &mut self.rows {
-            row.widget.set_platform_conventions(conventions);
+        self.pushed.conventions = Some(conventions);
+        for view in self.rows.iter_mut().filter_map(|row| row.view.as_mut()) {
+            view.widget.set_platform_conventions(conventions);
         }
     }
 
@@ -579,14 +738,16 @@ impl<R: Resource> Widget for Each<R> {
         &mut self,
         environment: ui_core::interaction::InteractionEnvironment,
     ) {
-        for row in &mut self.rows {
-            row.widget.set_interaction_environment(environment);
+        self.pushed.environment = Some(environment);
+        for view in self.rows.iter_mut().filter_map(|row| row.view.as_mut()) {
+            view.widget.set_interaction_environment(environment);
         }
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
-        for row in &mut self.rows {
-            row.widget.set_motion_reduced(reduced);
+        self.pushed.motion_reduced = Some(reduced);
+        for view in self.rows.iter_mut().filter_map(|row| row.view.as_mut()) {
+            view.widget.set_motion_reduced(reduced);
         }
     }
 
@@ -599,21 +760,21 @@ impl<R: Resource> Widget for Each<R> {
         let gap = f64::from(theme.gap_standard);
         if (gap - self.gap).abs() > f64::EPSILON {
             self.gap = gap;
-            self.relayout_tops();
+            self.relayout_tops(0);
         }
         let window = self.window();
         // Only mounted rows hold a node.
-        for &index in &self.mounted {
-            if let Some(row) = self.rows.get_mut(index) {
-                row.node = None;
-            }
+        self.for_each_mounted(|view| view.node = None);
+        // A row mounted for the first time is built now.
+        for &index in &window {
+            self.ensure_built(index);
         }
         let revision = self.live.revision();
         let state = self.live.get();
         let mut nodes = Vec::with_capacity(window.len());
         for &index in &window {
             let top = px(self.tops.get(index).copied().unwrap_or_default());
-            let Some(row) = self.rows.get_mut(index) else {
+            let Some(row) = self.rows.get_mut(index).and_then(|row| row.view.as_mut()) else {
                 continue;
             };
             // A row coming into view shows its item as it is now.
@@ -668,30 +829,40 @@ impl<R: Resource> Widget for Each<R> {
             // Heights measured at another width no longer hold.
             self.width = width;
             for row in &mut self.rows {
-                if row.node.is_none() {
+                if row.node().is_none() {
                     row.height = None;
                 }
             }
+            self.recount();
             measured = true;
         }
+        // The first row whose height moved: the rows before it stay put.
+        let mut moved = None;
         for &index in &self.mounted {
             let Some(row) = self.rows.get_mut(index) else {
                 continue;
             };
             let Some(height) = row
-                .node
+                .node()
                 .and_then(|child| taffy.layout(child).ok())
                 .map(|layout| f64::from(layout.size.height))
             else {
                 continue;
             };
             if row.height.is_none_or(|known| (known - height).abs() > 0.01) {
-                row.height = Some(height);
-                measured = true;
+                let (sum, count) = self.measured;
+                self.measured = match row.height.replace(height) {
+                    Some(known) => (sum - known + height, count),
+                    None => (sum + height, count.saturating_add(1)),
+                };
+                moved = Some(moved.map_or(index, |first: usize| first.min(index)));
             }
         }
         if measured {
-            self.relayout_tops();
+            self.relayout_tops(0);
+        } else if let Some(first) = moved {
+            measured = true;
+            self.relayout_tops(first);
         }
         if measured || self.geometry_dirty {
             self.push_geometry(taffy)
@@ -703,9 +874,9 @@ impl<R: Resource> Widget for Each<R> {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui_core::widget::layout_rect(taffy, node, origin);
         let inner = self.rect.origin();
-        self.for_each_mounted(|row| {
-            if let Some(child) = row.node {
-                row.widget.apply_layout(taffy, child, inner);
+        self.for_each_mounted(|view| {
+            if let Some(child) = view.node {
+                view.widget.apply_layout(taffy, child, inner);
             }
         });
         self.visible = ui_core::widget::layout_clip()
@@ -726,9 +897,9 @@ impl<R: Resource> Widget for Each<R> {
         presence: &PresenceCtx,
     ) {
         self.remounts = 0;
-        self.for_each_mounted(|row| {
-            if !presence.should_cull(row.widget.get_rect()) {
-                row.widget.draw(scene, transform, text, theme, presence);
+        self.for_each_mounted(|view| {
+            if !presence.should_cull(view.widget.get_rect()) {
+                view.widget.draw(scene, transform, text, theme, presence);
             }
         });
     }
@@ -740,25 +911,26 @@ impl<R: Resource> Widget for Each<R> {
         let capturing = self.mounted.iter().copied().find(|&index| {
             self.rows
                 .get(index)
-                .is_some_and(|row| row.widget.wants_pointer_capture())
+                .and_then(Row::widget)
+                .is_some_and(Widget::wants_pointer_capture)
         });
         if let Some(index) = capturing {
-            if let Some(row) = self.rows.get_mut(index)
-                && let Some(child) = row.node
+            if let Some(view) = self.rows.get_mut(index).and_then(|row| row.view.as_mut())
+                && let Some(child) = view.node
             {
-                row.widget
+                view.widget
                     .handle_event(event, &mut ctx.reborrow(ctx.path, child));
             }
             return;
         }
         for &index in &self.mounted {
-            let Some(row) = self.rows.get_mut(index) else {
+            let Some(view) = self.rows.get_mut(index).and_then(|row| row.view.as_mut()) else {
                 continue;
             };
-            let Some(child) = row.node else {
+            let Some(child) = view.node else {
                 continue;
             };
-            row.widget
+            view.widget
                 .handle_event(event, &mut ctx.reborrow(ctx.path, child));
             if *ctx.handled {
                 break;
@@ -767,14 +939,17 @@ impl<R: Resource> Widget for Each<R> {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.menu.menu.is_open() || self.mounted().any(|row| row.widget.wants_pointer_capture())
+        self.menu.menu.is_open()
+            || self
+                .mounted()
+                .any(|(_, view)| view.widget.wants_pointer_capture())
     }
 
     fn modal_capture(&self) -> Option<Rect> {
         let mut capture = self.menu.menu.modal_capture();
-        for row in self.mounted() {
+        for (_, view) in self.mounted() {
             if capture.is_none() {
-                capture = row.widget.modal_capture();
+                capture = view.widget.modal_capture();
             }
         }
         capture
@@ -788,8 +963,8 @@ impl<R: Resource> Widget for Each<R> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.for_each_mounted(|row| {
-            row.widget
+        self.for_each_mounted(|view| {
+            view.widget
                 .draw_overlay(scene, transform, text, theme, presence);
         });
         if self.menu.menu.is_open() {
@@ -804,9 +979,9 @@ impl<R: Resource> Widget for Each<R> {
             return Some(address);
         }
         let mut request = None;
-        self.for_each_mounted(|row| {
+        self.for_each_mounted(|view| {
             if request.is_none() {
-                request = row.widget.take_action_palette_request();
+                request = view.widget.take_action_palette_request();
             }
         });
         request
@@ -814,22 +989,28 @@ impl<R: Resource> Widget for Each<R> {
 
     fn take_search_request(&mut self) -> bool {
         let mut requested = false;
-        self.for_each_mounted(|row| requested |= row.widget.take_search_request());
+        self.for_each_mounted(|view| requested |= view.widget.take_search_request());
         requested
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         let mut dirty = std::mem::take(&mut self.structure_dirty);
-        self.for_each_mounted(|row| dirty |= row.widget.take_structure_dirty());
+        self.for_each_mounted(|view| dirty |= view.widget.take_structure_dirty());
         dirty
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.geometry_dirty || self.mounted().any(|row| row.widget.is_layout_dirty())
+        self.geometry_dirty
+            || self
+                .mounted()
+                .any(|(_, view)| view.widget.is_layout_dirty())
     }
 
     fn layout_needs_measure(&self) -> bool {
-        self.geometry_dirty || self.mounted().any(|row| row.widget.layout_needs_measure())
+        self.geometry_dirty
+            || self
+                .mounted()
+                .any(|(_, view)| view.widget.layout_needs_measure())
     }
 
     // The mounted rows, and an open row menu: it is part of the tree, so
@@ -842,7 +1023,7 @@ impl<R: Resource> Widget for Each<R> {
             .is_open()
             .then_some(&self.menu.menu as &dyn Widget);
         self.mounted()
-            .map(|row| row.widget.as_ref())
+            .map(|(_, view)| view.widget.as_ref())
             .chain(open)
             .collect()
     }
@@ -862,7 +1043,9 @@ impl<R: Resource> Widget for Each<R> {
             }) else {
                 break;
             };
-            children.push(row.widget.as_mut());
+            if let Some(view) = row.view.as_mut() {
+                children.push(view.widget.as_mut());
+            }
             rest = tail;
             start = index.saturating_add(1);
         }
@@ -881,11 +1064,11 @@ impl<R: Resource> Widget for Each<R> {
             .mounted
             .iter()
             .filter_map(|&index| {
-                let row = self.rows.get(index)?;
+                let widget = self.rows.get(index)?.widget()?;
                 Some(
                     AccessNode::new(Role::ListItem)
                         .with_position(index.saturating_add(1), count)
-                        .with_bounds(row.widget.get_rect()),
+                        .with_bounds(widget.get_rect()),
                 )
             })
             .collect();

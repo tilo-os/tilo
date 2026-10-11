@@ -3628,6 +3628,7 @@ fn exchanges_for(
                 workspace,
             )),
             may_write,
+            namespace_exchanged: Mutex::new(HashMap::new()),
         },
         deadline,
     )
@@ -3636,6 +3637,7 @@ fn exchanges_for(
 const TIMER_PASS: PassPlan = PassPlan {
     announce: false,
     reconcile: crate::record_materializer::ReconcileScope::Unplaced,
+    quiet: true,
 };
 
 /// One stalled peer and three healthy ones: the pass exchanges with the
@@ -3671,7 +3673,7 @@ async fn idle_pass_is_bounded_with_unreachable_peer() {
     );
 
     let started = Instant::now();
-    let changed = exchanges.run(peers.clone(), TIMER_PASS).await;
+    let changed = exchanges.run(peers.clone(), TIMER_PASS).await.changed;
     let first = started.elapsed();
     assert!(
         first < deadline + Duration::from_secs(2) && first < Duration::from_secs(15),
@@ -3745,6 +3747,7 @@ async fn read_only_member_never_downloads_full_snapshot() {
     let first_pass = PassPlan {
         announce: false,
         reconcile: crate::record_materializer::ReconcileScope::Everything,
+        quiet: false,
     };
     for plan in [first_pass, TIMER_PASS] {
         exchanges
@@ -3927,6 +3930,324 @@ async fn revoked_writer_is_cut_off_with_persisted_state() {
             .unwrap()
             .entry_at("from-revoked-writer")
             .is_none()
+    );
+    router.shutdown().await.unwrap();
+}
+
+/// TIL-745. The idle timer: three seconds after anything happens, doubling
+/// per quiet timer pass to thirty; a change, a pass something started, or
+/// activity outside a pass brings it back to three; a failing exchange
+/// holds three seconds for a minute, then backs off as well.
+#[test]
+fn idle_backoff_doubles_to_the_ceiling_and_resets_on_activity() {
+    let quiet = PassOutcome::default();
+    let changed = PassOutcome {
+        changed: true,
+        failed: false,
+    };
+    let failed = PassOutcome {
+        changed: false,
+        failed: true,
+    };
+    let start = Instant::now();
+    let mut backoff = IdleBackoff::default();
+    let mut schedule = vec![backoff.interval().as_secs()];
+    for _ in 0..6 {
+        backoff.after_pass(true, quiet, start);
+        schedule.push(backoff.interval().as_secs());
+    }
+    assert_eq!(schedule, [3, 6, 12, 24, 30, 30, 30]);
+    assert_eq!(IDLE_RECONCILE_CEILING, Duration::from_secs(30));
+
+    backoff.after_pass(true, changed, start);
+    assert_eq!(backoff.interval(), RECONCILE_INTERVAL, "a change resets");
+    backoff.after_pass(true, quiet, start);
+    backoff.after_pass(false, quiet, start);
+    assert_eq!(
+        backoff.interval(),
+        RECONCILE_INTERVAL,
+        "a pass a local change or an announcement started resets"
+    );
+    backoff.after_pass(true, quiet, start);
+    backoff.activity();
+    assert_eq!(backoff.interval(), RECONCILE_INTERVAL, "activity resets");
+
+    // Phase `a_failing_exchange_holds_the_short_interval_for_a_minute`.
+    for _ in 0..3 {
+        backoff.after_pass(true, quiet, start);
+    }
+    let mut at = start;
+    while at.duration_since(start) < FAILURE_RETRY_WINDOW {
+        backoff.after_pass(true, failed, at);
+        assert_eq!(
+            backoff.interval(),
+            RECONCILE_INTERVAL,
+            "at {:?}",
+            at - start
+        );
+        at += RECONCILE_INTERVAL;
+    }
+    backoff.after_pass(true, failed, at);
+    assert_eq!(
+        backoff.interval(),
+        RECONCILE_INTERVAL * 2,
+        "a peer gone for longer is not dialled every 3 s forever"
+    );
+    backoff.after_pass(true, quiet, at);
+    backoff.after_pass(true, failed, at);
+    assert_eq!(
+        backoff.interval(),
+        RECONCILE_INTERVAL,
+        "a new failure after a success holds the short interval again"
+    );
+}
+
+/// TIL-745. An idle exchange's replies carry the peer's heads; only one
+/// that brings changes reports any, so idle timer passes neither count as
+/// changes nor stop the timer backing off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_namespace_exchange_reports_no_change() {
+    let workspace = uuid::Uuid::new_v4();
+    let history = namespace_with_history(500).save();
+    let host = Arc::new(Mutex::new(Namespace::from_bytes("host", &history).unwrap()));
+    let (router, addr, _person) = session_member(workspace, Arc::clone(&host)).await;
+    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
+    let device = Arc::new(Mutex::new(
+        Namespace::from_bytes("device", &history).unwrap(),
+    ));
+    let sessions = SessionPool::new(endpoint, identity, workspace);
+    let session = sessions.get(&addr).await.unwrap().unwrap();
+    let sync = || session::sync_namespace(&sessions, &session, &device, None, &None);
+    for pass in 0..3 {
+        assert!(
+            !sync().await.unwrap(),
+            "idle exchange {pass} reported a change"
+        );
+    }
+    host.lock()
+        .unwrap()
+        .create_file(ROOT_INO, "from-host", None, 0, 1)
+        .unwrap();
+    assert!(sync().await.unwrap(), "a received change is reported");
+    assert!(device.lock().unwrap().entry_at("from-host").is_some());
+    device
+        .lock()
+        .unwrap()
+        .create_file(ROOT_INO, "from-device", None, 0, 1)
+        .unwrap();
+    assert!(
+        !sync().await.unwrap(),
+        "sending this device's change receives nothing"
+    );
+    assert!(host.lock().unwrap().entry_at("from-device").is_some());
+    router.shutdown().await.unwrap();
+}
+
+/// TIL-745. A peer's own pass that brings changes wakes this device's
+/// loop as an announcement does, so the records behind them are pulled now
+/// rather than at an idle timer pass up to 30 s later; an idle one does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peers_exchange_that_brings_changes_starts_a_pass() {
+    let workspace = uuid::Uuid::new_v4();
+    let host = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
+    let (announce_tx, mut announcements) = mpsc::unbounded_channel();
+    let protocol = SessionProtocol {
+        endpoint: endpoint.clone(),
+        identity,
+        policy: None,
+        namespace: Arc::clone(&host),
+        store: Arc::new(ContentStore::memory()),
+        records: None,
+        workspace_id: workspace,
+        announcements: announce_tx,
+        pool: std::sync::Weak::new(),
+    };
+    let router = Router::builder(endpoint.clone())
+        .accept(TILO_FS_SESSION_ALPN, protocol)
+        .spawn();
+    let (device_endpoint, _lookup, device_identity) = bind_certified_endpoint().await;
+    let device_id = device_endpoint.id();
+    let device = Arc::new(Mutex::new(
+        Namespace::from_bytes("device", &host.lock().unwrap().save()).unwrap(),
+    ));
+    let sessions = SessionPool::new(device_endpoint, device_identity, workspace);
+    let session = sessions.get(&endpoint.addr()).await.unwrap().unwrap();
+    let sync = || session::sync_namespace(&sessions, &session, &device, None, &None);
+
+    sync().await.unwrap();
+    while announcements.try_recv().is_ok() {}
+    device
+        .lock()
+        .unwrap()
+        .create_file(ROOT_INO, "from-device", None, 0, 1)
+        .unwrap();
+    sync().await.unwrap();
+    let announced = tokio::time::timeout(HANG_BOUND, announcements.recv())
+        .await
+        .expect("the host's loop was woken")
+        .unwrap();
+    assert_eq!(announced, device_id);
+    sync().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        announcements.try_recv().is_err(),
+        "an idle exchange woke the loop"
+    );
+    router.shutdown().await.unwrap();
+}
+
+/// TIL-745. A timer pass skips the namespace exchange with a peer that
+/// agreed on this device's heads at its last exchange in this loop: no sync
+/// message on either side. It never skips on the loop's first exchange with
+/// a peer, nor on a pass something started, nor once this device has a
+/// change, nor once the backstop is due, and every change still crosses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quiet_timer_pass_skips_the_namespace_exchange_with_a_peer_in_sync() {
+    let workspace = uuid::Uuid::new_v4();
+    let history = namespace_with_history(500).save();
+    let host = Arc::new(Mutex::new(Namespace::from_bytes("host", &history).unwrap()));
+    let (router, addr, _person) = session_member(workspace, Arc::clone(&host)).await;
+    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
+    let device = Arc::new(Mutex::new(
+        Namespace::from_bytes("device", &history).unwrap(),
+    ));
+    let exchanges = exchanges_for(
+        &endpoint,
+        &identity,
+        (workspace, None),
+        &device,
+        PEER_DEADLINE,
+    );
+    let generated = || {
+        device
+            .lock()
+            .unwrap()
+            .sync_bytes_generated()
+            .saturating_add(host.lock().unwrap().sync_bytes_generated())
+    };
+    let pass = |plan: PassPlan| {
+        let exchanges = &exchanges;
+        let addr = addr.clone();
+        async move {
+            let before = generated();
+            let outcome = exchanges.run(vec![addr], plan).await;
+            assert!(!outcome.failed, "{plan:?} failed");
+            generated().saturating_sub(before)
+        }
+    };
+    let announced = PassPlan {
+        announce: true,
+        reconcile: crate::record_materializer::ReconcileScope::Touched,
+        quiet: false,
+    };
+
+    assert!(
+        pass(TIMER_PASS).await > 0,
+        "the loop's first exchange is never skipped"
+    );
+    assert_eq!(
+        pass(TIMER_PASS).await,
+        0,
+        "a quiet pass with a peer in sync"
+    );
+    assert!(
+        pass(announced).await > 0,
+        "a pass something started exchanges"
+    );
+    assert_eq!(pass(TIMER_PASS).await, 0);
+
+    device
+        .lock()
+        .unwrap()
+        .create_file(ROOT_INO, "from-device", None, 0, 1)
+        .unwrap();
+    assert!(
+        pass(TIMER_PASS).await > 0,
+        "this device's change is exchanged"
+    );
+    assert!(host.lock().unwrap().entry_at("from-device").is_some());
+    assert_eq!(pass(TIMER_PASS).await, 0);
+
+    // The peer's change comes with its own pass; failing that, with the
+    // backstop.
+    host.lock()
+        .unwrap()
+        .create_file(ROOT_INO, "from-host", None, 0, 1)
+        .unwrap();
+    let device_of_host = *addr.id.as_bytes();
+    exchanges.shared.namespace_exchanged.lock().unwrap().insert(
+        device_of_host,
+        Instant::now()
+            .checked_sub(NAMESPACE_BACKSTOP)
+            .expect("an instant before the backstop"),
+    );
+    assert!(pass(TIMER_PASS).await > 0, "the backstop exchanges");
+    assert!(device.lock().unwrap().entry_at("from-host").is_some());
+    assert_eq!(pass(TIMER_PASS).await, 0);
+    router.shutdown().await.unwrap();
+}
+
+/// TIL-745. A device restarted with its persisted sync progress resumes
+/// its exchange with a peer over the production session: heads only,
+/// where a restart used to resend a summary of the whole history.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persisted_sync_progress_resumes_a_session_exchange_after_restart() {
+    let workspace = uuid::Uuid::new_v4();
+    let history = namespace_with_history(5_000).save();
+    let host = Arc::new(Mutex::new(Namespace::from_bytes("host", &history).unwrap()));
+    let (router, addr, _person) = session_member(workspace, Arc::clone(&host)).await;
+    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
+    let device = Arc::new(Mutex::new(
+        Namespace::from_bytes("device", &history).unwrap(),
+    ));
+    let sessions = SessionPool::new(endpoint, identity, workspace);
+    let session = sessions.get(&addr).await.unwrap().unwrap();
+    let pass = (&sessions, &*session);
+    let first = namespace_session_pass(pass, &device, &host, &None)
+        .await
+        .unwrap();
+    assert!(first > 5_000, "first contact is a full sync ({first} B)");
+
+    let (saved, progress) = {
+        let mut device = device.lock().unwrap();
+        (device.save(), device.encode_peer_sync_states())
+    };
+    let restarted = || (Namespace::from_bytes("device", &saved).unwrap(), &progress);
+    // Without its progress (before TIL-745) the restart syncs in full.
+    let (forgetful, _) = restarted();
+    let forgetful = Arc::new(Mutex::new(forgetful));
+    let full = namespace_session_pass(pass, &forgetful, &host, &None)
+        .await
+        .unwrap();
+    assert!(
+        full > 5_000,
+        "a restart without progress syncs in full ({full} B)"
+    );
+
+    let (mut resumed, progress) = restarted();
+    assert_eq!(resumed.restore_peer_sync_states(progress).unwrap(), 1);
+    let resumed = Arc::new(Mutex::new(resumed));
+    let bytes = namespace_session_pass(pass, &resumed, &host, &None)
+        .await
+        .unwrap();
+    assert!(
+        bytes < 512,
+        "a restart with progress resumed ({bytes} B, full {full} B)"
+    );
+    host.lock()
+        .unwrap()
+        .create_file(ROOT_INO, "while-restarted", None, 0, 1)
+        .unwrap();
+    namespace_session_pass(pass, &resumed, &host, &None)
+        .await
+        .unwrap();
+    assert!(
+        resumed
+            .lock()
+            .unwrap()
+            .entry_at("while-restarted")
+            .is_some()
     );
     router.shutdown().await.unwrap();
 }
@@ -4209,4 +4530,115 @@ fn unmaterialised_namespace_conflict_is_scanned_for_again() {
     watch.begin_pass(start + RECONCILE_INTERVAL * 2);
     assert!(watch.namespace_conflicts(&namespace).is_empty());
     assert_eq!(namespace.lock().unwrap().conflict_scans(), 2);
+}
+
+/// Bytes the endpoints have put on direct paths (IPv4 and IPv6).
+fn direct_bytes_sent(endpoints: &[&Endpoint]) -> u64 {
+    endpoints
+        .iter()
+        .map(|endpoint| {
+            let socket = &endpoint.metrics().socket;
+            socket
+                .send_ipv4
+                .get()
+                .saturating_add(socket.send_ipv6.get())
+        })
+        .sum()
+}
+
+/// A measurement, not a gate: run with `TILO_FS_IDLE_MEASURE=<seconds>`
+/// and `TILO_FS_NATIVE_TRACE=1 … -- --nocapture`. Two writer devices under
+/// an ACL, each with a record plane and the production reconciliation
+/// loop, nothing changing. Prints the bytes both endpoints sent over the
+/// window and marks its bounds, so the trace's `sync pass begins` lines
+/// between the marks count the passes. Two endpoints with no workspace are
+/// measured first: their traffic (address discovery, relay) is the floor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_workspace_cost_measurement() {
+    let Some(window) = std::env::var("TILO_FS_IDLE_MEASURE")
+        .ok()
+        .and_then(|seconds| seconds.parse::<u64>().ok())
+        .map(Duration::from_secs)
+    else {
+        eprintln!("idle workspace measurement disabled; set TILO_FS_IDLE_MEASURE=<seconds>");
+        return;
+    };
+    let settle = Duration::from_secs(60);
+
+    let (floor_a, _, _) = bind_certified_endpoint().await;
+    let (floor_b, _, _) = bind_certified_endpoint().await;
+    tokio::time::sleep(settle).await;
+    let before = direct_bytes_sent(&[&floor_a, &floor_b]);
+    tokio::time::sleep(window).await;
+    let floor = direct_bytes_sent(&[&floor_a, &floor_b]) - before;
+    drop((floor_a, floor_b));
+
+    let host_temp = tempfile::tempdir().unwrap();
+    let device_temp = tempfile::tempdir().unwrap();
+    let (host_ep, host_lookup, host_identity) = bind_certified_endpoint().await;
+    let (device_ep, device_lookup, device_identity) = bind_certified_endpoint().await;
+    let writers = [
+        host_identity.user_public_key(),
+        device_identity.user_public_key(),
+    ];
+    let history = namespace_with_history(5_000).save();
+    let host_store = Arc::new(ContentStore::memory());
+    let (_host, ticket) = Workspace::host_with_records(
+        host_ep.clone(),
+        host_lookup,
+        Arc::clone(&host_store),
+        Arc::new(Hydrator::new(host_ep.clone(), host_store)),
+        Arc::new(Mutex::new(Namespace::from_bytes("host", &history).unwrap())),
+        host_identity,
+        Some(policy_read_write(&writers, &[])),
+        record_services(host_temp.path()),
+    )
+    .await
+    .unwrap();
+    let device_store = Arc::new(ContentStore::memory());
+    let _device = Workspace::join_with_records(
+        SyncNode {
+            endpoint: device_ep.clone(),
+            lookup: device_lookup,
+            store: Arc::clone(&device_store),
+            hydrator: Arc::new(Hydrator::new(device_ep.clone(), device_store)),
+            namespace: Arc::new(Mutex::new(
+                Namespace::from_bytes("device", &history).unwrap(),
+            )),
+            identity: device_identity,
+            policy: Some(policy_read_write(&writers, &[])),
+        },
+        ticket,
+        record_services(device_temp.path()),
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(settle).await;
+    eprintln!("MEASURE window begins");
+    let before = direct_bytes_sent(&[&host_ep, &device_ep]);
+    // Per-thread wakeups of this process (both nodes) over the window, on
+    // Linux, where /proc has them (TIL-750).
+    let threads_before = tilo_test_env::idle::sample_process(std::process::id());
+    tokio::time::sleep(window).await;
+    let sent = direct_bytes_sent(&[&host_ep, &device_ep]) - before;
+    eprintln!("MEASURE window ends");
+    match threads_before.and_then(|threads_before| {
+        let threads_after = tilo_test_env::idle::sample_process(std::process::id())?;
+        Ok(tilo_test_env::idle::Wakeups::between(
+            threads_before,
+            threads_after,
+            window,
+        ))
+    }) {
+        Ok(wakeups) => eprintln!("MEASURE {wakeups}"),
+        Err(error) => eprintln!("MEASURE no per-thread wakeups here: {error}"),
+    }
+    let per_device_minute = |bytes: u64| bytes * 60 / window.as_secs().max(1) / 2;
+    eprintln!(
+        "MEASURE idle over {} s: both endpoints sent {sent} B, floor {floor} B; \
+         per device per minute {} B, floor {} B",
+        window.as_secs(),
+        per_device_minute(sent),
+        per_device_minute(floor)
+    );
 }

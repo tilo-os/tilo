@@ -1450,9 +1450,9 @@ impl MusicApp {
 
     fn source_status(&self) -> String {
         if self.source_invocation.is_some() {
-            ui::i18n!("music-source-connecting")
+            crate::i18n::t("music-source-connecting")
         } else if !self.spotify_jobs.is_empty() {
-            ui::i18n!("music-spotify-updating")
+            crate::i18n::t("music-spotify-updating")
         } else {
             self.source_error.clone().unwrap_or_else(|| {
                 self.spotify_remote_state
@@ -1461,7 +1461,7 @@ impl MusicApp {
                     .and_then(serde_json::Value::as_str)
                     .map_or_else(
                         || self.backend_name.clone(),
-                        |name| format!("{} {name}", ui::i18n!("music-spotify-output")),
+                        |name| format!("{} {name}", crate::i18n::t("music-spotify-output")),
                     )
             })
         }
@@ -1924,7 +1924,7 @@ impl MusicApp {
             if self.pb.current.as_deref() != Some(track.as_str()) {
                 self.audio.stop();
                 self.pb.playing = false;
-                self.playback_error = Some(ui::i18n!("music-spotify-queue-changed"));
+                self.playback_error = Some(crate::i18n::t("music-spotify-queue-changed"));
             }
         }
         self.prepare_spotify_queue();
@@ -2223,14 +2223,14 @@ impl MusicApp {
         let (title, primary, guidance) = match kind {
             NamePrompt::NewPlaylist => ("New playlist".into(), "Create".into(), String::new()),
             NamePrompt::NewSpotifyPlaylist => (
-                ui::i18n!("music-spotify-create-playlist"),
-                ui::i18n!("music-spotify-create"),
-                ui::i18n!("music-spotify-private-help"),
+                crate::i18n::t("music-spotify-create-playlist"),
+                crate::i18n::t("music-spotify-create"),
+                crate::i18n::t("music-spotify-private-help"),
             ),
             NamePrompt::Rename(ref id) if id.starts_with("spotify:") => (
-                ui::i18n!("music-spotify-rename-playlist"),
-                ui::i18n!("music-spotify-save-name"),
-                ui::i18n!("music-spotify-ownership-help"),
+                crate::i18n::t("music-spotify-rename-playlist"),
+                crate::i18n::t("music-spotify-save-name"),
+                crate::i18n::t("music-spotify-ownership-help"),
             ),
             NamePrompt::Rename(_) => ("Rename playlist".into(), "Save".into(), String::new()),
         };
@@ -4121,20 +4121,8 @@ impl MusicApp {
         if !self.allow_network || !is_live_id(id) || self.artist_requested.contains(id) {
             return;
         }
-        self.ensure_worker();
-        if let Some(w) = &self.worker {
-            match w.request(StreamRequest::Artist(id.to_string())) {
-                Ok(()) => {
-                    self.artist_requested.insert(id.to_string());
-                }
-                Err(error) => {
-                    self.failed_pages.insert(id.to_string());
-                    self.notify(
-                        ToastKind::Error,
-                        format!("Couldn\u{2019}t load artist: {error}"),
-                    );
-                }
-            }
+        if self.request_page(id, StreamRequest::Artist(id.to_string()), "artist") {
+            self.artist_requested.insert(id.to_string());
         }
     }
 
@@ -4143,20 +4131,8 @@ impl MusicApp {
         if !self.allow_network || !is_live_album_id(id) || self.album_requested.contains(id) {
             return;
         }
-        self.ensure_worker();
-        if let Some(w) = &self.worker {
-            match w.request(StreamRequest::Album(id.to_string())) {
-                Ok(()) => {
-                    self.album_requested.insert(id.to_string());
-                }
-                Err(error) => {
-                    self.failed_pages.insert(id.to_string());
-                    self.notify(
-                        ToastKind::Error,
-                        format!("Couldn\u{2019}t load album: {error}"),
-                    );
-                }
-            }
+        if self.request_page(id, StreamRequest::Album(id.to_string()), "album") {
+            self.album_requested.insert(id.to_string());
         }
     }
 
@@ -4165,19 +4141,27 @@ impl MusicApp {
         if !self.allow_network || !is_live_playlist_id(id) || self.playlist_requested.contains(id) {
             return;
         }
+        if self.request_page(id, StreamRequest::Playlist(id.to_string()), "playlist") {
+            self.playlist_requested.insert(id.to_string());
+        }
+    }
+
+    /// Send the page `request` for `id` to the worker; whether it was sent.
+    /// A refused request marks the page failed and says so.
+    fn request_page(&mut self, id: &str, request: StreamRequest, what: &str) -> bool {
         self.ensure_worker();
-        if let Some(w) = &self.worker {
-            match w.request(StreamRequest::Playlist(id.to_string())) {
-                Ok(()) => {
-                    self.playlist_requested.insert(id.to_string());
-                }
-                Err(error) => {
-                    self.failed_pages.insert(id.to_string());
-                    self.notify(
-                        ToastKind::Error,
-                        format!("Couldn\u{2019}t load playlist: {error}"),
-                    );
-                }
+        let Some(w) = &self.worker else {
+            return false;
+        };
+        match w.request(request) {
+            Ok(()) => true,
+            Err(error) => {
+                self.failed_pages.insert(id.to_string());
+                self.notify(
+                    ToastKind::Error,
+                    format!("Couldn\u{2019}t load {what}: {error}"),
+                );
+                false
             }
         }
     }
@@ -4722,14 +4706,14 @@ impl MusicApp {
         self.push_menu("Add to queue", Action::AddToQueue(track.clone()));
         if track.starts_with("spotify:track:") {
             self.push_menu(
-                ui::i18n!("music-spotify-save"),
+                crate::i18n::t("music-spotify-save"),
                 Action::SpotifyLibrary {
                     track: track.clone(),
                     save: true,
                 },
             );
             self.push_menu(
-                ui::i18n!("music-spotify-unsave"),
+                crate::i18n::t("music-spotify-unsave"),
                 Action::SpotifyLibrary {
                     track: track.clone(),
                     save: false,
@@ -4743,7 +4727,7 @@ impl MusicApp {
                     track: track.clone(),
                 };
                 self.push_menu(
-                    ui::i18n!("music-spotify-remove-playlist"),
+                    crate::i18n::t("music-spotify-remove-playlist"),
                     Action::SpotifyEffect(effect),
                 );
             }
@@ -4843,12 +4827,12 @@ impl MusicApp {
         self.push_checked_menu("Queue", self.view == View::Queue, Action::ToggleQueue);
         if self.spotify_catalogue {
             self.push_menu(
-                ui::i18n!("music-spotify-devices"),
+                crate::i18n::t("music-spotify-devices"),
                 Action::SpotifyEffect(crate::actions::MusicEffect::SpotifyDevices),
             );
             let devices = self.spotify_devices.clone();
             for device in devices.iter().filter(|device| !device.restricted).take(12) {
-                let label = ui::i18n::I18nManager::format(
+                let label = crate::i18n::t_args(
                     "music-spotify-select-device",
                     &[("device", (&device.name).into())],
                 );
@@ -4878,7 +4862,7 @@ impl MusicApp {
         );
         if track.starts_with("spotify:track:") {
             self.push_menu(
-                ui::i18n!("music-spotify-create-playlist"),
+                crate::i18n::t("music-spotify-create-playlist"),
                 Action::BeginNewSpotifyPlaylist,
             );
         }

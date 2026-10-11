@@ -5,7 +5,6 @@
 //! theme's own `bg_app`.
 use std::path::PathBuf;
 use tilo_ui::headless::FrameHarness;
-use tilo_ui::theme::Theme;
 use tilo_ui::widget::ButtonRole;
 use tilo_ui::widget::{Actions, Button, Card, CardGrid, Container, Element, Scrollable, Text};
 
@@ -31,18 +30,12 @@ fn page() -> Element {
     Box::new(Scrollable::new_vertical().with_child(Box::new(Container::new().with_child(cards()))))
 }
 
-fn shot_theme() -> Theme {
-    std::env::var("TILO_SHOTS_THEME")
-        .ok()
-        .and_then(|name| Theme::named(&name))
-        .unwrap_or_else(Theme::dark)
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = std::env::args_os()
         .nth(1)
         .map_or_else(|| PathBuf::from("/tmp/card-composition"), PathBuf::from);
     std::fs::create_dir_all(&output)?;
+    let theme = tilo_ui::launch::shot_theme_from_env()?;
     for (name, viewport, scale) in [
         ("wide", (1080, 640), 1.0),
         ("narrow", (340, 900), 1.0),
@@ -53,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tilo_ui::State::new(),
             page(),
             viewport,
-            shot_theme().with_text_scale(scale),
+            theme.clone().with_text_scale(scale),
         );
         harness.render_png(&output.join(format!("{name}.png")));
         std::fs::write(
@@ -71,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let mut resized =
-        FrameHarness::new_with_theme(tilo_ui::State::new(), page(), (1080, 640), shot_theme());
+        FrameHarness::new_with_theme(tilo_ui::State::new(), page(), (1080, 640), theme);
     resized.resize((340, 900))?;
     resized.render_png(&output.join("resized-narrow.png"));
     std::fs::write(

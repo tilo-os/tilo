@@ -159,17 +159,23 @@ impl LaunchArgs {
     pub fn positionals(&self) -> &[String] {
         &self.positionals
     }
+
+    /// This process's arguments, for a binary that runs its own live loop
+    /// (the greeter, the installer) yet takes the standard capture options,
+    /// plus its own capture-only `options`.
+    ///
+    /// # Errors
+    /// The same refusals as [`run`]: an unknown, malformed or duplicate
+    /// argument, or a capture option outside a capture.
+    #[cfg(feature = "native")]
+    pub fn from_env(options: &[&str]) -> Result<Self, LaunchError> {
+        let args: Vec<String> = std::env::args().collect();
+        parse_args_extended(&args, &[], options, &[], &[], 0)
+    }
 }
 
 /// How the standard lifecycle launches one application definition: its
 /// component host, capture scenarios, commands and accepted arguments.
-#[cfg_attr(
-    not(feature = "native"),
-    allow(
-        dead_code,
-        reason = "some fields are read only by the native event-loop runner"
-    )
-)]
 #[derive(Clone)]
 pub struct LaunchSpec {
     definition: &'static crate::application::ApplicationDefinition,
@@ -867,6 +873,11 @@ fn run_parsed(
     } else {
         None
     };
+    // The font database likewise, so the app's first text renderer finds
+    // the catalog verified and the fonts read.
+    if opens_native_window(&args) {
+        prepare_font_database_beside();
+    }
     match dispatch_definition(spec, &args)? {
         DefinitionDispatch::Native(app) => {
             #[cfg(any(windows, target_os = "linux"))]
@@ -896,6 +907,20 @@ fn run_parsed(
         }
     }
     Ok(())
+}
+
+/// Start building the process's font database in the background
+/// (`text_render::prepare_font_database`): only the database, so it neither
+/// shapes text nor touches the GPU the renderer preparation is opening. Where
+/// no background work can run, the first text renderer builds it as before.
+#[cfg(feature = "native")]
+fn prepare_font_database_beside() {
+    let _ = crate::background::Background::current().spawn("font-database-prepare", || {
+        tilo_startup_metrics::span(
+            "font-database-prepare",
+            crate::text_render::prepare_font_database,
+        );
+    });
 }
 
 #[cfg(feature = "native")]
@@ -1170,7 +1195,7 @@ pub const CAPTURE_SETTLE_BOUND: crate::time::Duration = crate::time::Duration::f
 pub const MAX_SHOT_DEVICE_SCALE: u32 = 4;
 
 /// `--distinct-letters` for the capture this process writes: every capture
-/// theme ([`shot_theme`], [`capture_theme`], [`shot_theme_from_env`]) takes it.
+/// theme ([`shot_theme`], [`shot_theme_from_env`]) takes it.
 static CAPTURE_DISTINCT_LETTERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// Pin "Always distinguish similar letters" on a capture theme when the
@@ -1212,25 +1237,6 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
     ));
     // Screenshot review must use the same motion policy as a real app.  The
     // headless harness does not construct `ui::App`, where this environment
-    // preference is normally read, so thread it onto the shot theme here.
-    theme.with_reduce_motion(shot_motion_reduced())
-}
-
-/// The same capture presentation for app-specific fixture drivers.
-#[must_use]
-pub fn capture_theme(text_scale: Option<f32>) -> Theme {
-    let theme = std::env::var("TILO_SHOTS_THEME")
-        .ok()
-        .and_then(|name| Theme::named(&name))
-        .unwrap_or_else(Theme::dark);
-    let theme = if let Some(scale) = text_scale {
-        theme.with_text_scale(scale)
-    } else {
-        theme
-    };
-    let theme = with_capture_letters(theme, None);
-    // Screenshot review must use the same motion policy as a real app.  The
-    // headless harness does not construct `tilo_ui::App`, where this environment
     // preference is normally read, so thread it onto the shot theme here.
     theme.with_reduce_motion(shot_motion_reduced())
 }

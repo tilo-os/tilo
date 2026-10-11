@@ -179,6 +179,12 @@ impl PlotPanel {
         &mut self.panel
     }
 
+    /// Whether the panel is open as a floating drawer, covering the plot
+    /// and the header.
+    pub fn floats_open(&self) -> bool {
+        self.panel.is_overlay() && self.panel.is_open()
+    }
+
     /// Adopt the theme's scale and metrics.
     pub fn scale_for(&mut self, theme: &Theme) {
         self.panel.scale_for(theme);
@@ -338,6 +344,23 @@ impl PlotPanel {
     /// The delete button's pointer target.
     pub fn delete_rect(&self, i: usize) -> Option<Rect> {
         self.rows.get(i).map(|r| self.target_of(r.del))
+    }
+
+    /// The panel's show/hide button, once placed.
+    pub fn toggle_rect(&self) -> Option<Rect> {
+        Some(self.panel.toggle_rect()).filter(|r| *r != Rect::ZERO)
+    }
+
+    /// Center of the show/hide button, once placed (test helper).
+    #[doc(hidden)]
+    pub fn toggle_center(&self) -> Option<Point> {
+        self.toggle_rect().map(|r| r.center())
+    }
+
+    /// Center of row `i`'s visibility toggle, once laid out (test helper).
+    #[doc(hidden)]
+    pub fn vis_center(&self, i: usize) -> Option<Point> {
+        self.visibility_rect(i).map(|r| r.center())
     }
 
     pub fn add_rect(&self) -> Option<Rect> {

@@ -446,10 +446,7 @@ pub(super) struct TrackColumns {
     pub title_x1: f64,
     pub album: Option<(f64, f64)>,
     /// The leading edge of the action cluster.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "read by the column layout's tests")
-    )]
+    #[cfg(test)]
     pub actions_x: f64,
 }
 
@@ -504,6 +501,7 @@ pub(super) fn track_columns(left: f64, right: f64, w: ColumnWidths, album: bool)
         title_x,
         title_x1,
         album,
+        #[cfg(test)]
         actions_x,
     }
 }
@@ -1252,7 +1250,7 @@ impl Widget for MusicApp {
         }
         let page_name = match &self.view {
             View::Home => "Home".to_string(),
-            View::Recommendations => ui::i18n!("music-recommendations-title"),
+            View::Recommendations => crate::i18n::t("music-recommendations-title"),
             View::Songs => "Songs".to_string(),
             View::Albums => "Albums".to_string(),
             View::Artists => "Artists".to_string(),
@@ -1955,7 +1953,7 @@ impl MusicApp {
             }
             MusicEffect::NewSpotifyPlaylist => {
                 if !self.spotify_catalogue {
-                    return Err(ui::i18n!("music-spotify-select-first"));
+                    return Err(crate::i18n::t("music-spotify-select-first"));
                 }
                 self.on_begin_new_playlist(None);
                 self.name_prompt = Some(super::NamePrompt::NewSpotifyPlaylist);
@@ -3015,7 +3013,7 @@ impl MusicApp {
     fn view_title(&self) -> String {
         match &self.view {
             View::Home => "Home".into(),
-            View::Recommendations => ui::i18n!("music-recommendations-title"),
+            View::Recommendations => crate::i18n::t("music-recommendations-title"),
             View::Songs => "Songs".into(),
             View::Albums => "Albums".into(),
             View::Artists => "Artists".into(),
@@ -3260,13 +3258,19 @@ impl MusicApp {
             );
             y += f64::from(size.height) + look.sibling;
         }
-        y = Self::section_heading(ctx, look, body, y, &ui::i18n!("music-spotify-remote-queue"));
-        let mut lines = vec![ui::i18n!("music-spotify-remote-queue-help")];
+        y = Self::section_heading(
+            ctx,
+            look,
+            body,
+            y,
+            &crate::i18n::t("music-spotify-remote-queue"),
+        );
+        let mut lines = vec![crate::i18n::t("music-spotify-remote-queue-help")];
         if let Some(error) = &self.source_error {
             lines.push(error.clone());
         }
         if let Some((snapshot, observed)) = &self.spotify_remote_queue {
-            lines.push(ui::i18n::I18nManager::format(
+            lines.push(crate::i18n::t_args(
                 "music-spotify-remote-queue-age",
                 &[("seconds", observed.elapsed().as_secs().to_string().into())],
             ));
@@ -3278,17 +3282,17 @@ impl MusicApp {
             }
             if let Some(items) = queue["queue"].as_array() {
                 if items.is_empty() {
-                    lines.push(ui::i18n!("music-spotify-remote-queue-empty"));
+                    lines.push(crate::i18n::t("music-spotify-remote-queue-empty"));
                 }
                 lines.extend(items.iter().take(50).enumerate().map(|(i, item)| {
                     format!("{}. {}", i + 1, super::spotify::remote_item_label(item))
                 }));
             }
             if snapshot["truncated"].as_bool() == Some(true) {
-                lines.push(ui::i18n!("music-spotify-remote-queue-truncated"));
+                lines.push(crate::i18n::t("music-spotify-remote-queue-truncated"));
             }
         } else {
-            lines.push(ui::i18n!("music-spotify-remote-queue-unloaded"));
+            lines.push(crate::i18n::t("music-spotify-remote-queue-unloaded"));
         }
         for line in lines {
             y = Self::provider_note(ctx, look, body, y, &line) + look.sibling;
@@ -3298,7 +3302,7 @@ impl MusicApp {
             look,
             body,
             y + look.sibling,
-            &ui::i18n!("music-spotify-local-queue"),
+            &crate::i18n::t("music-spotify-local-queue"),
         )
     }
 
@@ -4191,7 +4195,7 @@ impl MusicApp {
             ),
         ];
         let id = header.id.to_string();
-        let spotify_menu_label = ui::i18n!("music-spotify-playlist-actions");
+        let spotify_menu_label = crate::i18n::t("music-spotify-playlist-actions");
         match header.kind {
             DetailKind::Album { saved } => buttons.push((
                 if saved {

@@ -27,6 +27,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, SurfaceId};
+use crate::network::reachability::Reachability;
 use neighbour_wire::{Retention, retention};
 
 #[cfg(test)]
@@ -38,7 +39,9 @@ static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
 /// material and codecs, to announce a change the tick it lands. Local work: a
 /// converged, idle desktop sends nothing on it. Also the cadence of the
 /// heartbeat still sent where an older build listens for one
-/// ([`LEGACY_PEER_WINDOW`]).
+/// ([`LEGACY_PEER_WINDOW`]). Armed only while there is something to retry
+/// or someone to tell ([`ActorState::needs_upkeep`]): a desktop alone with
+/// its rooms never wakes for it.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// Peer liveness, kept by the transport rather than by messages. A gossip
 /// neighbour is a member while its link is up: iroh sends a QUIC keep-alive
@@ -62,6 +65,9 @@ const DEPARTURE_GRACE: Duration = Duration::from_secs(5);
 /// [`PEER_TIMEOUT`], and beats every 5 s itself, so three missed beats and
 /// one more mean it is gone. A topic of current builds only is silent.
 const LEGACY_PEER_WINDOW: Duration = Duration::from_secs(20);
+/// How often each workspace host session is asked for a fresh checkpoint
+/// ([`ActorState::run_host_checkpoint_tick`]); armed only while there is a
+/// host session to ask.
 const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(600);
 const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SURFACE_FRAME_BYTES: usize = 64 * 1024 * 1024;
@@ -731,14 +737,53 @@ struct TopicRuntime {
     /// a renewed certificate or a new revocation goes out the tick it lands
     /// and an unchanged one never does.
     identity_sent: Option<[u8; 32]>,
+    /// Whether gossip has had a neighbour on the topic: a `NeighborUp`, or a
+    /// lag that may have hidden one. Until then nothing is handed to gossip
+    /// (see [`Self::broadcast`]).
+    linked: bool,
 }
 
 impl TopicRuntime {
+    fn new(sender: GossipSender, pump: tokio::task::JoinHandle<()>) -> Self {
+        Self {
+            sender,
+            pump,
+            legacy_heard: None,
+            identity_sent: None,
+            linked: false,
+        }
+    }
+
     /// Whether a heartbeat-keeping build was heard here recently enough
     /// that it may still be listening for this device's heartbeat.
     fn hears_legacy(&self, now: Instant) -> bool {
         self.legacy_heard
             .is_some_and(|heard| now.saturating_duration_since(heard) < LEGACY_PEER_WINDOW)
+    }
+
+    /// Broadcast `bytes` to the topic's swarm, once it has had a neighbour.
+    ///
+    /// Before that gossip has nobody to send it to, and a neighbour that
+    /// comes later is never offered an older message: the shell syncs it
+    /// when it joins (`NetEvent::PeerJoined`). All a broadcast into an
+    /// empty topic would do is start the topic's cache sweep
+    /// ([`GOSSIP_CACHE_SWEEP`]), which iroh-gossip arms on the first message
+    /// and never stops, so a desktop alone with its rooms would wake to
+    /// sweep empty caches for the rest of the session. The first neighbour
+    /// arms it instead.
+    async fn broadcast(&self, bytes: Bytes) -> Result<(), iroh_gossip::api::ApiError> {
+        if !self.linked {
+            return Ok(());
+        }
+        self.sender.broadcast(bytes).await
+    }
+
+    /// [`Self::broadcast`] to the topic's direct neighbours only.
+    async fn broadcast_neighbors(&self, bytes: Bytes) -> Result<(), iroh_gossip::api::ApiError> {
+        if !self.linked {
+            return Ok(());
+        }
+        self.sender.broadcast_neighbors(bytes).await
     }
 }
 
@@ -941,6 +986,43 @@ impl ProtocolHandler for PersonalFabricProtocol {
     }
 }
 
+/// Why `command` means a remote party is involved, so this device must be
+/// reachable from now on (`crate::network::reachability`): it dials a peer
+/// or host, enrols a device, administers a relay room, joins a call or
+/// sends to a named one of the person's devices. `None` for everything a
+/// lone desktop does by itself: joining and publishing to a topic nobody
+/// else is on (its rooms, its fabric broadcast) sends nothing, and a lone
+/// desktop does that on every local change.
+fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
+    Some(match command {
+        NetCmd::Connect { .. } => "dialling a peer",
+        NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(_) => "dialling a host",
+        NetCmd::GovernorAction { .. } | NetCmd::RoomAdmin { .. } => "talking to a room's host",
+        NetCmd::NativeEnrollment(_) => "enrolling a device",
+        NetCmd::NativeMedia(_) => "a call",
+        NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
+            "sending to one of the person's devices"
+        }
+        NetCmd::PublishSurfaceTo { .. } => "streaming a window to a peer",
+        _ => return None,
+    })
+}
+
+/// Why `event` means a remote party reached this device (on a path that
+/// needed no relay, such as the local network), so it should be reachable
+/// through its relays too.
+fn remote_party_event(event: &InternalEvent) -> Option<&'static str> {
+    match event {
+        InternalEvent::Topic {
+            event: GossipEvent::NeighborUp(_),
+            ..
+        } => Some("a peer joined a topic"),
+        InternalEvent::PersonalFabric { .. } => Some("one of the person's devices connected"),
+        InternalEvent::SurfaceFrame { .. } => Some("a peer streamed a window"),
+        _ => None,
+    }
+}
+
 pub struct Actor;
 
 impl Actor {
@@ -957,12 +1039,33 @@ impl Actor {
         host_identity: Option<HostIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
+        Self::spawn_deferring_relays(
+            endpoint,
+            lookup,
+            host_identity,
+            listen_addrs,
+            Reachability::default(),
+        )
+    }
+
+    /// [`Self::spawn_reporting_addrs`] for an endpoint whose relays wait in
+    /// `reachability` until something needs this device reachable: the
+    /// actor wakes them when it dials a remote party or one reaches it
+    /// ([`remote_party_command`], [`remote_party_event`]).
+    pub fn spawn_deferring_relays(
+        endpoint: Endpoint,
+        lookup: MemoryLookup,
+        host_identity: Option<HostIdentity>,
+        listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
+        reachability: Reachability,
+    ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         Self::spawn_with_heartbeat(
             endpoint,
             lookup,
             host_identity,
             listen_addrs,
             HEARTBEAT_INTERVAL,
+            reachability,
         )
     }
 
@@ -975,6 +1078,7 @@ impl Actor {
         host_identity: Option<HostIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         heartbeat: Duration,
+        reachability: Reachability,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         if let Ok(mut out) = listen_addrs.lock() {
             out.push(endpoint.addr());
@@ -987,6 +1091,7 @@ impl Actor {
             listen_addrs,
             cmd_rx,
             heartbeat,
+            reachability,
         ));
         (cmd_tx, task)
     }
@@ -1007,7 +1112,8 @@ struct ActorState {
     native_media: super::native_media::Registry,
     native_enrollment: super::invite::enrollment_driver::Registry,
     native_routes: native_ingress::Routes,
-    listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
+    /// The endpoint's relays, held back until a remote party appears.
+    reachability: Reachability,
     gossip: Gossip,
     internal_tx: mpsc::Sender<InternalEvent>,
     topics: HashMap<WorkspaceId, TopicRuntime>,
@@ -1235,6 +1341,10 @@ impl PendingRemoteActions {
         ready.into_iter().map(|item| item.frame).collect()
     }
 
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     fn targets(&self) -> Vec<(WorkspaceId, EndpointId)> {
         let mut seen = Vec::new();
         for item in &self.items {
@@ -1368,6 +1478,9 @@ impl ActorState {
         reason = "the actor command match is the single auditable transport mutation boundary"
     )]
     async fn handle_command(&mut self, command: Option<NetCmd>) -> bool {
+        if let Some(why) = command.as_ref().and_then(remote_party_command) {
+            self.reachability.wake(why);
+        }
         match command {
             Some(NetCmd::PrivateMessages(reply)) => {
                 let _ = reply.send(self.private_messages.clone());
@@ -2400,12 +2513,7 @@ impl ActorState {
                         }
                         let _ = tx.send(InternalEvent::Closed { ws }).await;
                     });
-                    e.insert(TopicRuntime {
-                        sender,
-                        pump,
-                        legacy_heard: None,
-                        identity_sent: None,
-                    });
+                    e.insert(TopicRuntime::new(sender, pump));
                 }
                 Err(error) => tracing::warn!(ws, %error, "could not join iroh workspace topic"),
             }
@@ -2453,6 +2561,9 @@ impl ActorState {
         reason = "one exhaustive dispatcher over every internal actor event"
     )]
     async fn handle_internal(&mut self, internal: Option<InternalEvent>) -> bool {
+        if let Some(why) = internal.as_ref().and_then(remote_party_event) {
+            self.reachability.wake(why);
+        }
         match internal {
             Some(InternalEvent::ActionClosed { ws, peer, session }) => {
                 if self.host_sessions.get(&(ws, peer)).is_some_and(|runtime| {
@@ -2794,9 +2905,21 @@ impl ActorState {
         )
     }
 
+    /// A neighbour on `ws`, traffic only a neighbour delivers, or a lag that
+    /// may have hidden one: from here on the topic broadcasts
+    /// ([`TopicRuntime::broadcast`]).
+    fn note_topic_linked(&mut self, ws: WorkspaceId, event: &GossipEvent) {
+        if !matches!(event, GossipEvent::NeighborDown(_))
+            && let Some(topic) = self.topics.get_mut(&ws)
+        {
+            topic.linked = true;
+        }
+    }
+
     /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
     /// to keep that dispatcher short.
     async fn handle_topic_event(&mut self, ws: WorkspaceId, event: GossipEvent) {
+        self.note_topic_linked(ws, &event);
         if matches!(event, GossipEvent::NeighborUp(_)) {
             // Authenticate this device, and say what it can decode, as soon
             // as the link is usable: once per link, never on a timer. State
@@ -3158,9 +3281,28 @@ impl ActorState {
         }
     }
 
-    /// Refresh the advertised listen address, retry any workspace hosts not
-    /// yet connected, and broadcast this device's identity + a liveness
-    /// heartbeat on every joined topic.
+    /// Whether [`Self::run_heartbeat_tick`] has anything to do: a peer to
+    /// keep, retry or tell about a change, a workspace host or a governed
+    /// room's relay to keep connected, a remote action held for a peer, or a
+    /// topic whose subscription failed. A desktop alone with its rooms has
+    /// none of these, so its runtime sleeps until one appears ([`run`]).
+    fn needs_upkeep(&self) -> bool {
+        !self.peers.is_empty()
+            || !self.peers_seen.is_empty()
+            || !self.hosts.is_empty()
+            || !self.host_sessions.is_empty()
+            || !self.native_routes.is_empty()
+            || !self.pending_remote_actions.is_empty()
+            || self
+                .subscribers
+                .keys()
+                .any(|ws| !self.topics.contains_key(ws))
+    }
+
+    /// Retry any topic subscription, direct peer or workspace host not yet
+    /// connected, and announce this device's identity and codecs where they
+    /// changed (plus a heartbeat where an older build listens for one).
+    /// Runs every [`HEARTBEAT_INTERVAL`] while [`Self::needs_upkeep`].
     async fn run_heartbeat_tick(&mut self) {
         for (ws, peer) in self.pending_remote_actions.targets() {
             if self.peers_seen.contains_key(&(ws, peer)) {
@@ -3174,10 +3316,6 @@ impl ActorState {
         for ws in rooms {
             self.request_native_refresh(ws);
             self.drive_native_publication(ws);
-        }
-        if let Ok(mut out) = self.listen_addrs.lock() {
-            out.clear();
-            out.push(self.endpoint.addr());
         }
         if let Some(identity) = self.host_identity.as_ref() {
             let mut routes = HostRouteScheduler {
@@ -3245,7 +3383,7 @@ impl ActorState {
             ts: self.compat_beats,
         };
         if let (Some(topic), Ok(bytes)) = (self.topics.get(&ws), postcard::to_allocvec(&beat)) {
-            let _ = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await;
+            let _ = topic.broadcast_neighbors(Bytes::from(bytes)).await;
         }
     }
 
@@ -3296,7 +3434,7 @@ impl ActorState {
             return;
         };
         topic.identity_sent = Some(message_fingerprint(&bytes));
-        if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
+        if let Err(error) = topic.broadcast_neighbors(Bytes::from(bytes)).await {
             tracing::warn!(ws, %error, "could not send collaboration identity announcement");
         }
     }
@@ -3324,7 +3462,7 @@ impl ActorState {
             return;
         }
         tracing::info!(ws, "device identity material changed; announcing it again");
-        if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
+        if let Err(error) = topic.broadcast_neighbors(Bytes::from(bytes)).await {
             tracing::warn!(ws, %error, "could not send collaboration identity announcement");
         }
         for ((session_ws, _), runtime) in &self.host_sessions {
@@ -3351,7 +3489,7 @@ impl ActorState {
         };
         self.caps_sent = Some(message_fingerprint(&bytes));
         if let Some(topic) = self.topics.get(&ws) {
-            let _ = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await;
+            let _ = topic.broadcast_neighbors(Bytes::from(bytes)).await;
         }
     }
 
@@ -3369,10 +3507,7 @@ impl ActorState {
             return;
         }
         for topic in self.topics.values() {
-            let _ = topic
-                .sender
-                .broadcast_neighbors(Bytes::from(bytes.clone()))
-                .await;
+            let _ = topic.broadcast_neighbors(Bytes::from(bytes.clone())).await;
         }
     }
 
@@ -3698,6 +3833,7 @@ async fn run(
     listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     mut cmd_rx: mpsc::Receiver<NetCmd>,
     heartbeat_interval: Duration,
+    reachability: Reachability,
 ) {
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let (input_tx, mut input_rx) = mpsc::channel(64);
@@ -3725,18 +3861,20 @@ async fn run(
         )
         .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol)
         .spawn();
+    let reporting_addrs = report_addrs(&endpoint, listen_addrs);
     let mut state = ActorState {
         private_messages: super::private_messages::Transport::new(
             endpoint.clone(),
             private_messages,
+            reachability.clone(),
         ),
+        reachability,
         endpoint,
         lookup,
         host_identity,
         native_media: super::native_media::Registry::default(),
         native_enrollment: super::invite::enrollment_driver::Registry::default(),
         native_routes: native_ingress::Routes::default(),
-        listen_addrs,
         gossip,
         internal_tx,
         topics: HashMap::new(),
@@ -3769,17 +3907,21 @@ async fn run(
         compat_beats: 0,
         pending_remote_actions: PendingRemoteActions::default(),
     };
-    let mut heartbeat = tokio::time::interval(heartbeat_interval);
-    let mut host_checkpoint = tokio::time::interval(HOST_CHECKPOINT_INTERVAL);
-    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    host_checkpoint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    heartbeat.tick().await;
-    host_checkpoint.tick().await;
+    let mut upkeep = None;
+    let mut host_checkpoint = None;
 
     loop {
         // Evict when the soonest membership lapses, not on a polling tick:
         // linked peers have no deadline at all.
         let eviction = state.next_eviction();
+        // Upkeep every `heartbeat_interval` while there is someone to keep
+        // up with; a desktop alone with its rooms never wakes for it.
+        upkeep = next_upkeep(upkeep, state.needs_upkeep(), heartbeat_interval);
+        host_checkpoint = next_upkeep(
+            host_checkpoint,
+            !state.host_sessions.is_empty(),
+            HOST_CHECKPOINT_INTERVAL,
+        );
         tokio::select! {
             biased;
             input = input_rx.recv() => {
@@ -3798,8 +3940,14 @@ async fn run(
                 }
             }
             () = sleep_until_lapse(eviction) => state.run_eviction_tick().await,
-            _ = heartbeat.tick() => state.run_heartbeat_tick().await,
-            _ = host_checkpoint.tick() => state.run_host_checkpoint_tick().await,
+            () = sleep_until_lapse(upkeep) => {
+                upkeep = None;
+                state.run_heartbeat_tick().await;
+            }
+            () = sleep_until_lapse(host_checkpoint) => {
+                host_checkpoint = None;
+                state.run_host_checkpoint_tick().await;
+            }
         }
     }
 
@@ -3812,7 +3960,45 @@ async fn run(
     for (_, (_, task)) in state.surface_fanout_tasks {
         task.abort();
     }
+    reporting_addrs.abort();
     let _ = router.shutdown().await;
+}
+
+/// When the next upkeep tick is due, given when it was due (`armed`) and
+/// whether the actor still [needs one](ActorState::needs_upkeep): kept while
+/// it is needed, `interval` from now once it becomes needed, and none while
+/// nothing needs it.
+fn next_upkeep(armed: Option<Instant>, needed: bool, interval: Duration) -> Option<Instant> {
+    if !needed {
+        return None;
+    }
+    Some(armed.unwrap_or_else(|| later(Instant::now(), interval)))
+}
+
+/// Keep `listen_addrs` at the endpoint's current address, which invites
+/// carry and [`crate::shell::network::ShellNetwork::dial_addr`] reads: a
+/// new direct address, or the home relay once [`Reachability::wake`] adds
+/// the relays. iroh says when the address changes, so this waits rather
+/// than re-reading it on a timer.
+fn report_addrs(
+    endpoint: &Endpoint,
+    listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
+) -> tokio::task::JoinHandle<()> {
+    use iroh::Watcher as _;
+    let mut addr = endpoint.watch_addr();
+    let current = addr.get();
+    let report = move |current: EndpointAddr| {
+        if let Ok(mut out) = listen_addrs.lock() {
+            out.clear();
+            out.push(current);
+        }
+    };
+    report(current);
+    tokio::spawn(async move {
+        while let Ok(current) = addr.updated().await {
+            report(current);
+        }
+    })
 }
 
 /// `span` after `now`; `now` itself in the unreachable case that overflows.
@@ -3832,7 +4018,9 @@ async fn sleep_until_lapse(at: Option<Instant>) {
 /// sweep is a timer per topic that never stops, the one thing that woke an
 /// idle, converged session several times a second; swept every
 /// [`GOSSIP_CACHE_SWEEP`] instead, an idle topic wakes its runtime a tenth
-/// as often.
+/// as often. iroh-gossip arms it on a topic's first message or neighbour,
+/// so a topic that never had a neighbour is never swept
+/// ([`TopicRuntime::broadcast`]).
 const GOSSIP_CACHE_SWEEP: Duration = Duration::from_secs(10);
 /// How long gossip keeps a message to answer a neighbour's graft for it.
 /// iroh-gossip's 30 s less the longer sweep, so a message is still gone
@@ -3927,7 +4115,7 @@ async fn publish(
     }
     if broadcast_gossip {
         if let Some(topic) = topics.get(&ws) {
-            if let Err(error) = topic.sender.broadcast(Bytes::from(bytes)).await {
+            if let Err(error) = topic.broadcast(Bytes::from(bytes)).await {
                 tracing::warn!(ws, %error, "iroh gossip publish failed");
             }
         } else if host_sessions
@@ -4685,6 +4873,24 @@ mod tests {
         );
     }
 
+    /// A dial wakes the relays; what a lone desktop does on every local
+    /// change (join its own topic, publish to it) does not (TIL-740).
+    #[test]
+    fn only_a_remote_party_needs_this_device_reachable() {
+        let addr = EndpointAddr::new(iroh::SecretKey::generate().public());
+        assert!(remote_party_command(&NetCmd::Connect { addr: addr.clone() }).is_some());
+        assert!(
+            remote_party_command(&NetCmd::ConnectHost {
+                addr,
+                expectation: None,
+            })
+            .is_some()
+        );
+        let (on_event, _events) = mpsc::channel(1);
+        assert!(remote_party_command(&NetCmd::JoinWorkspace { ws: 7, on_event }).is_none());
+        assert!(remote_party_command(&NetCmd::LeaveWorkspace { ws: 7 }).is_none());
+    }
+
     #[test]
     fn a_remote_action_with_no_route_waits_for_that_peer_and_expires() {
         let mut pending = PendingRemoteActions::default();
@@ -4721,6 +4927,88 @@ mod tests {
                 .is_empty(),
             "a request is not run long after it was sent"
         );
+    }
+
+    #[test]
+    fn upkeep_is_armed_only_while_something_needs_it() {
+        const EVERY: Duration = Duration::from_secs(5);
+        let before = Instant::now();
+        assert_eq!(
+            next_upkeep(None, false, EVERY),
+            None,
+            "alone, it never ticks"
+        );
+        let armed = next_upkeep(None, true, EVERY).expect("a peer arms it");
+        assert!(
+            armed >= later(before, EVERY),
+            "the first tick is a whole interval away"
+        );
+        assert_eq!(
+            next_upkeep(Some(armed), true, EVERY),
+            Some(armed),
+            "an armed tick keeps its deadline"
+        );
+        assert_eq!(
+            next_upkeep(Some(armed), false, EVERY),
+            None,
+            "the last peer gone disarms it"
+        );
+    }
+
+    /// A topic hands nothing to gossip until it has had a neighbour, so a
+    /// desktop alone with its rooms never arms gossip's per-topic cache
+    /// sweep, which would otherwise run for the rest of the session. Once
+    /// linked, it broadcasts and the sweep runs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_topic_that_never_had_a_neighbour_never_arms_the_gossip_sweep() {
+        const SWEEP: Duration = Duration::from_millis(20);
+        let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let gossip = Gossip::builder()
+            .broadcast_config(iroh_gossip::proto::PlumtreeConfig {
+                cache_evict_interval: SWEEP,
+                ..broadcast_config()
+            })
+            .spawn(endpoint.clone());
+        let (sender, _receiver) = gossip
+            .subscribe(topic_id(42), Vec::new())
+            .await
+            .unwrap()
+            .split();
+        let mut topic = TopicRuntime::new(sender, tokio::spawn(std::future::pending()));
+        let timers = || gossip.metrics().actor_tick_timers.get();
+
+        for _ in 0..3 {
+            topic
+                .broadcast(Bytes::from_static(b"a local change"))
+                .await
+                .unwrap();
+            topic
+                .broadcast_neighbors(Bytes::from_static(b"an identity"))
+                .await
+                .unwrap();
+        }
+        tokio::time::sleep(SWEEP.saturating_mul(10)).await;
+        assert_eq!(timers(), 0, "gossip woke for a topic nobody else is on");
+
+        topic.linked = true;
+        topic
+            .broadcast(Bytes::from_static(b"a change a neighbour hears"))
+            .await
+            .unwrap();
+        tilo_test_env::within("a linked topic's cache sweep", async {
+            while timers() < 2 {
+                tokio::time::sleep(SWEEP).await;
+            }
+        })
+        .await;
+        topic.pump.abort();
+        endpoint.close().await;
     }
     use getrandom::{SysRng, rand_core::UnwrapErr};
 
@@ -5260,6 +5548,7 @@ mod tests {
             Some(identity),
             Arc::new(Mutex::new(Vec::new())),
             tick,
+            Reachability::default(),
         );
         let (events, rx) = mpsc::channel(64);
         cmd.send(NetCmd::JoinWorkspace {
@@ -6488,6 +6777,7 @@ mod tests {
             Some(identity_a),
             Arc::new(Mutex::new(Vec::new())),
             heartbeat,
+            Reachability::default(),
         );
         let (cmd_b, _task_b) = Actor::spawn_with_heartbeat(
             b,
@@ -6495,6 +6785,7 @@ mod tests {
             Some(identity_b),
             Arc::new(Mutex::new(Vec::new())),
             heartbeat,
+            Reachability::default(),
         );
         let (event_a, mut rx_a) = mpsc::channel(16);
         let (event_b, mut rx_b) = mpsc::channel(16);
