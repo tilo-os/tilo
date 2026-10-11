@@ -109,7 +109,6 @@ policies! {
         "tilo.notifications.show_badges",
         "tilo.notifications.focus",
         "tilo.notifications.per_app",
-        "tilo.input.natural_scroll",
         "tilo.input.touchpad_natural_scroll",
         "tilo.input.mouse_natural_scroll",
         "tilo.input.tap_to_click",
