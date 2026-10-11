@@ -36,6 +36,10 @@ use vello::Scene;
 use vello::kurbo::Rect;
 use vello_encoding::{Encoding, Patch};
 
+/// Bounds what a section draws outside its parts ([`damage_with_copies`],
+/// [`drawn_bounds`]); keep one across frames.
+pub use tilo_cpu_raster::DrawBounds;
+
 /// Identifies one part among the parts of a section. Two frames' parts are
 /// matched by key and position, so a key must name the same thing in both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -129,37 +133,191 @@ pub struct DamageHint {
     /// Where the content is placed: content placed elsewhere has moved.
     pub placement: vello::kurbo::Affine,
     /// Every pixel that differs between generations `from` and `to`, in the
-    /// section's coordinates, antialiasing, shadows and overhang included.
+    /// section's coordinates, antialiasing, shadows and overhang included,
+    /// except where `copies` land.
     pub rects: Vec<Rect>,
+    /// What of generation `from` generation `to` shows moved, in the
+    /// section's coordinates ([`crate::scroll_copy`]): a host that keeps the
+    /// pixels it presented may move them instead of repainting where they
+    /// land ([`damage_with_copies`]). Any other host repaints there.
+    pub copies: Vec<crate::scroll_copy::MovedRegion>,
 }
 
 impl DamageHint {
     /// `self`'s damage when it describes the change from `previous`'s
     /// content: the same source placed in the same place, painting the
     /// generation that follows the one `previous` painted.
-    fn follows(&self, previous: &Self) -> Option<&[Rect]> {
+    fn follows(&self, previous: &Self) -> bool {
         // The generation this one was measured from is the one painted then.
         let next_generation = previous.to == self.from;
-        (next_generation
+        next_generation
             && self.source == previous.source
             && self.placement == previous.placement
-            && !self.rects.is_empty())
-        .then_some(self.rects.as_slice())
+            && !(self.rects.is_empty() && self.copies.is_empty())
+    }
+
+    /// What changed for a host that makes no copy: the rects, and where
+    /// every copy lands.
+    fn repainted(&self) -> Vec<Rect> {
+        self.rects
+            .iter()
+            .copied()
+            .chain(self.copies.iter().map(|copy| copy.destination().expand()))
+            .collect()
     }
 
     fn transformed(&self, transform: Option<vello::kurbo::Affine>) -> Self {
         let Some(transform) = transform else {
             return self.clone();
         };
+        let mut rects: Vec<Rect> = self
+            .rects
+            .iter()
+            .map(|rect| transform.transform_rect_bbox(*rect))
+            .collect();
+        let mut copies = Vec::with_capacity(self.copies.len());
+        for copy in &self.copies {
+            match copy.transformed(transform) {
+                Some(moved) => copies.push(moved),
+                // Moved under a rotation, the copy is repainted.
+                None => rects.push(transform.transform_rect_bbox(copy.destination()).expand()),
+            }
+        }
         Self {
             placement: transform * self.placement,
-            rects: self
-                .rects
-                .iter()
-                .map(|rect| transform.transform_rect_bbox(*rect))
-                .collect(),
+            rects,
+            copies,
             ..self.clone()
         }
+    }
+}
+
+/// A copy a hinted part's content made ([`DamageHint::copies`]), as a host
+/// presenting the section over its last frame must check it: what it moves,
+/// what the section draws over that content, and how it composites.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SectionCopy {
+    /// What moved, in section coordinates.
+    pub moved: crate::scroll_copy::MovedRegion,
+    /// Where the section draws after the content the copy moves, over it:
+    /// bounded parts' bounds and the draw bounds of everything else. `None`
+    /// when some of it cannot be bounded.
+    pub above: Option<Vec<Rect>>,
+    /// Whether every layer open around the content is a plain clip or a
+    /// source-over group at full opacity, so its pixels are its own.
+    pub plain_layers: bool,
+}
+
+/// [`damage_with_copies`]: where a section changed, and the copies that
+/// explain the rest.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SectionDamage {
+    /// Where the section changed, except where the copies land.
+    pub rects: Vec<Rect>,
+    pub copies: Vec<SectionCopy>,
+}
+
+impl SectionDamage {
+    /// Where the section changed for a host that makes none of the copies.
+    pub fn without_copies(self) -> Vec<Rect> {
+        let mut rects = self.rects;
+        for copy in self.copies {
+            let landed = copy.moved.destination().expand();
+            if !rects.contains(&landed) {
+                rects.push(landed);
+            }
+        }
+        rects
+    }
+}
+
+/// How a host presents a frame over the pixels of the one before:
+/// [`present_copies`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Presented {
+    /// The copies to make within the target, in order, before anything is
+    /// repainted.
+    pub copies: Vec<crate::scroll_copy::DeviceCopy>,
+    /// What to repaint after them, in device pixels.
+    pub raster: Vec<Rect>,
+}
+
+impl Presented {
+    /// Every pixel the frame changes: what is repainted and where the
+    /// copies land, in device pixels.
+    pub fn changed(&self) -> Vec<Rect> {
+        self.raster
+            .iter()
+            .copied()
+            .chain(
+                self.copies
+                    .iter()
+                    .map(crate::scroll_copy::DeviceCopy::destination_rect),
+            )
+            .collect()
+    }
+}
+
+/// Decide which of a frame's section copies ([`damage_with_copies`]) a host
+/// that keeps its target makes, and what it repaints around them. `damage`
+/// is every other change of the frame, in device pixels; `above` is where
+/// the scene draws over the section after it (later sections), in section
+/// coordinates; `to_device` maps section coordinates into the `size`
+/// target.
+///
+/// A copy is made only when its content composites on its own (plain layers
+/// around it), everything drawn over it is bounded, its delta is a whole
+/// number of device pixels and it meets no earlier copy. What is drawn over
+/// it (in the section or above) is repainted where it is and, carried, where
+/// the copy took its pixels ([`crate::scroll_copy::carry`]), as is every
+/// other change a copy reads; a copy not made repaints where it lands.
+pub fn present_copies(
+    copies: &[SectionCopy],
+    mut damage: Vec<Rect>,
+    above: &[Rect],
+    to_device: vello::kurbo::Affine,
+    size: (u32, u32),
+) -> Presented {
+    let target = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
+    let device = |rect: Rect| {
+        to_device
+            .transform_rect_bbox(rect)
+            .expand()
+            .intersect(target)
+    };
+    let mut made = Vec::new();
+    let mut claimed: Vec<Rect> = Vec::new();
+    for copy in copies {
+        let reach = copy.moved.reach();
+        let planned = copy
+            .above
+            .as_ref()
+            .filter(|_| copy.plain_layers)
+            .and_then(|drawn| Some((drawn, copy.moved.device(to_device, size)?)))
+            .filter(|_| {
+                claimed
+                    .iter()
+                    .all(|area| area.intersect(device(reach)).area() <= 0.0)
+            });
+        let Some((drawn, (made_copy, fringe))) = planned else {
+            damage.push(device(copy.moved.destination()));
+            continue;
+        };
+        claimed.push(device(reach));
+        made.push(made_copy);
+        damage.extend(fringe);
+        for over in drawn.iter().chain(above) {
+            let covered = over.intersect(reach);
+            if covered.width() > 0.0 && covered.height() > 0.0 {
+                damage.push(device(covered));
+            }
+        }
+    }
+    damage.retain(|rect| rect.width() > 0.0 && rect.height() > 0.0);
+    crate::scroll_copy::carry(&made, &mut damage);
+    Presented {
+        copies: made,
+        raster: damage,
     }
 }
 
@@ -447,24 +605,151 @@ pub fn damage(
     current_parts: &SectionParts,
 ) -> Result<Vec<Rect>, Unproven> {
     let (old_events, new_events) = (&previous_parts.events, &current_parts.events);
-    match compare(previous, old_events, current, new_events) {
+    match compare(previous, old_events, current, new_events, false) {
         Err(Unproven::Structure) => compare(
             previous,
             &outermost(old_events)?,
             current,
             &outermost(new_events)?,
+            false,
         ),
         proven => proven,
     }
+    .map(|(rects, _)| rects)
+}
+
+/// [`damage`] for a host that presents the section over the pixels of the
+/// frame it compares with and can move them: a hinted part whose hint
+/// follows on and carries copies ([`DamageHint::copies`]) damages its rects
+/// only, and each copy comes with what the section draws over it and how
+/// its content composites, which the host must check before making it
+/// (and otherwise repaint where it lands, [`SectionDamage::without_copies`]).
+/// `bounds` bounds the draws of the section outside every bounded part.
+///
+/// # Errors
+/// As [`damage`].
+pub fn damage_with_copies(
+    previous: &Scene,
+    previous_parts: &SectionParts,
+    current: &Scene,
+    current_parts: &SectionParts,
+    bounds: &mut tilo_cpu_raster::DrawBounds,
+) -> Result<SectionDamage, Unproven> {
+    let (old_events, new_events) = (&previous_parts.events, &current_parts.events);
+    let (rects, copied) = match compare(previous, old_events, current, new_events, true) {
+        // Compared by their outermost parts, nested hints say nothing.
+        Err(Unproven::Structure) => (
+            damage(previous, previous_parts, current, current_parts)?,
+            Vec::new(),
+        ),
+        proven => proven?,
+    };
+    let ends = part_ends(new_events)?;
+    let mut copies = Vec::new();
+    for begin in copied {
+        let Some(PartEnd::Hint(Some(hint))) = ends.get(begin) else {
+            continue;
+        };
+        let Some(end) = end_of(new_events, begin) else {
+            continue;
+        };
+        let above = drawn_from(current, new_events, end.saturating_add(1), bounds);
+        let plain_layers = new_events.get(begin).is_some_and(|event| {
+            tilo_cpu_raster::plain_layers_open_at(current.encoding(), event.marks.draw_tags)
+        });
+        copies.extend(hint.copies.iter().map(|moved| SectionCopy {
+            moved: *moved,
+            above: above.clone(),
+            plain_layers,
+        }));
+    }
+    Ok(SectionDamage { rects, copies })
+}
+
+/// Where `scene`, drawn with `parts` (if it was), paints anything: inside a
+/// bounded part by that part's bounds, anywhere else by its draw bounds.
+/// `None` when some of it cannot be bounded.
+pub fn drawn_bounds(
+    scene: &Scene,
+    parts: Option<&SectionParts>,
+    bounds: &mut tilo_cpu_raster::DrawBounds,
+) -> Option<Vec<Rect>> {
+    if scene.encoding().draw_tags.is_empty() {
+        return Some(Vec::new());
+    }
+    match parts {
+        Some(parts) => drawn_from(scene, &parts.events, 0, bounds),
+        None => bounds.of(scene.encoding()),
+    }
+}
+
+/// The index of the event that ends the part `begin` begins.
+fn end_of(events: &[Event], begin: usize) -> Option<usize> {
+    let mut depth = 0_usize;
+    for (index, event) in events.iter().enumerate().skip(begin) {
+        match event.boundary {
+            Boundary::Begin(_) => depth = depth.saturating_add(1),
+            Boundary::End(_) | Boundary::EndHinted(_) => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Where `scene` paints in its pieces from `first` on: a piece inside a
+/// bounded part by that part's bounds, any other by its draw bounds.
+fn drawn_from(
+    scene: &Scene,
+    events: &[Event],
+    first: usize,
+    bounds: &mut tilo_cpu_raster::DrawBounds,
+) -> Option<Vec<Rect>> {
+    let ends = part_ends(events).ok()?;
+    let mut open: Vec<usize> = Vec::new();
+    let mut drawn = Vec::new();
+    for piece in 0..=events.len() {
+        if piece >= first {
+            let range = piece_range(scene.encoding(), events, piece);
+            let piece_scene = slice(scene.encoding(), range)?;
+            if !piece_scene.encoding().draw_tags.is_empty() {
+                let bounded = open.iter().rev().find_map(|&owner| match ends.get(owner) {
+                    Some(PartEnd::Bounds(rects)) => Some(*rects),
+                    _ => None,
+                });
+                match bounded {
+                    // A part claiming to paint nothing must not have drawn.
+                    Some([]) => return None,
+                    Some(rects) => drawn.extend_from_slice(rects),
+                    None => drawn.extend(bounds.of(piece_scene.encoding())?),
+                }
+            }
+        }
+        match events.get(piece).map(|event| &event.boundary) {
+            Some(Boundary::Begin(_)) => open.push(piece),
+            Some(Boundary::End(_) | Boundary::EndHinted(_)) => {
+                open.pop();
+            }
+            None => {}
+        }
+    }
+    drawn.iter().all(Rect::is_finite).then_some(drawn)
 }
 
 /// [`damage`] for one list of boundaries per frame, compared piece by piece.
+/// With `copies`, a hinted part whose hint carries copies damages its rects
+/// alone and is listed, by the index of its begin, beside the damage;
+/// without, it damages where its copies land too.
 fn compare(
     previous: &Scene,
     old_events: &[Event],
     current: &Scene,
     new_events: &[Event],
-) -> Result<Vec<Rect>, Unproven> {
+    copies: bool,
+) -> Result<(Vec<Rect>, Vec<usize>), Unproven> {
     if old_events.len() != new_events.len()
         || old_events
             .iter()
@@ -477,6 +762,7 @@ fn compare(
     let (old_ends, new_ends) = (part_ends(old_events)?, part_ends(new_events)?);
     let mut open: Vec<usize> = Vec::new();
     let mut damage = Vec::new();
+    let mut copied = Vec::new();
     let mut changed = vec![false; old_events.len()];
     let pieces = old_events.len().saturating_add(1);
     for piece in 0..pieces {
@@ -485,7 +771,7 @@ fn compare(
         let old = slice(previous.encoding(), old_range).ok_or(Unproven::Corrupt)?;
         let new = slice(current.encoding(), new_range).ok_or(Unproven::Corrupt)?;
         if !old.encoding_eq(&new) {
-            let (owner, rects) = changed_owner(&open, &old_ends, &new_ends)?;
+            let (owner, rects, copying) = changed_owner(&open, &old_ends, &new_ends, copies)?;
             // A part claiming to paint nothing must not have drawn anything.
             if let (Some(PartEnd::Bounds(old_part)), Some(PartEnd::Bounds(new_part))) =
                 (old_ends.get(owner), new_ends.get(owner))
@@ -497,6 +783,9 @@ fn compare(
             let flag = changed.get_mut(owner).ok_or(Unproven::Corrupt)?;
             if !*flag {
                 *flag = true;
+                if copying {
+                    copied.push(owner);
+                }
                 // A part that changed in place has the same bounds twice.
                 for rect in rects {
                     if !damage.contains(&rect) {
@@ -520,7 +809,7 @@ fn compare(
     {
         return Err(Unproven::Unbounded);
     }
-    Ok(damage)
+    Ok((damage, copied))
 }
 
 /// The part a change inside the `open` parts (innermost last) damages, and
@@ -531,17 +820,23 @@ fn changed_owner(
     open: &[usize],
     old_ends: &[PartEnd<'_>],
     new_ends: &[PartEnd<'_>],
-) -> Result<(usize, Vec<Rect>), Unproven> {
+    copies: bool,
+) -> Result<(usize, Vec<Rect>, bool), Unproven> {
     for &owner in open.iter().rev() {
         let old_end = old_ends.get(owner).ok_or(Unproven::Corrupt)?;
         let new_end = new_ends.get(owner).ok_or(Unproven::Corrupt)?;
         match (old_end, new_end) {
             (PartEnd::Bounds(old), PartEnd::Bounds(new)) => {
-                return Ok((owner, old.iter().chain(new.iter()).copied().collect()));
+                let rects = old.iter().chain(new.iter()).copied().collect();
+                return Ok((owner, rects, false));
             }
             (PartEnd::Hint(Some(old)), PartEnd::Hint(Some(new))) => {
-                if let Some(rects) = new.follows(old) {
-                    return Ok((owner, rects.to_vec()));
+                if new.follows(old) {
+                    return Ok(if copies && !new.copies.is_empty() {
+                        (owner, new.rects.clone(), true)
+                    } else {
+                        (owner, new.repainted(), false)
+                    });
                 }
             }
             (PartEnd::Hint(_), PartEnd::Hint(_)) => {}

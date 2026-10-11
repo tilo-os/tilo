@@ -1484,6 +1484,9 @@ struct ScanoutFrame<'a> {
     /// The frame as layers, which an output that is the whole scene
     /// composites a strip pan from.
     layers: Option<&'a crate::shell::frame::FrameCache>,
+    /// What a scroll in an in-process app moved, which the renderer copies
+    /// within its target instead of rasterising where it lands.
+    copies: Option<&'a crate::shell::frame::ScrollCopies>,
 }
 
 // These two constructors are the only places a frame is translated for the scanouts, so a field
@@ -1498,6 +1501,7 @@ impl<'a> ScanoutFrame<'a> {
             backdrop: None,
             scanout: None,
             layers: None,
+            copies: None,
         }
     }
 }
@@ -1517,6 +1521,7 @@ impl<'a> From<&'a FramePaint> for ScanoutFrame<'a> {
             backdrop: frame.backdrop.as_ref(),
             scanout: frame.scanout_candidate(),
             layers: frame.cache.as_ref(),
+            copies: frame.scroll_copies.as_ref(),
         }
     }
 }
@@ -1744,6 +1749,9 @@ fn paint_scanouts_with(
             return PaintScanoutSample::default();
         };
         bridge.set_backdrop(frame.backdrop.cloned());
+        // The render of this frame against the one the target holds moves
+        // what the copies name before it rasterises the rest.
+        bridge.stage_scroll_copies(damage.map(|damage| damage.revision), frame.copies);
         if bridge.size() != target_size {
             bridge_resized = true;
             if let Err(e) = bridge.resize(target_size.0, target_size.1) {
@@ -2695,6 +2703,8 @@ fn render_combined_readback(
         backdrop: _,
         scanout: _,
         layers: _,
+        // The CPU canvas repaints where copies land.
+        copies: _,
     } = frame;
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
@@ -3309,6 +3319,12 @@ impl Backend for DrmBackend {
     /// The GPU presenter composites a lone unmagnified output's strip pans
     /// from retained layers (`RetainedGpuTarget::render_layers_until`).
     fn composites_strip_layers(&self) -> bool {
+        cpu_present::cpu_render_reason().is_none()
+    }
+
+    /// The GPU presenter moves pixels within its retained target before it
+    /// repaints a frame's damage (`RetainedGpuTarget::stage_scroll_copies`).
+    fn copies_scrolls(&self) -> bool {
         cpu_present::cpu_render_reason().is_none()
     }
 

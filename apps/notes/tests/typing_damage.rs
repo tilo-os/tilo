@@ -109,6 +109,7 @@ impl Host {
             to: self.generation,
             placement: Affine::IDENTITY,
             rects: rects.iter().map(|rect| rect.inflate(1.0, 1.0)).collect(),
+            copies: Vec::new(),
         });
         let mut scene = Scene::new();
         let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {

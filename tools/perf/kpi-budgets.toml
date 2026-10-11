@@ -921,6 +921,30 @@ p99_tolerance = 2.0
 min_delta = 10000.0
 source = "framework-scaling scroll, pixels one copied scroll frame repaints, 5,000 items"
 
+# The same list shown in a region of a host's scene, as the shell shows an
+# in-process app (`FRAMEWORK-SCROLL-HOSTED`): each frame's section is compared
+# with the last (scene_parts::damage_with_copies) and presented over it as a
+# host that keeps its target presents it, copies first (present_copies).
+# A frame repaints the strip the scroll exposed, the bar's track and the
+# tile's edge bands: 158,040 px p50 of the 1280x800 region on an M-series Mac
+# (985,280 for a host that does not copy). Enforced about 40 % above that.
+[kpi."render.framework_scroll.hosted_pixels.5k"]
+unit = "pixels"
+p50 = 220000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "framework-scaling scroll shown in a host's scene, pixels one copied scroll frame repaints, 5,000 items"
+
+[kpi."render.framework_scroll.hosted_whole_frames.5k"]
+unit = "count"
+max = 0.0
+p50_tolerance = 1.5
+p99_tolerance = 1.5
+min_delta = 2.0
+source = "framework-scaling scroll shown in a host's scene, frames repainted whole in 120, 5,000 items (reported)"
+
 [kpi."render.framework_scroll.whole_frames.5k"]
 unit = "count"
 max = 0.0

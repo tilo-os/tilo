@@ -421,6 +421,7 @@ fn hinted_app(
                 to,
                 placement,
                 rects: vec![placement.transform_rect_bbox(A)],
+                copies: Vec::new(),
             });
             hinted(scene, PartKey::new("app", 0_u64), hint, |scene| {
                 fill(
@@ -481,6 +482,7 @@ fn a_hinted_part_outside_every_bounded_part_is_not_proven_without_its_hint() {
         to,
         placement: Affine::IDENTITY,
         rects: vec![A],
+        copies: Vec::new(),
     };
     let frame = |color: Color, hint: Option<DamageHint>| {
         section(move |scene| {
@@ -516,6 +518,7 @@ fn an_appended_hint_is_carried_to_where_the_scene_is_drawn() {
                 to,
                 placement: Affine::IDENTITY,
                 rects: vec![A],
+                copies: Vec::new(),
             };
             hinted(scene, PartKey::new("app", 0_u64), Some(hint), caret(color));
         });

@@ -142,7 +142,8 @@ all of their commands so scrolling cannot reveal a hole.
 A scroll moves every pixel of its viewport, so a window copies instead of
 repainting them (`ui::scroll_copy`). A scroller whose content moved by a pure
 translation since the presented frame offers the move from `collect_damage`
-(`Scrollable`, and Notes' page); only a host collecting inside
+(`Scrollable`, `VirtualList`, `DocumentViewport`, a painted host through
+`ScrollRegion::offer_copy`, and Notes' page); only a host collecting inside
 `scroll_copy::accepting` takes it, any other host gets the viewport damage.
 The window plans each offer against the widget tree it drew: the copy keeps to
 whole device pixels inside every ancestor's child clip, and is refused (the
@@ -162,6 +163,25 @@ software adapter, within its CPU canvas, then rasterizes the damage; the
 compositor gets the copies' destinations as damage too. History's toolbar is
 compared with the presented frame's paint instead of counting as a layer, so a
 framework window no longer repaints whole on every frame.
+
+An app the shell hosts in-process (`EmbeddedApp`) copies the same way, with
+the compositor as the host. Drawn for a presenter that keeps its target
+(`scroll_copy::HostCopies`, set by `FrameBuilder::set_scroll_copy_presenter`),
+the app collects with `SurfaceDamage::copying`, stands on an opaque ground of
+the theme's content colour (as a window stands on its target's), refuses
+copies while anything is painted over its widgets, and hands its copies to the
+compositor in its `scene_parts::DamageHint`. `scene_parts::damage_with_copies`
+returns each copy with what the section draws after the app (bounded parts'
+bounds, and the draw bounds `tilo_cpu_raster::DrawBounds` decodes for
+everything else) and whether only plain layers (clips, opaque source-over
+groups) enclose it; `present_copies` keeps copies whose delta is a whole number
+of scene pixels on a lone display, repaints and carries what is drawn over
+them (a peer's pointer, the tile's edge, the sections above the workspace),
+and repaints where any other copy lands. `FramePaint::scroll_copies` carries
+the copies and the raster beside `damage_regions`, which stays every pixel
+the frame changes, so a presenter that does not copy needs nothing new; the
+DRM GPU presenter copies within its retained target before the sparse raster
+and reads out every changed pixel.
 
 The worker acquires the swapchain before packing or uploading a scene. If the
 surface is occluded, timed out, outdated, or gone, that attempt performs zero
