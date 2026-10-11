@@ -10190,7 +10190,7 @@ impl BlockEditor {
         true
     }
 
-    /// The leading `/` still falls through to `TextInput` (visible
+    /// The `/` still falls through to `TextInput` (visible
     /// feedback); `slash_open_at` remembers where to strip it on commit.
     /// Code blocks excluded — `/` there is meaningful text.
     fn try_open_slash_menu(&mut self, event: &WindowEvent) {
@@ -10288,6 +10288,17 @@ impl BlockEditor {
                 .update_pointer_position(self.last_mouse_pos);
         }
         *ctx.focus_target = Some(ctx.node_id);
+        // A `/` inside a word ("and/or", "src/lib") is text. The menu opens
+        // only at the start of a block or after whitespace.
+        let after_boundary = self.blocks.get(focused_idx).is_none_or(|block| {
+            let text = block.line.value();
+            text.get(..trigger_byte.min(text.len()))
+                .and_then(|before| before.chars().next_back())
+                .is_none_or(char::is_whitespace)
+        });
+        if !after_boundary {
+            return;
+        }
     }
 
     /// Routes the event into the focused block's own `TextInput`, drains
