@@ -7313,16 +7313,6 @@ pub fn take_spatial_input() -> Vec<(
     )
 }
 
-/// Drain controllers whose target-issued lease was revoked, expired, or lost
-/// with the device. The compositor releases only input actually attributed to
-/// that controller, so cleanup cannot release a sibling controller's keys.
-pub fn take_spatial_input_releases() -> Vec<crate::shell::personal_continuity::DeviceId> {
-    spatial_input_state().lock().map_or_else(
-        |_| Vec::new(),
-        |mut spatial| spatial.release_controllers.drain(..).collect(),
-    )
-}
-
 fn native_display_connectors(
     snapshot: &settings_store::hardware::DisplayHardwareSnapshot,
 ) -> Vec<crate::shell::device_fabric::DisplayConnectorPlacement> {
