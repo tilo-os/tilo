@@ -2354,6 +2354,7 @@ fn cached_creation_evidence(
         cache.clear();
     }
     cache.insert(key, evidence.clone());
+    drop(cache);
     Some(evidence)
 }
 
