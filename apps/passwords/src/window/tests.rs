@@ -222,7 +222,6 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
     {
         let doc = AutoCommit::new();
         let mut app = PasswordsSurface::demo();
-        app.core_mut().toast = None;
         let (tx, rx) = std::sync::mpsc::channel();
         app.core_mut().export_portal = Some(rx);
         let first = app.core().next_wake().unwrap();
@@ -250,10 +249,9 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
             "copying must not disclose the value"
         );
         assert!(
-            app.core()
-                .toast
-                .as_ref()
-                .is_some_and(|(message, _)| message.starts_with("Copied password"))
+            app.shell()
+                .toast_text()
+                .is_some_and(|message| message.starts_with("Copied password"))
         );
 
         request(&mut app, Request::RevealSecret);
@@ -283,13 +281,10 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
             Request::CopyIdentity,
             Request::CopyOrigins,
         ] {
-            app.core_mut().toast = None;
+            app.shell.dismiss_toast();
             request(&mut app, copy);
             assert_eq!(
-                app.core()
-                    .toast
-                    .as_ref()
-                    .map(|(message, _)| message.as_str()),
+                app.shell().toast_text(),
                 Some("Could not copy to the clipboard. Try again.")
             );
             assert_eq!(ui::clipboard_paste().as_deref(), Some("existing clipboard"));
