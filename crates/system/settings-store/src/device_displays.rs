@@ -149,3 +149,57 @@ mod identity_compatibility_tests {
         assert_eq!(screen.key(), "peer/DP-1");
     }
 }
+
+#[cfg(test)]
+mod publication_regressions {
+    use super::*;
+
+    #[test]
+    fn unchanged_live_device_observations_keep_the_published_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", dir.path());
+        let (publisher_pid, publisher_start_ticks) = crate::hardware::publisher_identity().unwrap();
+        let snapshot = DeviceDisplaySnapshot {
+            publisher_pid,
+            publisher_start_ticks,
+            displays: Vec::new(),
+        };
+        snapshot.save().unwrap();
+        let path = snapshot_path().unwrap();
+        let retained = std::fs::File::open(&path).unwrap();
+        let original = tilo_files::native::atomic::FileIdentity::of(&retained).unwrap();
+        snapshot.save().unwrap();
+        let current = std::fs::File::open(&path).unwrap();
+        assert_eq!(
+            original,
+            tilo_files::native::atomic::FileIdentity::of(&current).unwrap(),
+            "an unchanged live observation must not perform durable replacement"
+        );
+        assert_eq!(DeviceDisplaySnapshot::load(), Some(snapshot.clone()));
+        let mut changed = snapshot.clone();
+        changed.displays.push(DeviceDisplay {
+            device: "own-device".into(),
+            device_label: "Own device".into(),
+            connector: "DP-1".into(),
+            output_id: Some("stable-output".into()),
+            label: "Calibrated output".into(),
+            online: true,
+            local: true,
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            scale_milli: 1000,
+            revision: 1,
+        });
+        changed.save().unwrap();
+        assert_eq!(DeviceDisplaySnapshot::load(), Some(changed));
+        std::fs::write(&path, b"invalid observation").unwrap();
+        snapshot.save().unwrap();
+        assert_eq!(DeviceDisplaySnapshot::load(), Some(snapshot.clone()));
+        std::fs::remove_file(&path).unwrap();
+        snapshot.save().unwrap();
+        assert_eq!(DeviceDisplaySnapshot::load(), Some(snapshot));
+    }
+}
