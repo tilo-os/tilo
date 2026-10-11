@@ -27,7 +27,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, SurfaceId};
-use crate::network::reachability::Reachability;
+use crate::network::reachability::{Need, Reachability};
 use neighbour_wire::{Retention, retention};
 
 #[cfg(test)]
@@ -987,7 +987,7 @@ impl ProtocolHandler for PersonalFabricProtocol {
 }
 
 /// Why `command` means a remote party is involved, so this device must be
-/// reachable from now on (`crate::network::reachability`): it dials a peer
+/// reachable for a while (`crate::network::reachability`): it dials a peer
 /// or host, enrols a device, administers a relay room, joins a call or
 /// sends to a named one of the person's devices. `None` for everything a
 /// lone desktop does by itself: joining and publishing to a topic nobody
@@ -3299,6 +3299,42 @@ impl ActorState {
                 .any(|ws| !self.topics.contains_key(ws))
     }
 
+    /// The remote party this actor is connected to or keeps dialling, if
+    /// any, which holds this device's relays up ([`Need::Transport`]): a
+    /// peer it dials, a peer on one of its topics, a workspace host, a
+    /// governed room's relay, one of the person's devices, a window streamed
+    /// with a peer, a remote action waiting for its peer, a device being
+    /// enrolled or a Messages account its contacts text. A peer that left
+    /// stops counting once its membership lapses.
+    fn remote_party(&self) -> Option<&'static str> {
+        Some(if !self.peers.is_empty() {
+            "a peer this device dials"
+        } else if !self.peers_seen.is_empty() {
+            "a peer on one of its topics"
+        } else if !self.hosts.is_empty()
+            || !self.connecting_hosts.is_empty()
+            || !self.host_sessions.is_empty()
+        {
+            "a workspace host"
+        } else if !self.native_routes.is_empty() {
+            "a relay-governed room"
+        } else if !self.personal_fabric_connections.is_empty()
+            || !self.active_personal_transfers.is_empty()
+        {
+            "one of the person's devices"
+        } else if !self.surface_connections.is_empty() || !self.surface_fanout_viewers.is_empty() {
+            "a window streamed with a peer"
+        } else if !self.pending_remote_actions.is_empty() {
+            "a remote action waiting for its peer"
+        } else if self.native_enrollment.is_busy() {
+            "a device being enrolled"
+        } else if self.private_messages.is_bound() {
+            "a Messages account receives texts"
+        } else {
+            return None;
+        })
+    }
+
     /// Retry any topic subscription, direct peer or workspace host not yet
     /// connected, and announce this device's identity and codecs where they
     /// changed (plus a heartbeat where an older build listens for one).
@@ -3909,8 +3945,16 @@ async fn run(
     };
     let mut upkeep = None;
     let mut host_checkpoint = None;
+    let mut reported_party = None;
 
     loop {
+        // The relays stay up while a remote party lasts, and rest a while
+        // after the last one is gone (`crate::network::reachability`).
+        let party = state.remote_party();
+        if party != reported_party {
+            reported_party = party;
+            state.reachability.need(Need::Transport, party);
+        }
         // Evict when the soonest membership lapses, not on a polling tick:
         // linked peers have no deadline at all.
         let eviction = state.next_eviction();

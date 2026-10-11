@@ -339,6 +339,9 @@ tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 greeter = { path = "../greeter" }
 # Private native-pair acceptance uses the governed host's real voice relay.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
+# An iroh relay of a test's own, so a desktop's relays can be started and a
+# home relay appear without the public ones.
+iroh-relay = { version = "1.0.3", features = ["server"] }
 # Signs the TPM quotes the disk-unlock auto-approval tests verify.
 p256 = { version = "0.14", features = ["ecdsa"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }

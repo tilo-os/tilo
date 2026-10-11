@@ -261,6 +261,37 @@ iroh-gossip's 60 s membership shuffle, outside the gate's window.
 The lone gate's budget is now 0.6/s (p95 0.45/s plus a quarter). The idle
 pair is gated on blocking switches too, at 12/s with a 1 % CPU bound.
 
+### Relays rest again, and invites name a home relay
+
+Waking the relays used to be sticky: after any collaboration, even an
+invitation issued and cancelled, an idle desktop ran iroh's net report every
+20-26 s again for the rest of the session. `Reachability` now records what
+holds the relays up: the network actor reports the remote parties it is
+connected to or keeps dialling (a peer it dials or one on its topics, a host,
+a governed room's relay, one of the person's devices, a streamed window, a
+held remote action, an enrolment, a bound Messages account), and the session
+what it has recorded (a joined room, a peer named in a room, a relay-governed
+or continuation room, an open invitation, another of the person's devices),
+re-read at most once a second while the compositor ticks. Five minutes after
+the last of these ended, and after the last wake, `Endpoint::remove_relay`
+empties the map, and net report, QAD and port mapping stop. iroh's API cannot
+close the home relay it chose, so that connection and its 15 s ping stay
+until the endpoint closes; the address keeps naming it.
+
+A peer whose name was removed from a room no longer counts: its certified
+identity row stays as revocation evidence, but it is not a member.
+
+Opening the invite composer starts the relays, and a direct invite waits up
+to 2 s for a home relay, so the token names one (a loopback relay without
+QAD is picked in about 0.2 s, one whose QAD never answers in about 3 s).
+
+Focused run 95964: once its collaborator had left and been taken out of the
+room, the desktop rested its relays and then blocked 0.65 times a second,
+against 0.30/s for a lone desktop that never had a peer (run 95857). The
+difference is gossip's sweeps of the three topics the pair linked, which
+iroh-gossip cannot stop; `reachability_tests` gates it at the lone budget
+plus those sweeps, 0.9/s.
+
 ## The collaboration-plane gate in the shell shard
 
 `idle_quiet_tests` (two converged desktops) had a 15/s budget, set from
