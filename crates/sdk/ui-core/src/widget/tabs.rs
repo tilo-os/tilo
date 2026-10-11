@@ -273,6 +273,9 @@ pub struct TabBar {
     /// theme change invalidates rather than reusing a stale advance. Set from `draw`
     /// (the only pass with a [`TextRenderer`]) and read back by `apply_layout`.
     title_advance: HashMap<u64, (String, TextStyle, f64)>,
+    /// `draw` measured an advance that differs from the one the last layout
+    /// used for some pill, so the next layout must run to settle the row.
+    advance_changed: bool,
     /// Aligned 1:1 with `tabs`; `None` for a pinned, icon-only pill.
     visible_titles: Vec<Option<String>>,
     pending_context_menu: Option<(u64, Point)>,
@@ -433,6 +436,7 @@ impl TabBar {
             search_rects: Vec::new(),
             new_tab_rect: Rect::ZERO,
             title_advance: HashMap::new(),
+            advance_changed: false,
             visible_titles: Vec::new(),
             pending_context_menu: None,
             hover_idx: None,
@@ -1445,18 +1449,20 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return 0.0;
         };
-        self.title_advance
-            .get(&t.id)
-            .filter(|(title, _, _)| title == &t.title)
-            .map_or_else(
-                || {
-                    // Title lengths never approach `u32::MAX` chars, so this is
-                    // lossless in practice; `f64::from` preserves the value.
-                    let chars = u32::try_from(t.title.chars().count()).unwrap_or(u32::MAX);
-                    f64::from(chars) * APPROX_CHAR_W
-                },
-                |(_, _, w)| *w,
-            )
+        match self.title_advance.get(&t.id) {
+            Some((title, _, w)) if title == &t.title => *w,
+            // A retitled tab keeps the width it was drawn at until `draw`
+            // measures the new title. Guessing from the character count
+            // first made the pill jump wide, then narrow, on every title
+            // change a client makes (a terminal's running status, say).
+            Some((_, _, w)) => *w,
+            None => {
+                // Title lengths never approach `u32::MAX` chars, so this is
+                // lossless in practice; `f64::from` preserves the value.
+                let chars = u32::try_from(t.title.chars().count()).unwrap_or(u32::MAX);
+                f64::from(chars) * APPROX_CHAR_W
+            }
+        }
     }
 
     fn leading_zone(&self, i: usize) -> f64 {
@@ -1507,8 +1513,13 @@ impl TabBar {
             None,
             &style.clone().with_weight(TextWeight::Semibold),
         );
-        self.title_advance
-            .insert(id, (title.clone(), style.clone(), f64::from(full_w)));
+        let measured = f64::from(full_w);
+        let previous = self
+            .title_advance
+            .insert(id, (title.clone(), style.clone(), measured));
+        if previous.is_none_or(|(_, _, w)| (w - measured).abs() > 0.5) {
+            self.advance_changed = true;
+        }
         let r = *self.tab_rects.get(i)?;
         let (zx0, zx1) = self.title_zone(i, r);
         // A pill's title zone is a few hundred px at most, well inside `f32`'s
@@ -2516,6 +2527,7 @@ impl Widget for TabBar {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.advance_changed = false;
         self.tab_rects.clear();
         self.close_rects.clear();
         self.close_hit_rects.clear();
@@ -2908,7 +2920,7 @@ impl Widget for TabBar {
     /// A fixed-height strip sized by its parent: only its first layout is a
     /// size change. Tab additions and removals are structural.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+        self.rect == Rect::ZERO || self.advance_changed
     }
     fn is_focusable(&self) -> bool {
         !self.tabs.is_empty()
@@ -6356,6 +6368,38 @@ mod tests {
             )
             .unwrap();
         b.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn a_retitled_pill_keeps_its_measured_width_until_the_new_title_is_measured() {
+        let theme = crate::theme::Theme::dark();
+        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
+        b.title_advance.insert(
+            1,
+            (
+                "Notes".into(),
+                theme.text(TextRole::Label),
+                60.0,
+            ),
+        );
+        lay_out_at_width(&mut b, 900.0);
+        let measured = b.tab_rects[0].width();
+        // A client retitles the window: the character-count guess for the
+        // new title would be far wider, and the pill must not jump to it.
+        b.tabs[0].title = "a considerably longer title than before".into();
+        lay_out_at_width(&mut b, 900.0);
+        assert!(
+            (b.tab_rects[0].width() - measured).abs() < 0.01,
+            "pill jumped from {measured} to {} before the new title was measured",
+            b.tab_rects[0].width()
+        );
+        // Once `draw` has measured a different advance, the bar asks for a
+        // layout instead of keeping the stale width.
+        assert!(!b.is_layout_dirty());
+        b.advance_changed = true;
+        assert!(b.is_layout_dirty());
+        lay_out_at_width(&mut b, 900.0);
+        assert!(!b.is_layout_dirty());
     }
 
     #[test]
