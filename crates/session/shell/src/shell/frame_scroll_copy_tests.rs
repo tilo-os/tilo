@@ -21,7 +21,12 @@ fn scroll_desktop(
         (LOGICAL.0 * scale).round() as u32,
         (LOGICAL.1 * scale).round() as u32,
     );
-    let mut frame = PopulatedShellFixture::new(panel, theme.with_reduce_motion(true));
+    // Laid out at the desktop's layout size from the start; a scaled panel
+    // only magnifies it.
+    let mut frame = PopulatedShellFixture::new(
+        (LOGICAL.0 as u32, LOGICAL.1 as u32),
+        theme.with_reduce_motion(true),
+    );
     if (scale - 1.0).abs() > f64::EPSILON {
         frame.set_output_geometry(vec![crate::shell::output_scene::OutputGeometry {
             id: 0,
