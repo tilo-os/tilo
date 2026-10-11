@@ -7271,9 +7271,6 @@ fn install_session_peer_sync(
             let active = tree_handle.read().desktop.active;
             match req {
                 PeerSyncRequest::PrepareInvitation => Ok(bridge_net.prepare_invitation()),
-                PeerSyncRequest::IssueInvite => bridge_net
-                    .issue_invite(active, INVITE_EXPIRY_SECONDS)
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
                 PeerSyncRequest::ExportIdentity => bridge_net
                     .person_identity_card(active)
                     .map(crate::shell::overlay_host::PeerSyncResponse::Message),
