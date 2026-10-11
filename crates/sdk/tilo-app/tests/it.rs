@@ -49,6 +49,8 @@ pub mod publication_per_keystroke;
 pub mod render_view;
 #[path = "scenarios.rs"]
 pub mod scenarios;
+#[path = "scroll_copy.rs"]
+pub mod scroll_copy;
 #[path = "settings.rs"]
 pub mod settings;
 #[path = "surface_semantics.rs"]

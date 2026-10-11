@@ -39,6 +39,17 @@ Each adapter reads what a benchmark already prints and emits records through
   laid-out frame. Each size becomes `render.framework_open.ms.<size>` (every
   open is a sample), `.allocations.<size>` and `.heap_per_item.<size>` (one
   sample per run), with sizes written `5k`, `50k`.
+- `framework-scroll LOG...`: the `FRAMEWORK-SCROLL tasks=<n> step=<px>
+  copying=<bool> pixels_p50=<x> pixels_max=<y> copied_p50=<z> whole=<w>
+  frames=<f> cpu_ms=<c> gpu_ms=<g> gpu_full_ms=<h> differing=<d>` lines of
+  the same example's `scroll` mode: a long list scrolled frame by frame,
+  each frame presented as a window that copies what a scroll keeps on screen
+  presents it. The line with copies and a whole-pixel step becomes, per
+  size, `render.framework_scroll.pixels.<size>` (pixels one frame repaints,
+  p50), `.whole_frames.<size>` (frames repainted whole), `.cpu_ms.<size>`
+  (one scroll frame on the CPU, p50) and `.raster_ms.<size>` (presenting it
+  on the GPU, copies included, p50), one sample per run. A run whose
+  presented pixels differ from a full render fails.
 - `hosting-load REPORT_JSON`: the relay load bench's `hosting-load.json`
   (`crates/hosting/tilo-relay/examples/relay_load`). Each KPI it measured
   becomes `<kpi>.n<collaborators>`, one sample per measured minute (fan-out
@@ -54,6 +65,7 @@ Usage:
     python3 tools/perf/adapters.py workspace-switch --env-json env.json session.log >> results.jsonl
     python3 tools/perf/adapters.py idle-wakeups --env-json env.json run-*.log >> results.jsonl
     python3 tools/perf/adapters.py framework-open --env-json env.json framework-open.log >> results.jsonl
+    python3 tools/perf/adapters.py framework-scroll --env-json env.json framework-scroll.log >> results.jsonl
     python3 tools/perf/adapters.py hosting-load --env-json env.json hosting-load.json >> results.jsonl
 
 An adapter that finds nothing to record fails: a benchmark whose output format
@@ -254,6 +266,46 @@ def framework_open(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
     return [record.from_samples(kpi, units[kpi], values, meta=meta, **base) for kpi, values in samples.items()]
 
 
+FRAMEWORK_SCROLL_LINE = re.compile(
+    r"^FRAMEWORK-SCROLL tasks=(?P<tasks>[0-9]+) step=(?P<step>[0-9.]+) copying=(?P<copying>true|false) "
+    r"pixels_p50=(?P<pixels>[0-9]+) pixels_max=(?P<max>[0-9]+) copied_p50=(?P<copied>[0-9]+) "
+    r"whole=(?P<whole>[0-9]+) frames=(?P<frames>[0-9]+) cpu_ms=(?P<cpu>[0-9.]+) gpu_ms=(?P<gpu>[0-9.]+) "
+    r"gpu_full_ms=(?P<gpu_full>[0-9.]+) differing=(?P<differing>[0-9]+)$")
+
+
+def framework_scroll(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
+    """Records for one or more runs of the framework-scaling example's scroll."""
+    samples: dict[str, list[float]] = {}
+    units: dict[str, str] = {}
+    for log in logs:
+        lines = [match for line in log.splitlines() if (match := FRAMEWORK_SCROLL_LINE.match(line.strip()))]
+        if not lines:
+            raise ValueError("no `FRAMEWORK-SCROLL` line: did framework-scaling run to the end?")
+        for line in lines:
+            if int(line["differing"]) != 0:
+                raise ValueError(f"a scroll of {line['tasks']} tasks presented {line['differing']} pixels "
+                                 "a full render does not have")
+            if line["copying"] != "true" or float(line["step"]) != int(float(line["step"])):
+                continue
+            size = framework_open_size(int(line["tasks"]))
+            measured = {
+                (f"render.framework_scroll.pixels.{size}", "pixels"): float(line["pixels"]),
+                (f"render.framework_scroll.whole_frames.{size}", "count"): float(line["whole"]),
+                (f"render.framework_scroll.cpu_ms.{size}", "ms"): float(line["cpu"]),
+                (f"render.framework_scroll.raster_ms.{size}", "ms"): float(line["gpu"]),
+            }
+            for (kpi, unit), value in measured.items():
+                samples.setdefault(kpi, []).append(value)
+                units[kpi] = unit
+    if not logs:
+        raise ValueError("no framework-scaling logs")
+    if not samples:
+        raise ValueError("no `FRAMEWORK-SCROLL` line with copies and a whole-pixel step")
+    meta = {**env.get("meta", {}), "runs": str(len(logs))}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(kpi, units[kpi], values, meta=meta, **base) for kpi, values in samples.items()]
+
+
 PRICES = Path(__file__).resolve().parent / "prices.toml"
 # The relay load bench's per-minute KPIs, as `relay_load` names them.
 HOSTING_KPIS = {
@@ -363,6 +415,10 @@ def main(argv: list[str] | None = None) -> int:
     opening = commands.add_parser("framework-open", help="records from framework-scaling's FRAMEWORK-OPEN lines")
     opening.add_argument("--env-json", required=True, type=Path)
     opening.add_argument("logs", nargs="+", type=Path)
+    scrolling = commands.add_parser("framework-scroll",
+                                    help="records from framework-scaling's FRAMEWORK-SCROLL lines")
+    scrolling.add_argument("--env-json", required=True, type=Path)
+    scrolling.add_argument("logs", nargs="+", type=Path)
     hosting = commands.add_parser("hosting-load", help="records from the relay load bench's hosting-load.json")
     hosting.add_argument("--env-json", required=True, type=Path)
     hosting.add_argument("--prices", type=Path, default=PRICES)
@@ -389,6 +445,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "framework-open":
             records = framework_open([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
                                      env)
+        elif args.command == "framework-scroll":
+            records = framework_scroll([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
+                                       env)
         elif args.command == "idle-wakeups":
             records = idle_wakeups([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
         else:

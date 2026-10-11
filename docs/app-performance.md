@@ -480,6 +480,56 @@ The rows below the edit still repaint (the region moved): Enter near the top
 of a long note repaints the visible note, not the window. A copy of the moved
 pixels in the renderer would avoid that.
 
+### A scroll copies what stays on screen
+
+`framework-scaling -- 5000 scroll` scrolls the checklist of 5,000 tasks down
+120 frames of 40 px (and of 40.5 px), the pointer resting over the list, each
+frame presented on an offscreen GPU target as a window presents it and the
+last checked against a full render. Release, M-series Mac (Metal), 1280×800:
+
+| | Repainted px p50 (max) | Copied px p50 | Whole-window frames | CPU frame p50 | GPU present p50 (full render) |
+|---|---:|---:|---:|---:|---:|
+| Before | 1,024,000 (1,024,000) | 0 | 120 / 120 ("history mode") | 0.44 ms | 1.65 ms (1.64 ms) |
+| After, a host that does not copy | 983,616 (983,616) | 0 | 0 | 0.51 ms | 1.68 ms (1.67 ms) |
+| After, the native window (copies) | 99,792 (115,872) | 756,288 | 0 | 0.52 ms | 1.72 ms (1.67 ms) |
+| After, 40.5 px steps | 843,168 (843,168) | 0 (refused) | 0 | 0.52 ms | 1.68 ms (1.67 ms) |
+
+A long note (`apps/notes/tests/scroll_damage.rs`, 120 paragraphs, 1280×900)
+repaints 114,084 px per frame scrolling down by 40 px and 92,602 scrolling up
+by 32, copying every frame, in all three themes; before, every frame repainted
+the window (1,152,000 px).
+
+What was behind it:
+
+- A scroll moved every row, and the native window repaints whole for moved
+  geometry. A relayout whose only moves are scrolls now stays sparse: a
+  scroller offers the move as a copy (`ui::scroll_copy`), the window plans it
+  against the tree it drew and checks every other box (`moves_besides`).
+- A framework window's History toolbar was a "layer" in every frame the
+  window drew without scene parts, so every native frame of a framework app
+  repainted whole. History now draws into its own scene, compared with the
+  presented frame's.
+- `Each` damaged its whole list when any row was dirty and every `Checkbox`
+  damaged itself on every frame; a remount during a scroll was an undescribed
+  rebuild. The list now unions its rows' damage, a checkbox repaints when what
+  it paints changed, and a remount is described.
+- Notes' page scrolls by hand: the panel offers its body (paragraphs and
+  headings; other blocks' hover chrome is not followed), and the app repaints
+  its save bubble, which floats over the note, on every copied frame.
+
+On this GPU the raster stays about as long as a full render: the frame's
+fixed stages dominate at this size, and only the fine raster shrinks with the
+damage. The CPU rasterizer a software adapter (lavapipe, VMs) uses
+rasterizes only the damage, so there the frame shrinks with the pixels. The
+compositor still repaints where the copies landed: the client's pixels there
+changed. The nightly render job records `render.framework_scroll.*` and
+enforces the pixels.
+
+Not yet copied: the shell's in-process apps (the compositor composites their
+scene and would need to copy the app's moved region itself), `ScrollRegion`
+(chat transcripts), `VirtualList`, `DocumentViewport`, and Notes blocks with
+hover chrome (code, tables, images, lists).
+
 ## Verified shared-list CPU workload
 
 The `ui-perf perf_scenario --count 1200 --json` list case now checks the real

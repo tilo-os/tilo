@@ -791,6 +791,51 @@ p99_tolerance = 1.1
 min_delta = 64.0
 source = "framework-scaling heap held per item with the window open, 50,000 items (TIL-758)"
 
+# Scrolling a long framework list: the framework-scaling example (`scroll`
+# mode, crates/sdk/tilo-app/examples/framework-scaling.rs) scrolls 5,000 items
+# 120 frames of 40 px, each frame presented over the last as a window that
+# copies what a scroll keeps on screen presents it, through adapters.py
+# framework-scroll in the render job; a frame that differs from a full render
+# fails the run. A frame repaints the strip the scroll exposed, the bar's
+# track and what reaches into the list: 99,792 px p50 of the 1280x800 window
+# on an M-series Mac (983,616 without copies; the whole window, 1,024,000,
+# before the copies and before History's toolbar stopped counting as a
+# layer). Pixels are enforced about 40 % above that. Whole-window frames, CPU
+# frame time and raster time on the shared runner are reported.
+
+[kpi."render.framework_scroll.pixels.5k"]
+unit = "pixels"
+p50 = 140000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "framework-scaling scroll, pixels one copied scroll frame repaints, 5,000 items"
+
+[kpi."render.framework_scroll.whole_frames.5k"]
+unit = "count"
+max = 0.0
+p50_tolerance = 1.5
+p99_tolerance = 1.5
+min_delta = 2.0
+source = "framework-scaling scroll, frames repainted whole in 120, 5,000 items (reported)"
+
+[kpi."render.framework_scroll.cpu_ms.5k"]
+unit = "ms"
+p50 = 2.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "framework-scaling scroll, one scroll frame on the CPU p50, 5,000 items (reported)"
+
+[kpi."render.framework_scroll.raster_ms.5k"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+source = "framework-scaling scroll, presenting one frame on the GPU p50, 5,000 items (lavapipe; reported)"
+
 # The installed desktop (TIL-589): Dev / VM acceptance's nightly run on the newest
 # published dev disk, a KVM guest on `runner-disk-100g` rendering with lavapipe
 # (scripts/vm-acceptance, acceptance/records.py). Those runs compare and publish

@@ -254,6 +254,7 @@ pub mod richtext;
 pub mod scale;
 pub mod scene_parts;
 pub mod screen_reader;
+pub mod scroll_copy;
 pub mod search;
 pub mod secret_paint;
 pub mod selection;
