@@ -1493,69 +1493,38 @@ fn valid_xkb_name(value: &str) -> bool {
 }
 
 impl RichInputConfig {
-    /// Parse the input section using field-by-field defaults, then reconcile
-    /// old single-layout documents with the ordered source list. Invalid and
-    /// duplicate ids are ignored; the active legacy source is inserted when
-    /// it is absent, so `{"keyboard_layout":"de"}` migrates to one German
-    /// source instead of silently falling back to US.
+    /// Parse the input section field by field: a missing or wrong-typed
+    /// value only resets itself to its default. Old single-layout documents
+    /// are then reconciled with the ordered source list, so
+    /// `{"keyboard_layout":"de"}` becomes one German source instead of
+    /// German plus the default US.
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let Ok(serde_json::Value::Object(mut fields)) = serde_json::to_value(Self::default())
+        else {
+            return Self::default();
+        };
+        if !section.contains_key("keyboard_layouts") {
+            fields.insert("keyboard_layouts".into(), serde_json::json!([]));
+        }
+        for (key, value) in section {
+            let Some(previous) = fields.insert(key.clone(), value.clone()) else {
+                // Not one of ours (the touchpad switches, the inspector state).
+                fields.remove(key);
+                continue;
+            };
+            if serde_json::from_value::<Self>(serde_json::Value::Object(fields.clone())).is_err() {
+                fields.insert(key.clone(), previous);
+            }
+        }
         let mut config: Self =
-            serde_json::from_value(serde_json::Value::Object(section.clone())).unwrap_or_default();
-        config.touchpad_natural_scroll = section
-            .get("touchpad_natural_scroll")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(DEFAULT_TOUCHPAD_NATURAL_SCROLL);
-        config.mouse_natural_scroll = section
-            .get("mouse_natural_scroll")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(DEFAULT_MOUSE_NATURAL_SCROLL);
-        // Read the keyboard fields independently as well: a wrong-typed
-        // pointer field must not discard an otherwise valid input-source
-        // list merely because serde rejected the whole rich object.
-        config.keyboard_layout = section
-            .get("keyboard_layout")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("us")
-            .to_string();
-        config.keyboard_layouts = section
-            .get("keyboard_layouts")
-            .and_then(serde_json::Value::as_array)
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
-        config.compose_key = section
-            .get("compose_key")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
-        // Likewise for the touchpad choices: each is read on its own so one
-        // unexpected value only resets itself.
-        config.touchpad_click_method = section
-            .get("touchpad_click_method")
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
-            .unwrap_or_default();
-        config.touchpad_scroll_method = section
-            .get("touchpad_scroll_method")
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
-            .unwrap_or_default();
-        config.scroll_speed = section
-            .get(SCROLL_SPEED_KEY)
-            .and_then(serde_json::Value::as_f64)
-            .map_or(1.0, clamp_scroll_speed);
-        config.caps_lock = section
-            .get("caps_lock")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
-        section
-            .get("keyboard_model")
-            .and_then(serde_json::Value::as_str)
-            .filter(|model| matches!(*model, "pc104" | "pc105" | "jp106" | "kr106"))
-            .unwrap_or("pc105")
-            .clone_into(&mut config.keyboard_model);
+            serde_json::from_value(serde_json::Value::Object(fields)).unwrap_or_default();
+        config.scroll_speed = clamp_scroll_speed(config.scroll_speed);
+        if !matches!(
+            config.keyboard_model.as_str(),
+            "pc104" | "pc105" | "jp106" | "kr106"
+        ) {
+            config.keyboard_model = "pc105".into();
+        }
         config.normalise_sources();
         config
     }
