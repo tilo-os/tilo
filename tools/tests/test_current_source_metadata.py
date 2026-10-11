@@ -2,6 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -24,11 +25,22 @@ class CurrentSourceMetadataTests(unittest.TestCase):
                      ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")):
             subprocess.run(["git", "-C", str(self.root), *args], check=True)
         package_id = "path+file://" + str(self.root) + "#fixture@0.1.0"
-        self.metadata = {"version": 1, "workspace_root": str(self.root),
+        self.metadata = {"metadata": None, "version": 1, "workspace_root": str(self.root),
                          "workspace_members": [package_id], "packages": [{"id": package_id,
                          "manifest_path": str(self.root / "Cargo.toml"),
                          "dependencies": [{"name": "optional", "optional": True, "kind": "build", "target": "cfg(unix)"}],
                          "targets": [{"src_path": str(self.root / "src/lib.rs")}]}]}
+
+    def test_real_validate_cli_accepts_cargo_workspace_metadata_field(self):
+        bundle = Path(self.temp.name) / "bundle.json"
+        output = Path(self.temp.name) / "metadata.json"
+        bundle.write_text(json.dumps(module.seal(self.root, self.metadata)))
+        result = subprocess.run([sys.executable, str(SCRIPT), "validate", "--root", str(self.root),
+                                 "--input", str(bundle), "--output", str(output)],
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(output.read_text()), self.metadata)
+        self.assertEqual(json.loads(result.stdout)["workspace_packages"], 1)
 
     def test_complete_round_trip_preserves_ids_dependency_and_target_details(self):
         bundle = module.seal(self.root, self.metadata)
