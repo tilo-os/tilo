@@ -71,8 +71,6 @@ pub use tilo_model_gateway;
 pub use tilo_oauth;
 pub use tilo_pdf;
 pub use tilo_relay_protocol;
-pub use tilo_rich_text;
-pub use tilo_spotify;
 pub use tilo_subject;
 pub use tilo_user_identity;
 pub use tilo_wet_media;

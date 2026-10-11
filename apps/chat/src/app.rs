@@ -4098,6 +4098,7 @@ impl ChatApp {
     /// still requests a clean relayout).
     pub(crate) fn request_relayout(&mut self) {
         self.relayout = true;
+        self.canonical_dirty = true;
     }
 }
 

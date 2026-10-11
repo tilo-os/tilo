@@ -9223,6 +9223,7 @@ dependencies = [
  "tilo-oauth",
  "tilo-paths",
  "tilo-spotify",
+ "tilo-spotify-engine",
  "tilo-test-env",
  "tilo-thumbnail",
  "tilo-vello",
@@ -13075,7 +13076,6 @@ dependencies = [
  "tilo-pdf",
  "tilo-relay-protocol",
  "tilo-rich-text",
- "tilo-spotify",
  "tilo-subject",
  "tilo-thumbnail",
  "tilo-ui",
@@ -18249,6 +18249,15 @@ dependencies = [
  "tilo-media",
  "tilo-rt",
  "tokio",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-spotify-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-spotify",
  "workspace-hack",
 ]
 

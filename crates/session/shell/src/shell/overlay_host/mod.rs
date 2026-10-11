@@ -7334,6 +7334,11 @@ impl ShellOverlayHost {
                 tree.desktop.set_active_group(strip, group);
                 changed = true;
             }
+            let workspace = tree.desktop.active;
+            if tree.desktop.active_strip.get(&workspace).copied() != Some(strip) {
+                tree.desktop.active_strip.insert(workspace, strip);
+                changed = true;
+            }
             if changed {
                 tree.queue_save();
             }
@@ -7439,8 +7444,14 @@ impl ShellOverlayHost {
         let Some((strip, group, tab)) = target else {
             return false;
         };
-        self.followed_tab = Some(tab);
-        self.focus_window_on_strip(strip, group, tab)
+        let changed = self.focus_window_on_strip(strip, group, tab);
+        // A replicated tab can reach the tree before its live row. Until
+        // that row accepts focus, the old local tab is not navigation intent.
+        // Preserve the last successfully followed target and retry next frame.
+        if chrome.borrow().active_tab_id() == Some(tab) {
+            self.followed_tab = Some(tab);
+        }
+        changed
     }
 
     /// Change Follow once, then notify every local app in the room using the

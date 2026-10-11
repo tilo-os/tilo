@@ -18,15 +18,15 @@ crate-type = ["dylib"]
 # What belongs here: the SDK an app links (the toolkit, `tilo-app`, the CLI
 # kit), crates several shipped apps share, and, until each moves to an engine
 # library of its own, engines too heavy for the one app that uses them to
-# carry in its tapp (Spotify playback, Canvas's painting engines). What never
-# does: OS daemons and other OS-internal crates (the FUSE filesystem, the
-# sandbox launcher, the app host, the install CLI), light crates only one app
-# uses, and engines that already have their own library under
-# crates/runtime/engines/ (Typst). Every app process maps this library, so a
-# crate here costs every app its relocations and dirty pages; an app that
-# needs one of those links it itself, or loads its engine library, and gets
-# only the code it calls. tools/policy/check_runtime_dylib_surface.py fails
-# when a denied crate re-enters the graph, through any dependency or feature.
+# carry in its tapp (Canvas's painting engines). What never does: OS daemons
+# and other OS-internal crates (the FUSE filesystem, the sandbox launcher, the
+# app host, the install CLI), light crates only one app uses, and engines that
+# already have their own library under crates/runtime/engines/ (Typst,
+# Spotify playback). Every app process maps this library, so a crate here
+# costs every app its relocations and dirty pages; an app that needs one of
+# those links it itself, or loads its engine library, and gets only the code
+# it calls. tools/policy/check_runtime_dylib_surface.py fails when a denied
+# crate re-enters the graph, through any dependency or feature.
 [dependencies]
 tilo-cli-kit = { path = "../cli" }
 # The UI toolkit and its rendering graph are included in the shared dylib.
@@ -42,9 +42,6 @@ tilo-app = { path = "../../sdk/tilo-app" }
 # Versioned live-service engine shared by Music and Tube and loaded only for
 # their feature-gated paths.
 rustypipe.workspace = true
-# Music keeps its library and controls in the tapp; native playback belongs
-# beside the other versioned media engines in the shared runtime.
-tilo-spotify = { path = "../../platform/tilo-spotify", features = ["native"] }
 # Desktop policy and control-surface vocabulary shared by the toolkit and the
 # apps that configure the desktop.
 settings-store = { path = "../../system/settings-store" }
