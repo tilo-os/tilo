@@ -50,7 +50,7 @@ pub struct PeerAuthProof {
     /// The exact verifier-issued challenge being answered.
     pub challenge: PeerAuthChallenge,
     /// Device-key signature over the domain-separated proof payload.
-    #[serde(with = "sig64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 
@@ -322,22 +322,6 @@ fn proof_digest(proof: &PeerAuthProof) -> Result<[u8; 32], PeerAuthError> {
     hasher.update(FS_PEER_AUTH_TAG);
     hasher.update(&encoded);
     Ok(*hasher.finalize().as_bytes())
-}
-
-mod sig64 {
-    use serde::de::Error as _;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_bytes(bytes)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 64], D::Error> {
-        let bytes: Vec<u8> = Deserialize::deserialize(deserializer)?;
-        bytes.try_into().map_err(|bytes: Vec<u8>| {
-            D::Error::custom(format!("expected 64 bytes, got {}", bytes.len()))
-        })
-    }
 }
 
 #[cfg(test)]

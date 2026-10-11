@@ -50,7 +50,7 @@ pub struct TransportHint {
     /// Domain-separated service key actually terminating this endpoint.
     pub service_public_key: [u8; 32],
     /// Host-device signature binding the exact hint and service key.
-    #[serde(with = "bytes64")]
+    #[serde(with = "serde_bytes")]
     pub host_signature: [u8; 64],
 }
 
@@ -96,7 +96,7 @@ pub struct WorkspaceDelegation {
     pub permissions: WorkspaceDelegationPermissions,
     pub nonce: [u8; 16],
     pub expires_at_ns: Option<u64>,
-    #[serde(with = "bytes64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 
@@ -125,7 +125,7 @@ pub struct Inviter {
 struct SignedInvitation {
     version: u32,
     grant: InviteGrant,
-    #[serde(with = "bytes64")]
+    #[serde(with = "serde_bytes")]
     signature: [u8; 64],
 }
 
@@ -134,7 +134,7 @@ struct SignedInvitationWithInviter {
     version: u32,
     grant: InviteGrant,
     inviter: Inviter,
-    #[serde(with = "bytes64")]
+    #[serde(with = "serde_bytes")]
     signature: [u8; 64],
 }
 
@@ -236,7 +236,7 @@ impl JoinChallenge {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JoinProof {
     pub challenge: JoinChallenge,
-    #[serde(with = "bytes64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 
@@ -302,7 +302,7 @@ impl MembershipChallenge {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MembershipProof {
     pub challenge: MembershipChallenge,
-    #[serde(with = "bytes64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 
@@ -979,20 +979,4 @@ fn tagged_digest(value: &[u8], body: &impl Serialize) -> Result<[u8; 32], String
     hasher.update(value);
     hasher.update(&encoded);
     Ok(*hasher.finalize().as_bytes())
-}
-
-mod bytes64 {
-    use serde::de::Error as _;
-    use serde::{Deserialize as _, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_bytes(bytes)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 64], D::Error> {
-        let bytes = Vec::<u8>::deserialize(deserializer)?;
-        bytes.try_into().map_err(|bytes: Vec<u8>| {
-            D::Error::custom(format!("expected 64 bytes, got {}", bytes.len()))
-        })
-    }
 }
