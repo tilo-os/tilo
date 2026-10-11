@@ -2931,10 +2931,12 @@ fn moving_to_another_strip_repaints_the_focus_and_the_strip_chrome() {
         let _ = frame.paint_with_damage();
         for (direction, way) in [(1, "down"), (-1, "up")] {
             let label = format!("moving {way} a strip, {name}");
-            // Two windows' edges (each about 4 % of a 4K output in its
-            // 16-pixel tiles), the ribbon and the rail; the whole stretch
-            // between the ribbon and the rail was another 26 %.
-            let damage = assert_change_repaints_under(&mut frame, &label, 12, |frame| {
+            // Two windows' edges (their corners and thin bands along their
+            // sides, in 16-pixel tiles), the ribbon and the rail: 5.2-6.2 %
+            // of a 4K output. Edge bands as deep as the corners made it
+            // about 7.6 % (strip_pan_bench), and the whole stretch between
+            // the ribbon and the rail was another 26 %.
+            let damage = assert_change_repaints_under(&mut frame, &label, 7, |frame| {
                 let mut moved = false;
                 frame.with_chrome(|chrome| moved = chrome.switch_strip(direction));
                 assert!(moved, "{label}: the desktop has another strip to move to");
