@@ -242,6 +242,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
                             widget.ime_cursor_rect();
                             widget.perform_action(
                                 &tilo_ui::a11y::Action::Focus,
+                                &[],
                                 &mut tilo_ui::widget::Edits::lend(doc),
                                 root,
                             );
@@ -424,6 +425,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
                         if widget.name() == "Leaf" {
                             widget.perform_action(
                                 &tilo_ui::a11y::Action::Focus,
+                                &[],
                                 &mut tilo_ui::widget::Edits::lend(doc),
                                 path,
                             );
@@ -608,23 +610,17 @@ impl Widget for Leaf {
     }
     fn perform_action(
         &mut self,
-        _: &tilo_ui::a11y::Action,
+        action: &tilo_ui::a11y::Action,
+        key_path: &[u64],
         doc: &mut tilo_ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (doc, _) = tilo_ui::doc::document(doc, path);
-        self.edit(doc, "action");
-        true
-    }
-    fn perform_action_at(
-        &mut self,
-        action: &tilo_ui::a11y::Action,
-        path: &[u64],
-        doc: &mut tilo_ui::widget::Edits<'_>,
-        doc_path: &ModelPath,
-    ) -> bool {
-        let (doc, _) = tilo_ui::doc::document(doc, doc_path);
-        assert_eq!(path, &[42]);
+        if key_path.is_empty() {
+            self.edit(doc, "action");
+            return true;
+        }
+        assert_eq!(key_path, &[42]);
         assert_eq!(action, &tilo_ui::a11y::Action::Focus);
         self.edit(doc, "synthetic-action");
         true
@@ -1062,6 +1058,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
                         |widget, doc, root| {
                             widget.perform_action(
                                 &tilo_ui::a11y::Action::Focus,
+                                &[],
                                 &mut tilo_ui::widget::Edits::lend(doc),
                                 root,
                             )

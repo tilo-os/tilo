@@ -912,6 +912,7 @@ mod tests {
         assert!(unsafe {
             (&mut *button).perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut Edits::lend(doc),
                 &automerge::ROOT,
             )

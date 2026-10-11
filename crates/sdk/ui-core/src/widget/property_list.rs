@@ -1092,15 +1092,14 @@ impl Widget for PropertyList {
 
     /// An action addressed to one of a row's action buttons: `[row,
     /// action]`.
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
     ) -> bool {
         match key_path {
-            [] => self.perform_action(action, state, path),
             [row, index] if matches!(action, crate::a11y::Action::Activate) => {
                 match (usize::try_from(*row), usize::try_from(*index)) {
                     (Ok(row), Ok(index)) => self.run_action(row, index),
@@ -1404,7 +1403,7 @@ impl Widget for PropertyValue {
         Some(node)
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],

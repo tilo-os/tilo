@@ -4477,9 +4477,9 @@ impl FrameBuilder {
             if let Some(target) = semantic_target.as_deref() {
                 (*widget).perform_semantic_action(target, action, state, root_obj)
             } else if synthetic {
-                (*widget).perform_action_at(action, &key_path, state, root_obj)
+                (*widget).perform_action(action, &key_path, state, root_obj)
             } else {
-                (*widget).perform_action(action, state, root_obj)
+                (*widget).perform_action(action, &[], state, root_obj)
             }
         };
         if handled {
@@ -4723,8 +4723,9 @@ impl FrameBuilder {
             // SAFETY: `node_map` is rebuilt from widgets owned by `host`; the
             // pointer remains valid until the next structural rebuild. This is
             // the same focused-node dispatch invariant used by `ui::App`.
-            let activated =
-                unsafe { (*widget).perform_action(&ui::a11y::Action::Activate, state, root_obj) };
+            let activated = unsafe {
+                (*widget).perform_action(&ui::a11y::Action::Activate, &[], state, root_obj)
+            };
             if activated {
                 handled = true;
             }

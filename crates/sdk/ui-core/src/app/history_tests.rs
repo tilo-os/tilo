@@ -143,6 +143,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         app.dispatch_node(editor, |widget, doc, path| {
             widget.perform_action(
                 &crate::a11y::Action::SetValue("unfinished".into()),
+                &[],
                 &mut crate::widget::Edits::lend(doc),
                 path,
             )
@@ -154,6 +155,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
                     anchor: 2,
                     focus: 7,
                 },
+                &[],
                 &mut crate::widget::Edits::lend(doc),
                 path,
             )
@@ -345,6 +347,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         app.dispatch_node(editor, |widget, doc, path| {
             widget.perform_action(
                 &crate::a11y::Action::SetValue("draft".into()),
+                &[],
                 &mut crate::widget::Edits::lend(doc),
                 path,
             )
@@ -5019,6 +5022,7 @@ fn emit_pending_control_command(
     app.dispatch_node(node, |widget, doc, path| {
         widget.perform_action(
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(doc),
             path,
         )
@@ -5066,6 +5070,7 @@ fn delayed_framework_continue_confirm_and_cancel_callbacks_cannot_cross_reentry_
                 app.dispatch_node(phrase, |widget, doc, path| {
                     widget.perform_action(
                         &crate::a11y::Action::SetValue("RUN COMPONENT".into()),
+                        &[],
                         &mut crate::widget::Edits::lend(doc),
                         path,
                     )
@@ -5157,6 +5162,7 @@ fn retained_framework_callback_objects_cannot_acquire_current_tokens_after_reent
             app.dispatch_node(phrase, |widget, doc, path| {
                 widget.perform_action(
                     &crate::a11y::Action::SetValue("RUN CALLBACK".into()),
+                    &[],
                     &mut crate::widget::Edits::lend(doc),
                     path,
                 )
@@ -6620,7 +6626,7 @@ fn custody_matrix_activate(app: &mut App, kind: &str, second: bool) -> serde_jso
                     path,
                 )
             } else {
-                widget.perform_action(&action, &mut crate::widget::Edits::lend(doc), path)
+                widget.perform_action(&action, &[], &mut crate::widget::Edits::lend(doc), path)
             }
         })
         .unwrap(),
@@ -6875,6 +6881,7 @@ fn control_custody_core_outer_component_legacy_owners_and_sibling() {
     assert!(
         app.dispatch_node(a, |widget, doc, path| widget.perform_action(
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(doc),
             path
         ))
@@ -7003,6 +7010,7 @@ fn control_custody_core_actual_nested_surfaces_finish_in_both_orders() {
         assert!(
             app.dispatch_node(a, |widget, doc, path| widget.perform_action(
                 &crate::a11y::Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(doc),
                 path
             ))
@@ -7103,6 +7111,7 @@ fn control_custody_core_actual_retained_tile_rebind_closes_old_outboxes() {
     assert!(
         app.dispatch_node(node, |widget, doc, path| widget.perform_action(
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(doc),
             path
         ))
@@ -7413,6 +7422,7 @@ fn custody_native_return_covers_final_draw_callbacks(embedded: bool) {
     assert!(
         app.dispatch_node(a, |widget, doc, path| widget.perform_action(
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(doc),
             path
         ))
@@ -7610,6 +7620,7 @@ fn control_custody_core_nested_unbound_tile_follows_authorized_record_renewal() 
     assert!(
         app.dispatch_node(node, |widget, doc, path| widget.perform_action(
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(doc),
             path,
         ))
@@ -7755,6 +7766,7 @@ fn control_custody_core_unbound_tile_foreign_attachment_preserves_owner() {
         let activate = |tile: &mut crate::widget::TileHost| {
             assert!(tile.children_mut()[0].children_mut()[0].perform_action(
                 &crate::a11y::Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
                 &ROOT
             ));

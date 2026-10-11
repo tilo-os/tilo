@@ -352,6 +352,9 @@ COPY vendor /build/vendor
 COPY dist /build/dist
 COPY docs/developers/tasks /build/docs/developers/tasks
 COPY tools/ci/rustc-thin-app-wrapper.sh tools/ci/runtime-dylib-lazy-link.py /build/tools/ci/
+# build-thin-apps.sh routes a cached build through this dispatcher
+# (RUSTC_WRAPPER), which finds the size wrapper beside it in tools/ci/.
+COPY tools/ci/thin-app/sccache /build/tools/ci/thin-app/sccache
 COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
 COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
@@ -694,7 +697,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     # (default collection), the Browser included; its engine is the separate
     # runtime built at the end of this step.
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi \
-    && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine" \
+    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \

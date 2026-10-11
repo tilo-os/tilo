@@ -115,23 +115,11 @@ impl crate::widget::Decorator for OwnedText {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        let performed = self.input.perform_action(action, state, path);
-        let (doc, root) = crate::doc::document(state, path);
-        self.publish(doc, root);
-        performed
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let performed = self.input.perform_action_at(action, key_path, state, path);
+        let performed = self.input.perform_action(action, key_path, state, path);
         let (doc, root) = crate::doc::document(state, path);
         self.publish(doc, root);
         performed
