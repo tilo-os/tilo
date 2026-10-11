@@ -776,7 +776,7 @@ fn activity_launch_event(
         managed_workspace_id: event.managed_workspace_id.clone(),
         kind: match &event.kind {
             Native::Started { pid } => Shared::Started { pid: *pid },
-            Native::SpawnFailed { detail } => Shared::SpawnFailed {
+            Native::SpawnFailed { detail, .. } => Shared::SpawnFailed {
                 detail: detail.clone(),
             },
             Native::Failed { code, stderr_tail } | Native::WindowLost { code, stderr_tail } => {

@@ -303,6 +303,7 @@ mod tests {
             managed_agent_id: None,
             managed_workspace_id: None,
             kind: crate::shell::launcher::LaunchEventKind::SpawnFailed {
+                reason: crate::shell::launcher::LaunchFailure::LauncherUnavailable,
                 detail: "synthetic worker refusal".into(),
             },
         });
