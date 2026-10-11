@@ -36,7 +36,11 @@ impl SurfaceFile {
     /// Bytes that are not a surface file.
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
         let text = std::str::from_utf8(bytes).map_err(|error| error.to_string())?;
-        toml::from_str(text).map_err(|error| error.to_string())
+        // Through a JSON value: the surface types are then read by the
+        // JSON deserializer the rest of the runtime already compiles, not by
+        // a second, TOML-specific copy of their whole deserializer.
+        let value: serde_json::Value = toml::from_str(text).map_err(|error| error.to_string())?;
+        serde_json::from_value(value).map_err(|error| error.to_string())
     }
 
     /// The resource of kind `kind`, or the app's first (its own record)

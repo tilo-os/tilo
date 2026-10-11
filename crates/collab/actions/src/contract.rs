@@ -12,7 +12,7 @@ use crate::action::OperationKind;
 
 /// Whether an action can be invoked in the resource's current state.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
+#[serde(remote = "Self", tag = "state", rename_all = "snake_case")]
 pub enum Availability {
     #[default]
     Available,
@@ -23,6 +23,8 @@ pub enum Availability {
         reason: String,
     },
 }
+
+read_through_json_value!(Availability);
 
 impl Availability {
     pub fn is_available(&self) -> bool {
@@ -203,7 +205,7 @@ const fn undoable() -> ActionKind {
 
 /// Confirmation required after argument binding and immediately before run.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
+#[serde(remote = "Self", tag = "mode", rename_all = "snake_case")]
 pub enum ConfirmationPolicy {
     #[default]
     None,
@@ -213,6 +215,8 @@ pub enum ConfirmationPolicy {
         phrase: String,
     },
 }
+
+read_through_json_value!(ConfirmationPolicy);
 
 /// What a caller may safely do after losing the completion response.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -229,7 +233,7 @@ pub enum RetryPolicy {
 
 /// Completion behavior advertised before invocation.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
+#[serde(remote = "Self", tag = "mode", rename_all = "snake_case")]
 pub enum ExecutionMode {
     /// Expected to finish in the request/response window.
     #[default]
@@ -244,10 +248,12 @@ pub enum ExecutionMode {
     },
 }
 
+read_through_json_value!(ExecutionMode);
+
 /// Shape of a successful result. Schemas use JSON Schema so non-Rust callers
 /// do not need a parallel Tilo-only type system.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(remote = "Self", tag = "type", rename_all = "snake_case")]
 pub enum ResultSpec {
     #[default]
     None,
@@ -259,6 +265,8 @@ pub enum ResultSpec {
     },
     Job,
 }
+
+read_through_json_value!(ResultSpec);
 
 impl ResultSpec {
     /// Check that a completed action returned the shape it advertised.

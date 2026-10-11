@@ -22,13 +22,56 @@ pub const MAX_VERB_ARGS: usize = 8;
 pub const MAX_GROUP_MEMBERS: usize = 8;
 
 /// What an action did.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "did", rename_all = "kebab-case")]
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(remote = "Self", tag = "did", rename_all = "kebab-case")]
 pub enum Did {
     Edit(FieldEdit),
     Verb(VerbCall),
     Group(GroupOf),
     History(HistoryStep),
+}
+
+read_through_json_value!(Did, custom);
+
+impl Did {
+    /// Read by its `did` tag, each variant's fields straight from the
+    /// object: no buffered copy of the entry.
+    #[inline(never)]
+    fn from_json_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+        use serde::de::Error;
+        let serde_json::Value::Object(mut fields) = value else {
+            return Err(serde_json::Error::custom("an entry is an object"));
+        };
+        let tag = match fields.remove("did") {
+            Some(serde_json::Value::String(tag)) => tag,
+            Some(_) => return Err(serde_json::Error::custom("`did` is a string")),
+            None => return Err(serde_json::Error::missing_field("did")),
+        };
+        let fields = serde_json::Value::Object(fields);
+        match tag.as_str() {
+            "edit" => serde_json::from_value(fields).map(Self::Edit),
+            "verb" => serde_json::from_value(fields).map(Self::Verb),
+            "group" => serde_json::from_value(fields).map(Self::Group),
+            "history" => serde_json::from_value(fields).map(Self::History),
+            other => Err(serde_json::Error::unknown_variant(
+                other,
+                &["edit", "verb", "group", "history"],
+            )),
+        }
+    }
+}
+
+// Written out rather than derived: a derived clone is inlined into every
+// crate that clones an entry, and entries are cloned throughout the toolkit.
+impl Clone for Did {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Edit(edit) => Self::Edit(edit.clone()),
+            Self::Verb(verb) => Self::Verb(verb.clone()),
+            Self::Group(group) => Self::Group(group.clone()),
+            Self::History(step) => Self::History(step.clone()),
+        }
+    }
 }
 
 impl Did {
@@ -532,6 +575,44 @@ mod tests {
             group.shared().is_none(),
             "a cut group does not claim one shared step"
         );
+    }
+
+    #[test]
+    fn every_kind_of_entry_reads_back_from_its_json() {
+        let edit = Did::Edit(FieldEdit {
+            ty: "snippet".into(),
+            field: "title".into(),
+            path: vec![
+                PathStep::Item("s1".into()),
+                PathStep::Cell("r1".into(), "c2".into()),
+            ],
+            op: EditOp::Set,
+            old: Some(Scalar::text("a")),
+            new: Some(Scalar::text("b")),
+            args: BTreeMap::from([("mark".to_owned(), Scalar::from(true))]),
+        });
+        let verb = Did::verb(ActionKey::default(), [("size".to_owned(), Scalar::from(3))]);
+        let group = Did::group([edit.clone(), verb.clone()]);
+        let history = Did::history(
+            HistoryOp::Checkpoint {
+                name: "draft".into(),
+            },
+            1,
+            Some(Described::new(group.clone()).on("s1", "First")),
+        );
+        for did in [edit, verb, group, history] {
+            let json = serde_json::to_string(&did).unwrap();
+            assert!(json.starts_with(r#"{"did":"#), "the tag leads: {json}");
+            let read: Did = serde_json::from_str(&json).unwrap();
+            assert_eq!(read, did);
+            assert_eq!(serde_json::to_string(&read).unwrap(), json);
+            let from_value: Did =
+                serde_json::from_value(serde_json::to_value(&did).unwrap()).unwrap();
+            assert_eq!(from_value, did);
+        }
+        for bad in [r#"{"did":"wave"}"#, r#"{"ty":"x"}"#, r#"{"did":3}"#, "[]"] {
+            assert!(serde_json::from_str::<Did>(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
