@@ -550,7 +550,6 @@ dependencies = [
  "capnp-rpc",
  "clap",
  "ed25519-dalek 3.0.0",
- "futures-util",
  "getrandom 0.4.3",
  "hex",
  "install",
@@ -566,7 +565,6 @@ dependencies = [
  "tilo-app-package",
  "tilo-paths",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "wire-frame",
@@ -4643,14 +4641,13 @@ dependencies = [
  "capnp",
  "capnp-rpc",
  "format-provider-abi",
- "futures",
  "getrandom 0.4.3",
  "notify",
+ "runtime-portal",
  "serde",
  "tempfile",
  "tilo-paths",
  "tokio",
- "tokio-util",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
@@ -13032,7 +13029,6 @@ dependencies = [
  "tilo-clock",
  "tilo-test-env",
  "tokio",
- "tokio-util",
  "workspace-hack",
 ]
 
@@ -13046,7 +13042,6 @@ dependencies = [
  "async-imap",
  "chrono-tz",
  "collab-types",
- "comemo",
  "desktop-policy",
  "mime_guess",
  "os-actions",
@@ -13075,12 +13070,6 @@ dependencies = [
  "tilo-ui",
  "tilo-user-identity",
  "tilo-wet-media",
- "tiny-skia",
- "typst",
- "typst-assets",
- "typst-layout",
- "typst-pdf",
- "typst-render",
  "vte",
  "workspace-hack",
  "xattr",
@@ -13104,7 +13093,6 @@ dependencies = [
  "tilo-files",
  "tilo-test-env",
  "tokio",
- "tokio-util",
  "uuid",
  "wire-frame",
  "workspace-hack",
@@ -18274,6 +18262,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-typst-engine"
+version = "0.1.0"
+dependencies = [
+ "comemo",
+ "runtime-dylib",
+ "typst",
+ "typst-assets",
+ "typst-layout",
+ "typst-pdf",
+ "typst-render",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-typst-fonts"
 version = "0.1.0"
 dependencies = [
@@ -18375,7 +18377,6 @@ dependencies = [
  "tilo-vello-encoding",
  "tilo-winit",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "two-face",
@@ -19447,6 +19448,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-files",
+ "tilo-typst-engine",
  "tilo-typst-fonts",
  "tilo-vello",
  "tilo-winit",
@@ -22254,7 +22256,6 @@ dependencies = [
  "tracing-core",
  "tracing-subscriber",
  "ttf-parser",
- "typst-assets",
  "unic-langid",
  "unic-langid-impl",
  "unicode-bidi",

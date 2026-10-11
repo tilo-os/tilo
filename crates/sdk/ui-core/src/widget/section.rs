@@ -47,6 +47,7 @@ use crate::a11y::{AccessNode, AccessState, Role};
 use crate::chrome::{RowJoin, SelectionState, paint_row_selection, row_bleed};
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
+use crate::pointer_replay::{PressAt, Release};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -526,6 +527,8 @@ struct Disclosure {
     expanded: Rc<Cell<bool>>,
     on_toggle: Option<Box<dyn FnMut(bool)>>,
     interaction: Interaction,
+    /// The press on the header; `interaction.pressed` mirrors it.
+    press: crate::pointer_replay::HeldPress,
     cursor: Point,
     toggled: bool,
 }
@@ -718,6 +721,8 @@ impl Widget for HeaderRow {
         }
         let rect = self.parts.rect;
         let action = self.action_rect();
+        // The title names the header across a rebuild.
+        let title = self.title.as_str();
         let Some(disclosure) = &mut self.disclosure else {
             return;
         };
@@ -735,19 +740,24 @@ impl Widget for HeaderRow {
                 ..
             } => match state {
                 ElementState::Pressed if disclosure.interaction.hovered => {
+                    disclosure.press.press(PressAt::one(title, rect));
                     disclosure.interaction.pressed = true;
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                 }
-                ElementState::Released if disclosure.interaction.pressed => {
+                ElementState::Released => {
+                    let over = disclosure.interaction.hovered;
+                    let release = disclosure
+                        .press
+                        .release(over.then_some(PressAt::one(title, rect)));
                     disclosure.interaction.pressed = false;
-                    *ctx.handled = true;
-                    if disclosure.interaction.hovered {
+                    *ctx.handled |= release.ended();
+                    if release == Release::Click(()) {
                         let open = !disclosure.expanded.get();
                         disclosure.set(open);
                     }
                 }
-                _ => {}
+                ElementState::Pressed => {}
             },
             WindowEvent::KeyboardInput { event, .. }
                 if disclosure.interaction.focused && event.state == ElementState::Pressed =>
@@ -910,6 +920,7 @@ impl Section {
             expanded: Rc::clone(expanded),
             on_toggle: None,
             interaction: Interaction::default(),
+            press: crate::pointer_replay::HeldPress::default(),
             cursor: Point::ZERO,
             toggled: false,
         });
@@ -970,6 +981,7 @@ impl Section {
                 expanded: Rc::clone(&state),
                 on_toggle,
                 interaction: Interaction::default(),
+                press: crate::pointer_replay::HeldPress::default(),
                 cursor: Point::ZERO,
                 toggled: false,
             });

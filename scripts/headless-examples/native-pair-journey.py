@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Two independent native desktops on a private governed host and audio graph.
 
-Run on the disposable remote builder. No login profile, hardware microphone,
-screen capture, external account or public listener is used. Missing evidence
+Run on the disposable remote builder. App-state-only mode needs no audio server.
+No login profile, hardware microphone, screen capture, external account or public
+listener is used. Missing evidence
 fails the journey; a partial receipt never qualifies the pair.
 """
 from __future__ import annotations
 
 import argparse
 import array
+import concurrent.futures
 import importlib.util
 import json
 import math
@@ -20,6 +22,7 @@ import select
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -72,9 +75,12 @@ class Fixture:
                "TILO_STATE_PATH": str(profile / "config/tilo/state.json"),
                "TILO_HEADLESS_SIZE": "1280x800",
                "TILO_LAUNCHER_BIN": str(self.binaries / "tilo-launcher"),
-               "GST_PLUGIN_PATH": str(self.pipewire / "usr/lib64/gstreamer-1.0"),
                "RUST_LOG": "warn,tilo_joined_room::voice=debug,tilo_media::voice::gst=debug,shell::network::native_media=debug,shell::shell::native_media=debug,tilo_action_broker::collab_broker_capnp::native_media=debug",
                "GST_DEBUG": "pipewiresrc:6,pipewirecore:5,appsink:5,opusenc:5,basesink:5,basesrc:6"}
+        if self.pipewire is not None:
+            env["GST_PLUGIN_PATH"] = str(self.pipewire / "usr/lib64/gstreamer-1.0")
+        else:
+            env.pop("GST_PLUGIN_PATH", None)
         for key in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
                     "PIPEWIRE_REMOTE", "PIPEWIRE_RUNTIME_DIR", "TILO_COLLAB_HOST",
                     "TILO_COLLAB_HOSTS", "TILO_APPS_SYSTEM_DIR"):
@@ -308,7 +314,7 @@ class Fixture:
                                         public_failure_path=self.output / f"failed-{operation}.json")
         return receipt.get("update", {}).get("output", {}).get("value")
 
-    def context(self, sessions, room, presence_ids):
+    def shared_state(self, sessions, room):
         alice, bob = sessions["alice"], sessions["bob"]
         for session in (alice, bob):
             report = self.act(session, room, "live-context-status")
@@ -400,6 +406,13 @@ class Fixture:
         packaged.wait_for("live resource address reaches admitted native reader",
                           shared_reference, bob[1])
         self.record("native-live-resource-reference-preserves-existing-access")
+        return text_channels
+
+    def context(self, sessions, room, presence_ids):
+        text_channels = self.shared_state(sessions, room)
+        alice, bob = sessions["alice"], sessions["bob"]
+        channels = text_channels(alice[0])
+        first, second = sorted(channels)[:2]
         self.act(alice, room, "open-channel", resource=channels[first])
         self.act(bob, room, "open-channel", resource=text_channels(bob[0])[second])
         require_ok(call(alice[0], {"op": "pointer_move", "x": 350, "y": 220}))
@@ -773,13 +786,70 @@ class Fixture:
         self.act(sessions["alice"], room, "leave-call")
         packaged.wait_for("remaining participant leaves", lambda: self.no_audio_streams("alice", sessions["alice"]), sessions["alice"][1])
 
-    def run(self, *, voice_only=False):
+    def app_state(self, sessions, room, early, authors):
+        channels = self.shared_state(sessions, room)
+        texts = ["Fixture committed before Bob app launch",
+                 "Fixture concurrent Alice", "Fixture concurrent Bob"]
+        observations = {}
+        expected_authors = dict(zip(texts, (authors[0], authors[0], authors[1])))
+        def readable():
+            for name, session in sessions.items():
+                resources = channels(session[0])
+                if early not in resources:
+                    return False
+                page = self.act(session, room, "read-messages", {"pageSize": 32},
+                                resource=resources[early])
+                content = page.get("content", {})
+                if content.get("channel") != early.removeprefix("chat.channel:"):
+                    raise RuntimeError("late app read another record")
+                messages = content.get("messages", [])
+                if any(sum(message.get("text") == text and message.get("complete") is True
+                           for message in messages) != 1 for text in texts):
+                    return False
+                observed = [message for message in messages if message.get("text") in expected_authors]
+                if any(message.get("author") != expected_authors[message["text"]] for message in observed):
+                    raise RuntimeError("native message attribution differs from its certified invoker")
+                observations[name] = observed
+            return True
+        packaged.wait_for("late app receives early channel", lambda: early in channels(sessions["bob"][0]),
+                          sessions["bob"][1])
+        # Bob's ordinary signed app was launched only after Alice's first
+        # commit. Submit subsequent edits from both native app processes.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(self.act, session, room, "post", {"value": text},
+                                   channels(session[0])[early])
+                       for session, text in zip(sessions.values(), texts[1:])]
+            for future in futures:
+                future.result()
+        packaged.wait_for("late app and concurrent edits converge", readable, sessions["bob"][1])
+        self.record("late-native-app-and-concurrent-resource-state-converged", channel=early,
+                    messages=observations)
+        for name, session in sessions.items():
+            before = packaged.presented_primary_frame(call(session[0], {"op": "foreign_frames"}), "so.tilo.chat")
+            if before is None:
+                raise RuntimeError("native app disappeared before state rendering")
+            self.act(session, room, "open-channel", resource=channels(session[0])[early])
+            def painted():
+                frame = packaged.presented_primary_frame(call(session[0], {"op": "foreign_frames"}), "so.tilo.chat")
+                return frame if frame and frame["frame_seq"] > before["frame_seq"] else None
+            frame = packaged.wait_for("local app paints after shared channel navigation", painted, session[1])
+            require_ok(call(session[0], {"op": "snapshot", "path": str(self.output / f"{name}-shared-state.png")}))
+            self.record(f"{name}-shared-state-locally-presented", frame_seq=frame["frame_seq"])
+
+    def run(self, *, voice_only=False, state_only=False):
         environments = {name: self.env(name) for name in ("alice", "bob")}
         publisher = self.root / "alice"
         for name, env in environments.items():
             env["TILO_APPS_DATA_DIR"] = str(self.root / name / "apps")
             env["TILO_RUNTIME_BUNDLE_DIR"] = str(publisher / "runtimes")
-        packaged.install_packages(self.binaries, publisher, environments["alice"])
+        _version, native_chat = packaged.install_packages(self.binaries, publisher, environments["alice"])
+        self.record("same-source-native-inputs", digests={
+            name: packaged.digest_file(path) for name, path in {
+                "fixture": pathlib.Path(__file__), "shell": self.binaries / "shell",
+                "governor": self.binaries / "examples/native_pair_host",
+                "launcher": self.binaries / "tilo-launcher", "native_chat": native_chat,
+                "signed_chat": publisher / "chat.tapp",
+            }.items()})
         environments["bob"]["TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE"] = environments["alice"]["TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE"]
         packaged.run(self.binaries / "tilo-install", ["install", publisher / "chat.tapp", "--allow-self-signed"], environments["bob"])
         self.record("ordinary-signed-chat-packages-installed")
@@ -788,11 +858,12 @@ class Fixture:
         bootstrap_path = self.root / "bootstrap.json"
         packaged.wait_for("private signed host invitations", bootstrap_path.exists, host)
         bootstrap = json.loads(bootstrap_path.read_text())
-        self.record("two-distinct-certified-native-identities")
+        self.record("two-distinct-certified-native-identities", users=bootstrap["users"])
         sessions = {}
         for name, frequency in (("alice", 700), ("bob", 1100)):
             env = environments[name]
-            self.audio(name, env, frequency)
+            if not state_only:
+                self.audio(name, env, frequency)
             shell = self.spawn(name, [self.binaries / "shell", "--mode", "native",
                                       "--backend", "headless", "--enable-peer-sync"], env)
             socket = env["TILO_TEST_CONTROL"]
@@ -809,6 +880,7 @@ class Fixture:
             self.record(f"{name}-governed-native-join")
             sessions[name] = (socket, shell)
             require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-joined.png")}))
+        early = None
         for name, (socket, shell) in sessions.items():
             app = packaged.wait_for("signed Chat offering", lambda: next((
                 row for row in packaged.actions(socket, "Chat")
@@ -832,6 +904,24 @@ class Fixture:
             (self.output / f"{name}-actions.json").write_text(json.dumps(
                 [packaged.public_action_observation(row) for row in packaged.actions(socket)], indent=2))
             require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-chat.png")}))
+            if state_only and name == "alice":
+                before = {self.logical_resource(row["resource"]) for row in self.catalogue(socket)
+                          if row.get("application") == "so.tilo.chat"
+                          and row.get("room") == bootstrap["room"] and row.get("operation") == "post"}
+                self.act(sessions[name], bootstrap["room"], "new-channel",
+                         {"value": "Fixture before second app launch"})
+                row = packaged.wait_for("new early channel", lambda: next((
+                    row for row in self.catalogue(socket)
+                    if row.get("application") == "so.tilo.chat"
+                    and row.get("room") == bootstrap["room"]
+                    and row.get("operation") == "post" and self.logical_resource(row["resource"]) not in before), None), shell)
+                early = self.logical_resource(row["resource"])
+                self.act(sessions[name], bootstrap["room"], "post",
+                         {"value": "Fixture committed before Bob app launch"}, resource=row["resource"])
+                self.record("alice-state-committed-before-bob-app-launch", channel=early)
+        if state_only:
+            self.app_state(sessions, bootstrap["room"], early, bootstrap["users"])
+            return
         if not voice_only:
             self.context(sessions, bootstrap["room"], bootstrap["presence_ids"])
         channel = self.voice(sessions, bootstrap["room"])
@@ -842,22 +932,49 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=pathlib.Path, required=True)
     parser.add_argument("--binaries", type=pathlib.Path, default=REPO / "target/debug")
-    parser.add_argument("--pipewire", type=pathlib.Path, required=True,
+    parser.add_argument("--pipewire", type=pathlib.Path,
                         help="private extracted PipeWire server/config/plugin payload")
     parser.add_argument("--cleanup-proof", action="store_true", help="test exact private daemon cleanup without launching Chat")
     parser.add_argument("--voice-proof", action="store_true", help="test governed native voice without qualifying follow or the combined pair")
+    parser.add_argument("--state-proof", action="store_true",
+                        help="qualify native app state independently of voice and following")
+    parser.add_argument("--font-namespace", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.cleanup_proof and args.voice_proof:
+    if sum((args.cleanup_proof, args.voice_proof, args.state_proof)) > 1:
         parser.error("choose only one isolated proof mode")
+    if not args.state_proof and not args.cleanup_proof and args.pipewire is None:
+        parser.error("voice requires --pipewire")
+    if args.state_proof and not args.font_namespace:
+        # Reuse the existing packaged-native proof's OS font-catalog stage.
+        # Only this fixture's mount namespace changes; host fonts stay intact.
+        with tempfile.TemporaryDirectory(prefix="tilo-state-fonts-") as scratch:
+            fonts = pathlib.Path(scratch) / "catalog"
+            subprocess.run([sys.executable, "-B", str(REPO / "tools/font-catalog.py"),
+                            "prepare", str(REPO / "crates/sdk/ui-core/assets/fonts"),
+                            str(fonts), "--scope", "os"], check=True)
+            subprocess.run(["bwrap", "--die-with-parent", "--bind", "/", "/",
+                            "--dev-bind", "/dev", "/dev", "--tmpfs", "/usr/share/fonts",
+                            "--ro-bind", str(fonts), "/usr/share/fonts/tilo", "--",
+                            sys.executable, "-B", str(pathlib.Path(__file__).resolve()),
+                            *sys.argv[1:], "--font-namespace"], check=True)
+        return
+    if args.state_proof:
+        subprocess.run([sys.executable, "-B", str(REPO / "tools/font-catalog.py"),
+                        "verify", "/usr/share/fonts/tilo", "--scope", "os"], check=True)
+        mounts = pathlib.Path("/proc/self/mountinfo").read_text().splitlines()
+        if not any(row.split()[4] == "/usr/share/fonts/tilo"
+                   and "ro" in row.split()[5].split(",") for row in mounts):
+            raise RuntimeError("canonical OS font namespace is not read-only")
     args.out.mkdir(parents=True, exist_ok=False, mode=0o700)
-    fixture = Fixture(args.out.resolve(), args.binaries.resolve(), args.pipewire.resolve())
-    qualified, error = False, None
+    fixture = Fixture(args.out.resolve(), args.binaries.resolve(), args.pipewire.resolve() if args.pipewire else None)
+    qualified, state_qualified, error = False, False, None
     try:
         if args.cleanup_proof:
             fixture.cleanup_proof()
         else:
-            fixture.run(voice_only=args.voice_proof)
-            qualified = not args.voice_proof
+            fixture.run(voice_only=args.voice_proof, state_only=args.state_proof)
+            state_qualified = args.state_proof
+            qualified = not args.voice_proof and not args.state_proof
     except Exception as failure:
         error = str(failure)
         raise
@@ -866,13 +983,16 @@ def main():
         try:
             fixture.close()
         except Exception as failure:
-            qualified = False
+            qualified = state_qualified = False
             cleanup_error = str(failure)
         (args.out / "journey.json").write_text(json.dumps({
-            "qualified": qualified,
-            "mode": "cleanup-proof" if args.cleanup_proof else "native-voice-proof" if args.voice_proof else "native-pair",
+            "qualified": qualified, "app_state_qualified": state_qualified,
+            "mode": "native-app-state-proof" if args.state_proof else "cleanup-proof" if args.cleanup_proof else "native-voice-proof" if args.voice_proof else "native-pair",
             "error": error, "cleanup_error": cleanup_error, "stages": fixture.stages,
             "real_microphone": False, "video_screen_sharing": False,
+            "same_person_devices_qualified": False,
+            "automatic_peer_app_launch_qualified": False,
+            "offline_reconnect_qualified": False,
         }, indent=2) + "\n")
         if cleanup_error is not None:
             raise RuntimeError(f"fixture cleanup failed: {cleanup_error}")

@@ -1009,14 +1009,22 @@ mod component_adapter {
         fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             let (state, _) = crate::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
-            binding
-                .read_document(state, |document, record_root| {
-                    if let Some(root) = self.component.root.as_deref_mut() {
-                        root.sync(document, record_root);
-                    }
-                })
-                .unwrap_or(());
-            self.component.project_record_save_status();
+            let sync_root = |component: &mut AppComponent| {
+                binding
+                    .read_document(state, |document, record_root| {
+                        if let Some(root) = component.root.as_deref_mut() {
+                            root.sync(document, record_root);
+                        }
+                    })
+                    .unwrap_or(());
+            };
+            sync_root(&mut self.component);
+            // The record's durability, sampled once the root has synced. A
+            // change is shown by syncing the root again with it, so the frame
+            // needs no rebuilt tree (which repaints the whole window).
+            if self.component.project_record_save_status() {
+                sync_root(&mut self.component);
+            }
         }
         fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, _path: &ObjId) {
             let binding = self.component.callback_binding();
@@ -1876,6 +1884,9 @@ mod component_adapter {
         }
         fn take_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
             self.component.take_replacement()
+        }
+        fn take_save_status_presentation(&mut self) -> bool {
+            self.component.take_save_status_changed()
         }
         fn take_component_close_reports(
             &mut self,

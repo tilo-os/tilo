@@ -4034,6 +4034,15 @@ impl TextInput {
         })
     }
 
+    /// What the last draw painted outside the field's rect: while a
+    /// correction is offered, its chip, which floats above or below the
+    /// field. A host proving its own damage repaints this too when the field
+    /// changes.
+    #[must_use]
+    pub fn overhang(&self) -> Option<Rect> {
+        self.suggestion_chip
+    }
+
     /// Replace the previewed word with its correction (a click on the chip).
     fn accept_suggestion(&mut self) -> bool {
         self.refresh_personal_spelling();

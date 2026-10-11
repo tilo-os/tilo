@@ -10,7 +10,7 @@ test-support = []
 managed-read-test = ["launcher/managed-tree-test"]
 [dependencies]
 # Kernel-authenticated custody of the executing native service peer.
-runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
+runtime-portal = { path = "../../runtime/runtime-portal" }
 tilo-paths.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 # Saves the launchable action catalogue across restarts.

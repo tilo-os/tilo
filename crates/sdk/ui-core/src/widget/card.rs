@@ -621,7 +621,7 @@ impl Widget for Card {
             if *ctx.handled {
                 // A child's own control took the press; the card stays put.
                 if self.activation.state.pressed {
-                    self.activation.state.pressed = false;
+                    self.activation.cancel_press();
                     self.dirty = true;
                 }
                 return;

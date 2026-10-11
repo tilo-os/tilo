@@ -479,14 +479,47 @@ bytes = 4194304
 When the runtime shrinks, both gates print the lower budget to commit.
 
 What the runtime may carry is a rule of its own. It holds the SDK, crates
-several apps share and engines too heavy for their one app's tapp, never an
-OS daemon or other OS-internal crate (the filesystem, the launcher, the app
-host, the install CLI, the peer transport) and nothing no app reaches. An app
-that calls into such a crate links it itself and gets only the code it calls;
-the Store, for one, depends on `app-host` without its default `service`
-feature. `tools/policy/check_runtime_dylib_surface.py` (CI / fast quality)
-resolves the runtime with the default collection the way the release does and
-fails on either.
+several apps share and, until each moves out, engines too heavy for their one
+app's tapp; never an OS daemon or other OS-internal crate (the filesystem, the
+launcher, the app host, the install CLI, the peer transport) and nothing no
+app reaches. An app that calls into such a crate links it itself and gets only
+the code it calls; the Store, for one, depends on `app-host` without its
+default `service` feature. `tools/policy/check_runtime_dylib_surface.py` (CI /
+fast quality) resolves the runtime with the default collection the way the
+release does and fails on either, and on a crate of an engine that has moved
+out.
+
+An engine one app uses moves out of the runtime into an engine library of its
+own: a crate under `crates/runtime/engines/<name>/` that is a Rust
+`dylib` chained on the runtime (Typst: `libtilo_typst_engine.so`). It is signed
+into the runtime bundle beside `libruntime_dylib.so`, so the runtime's id,
+signature and verity cover it, but only its app names it `DT_NEEDED`; every
+other app no longer maps or relocates it. The conventions the build relies on:
+
+- the package is `tilo-<name>-engine`, its library `tilo_<name>_engine`; every
+  dependency sits behind a `thin` feature, so builds other than the thin one
+  (workspace checks and tests, `tilo-app dev`) see an empty library;
+- a `[[bin]] tilo-<name>-engine-check` with `required-features = ["thin"]`:
+  `os/scripts/build-thin-apps.sh` builds and runs it in every runtime build,
+  whichever apps are selected, and writes the libraries it built to
+  `target/thin-app/runtime-engines`, which packaging signs into the bundle;
+- `tools/ci/rustc-thin-app-wrapper.sh` gives `tilo_*_engine` crates the
+  runtime's link flags (`-C prefer-dynamic` is what lets one Rust dylib link
+  another);
+- the app links the engine under a feature of its own (Typst Editor's
+  `runtime-engine`), named in `dist/apps/app-collections.toml`, the
+  Containerfile's `APP_FEATURES` and `os/components.toml`; without it the app
+  links the engine's crates statically, as `tilo-app dev` does;
+- the engine's crates go into the surface check's `ENGINES`. They must also
+  stay out of the workspace-hack, which is linked into the runtime: hakari
+  lists a crate there when members build it with different feature sets, so
+  give every member the same set (`tilo-typst-fonts` enables typst-assets'
+  `fonts` on every target for this). Excluding the crate in
+  `.config/hakari.toml` instead fails `cargo hakari verify`.
+
+Release / apps reports each engine's bytes, relocations and dirtied pages
+beside the runtime's, fails when an app of `apps_without_media` loads one, and
+renders Typst Editor through its engine.
 
 ## OS image size
 
@@ -640,6 +673,23 @@ expand `-F` files and parses `-f` values as CSV, which breaks JSON arrays.
 
 Do not reserve runners or ask another agent to allocate a slot. Each case's
 result and the exact source/workflow/builder identities appear in the run summary.
+
+Use operation `clippy` to meet CI's lint gate before pushing, including for
+crates that do not build on macOS (`shell`, `tilo-relay`, `launcher`). It runs
+the source's own `tools/ci/clippy-check.sh -p <pkg>…` (all targets,
+`-D warnings`, the workspace lint table), on the runner label, builder image,
+environment and checkout path of CI's `clippy` job, so the two share compiler
+cache entries and a warm package takes minutes. Name one `package`, or up to 64
+in `packages`; leave the test fields empty. A failure prints the rendered
+Clippy diagnostics; the run summary lists the compiler-cache statistics.
+
+```sh
+jq -n --arg source "$(git rev-parse HEAD)" \
+  '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"clippy"}}' \
+  | fgj api -X POST repos/tilo/tilo/actions/workflows/dev-focused-test.yml/dispatches --hostname code.tilo.so
+```
+
+The source commit must be pushed (any branch) so the runner can fetch it.
 
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 

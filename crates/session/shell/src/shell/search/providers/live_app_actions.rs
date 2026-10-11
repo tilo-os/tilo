@@ -1041,6 +1041,7 @@ impl LiveAppActionsProvider {
     fn poll_directory_pages_at(&self, now: Instant) {
         let mut ready = Vec::new();
         let mut expired = false;
+        let mut spent = Vec::new();
         self.directory_pending.borrow_mut().retain(|key, pending| {
             // The UI may have been idle after the reply arrived. The deadline
             // bounds unanswered work, not how soon a completed page is read.
@@ -1053,9 +1054,17 @@ impl LiveAppActionsProvider {
                     false
                 }
                 PendingPoll::Ready(answer) => {
+                    // A continuation the app no longer holds (each is
+                    // spent once) cannot be asked for again: its chain
+                    // starts over from the first page.
+                    if !key.3.is_empty() && answer.as_ref().is_ok_and(|page| page.stale_cursor) {
+                        spent.push(key.clone());
+                    }
                     tracing::debug!(
                         target: "tilo::listing",
                         peer = key.0,
+                        needle = %key.2,
+                        cursor_bytes = key.3.len(),
                         error = ?answer.as_ref().err(),
                         stale_cursor = answer.as_ref().is_ok_and(|page| page.stale_cursor),
                         "app directory page not kept"
@@ -1074,7 +1083,14 @@ impl LiveAppActionsProvider {
                 PendingPoll::Waiting => true,
             }
         });
-        if expired {
+        if !spent.is_empty() {
+            self.directory_pages.borrow_mut().retain(|existing, _| {
+                !spent
+                    .iter()
+                    .any(|key| existing.0 == key.0 && existing.1 == key.1 && existing.2 == key.2)
+            });
+        }
+        if expired || !spent.is_empty() {
             // An empty projection must not prevent another bounded request
             // after a stalled directory ticket has been cancelled.
             self.auxiliary_snapshot.borrow_mut().take();
@@ -1083,16 +1099,22 @@ impl LiveAppActionsProvider {
         if !ready.is_empty() {
             let mut pages = self.directory_pages.borrow_mut();
             for (key, page, initial_page) in ready {
-                // A continuation only needs the page named by its opaque
-                // cursor.  Superseded pages for this same route/query can be
-                // dropped immediately; this bounds a 100k-row remote source
-                // without making later rows unreachable.
-                pages.retain(|existing, _| {
-                    existing == &key
-                        || existing.0 != key.0
-                        || existing.1 != key.1
-                        || existing.2 != key.2
-                });
+                // A first page starts a new chain: the pages of an earlier
+                // one for this route/query continue cursors this page does
+                // not name, so they go. A continuation keeps the chain it
+                // extends: a complete listing walks it again from its first
+                // page, and dropping that page asked the app for it again,
+                // whose answer named a new continuation, never cached, so the
+                // listing never settled. The chain stays bounded by
+                // MAX_RETAINED_DIRECTORY_PAGES.
+                if initial_page {
+                    pages.retain(|existing, _| {
+                        existing == &key
+                            || existing.0 != key.0
+                            || existing.1 != key.1
+                            || existing.2 != key.2
+                    });
+                }
                 if !pages.contains_key(&key)
                     && pages.len() >= MAX_RETAINED_DIRECTORY_PAGES
                     && let Some(evicted) = pages.keys().next().cloned()
@@ -5080,6 +5102,65 @@ mod tests {
             provider.set_directory_query("other");
             assert!(provider.directory_pages.borrow().is_empty());
         }
+    }
+
+    /// A listing walks a directory's pages from its first every time it
+    /// runs again, so a continuation's answer must not drop the first page:
+    /// asking the app for it again mints a new continuation, never cached,
+    /// and the listing never settled. A continuation the app no
+    /// longer holds restarts its chain instead of being asked for again.
+    #[test]
+    fn a_directory_chain_is_kept_until_its_continuation_is_spent() {
+        let provider = LiveAppActionsProvider::new(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        provider.set_directory_query("note");
+        let key = |cursor: &[u8]| -> DirectoryCacheKey {
+            (7, "actor-a".into(), "note".into(), cursor.to_vec())
+        };
+        let answer = |cursor: &[u8], answered: CataloguePage| {
+            let (sender, receiver) = pending();
+            provider.directory_pending.borrow_mut().insert(
+                key(cursor),
+                PendingDirectoryPage {
+                    receiver,
+                    deadline: super::deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                    initial_page: cursor.is_empty(),
+                },
+            );
+            sender.complete(Ok(answered));
+            provider.poll_directory_pages_at(Instant::now());
+        };
+
+        answer(b"", page(Vec::new(), b"c1".to_vec()));
+        answer(b"c1", page(Vec::new(), b"c2".to_vec()));
+        answer(b"c2", page(Vec::new(), Vec::new()));
+        for cursor in [&b""[..], b"c1", b"c2"] {
+            assert!(
+                provider.directory_pages.borrow().contains_key(&key(cursor)),
+                "the chain keeps its page at {cursor:?}"
+            );
+        }
+
+        // A new first page starts a new chain; the old one's pages go.
+        answer(b"", page(Vec::new(), b"c3".to_vec()));
+        assert!(provider.directory_pages.borrow().contains_key(&key(b"")));
+        assert!(!provider.directory_pages.borrow().contains_key(&key(b"c1")));
+
+        // The app no longer holds c3: the chain starts over.
+        let epoch = provider
+            .directory_epoch
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let mut stale = page(Vec::new(), Vec::new());
+        stale.stale_cursor = true;
+        answer(b"c3", stale);
+        assert!(provider.directory_pages.borrow().is_empty());
+        assert!(
+            provider
+                .directory_epoch
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > epoch
+        );
     }
 
     #[test]

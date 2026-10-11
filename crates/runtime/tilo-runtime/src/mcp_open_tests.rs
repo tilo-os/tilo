@@ -460,7 +460,11 @@ fn run<F: std::future::Future>(future: F) -> F::Output {
 }
 
 /// One turn's tool call: its structured result, or its error text.
-async fn call(server: &McpServer<Writer>, name: &str, arguments: Value) -> Result<Value, String> {
+async fn call<H: ActionHost + Send + Sync + 'static>(
+    server: &McpServer<H>,
+    name: &str,
+    arguments: Value,
+) -> Result<Value, String> {
     let reply = server
         .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}}))
         .await
@@ -788,7 +792,7 @@ fn workspace_pages_name_their_resources_in_full() {
 /// computer (run 20260930-071012, deck-launch): `set-slide-text` was refused
 /// `slide: "r1"`, the directory's handle for the slide.
 #[test]
-fn a_handle_in_a_resource_argument_is_expanded_and_elsewhere_named_in_full() {
+fn a_handle_in_a_resource_argument_is_expanded_and_text_is_not_replayed() {
     let host = Writer::new(Some("open"));
     let server = McpServer::new(host.clone(), "room".into(), "owner".into());
     run(async {
@@ -819,12 +823,12 @@ fn a_handle_in_a_resource_argument_is_expanded_and_elsewhere_named_in_full() {
         let selected = call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "select-block", "arguments": {"block": style}}))
             .await
             .unwrap();
-        assert_eq!(selected["update"]["state"], "succeeded", "{selected}");
-        let adjusted = selected["adjusted"].as_str().unwrap_or_default();
-        assert!(
-            adjusted.contains(&format!("block {style} was refused; used its id {RICH}")),
-            "{selected}"
+        assert_eq!(selected["update"]["state"], "failed", "{selected}");
+        assert_eq!(
+            selected["update"]["error"]["message"],
+            "no block has that id"
         );
+        assert!(selected.get("adjusted").is_none(), "{selected}");
     });
     let calls = host.invoked();
     let arguments = |action: &str| {
@@ -836,14 +840,247 @@ fn a_handle_in_a_resource_argument_is_expanded_and_elsewhere_named_in_full() {
     };
     assert_eq!(arguments("apply-style"), [json!({"style": RICH})]);
     let selects = arguments("select-block");
-    assert_eq!(selects.len(), 2, "{selects:?}");
+    assert_eq!(selects.len(), 1, "{selects:?}");
     assert!(
         selects[0]["block"]
             .as_str()
             .is_some_and(|handle| handle.starts_with('r')),
-        "a text argument goes as given first: {selects:?}"
+        "a text argument stays as given: {selects:?}"
     );
-    assert_eq!(selects[1], json!({"block": RICH}));
+}
+
+/// A host that mutates before reporting execution failure. The real ledger
+/// deduplicates the caller's id; it cannot protect against a bridge inventing
+/// a fresh id. Admission refusals, in contrast, record no mutation.
+#[derive(Clone)]
+struct FailingMutationHost {
+    directory: Writer,
+    ledger: Arc<Mutex<tilo_actions::remote::InvocationLedger<InvocationState>>>,
+    mutations: Arc<Mutex<Vec<InvokeRequest>>>,
+    refuse: bool,
+}
+
+impl FailingMutationHost {
+    fn new(refuse: bool) -> Self {
+        let directory = Writer::new(None);
+        *directory.running.lock().unwrap() = true;
+        Self {
+            directory,
+            ledger: Arc::default(),
+            mutations: Arc::default(),
+            refuse,
+        }
+    }
+}
+
+impl ActionHost for FailingMutationHost {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        self.directory.query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if self.refuse {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        let result = self
+            .ledger
+            .lock()
+            .unwrap()
+            .admit(caller, &request, || {
+                self.mutations.lock().unwrap().push(request.clone());
+                Ok(InvocationState::new(
+                    request.invocation,
+                    InvocationUpdate::Failed {
+                        invocation: request.invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "write_failed".into(),
+                            message: "mutation applied; completion failed".into(),
+                            details: Some(json!({"applied": true})),
+                            retryable: false,
+                        },
+                    },
+                ))
+            })
+            .map(|(state, _)| state.receipt());
+        Pending::ready(result)
+    }
+
+    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        self.ledger.lock().unwrap().get(caller, id).cloned()
+    }
+
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Result<(), ActionHostError> {
+        Ok(())
+    }
+}
+
+fn mutation_call(handle: &str, id: tilo_actions::InvocationId) -> Value {
+    json!({"peer_id": 1, "revision": "v5", "resource": DOC, "action": "select-block",
+        "arguments": {"block": handle}, "invocation_id": id.0.to_string()})
+}
+
+fn assert_failed_mutation(reply: &Value, id: tilo_actions::InvocationId) {
+    assert_eq!(reply["invocation_id"], id.0.to_string(), "{reply}");
+    assert_eq!(reply["update"]["state"], "failed", "{reply}");
+    assert_eq!(reply["update"]["error"]["code"], "write_failed", "{reply}");
+    assert_eq!(
+        reply["update"]["error"]["message"],
+        "mutation applied; completion failed"
+    );
+    assert_eq!(
+        reply["update"]["error"]["details"],
+        json!({"applied": true})
+    );
+    assert!(reply.get("adjusted").is_none(), "{reply}");
+}
+
+#[test]
+fn a_failed_call_with_an_unexpanded_handle_is_not_rerun() {
+    let host = FailingMutationHost::new(false);
+    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    run(async {
+        let page = call(&server, "tilo_query", json!({"peer_id": 1}))
+            .await
+            .unwrap();
+        let handle = resource(&page, "qdoc.rich-text")["resource"]
+            .as_str()
+            .unwrap();
+        assert_ne!(handle, RICH);
+        let id = tilo_actions::InvocationId::new();
+        let arguments = mutation_call(handle, id);
+        let reply = call(&server, "tilo_invoke", arguments.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            host.mutations.lock().unwrap().len(),
+            1,
+            "one admission must apply one mutation"
+        );
+        assert_failed_mutation(&reply, id);
+        let retried = call(&server, "tilo_invoke", arguments).await.unwrap();
+        assert_failed_mutation(&retried, id);
+        let mutations = host.mutations.lock().unwrap();
+        assert_eq!(
+            mutations.len(),
+            1,
+            "same-id retry must retain the original admission"
+        );
+        assert_eq!(mutations[0].invocation, id);
+        assert!(
+            matches!(&mutations[0].argument, InvokeArgument::Json(map) if map["block"] == handle)
+        );
+        drop(mutations);
+    });
+}
+
+#[test]
+fn an_admission_refusal_with_a_text_handle_is_not_an_execution_failure() {
+    let host = FailingMutationHost::new(true);
+    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    run(async {
+        let page = call(&server, "tilo_query", json!({"peer_id": 1}))
+            .await
+            .unwrap();
+        let handle = resource(&page, "qdoc.rich-text")["resource"]
+            .as_str()
+            .unwrap();
+        let refusal = call(
+            &server,
+            "tilo_invoke",
+            mutation_call(handle, tilo_actions::InvocationId::new()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refusal, ActionHostError::NotPermitted.to_string());
+        assert!(host.mutations.lock().unwrap().is_empty());
+    });
+}
+
+#[test]
+fn the_http_bridge_does_not_readmit_a_failed_text_handle_mutation() {
+    use http_body_util::BodyExt;
+    use hyper::{HeaderMap, Method, StatusCode, header::HeaderValue};
+
+    let host = FailingMutationHost::new(false);
+    let endpoint =
+        crate::mcp_http::Endpoint::new(host.clone(), "room".into(), "owner".into(), None, None);
+    run(async {
+        let initialize = json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params": {
+            "protocolVersion":"2025-06-18", "capabilities":{}, "clientInfo":{"name":"handle-test", "version":"1"}}});
+        let opened = endpoint
+            .dispatch(
+                &Method::POST,
+                "/mcp",
+                &HeaderMap::new(),
+                initialize.to_string().as_bytes(),
+            )
+            .await;
+        assert_eq!(opened.status(), StatusCode::OK);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "mcp-session-id",
+            HeaderValue::from_str(opened.headers()["mcp-session-id"].to_str().unwrap()).unwrap(),
+        );
+        let query = json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"tilo_query", "arguments":{"peer_id":1}}});
+        let listed = endpoint
+            .dispatch(
+                &Method::POST,
+                "/mcp",
+                &headers,
+                query.to_string().as_bytes(),
+            )
+            .await;
+        assert_eq!(listed.status(), StatusCode::OK);
+        let bytes = listed.into_body().collect().await.unwrap().to_bytes();
+        let page: Value = serde_json::from_slice(&bytes).unwrap();
+        let handle = resource(&page["result"]["structuredContent"], "qdoc.rich-text")["resource"]
+            .as_str()
+            .unwrap();
+        assert_ne!(handle, RICH);
+        let id = tilo_actions::InvocationId::new();
+        let invoke = json!({"jsonrpc":"2.0", "id":3, "method":"tools/call", "params":{"name":"tilo_invoke", "arguments":mutation_call(handle, id)}});
+        for _ in 0..2 {
+            let response = endpoint
+                .dispatch(
+                    &Method::POST,
+                    "/mcp",
+                    &headers,
+                    invoke.to_string().as_bytes(),
+                )
+                .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let reply: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                host.mutations.lock().unwrap().len(),
+                1,
+                "HTTP must not readmit a failed mutation"
+            );
+            assert_eq!(
+                reply["result"]["isError"], false,
+                "execution failure is a structured update: {reply}"
+            );
+            assert_failed_mutation(&reply["result"]["structuredContent"], id);
+        }
+        let mutations = host.mutations.lock().unwrap();
+        assert_eq!(mutations[0].invocation, id);
+        assert!(
+            matches!(&mutations[0].argument, InvokeArgument::Json(map) if map["block"] == handle)
+        );
+        drop(mutations);
+    });
 }
 
 #[test]

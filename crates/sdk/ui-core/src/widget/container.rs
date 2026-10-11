@@ -538,7 +538,7 @@ impl Widget for Container {
         if self.activation.is_bound() {
             if *ctx.handled {
                 // A control inside took the press; the container stays put.
-                self.activation.state.pressed = false;
+                self.activation.cancel_press();
                 return;
             }
             let target = self.rect.inflate(self.bleed.0, self.bleed.1);

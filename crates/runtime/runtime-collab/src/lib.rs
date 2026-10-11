@@ -4087,9 +4087,7 @@ mod resolved_invocation_tests {
     use super::*;
 
     use capnp::capability::Promise;
-    use capnp_rpc::{RpcSystem, twoparty};
     use std::cell::{Cell, RefCell};
-    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
     #[derive(Debug, PartialEq, Eq)]
     struct Received {
@@ -4161,15 +4159,9 @@ mod resolved_invocation_tests {
             .run_until(async {
                 let (server_io, client_io) = tokio::io::duplex(512);
                 let raw: collab_capnp::channel_handle::Client = capnp_rpc::new_client(server);
-                let (read, write) = tokio::io::split(server_io);
-                let network = twoparty::VatNetwork::new(
-                    read.compat(),
-                    write.compat_write(),
-                    capnp_rpc::rpc_twoparty_capnp::Side::Server,
-                    capnp::message::ReaderOptions::default(),
-                );
-                let task =
-                    tokio::task::spawn_local(RpcSystem::new(Box::new(network), Some(raw.client)));
+                let task = tokio::task::spawn_local(runtime_portal::serve_connected_io(
+                    server_io, raw.client,
+                ));
                 let connection = runtime_portal::CapnpClient::from_connected_io(
                     client_io,
                     capnp_rpc::rpc_twoparty_capnp::Side::Client,
@@ -4703,9 +4695,7 @@ mod reliable_invocation_tests {
     use super::*;
 
     use capnp::capability::Promise;
-    use capnp_rpc::{RpcSystem, twoparty};
     use std::cell::{Cell, RefCell};
-    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
     const HOST: [u8; 16] = [2; 16];
     const ID: [u8; 16] = [1; 16];
@@ -4947,15 +4937,9 @@ mod reliable_invocation_tests {
             .run_until(async {
                 let (server_io, client_io) = tokio::io::duplex(512);
                 let raw: collab_capnp::channel_handle::Client = capnp_rpc::new_client(server);
-                let (read, write) = tokio::io::split(server_io);
-                let network = twoparty::VatNetwork::new(
-                    read.compat(),
-                    write.compat_write(),
-                    capnp_rpc::rpc_twoparty_capnp::Side::Server,
-                    capnp::message::ReaderOptions::default(),
-                );
-                let task =
-                    tokio::task::spawn_local(RpcSystem::new(Box::new(network), Some(raw.client)));
+                let task = tokio::task::spawn_local(runtime_portal::serve_connected_io(
+                    server_io, raw.client,
+                ));
                 let connection = runtime_portal::CapnpClient::from_connected_io(
                     client_io,
                     capnp_rpc::rpc_twoparty_capnp::Side::Client,

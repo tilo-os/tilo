@@ -892,7 +892,7 @@ impl App {
         let component = assembly.component.insert(component);
         let _entry = scope.enter();
         let handle = scope.handle();
-        if let Err(error) = component.mount(move |_| handle.wake()) {
+        if let Err(error) = component.mount(move |event| forward_component_wake(&handle, &event)) {
             return Err(component.setup_error(error));
         }
         let binding = component.callback_binding();
@@ -2291,6 +2291,24 @@ impl App {
     }
 }
 
+/// Hand a component's wake on to the App that runs it, as it was raised: a
+/// model-dirty wake stays one, and an event-queue notification (a directory
+/// request, a reply) stays one, whose consumer decides whether the model
+/// changed. Forwarding every event as model-dirty made the App sync and
+/// invalidate its directory on each, so a directory continuation it had just
+/// issued was gone before it was asked for, and a hosted app's listing never
+/// settled.
+pub(crate) fn forward_component_wake(
+    handle: &crate::wake::WakeHandle,
+    event: &crate::wake::WakeEvent,
+) {
+    if event.requires_sync() {
+        handle.wake();
+    } else {
+        handle.notify_events();
+    }
+}
+
 impl App {
     #[doc(hidden)]
     pub fn state_mut_for_test(&mut self) -> &mut crate::state::State {
@@ -2532,6 +2550,10 @@ impl App {
         // ran against, so without this they draw blank until the next event.
         self.root_widget.sync(&self.state.doc, &self.state.root);
         self.needs_sync = false;
+        // This rebuild's frame presents a durability the sync just took up;
+        // it is not another structure change.
+        let _ =
+            crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
         if self.root_widget.take_structure_dirty() {
             // Fresh sync can replace delegates. Rebuild before any map access.
             self.layout.structure_dirty = true;

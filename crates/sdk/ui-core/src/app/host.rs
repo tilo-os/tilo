@@ -594,7 +594,7 @@ fn run_layout_pass(
         && !app.layout.structure_dirty
         && app.history.is_none()
         && app.history_layout.is_none())
-    .then(|| widget_geometry(app.root_widget.as_ref()));
+    .then(|| crate::pointer_replay::widget_geometry(app.root_widget.as_ref()));
     let mut t_compute_us = 0u128;
     let mut t_apply_us = 0u128;
     let mut current_root = root_node;
@@ -753,21 +753,10 @@ fn run_layout_pass(
     app.publish_action_surface();
     let geometry_changed = recomposed
         || viewport_changed
-        || geometry_before.is_none_or(|before| before != widget_geometry(app.root_widget.as_ref()));
+        || geometry_before.is_none_or(|before| {
+            before != crate::pointer_replay::widget_geometry(app.root_widget.as_ref())
+        });
     Some((geometry_changed, t_compute_us, t_apply_us))
-}
-
-/// Every widget's layout box in tree order. Two snapshots of one unchanged
-/// tree are equal exactly when no widget moved or resized.
-#[cfg(feature = "native")]
-fn widget_geometry(root: &dyn crate::widget::Widget) -> Vec<KurboRect> {
-    fn walk(widget: &dyn crate::widget::Widget, out: &mut Vec<KurboRect>) {
-        out.push(widget.get_rect());
-        widget.for_each_child(&mut |child| walk(child, out));
-    }
-    let mut out = Vec::new();
-    walk(root, &mut out);
-    out
 }
 
 #[cfg(test)]

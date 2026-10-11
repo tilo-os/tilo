@@ -620,7 +620,7 @@ impl InProcessApps {
 /// the broker needs the desktop's chrome to start. A restored tab's one
 /// connection attempt then found no socket and the app stayed offline for
 /// the whole session: nothing it published reached the palette, search or an
-/// agent until the tab was reopened (TIL-759).
+/// agent until the tab was reopened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionServices {
     /// No session in this process binds them (a test, a hosted host): a
@@ -738,7 +738,7 @@ mod tests {
     }
 
     /// A tab the session restores before it binds its services connects
-    /// once they listen, woken by the change (TIL-759).
+    /// once they listen, woken by the change.
     #[test]
     fn a_hosted_tab_restored_before_the_session_binds_its_services_connects_once_they_listen() {
         let directory = tempfile::tempdir().unwrap();

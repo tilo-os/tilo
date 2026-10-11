@@ -26,6 +26,8 @@ use crate::shell::search::{
 
 mod native_identity;
 
+use crate::shell::shared_display_actions;
+
 /// What `record.bring` must be told.
 const RECORD_BRING_PARAMS: &[ActionParam] = &[
     ActionParam::required(
@@ -218,6 +220,7 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "history.compare",
     "history.undo",
     "history.restore",
+    shared_display_actions::INSPECT_ID,
 ];
 
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
@@ -281,7 +284,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | DISPLAY_BUILTIN_ONLY_ID
         | DISPLAY_EXTERNAL_ONLY_ID
         | DISPLAY_KEEP_ID
-        | DISPLAY_REVERT_ID => contract = display_layout_contract(),
+        | DISPLAY_REVERT_ID
+        | shared_display_actions::INCLUDE_ID => contract = display_layout_contract(),
         BLUETOOTH_PAIRING_DECLINE_ID => {
             contract.permission = PermissionRequirement::Write;
             contract.retry = RetryPolicy::AtMostOnce;
@@ -1515,6 +1519,31 @@ impl Action {
                 Ok(())
             },
         ),
+        chrome(
+            shared_display_actions::INSPECT_ID,
+            "search-action-shared-display-inspect",
+            "search-action-shared-display-inspect-subtitle",
+            |_, _| Ok(()),
+        ),
+        Action {
+            id: shared_display_actions::INCLUDE_ID,
+            label: "search-action-shared-display-include",
+            subtitle: "search-action-shared-display-include-subtitle",
+            params: shared_display_actions::INCLUDE_PARAMS,
+            apply: |state, args| {
+                let revision = args
+                    .integer("revision")
+                    .and_then(|value| u64::try_from(value).ok())
+                    .ok_or_else(|| ActionError::Refused(t("display-remote-stale")))?;
+                shared_display_actions::include(
+                    state,
+                    args.text("device").unwrap_or_default(),
+                    args.text("output").unwrap_or_default(),
+                    revision,
+                    args.boolean("included").unwrap_or(false),
+                )
+            },
+        },
         chrome(
             DISPLAY_EXTEND_ID,
             "search-action-display-layout-extend",
@@ -3500,7 +3529,17 @@ impl ActionsProvider {
                     params: action.params.to_vec(),
                     contract: Some(shell_action_contract(action.id)),
                     on_open,
-                    on_invoke: None,
+                    on_invoke: (action.id == shared_display_actions::INSPECT_ID).then(|| {
+                        Rc::new(
+                            |_: &mut ui::widget::Edits<'_>,
+                             _: &automerge::ObjId,
+                             _: &Chrome,
+                             _: &ActionArgs| {
+                                shared_display_actions::inspect()
+                                    .map(crate::shell::search::ActionReceipt::completed_with)
+                            },
+                        ) as Rc<crate::shell::search::InvokeFn>
+                    }),
                     on_begin_invoke,
                 });
             }
@@ -4083,6 +4122,105 @@ mod tests {
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
     use std::sync::Arc;
+
+    #[test]
+    fn shared_display_public_actions_inspect_and_edit_only_the_current_certified_pair() {
+        let _home = shared_display_actions::test_support::publish();
+        let chrome = chrome_with_room();
+        let inspect = invoke_shell_action(
+            &chrome,
+            shared_display_actions::INSPECT_ID,
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        let crate::shell::search::InvocationDisposition::Accepted(receipt) = inspect else {
+            panic!("inspection completes immediately")
+        };
+        let tilo_actions::InvocationUpdate::Succeeded { output, .. } = receipt.update else {
+            panic!("inspection returns current facts")
+        };
+        let value = output.value.unwrap();
+        let outputs = value["outputs"].as_array().unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert!(
+            outputs
+                .iter()
+                .any(|row| row["device"] == "bb02" && row["number"] == 2 && row["revision"] == 0)
+        );
+        assert!(
+            outputs
+                .iter()
+                .any(|row| row["device"] == "cc03" && row["online"] == false)
+        );
+        let before = settings_store::load();
+        let args =
+            serde_json::json!({"device":"bb02","output":"panel","revision":0,"included":false});
+        invoke_shell_action(&chrome, shared_display_actions::INCLUDE_ID, &args).unwrap();
+        let saved = settings_store::person_displays::Arrangement::load();
+        assert!(!saved.entry("bb02", "panel").unwrap().enabled);
+        assert!(
+            saved.entry("aa01", "panel").unwrap().enabled,
+            "same output ID on another device is independent"
+        );
+        assert_eq!(
+            settings_store::load().get("continuity"),
+            before.get("continuity"),
+            "inclusion cannot grant consent or input"
+        );
+        let after = settings_store::load();
+        assert!(
+            invoke_shell_action(&chrome, shared_display_actions::INCLUDE_ID, &args).is_err(),
+            "old arrangement revision must fail"
+        );
+        assert!(invoke_shell_action(&chrome, shared_display_actions::INCLUDE_ID,
+            &serde_json::json!({"device":"bb02","output":"connector-guess","revision":0,"included":true})).is_err());
+        assert!(invoke_shell_action(&chrome, shared_display_actions::INCLUDE_ID,
+            &serde_json::json!({"device":"bb02","output":"panel","revision":0,"included":"true"})).is_err());
+        assert_eq!(settings_store::load(), after);
+    }
+
+    #[test]
+    fn selected_shared_display_action_rechecks_workspace_authority_before_writing() {
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        let _home = shared_display_actions::test_support::publish();
+        let chrome = chrome_with_room();
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(Rc::new(ActionsProvider::new()));
+        let mut document = AutoCommit::new();
+        let resource = ResourceRef::new("actions", shared_display_actions::INCLUDE_ID);
+        let catalogue = ActionCatalog::build_exact(
+            &registry,
+            &resource,
+            crate::shell::search::SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &document,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        let action = catalogue
+            .select(&resource)
+            .expect("published inclusion action");
+        chrome
+            .borrow_mut()
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .unwrap()
+            .set_owner("foreign-owner");
+        assert!(!current_shell_action_authorized(
+            &chrome.borrow(),
+            shared_display_actions::INCLUDE_ID
+        ));
+        let before = settings_store::load();
+        assert!(action.invoke_json(&mut ui::widget::Edits::lend(&mut document), &automerge::ROOT,
+            &chrome, serde_json::json!({"device":"bb02","output":"panel","revision":0,"included":false}).as_object().unwrap()).is_err());
+        assert_eq!(
+            settings_store::load(),
+            before,
+            "revoked authority never saves an arrangement"
+        );
+    }
 
     #[test]
     fn topbar_editor_catalogue_opens_the_native_request_and_hides_in_fullscreen() {

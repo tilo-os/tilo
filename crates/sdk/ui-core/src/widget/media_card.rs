@@ -851,7 +851,7 @@ pub struct MediaCard {
     creator_rect: Rect,
     badges: Vec<OwnedBadge>,
     hover_action: Option<(Icon, String, Box<dyn FnMut()>)>,
-    pressed_action: bool,
+    pressed_action: crate::pointer_replay::HeldPress,
     selected: bool,
     activation: Activation,
     metrics: Option<MediaMetrics>,
@@ -880,7 +880,7 @@ impl MediaCard {
             creator_rect: Rect::ZERO,
             badges: Vec::new(),
             hover_action: None,
-            pressed_action: false,
+            pressed_action: crate::pointer_replay::HeldPress::default(),
             selected: false,
             activation: Activation::new(id),
             metrics: None,
@@ -1173,22 +1173,36 @@ impl Widget for MediaCard {
             && shown
             && let Some(target) = target
         {
+            use crate::pointer_replay::{PressAt, Release};
             let over = target.contains(self.activation.cursor());
+            // The card's id names its hover action across a rebuild.
+            let key = if self.activation.id().is_empty() {
+                String::new()
+            } else {
+                format!("{}/action", self.activation.id())
+            };
+            let at = over.then_some(PressAt::one(&key, target));
             match state {
                 ElementState::Pressed if over => {
-                    self.pressed_action = true;
-                    *ctx.handled = true;
-                    return;
-                }
-                ElementState::Released if self.pressed_action => {
-                    self.pressed_action = false;
-                    *ctx.handled = true;
-                    if over && let Some((_, _, on_activate)) = &mut self.hover_action {
-                        on_activate();
+                    if let Some(at) = at {
+                        self.pressed_action.press(at);
                     }
+                    *ctx.handled = true;
                     return;
                 }
-                _ => {}
+                ElementState::Released => match self.pressed_action.release(at) {
+                    Release::NotHeld => {}
+                    release => {
+                        *ctx.handled = true;
+                        if release == Release::Click(())
+                            && let Some((_, _, on_activate)) = &mut self.hover_action
+                        {
+                            on_activate();
+                        }
+                        return;
+                    }
+                },
+                ElementState::Pressed => {}
             }
         }
         let exclude: Vec<Rect> = target.filter(|_| shown).into_iter().collect();

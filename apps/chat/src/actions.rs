@@ -2658,10 +2658,8 @@ mod tests {
 
     fn post(resource: &Resource, text: &str) -> ChatAction {
         let post = resource.actions.iter().find(|a| a.id == "post").unwrap();
-        let tilo_actions::ActionInput::Prompted { build, .. } = &post.input else {
-            panic!("post is a prompted action");
-        };
-        serde_json::from_slice(&build(text).payload).unwrap()
+        let built = post.build_text(text).expect("post is a prompted action");
+        serde_json::from_slice(&built.payload).unwrap()
     }
 
     #[test]

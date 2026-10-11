@@ -827,6 +827,103 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
     );
 }
 
+/// A component's event-queue notification reaches the App that runs it as
+/// one, not as a model-dirty wake: a directory request answered in the pass
+/// it woke keeps the directory's revision and the continuation it issued.
+#[test]
+fn a_component_queue_notification_reaches_its_app_without_forcing_a_sync() {
+    use crate::application::{
+        ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let mut owners = crate::record::RecordOwners::new(temp.path().into());
+    let records = owners
+        .open("test.directory", "00000000-0000-0000-0000-000000000006")
+        .unwrap();
+    let views = Rc::new(
+        crate::application_view::InstanceViewStore::new(
+            temp.path().into(),
+            "D",
+            "00000000-0000-0000-0000-000000000006",
+        )
+        .unwrap(),
+    );
+    let definition = ApplicationDefinition {
+        app_id: "test.directory",
+        title: "Directory",
+        icon: crate::widget::IconDescriptor::Glyph("D"),
+        record_kind: crate::record::RecordKind::new("directory"),
+        required: vec![],
+        optional: vec![],
+        opens: &[],
+        room_record: false,
+        create: owned_declared_directory_factory,
+    };
+    let context = HostContext::prepare(
+        &definition,
+        HostContextInputs {
+            records,
+            views,
+            device_id: "D".into(),
+            instance_id: 83,
+            permissions: Rc::new(RefCell::new(
+                crate::permissions::PermissionContext::permissive(),
+            )),
+            author: crate::permissions::UserId("fixture-user".into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
+        &LaunchTarget::New,
+    )
+    .unwrap();
+    let component_wake = context.wake_handle();
+    let component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    let binding = component.callback_binding();
+    let inputs = crate::application::ComponentRunnerInputs {
+        theme: Theme::dark(),
+        text_renderer: crate::font_catalog::fixture_renderer(),
+    };
+    let mut app = App::from_component_using(component, inputs, |_, _| {
+        AppConstructionInputs::controlled()
+    })
+    .unwrap();
+    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        route: binding.broker_route().unwrap(),
+        epoch: uuid::Uuid::new_v4(),
+    });
+    app.init_layout();
+    let mut settled = false;
+    for _ in 0..8 {
+        app.collaboration.manager.wait_for_commands_for_test();
+        if app.pump_hosted_model_as(false) == model_lifecycle::HostedPumpReport::default() {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "hosted pump never went idle");
+    let revision = app.action_directory_revision();
+
+    component_wake.notify_events();
+    let report = app.pump_hosted_model_as(false);
+    assert!(
+        !report.synced,
+        "a component's queue notification is not model-dirty"
+    );
+    assert_eq!(
+        app.action_directory_revision(),
+        revision,
+        "a queue notification keeps the directory revision"
+    );
+
+    component_wake.wake();
+    assert!(
+        app.pump_hosted_model_as(false).synced,
+        "a component's model-dirty wake still syncs its App"
+    );
+}
+
 #[test]
 fn hosted_pump_baseline_always_refreshes() {
     let mut fixture = HostedPumpFixture::new(1);

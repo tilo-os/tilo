@@ -246,7 +246,7 @@ pub mod published;
 pub mod reader_hud;
 pub mod record;
 pub mod remote_actions;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod render_thread;
 pub mod reorder;
 pub mod resources;
@@ -529,7 +529,7 @@ pub mod synthetic_input;
 
 pub mod bound_dispatch;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod presentation_feedback;
 
 /// Emission-time local control custody.

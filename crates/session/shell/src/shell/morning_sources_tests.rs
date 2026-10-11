@@ -35,7 +35,8 @@ impl ActionHost for Host {
         } else {
             if query.target.is_none() {
                 assert_eq!(query.provider.as_deref(), Some("synthetic"));
-                assert_eq!(query.needle, "fixture:chosen");
+                assert_eq!(query.parent_resource.as_deref(), Some("fixture:chosen"));
+                assert!(query.needle.is_empty());
                 assert_eq!(query.max_results, 32);
             } else {
                 assert_eq!(
@@ -46,10 +47,17 @@ impl ActionHost for Host {
                     ))
                 );
             }
-            CataloguePage {
-                rows: self.rows.lock().unwrap().clone(),
-                exhausted: true,
-                ..Default::default()
+            let rows = self.rows.lock().unwrap().clone();
+            if query.target.is_none() && rows.len() <= 32 {
+                CataloguePage::from_rows("synthetic-generation".into(), rows, &query)
+            } else {
+                // Exact resolution is independent of browsing. Deliberately
+                // malformed oversized pages exercise the adapter's own bound.
+                CataloguePage {
+                    rows,
+                    exhausted: true,
+                    ..Default::default()
+                }
             }
         };
         Pending::ready(Ok(page))
@@ -97,7 +105,7 @@ fn row() -> CatalogueRow {
     CatalogueRow {
         provider: "synthetic".into(),
         app_id: "so.tilo.fixture".into(),
-        parent_resource: String::new(),
+        parent_resource: "fixture:chosen".into(),
         resource: CatalogueResource {
             id: "fixture:chosen".into(),
             kind: "fixture".into(),
@@ -142,6 +150,24 @@ fn fixture() -> (NativeMorningSources, Arc<Host>, MorningSource) {
         },
     )
 }
+#[test]
+fn morning_payload_loads_the_chosen_resources_production_parent_scoped_action_page() {
+    let (native, host, source) = fixture();
+    assert!(native.payload(&host.room, &source).is_none());
+    let loaded = native.payload(&host.room, &source);
+    assert!(
+        loaded.is_some(),
+        "the chosen resource's published action page must provide its preview"
+    );
+    assert!(
+        loaded
+            .unwrap()
+            .text()
+            .contains("Two project goals complete")
+    );
+    assert!(host.commands.lock().unwrap().is_empty());
+}
+
 #[test]
 fn morning_payload_queries_only_explicit_choice_and_loses_revoked_or_foreign_evidence() {
     let (native, host, source) = fixture();

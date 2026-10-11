@@ -567,6 +567,11 @@ pub struct BlockEditor {
     painted_blocks: usize,
     dirty: bool,
     paint_damage: crate::widget::paint_damage::PaintDamage,
+    /// Where each line this draw painted past its own rect (a correction
+    /// chip floats above or below its field), by block id.
+    line_overhang: HashMap<String, Rect>,
+    /// [`Self::line_overhang`] as the last drawn frame painted it.
+    drawn_overhang: HashMap<String, Rect>,
     /// Which blocks the person may have changed since the owning model last
     /// asked ([`Self::take_edit_scope`]).
     edit_scope: EditScope,
@@ -777,6 +782,8 @@ impl BlockEditor {
             painted_blocks: 0,
             dirty: true,
             paint_damage: crate::widget::paint_damage::PaintDamage::default(),
+            line_overhang: HashMap::new(),
+            drawn_overhang: HashMap::new(),
             structure_dirty: true,
             edit_pending: false,
             edit_scope: EditScope::Anywhere,
@@ -1241,6 +1248,14 @@ impl BlockEditor {
             rect = rect.union(*preview);
         }
         Some(rect)
+    }
+
+    /// Everything the last draw painted: the editor's rect and what its
+    /// lines painted past it.
+    fn paint_extent(&self) -> Rect {
+        self.line_overhang
+            .values()
+            .fold(self.rect, |extent, painted| extent.union(*painted))
     }
 
     /// For tests + notes-app persistence to seed blocks directly;
@@ -6629,6 +6644,14 @@ fn draw_block(
     );
 }
 
+/// Whether a block of `kind` paints only within its own row of the editor,
+/// so a change to it can be damaged as that row: everything but code, whose
+/// run shares one ground (and one header) across its blocks, and tables,
+/// whose cell editors and controls are widgets of their own.
+fn paints_within_its_row(kind: &BlockKind) -> bool {
+    !matches!(kind, BlockKind::CodeBlock { .. } | BlockKind::Table { .. })
+}
+
 fn transclusion_target(block: &Block) -> Option<PageId> {
     let text_len = block.text().len();
     block.line.marks().iter().find_map(|span| match &span.mark {
@@ -7774,10 +7797,11 @@ impl Widget for BlockEditor {
             && self.document_selection.is_none()
             && self.retained_block_selection.is_none()
             && self.blocks.iter().all(|block| {
-                matches!(block.kind, BlockKind::Paragraph) && block.line.selection_range().is_none()
+                paints_within_its_row(&block.kind) && block.line.selection_range().is_none()
             });
         let mut paragraph_parts = Vec::new();
         let mut paragraph_scene = Scene::new();
+        self.line_overhang.clear();
         let unit;
         let theme = if self.content_sized {
             unit = theme.at_unit_text_scale();
@@ -7986,6 +8010,9 @@ impl Widget for BlockEditor {
                 draw_block(b, idx, &mut ctx, &mut formulas);
             }
             b.line.inner_mut().suppress_caret_paint(false);
+            if let Some(overhang) = b.line.overhang() {
+                self.line_overhang.insert(b.id.clone(), overhang);
+            }
             if matches!(b.kind, BlockKind::Table { visual: true })
                 && let Some(Some(rect)) = self.table_preview_rects.get(idx)
             {
@@ -8078,11 +8105,23 @@ impl Widget for BlockEditor {
                 let drawn = std::mem::take(ctx.scene);
                 paragraph_scene.append(&drawn, None);
                 let rect = b.line.get_rect();
+                // A paragraph paints in its line; a heading, quote, list item
+                // or rule also in its prefix gutter, so it damages its row of
+                // the editor. Then its correction chip where it is and was.
+                let row = match (&b.kind, paint_rects.get(idx).copied().flatten()) {
+                    (BlockKind::Paragraph, _) | (_, None) => rect,
+                    (_, Some(painted)) => {
+                        Rect::new(self.rect.x0, painted.y0, self.rect.x1, painted.y1).union(rect)
+                    }
+                };
+                let mut damage = vec![row];
+                damage.extend(self.line_overhang.get(&b.id).copied());
+                damage.extend(self.drawn_overhang.get(&b.id).copied());
                 paragraph_parts.push(crate::widget::paint_damage::PaintPart::new(
                     b.id.clone(),
                     rect,
                     drawn,
-                    vec![rect],
+                    damage,
                 ));
             }
             if let Some(preceding) = preceding {
@@ -8327,7 +8366,7 @@ impl Widget for BlockEditor {
             complete.append(&suffix, None);
             *scene = complete;
             self.paint_damage.record(
-                self.rect,
+                self.paint_extent(),
                 Some(crate::widget::paint_damage::PaintFrame::new(
                     vec![self.rect, presence.viewport.get().unwrap_or(self.rect)],
                     transform,
@@ -8337,7 +8376,7 @@ impl Widget for BlockEditor {
                 )),
             );
         } else {
-            self.paint_damage.record(self.rect, None);
+            self.paint_damage.record(self.paint_extent(), None);
         }
         let own = std::mem::replace(scene, incoming);
         scene.append(&own, None);
@@ -9502,7 +9541,7 @@ impl Widget for BlockEditor {
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if self.needs_redraw() || self.paint_damage.is_recorded() {
-            self.paint_damage.collect(self.rect, regions);
+            self.paint_damage.collect(self.paint_extent(), regions);
         }
     }
 
@@ -9515,6 +9554,9 @@ impl Widget for BlockEditor {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        if self.paint_damage.is_recorded() {
+            self.drawn_overhang.clone_from(&self.line_overhang);
+        }
         self.paint_damage.mark_drawn();
     }
 

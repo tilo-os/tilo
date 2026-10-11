@@ -199,8 +199,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         std::process::exit(i32::from(code));
     }
+    if let Some(code) = tilo_agent_participant::worker::dispatch_early() {
+        std::process::exit(i32::from(code));
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--journey")) {
         let status = std::process::Command::new("python3")
+            .arg("-B")
             .arg("scripts/headless-examples/native-pair-journey.py")
             .args(std::env::args_os().skip(2))
             .status()?;

@@ -408,7 +408,7 @@ fn new_id(kind: &str) -> String {
 mod tests {
     use super::*;
     use crate::resource::Calculator;
-    use tilo_actions::{ActionInput, LocalTransport, Resource};
+    use tilo_actions::{LocalTransport, Resource};
     use ui::automerge::AutoCommit;
     use ui::tilo_resource::Resource as _;
 
@@ -701,11 +701,11 @@ mod tests {
             .iter()
             .find(|a| a.id == "add-function")
             .unwrap();
-        let ActionInput::Prompted { build, .. } = &add.input else {
-            panic!("add-function asks for its formula");
-        };
+        let built = add
+            .build_text("x^2")
+            .expect("add-function asks for its formula");
         let decoded: CalculatorAction =
-            serde_json::from_slice(&build("x^2").payload).expect("decode canonical action");
+            serde_json::from_slice(&built.payload).expect("decode canonical action");
         assert!(
             matches!(decoded, CalculatorAction::AddGraph { kind: GraphKind::Curve2d, expr, .. } if expr == "x^2"),
             "add-function uses the canonical AddGraph action with a fresh stable id"
