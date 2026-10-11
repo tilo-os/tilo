@@ -5408,3 +5408,395 @@ mod task_review_tests {
         assert!(host.submitted.borrow().is_empty());
     }
 }
+
+#[cfg(test)]
+mod morning_source_tests {
+    use super::*;
+    use crate::activity::ActivityHost;
+    use crate::activity::testing::TestTree;
+    use automerge::transaction::CommitOptions;
+
+    fn fixture() -> (TestTree, RoomActivityPane) {
+        let mut tree = TestTree::bootstrap_default();
+        let context = tilo_actions::ActionContext::for_resource(
+            "Update selected forecast",
+            "weather.location:fixture",
+            "location",
+            "Chosen location",
+        )
+        .with_app("so.tilo.weather", "Weather");
+        tree.doc
+            .put(automerge::ROOT, "name", "Morning review")
+            .unwrap();
+        tree.doc.commit_with(
+            CommitOptions::default()
+                .with_time(1_800_000_000)
+                .with_message(context.change_message().unwrap()),
+        );
+        let mut pane = RoomActivityPane::new();
+        pane.set_host(Rc::new(crate::activity::testing::TestHost::default()));
+        pane.refresh(&mut tree);
+        let index = pane
+            .timeline
+            .entries()
+            .iter()
+            .position(|entry| {
+                entry
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.resource.as_ref())
+                    .is_some_and(|resource| resource.id == "weather.location:fixture")
+            })
+            .unwrap();
+        pane.timeline.set_selection(Some((index, index)));
+        (tree, pane)
+    }
+
+    // Compatible with the old public pane API: fails before implementation
+    // because the real causal resource selection has no morning-choice action.
+    #[test]
+    fn morning_source_choice_is_a_semantic_action_on_real_resource_history() {
+        let (mut tree, mut pane) = fixture();
+        assert!(
+            pane.selection_history_actions()
+                .iter()
+                .any(|(id, _)| *id == "room.activity.morning.toggle")
+        );
+        let heads = tree.doc.get_heads();
+        assert!(
+            pane.apply_selection_history_action("room.activity.morning.toggle", &mut tree, None)
+                .handled
+        );
+        assert_eq!(
+            tree.doc.get_heads(),
+            heads,
+            "source selection grants nothing and changes no shared document"
+        );
+    }
+
+    #[derive(Default)]
+    struct Host(RefCell<HashMap<u64, MorningPreferences>>);
+    impl ActivityHost for Host {
+        fn all_workspaces_available(&self) -> bool {
+            true
+        }
+        fn morning_sources_available(&self) -> bool {
+            true
+        }
+        fn load_morning_sources(&self) -> HashMap<u64, MorningPreferences> {
+            self.0.borrow().clone()
+        }
+        fn save_morning_sources(&self, value: &HashMap<u64, MorningPreferences>) {
+            *self.0.borrow_mut() = value.clone();
+        }
+    }
+    #[test]
+    fn morning_sources_survive_restart_without_crossing_rooms_or_acknowledging_work() {
+        let (mut tree, mut pane) = fixture();
+        let host = Rc::new(Host::default());
+        pane.set_host(host.clone());
+        assert!(pane.chosen_morning_sources().is_empty());
+        let before = pane.seen_frontiers.clone();
+        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        assert_eq!(pane.chosen_morning_sources().len(), 1);
+        assert_eq!(pane.seen_frontiers, before);
+        let key = pane.chosen_morning_sources()[0].key();
+        let room = tree.workspaces[0].room;
+        let mut restarted = RoomActivityPane::new();
+        restarted.set_host(host.clone());
+        restarted.load_frontiers();
+        restarted.refresh(&mut tree);
+        assert_eq!(restarted.chosen_morning_sources().len(), 1);
+        let outcome = restarted.apply_selection_history_action(
+            &format!("{MORNING_OPEN}{room}.{key}"),
+            &mut tree,
+            None,
+        );
+        assert_eq!(outcome.open_target.unwrap().id, "weather.location:fixture");
+        tree.workspaces[0].room = tilo_desktop_model::RoomId::new();
+        restarted.refresh(&mut tree);
+        assert!(
+            restarted.chosen_morning_sources().is_empty(),
+            "even the same workspace id cannot borrow another room's choices"
+        );
+        restarted.apply_selection_history_action(
+            &format!("{MORNING_SOURCE}.{room}"),
+            &mut tree,
+            None,
+        );
+        assert!(
+            restarted.chosen_morning_sources().is_empty(),
+            "a queued source choice cannot cross the originating room"
+        );
+        assert!(
+            restarted
+                .apply_selection_history_action(
+                    &format!("{MORNING_OPEN}{room}.{key}"),
+                    &mut tree,
+                    None
+                )
+                .open_target
+                .is_none()
+        );
+        tree.workspaces[0].room = room;
+        restarted.refresh(&mut tree);
+        assert_eq!(restarted.chosen_morning_sources().len(), 1);
+        restarted.set_scope(RoomScope::AllWorkspaces, &tree);
+        assert!(
+            restarted
+                .apply_selection_history_action(
+                    &format!("{MORNING_OPEN}{room}.{key}"),
+                    &mut tree,
+                    None
+                )
+                .open_target
+                .is_none()
+        );
+        restarted.set_scope(RoomScope::ThisRoom, &tree);
+        restarted.timeline.set_entries(Vec::new());
+        assert!(
+            restarted.morning_target(&key).is_none(),
+            "missing or revoked resource evidence is unavailable, never fabricated"
+        );
+        restarted.apply_selection_history_action(
+            &format!("{MORNING_REMOVE}{room}.{key}"),
+            &mut tree,
+            None,
+        );
+        assert!(restarted.chosen_morning_sources().is_empty());
+        assert!(host.0.borrow()[&tree.active.raw()].sources.is_empty());
+    }
+    #[test]
+    fn morning_source_choices_are_bounded_and_noisy_activity_preserves_focus() {
+        let (mut tree, mut pane) = fixture();
+        for index in 0..200_u64 {
+            tree.doc
+                .put(automerge::ROOT, "name", format!("Update {index}"))
+                .unwrap();
+            let context = tilo_actions::ActionContext::for_resource(
+                "Update",
+                "weather.location:fixture",
+                "location",
+                "Chosen location",
+            )
+            .with_app("so.tilo.weather", "Weather");
+            tree.doc.commit_with(
+                CommitOptions::default()
+                    .with_time(1_800_000_010 + i64::try_from(index).unwrap())
+                    .with_message(context.change_message().unwrap()),
+            );
+        }
+        pane.refresh(&mut tree);
+        assert!(
+            pane.chosen_morning_sources().is_empty(),
+            "even repeated activity never opts a user into a source"
+        );
+        let target = pane
+            .timeline
+            .entries()
+            .iter()
+            .position(|entry| {
+                entry
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.resource.as_ref())
+                    .is_some_and(|resource| resource.id == "weather.location:fixture")
+            })
+            .unwrap();
+        pane.timeline.set_selection(Some((target, target)));
+        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        let key = pane.chosen_morning_sources()[0].key();
+        assert_eq!(
+            pane.morning_evidence(&key).unwrap().1,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_209)
+        );
+        pane.keyboard_focus = Some(ActivityFocus::Morning(key.clone(), false));
+        pane.refresh(&mut tree);
+        assert_eq!(
+            pane.chosen_morning_sources().len(),
+            1,
+            "repeated updates group into one chosen source"
+        );
+        assert_eq!(
+            pane.keyboard_focus,
+            Some(ActivityFocus::Morning(key, false))
+        );
+        for index in 1..=8 {
+            let id = format!("weather.location:fixture-{index}");
+            let context =
+                tilo_actions::ActionContext::for_resource("Select location", &id, "location", &id)
+                    .with_app("so.tilo.weather", "Weather");
+            tree.doc.put(automerge::ROOT, "name", &id).unwrap();
+            tree.doc.commit_with(
+                CommitOptions::default()
+                    .with_time(1_800_001_000 + index)
+                    .with_message(context.change_message().unwrap()),
+            );
+            pane.refresh(&mut tree);
+            let selected = pane
+                .timeline
+                .entries()
+                .iter()
+                .position(|entry| {
+                    entry
+                        .context
+                        .as_ref()
+                        .and_then(|context| context.resource.as_ref())
+                        .is_some_and(|resource| resource.id == id)
+                })
+                .unwrap();
+            pane.timeline.set_selection(Some((selected, selected)));
+            if index == 8 {
+                assert!(
+                    !pane
+                        .selection_history_actions()
+                        .iter()
+                        .any(|(id, _)| *id == MORNING_SOURCE)
+                );
+            }
+            pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        }
+        assert_eq!(pane.chosen_morning_sources().len(), 8);
+    }
+
+    #[test]
+    fn morning_source_long_resource_names_keep_freshness_and_navigation_visible() {
+        let (mut tree, mut pane) = fixture();
+        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        let key = pane.chosen_morning_sources()[0].key();
+        let title = "A very long authorized resource name ".repeat(100);
+        let context = tilo_actions::ActionContext::for_resource(
+            "Update",
+            "weather.location:fixture",
+            "location",
+            title,
+        )
+        .with_app("so.tilo.weather", "Weather");
+        tree.doc
+            .put(automerge::ROOT, "name", "Long resource label")
+            .unwrap();
+        tree.doc.commit_with(
+            CommitOptions::default()
+                .with_time(1_800_000_300)
+                .with_message(context.change_message().unwrap()),
+        );
+        pane.refresh(&mut tree);
+        pane.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_600));
+        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 900.0));
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        pane.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let focus = ActivityFocus::Morning(key, false);
+        assert!(
+            pane.focus_order().contains(&focus),
+            "long names must not push the source controls outside the viewport"
+        );
+        let accessible = pane.access_control(&focus).unwrap();
+        assert!(accessible.description.contains("5 min ago"));
+        assert!(
+            accessible
+                .description
+                .contains("external freshness unknown")
+        );
+    }
+
+    #[test]
+    fn morning_source_native_render_and_keyboard_matrix() {
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/morning-source-renders");
+        std::fs::create_dir_all(&output).unwrap();
+        for (name, theme) in [
+            ("light", Theme::light()),
+            ("dark", Theme::dark()),
+            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
+        ] {
+            for (size, width, height) in [("normal", 1600, 1000), ("compact", 640, 900)] {
+                let (mut tree, mut pane) = fixture();
+                pane.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_300));
+                pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+                let key = pane.chosen_morning_sources()[0].key();
+                pane.set_view(ActivityView::CatchUp);
+                pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                text.set_text_scale(theme.text_scale);
+                pane.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                let focus = ActivityFocus::Morning(key.clone(), false);
+                assert!(
+                    pane.focus_order().contains(&focus),
+                    "chosen source must remain reachable at {name}/{size}"
+                );
+                let rectangle = pane.rect_for_focus(&focus).unwrap();
+                assert!(rectangle.y1 <= f64::from(height));
+                let accessible = pane.access_control(&focus).unwrap();
+                assert!(accessible.description.contains("Weather"));
+                assert!(accessible.description.contains("5 min ago"));
+                assert!(
+                    accessible
+                        .description
+                        .contains("external freshness unknown")
+                );
+                pane.keyboard_focus = Some(focus.clone());
+                let outcome = pane.activate_focus(&mut tree, None);
+                assert_eq!(outcome.open_target.unwrap().id, "weather.location:fixture");
+                assert_eq!(
+                    pane.keyboard_focus,
+                    Some(focus),
+                    "opening must preserve logical focus"
+                );
+                let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
+                renderer.render_png(
+                    &scene,
+                    theme.tokens.colors.surfaces.content,
+                    output.join(format!("{name}-{size}.png")),
+                );
+                pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+                pane.set_view(ActivityView::Explore);
+                pane.explorer_pane = ExplorerPane::Details;
+                let mut scene = Scene::new();
+                pane.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                assert!(
+                    pane.focus_order()
+                        .contains(&ActivityFocus::Detail(DetailAction::MorningSource)),
+                    "the source choice must be a keyboard control at {name}/{size}"
+                );
+                for (_, rect) in &pane.detail_action_rects {
+                    assert!(
+                        rect.height()
+                            >= ui::widget::ButtonFace::height(
+                                ui::widget::ControlSize::Regular,
+                                &theme
+                            ),
+                        "source/history controls must use the shared minimum height at {name}/{size}"
+                    );
+                    assert!(rect.y1 <= f64::from(height));
+                }
+                renderer.render_png(
+                    &scene,
+                    theme.tokens.colors.surfaces.content,
+                    output.join(format!("{name}-{size}-choose.png")),
+                );
+            }
+        }
+    }
+}

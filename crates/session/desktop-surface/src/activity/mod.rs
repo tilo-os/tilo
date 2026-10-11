@@ -12,6 +12,7 @@ use tilo_desktop_model::{
 };
 
 pub mod index;
+pub mod morning;
 pub mod view_actions;
 pub use view_actions::WorkspaceViewRequest;
 mod pane;
@@ -147,6 +148,13 @@ pub trait ActivityHost {
     fn local_author(&self, _authors: &mut ui::AuthorDirectory, _actor: &str) -> Option<String> {
         None
     }
+    fn morning_sources_available(&self) -> bool {
+        false
+    }
+    fn load_morning_sources(&self) -> HashMap<u64, morning::MorningPreferences> {
+        HashMap::new()
+    }
+    fn save_morning_sources(&self, _sources: &HashMap<u64, morning::MorningPreferences>) {}
     fn load_frontiers(&self) -> HashMap<u64, WorkspaceSeenFrontier> {
         HashMap::new()
     }

@@ -214,6 +214,7 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "room.activity.tasks",
     "tab.menu",
     "tab.drag.cancel",
+    "room.activity.morning.toggle",
     "history.compare",
     "history.undo",
     "history.restore",
@@ -3538,7 +3539,54 @@ impl ActionsProvider {
                 on_begin_invoke: None,
             });
         }
+        let morning = ctx.chrome.tree().active_workspace().map(|workspace| {
+            (
+                workspace.id,
+                workspace.room,
+                crate::shell::room_activity::morning_source_actions(workspace),
+            )
+        });
+        if let Some((workspace, room, actions)) = morning {
+            for (id, label) in actions {
+                let subtitle = t("activity-morning-description");
+                candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), &id);
+                let request = id.clone();
+                out.push(SearchResult {
+                    kind: ResourceKind::Action,
+                    operation_kind: tilo_actions::OperationKind::View,
+                    provider_id: self.id().into(),
+                    id,
+                    title: label,
+                    subtitle: Some(subtitle),
+                    badge: None,
+                    score: 0,
+                    params: vec![],
+                    contract: Some(tilo_actions::ActionContract::view()),
+                    on_open: Rc::new(move |_, _, chrome, _| {
+                        let mut state = chrome.borrow_mut();
+                        if !state
+                            .tree()
+                            .active_workspace()
+                            .is_some_and(|active| active.id == workspace && active.room == room)
+                        {
+                            return Err(ActionError::Refused("Workspace changed".into()));
+                        }
+                        state
+                            .request_history_selection_action(&request)
+                            .map_err(ActionError::Refused)
+                    }),
+                    on_invoke: None,
+                    on_begin_invoke: None,
+                });
+            }
+        }
         for (id, label_key, subtitle_key, keywords_key) in [
+            (
+                tilo_desktop::activity::morning::MORNING_SOURCE,
+                "activity-morning-choose",
+                "activity-morning-description",
+                "activity-morning-choose",
+            ),
             (
                 tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE,
                 "search-action-activity-acknowledge",

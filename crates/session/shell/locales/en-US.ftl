@@ -2578,3 +2578,11 @@ device-fabric-error-input-decline-save-failed = Input control was revoked, but t
 device-fabric-error-input-sequence-exhausted = Input sequencing is exhausted. Request a new control lease.
 
 device-fabric-error-input-cleanup-pending = Previous input is still being released. Try again.
+
+activity-morning-choose = Choose for morning
+activity-morning-remove = Remove morning source
+activity-morning-empty = Morning sources: choose a resource in Explore → Details. Up to eight sources; no sources connected automatically.
+activity-morning-description = Chosen morning sources · links to existing workspace resources. No external refresh is performed.
+activity-morning-unavailable = Source unavailable in this workspace · no current evidence
+activity-morning-source = { $source } · last recorded workspace activity: { $time } · external freshness unknown
+activity-morning-open = Open morning source

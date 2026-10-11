@@ -176,6 +176,24 @@ Use the returned provider, ID, contract and parameter schema with `actions invok
 A programmatic page read may carry Write authority; the generic `read` convenience
 command is limited to declared read-only operations.
 
+Workspace Activity's morning sources use the same `actions` provider. In
+**Activity → Explore → Details**, select an existing workspace resource and
+invoke `room.activity.morning.toggle` (the **Choose for morning** / **Remove
+morning source** control). The choice is private to this device and room, with
+up to eight resources. Selecting it does not grant access, refresh a provider,
+connect an account or acknowledge activity.
+
+**Activity → Catch up** shows these choices with their latest admitted resource
+history and last recorded activity time. External freshness remains unknown:
+these links do not claim to contain a fresh forecast, news report or market quote.
+Open/remove actions are enumerated for the current room as
+`room.activity.morning.open.<room>.<key>` and
+`room.activity.morning.remove.<room>.<key>`; use the returned IDs rather than
+constructing keys. Queued actions remain bound to that room. Opening uses the
+existing history resource launcher (file/URI targets where available, otherwise
+the owning app), with its ordinary workspace permission checks. Missing evidence
+is shown as unavailable and can still be removed.
+
 The providers on a stock build are `actions` (the shell's own chrome),
 `applications`, `host-applications`, `notes`, `files`, `records` and `editor`.
 

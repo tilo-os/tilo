@@ -1071,3 +1071,12 @@ activity-task-run-executing = Agent bearbeitet diesen Lauf · letzter Bericht { 
 
 topbar-cpu-reading = CPU { $value }
 topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, Temperatur { $temperature }
+
+activity-morning-choose = Für den Morgen auswählen
+activity-morning-remove = Morgenquelle entfernen
+activity-morning-empty = Morgenquellen: Ressource unter Erkunden → Details auswählen. Bis zu acht Quellen; keine automatische Verbindung.
+activity-morning-description = Ausgewählte Morgenquellen · bestehende Ressourcen dieses Arbeitsbereichs. Keine externe Aktualisierung.
+activity-morning-unavailable = Quelle in diesem Arbeitsbereich nicht verfügbar · keine aktuellen Nachweise
+activity-morning-source = { $source } · letzte aufgezeichnete Aktivität: { $time } · externe Aktualität unbekannt
+
+activity-morning-open = Morgenquelle öffnen

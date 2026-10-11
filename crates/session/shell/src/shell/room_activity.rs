@@ -504,6 +504,43 @@ impl HistoryBatch {
     }
 }
 
+/// Palette actions use only this device's explicit choices for the active room.
+pub(crate) fn morning_source_actions(workspace: &Workspace) -> Vec<(String, String)> {
+    use crate::shell::i18n::t;
+    use tilo_desktop::activity::morning::{MORNING_OPEN, MORNING_REMOVE, MorningPreferences};
+    let choices: HashMap<u64, MorningPreferences> = load_history_map("morning_sources");
+    choices
+        .get(&workspace.id.raw())
+        .map_or_else(Vec::new, |preferences| {
+            preferences
+                .for_room(&workspace.room.to_string())
+                .iter()
+                .flat_map(|source| {
+                    let app = crate::shell::launcher::display_name_for_app_id(&source.app)
+                        .unwrap_or_else(|| source.app.clone());
+                    [
+                        (
+                            format!("{MORNING_OPEN}{}.{}", workspace.room, source.key()),
+                            format!(
+                                "{}: {app} · {}",
+                                t("activity-morning-open"),
+                                source.resource
+                            ),
+                        ),
+                        (
+                            format!("{MORNING_REMOVE}{}.{}", workspace.room, source.key()),
+                            format!(
+                                "{}: {app} · {}",
+                                t("activity-morning-remove"),
+                                source.resource
+                            ),
+                        ),
+                    ]
+                })
+                .collect()
+        })
+}
+
 impl ActivityHost for NativeActivityHost {
     fn task_review_required(&self, room: &str) -> bool {
         self.review
@@ -544,6 +581,17 @@ impl ActivityHost for NativeActivityHost {
             let user = self.local_user();
             (!user.is_empty()).then_some(user)
         }
+    }
+    fn load_morning_sources(
+        &self,
+    ) -> HashMap<u64, tilo_desktop::activity::morning::MorningPreferences> {
+        load_history_map("morning_sources")
+    }
+    fn save_morning_sources(
+        &self,
+        sources: &HashMap<u64, tilo_desktop::activity::morning::MorningPreferences>,
+    ) {
+        save_history_map("morning_sources", sources);
     }
     fn load_frontiers(&self) -> HashMap<u64, WorkspaceSeenFrontier> {
         load_history_map("seen_frontiers")
@@ -1209,6 +1257,48 @@ mod tests {
     /// Leaving a workspace rewrites the history file and nothing else: a
     /// write to `settings.json` would make every settings reader re-apply
     /// its preferences on each workspace switch.
+    #[test]
+    fn morning_sources_private_persistence_preserves_review_boundaries_and_room_identity() {
+        use std::os::unix::fs::PermissionsExt;
+        use tilo_desktop::activity::morning::{MorningPreferences, MorningSource};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("activity-history.json");
+        let frontier = HashMap::from([(4, WorkspaceSeenFrontier::default())]);
+        save_history_map_at(&path, "seen_frontiers", &frontier).unwrap();
+        let room = uuid::Uuid::new_v4().to_string();
+        let source = MorningSource {
+            app: "so.tilo.weather".into(),
+            resource: "weather.location:fixture".into(),
+        };
+        let preferences = HashMap::from([(
+            4,
+            MorningPreferences {
+                room: room.clone(),
+                sources: vec![source.clone()],
+            },
+        )]);
+        save_history_map_at(&path, "morning_sources", &preferences).unwrap();
+        let reloaded: HashMap<u64, MorningPreferences> =
+            load_history_map_at(Some(&path), "morning_sources");
+        assert_eq!(reloaded[&4].for_room(&room), &[source]);
+        assert!(
+            reloaded[&4]
+                .for_room(&uuid::Uuid::new_v4().to_string())
+                .is_empty()
+        );
+        let observed: HashMap<u64, WorkspaceSeenFrontier> =
+            load_history_map_at(Some(&path), "seen_frontiers");
+        assert_eq!(observed, frontier);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
     #[test]
     fn workspace_history_keeps_both_maps_in_its_own_private_file() {
         use std::os::unix::fs::PermissionsExt as _;

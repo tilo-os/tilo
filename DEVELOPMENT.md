@@ -39,6 +39,11 @@ needed architecture list), or for an image-changing pull request labelled
 `os-image` (`os-arm64` also requests both architectures), fully cached. Ordinary
 pushes and unlabelled PRs keep the native slots available for required package
 checks; scheduled and tagged releases retain their existing verification.
+PR dev images and x86 main dev images share one non-cancelling queue, so only
+one of these image workflows can occupy x86 native capacity at a time. This
+also queues an ARM-only request through the PR wrapper; the dedicated ARM main
+wrapper retains its independent queue. Existing requests finish before the
+next image starts.
 Architecture-specific main dispatches build the newest main commit only. It publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
 the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`);
 main also moves `tilo-vm:main-ci` to its newest dev images.
