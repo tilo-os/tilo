@@ -477,13 +477,6 @@ impl ResourceRoot {
         RootWidget::new(Box::new(self))
     }
 
-    /// The ids of the effects and of the named views the root publishes.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn published_ids(&self) -> (Vec<String>, Vec<String>) {
-        let effects = self.typed.effect_specs().into_iter().map(|spec| spec.id);
-        (effects.collect(), self.typed.view_ids())
-    }
-
     /// The handles of the root that name its resource type, when it is `R`.
     pub(crate) fn typed<R: Resource>(&self) -> Option<&Typed<R>> {
         self.typed.as_any().downcast_ref::<Typed<R>>()

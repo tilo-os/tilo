@@ -178,10 +178,6 @@ pub(crate) trait TypedRoot {
     /// The specs of the effects the views registered.
     fn effect_specs(&self) -> Vec<tilo_actions::ActionSpec>;
 
-    /// The ids of the named views of the live state ([`Resource::views`]).
-    #[cfg(not(target_arch = "wasm32"))]
-    fn view_ids(&self) -> Vec<String>;
-
     /// The operation types of the effects the views registered.
     fn effect_operations(&self) -> Vec<&'static str>;
 
@@ -424,14 +420,6 @@ impl<R: Resource> TypedRoot for Typed<R> {
 
     fn effect_specs(&self) -> Vec<tilo_actions::ActionSpec> {
         self.effects.specs()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn view_ids(&self) -> Vec<String> {
-        R::views(&self.live.get())
-            .into_iter()
-            .map(|view| view.id)
-            .collect()
     }
 
     fn effect_operations(&self) -> Vec<&'static str> {

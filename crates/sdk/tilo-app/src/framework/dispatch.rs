@@ -793,12 +793,6 @@ impl<R: Resource> Dispatcher<R> {
         self.core.landed.clone()
     }
 
-    /// Record that the door refused `action`, submitted here.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn refuse(&self, action: &str, reason: String) {
-        self.core.refuse(action, reason);
-    }
-
     /// Why `action` may not be applied by this participant.
     fn not_allowed(&self, action: &R::Action) -> ActionError {
         ActionError::Refused(self.core.not_allowed(&(self.permission_of)(action)))
@@ -1182,19 +1176,8 @@ impl<R: Resource> Dispatcher<R> {
         self.last.borrow_mut().take();
     }
 
-    /// The next queued invocation, with the effect invocation it continues.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_attributed(&self) -> Option<AttributedControlInvocation> {
-        self.core.queue.borrow_mut().pop_front()
-    }
-
     pub(crate) fn name_resource(&self, label: &str) {
         self.core.resource_label.set(label.to_owned());
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn resource_id(&self) -> &str {
-        &self.core.resource_id
     }
 
     /// The id of the app whose resource this is, which presence keys name

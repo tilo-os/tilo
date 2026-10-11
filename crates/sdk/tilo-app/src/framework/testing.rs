@@ -1448,8 +1448,8 @@ pub fn resolve<R: Resource>(
     doc: &mut tilo_resource::Doc,
 ) -> Result<Vec<Vec<R::Action>>, String> {
     let mut applied = Vec::new();
-    while let Some((invocation, _)) = dispatcher.take_attributed() {
-        if invocation.address.resource != dispatcher.resource_id() {
+    while let Some((invocation, _)) = dispatcher.core().take_attributed() {
+        if invocation.address.resource != dispatcher.core().resource_id() {
             return Err(format!(
                 "`{}` on `{}` is not an action of {}",
                 invocation.address.action,
@@ -1477,7 +1477,7 @@ pub fn resolve<R: Resource>(
             }
         }
         match refused {
-            Some(reason) => dispatcher.refuse(&invocation.address.action, reason),
+            Some(reason) => dispatcher.core().refuse(&invocation.address.action, reason),
             None => applied.push(actions),
         }
     }
@@ -1734,17 +1734,25 @@ pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
     report_surface(
         &Opening::of::<A>(),
         <A::Resource as Resource>::surface(),
-        &published_ids,
+        &published_ids::<A>,
     )
 }
 
 /// The ids of the effects and of the named views a built view publishes.
 type PublishedIds = (Vec<String>, Vec<String>);
 
-/// [`PublishedIds`] of the root `harness` hosts.
-fn published_ids(harness: &mut FrameHarness) -> PublishedIds {
+/// [`PublishedIds`] of `A`'s root `harness` hosts.
+fn published_ids<A: ResourceApp>(harness: &mut FrameHarness) -> PublishedIds {
     harness
-        .with_widget_mut(|root: &mut ResourceRoot| root.published_ids())
+        .with_widget_mut(|root: &mut ResourceRoot| {
+            let typed = root.typed::<A::Resource>()?;
+            let effects = typed.effects.specs().into_iter().map(|spec| spec.id);
+            let views = <A::Resource as Resource>::views(&typed.live.get())
+                .into_iter()
+                .map(|view| view.id);
+            Some((effects.collect(), views.collect()))
+        })
+        .flatten()
         .unwrap_or_default()
 }
 
