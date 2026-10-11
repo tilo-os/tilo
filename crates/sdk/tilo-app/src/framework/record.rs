@@ -14,7 +14,7 @@
 //! recorded in the record's own history: a person record's document history,
 //! the settings document's log of who changed which setting.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,9 @@ pub struct Held<P: Resource> {
     live: Live<P>,
     sync: Sync<P>,
     apply: Apply<P>,
+    /// The last publication, at the record's and the locale's revision it
+    /// was built at: published again only when either moved.
+    published: RefCell<Option<((u64, u64), tilo_actions::Resource)>>,
 }
 
 impl<P: Resource> Held<P> {
@@ -77,6 +80,7 @@ impl<P: Resource> Held<P> {
             live,
             sync: Box::new(sync),
             apply: Box::new(apply),
+            published: RefCell::new(None),
         }
     }
 
@@ -127,9 +131,20 @@ impl<P: Resource> Held<P> {
     /// role in the room; nothing to change where it is read only.
     pub(crate) fn publish(&self) -> tilo_actions::Resource {
         self.sync();
+        let revision = (self.live.revision(), ui_core::i18n::I18nManager::revision());
+        if let Some((at, published)) = self.published.borrow().as_ref()
+            && *at == revision
+        {
+            return published.clone();
+        }
         let state = self.live.get();
-        let published = tilo_resource::publish::<P>(&self.id, &self.label, &state);
-        route(published, &self.id, self.editable)
+        let published = route(
+            tilo_resource::publish::<P>(&self.id, &self.label, &state),
+            &self.id,
+            self.editable,
+        );
+        *self.published.borrow_mut() = Some((revision, published.clone()));
+        published
     }
 }
 
