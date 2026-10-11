@@ -18,6 +18,9 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+#[path = "notification_header_tests.rs"]
+mod notification_header_tests;
+
 /// Mock content widget recording every [`Widget::handle_event`] call by
 /// event-variant name, so tests can assert which events reached it —
 /// and that absorbed ones did not.
