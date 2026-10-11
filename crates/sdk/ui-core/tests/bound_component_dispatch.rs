@@ -799,6 +799,13 @@ impl Widget for Root {
         theme: &tilo_ui::Theme,
         presence: &tilo_ui::PresenceCtx,
     ) {
+        assert!(
+            presence.permits(&tilo_ui::permissions::PermissionScope::workspace(
+                tilo_ui::permissions::Verb::Write
+            )) == EXPECTED_WRITE.get(),
+            "draw received outer authority"
+        );
+        self.mark("draw-permissions");
         self.0.draw(scene, transform, renderer, theme, presence);
     }
     fn handle_event(
@@ -807,24 +814,6 @@ impl Widget for Root {
         ctx: &mut tilo_ui::widget::EventCtx<'_>,
     ) {
         self.0.handle_event(event, ctx);
-    }
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut tilo_ui::TextRenderer,
-        theme: &tilo_ui::Theme,
-        presence: &tilo_ui::PresenceCtx,
-        permissions: &tilo_ui::permissions::PermissionContext,
-    ) {
-        assert!(
-            permissions.check(&tilo_ui::permissions::PermissionScope::workspace(
-                tilo_ui::permissions::Verb::Write
-            )) == EXPECTED_WRITE.get(),
-            "draw received outer authority"
-        );
-        self.mark("draw-permissions");
-        self.0.draw(scene, transform, text, theme, presence);
     }
     fn on_external_event(
         &mut self,
@@ -1293,13 +1282,18 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                         "en-US",
                     );
                     let mut renderer = tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap();
-                    tile.draw_with_presence(
-                        &mut vello::Scene::new(),
-                        vello::kurbo::Affine::IDENTITY,
-                        &mut renderer,
-                        &tilo_ui::Theme::dark(),
-                        &tilo_ui::PresenceCtx::empty(),
-                        &tilo_ui::permissions::PermissionContext::permissive(),
+                    let presence = tilo_ui::PresenceCtx::empty();
+                    presence.with_permissions(
+                        tilo_ui::permissions::PermissionContext::permissive(),
+                        || {
+                            tile.draw(
+                                &mut vello::Scene::new(),
+                                vello::kurbo::Affine::IDENTITY,
+                                &mut renderer,
+                                &tilo_ui::Theme::dark(),
+                                &presence,
+                            );
+                        },
                     );
                 }
 
@@ -1450,6 +1444,8 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
                 viewport,
             );
+            // A bare root draws under the driver's own permissive authority.
+            EXPECTED_WRITE.set(true);
             let legacy = controlled_driver(
                 Box::new(Column::new().push(Box::new(TileHost::new(
                     tilo_ui::widget::TileContent::App(Box::new(Root(
@@ -1460,6 +1456,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 )))),
                 viewport,
             );
+            EXPECTED_WRITE.set(false);
             let actual = canonical.targets()["dispatch-root"];
             let expected = legacy.targets()["dispatch-root"];
             assert!(expected.width() > f64::from(viewport.0) / 2.0);

@@ -17,41 +17,11 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
+use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
 };
-
-#[derive(Clone, Debug)]
-pub struct TreemapItem {
-    pub id: String,
-    pub label: String,
-    pub value: f64,
-    pub color: Option<Color>,
-    pub detail: String,
-}
-
-impl TreemapItem {
-    pub fn new(id: impl Into<String>, label: impl Into<String>, value: f64) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-            value,
-            color: None,
-            detail: String::new(),
-        }
-    }
-    #[must_use]
-    pub fn colored(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-    #[must_use]
-    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = detail.into();
-        self
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct TreemapStyle {
@@ -83,7 +53,7 @@ struct Tile {
 }
 
 pub struct Treemap {
-    items: Vec<TreemapItem>,
+    items: Vec<ChartItem>,
     style: TreemapStyle,
     title: String,
     height: f32,
@@ -96,7 +66,7 @@ pub struct Treemap {
 }
 
 impl Treemap {
-    pub fn new(items: Vec<TreemapItem>) -> Self {
+    pub fn new(items: Vec<ChartItem>) -> Self {
         Self {
             items,
             style: TreemapStyle::default(),
@@ -135,7 +105,7 @@ impl Treemap {
         self.height = height.max(100.0);
         self
     }
-    pub fn set_items(&mut self, items: Vec<TreemapItem>) {
+    pub fn set_items(&mut self, items: Vec<ChartItem>) {
         self.items = items;
         self.hovered = None;
     }
@@ -491,9 +461,9 @@ mod tests {
         // Case `layout_covers_each_positive_item_once`.
         {
             let mut map = Treemap::new(vec![
-                TreemapItem::new("a", "A", 3.0),
-                TreemapItem::new("b", "B", 2.0),
-                TreemapItem::new("c", "C", 1.0),
+                ChartItem::new("a", "A", 3.0),
+                ChartItem::new("b", "B", 2.0),
+                ChartItem::new("c", "C", 1.0),
             ]);
             map.rect = Rect::new(0.0, 0.0, 600.0, 300.0);
             assert_eq!(map.layout().len(), 3);
@@ -502,8 +472,8 @@ mod tests {
         // Case `invalid_values_are_omitted`.
         {
             let map = Treemap::new(vec![
-                TreemapItem::new("a", "A", f64::NAN),
-                TreemapItem::new("b", "B", -2.0),
+                ChartItem::new("a", "A", f64::NAN),
+                ChartItem::new("b", "B", -2.0),
             ]);
             assert!(map.valid_items().is_empty());
         }

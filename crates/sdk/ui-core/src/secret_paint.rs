@@ -82,16 +82,14 @@ mod tests {
 
     fn frame_shows_secret(widget: &mut dyn Widget) -> bool {
         let presence = crate::presence::PresenceCtx::empty();
-        let permissions = crate::permissions::PermissionContext::permissive();
         let mut text = TextRenderer::new();
         let secrets = SecretPaint::begin();
-        widget.draw_with_presence(
+        widget.draw(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut text,
             &Theme::dark(),
             &presence,
-            &permissions,
         );
         secrets.finish()
     }
