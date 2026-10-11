@@ -201,10 +201,19 @@ fn scenario(desktop: &Desktop) {
     for (client, rect) in clients.iter().zip(&rects) {
         let (cx, cy) = centre(*rect);
         desktop.click_at(cx, cy);
-        desktop.type_text("smoke");
-        desktop.wait_for("the client to receive its keys", || {
-            client.count("EVENT:KEY PRESS") >= 5
+        // Keys go to whoever holds keyboard focus when they arrive: wait for
+        // the click to have given it to this client.
+        desktop.wait_for("the client to hold keyboard focus", || {
+            client.count("EVENT:KEYBOARD ENTER") > client.count("EVENT:KEYBOARD LEAVE")
         });
+        let before = client.count("EVENT:KEY PRESS");
+        desktop.type_text("smoke");
+        let wanted = before.saturating_add(5);
+        desktop.wait_for_with(
+            "the client to receive its keys",
+            || format!("the client reported:\n{}", client.output()),
+            || client.count("EVENT:KEY PRESS") >= wanted,
+        );
     }
     // ... and the in-process apps take theirs.
     let (w, h) = (f64::from(SCREEN.0), f64::from(SCREEN.1));
