@@ -2985,6 +2985,9 @@ impl CollaborationManager {
             cluster_id,
             record,
         } = route;
+        // The connect's phases, so a launch's startup file splits it from the
+        // rest of the time before `app-prepare`.
+        tilo_startup_metrics::startup_mark("collab-connect");
         let mut identity = match endpoint_identity {
             Some(identity) => Some(identity),
             None if matches!(&source, SdkConnectSource::Host(_, _)) => None,
@@ -3000,7 +3003,9 @@ impl CollaborationManager {
         if let Some(identity) = &mut identity {
             identity.participant_kind = participant_kind;
         }
+        tilo_startup_metrics::startup_mark("collab-identity-ready");
         let mut transport = Self::spawn_sdk(source, identity)?;
+        tilo_startup_metrics::startup_mark("collab-transport-ready");
         let mut primary_route = PrimaryRouteState::default();
         primary_route.announce(RouteSpec {
             app_id: app_id.clone(),
@@ -3015,6 +3020,7 @@ impl CollaborationManager {
             handle,
         }));
         await_primary_route_on(&mut transport, &mut primary_route)?;
+        tilo_startup_metrics::startup_mark("collab-primary-ready");
         Ok(ConnectedBroker {
             transport,
             primary_route,

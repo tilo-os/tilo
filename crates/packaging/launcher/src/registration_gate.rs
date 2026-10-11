@@ -9,16 +9,30 @@
 //! launch work, and the host releases it only after the record exists. The
 //! broker can then attest once, with no retry, and an unrecorded process is
 //! refused at once.
+//!
+//! The child's end arrives as its **stdin**. Any other inherited descriptor
+//! would need a `pre_exec` hook to clear its close-on-exec flag, and a
+//! `pre_exec` hook makes `Command::spawn` `fork()` the host — for the
+//! compositor, a copy of every page table of a large multi-threaded process
+//! and a copy-on-write fault on each page its own threads touch next — where
+//! without one it uses `posix_spawn`, whose cost does not grow with the host.
+//! The launcher puts `/dev/null` on its stdin once released
+//! ([`wait_on_stdin`]), so nothing it runs inherits the gate.
 
-use std::io::{self, Write as _};
-use std::os::fd::AsRawFd as _;
+use std::io::{self, Read as _, Write as _};
+use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt as _;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
-/// The environment variable naming the inherited descriptor the launcher
-/// waits on. Internal to a host and the launcher it starts; the launcher
-/// removes it before anything it runs could inherit it.
+/// The variable a host sets when the gate is the launcher's stdin. Internal to
+/// a host and the launcher it starts; the launcher removes it before anything
+/// it runs could inherit it.
+pub const LAUNCH_REGISTRATION_STDIN_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_STDIN";
+
+/// The variable an earlier host set instead, naming an inherited descriptor
+/// (at least 3) the launcher waits on. Still honoured, so a launcher accepts a
+/// host from before [`LAUNCH_REGISTRATION_STDIN_ENV`]; [`install`] never sets
+/// it.
 pub const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
 
 /// The host's end of a launch's registration gate.
@@ -39,39 +53,50 @@ impl RegistrationGate {
     }
 }
 
-/// Make `command` start gated: its child inherits a private descriptor named
-/// by [`LAUNCH_REGISTRATION_FD_ENV`] and waits on it before any launch work,
-/// until the returned gate is released.
+/// Make `command` start gated: its child's stdin is a private socket, named by
+/// [`LAUNCH_REGISTRATION_STDIN_ENV`], that it waits on before any launch work,
+/// until the returned gate is released. This replaces any stdin set before.
+///
+/// Drop `command` once it has spawned: it holds the child's end until then.
 ///
 /// # Errors
 ///
 /// When the socket pair cannot be created.
 pub fn install(command: &mut Command) -> io::Result<RegistrationGate> {
     let (release, wait) = UnixStream::pair()?;
-    command.env(LAUNCH_REGISTRATION_FD_ENV, wait.as_raw_fd().to_string());
-    // SAFETY: the closure runs after fork and before exec and calls only the
-    // async-signal-safe `fcntl(2)`. The closure retains the child copy through
-    // exec; the launcher closes it immediately after reading release.
-    unsafe {
-        command.pre_exec(move || {
-            let inherited_fd = wait.as_raw_fd();
-            let flags = libc::fcntl(inherited_fd, libc::F_GETFD);
-            if flags == -1
-                || libc::fcntl(inherited_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    command
+        .env_remove(LAUNCH_REGISTRATION_FD_ENV)
+        .env(LAUNCH_REGISTRATION_STDIN_ENV, "1")
+        .stdin(Stdio::from(OwnedFd::from(wait)));
     Ok(RegistrationGate(release))
+}
+
+/// The launcher's side of [`install`]: wait for the release on stdin, then put
+/// `/dev/null` there. Call it first in `main`, while the process has one
+/// thread and nothing has read stdin.
+///
+/// # Errors
+///
+/// End-of-file when the host dropped the gate unreleased, or the error of
+/// reading stdin or of replacing it. The launcher must not go on after any.
+pub fn wait_on_stdin() -> io::Result<()> {
+    // SAFETY: fd 0 is the gate the host handed over. The `File` is never
+    // dropped, so the descriptor stays open until `dup2` replaces it below.
+    let mut gate = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
+    let mut release = [0_u8; 1];
+    gate.read_exact(&mut release)?;
+    let null = std::fs::File::open("/dev/null")?;
+    // SAFETY: both are descriptors this process owns. Replacing fd 0 closes
+    // the gate in one step, so no later child can inherit it.
+    if unsafe { libc::dup2(null.as_raw_fd(), 0) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::{BufRead as _, BufReader, Read as _};
-    use std::os::fd::{FromRawFd as _, RawFd};
-    use std::process::Stdio;
 
     use super::*;
 
@@ -81,25 +106,53 @@ mod tests {
 
     /// The child side, run in a copy of this test binary: announce that it
     /// is waiting, wait on the gate as the launcher does, report what it
-    /// read. Without [`CHILD_ENV`] it is not the child and has nothing to do.
+    /// read and what its stdin is afterwards. Without [`CHILD_ENV`] it is not
+    /// the child and has nothing to do.
     #[test]
     fn gated_child() {
         if std::env::var_os(CHILD_ENV).is_none() {
             return;
         }
-        let fd: RawFd = std::env::var(LAUNCH_REGISTRATION_FD_ENV)
-            .expect("the gate descriptor is named")
-            .parse()
-            .expect("a descriptor number");
+        assert_eq!(
+            std::env::var(LAUNCH_REGISTRATION_STDIN_ENV).as_deref(),
+            Ok("1"),
+            "the gate is named"
+        );
+        assert!(
+            std::env::var_os(LAUNCH_REGISTRATION_FD_ENV).is_none(),
+            "the descriptor-number handoff is never set alongside"
+        );
         println!("waiting");
-        // SAFETY: the parent handed this descriptor to this process through
-        // `LAUNCH_REGISTRATION_FD_ENV`; nothing else owns it.
-        let mut gate = unsafe { std::fs::File::from_raw_fd(fd) };
-        let mut release = [0_u8; 1];
-        match gate.read_exact(&mut release) {
+        match wait_on_stdin() {
             Ok(()) => println!("released"),
-            Err(_) => println!("closed"),
+            Err(_) => {
+                println!("closed");
+                return;
+            }
         }
+        // `/dev/null`: end-of-file at once, where the gate would have
+        // blocked or handed over another byte.
+        let mut rest = Vec::new();
+        // SAFETY: fd 0 is this process's stdin; the `File` is not dropped.
+        let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
+        let read = stdin
+            .read_to_end(&mut rest)
+            .expect("read the replaced stdin");
+        let null = std::fs::metadata("/dev/null").expect("/dev/null");
+        let current =
+            std::fs::metadata("/proc/self/fd/0").or_else(|_| std::fs::metadata("/dev/fd/0"));
+        let same = current.is_ok_and(|current| {
+            use std::os::unix::fs::MetadataExt as _;
+            current.rdev() == null.rdev() && current.ino() == null.ino()
+        });
+        println!(
+            "{}",
+            if read == 0 && same {
+                "null-stdin"
+            } else {
+                "gate-still-stdin"
+            }
+        );
     }
 
     /// Start the child gated; its stdout and the gate.
@@ -112,10 +165,14 @@ mod tests {
         command
             .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
             .env(CHILD_ENV, "1")
+            // A host that once used the descriptor handoff: `install` drops it.
+            .env(LAUNCH_REGISTRATION_FD_ENV, "9")
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         let gate = install(&mut command).expect("install the gate");
         let mut child = command.spawn().expect("spawn the gated child");
+        drop(command);
         let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
         (child, stdout, gate)
     }
@@ -130,9 +187,15 @@ mod tests {
             );
             // libtest may print the test's name on the same line first.
             let line = line.trim();
-            if let Some(report) = ["waiting", "released", "closed"]
-                .into_iter()
-                .find(|report| line.ends_with(report))
+            if let Some(report) = [
+                "waiting",
+                "released",
+                "closed",
+                "null-stdin",
+                "gate-still-stdin",
+            ]
+            .into_iter()
+            .find(|report| line.ends_with(report))
             {
                 return report.to_owned();
             }
@@ -140,8 +203,9 @@ mod tests {
     }
 
     /// The gated child goes no further than the gate until the host
-    /// releases it — the host records the launch in between — and a gate
-    /// dropped unreleased refuses the child instead of letting it on.
+    /// releases it — the host records the launch in between — its stdin is
+    /// `/dev/null` from then on, and a gate dropped unreleased refuses the
+    /// child instead of letting it on.
     #[test]
     fn a_gated_child_waits_for_its_release() {
         let (mut child, mut stdout, gate) = spawn_gated();
@@ -152,6 +216,7 @@ mod tests {
         );
         gate.release().expect("release the child");
         assert_eq!(next_line(&mut stdout), "released");
+        assert_eq!(next_line(&mut stdout), "null-stdin");
         assert!(child.wait().expect("child exit").success());
 
         let (mut child, mut stdout, gate) = spawn_gated();
