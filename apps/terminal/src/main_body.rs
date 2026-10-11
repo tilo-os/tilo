@@ -6538,9 +6538,9 @@ pub fn exec_script(argv: &[String]) -> String {
 /// service socket on this app's behalf, per `[sandbox.services]`.
 pub const USH_SERVICE_FD_ENV: &str = "TILO_SVC_USH_FD";
 
-/// Ownership and refusal retries live with the runtime's service transport.
-static USH_SERVICE: runtime_portal::service_socket::InheritedServiceSocket =
-    runtime_portal::service_socket::InheritedServiceSocket::new("ush");
+/// The inherited control connection is distinct from each session lifetime lease.
+static USH_SERVICE: runtime_portal::service_socket::InheritedControlSocket =
+    runtime_portal::service_socket::InheritedControlSocket::new("ush");
 
 /// Who caused a session to open. The device's own shell is never opened for
 /// an agent, whatever else allows it.
@@ -6827,18 +6827,19 @@ fn ush_service_backend(
 ) -> Result<TerminalBackend, OpenError> {
     use runtime_portal::service_socket::ServiceSocketError;
 
-    // SAFETY: this process-wide instance alone owns the launcher's ush fd.
-    let stream = unsafe { USH_SERVICE.take() }.map_err(|error| match error {
-        ServiceSocketError::InUse => OpenError::Unavailable(
-            "This window's shell service is already in use; open a new tab".into(),
-        ),
-        other => OpenError::Failed(other.to_string()),
-    })?;
-    let opened = ush_backend_on(&stream, program, target, requested_by, relay_session);
-    if opened.as_ref().is_err_and(OpenError::is_refusal) {
-        let _ = USH_SERVICE.retry_after_refusal(stream);
+    // SAFETY: this instance alone owns the inherited fd. ush_backend_on
+    // negotiates protocol two and returns only its independent session lease.
+    unsafe {
+        USH_SERVICE.with_control(|stream| {
+            ush_backend_on(stream, program, target, requested_by, relay_session)
+        })
     }
-    opened
+    .map_err(|error| match error {
+        ServiceSocketError::InUse => {
+            OpenError::Unavailable(t("terminal-service-control-unavailable"))
+        }
+        other => OpenError::Failed(other.to_string()),
+    })?
 }
 
 #[cfg(windows)]
@@ -6901,6 +6902,9 @@ struct UshSessionReply {
     relay_session: Option<String>,
     #[serde(default)]
     editor_protocol: Option<u8>,
+    /// The control protocol that granted this session's private lease.
+    #[serde(default)]
+    protocol: u16,
 }
 
 #[cfg(unix)]
@@ -6919,6 +6923,25 @@ pub(crate) fn ush_backend_on(
     // bound, nor add one where the connection has none.
     const USH_OPEN_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let failed = |error: &dyn std::fmt::Display| OpenError::Failed(error.to_string());
+    {
+        let mut writer = stream;
+        writer
+            .write_all(b"{\"op\":\"hello\",\"protocol\":2}\n")
+            .map_err(|e| failed(&e))?;
+        writer.flush().map_err(|e| failed(&e))?;
+    }
+    let (hello, rights) = runtime_portal::fd_transport::recv_with_owned_fds(stream.as_raw_fd())
+        .map_err(|e| failed(&e))?;
+    let ready = serde_json::from_slice::<serde_json::Value>(&hello).ok();
+    if !rights.is_empty()
+        || ready
+            .as_ref()
+            .is_none_or(|value| value["result"] != "ready" || value["protocol"] != 2)
+    {
+        return Err(OpenError::Unavailable(t(
+            "terminal-service-protocol-unavailable",
+        )));
+    }
     let request = ush_request(program, target, requested_by, relay_session, (80, 24))?;
     {
         let mut w = stream;
@@ -6955,16 +6978,15 @@ pub(crate) fn ush_backend_on(
             .editor_protocol
             .is_some_and(|version| version != runtime_portal::editor::VERSION)
         || (response.editor_protocol.is_some() && (!program.is_empty() || target.is_host()))
+        || response.protocol != 2
         || descriptors.len()
             != if response.editor_protocol.is_some() {
-                2
+                3
             } else {
-                1
+                2
             }
     {
-        return Err(OpenError::Failed(
-            "Invalid ush session descriptor roles".into(),
-        ));
+        return Err(OpenError::Failed(t("terminal-service-invalid-session")));
     }
     let native_editor = if response.editor_protocol.is_some() {
         let fd = descriptors
@@ -6974,13 +6996,21 @@ pub(crate) fn ush_backend_on(
     } else {
         None
     };
+    let lifetime = descriptors
+        .pop()
+        .ok_or_else(|| OpenError::Failed(t("terminal-service-missing-lease")))?;
     let fd = descriptors
         .pop()
-        .ok_or_else(|| OpenError::Failed("Missing PTY descriptor".into()))?;
+        .ok_or_else(|| OpenError::Failed(t("terminal-service-missing-terminal")))?;
 
-    // `fd` arrived over `SCM_RIGHTS` and this process now owns it. The
-    // supervisor declares PTY first and, only after negotiation, editor second.
+    // Every descriptor arrived over `SCM_RIGHTS` and this process now owns it.
+    // The supervisor declares PTY first, then the private session lease, and
+    // only after negotiation the editor capability last.
     let master = std::fs::File::from(fd);
+    let lifetime = std::os::unix::net::UnixStream::from(lifetime);
+    lifetime
+        .peer_addr()
+        .map_err(|_| OpenError::Failed(t("terminal-service-invalid-lease")))?;
     tilo_process::editor::validate_master(&master).map_err(|e| failed(&e))?;
     let reader = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Read + Send>;
     let writer = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Write + Send>;
@@ -6992,7 +7022,7 @@ pub(crate) fn ush_backend_on(
         relay_session: response.relay_session,
         native_editor,
         service_lifetime: Some(runtime_portal::pending_connection::SessionLifetime::new(
-            stream.try_clone().map_err(|e| failed(&e))?,
+            lifetime,
         )),
     })
 }

@@ -1027,3 +1027,6 @@ fn published_run_and_read_follow_actual_pty_output_into_the_shared_session() {
     wait_for_owner_shell(&mut app, session.as_str().unwrap(), true);
     assert!(observed, "canonical retained PTY output/prompt absent");
 }
+
+#[cfg(unix)]
+mod inherited_control_wire;
