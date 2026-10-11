@@ -850,8 +850,6 @@ pub struct ShellOverlayHost {
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
     status_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
     status_narrative_request: Option<ui::NarrativeRequest>,
-    /// Open/close curve for the room-activity sheet.
-    room_activity_transition: ui::Transition,
     /// Whether the sheet was open last frame, to invalidate derived rows
     /// on the rising edge.
     room_activity_was_open: bool,
@@ -1661,7 +1659,7 @@ impl ShellOverlayHost {
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
                 palette: self.palette_transition.is_animating(now),
                 power_menu: self.layers.power_menu.is_animating(now),
-                room_activity: self.room_activity_transition.is_animating(now),
+                room_activity: self.room_activity.needs_animation_frame(now),
                 follow: self.follow_transition.is_animating(now),
                 room_replay: self.room_activity.replay_is_playing(),
                 projection: self.projection_overlay.needs_animation_frame(now),
@@ -2438,7 +2436,6 @@ impl ShellOverlayHost {
             history_narrator: inputs.history_narrator,
             status_narrator: inputs.status_narrator,
             status_narrative_request: None,
-            room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
             activity_awareness_workspace: None,
             activity_refresh: ActivityRefreshGate::default(),
@@ -10875,20 +10872,18 @@ impl ShellOverlayHost {
         &mut self.room_activity
     }
 
-    /// Skip the room-activity sheet's open animation so a screenshot or a
-    /// click-driven test sees the settled panel rather than a frame of its
-    /// entry curve. Mirrors [`Self::force_ws_settings_settled`].
+    /// Treat the tiled recap as already open and lay it out now, so a
+    /// screenshot or a click-driven test sees the settled window on the very
+    /// next paint. It draws exactly as a live session does: the recap has no
+    /// entry animation for a capture to skip.
     pub fn force_room_activity_settled(&mut self) {
-        self.room_activity_transition = ui::Transition::open();
         self.room_activity_was_open = true;
         self.refresh_room_activity();
     }
 
-    /// Settle the room-activity sheet in its closed state after a shot driver
-    /// action closes it, preventing the following capture from containing the
-    /// tail of the dismissal animation.
+    /// Forget that the recap was open after a shot driver action closes it,
+    /// so a later open is a fresh rising edge.
     pub fn force_room_activity_closed_for_shots(&mut self) {
-        self.room_activity_transition = ui::Transition::closed();
         self.room_activity_was_open = false;
     }
 
@@ -20474,8 +20469,7 @@ impl ShellOverlayHost {
         let ws_settings_in_flight = self.workspace_settings_overlay.is_animating(now);
         let palette_in_flight = self.palette_transition.is_animating(now);
         let layers_in_flight = self.layers.is_animating(now);
-        let room_activity_in_flight = self.room_activity_transition.is_animating(now)
-            || self.room_activity.needs_animation_frame(now);
+        let room_activity_in_flight = self.room_activity.needs_animation_frame(now);
         let follow_in_flight = self.follow_transition.is_animating(now);
         let room_replay_in_flight = self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
@@ -21713,43 +21707,11 @@ impl ShellOverlayHost {
         if visible {
             self.refresh_room_activity();
             self.apply_pending_history_action();
-            let ra_now = Instant::now();
-            let openness = self.room_activity_transition.value(ra_now);
-            draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
-            let alpha = openness;
-            let in_flight = alpha < 1.0;
-            let sheet = self.room_activity.rect();
-            if in_flight {
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    BlendMode::default(),
-                    alpha,
-                    transform,
-                    &self.rect,
-                );
-            }
-            // Slides in from its anchored edge rather than scaling about
-            // its centre — scaling a full-height panel reads as the whole
-            // desktop breathing.
-            let slide = (1.0 - f64::from(openness)) * (sheet.width() * 0.25);
-            let sheet_xform = if slide > 0.0 {
-                transform.pre_translate((slide, 0.0).into())
-            } else {
-                transform
-            };
-            // A Panel casts `e4` (HIG §9.1), following the outline the
-            // sheet paints itself with (`radii.control` in `room_activity.rs`);
-            // the token's own colour, not a ramp slot, and its strength
-            // fades in with the sheet.
-            let mut sheet_shadow = theme.tokens.elevation.floating;
-            sheet_shadow.color = sheet_shadow.color.with_alpha_factor(alpha);
-            ui::surface::shadow(
-                scene,
-                sheet_xform,
-                sheet,
-                f64::from(theme.tokens.radii.control),
-                &sheet_shadow,
-            );
+            // The recap is a tiled window: it has no scrim, entry fade or
+            // floating shadow of its own, and it must open no layer here.
+            // A layer left open leaks past this draw: every later overlay
+            // lands in it, and with several displays the next display's
+            // whole pass nests inside this display's clip and draws nothing.
             self.room_activity.set_review_clip(self.rect);
             self.room_activity
                 .draw(scene, transform, text_renderer, theme, presence);
