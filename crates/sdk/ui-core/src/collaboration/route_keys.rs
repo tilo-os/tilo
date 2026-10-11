@@ -75,6 +75,11 @@ pub(super) struct RouteKeys {
     /// The generation of the keys that last failed to open held ciphertext
     /// and asked for newer ones: asked once per generation.
     asked_for_held: Option<u64>,
+    /// The channel service answered the last question about these keys, so
+    /// it tells the route when that answer may change. False until the
+    /// first answer, and after a question the identity service refused or
+    /// could not take.
+    answered: bool,
 }
 
 impl RouteKeys {
@@ -96,6 +101,7 @@ impl RouteKeys {
             held_inbound: VecDeque::new(),
             reported: None,
             asked_for_held: None,
+            answered: false,
         }
     }
 
@@ -108,6 +114,23 @@ impl RouteKeys {
     /// it waits for access, was removed, or the service is unavailable.
     pub(super) fn awaiting_keys(&self) -> bool {
         matches!(self.keys, Keys::Pending(_))
+    }
+
+    /// Whether the endpoint asks about this route on its timer while the
+    /// broker pushes channel changes: it holds no keys, and either nothing
+    /// will tell it when that changes (no answer from the channel service
+    /// yet) or it was removed, whose rejoin each question asks for again.
+    pub(super) fn asks_on_timer(&self) -> bool {
+        match self.keys {
+            Keys::Pending(ChannelAccessState::Removed) => true,
+            Keys::Pending(_) => !self.answered,
+            _ => false,
+        }
+    }
+
+    /// Record whether the channel service answered the last question.
+    pub(super) fn set_answered(&mut self, answered: bool) {
+        self.answered = answered;
     }
 
     /// Whether held ciphertext should make the endpoint ask for newer keys
