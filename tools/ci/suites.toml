@@ -360,6 +360,7 @@ suites = [
   "dist/ci/tests/test_failed_rpm_retention.py",
   "dist/ci/tests/test_host_session_rpm_replay.py",
   "dist/session/tests/vm-e2e-exit-status.py",
+  "dist/session/tests/vm-e2e-input-import.py",
   "dist/session/tests/test-files-workspace.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
   "dist/local-models/smolvlm2-500m/contract-test.sh",
