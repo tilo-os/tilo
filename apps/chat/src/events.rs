@@ -1763,10 +1763,15 @@ impl ChatApp {
             self.poll_agent_tasks();
             return;
         }
-        let tasks = self.agent_task_context(&workspace, &agent);
         let submitted = match intent {
-            crate::app::AgentComposerIntent::Queue => tasks.borrow_mut().queue(&text, None).is_ok(),
-            crate::app::AgentComposerIntent::Steer => tasks.borrow_mut().steer(&text).is_ok(),
+            crate::app::AgentComposerIntent::Queue => self
+                .direct_agent_tasks()
+                .is_some_and(|tasks| tasks.borrow_mut().queue(&text, None).is_ok()),
+            crate::app::AgentComposerIntent::Steer => self
+                .agent_task_context(&workspace, &agent)
+                .borrow_mut()
+                .steer(&text)
+                .is_ok(),
             crate::app::AgentComposerIntent::Message => false,
         };
         if submitted {
@@ -6404,6 +6409,73 @@ mod tests {
         );
         assert_eq!(app.composer_main.selection(), (8, 0));
         assert!(matches!(app.focus, Focus::Main));
+    }
+
+    #[test]
+    fn queue_send_uses_the_exact_displayed_offer_across_due_refresh() {
+        let clock = ui::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let (mut app, mut doc, host) = agent_task_control_app();
+        app.on_hit(
+            Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Queue this private instruction");
+        let tasks = app.direct_agent_tasks().expect("owner-backed task context");
+        assert!(tasks.borrow().can_queue());
+        let deadline = tasks
+            .borrow()
+            .next_refresh_deadline()
+            .expect("the displayed Queue offer has a refresh deadline");
+        let queue_requests = || {
+            host.requests()
+                .iter()
+                .filter(|request| request.target.address.action == "queue")
+                .count()
+        };
+        let requests_before = queue_requests();
+        let acceptances_before = app.agent_submission_acceptances.get();
+
+        host.defer_current_reads();
+        clock.advance(
+            deadline
+                .saturating_duration_since(clock.background().now())
+                .saturating_add(std::time::Duration::from_millis(1)),
+        );
+        assert!(
+            tasks.borrow().can_queue(),
+            "without a sync, the exact displayed offer remains actionable"
+        );
+
+        app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
+
+        assert_eq!(queue_requests(), requests_before + 1);
+        assert_eq!(
+            app.agent_submission_acceptances.get(),
+            acceptances_before + 1
+        );
+        assert_eq!(app.active_ws, "ws_home");
+        assert_eq!(app.agent_tasks.len(), 1);
+        assert!(std::rc::Rc::ptr_eq(
+            &tasks,
+            &app.direct_agent_tasks()
+                .expect("same retained task context")
+        ));
+        let requests = host
+            .requests()
+            .into_iter()
+            .filter(|request| request.target.address.action == "queue")
+            .collect::<Vec<_>>();
+        let request = requests
+            .get(requests_before)
+            .expect("one new canonical Queue request");
+        assert_eq!(request.target.address.resource, "desktop:tasks");
+        assert_eq!(json_argument(request)["agent"], "scribe");
+        assert_eq!(json_argument(request)["route"], "model");
+        assert_eq!(
+            json_argument(request)["instruction"],
+            "Queue this private instruction"
+        );
     }
 
     #[test]

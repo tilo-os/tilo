@@ -8584,7 +8584,8 @@ def managed_task_and_message_lifecycle(
     return evidence
 
 
-def current_detached_task_target(socket, owner, child, composer, label, role):
+def current_detached_task_target(
+        socket, owner, child, composer, label, role, observation=None):
     """Bind a real intent/Send control to the same ordinary detached native seat."""
     if owner.get("detached") is not True:
         raise RuntimeError("detached task control has no exact captured child route")
@@ -8603,9 +8604,35 @@ def current_detached_task_target(socket, owner, child, composer, label, role):
         raise RuntimeError("detached task control belongs to a foreign Chat owner")
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
     tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
-    matches = [path for path in client.named(tree, label) if client.role(path) == role]
-    if len(matches) != 1 or not accessibility_control_enabled(access, matches[0]):
-        raise RuntimeError("detached task has no unique enabled actual intent/Send control")
+    named = client.named(tree, label)
+    roles = {path: client.role(path) for path in named}
+    matches = [path for path, observed_role in roles.items() if observed_role == role]
+    control_state = {
+        "named_count": min(len(named), 64),
+        "tab_count": min(sum(value == AT_SPI_ROLE_TAB for value in roles.values()), 64),
+        "button_count": min(sum(value == AT_SPI_ROLE_BUTTON for value in roles.values()), 64),
+        "other_role_count": min(sum(
+            value not in (AT_SPI_ROLE_TAB, AT_SPI_ROLE_BUTTON) for value in roles.values()
+        ), 64),
+        "expected_role_count": min(len(matches), 64),
+        "expected_enabled_observed": False,
+        "expected_enabled": False,
+    }
+    if observation is not None:
+        observation.clear()
+        observation.update(control_state)
+    if len(matches) != 1:
+        raise RuntimeError(
+            "detached task has no unique actual intent/Send control: "
+            + json.dumps(control_state, sort_keys=True)
+        )
+    enabled = accessibility_control_enabled(access, matches[0])
+    control_state["expected_enabled_observed"] = True
+    control_state["expected_enabled"] = enabled
+    if observation is not None:
+        observation.update(control_state)
+    if not enabled:
+        return None
     geometry = presented_content_geometry(frame)
     target = component_global_target(access, matches[0], geometry, "detached task control")
     confirmed = current_same_floating_presentation(call(socket, {"op": "foreign_frames"}), frame)
@@ -8615,8 +8642,16 @@ def current_detached_task_target(socket, owner, child, composer, label, role):
 
 
 def physical_detached_task_control(socket, owner, child, composer, label, role, process):
-    frame, access, target = wait_for("exact detached task control", lambda:
-        current_detached_task_target(socket, owner, child, composer, label, role), process)
+    observation = {}
+    try:
+        frame, access, target = wait_for("exact detached task control", lambda:
+            current_detached_task_target(
+                socket, owner, child, composer, label, role, observation
+            ), process)
+    except ProofTimeout as error:
+        raise ProofTimeout(
+            f"{error}; control={json.dumps(observation, sort_keys=True)}"
+        ) from None
     center = target["global_center"]
     require_ok(call(socket, {"op": "click_at", "x": center["x"], "y": center["y"]}))
     return frame, access, target

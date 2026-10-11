@@ -4730,6 +4730,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         client.role.side_effect = lambda path: 37 if path == "/queue-tab" else 43
         target = {"client_rect": {"x": 40, "y": 240, "w": 100, "h": 30},
                   "global_center": {"x": 106, "y": 425}}
+        observation = {}
         with patch.object(PROOF, "call", return_value={"answer": {"frames": [child]}}), \
                 patch.object(PROOF, "agent_conversation_accessibility", return_value=owner) as discover, \
                 patch.object(PROOF.atspi, "atspi_address", return_value="private-address"), \
@@ -4738,11 +4739,21 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 patch.object(PROOF, "accessibility_control_enabled", return_value=True), \
                 patch.object(PROOF, "component_global_target", return_value=target) as component:
             self.assertEqual(PROOF.current_detached_task_target(
-                "socket", owner, child, "Task instruction composer", "Queue task", 43),
+                "socket", owner, child, "Task instruction composer", "Queue task", 43,
+                observation),
                 (child, owner, target))
             discover.assert_called_once_with("Tide", detached=True,
                 composer_name="Task instruction composer", stale_only=True)
             self.assertEqual(component.call_args.args[1], "/queue-send")
+        self.assertEqual(observation, {
+            "named_count": 2,
+            "tab_count": 1,
+            "button_count": 1,
+            "other_role_count": 0,
+            "expected_role_count": 1,
+            "expected_enabled_observed": True,
+            "expected_enabled": True,
+        })
         for changed in ({"keyboard_focused": False}, {"suspended": True},
                         {"transferring": True}, {"input_route": "foreign"}):
             with self.subTest(changed=changed), \
@@ -4761,6 +4772,95 @@ class PresentedEditorTargetTests(unittest.TestCase):
                     PROOF.current_detached_task_target(
                         "socket", owner, child, "Task instruction composer", "Queue task", 43)
                 component.assert_not_called()
+
+    def test_detached_task_target_waits_only_for_unique_expected_role_to_enable(self):
+        owner = {"bus": "private-bus", "process": 9975, "agent": "Tide", "detached": True,
+                 "window": "/private-window"}
+        child = {"app_id": "so.tilo.chat", "surface_id": 9974,
+                 "floating_id": "private-child", "frame_seq": 12,
+                 "presented": True, "pixels_ready": True, "keyboard_focused": True,
+                 "suspended": False, "transferring": False, "last_error": None,
+                 "input_route": None, "input_source_surface_id": None,
+                 "content_rect": {"x": 0, "y": 0, "w": 100, "h": 100}}
+        client = unittest.mock.Mock()
+        client.named.return_value = ["/queue-tab", "/queue-send"]
+        client.role.side_effect = lambda path: 37 if path == "/queue-tab" else 43
+        target = {"global_center": {"x": 50, "y": 50}}
+        observation = {}
+        with patch.object(PROOF, "call", return_value={"answer": {"frames": [child]}}), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
+                patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(PROOF, "accessible_subtree", return_value={}), \
+                patch.object(PROOF, "accessibility_control_enabled", side_effect=[False, True]), \
+                patch.object(PROOF, "presented_content_geometry", return_value={}), \
+                patch.object(PROOF, "component_global_target", return_value=target):
+            self.assertIsNone(PROOF.current_detached_task_target(
+                "socket", owner, child, "Task instruction composer", "Queue task", 43,
+                observation))
+            self.assertFalse(observation["expected_enabled"])
+            self.assertEqual(PROOF.current_detached_task_target(
+                "socket", owner, child, "Task instruction composer", "Queue task", 43,
+                observation), (child, owner, target))
+        self.assertTrue(observation["expected_enabled"])
+        self.assertEqual(observation["expected_role_count"], 1)
+
+    def test_detached_task_target_rejects_missing_or_duplicate_expected_role(self):
+        owner = {"bus": "private-bus", "process": 9975, "agent": "Tide", "detached": True,
+                 "window": "/private-window"}
+        child = {"app_id": "so.tilo.chat", "surface_id": 9974,
+                 "floating_id": "private-child", "frame_seq": 12,
+                 "presented": True, "pixels_ready": True, "keyboard_focused": True,
+                 "suspended": False, "transferring": False, "last_error": None,
+                 "input_route": None, "input_source_surface_id": None}
+        for roles in ((37,), (43, 43)):
+            client = unittest.mock.Mock()
+            client.named.return_value = [f"/control-{index}" for index in range(len(roles))]
+            client.role.side_effect = roles
+            with self.subTest(roles=roles), \
+                    patch.object(PROOF, "call", return_value={"answer": {"frames": [child]}}), \
+                    patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
+                    patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                    patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                    patch.object(PROOF, "accessible_subtree", return_value={}), \
+                    patch.object(PROOF, "accessibility_control_enabled") as enabled, \
+                    self.assertRaisesRegex(RuntimeError, "no unique actual"):
+                PROOF.current_detached_task_target(
+                    "socket", owner, child, "Task instruction composer", "Queue task", 43)
+            enabled.assert_not_called()
+
+    def test_physical_detached_task_control_retries_disabled_without_replaying_click(self):
+        frame, access = {"frame_seq": 4}, {"composer": "/editor"}
+        target = {"global_center": {"x": 30, "y": 40}}
+        with patch.object(PROOF, "current_detached_task_target",
+                          side_effect=[None, (frame, access, target)]) as current, \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, .1]), \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "call", return_value={"ok": {}}) as call:
+            self.assertEqual(PROOF.physical_detached_task_control(
+                "socket", {}, {}, "Task instruction composer", "Queue task", 43, None
+            ), (frame, access, target))
+        self.assertEqual(current.call_count, 2)
+        self.assertEqual(call.call_count, 1)
+        self.assertEqual(call.call_args.args[1]["op"], "click_at")
+
+    def test_physical_detached_task_control_times_out_disabled_without_click(self):
+        def disabled(*args):
+            args[-1].update({
+                "expected_role_count": 1,
+                "expected_enabled_observed": True,
+                "expected_enabled": False,
+            })
+
+        with patch.object(PROOF, "current_detached_task_target", side_effect=disabled), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 31]), \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "call") as call, \
+                self.assertRaisesRegex(PROOF.ProofTimeout, '"expected_enabled": false'):
+            PROOF.physical_detached_task_control(
+                "socket", {}, {}, "Task instruction composer", "Queue task", 43, None
+            )
+        call.assert_not_called()
 
     def test_stale_task_editor_refresh_retains_exact_selected_mode(self):
         for mode in ("Task instruction composer", "Task direction composer"):
