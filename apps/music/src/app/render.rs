@@ -27,7 +27,7 @@ use ui::surface;
 use ui::tokens::TextRole;
 use ui::widget::Continuable;
 use ui::widget::data_table::DataTableFace;
-use ui::widget::toast::{ToastAnchor, ToastCard, paint_transient};
+use ui::widget::toast::ToastAnchor;
 use ui::widget::{
     Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent, MediaArt,
     MediaCardFace, MediaSize, SkeletonFace, SkeletonShape, Slider, SliderFace, TransportControl,
@@ -1521,6 +1521,7 @@ impl Widget for MusicApp {
         children.extend(self.drawer.toggle_accessibility());
         children.extend([navigation, search, page, player]);
         children.extend(self.history.accessibility(self.history_rect));
+        children.extend(self.toast.access_node());
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Music")
@@ -1731,7 +1732,6 @@ impl Widget for MusicApp {
             || self.resource_stream_invocation.is_some()
             || !self.effect_replies.is_empty()
             || self.local_file_pick.is_some()
-            || self.toast.is_some()
             || self.live_search_pending.is_some()
             || self.source_invocation.is_some()
             || !self.spotify_jobs.is_empty()
@@ -1756,6 +1756,7 @@ impl Widget for MusicApp {
             .playing
             .then_some(self.last_tick + super::PLAYBACK_POLL_INTERVAL)
             .into_iter()
+            .chain(self.toast.deadline())
             .chain(
                 self.children()
                     .into_iter()
@@ -2700,11 +2701,7 @@ impl MusicApp {
         // Apply any deferred `--shots` staging now that `rect` is known.
         self.apply_shot_stage();
         self.tick();
-        if let Some(notice) = &self.toast
-            && notice.at.elapsed().as_secs_f32() > 2.6
-        {
-            self.toast = None;
-        }
+        self.dirty |= self.toast.expire();
 
         // The sidebar drawer decides docked vs floating from the window width
         // (its breakpoint grows with the text), eases its reveal and hands
@@ -5678,23 +5675,19 @@ impl MusicApp {
     // ---- toast ------------------------------------------------------------
 
     fn draw_toast(&self, ctx: &mut PaintCtx<'_>) {
-        let Some(notice) = self.toast.as_ref() else {
-            return;
-        };
         let area = Rect::new(
             self.body_rect.x0,
             self.rect.y0,
             self.rect.x1,
             self.rect.y1 - self.bar_h,
         );
-        paint_transient(
+        self.toast.paint(
             ctx.scene,
             ctx.transform,
             ctx.text,
             ctx.theme,
             area,
             ToastAnchor::BottomCenter,
-            &ToastCard::new(&notice.text, notice.kind),
         );
     }
 
