@@ -1388,3 +1388,36 @@ cargo run -p tilo-relay --features web -- dev
 # in Cloud, with the user key the host printed
 npm run dev:tilo -- --port 9998 --host-origin https://localhost:9443 --user-public-key <hex>
 ```
+
+## Updating the engine without replacing the desktop SDK
+
+A worktree `tilo-vm swap userspace` assembles the native toolkit and apps in one
+Cargo graph. It does not build Chromium's optional runtime. Browser declares the
+exact engine reference in its signed `optional-runtimes`; a missing engine does
+not become available merely because the nine userspace components were updated.
+
+The Browser's **Install the browser engine** action opens the existing Store
+review for `so.tilo.runtime.chromium`. Store verifies the configured catalogue and
+uses its ordinary installation action. This does not replace Browser or its
+required core SDK.
+
+For an exact required version, the same canonical package flow is available as:
+
+```sh
+app runtime install tilo-runtime/2026.10.4-chromium --repo 'Tilo main'
+```
+
+The repository must already be enabled and pinned. The runtime offer must match
+this machine's architecture, system interfaces, release channel and the exact
+runtime reference. Download size, content hash, package root and publisher checks
+remain in the normal downloader/installer; the inner bundle must satisfy the
+installed immutable runtime-publisher policy. An existing package follows normal
+update, held-version and downgrade admission. No key is granted by this command.
+The installed engine coexists with the core SDK and becomes visible on the next
+Browser launch. No machine reboot is required.
+
+If the exact engine is not offered, this command fails. The maintained
+`Release / Apps` main-only dispatch can publish the engine alone with
+`engine_runtime_only=true`, `architectures=aarch64`, `apps=browser`, and
+`publish=true`. Publication and an installed, verified engine are separate
+prerequisites; an accepted Browser Open is not proof of either.

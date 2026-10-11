@@ -3171,7 +3171,7 @@ pub(crate) enum EngineProblem {
 
 /// Where the engine runtime is offered for install: its Store page, the
 /// same consented route every package takes.
-pub(crate) const ENGINE_INSTALL_URI: &str = "tilo-store:app/so.tilo.browser-engine";
+pub(crate) const ENGINE_INSTALL_URI: &str = "tilo-store:app/so.tilo.runtime.chromium";
 
 /// Live browsing runs the Chromium engine runtime
 /// ([`ui::webview::chromium::runtime`]); there is no other engine and no

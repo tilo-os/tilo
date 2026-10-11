@@ -552,6 +552,32 @@ pub fn install_app_reporting(
     install_or_update_app_reporting(app, on_progress, Change::Install)
 }
 
+/// Install an exact runtime from a configured repository without replacing an app.
+/// The normal downloader and installer retain registry, signature, payload and
+/// runtime publisher checks; an installed version follows the normal update policy.
+///
+/// # Errors
+/// Returns registry verification or offer errors, or the normal install refusal.
+pub fn install_runtime_reporting(
+    runtime: &str,
+    registry: &str,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<CatalogueApp, InstallError> {
+    let offer = crate::runtime_offer(runtime, registry)
+        .map_err(|detail| InstallError::Download { detail })?
+        .ok_or_else(|| InstallError::NotOffered {
+            package_id: runtime.to_string(),
+        })?;
+    let installed = crate::installed_version(&offer.package_id)
+        .map_err(|detail| InstallError::Integrity { detail })?;
+    if installed.is_some() {
+        update_app_reporting(&offer, on_progress)?;
+    } else {
+        install_app_reporting(&offer, on_progress)?;
+    }
+    Ok(offer)
+}
+
 /// What [`install_or_update_app_reporting`] does with the verified package.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Change {
