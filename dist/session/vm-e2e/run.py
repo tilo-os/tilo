@@ -4,9 +4,12 @@
 The host-desktop counterpart of the Tilo OS acceptance suite: the
 tilo-session RPMs CI built, installed on the Fedora Cloud image with dnf, a
 gnome-keyring Secret Service unlocked on the user's bus, the identity
-provisioned there, SDDM autologin into /usr/share/wayland-sessions/tilo.desktop,
+provisioned there, GNOME input sources seeded the way a GNOME user has them
+(German without dead keys, Compose on Right Alt), SDDM autologin into /usr/share/wayland-sessions/tilo.desktop,
 then each app opened the way a person opens it (Super+Space, its name, Enter,
-typed on the VM's keyboard through QMP). After each app starts, the compositor
+typed on the VM's keyboard through QMP). The session must have imported the
+GNOME input sources on its first login, and the lock screen password and app
+names are typed on the German layout it imported. After each app starts, the compositor
 must still be the same process for the whole dwell, with no crash record,
 core dump, unexpected session exit or panic.
 
@@ -48,6 +51,19 @@ SSH_PORT = 2222
 GUEST_USER = "fedora"
 # The throwaway guest account's fixture password, also set by guest.sh.
 GUEST_PASSWORD = "tilo-e2e-password"
+# What the session's first-login import must make of the GNOME settings
+# guest.sh seeds (sources [('xkb', 'de+nodeadkeys')], xkb-options
+# ['compose:ralt']): crates/session/shell/src/firstboot.rs.
+IMPORTED_INPUT = {"keyboard_layout": "de:nodeadkeys", "keyboard_layouts": ["de:nodeadkeys"],
+                  "compose_key": "ralt"}
+# Written once the import has completed; its absence means it never ran.
+IMPORT_MARKER = "host_input_migration_version"
+# QMP sends key positions. Where a layout puts a character on another key
+# than US does, the key that types it there.
+LAYOUT_KEYS = {
+    "us": {"-": "minus"},
+    "de": {"-": "slash", "y": "z", "z": "y"},
+}
 
 
 def log(msg: str) -> None:
@@ -92,17 +108,55 @@ class Qmp:
         self.call("send-key", keys=[{"type": "qcode", "data": q} for q in qcodes], **{"hold-time": 80})
         time.sleep(0.15)
 
-    def type_text(self, text: str) -> None:
-        for ch in text:
-            if ch == " ":
-                self.keys("spc")
-            elif ch.isupper():
-                self.keys("shift", ch.lower())
-            else:
-                self.keys({"-": "minus"}.get(ch, ch))
+    def type_text(self, text: str, layout: str = "us") -> None:
+        for keys in key_presses(text, layout):
+            self.keys(*keys)
 
     def screendump(self, path: Path) -> None:
         self.call("screendump", filename=str(path), format="png")
+
+
+def key_presses(text: str, layout: str = "us") -> list[tuple[str, ...]]:
+    """The QMP key presses that type `text` on the session's `layout`."""
+    keys = LAYOUT_KEYS[layout]
+    presses = []
+    for ch in text:
+        if ch == " ":
+            presses.append(("spc",))
+        elif ch.isupper():
+            presses.append(("shift", keys.get(ch.lower(), ch.lower())))
+        else:
+            presses.append((keys.get(ch, ch),))
+    return presses
+
+
+def typing_layout(settings: dict) -> str:
+    """The layout to type on: the one the session's settings select."""
+    layout = ((settings.get("input") or {}).get("keyboard_layout") or "us")
+    return "de" if str(layout).split(":", 1)[0] == "de" else "us"
+
+
+def input_import_problems(settings_text: str) -> tuple[dict, list[str]]:
+    """(settings, problems): whether the first login imported the GNOME input settings."""
+    if not settings_text.strip():
+        return {}, ["the session wrote no settings.json: the GNOME input settings were not imported"]
+    try:
+        settings = json.loads(settings_text)
+    except json.JSONDecodeError as error:
+        return {}, [f"the session's settings.json is not JSON ({error}): {settings_text[:200]!r}"]
+    if not isinstance(settings, dict):
+        return {}, [f"the session's settings.json is not an object: {settings_text[:200]!r}"]
+    section = settings.get("input")
+    if not isinstance(section, dict):
+        return settings, ["the session's settings.json has no input section: the GNOME input "
+                          "settings were not imported"]
+    problems = [f"input.{key} is {section.get(key)!r}, want {want!r}"
+                for key, want in IMPORTED_INPUT.items() if section.get(key) != want]
+    marker = section.get(IMPORT_MARKER)
+    if not isinstance(marker, int) or marker < 1:
+        problems.append(f"input.{IMPORT_MARKER} is {marker!r}: the first-login import of the host's "
+                        "GNOME input settings did not complete")
+    return settings, problems
 
 
 class Vm:
@@ -202,6 +256,9 @@ class Vm:
     def status(self, apps: list[str]) -> dict:
         out = self.guest("status", *apps, timeout=60, capture=True).stdout
         return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+    def settings(self) -> str:
+        return self.guest("settings", timeout=60, capture=True).stdout
 
     def reboot(self) -> None:
         self.ssh("sudo -n systemctl reboot", timeout=30, check=False, capture=True)
@@ -335,6 +392,13 @@ def run_test(args) -> int:
         elif result.returncode != 0:
             raise Fail("installing the packages failed")
         vm.guest("user")
+        seeded = vm.guest("gnome-input", check=False, capture=True)
+        (out / "gnome-input.log").write_text(seeded.stdout or "")
+        if seeded.returncode != 0:
+            report.add("H05", "The first login imports the host's GNOME input settings", False,
+                       "seeding the GNOME input settings failed: "
+                       + ((seeded.stdout or "").strip().splitlines() or ["no output"])[-1])
+            return 1
         keyring = vm.guest("keyring", check=False, capture=True)
         if not report.add("H01", "gnome-keyring answers org.freedesktop.secrets, unlocked",
                           keyring.returncode == 0, keyring.stdout.strip().splitlines()[-1] if keyring.stdout else ""):
@@ -370,11 +434,21 @@ def run_test(args) -> int:
                           "; ".join(problems)):
             return 1
 
+        # The import runs before the compositor starts; the keymap is built
+        # from its result, so everything typed below goes through it.
+        settings, problems = input_import_problems(vm.settings())
+        report.add("H05", "The first login imports the host's GNOME input settings", not problems,
+                   "; ".join(problems), **{key: (settings.get("input") or {}).get(key)
+                                            for key in (*IMPORTED_INPUT, IMPORT_MARKER)})
+        # Type on the layout the session actually selected, so a broken import
+        # fails H05 rather than every later check.
+        layout = typing_layout(settings)
+
         # Autologin starts the real compositor locked. Authenticate through
         # its normal PAM-backed lock screen before sending app search input.
         # Keep lock policy and failed-authentication behavior intact.
         log("authenticating the throwaway guest account at the lock screen")
-        vm.qmp.type_text(GUEST_PASSWORD)
+        vm.qmp.type_text(GUEST_PASSWORD, layout)
         vm.qmp.keys("ret")
         time.sleep(2)
 
@@ -384,7 +458,7 @@ def run_test(args) -> int:
             vm.qmp.keys("esc")
             vm.qmp.keys("meta_l", "spc")
             time.sleep(1.5)
-            vm.qmp.type_text(name)
+            vm.qmp.type_text(name, layout)
             time.sleep(1.5)
             vm.qmp.screendump(shots / f"{n:02d}-{app_id}-search.png")
             vm.qmp.keys("ret")
