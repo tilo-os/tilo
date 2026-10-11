@@ -107,15 +107,23 @@ impl ScrollRegion {
     /// The region's rect (bar lanes included) for this layout, and the
     /// theme its lanes and steps come from.
     pub fn set_viewport(&mut self, viewport: Rect, theme: &Theme) {
+        let lane = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        if self.viewport != viewport || self.lane.to_bits() != lane.to_bits() {
+            self.cancel_interaction();
+        }
         self.viewport = viewport;
-        self.lane = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        self.lane = lane;
         self.line = f64::from(theme.tokens.metrics.wheel_line);
         self.clamp();
     }
 
     /// How big the content is, in the host's content coordinates.
     pub fn set_content_size(&mut self, width: f64, height: f64) {
-        self.content = Vec2::new(width.max(0.0), height.max(0.0));
+        let content = Vec2::new(width.max(0.0), height.max(0.0));
+        if self.content != content {
+            self.cancel_interaction();
+        }
+        self.content = content;
         self.clamp();
     }
 
@@ -378,24 +386,51 @@ impl ScrollRegion {
         ctx: &mut crate::widget::EventCtx<'_>,
         theme: &Theme,
     ) -> bool {
+        self.handle_window_event(
+            event,
+            ctx.scale_factor,
+            ctx.modifiers.state(),
+            ctx.handled,
+            theme,
+        )
+    }
+
+    /// Retire a captured scrollbar gesture and its transient pointer feedback.
+    pub fn cancel_interaction(&mut self) -> bool {
+        let changed = self.vbar.release()
+            | self.hbar.release()
+            | self.vbar.set_hover(false)
+            | self.hbar.set_hover(false);
+        self.pointer_near = false;
+        changed
+    }
+
+    /// The same input path for painted hosts without a retained widget tree.
+    pub fn handle_window_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::keyboard::ModifiersState,
+        handled: &mut bool,
+        theme: &Theme,
+    ) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
                 let mut changed = false;
                 if self.vbar.is_dragging()
                     && let Some(track) = self.v_track(theme)
                     && let Some(target) = self.vbar.drag_to(track, self.v_metrics(), self.cursor)
                 {
                     changed |= self.scroll_by(Vec2::new(0.0, target - self.offset.y));
-                    *ctx.handled = true;
+                    *handled = true;
                 }
                 if self.hbar.is_dragging()
                     && let Some(track) = self.h_track(theme)
                     && let Some(target) = self.hbar.drag_to(track, self.h_metrics(), self.cursor)
                 {
                     changed |= self.scroll_by(Vec2::new(target - self.offset.x, 0.0));
-                    *ctx.handled = true;
+                    *handled = true;
                 }
                 if let Some(track) = self.v_track(theme) {
                     changed |= self.vbar.update_hover(track, self.v_metrics(), self.cursor);
@@ -413,16 +448,23 @@ impl ScrollRegion {
                 }
                 changed
             }
+            WindowEvent::Focused(false) => self.cancel_interaction(),
+            WindowEvent::KeyboardInput { event, .. }
+                if self.is_dragging()
+                    && event.state == ElementState::Pressed
+                    && event.logical_key == Key::Named(NamedKey::Escape) =>
+            {
+                *handled = true;
+                self.cancel_interaction()
+            }
             WindowEvent::MouseWheel { delta, .. } if self.viewport.contains(self.cursor) => {
                 let (mut dx, mut dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => {
                         (-f64::from(*x) * self.line, -f64::from(*y) * self.line)
                     }
-                    MouseScrollDelta::PixelDelta(p) => {
-                        (-p.x / ctx.scale_factor, -p.y / ctx.scale_factor)
-                    }
+                    MouseScrollDelta::PixelDelta(p) => (-p.x / scale_factor, -p.y / scale_factor),
                 };
-                if ctx.modifiers.state().shift_key() && self.has_horizontal() && dx == 0.0 {
+                if modifiers.shift_key() && self.has_horizontal() && dx == 0.0 {
                     (dx, dy) = (dy, 0.0);
                 }
                 if !self.has_horizontal() {
@@ -433,7 +475,7 @@ impl ScrollRegion {
                 }
                 let moved = self.scroll_by(Vec2::new(dx, dy));
                 if moved {
-                    *ctx.handled = true;
+                    *handled = true;
                 }
                 moved
             }
@@ -460,7 +502,7 @@ impl ScrollRegion {
                         match bar.press(track, metrics, self.cursor) {
                             PressOutcome::Thumb => {
                                 self.fade.wake(crate::time::now());
-                                *ctx.handled = true;
+                                *handled = true;
                                 return true;
                             }
                             PressOutcome::Page(target) => {
@@ -469,7 +511,7 @@ impl ScrollRegion {
                                 } else {
                                     Vec2::new(target - self.offset.x, 0.0)
                                 };
-                                *ctx.handled = true;
+                                *handled = true;
                                 return self.scroll_by(delta);
                             }
                             PressOutcome::Miss => {}
@@ -480,7 +522,7 @@ impl ScrollRegion {
                 ElementState::Released => {
                     let released = self.vbar.release() | self.hbar.release();
                     if released {
-                        *ctx.handled = true;
+                        *handled = true;
                     }
                     released
                 }
@@ -512,7 +554,7 @@ impl ScrollRegion {
                 };
                 let moved = self.scroll_by(delta);
                 if moved {
-                    *ctx.handled = true;
+                    *handled = true;
                 }
                 moved
             }
@@ -554,6 +596,10 @@ impl ScrollRegion {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "scroll_region/capture_tests.rs"]
+mod capture_tests;
 
 #[cfg(test)]
 mod tests {

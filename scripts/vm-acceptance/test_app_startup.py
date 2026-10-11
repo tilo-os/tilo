@@ -37,6 +37,14 @@ def judge(log, *args):
 
 
 class AppStartupTest(unittest.TestCase):
+    def test_a_warm_open_on_a_cpu_rasterizer_is_held_tighter_than_a_launch(self):
+        warm = app_startup.warm_open_budget_ms("so.tilo.notes", "cpu")
+        self.assertEqual(warm, 1500)
+        self.assertLess(warm, app_startup.budget_ms("so.tilo.notes", "cpu"),
+                        "a session's cold launches keep the per-launch software budget")
+        self.assertEqual(app_startup.warm_open_budget_ms("so.tilo.notes", "gpu"),
+                         app_startup.budget_ms("so.tilo.notes", "gpu"))
+
     def test_parses_launches_phases_and_history(self):
         startups = app_startup.parse_startups(LOG)
         self.assertEqual([s["app"] for s in startups],

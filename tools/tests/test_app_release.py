@@ -264,6 +264,17 @@ class AppReleaseTests(unittest.TestCase):
                     self.assertEqual([path], app_release.input_classification([path], metadata, root)[kind])
                 self.assertEqual(sorted(catalog), app_release.apps_from_changes(
                     ['crates/deleted-owner/src/lib.rs'], catalog, metadata, root))
+                # A runtime engine is signed into the runtime bundle:
+                # changing it changes the runtime every app names, not only
+                # the one app that loads it.
+                engine = root / 'crates/runtime/engines/typst/Cargo.toml'
+                engine.parent.mkdir(parents=True)
+                engine.write_text('[package]\nname = "tilo-typst-engine"\n')
+                metadata['packages'].append(package('tilo-typst-engine', 'crates/runtime/engines/typst'))
+                self.assertEqual({'tilo-typst-engine'}, app_release.runtime_engines(root))
+                self.assertEqual(sorted(catalog), app_release.apps_from_changes(
+                    ['crates/runtime/engines/typst/src/lib.rs'], catalog, metadata, root))
+                metadata['packages'].pop()
                 # A shared dependency can invalidate packaging tools AND app code;
                 # do not label that as packaging-only for a future reuse worker.
                 metadata['packages'][-2]['dependencies'] = [{'path': str(root / 'crates/format')}]

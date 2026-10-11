@@ -317,8 +317,34 @@ class Rechunk(unittest.TestCase):
                      "usr/bin", "etc", "sysroot/ostree"):
             (rootfs / path).mkdir(parents=True)
         (rootfs / "usr/lib/libz.so.1").write_text("z")
-        self.assertEqual(runner.outside(rootfs, "/usr/lib/tilo/windows-runners"), [
+        self.assertEqual(runner.outside(rootfs, ["/usr/lib/tilo/windows-runners"]), [
             "/etc", "/sysroot", "/usr/bin", "/usr/lib/libz.so.1", "/usr/lib/sysimage", "/usr/lib/tilo/fonts"])
+
+    def test_a_file_set_run_keeps_only_its_files_and_their_parents(self) -> None:
+        rootfs = self.work / "rootfs"
+        for path in ("usr/lib/tilo-runtime/2026.07+native.ab/lib", "usr/lib/tilo-runtime/2026.10.9-chromium",
+                     "usr/share/tilo", "etc/tilo", "usr/bin"):
+            (rootfs / path).mkdir(parents=True)
+        for path in ("usr/lib/tilo-runtime/2026.07+native.ab/bundle.toml",
+                     "usr/lib/tilo-runtime/2026.07+native.ab/lib/libruntime_dylib.so",
+                     "usr/lib/tilo-runtime/2026.10.9-chromium/bundle.toml",
+                     "usr/share/tilo/runtime-bundle-publisher.hex", "usr/share/tilo/catalog.toml",
+                     "etc/tilo/runtime-bundle-trusted-publishers.txt", "etc/tilo/other.conf", "etc/hostname"):
+            (rootfs / path).write_text(path)
+        # A link is no file of the set: chunkah would follow nothing, and the
+        # main run keeps it.
+        (rootfs / "usr/share/tilo/app-publisher.hex").symlink_to("runtime-bundle-publisher.hex")
+        files = runner.matches(rootfs, runner.FILE_SETS["build-signatures"])
+        self.assertEqual(files, [
+            "/etc/tilo/runtime-bundle-trusted-publishers.txt",
+            "/usr/lib/tilo-runtime/2026.07+native.ab/bundle.toml",
+            "/usr/lib/tilo-runtime/2026.10.9-chromium/bundle.toml",
+            "/usr/share/tilo/runtime-bundle-publisher.hex",
+        ])
+        self.assertEqual(runner.outside(rootfs, files), [
+            "/etc/hostname", "/etc/tilo/other.conf", "/usr/bin",
+            "/usr/lib/tilo-runtime/2026.07+native.ab/lib",
+            "/usr/share/tilo/app-publisher.hex", "/usr/share/tilo/catalog.toml"])
 
     def test_the_runner_gives_present_trees_their_own_run(self) -> None:
         rootfs = self.work / "rootfs"
@@ -337,21 +363,65 @@ class Rechunk(unittest.TestCase):
         (fake / "chunkah").chmod(0o755)
         environment = {"PATH": f"{fake}:/usr/bin:/bin", "SOURCE_DATE_EPOCH": "1700000000"}
         out = self.work / "out"
+        (rootfs / "etc/tilo").mkdir()
+        (rootfs / "etc/tilo/runtime-bundle-trusted-publishers.txt").write_text("ab\n")
         subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs), str(out), "128"],
                        check=True, env=environment)
-        main, tree = calls.read_text().splitlines()
+        main, tree, signatures = calls.read_text().splitlines()
         self.assertIn("--max-layers 128", main)
-        self.assertIn("--prune /sysroot/ --prune /usr/lib/tilo/windows-runners/", main)
+        self.assertIn("--prune /sysroot/ --prune /usr/lib/tilo/windows-runners/"
+                      " --prune /etc/tilo/runtime-bundle-trusted-publishers.txt", main)
         self.assertIn("--max-layers 16", tree)
         self.assertIn("--prune /etc", tree)
+        self.assertIn("--max-layers 1 ", signatures)
+        self.assertIn("--prune /usr", signatures)
+        self.assertNotIn("--prune /etc/tilo", signatures)
         self.assertTrue((out / "image").is_dir() and (out / "components.json").is_file())
         self.assertTrue((out / "trees" / "windows-runners" / "image").is_dir())
+        self.assertTrue((out / "trees" / "build-signatures" / "image").is_dir())
         # No epoch, no run: two builds must share it to share layers.
         failed = subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs),
                                  str(self.work / "out2"), "128"], env={"PATH": environment["PATH"]},
                                 capture_output=True, text=True)
         self.assertNotEqual(failed.returncode, 0)
         self.assertIn("SOURCE_DATE_EPOCH", failed.stderr)
+
+    def test_the_app_store_index_leaves_the_app_store_tree_for_a_layer_of_its_own(self) -> None:
+        rootfs = self.work / "rootfs"
+        store = rootfs / "usr/share/tilo-apps"
+        for path in ("pkgs/ab/bin", "pkgs/ab.pkg", "cohort", "../../bin"):
+            (store / path).mkdir(parents=True)
+        for path in ("registry.toml", "pkgs/ab/bin/calculator", "pkgs/ab.pkg/manifest.toml",
+                     "pkgs/ab.pkg/signed-root", "cohort/so.tilo.calculator.tapp"):
+            (store / path).write_text(path)
+        calls = self.work / "calls"
+        fake = self.work / "bin"
+        fake.mkdir()
+        (fake / "chunkah").write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$*\" >> {calls}\n"
+            "while [ $# -gt 0 ]; do\n"
+            "  case $1 in --output) mkdir -p \"${2#oci:}\";; --write-manifest-to) echo {} > \"$2\";; esac\n"
+            "  shift\n"
+            "done\n")
+        (fake / "chunkah").chmod(0o755)
+        environment = {"PATH": f"{fake}:/usr/bin:/bin", "SOURCE_DATE_EPOCH": "1700000000"}
+        subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs), str(self.work / "out"),
+                        "128"], check=True, env=environment)
+        main, store_run, index = calls.read_text().splitlines()
+        # The main run leaves the whole store to the tree's run and the set's.
+        self.assertIn("--prune /usr/share/tilo-apps/ ", main + " ")
+        self.assertNotIn("registry.toml", main)
+        self.assertIn("--max-layers 32", store_run)
+        self.assertIn("--prune /usr/bin", store_run)
+        for path in ("registry.toml", "pkgs/ab.pkg/manifest.toml", "pkgs/ab.pkg/signed-root"):
+            self.assertIn(f"--prune /usr/share/tilo-apps/{path}", store_run)
+        self.assertNotIn("calculator", store_run)
+        self.assertIn("--max-layers 1 ", index)
+        self.assertIn("--prune /usr/share/tilo-apps/cohort", index)
+        self.assertIn("--prune /usr/share/tilo-apps/pkgs/ab ", index + " ")
+        self.assertNotIn("registry.toml", index)
+        self.assertNotIn("ab.pkg", index)
 
     def test_opaque_root_and_replaced_directory(self) -> None:
         tree = rechunk.Tree()

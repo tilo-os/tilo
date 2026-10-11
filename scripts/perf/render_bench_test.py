@@ -40,16 +40,23 @@ class FakeHarness:
             Path(overrides[render_bench.REDRAW_SAMPLES_ENV]).write_text(
                 "".join(f"{4000 + index}\n" for index in range(self.redraw_samples)))
             return (0 if self.redraw_gate == "Pass" else 1), REDRAW_OUTPUT.format(gate=self.redraw_gate)
+        if label == "strip-pan":
+            out = Path(argv[argv.index("--out") + 1])
+            out.mkdir(parents=True, exist_ok=True)
+            for _, _, stem, _ in render_bench.PAN_RECORDS:
+                (out / f"{stem}.txt").write_text("3000\n5000\n4000\n")
+            return 0, 'adapter: name="llvmpipe (LLVM 19.1.7, 256 bits)" backend=Vulkan driver="Mesa"\n'
         raise AssertionError(label)
 
 
 class Timing(unittest.TestCase):
-    def timing(self, harness):
+    def timing(self, harness, strip_pan_bench=None):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "env.json").write_text(json.dumps(ENV))
             args = argparse.Namespace(ui_perf="ui-perf", redraw_bench="redraw_bench", out=root / "out",
-                                      env_json=root / "env.json", records=root / "records.jsonl")
+                                      env_json=root / "env.json", records=root / "records.jsonl",
+                                      strip_pan_bench=strip_pan_bench)
             with mock.patch.object(render_bench, "run", harness):
                 status = render_bench.timing(args)
             records = (render_bench.record.read(args.records) if args.records.exists() else [])
@@ -65,6 +72,16 @@ class Timing(unittest.TestCase):
         self.assertEqual((redraw.kpi, redraw.n), ("render.shell.redraw_us.4k", 1000))
         self.assertEqual(redraw.meta["gate"], "mean<=25000us p99<=50000us Pass")
         self.assertEqual(redraw.renderer, "lavapipe")
+
+    def test_the_pan_harness_adds_its_frame_time_and_pixel_records(self):
+        status, records = self.timing(FakeHarness(), strip_pan_bench="strip_pan_bench")
+        self.assertEqual(status, 0)
+        pan = {item.kpi: item for item in records[2:]}
+        self.assertEqual(sorted(pan), sorted(kpi for kpi, _, _, _ in render_bench.PAN_RECORDS))
+        self.assertEqual((pan["render.shell.pan_pixels.4k"].unit, pan["render.shell.pan_pixels.4k"].n),
+                         ("pixels", 3))
+        self.assertEqual(pan["render.shell.pan_us.4k"].p50, 4000)
+        self.assertTrue(pan["render.shell.pan_us.4k"].meta["adapter"].startswith("llvmpipe"))
 
     def test_a_failed_verification_records_nothing(self):
         harness = FakeHarness(verify="damage-verify: FAIL checked=40/40 differing_frames=2\n")
@@ -124,6 +141,17 @@ class HarnessContract(unittest.TestCase):
         self.assertIn('"gates: mean<={MEAN_LIMIT_US}us p99<={P99_LIMIT_US}us ({gate:?})"', shell)
         self.assertIn('"DRM bridge adapter: name=', shell)
         self.assertIn(f"const SAMPLE_COUNT: usize = {render_bench.REDRAW_SAMPLE_COUNT:_}", shell)
+        pan = (REPO / "crates/session/shell/examples/strip_pan_bench.rs").read_text()
+        self.assertIn('"adapter: name=', pan)
+        # Labels are `pan.<size>[.s<percent>][.strips<n>].w<windows>.<mode>`,
+        # joined from these parts; the default cases include every scale and
+        # strip count PAN_CASES reads.
+        for stem in ('case.label("pan", mode)', 'case.label("strip-move", mode)',
+                     'format!("s{}", (self.scale * 100.0).round())', 'format!("strips{}", self.strips)',
+                     'format!("w{}", self.windows)', 'parts.join(".")',
+                     '[(1.5, 1), (2.0, 1), (1.0, 2), (2.0, 2)]',
+                     '("frame-us", ', '("pixels", ', '("4k", (3840, 2160))', '"layered"'):
+            self.assertIn(stem, pan)
 
 
 if __name__ == "__main__":

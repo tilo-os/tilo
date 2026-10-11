@@ -12,6 +12,7 @@ use tilo_desktop_model::{
 };
 
 pub mod index;
+pub mod morning;
 pub mod view_actions;
 pub use view_actions::WorkspaceViewRequest;
 mod pane;
@@ -147,6 +148,40 @@ pub trait ActivityHost {
     fn local_author(&self, _authors: &mut ui::AuthorDirectory, _actor: &str) -> Option<String> {
         None
     }
+    fn morning_sources_available(&self) -> bool {
+        false
+    }
+    /// Presently admitted provider data only; no implicit refresh or account connection.
+    fn morning_payload(
+        &self,
+        _room: &str,
+        _source: &morning::MorningSource,
+    ) -> Option<morning::MorningPayload> {
+        None
+    }
+    /// Submit a chosen source command through the existing admitted action session.
+    ///
+    /// # Errors
+    /// Returns a localized refusal if the source or caller is no longer admitted.
+    fn submit_morning_command(
+        &self,
+        _room: &str,
+        _source: &morning::MorningSource,
+        _command: morning::MorningCommand,
+    ) -> Result<(), String> {
+        Err(crate::i18n::t("activity-morning-command-unavailable"))
+    }
+    fn morning_command_status(
+        &self,
+        _room: &str,
+        _source: &morning::MorningSource,
+    ) -> Option<String> {
+        None
+    }
+    fn load_morning_sources(&self) -> HashMap<u64, morning::MorningPreferences> {
+        HashMap::new()
+    }
+    fn save_morning_sources(&self, _sources: &HashMap<u64, morning::MorningPreferences>) {}
     fn load_frontiers(&self) -> HashMap<u64, WorkspaceSeenFrontier> {
         HashMap::new()
     }

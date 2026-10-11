@@ -13,34 +13,11 @@ use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, OpenOptionsExt as _}
 use std::path::{Path, PathBuf};
 use std::slice;
 
+use crate::linux_gamepad_evdev::{self as evdev, ABS_HAT0X, ABS_HAT0Y, EV_ABS, EV_KEY, EV_SYN};
 use crate::linux_virtual_gamepad::{FORWARDED_GAMEPAD_PRODUCT, FORWARDED_GAMEPAD_VENDOR};
-use crate::{ForwardedGamepadEvent, GamepadAxis, GamepadButton};
+use crate::{ForwardedGamepadEvent, GamepadAxis};
 
-const EV_SYN: u16 = 0x00;
-const EV_KEY: u16 = 0x01;
-const EV_ABS: u16 = 0x03;
 const SYN_DROPPED: u16 = 3;
-
-const ABS_X: u16 = 0x00;
-const ABS_Y: u16 = 0x01;
-const ABS_Z: u16 = 0x02;
-const ABS_RX: u16 = 0x03;
-const ABS_RY: u16 = 0x04;
-const ABS_RZ: u16 = 0x05;
-const ABS_HAT0X: u16 = 0x10;
-const ABS_HAT0Y: u16 = 0x11;
-
-const BTN_SOUTH: u16 = 0x130;
-const BTN_EAST: u16 = 0x131;
-const BTN_NORTH: u16 = 0x133;
-const BTN_WEST: u16 = 0x134;
-const BTN_TL: u16 = 0x136;
-const BTN_TR: u16 = 0x137;
-const BTN_SELECT: u16 = 0x13a;
-const BTN_START: u16 = 0x13b;
-const BTN_MODE: u16 = 0x13c;
-const BTN_THUMBL: u16 = 0x13d;
-const BTN_THUMBR: u16 = 0x13e;
 
 // Nintendo's Joy-Con halves as the kernel hid-nintendo driver exposes them.
 // joycond claims exactly these (os/usr/lib/udev/rules.d/72-joycond.rules).
@@ -49,15 +26,6 @@ const JOYCON_LEFT_PRODUCT: u16 = 0x2006;
 const JOYCON_RIGHT_PRODUCT: u16 = 0x2007;
 const JOYCON_GRIP_PRODUCT: u16 = 0x200e;
 const JOYCOND_UDEV_TAG: &str = "joycond";
-
-const AXES: [(u16, GamepadAxis, AxisKind); 6] = [
-    (ABS_X, GamepadAxis::LeftX, AxisKind::Stick),
-    (ABS_Y, GamepadAxis::LeftY, AxisKind::Stick),
-    (ABS_RX, GamepadAxis::RightX, AxisKind::Stick),
-    (ABS_RY, GamepadAxis::RightY, AxisKind::Stick),
-    (ABS_Z, GamepadAxis::LeftTrigger, AxisKind::Trigger),
-    (ABS_RZ, GamepadAxis::RightTrigger, AxisKind::Trigger),
-];
 
 /// Opaque device-local identifier. It is never serialized or sent to a peer.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -276,10 +244,14 @@ impl LinuxPhysicalGamepadSource {
             .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK)
             .open(path)?;
         let mut calibrations = BTreeMap::new();
-        for (code, _, kind) in AXES {
+        for axis in evdev::AXES {
+            let code = evdev::axis_code(axis);
             match query_abs_info(file.as_raw_fd(), code) {
                 Ok(info) => {
-                    calibrations.insert(code, AxisCalibration::from_abs_info(info, kind)?);
+                    calibrations.insert(
+                        code,
+                        AxisCalibration::from_abs_info(info, AxisKind::of(axis))?,
+                    );
                 }
                 Err(error) if matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOTTY)) => {
                 }
@@ -329,7 +301,7 @@ impl LinuxPhysicalGamepadSource {
                     ));
                 }
                 (EV_KEY, code) => {
-                    if let Some(button) = gamepad_button(code)
+                    if let Some(button) = evdev::button(code)
                         && matches!(raw.value, 0 | 1)
                     {
                         events.push(ForwardedGamepadEvent::Button {
@@ -353,16 +325,14 @@ impl LinuxPhysicalGamepadSource {
                     });
                 }
                 (EV_ABS, code) => {
-                    let Some((_, axis, _)) =
-                        AXES.iter().find(|(candidate, _, _)| *candidate == code)
-                    else {
+                    let Some(axis) = evdev::axis(code) else {
                         continue;
                     };
                     let Some(calibration) = self.calibrations.get(&code) else {
                         continue;
                     };
                     events.push(ForwardedGamepadEvent::Axis {
-                        axis: *axis,
+                        axis,
                         value: calibration.normalize(raw.value),
                     });
                 }
@@ -380,6 +350,17 @@ impl LinuxPhysicalGamepadSource {
 enum AxisKind {
     Stick,
     Trigger,
+}
+
+impl AxisKind {
+    fn of(axis: GamepadAxis) -> Self {
+        match axis {
+            GamepadAxis::LeftTrigger | GamepadAxis::RightTrigger => Self::Trigger,
+            GamepadAxis::LeftX | GamepadAxis::LeftY | GamepadAxis::RightX | GamepadAxis::RightY => {
+                Self::Stick
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -432,23 +413,6 @@ fn scale(value: i32, from_min: i32, from_max: i32, to_min: i32, to_max: i32) -> 
     let denominator = i64::from(from_max).saturating_sub(i64::from(from_min));
     let mapped = i64::from(to_min).saturating_add(numerator.checked_div(denominator).unwrap_or(0));
     i16::try_from(mapped.clamp(i64::from(i16::MIN), i64::from(i16::MAX))).unwrap_or_default()
-}
-
-fn gamepad_button(code: u16) -> Option<GamepadButton> {
-    Some(match code {
-        BTN_SOUTH => GamepadButton::South,
-        BTN_EAST => GamepadButton::East,
-        BTN_WEST => GamepadButton::West,
-        BTN_NORTH => GamepadButton::North,
-        BTN_TL => GamepadButton::LeftBumper,
-        BTN_TR => GamepadButton::RightBumper,
-        BTN_THUMBL => GamepadButton::LeftStick,
-        BTN_THUMBR => GamepadButton::RightStick,
-        BTN_START => GamepadButton::Start,
-        BTN_SELECT => GamepadButton::Select,
-        BTN_MODE => GamepadButton::Guide,
-        _ => return None,
-    })
 }
 
 fn is_exclusive_controller(properties: &str) -> bool {
@@ -750,13 +714,6 @@ mod tests {
                     .is_valid()
                 );
             }
-        }
-        // Phase `kernel_codes_map_only_to_fixed_schema`.
-        {
-            assert_eq!(gamepad_button(BTN_SOUTH), Some(GamepadButton::South));
-            assert_eq!(gamepad_button(BTN_MODE), Some(GamepadButton::Guide));
-            assert_eq!(gamepad_button(30), None, "keyboard A must never escape");
-            assert_eq!(gamepad_button(0xffff), None);
         }
     }
 }

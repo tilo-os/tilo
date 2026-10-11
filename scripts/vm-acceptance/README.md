@@ -170,8 +170,10 @@ run here on every full run instead, on the dev disk under KVM:
   applications <app>`) and timed to the app's own `first-frame-presented` startup mark,
   so the time holds the compositor's dispatch, the launcher and the sandbox as well as
   the app's start; it waits for the app's processes to exit before the next open. The
-  median is held to the app's budget on the session's renderer (`app_startup.budget_ms`);
-  on a GPU the p95 is also held to the KPI document's target (`tools/perf/kpi-budgets.toml`).
+  median is held to the app's warm-open budget on the session's renderer
+  (`app_startup.warm_open_budget_ms`: 1.5 s on a CPU rasterizer, tighter than a launch's
+  3 s, otherwise the app's budget); on a GPU the p95 is also held to the KPI document's
+  target (`tools/perf/kpi-budgets.toml`).
   Each open is split into segments that add up to it (`open_segments`): request to the
   launcher's start, the launcher's own phases (the marks it hands the app in
   `TILO_STARTUP_LAUNCHER_MARKS`), the launcher's hand-off to the app's `main` (bubblewrap,
@@ -224,6 +226,7 @@ the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run'
 | `disk.runtime_mib.per_user`, `disk.runtime_builds.per_user`, `disk.app_store_mib.per_user` | MiB, count | R03 | the slot user's downloaded runtime builds (`$XDG_DATA_HOME/tilo-runtime`) and app store (`$XDG_DATA_HOME/tilo-apps`) after the apps closed: what collection after each change leaves |
 | `memory.shell_anon_mib.empty` | MiB | R01 | the compositor's anonymous RSS with no app open |
 | `memory.compositor_memfd_mib{,.four_apps,.after_close}` | MiB | R01, R03 | shmem allocated to the memfds and `/dev/shm` files the compositor holds open, mapped or not (`stat -L` through `/proc/PID/fd`); `R0x-shell-smaps*.json` `shm_by_name` splits it by memfd name and `shm_fds` lists every memfd, dma-buf and DRM fd with its fdinfo (TIL-731) |
+| `memory.shell_parts_mib.<class>`, `memory.shell_parts_mib.malloc_{in_use,free}`, `memory.shell_threads` | MiB, count | R01 (and `.after_close`, R03) | the compositor's own resident memory per kind of mapping (`heap_main`, `heap_arenas`, `thread_stacks`, `anon_other`, `anon_exec`, `gpu_memfd`, `fonts`, `binary`, `gpu_driver_libs`, `libraries`, `files_other`, …), from `mincore` over `/proc/self/maps` in the compositor (`tilo-control raw '{"op":"process_memory"}'`; Tilo's kernel has no smaps); glibc's heap in use and free (`mallinfo2`); its thread count. The whole report is `R01-shell-memory-map.json` |
 | `app.open.warm_ms.<app>` | ms | A15 | open request to first presented frame, ten warm opens |
 | `app.startup_ms.<app>`, `app.startup_ms.file-explorer.first_in_session` | ms | A15, A14 | process start to first presented frame |
 | `app.open.{request_to_launcher,launcher,sandbox_to_main,exec_to_main}_ms.<app>` | ms | A15 | the open before the app's `main`, by segment |

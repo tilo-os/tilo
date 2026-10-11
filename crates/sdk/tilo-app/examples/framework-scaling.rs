@@ -44,10 +44,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-use tilo_app::framework::profiling::observe;
 use tilo_app::framework::testing::drive_live_window;
 use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
+use tilo_app::tilo_resource::profiling::observe;
 use tilo_app::time::Instant;
 use tilo_app::winit::dpi::{PhysicalPosition, PhysicalSize};
 use tilo_app::winit::event::DeviceId;
@@ -368,7 +368,8 @@ fn pointer_moves(app: &mut tilo_app::App) -> (f64, usize) {
                 phases
                     .iter()
                     .filter(|phase| phase.phase == "framework.publication")
-                    .count(),
+                    .map(|phase| phase.calls)
+                    .sum(),
             );
             elapsed
         })

@@ -1344,11 +1344,7 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        let at = Point::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-        );
+        let at = crate::widget::layout_rect(taffy, node, origin).origin();
         let Some((button, popover)) = Self::nodes(taffy, node) else {
             return;
         };

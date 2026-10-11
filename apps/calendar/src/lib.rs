@@ -46,6 +46,8 @@ pub mod model;
 mod outbox;
 pub mod resource;
 mod sidebar;
+mod tasks;
+mod tasks_i18n;
 mod timeline_interaction;
 mod timeline_viewport;
 pub mod timezone;

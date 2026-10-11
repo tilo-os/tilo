@@ -2051,16 +2051,13 @@ impl Widget for GreeterApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
         let before = (
             self.compact(self.layout_text_scale),
             self.clock_size(self.compact(self.layout_text_scale))
                 .to_bits(),
             self.rect.width() >= 1000.0,
         );
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         // The composition depends on the viewport. App and FrameHarness
         // settle this rebuild before painting, including the very first frame
         // and crossings caused by display/text scaling.

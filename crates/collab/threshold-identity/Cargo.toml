@@ -52,11 +52,6 @@ thiserror.workspace = true
 # of entropy + 8-bit checksum). Fixed at 2.x to avoid breaking changes.
 bip39.workspace = true
 
-# SHA-512 for the pairing-transcript hash (matches the hash
-# function used in FROST(Ed25519, SHA-512), which is already a
-# transitive dep via frost-ed25519).
-sha2.workspace = true
-
 # `ed25519-dalek` holds the single-device (1-of-1) key. A frost
 # `SigningKey` stores a signing scalar, not the seed `ed25519-dalek`
 # expands via SHA-512 to reach that scalar — and every reader of the

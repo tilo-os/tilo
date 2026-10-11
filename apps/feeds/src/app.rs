@@ -2192,11 +2192,7 @@ impl ui::widget::Decorator for FeedsApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         match self.mount.filter(|mount| mount.root == node) {
             Some(mount) => {
-                let l = taffy.layout(node).copied().unwrap_or_default();
-                let inner = Point::new(
-                    origin.x + f64::from(l.location.x),
-                    origin.y + f64::from(l.location.y),
-                );
+                let inner = ui::widget::layout_rect(taffy, node, origin).origin();
                 Widget::apply_layout(&mut self.shell, taffy, mount.shell, inner);
                 if let (Some(modal), Some(dialog)) = (self.modal.as_mut(), mount.dialog) {
                     modal.dialog.apply_layout(taffy, dialog, inner);

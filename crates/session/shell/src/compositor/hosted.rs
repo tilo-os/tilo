@@ -387,6 +387,9 @@ fn attach_peer_sync_bridge(
     let net = Arc::clone(net);
     let tree_for_bridge = tree_handle;
     host.with_peer_sync_bridge(std::rc::Rc::new(move |req| match req {
+        crate::shell::overlay_host::PeerSyncRequest::PrepareInvitation => {
+            Ok(net.prepare_invitation())
+        }
         crate::shell::overlay_host::PeerSyncRequest::IssueInvite => {
             let active = tree_for_bridge.read().desktop.active;
             net.issue_invite(active, INVITE_EXPIRY_SECONDS)

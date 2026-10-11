@@ -12,6 +12,10 @@ way in every lane:
 - `redraw_bench` (`crates/session/shell/examples`): 1,000 clicks through the
   shell's `FrameBuilder`, each painted, rendered by the DRM bridge, read back
   and swizzled into an XRGB buffer. No page flip or scanout.
+- `strip_pan_bench` (`crates/session/shell/examples`, optional): a continuous
+  strip pan and strip-to-strip moves through `FrameBuilder` and the DRM direct
+  path's GPU target, with the presenter compositing pans from retained strip
+  layers: frame time and the pixels each frame rasterises.
 
 Subcommands:
 
@@ -19,9 +23,12 @@ Subcommands:
   allocator calls and bytes per redraw, native pixels rasterised per redraw,
   and allocations per 1,000 events that need no redraw, against the budgets
   `docs/ui-performance-benchmark.md` documents. No clock is compared.
-- `timing UI_PERF REDRAW_BENCH`: the scheduled lane. Frame-time samples from
-  both harnesses become `render.ui.frame_us.4k` and
-  `render.shell.redraw_us.4k` records (`tools/perf/record.py`).
+- `timing UI_PERF REDRAW_BENCH [--strip-pan-bench STRIP_PAN_BENCH]`: the
+  scheduled lane. Frame-time samples from both harnesses become
+  `render.ui.frame_us.4k` and `render.shell.redraw_us.4k` records
+  (`tools/perf/record.py`); the pan harness adds `render.shell.pan_us.*` and
+  `render.shell.pan_pixels.*` (4K at 100 %, 150 % and 200 %, and on two
+  strips at 100 % and 200 %) and `render.shell.strip_move_us.4k`.
 
 Both start with the damage-verification preflight: every retained frame must
 match a full render of the same scene, or no number of the run counts.
@@ -70,6 +77,22 @@ UI_TIMING = {**NATIVE_4K, "TILO_UI_DASH_ITERS": "1000"}
 UI_SAMPLES_ENV = "TILO_UI_DASH_SAMPLES"
 REDRAW_SAMPLES_ENV = "TILO_REDRAW_BENCH_SAMPLES"
 REDRAW_SAMPLE_COUNT = 1000
+# The strip pan harness's 4K, six-window cases through the layered presenter,
+# as (KPI, unit, samples file stem in its --out directory, case): at 100 % on
+# one strip, at 150 % and 200 % on one strip, and on two strips (the docked
+# wheel riding the top strip over the second) at 100 % and 200 %.
+PAN_CASES = (("4k", "pan.4k.w6", "4k, 6 windows, layered presenter"),
+             ("4k_s150", "pan.4k.s150.w6", "4k at 150 %, 6 windows, layered presenter"),
+             ("4k_s200", "pan.4k.s200.w6", "4k at 200 %, 6 windows, layered presenter"),
+             ("4k_strips2", "pan.4k.strips2.w6", "4k, two strips, 6 windows, layered presenter"),
+             ("4k_s200_strips2", "pan.4k.s200.strips2.w6",
+              "4k at 200 %, two strips, 6 windows, layered presenter"))
+PAN_RECORDS = tuple(record for suffix, stem, case in PAN_CASES
+                    for record in ((f"render.shell.pan_us.{suffix}", "us", f"{stem}.layered.frame-us", case),
+                                   (f"render.shell.pan_pixels.{suffix}", "pixels", f"{stem}.layered.pixels", case))) + (
+    ("render.shell.strip_move_us.4k", "us", "strip-move.4k.w6.layered.frame-us",
+     "4k, 6 windows, layered presenter"),)
+PAN_ADAPTER = re.compile(r"^adapter: name=\"([^\"]*)\"", re.M)
 
 # A run measures the harness's defaults: no inherited benchmark switch or
 # renderer optimisation override may reach it.
@@ -168,6 +191,16 @@ def redraw_record(output: str, samples_file: Path, env: dict[str, Any]) -> tuple
     return record.from_samples("render.shell.redraw_us.4k", "us", samples, meta=meta, **base), gate.group(2) == "Pass"
 
 
+def pan_records(output: str, samples_dir: Path, env: dict[str, Any]) -> list[record.Record]:
+    """The strip pan records, from the samples the harness wrote to `samples_dir`."""
+    adapter = PAN_ADAPTER.search(output)
+    meta = {**env.get("meta", {}), "adapter": adapter.group(1) if adapter else "unknown"}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(kpi, unit, read_samples(samples_dir / f"{stem}.txt", None, "strip_pan_bench"),
+                                meta={**meta, "case": case}, **base)
+            for kpi, unit, stem, case in PAN_RECORDS]
+
+
 def timing(args: argparse.Namespace) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     env = record.load_env(args.env_json)
@@ -197,6 +230,13 @@ def timing(args: argparse.Namespace) -> int:
             # outcome and the lane's comparison judges the trend.
             print(f"::warning::redraw_bench's own gate failed on this renderer ({redraw.meta['gate']}); "
                   "the record is kept")
+        strip_pan_bench = getattr(args, "strip_pan_bench", None)
+        if strip_pan_bench is not None:
+            pan_dir = args.out / "pan"
+            pan_status, pan_output = run("strip-pan", [strip_pan_bench, "--out", str(pan_dir)], {}, args.out)
+            if pan_status != 0:
+                raise ValueError(f"strip_pan_bench exited {pan_status}")
+            records.extend(pan_records(pan_output, pan_dir, env))
     except ValueError as error:
         print(f"::error::render timing: {error}")
         status = 1
@@ -217,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
     lane = commands.add_parser("timing", help="frame-time records for the scheduled lane")
     lane.add_argument("ui_perf")
     lane.add_argument("redraw_bench")
+    lane.add_argument("--strip-pan-bench", help="also time strip pans with this strip_pan_bench binary")
     lane.add_argument("--env-json", type=Path, required=True, help="tools/perf/record.py env output")
     lane.add_argument("--out", type=Path, default=REPO / "target/render-bench")
     lane.add_argument("--records", type=Path, help="append the records to this JSON-lines file")

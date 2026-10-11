@@ -87,9 +87,7 @@ const LAB_SOURCES: &[&str] = &[
     "conflict_picker.rs",
     "dashboard.rs",
     "gallery.rs",
-    "identity_flow_demo.rs",
     "responsive_gallery.rs",
-    "widget_showcase.rs",
 ];
 const SHOT_SOURCES: &[&str] = &[
     "chart_gallery_shots.rs",
@@ -111,8 +109,6 @@ const SHOT_SOURCES: &[&str] = &[
     "text_shots.rs",
     "textinput_ext_shots.rs",
     "undo_controls_shots.rs",
-    "widget_showcase_snapshot.rs",
-    "widget_snapshot.rs",
     "widget_states_shots.rs",
     "window_chrome_shots.rs",
 ];

@@ -25,6 +25,9 @@ pub use accessibility::is_sheet_target as is_accessibility_target;
 /// A transport request emitted by the overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerSyncRequest {
+    /// The invite composer opened: an invite is likely, so the network
+    /// starts this device's relays now and the invite can name one.
+    PrepareInvitation,
     IssueInvite,
     ExportIdentity,
     IssueInviteFor {
@@ -384,7 +387,8 @@ impl PeerSyncOverlay {
             (
                 PeerSyncRequest::PollEnrollment(_)
                 | PeerSyncRequest::CancelEnrollment(_)
-                | PeerSyncRequest::IssueInvitation(_),
+                | PeerSyncRequest::IssueInvitation(_)
+                | PeerSyncRequest::PrepareInvitation,
                 _,
             ) => {}
 

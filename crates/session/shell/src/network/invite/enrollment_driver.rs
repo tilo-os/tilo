@@ -126,6 +126,11 @@ pub(crate) struct Registry {
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 impl Registry {
+    /// Whether an enrollment is still talking to its host.
+    pub(crate) fn is_busy(&self) -> bool {
+        self.tasks.iter().any(|task| !task.is_finished())
+    }
+
     pub(crate) fn handle(
         &mut self,
         command: Command,

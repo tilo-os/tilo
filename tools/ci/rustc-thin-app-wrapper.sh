@@ -78,4 +78,17 @@ if [ "$crate_name" = "runtime_dylib" ]; then
         -C link-arg=-Wl,-Bsymbolic-functions \
         ${lazy_link[@]+"${lazy_link[@]}"}
 fi
+
+# A runtime engine (crates/runtime/engines/*) is a Rust dylib
+# chained on the runtime: one app maps it beside libruntime_dylib.so. It
+# needs prefer-dynamic to link against the runtime at all (a dylib that links
+# another Rust dylib otherwise carries a second libstd), and the runtime's
+# relocation flags for the same reasons.
+case "$crate_name" in
+    tilo_*_engine)
+        exec "$compiler" "$@" -C prefer-dynamic \
+            -C link-arg=-Wl,-z,pack-relative-relocs \
+            -C link-arg=-Wl,-Bsymbolic-functions
+        ;;
+esac
 exec "$compiler" "$@"
