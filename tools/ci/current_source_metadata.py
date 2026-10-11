@@ -32,7 +32,9 @@ def identity(root):
 
 def map_strings(value, old, new):
     if isinstance(value, str):
-        return value.replace(quote(old, safe="/"), quote(new, safe="/")).replace(old, new)
+        if value.startswith(("path+file://", "file://")):
+            return value.replace(quote(old, safe="/"), quote(new, safe="/"))
+        return value.replace(old, new)
     if isinstance(value, list):
         return [map_strings(item, old, new) for item in value]
     if isinstance(value, dict):

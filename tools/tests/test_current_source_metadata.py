@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from urllib.parse import quote
 
 SCRIPT = Path(__file__).resolve().parents[1] / "ci/current_source_metadata.py"
 spec = importlib.util.spec_from_file_location("current_source_metadata", SCRIPT)
@@ -16,7 +17,7 @@ class CurrentSourceMetadataTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name) / "source"
+        self.root = Path(self.temp.name) / "source with spaces"
         (self.root / "src").mkdir(parents=True)
         (self.root / "Cargo.toml").write_text('[package]\nname="fixture"\nversion="0.1.0"\nedition="2024"\n')
         (self.root / "Cargo.lock").write_text("version = 4\n")
@@ -24,7 +25,7 @@ class CurrentSourceMetadataTests(unittest.TestCase):
         for args in (("init", "-q"), ("add", "."),
                      ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")):
             subprocess.run(["git", "-C", str(self.root), *args], check=True)
-        package_id = "path+file://" + str(self.root) + "#fixture@0.1.0"
+        package_id = "path+file://" + quote(str(self.root), safe="/") + "#fixture@0.1.0"
         self.metadata = {"metadata": None, "version": 1, "workspace_root": str(self.root),
                          "workspace_members": [package_id], "packages": [{"id": package_id,
                          "manifest_path": str(self.root / "Cargo.toml"),
