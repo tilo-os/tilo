@@ -2164,8 +2164,6 @@ dependencies = [
  "taffy",
  "tilo-app",
  "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
  "tracing",
  "uuid",
  "workspace-hack",
@@ -11748,7 +11746,6 @@ dependencies = [
  "tilo-ocr",
  "tilo-thumbnail",
  "tilo-vello",
- "tilo-winit",
  "workspace-hack",
 ]
 
