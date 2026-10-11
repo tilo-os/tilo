@@ -318,7 +318,7 @@ impl<R: Resource> ViewPreview<R> {
     fn new(root: ResourceRoot<R>, doc: AutoCommit, view: PreviewView) -> Self {
         Self {
             live: root.live().clone(),
-            root: RootWidget::new(root),
+            root: RootWidget::new(Box::new(root)),
             doc: Some(doc),
             bounds: Rect::ZERO,
             view,

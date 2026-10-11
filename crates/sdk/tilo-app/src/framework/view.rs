@@ -481,7 +481,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let stages = self.stages.clone();
         let feeds = self.feeds.clone();
         let bindings = self.bindings.clone();
-        Box::new(Switch::new(
+        Switch::keyed(
             key.clone(),
             Box::new(move |value: &K, alive: &Rc<()>| {
                 let mut cx = ViewCx {
@@ -501,7 +501,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                 };
                 part(&mut cx, value)
             }),
-        ))
+        )
     }
 
     /// Host a custom widget or renderer that takes part through the

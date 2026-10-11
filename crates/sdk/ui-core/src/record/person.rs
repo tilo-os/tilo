@@ -177,6 +177,40 @@ impl PersonRecords {
         }
     }
 
+    /// The person's record of `kind` when it exists, without creating it:
+    /// what a reader opens, leaving creation to the first write
+    /// ([`Self::open_record`]).
+    ///
+    /// # Errors
+    /// The record could not be read or replicated.
+    pub fn open_existing_record(
+        &self,
+        kind: RecordKind,
+    ) -> Result<Option<PersonRecord>, RecordOpenError> {
+        let checkout = RecordCheckout::new(record_id(&kind), kind);
+        let store = match self.store.try_open_record(&checkout) {
+            Ok(_) => self.store.clone(),
+            Err(RecordOpenError::MissingRecord) => return Ok(None),
+            Err(RecordOpenError::Store(app_state::StoreError::WriterBusy { .. }))
+                if !self.replica =>
+            {
+                let (package, _) = self.store.package_and_home();
+                let replica = Self::replica(&package, self.author.clone())?;
+                match replica.store.try_open_record(&checkout) {
+                    Ok(_) => replica.store,
+                    Err(RecordOpenError::MissingRecord) => return Ok(None),
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(Some(PersonRecord::new(
+            store,
+            checkout,
+            self.author.clone(),
+        )))
+    }
+
     /// Open the original writer for a host-owned canonical edit. Unlike the
     /// readable replica path, this must observe and edit the actual owner:
     /// a busy/missing writer is never replaced by an empty local replica.

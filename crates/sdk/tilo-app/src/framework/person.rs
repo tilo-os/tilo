@@ -10,7 +10,7 @@ use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, Chang
 
 use super::live::Live;
 use super::record::{Held, RecordDoor};
-use super::section::{SectionDoor, SectionKind, record_kind};
+use super::section::{Opener, SectionDoor, SectionKind, record_kind};
 use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::history_mode::HistoryOwner;
@@ -220,7 +220,7 @@ pub(crate) struct PersonState {
     opened: RefCell<HashMap<OpenKey, Rc<dyn Any>>>,
     /// The records of the person's other apps keep, held here too.
     others: RefCell<HashMap<&'static str, PersonRecords>>,
-    owners: RefCell<Vec<HistoryOwner>>,
+    owners: Rc<RefCell<Vec<HistoryOwner>>>,
     refreshers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
     /// The open records' undo and redo, as the palette and agents reach
     /// them.
@@ -332,7 +332,7 @@ impl PersonState {
             me,
             opened: RefCell::default(),
             others: RefCell::default(),
-            owners: RefCell::default(),
+            owners: Rc::default(),
             refreshers: RefCell::default(),
             published: RefCell::default(),
         }
@@ -439,15 +439,21 @@ impl PersonState {
         if let Some(open) = self.opened.borrow().get(&key) {
             return Rc::clone(open).downcast::<SectionDoor>().ok();
         }
-        let record = open_record(&self.records, name, kind.kind, &|doc| kind.fill(doc))?;
-        self.owners.borrow_mut().push(record.history_owner());
-        let door = Rc::new(SectionDoor::person(
+        let label = kind.kind;
+        let door = SectionDoor::person(
             kind,
-            record,
+            Opener {
+                records: self.records.clone(),
+                name,
+                owners: Rc::clone(&self.owners),
+            },
             self.app_id,
             self.app_title,
             self.me.clone(),
-        ));
+        )
+        .map_err(|error| tracing::warn!(kind = label, %error, "settings section unavailable"))
+        .ok()?;
+        let door = Rc::new(door);
         let stepping = Rc::downgrade(&door);
         self.publish(
             key,

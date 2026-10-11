@@ -176,9 +176,16 @@ enum Kept {
         seen: Cell<SettingsRevision>,
     },
     /// A record of the person's: its edits are their steps, undone and
-    /// redone like any of theirs.
+    /// redone like any of theirs. Opened only when something needs it (a
+    /// write creates it, an undo or redo opens it where it exists); until
+    /// then the section reads as stored, from `scratch`.
     Person {
-        record: Box<StoredRecord>,
+        opener: Box<Opener>,
+        record: RefCell<Option<Box<StoredRecord>>>,
+        /// The stored value, while the record is not open.
+        scratch: Box<RefCell<Doc>>,
+        /// The settings document's version `scratch` last followed.
+        scratch_seen: Cell<SettingsRevision>,
         /// The settings document's version the record last followed.
         seen: Cell<Option<SettingsRevision>>,
         /// The record's heads when last read.
@@ -187,6 +194,15 @@ enum Kept {
         app_title: &'static str,
         me: String,
     },
+}
+
+/// How a section's person record is opened when it is first needed.
+pub(crate) struct Opener {
+    pub(crate) records: ui_core::record::person::PersonRecords,
+    /// The record kind it is kept under.
+    pub(crate) name: String,
+    /// The routes of the person's open records, which the runtime syncs.
+    pub(crate) owners: Rc<RefCell<Vec<ui_core::history_mode::HistoryOwner>>>,
 }
 
 /// A settings section held as a record, whatever its type.
@@ -220,30 +236,71 @@ impl SectionDoor {
         })
     }
 
-    /// The section kept in the person's record `record`.
+    /// The section kept in the person's record, which `opener` opens when
+    /// it is first needed.
+    ///
+    /// # Errors
+    /// The stored value does not make a document of the section.
     pub(crate) fn person(
         kind: Rc<SectionKind>,
-        record: StoredRecord,
+        opener: Opener,
         app_id: &'static str,
         app_title: &'static str,
         me: String,
-    ) -> Self {
-        let door = Self {
+    ) -> Result<Self, String> {
+        let mut scratch = Doc::new();
+        kind.fill(&mut scratch)?;
+        scratch.commit();
+        Ok(Self {
             id: format!("settings:{}", kind.kind),
             editable: true,
             kept: Kept::Person {
-                heads: RefCell::new(record.heads()),
-                record: Box::new(record),
+                opener: Box::new(opener),
+                record: RefCell::new(None),
+                scratch: Box::new(RefCell::new(scratch)),
+                scratch_seen: Cell::new(kind.revision()),
                 seen: Cell::new(None),
+                heads: RefCell::new(Vec::new()),
                 app_id,
                 app_title,
                 me,
             },
             kind,
             revision: Cell::new(0),
+        })
+    }
+
+    /// The person's record, opened now if `create` (making it where it does
+    /// not exist) or if it exists; `None` for a window's own section, or a
+    /// person record that does not exist and is not to be made.
+    fn person_record(&self, create: bool) -> Option<std::cell::Ref<'_, Box<StoredRecord>>> {
+        let Kept::Person { opener, record, .. } = &self.kept else {
+            return None;
         };
-        door.follow();
-        door
+        if record.borrow().is_none() {
+            let kind = ui_core::record::RecordKind::new(opener.name.clone());
+            let opened = if create {
+                opener
+                    .records
+                    .open_record(kind, &|doc| self.kind.fill(doc))
+                    .map(Some)
+            } else {
+                opener.records.open_existing_record(kind)
+            };
+            match opened {
+                Ok(Some(opened)) => {
+                    opener.owners.borrow_mut().push(opened.history_owner());
+                    *record.borrow_mut() = Some(Box::new(opened));
+                    self.moved();
+                }
+                Ok(None) => return None,
+                Err(error) => {
+                    tracing::warn!(kind = self.kind.kind, %error, "person record unavailable");
+                    return None;
+                }
+            }
+        }
+        std::cell::Ref::filter_map(record.borrow(), Option::as_ref).ok()
     }
 
     pub(crate) fn label(&self) -> &'static str {
@@ -259,42 +316,34 @@ impl SectionDoor {
     /// Whether the record moved since it was last read.
     pub(crate) fn follow(&self) -> bool {
         let moved = match &self.kept {
-            Kept::Window { doc, seen } => {
-                let revision = self.kind.revision();
-                if revision == seen.get() {
-                    false
-                } else {
-                    seen.set(revision);
-                    let mut doc = doc.borrow_mut();
-                    if self.kind.write(&mut doc).is_ok() {
-                        doc.commit();
-                    } else {
-                        doc.rollback();
-                    }
-                    true
-                }
-            }
+            Kept::Window { doc, seen } => follow_doc(&self.kind, doc, seen),
             Kept::Person {
                 record,
+                scratch,
+                scratch_seen,
                 seen,
                 heads,
                 ..
-            } => {
-                let revision = self.kind.revision();
-                if seen.get() != Some(revision) {
-                    seen.set(Some(revision));
-                    let holds = record
-                        .read(|doc| self.kind.holds_stored(doc))
-                        .unwrap_or(false);
-                    if !holds && let Err(error) = record.edit(false, |doc| self.kind.write(doc)) {
-                        tracing::warn!(kind = self.kind.kind, %error, "settings record did not follow the section");
+            } => match record.borrow().as_deref() {
+                None => follow_doc(&self.kind, scratch, scratch_seen),
+                Some(record) => {
+                    let revision = self.kind.revision();
+                    if seen.get() != Some(revision) {
+                        seen.set(Some(revision));
+                        let holds = record
+                            .read(|doc| self.kind.holds_stored(doc))
+                            .unwrap_or(false);
+                        if !holds && let Err(error) = record.edit(false, |doc| self.kind.write(doc))
+                        {
+                            tracing::warn!(kind = self.kind.kind, %error, "settings record did not follow the section");
+                        }
                     }
+                    let now = record.heads();
+                    let moved = *heads.borrow() != now;
+                    *heads.borrow_mut() = now;
+                    moved
                 }
-                let now = record.heads();
-                let moved = *heads.borrow() != now;
-                *heads.borrow_mut() = now;
-                moved
-            }
+            },
         };
         if moved {
             self.moved();
@@ -306,7 +355,12 @@ impl SectionDoor {
     pub(crate) fn read<T>(&self, read: impl FnOnce(&Doc) -> T) -> Option<T> {
         match &self.kept {
             Kept::Window { doc, .. } => Some(read(&doc.borrow())),
-            Kept::Person { record, .. } => record.read(read),
+            Kept::Person {
+                record, scratch, ..
+            } => match record.borrow().as_deref() {
+                Some(record) => record.read(read),
+                None => Some(read(&scratch.borrow())),
+            },
         }
     }
 
@@ -342,13 +396,15 @@ impl SectionDoor {
                 }
             }
             Kept::Person {
-                record,
                 seen,
                 app_id,
                 app_title,
                 me,
                 ..
             } => {
+                let record = self.person_record(true).ok_or_else(|| {
+                    ActionError::Refused(format!("{} could not be kept", self.kind.label))
+                })?;
                 let change = action.change_kind();
                 let context =
                     ActionContext::for_resource(self.kind.kind, self.kind.kind, self.kind.label)
@@ -370,7 +426,7 @@ impl SectionDoor {
                         .map_err(|error| error.to_string())
                     })
                     .map_err(ActionError::Refused)?;
-                self.write_person(record, seen, &id, &invoker.actor);
+                self.write_person(&record, seen, &id, &invoker.actor);
             }
         }
         self.follow();
@@ -399,12 +455,18 @@ impl SectionDoor {
     /// Take back (`undo`) or redo one of the person's steps on the record,
     /// for `by`. Whether there was one.
     pub(crate) fn step(&self, undo: bool, by: &str) -> bool {
-        let Kept::Person { record, seen, .. } = &self.kept else {
+        let Kept::Person { seen, .. } = &self.kept else {
+            return false;
+        };
+        let Some(record) = self.person_record(false) else {
             return false;
         };
         let stepped = if undo { record.undo() } else { record.redo() };
         if stepped {
-            self.write_person(record, seen, if undo { "undo" } else { "redo" }, by);
+            self.write_person(&record, seen, if undo { "undo" } else { "redo" }, by);
+        }
+        drop(record);
+        if stepped {
             self.follow();
             self.moved();
         }
@@ -476,6 +538,23 @@ impl RecordDoor for SectionDoor {
         self.apply(action, invoker)
             .map_err(|error| error.to_string())
     }
+}
+
+/// Take into `doc`, a document of the section's own, what was stored since
+/// it last followed at `seen`. Whether it moved.
+fn follow_doc(kind: &SectionKind, doc: &RefCell<Doc>, seen: &Cell<SettingsRevision>) -> bool {
+    let revision = kind.revision();
+    if revision == seen.get() {
+        return false;
+    }
+    seen.set(revision);
+    let mut doc = doc.borrow_mut();
+    if kind.write(&mut doc).is_ok() {
+        doc.commit();
+    } else {
+        doc.rollback();
+    }
+    true
 }
 
 /// The public id of the action whose encoded payload is `payload`.

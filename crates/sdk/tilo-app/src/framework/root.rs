@@ -400,7 +400,7 @@ impl<R: Resource> ResourceRoot<R> {
 
     /// The root as the widget a host mounts.
     pub(crate) fn into_widget(self) -> Box<dyn AppWidget> {
-        Box::new(RootWidget::new(self))
+        RootWidget::boxed(Box::new(self))
     }
 
     pub(crate) fn live(&self) -> &Live<R> {
@@ -2286,6 +2286,14 @@ impl Unopened {
             ),
             resource,
         }
+    }
+}
+
+impl Unopened {
+    /// The window as a host mounts it, its widget table compiled once for
+    /// every app.
+    pub(crate) fn boxed(self) -> Box<dyn AppWidget> {
+        Box::new(self)
     }
 }
 
