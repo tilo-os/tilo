@@ -57,6 +57,13 @@ pub mod appearance;
 #[cfg(target_os = "linux")]
 pub mod auth;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod background;
 #[cfg(any(test, target_os = "linux"))]
 pub mod camera;
@@ -72,8 +79,22 @@ pub mod file_chooser;
 pub mod file_picker_spawner;
 pub mod global_shortcuts;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod inhibit;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod input_capture;
 #[cfg(target_os = "linux")]
 pub(crate) mod interface_dispatch;
@@ -87,8 +108,22 @@ pub mod permission_store;
 pub mod picker_queue;
 pub mod print;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod remote_desktop;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod screencast;
 pub mod screencast_pipewire;
 #[cfg(target_os = "linux")]
@@ -99,6 +134,13 @@ pub mod screenshot;
 pub mod secret;
 pub mod settings;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod usb;
 #[cfg(any(test, target_os = "linux"))]
 pub mod wallpaper;
