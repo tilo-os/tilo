@@ -216,14 +216,14 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
     })?;
 
     let program = PathBuf::from(program);
-    let mut args: Vec<String> = argv.collect();
-    grant_flatpak_x11(&program, &mut args, env);
+    let mut arguments: Vec<String> = argv.collect();
+    grant_flatpak_x11(&program, &mut arguments, env);
 
     Ok(HostLaunch {
         desktop_id: entry.id.clone(),
         display_name: entry.name.clone(),
         program,
-        args,
+        args: arguments,
         env: build_env(env),
         window_identities: entry.window_identities(),
         source: entry.source.clone(),

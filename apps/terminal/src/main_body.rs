@@ -7214,9 +7214,11 @@ impl TerminalWidget {
             .as_ref()
             .and_then(|socket| socket.clone_for_reader().ok());
         #[cfg(unix)]
-        let session_open = move || reader_lifetime
-            .as_ref()
-            .is_some_and(runtime_portal::pending_connection::ReaderLifetime::is_open);
+        let session_open = move || {
+            reader_lifetime
+                .as_ref()
+                .is_some_and(runtime_portal::pending_connection::ReaderLifetime::is_open)
+        };
         #[cfg(not(unix))]
         let session_open = || false;
         let reader = std::sync::Arc::new(std::sync::Mutex::new(backend.reader));

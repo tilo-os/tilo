@@ -247,7 +247,7 @@ fn vconsole_sources(text: &str) -> Vec<String> {
             .filter_map(|line| line.trim().split_once('='))
             .filter(|(name, _)| name.trim() == key)
             .map(|(_, value)| value.trim().trim_matches(['"', '\'']).to_owned())
-            .last()
+            .next_back()
             .unwrap_or_default()
     };
     sources_from_names(&value("XKBLAYOUT"), &value("XKBVARIANT"))
@@ -264,7 +264,7 @@ fn xorg_keyboard_sources(text: &str) -> Vec<String> {
                 let value = quoted.next()?;
                 name.eq_ignore_ascii_case(key).then(|| value.to_owned())
             })
-            .last()
+            .next_back()
             .unwrap_or_default()
     };
     sources_from_names(&value("XkbLayout"), &value("XkbVariant"))

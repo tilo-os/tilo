@@ -4030,6 +4030,10 @@ impl App {
 
     // ---- swap -----------------------------------------------------------------
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one swap sequence: resolve, build, deliver and receipt stay in order"
+    )]
     fn swap(
         &mut self,
         slot: Option<String>,
@@ -5676,7 +5680,6 @@ pub fn plan_apps_runtime_build(
             what: "a VM-only cargo build for the paired apps+runtime assembly".into(),
             alternative: "tilo-vm swap apps+runtime --builder host (a Linux host of the device's architecture) or --builder remote".into(),
         }),
-        Some(Builder::Remote) => Ok(AppsRuntimeBuild::Remote),
         Some(Builder::Host) if local_possible => Ok(AppsRuntimeBuild::Local),
         Some(Builder::Host) => Err(CliError::Unsupported {
             what: format!(
@@ -5685,9 +5688,8 @@ pub fn plan_apps_runtime_build(
             ),
             alternative: "the cohort must be built on a Linux machine of the device's architecture: tilo-vm swap apps+runtime --builder remote".into(),
         }),
-        None if remote_configured => Ok(AppsRuntimeBuild::Remote),
-        None if local_possible => Ok(AppsRuntimeBuild::Local),
-        None => Ok(AppsRuntimeBuild::Remote),
+        None if !remote_configured && local_possible => Ok(AppsRuntimeBuild::Local),
+        Some(Builder::Remote) | None => Ok(AppsRuntimeBuild::Remote),
     }
 }
 

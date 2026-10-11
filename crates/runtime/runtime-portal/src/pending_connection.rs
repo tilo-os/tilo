@@ -132,7 +132,9 @@ impl SessionLifetime {
     /// Returns the descriptor duplication error.
     #[cfg(unix)]
     pub fn clone_for_reader(&self) -> std::io::Result<ReaderLifetime> {
-        self.socket.try_clone().map(|socket| ReaderLifetime { socket })
+        self.socket
+            .try_clone()
+            .map(|socket| ReaderLifetime { socket })
     }
 }
 
@@ -190,11 +192,11 @@ mod tests {
     #[test]
     fn reader_lifetime_sees_the_peer_close_its_end() {
         let (ours, peer) = UnixStream::pair().expect("socket pair");
-        let reader = SessionLifetime::new(ours)
-            .clone_for_reader()
-            .expect("reader duplicate");
+        let lifetime = SessionLifetime::new(ours);
+        let reader = lifetime.clone_for_reader().expect("reader duplicate");
         assert!(reader.is_open());
-        peer.shutdown(std::net::Shutdown::Both).expect("peer closes");
+        peer.shutdown(std::net::Shutdown::Both)
+            .expect("peer closes");
         assert!(!reader.is_open());
     }
 

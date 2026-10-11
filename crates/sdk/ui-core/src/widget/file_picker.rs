@@ -1371,7 +1371,7 @@ impl FilePicker {
         let avail = (bar.width() - m.inset_x).max(0.0);
         let mut total: f64 = widths.iter().sum();
         let mut first: usize = 0;
-        while first.saturating_add(1) < segments.len() && total > avail {
+        while total > avail && segments.len().saturating_sub(first) > 1 {
             total -= widths.get(first).copied().unwrap_or(0.0);
             first = first.saturating_add(1);
         }
@@ -1417,7 +1417,12 @@ impl FilePicker {
             face(REPLACE_KEY, false),
         ]
         .map(|w| w.max(m.min_button_w));
-        if widths != self.button_w {
+        #[allow(
+            clippy::float_cmp,
+            reason = "cache key: relayout only when a measured width actually changed"
+        )]
+        let widths_changed = widths != self.button_w;
+        if widths_changed {
             self.button_w = widths;
             changed = true;
         }

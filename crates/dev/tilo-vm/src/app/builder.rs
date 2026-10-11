@@ -198,6 +198,10 @@ impl App {
         self.build_layer_remote_cached(remote, vm, component, &[], "host", true)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one build-and-stream sequence: provenance, cache probe, upload and receipt stay in order"
+    )]
     fn build_layer_remote_cached(
         &mut self,
         remote: &mut Remote,
