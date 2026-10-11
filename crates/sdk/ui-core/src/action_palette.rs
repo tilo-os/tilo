@@ -2344,7 +2344,7 @@ impl ActionPalette {
         } else if matches!(action, crate::a11y::Action::Focus) {
             true
         } else {
-            self.field.perform_action(action, doc, root)
+            self.field.perform_action(action, &[], doc, root)
         };
         if let Some(query) = self.field.take_dirty() {
             if self.arg.is_none() && self.confirm.is_none() {
@@ -2463,6 +2463,7 @@ impl ActionPalette {
             {
                 self.controls.children_mut()[focused - 1].perform_action(
                     &crate::a11y::Action::Activate,
+                    &[],
                     doc,
                     path,
                 );
@@ -2994,7 +2995,7 @@ impl Widget for ActionPalette {
             if matches!(action, crate::a11y::Action::Focus) {
                 self.focus_part(0);
             }
-            return self.field.perform_action(action, doc, path);
+            return self.field.perform_action(action, &[], doc, path);
         }
         if !self.in_argument_mode() && !self.history_review_required {
             let handled = self
@@ -3011,7 +3012,8 @@ impl Widget for ActionPalette {
                 if matches!(action, crate::a11y::Action::Focus) {
                     self.focus_part(index + 1);
                 }
-                let handled = self.controls.children_mut()[index].perform_action(action, doc, path);
+                let handled =
+                    self.controls.children_mut()[index].perform_action(action, &[], doc, path);
                 let (doc, path) = crate::doc::document(doc, path);
                 self.drain_command(doc, path);
                 return handled;

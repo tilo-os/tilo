@@ -374,7 +374,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
         path: &automerge::ObjId,
     ) -> bool {
         self.host.sync(doc, path);
-        let done = Widget::perform_action(self.host.widget_mut(), action, doc, path);
+        let done = Widget::perform_action(self.host.widget_mut(), action, &[], doc, path);
         self.host.sync(doc, path);
         done
     }

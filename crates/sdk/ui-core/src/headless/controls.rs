@@ -566,7 +566,7 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(owner, verb, |widget, doc, root| {
                 if let Some(key_path) = &key_path {
-                    widget.perform_action_at(
+                    widget.perform_action(
                         verb,
                         key_path,
                         &mut crate::widget::Edits::lend(doc),

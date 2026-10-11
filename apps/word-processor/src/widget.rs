@@ -6370,7 +6370,7 @@ impl WordProcessorWidget {
                 let Some(slot) = self.num_inputs.iter_mut().find(|slot| slot.field == field) else {
                     return false;
                 };
-                Widget::perform_action(&mut slot.input, action, state, &automerge::ROOT)
+                Widget::perform_action(&mut slot.input, action, &[], state, &automerge::ROOT)
             }
         } else {
             if matches!(action, ui::a11y::Action::Focus) {
@@ -6390,7 +6390,7 @@ impl WordProcessorWidget {
                 Widget::set_focus(menu, true);
                 true
             } else {
-                Widget::perform_action(menu, action, state, &automerge::ROOT)
+                Widget::perform_action(menu, action, &[], state, &automerge::ROOT)
             }
         };
         if performed {
@@ -10734,10 +10734,10 @@ impl Widget for WordProcessorWidget {
         {
             return false;
         }
-        self.perform_action_at(action, &[ui::a11y::hash_key(&target)], state, path)
+        ui::Widget::perform_action(self, action, &[ui::a11y::hash_key(&target)], state, path)
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],

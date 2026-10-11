@@ -3950,7 +3950,12 @@ mod tests {
         let composed = app.composed.element_mut().expect("composed step");
         let control = find_test_id_mut(composed, id).unwrap_or_else(|| panic!("no control {id}"));
         assert!(
-            control.perform_action(action, &mut ui::widget::Edits::lend(doc), &automerge::ROOT),
+            control.perform_action(
+                action,
+                &[],
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT
+            ),
             "{id} refused {action:?}"
         );
         app.sync(doc, &automerge::ROOT);

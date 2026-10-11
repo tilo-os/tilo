@@ -1829,7 +1829,7 @@ mod tests {
         assert_eq!(selected_compact_source(app), "Show Ours source");
 
         let theirs_key = ui::a11y::hash_key(&"diffmerge.source.theirs");
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             &mut app.merge,
             &ui::a11y::Action::Activate,
             &[theirs_key],

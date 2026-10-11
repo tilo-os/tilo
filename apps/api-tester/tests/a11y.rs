@@ -478,6 +478,14 @@ fn move_pointer(d: &mut Driver, x: f64, y: f64) {
     });
 }
 
+/// Settle the drawer's animation through real redraw ticks.
+fn settle_drawer(d: &mut Driver) {
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        d.relayout();
+    }
+}
+
 fn assert_sidebar_targets(d: &Driver, height: f64) {
     let targets = d.targets();
     let mut sidebar = Vec::new();
@@ -646,11 +654,7 @@ fn composition_narrow_escape_paging_and_open_resize_are_reachable() {
     d.perform_named("nav-shell-sidebar", &ui::a11y::Action::Focus)
         .unwrap();
     d.key("Enter");
-    // Settle the drawer's existing animation through real redraw ticks.
-    for _ in 0..30 {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        d.relayout();
-    }
+    settle_drawer(d);
     assert_sidebar_targets(d, 900.0);
     environment_command(d, "Add variable…");
     d.wait_for_named("api.form-variable-key", ui::time::Duration::from_secs(5))
@@ -680,6 +684,12 @@ fn composition_real_two_x_retains_all_controls_and_response_space() {
     )
     .unwrap();
     assert_sidebar_targets(d, 900.0);
+    // Large text narrows the window to the drawer, which covers the request
+    // while open; close it to reach the request.
+    d.perform_named("nav-shell-sidebar", &ui::a11y::Action::Focus)
+        .unwrap();
+    d.key("Enter");
+    settle_drawer(d);
     let targets = d.targets();
     assert!(targets["api.request-divider"].y1 < 700.0);
     assert!(targets["api.request-tabs"].x1 <= 800.0);

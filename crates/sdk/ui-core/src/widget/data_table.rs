@@ -3896,17 +3896,16 @@ impl<Row: 'static> Widget for DataTable<Row> {
     /// Rows carry no explicit key, so the path element is the row's display
     /// index (its ordinal among the table's synthetic children); the
     /// callbacks it reaches name the host's row, as `on_row_click` does.
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-        // Empty path: the table itself, not a row — nothing table-specific to do.
         let Some(&row_key) = key_path.first() else {
-            return self.perform_action(action, state, path);
+            return false;
         };
         // A read-only table's rows aren't operable.
         if !self.selectable {
@@ -5741,7 +5740,7 @@ mod tests {
 
             let mut doc = automerge::AutoCommit::new();
             let root = automerge::ROOT;
-            let handled = Widget::perform_action_at(
+            let handled = Widget::perform_action(
                 &mut t,
                 &crate::a11y::Action::Activate,
                 &[7],
@@ -7049,7 +7048,7 @@ mod content_edge_tests {
         assert_eq!(node_a11y.children[0].state.expanded, Some(false));
         assert_eq!(node_a11y.children[1].level, Some(2));
         let mut doc = AutoCommit::new();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             &mut table,
             &crate::a11y::Action::Expand,
             &[0],
@@ -7176,14 +7175,14 @@ mod content_edge_tests {
         );
         assert_eq!(*checks.borrow(), [(1, true)]);
         let mut state = crate::state::State::new();
-        assert!(table.perform_action_at(
+        assert!(table.perform_action(
             &crate::a11y::Action::ToggleCheck,
             &[0, 0],
             &mut crate::widget::Edits::lend(&mut state.doc),
             &state.root,
         ));
         assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
-        assert!(!table.perform_action_at(
+        assert!(!table.perform_action(
             &crate::a11y::Action::ToggleCheck,
             &[0, 99],
             &mut crate::widget::Edits::lend(&mut state.doc),

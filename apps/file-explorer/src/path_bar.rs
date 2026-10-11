@@ -323,17 +323,18 @@ impl Widget for PathBar {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if self.editing {
-            return self.field.perform_action(action, state, path);
+            return self.field.perform_action(action, &[], state, path);
         }
         if matches!(action, ui::a11y::Action::Activate) {
             self.begin_edit();
             return true;
         }
-        self.crumbs.perform_action(action, state, path)
+        self.crumbs.perform_action(action, &[], state, path)
     }
 }
 
@@ -482,6 +483,7 @@ mod tests {
                 let mut doc = AutoCommit::new();
                 assert!(bar.perform_action(
                     &Action::SetValue(input.into()),
+                    &[],
                     &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
@@ -562,6 +564,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             assert!(bar.perform_action(
                 &Action::Activate,
+                &[],
                 &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

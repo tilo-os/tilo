@@ -1958,6 +1958,7 @@ impl Widget for MainPanel {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
@@ -2006,10 +2007,10 @@ impl Widget for MainPanel {
             return true;
         }
         if target == "notes.first_note" && self.page_id.is_none() {
-            return self.perform_action(action, state, path);
+            return self.perform_action(action, &[], state, path);
         }
         if target == "notes.page-title" {
-            return Widget::perform_action(&mut self.title_label, action, state, path);
+            return Widget::perform_action(&mut self.title_label, action, &[], state, path);
         }
         false
     }
@@ -2041,10 +2042,22 @@ impl Widget for MainPanel {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // Forward the editor's structure-dirty flag (split/merge
-        // shifted the block count) so the host App rebuilds the
-        // taffy tree.
-        std::mem::take(&mut self.tag_layout_dirty) || self.editor.take_structure_dirty()
+        self.take_structure_change().rebuilds()
+    }
+
+    /// The header rebuilt its widgets: the host rebuilds its tree, but the
+    /// panel's damage describes it (the header is a part of its own, and a
+    /// header that grew or shrank moves the parts below it, which repaints
+    /// the panel). The editor's flag (a split or merge changed the block
+    /// count) rebuilds.
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        use ui::widget::StructureChange;
+        let header = if std::mem::take(&mut self.tag_layout_dirty) {
+            StructureChange::Described
+        } else {
+            StructureChange::None
+        };
+        header.join(self.editor.take_structure_change())
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -2171,6 +2184,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             assert!(p.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut Edits::lend(&mut doc),
                 &ObjId::Root
             ));

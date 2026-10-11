@@ -679,6 +679,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut c,
                 &Action::ToggleCheck,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -687,6 +688,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut c,
                 &Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -701,6 +703,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut c,
                 &Action::ToggleCheck,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
@@ -767,6 +770,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut checkbox,
                 &crate::a11y::Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
@@ -781,6 +785,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut checkbox,
                 &crate::a11y::Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
@@ -849,6 +854,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::ToggleCheck,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));

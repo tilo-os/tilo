@@ -357,7 +357,7 @@ struct PaintedTarget {
 /// [`PaintedTargets::paint_focus`]), and acts on
 /// [`PaintedTargets::take_activated`]. Its accessibility node lists the
 /// targets as buttons ([`PaintedTargets::accessibility_children`]) and
-/// routes their activation back ([`PaintedTargets::perform_action_at`],
+/// routes their activation back ([`PaintedTargets::perform_action`],
 /// [`PaintedTargets::perform_semantic_action`]).
 /// Tab moves between the targets while the host holds keyboard focus
 /// ([`PaintedTargets::wants_tab_input`]).
@@ -752,8 +752,8 @@ impl PaintedTargets {
 
     /// Route an assistive-technology action on one of
     /// [`Self::accessibility_children`]: forward the host's
-    /// `Widget::perform_action_at` key path here.
-    pub fn perform_action_at(&mut self, action: &crate::a11y::Action, key_path: &[u64]) -> bool {
+    /// `Widget::perform_action` key path here.
+    pub fn perform_action(&mut self, action: &crate::a11y::Action, key_path: &[u64]) -> bool {
         let Some(&key) = key_path.first() else {
             return false;
         };
@@ -768,7 +768,7 @@ impl PaintedTargets {
         self.perform_semantic_action(action, &id)
     }
 
-    /// [`Self::perform_action_at`] by the target's id (its semantic action
+    /// [`Self::perform_action`] by the target's id (its semantic action
     /// target): forward the host's `Widget::perform_semantic_action` here.
     pub fn perform_semantic_action(&mut self, action: &crate::a11y::Action, target: &str) -> bool {
         match action {
@@ -994,9 +994,9 @@ mod tests {
         assert_eq!(nodes[1].name.as_deref(), Some("8"));
         assert!(nodes[2].state.disabled);
         let key = nodes[1].key.expect("keyed by id");
-        assert!(targets.perform_action_at(&crate::a11y::Action::Activate, &[key]));
+        assert!(targets.perform_action(&crate::a11y::Action::Activate, &[key]));
         assert_eq!(targets.take_activated(), vec!["eight".to_string()]);
-        assert!(!targets.perform_action_at(&crate::a11y::Action::Activate, &[key ^ 1]));
+        assert!(!targets.perform_action(&crate::a11y::Action::Activate, &[key ^ 1]));
         assert!(!targets.perform_semantic_action(&crate::a11y::Action::Activate, "nine"));
     }
 }

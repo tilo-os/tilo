@@ -427,10 +427,11 @@ impl ui::widget::Decorator for EmptyAction {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         state: &mut ui::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
-        let done = Widget::perform_action(&mut self.state, action, state, root);
+        let done = Widget::perform_action(&mut self.state, action, &[], state, root);
         self.drain();
         done
     }

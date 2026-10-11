@@ -2957,7 +2957,7 @@ impl Widget for GitClientApp {
                 Field::WorktreePath => &mut self.worktree_path_input,
                 Field::WorktreeStart => &mut self.worktree_start_input,
             };
-            return input.perform_action(action, state, path);
+            return input.perform_action(action, &[], state, path);
         }
         if !matches!(action, Action::Activate | Action::ToggleCheck) {
             return false;

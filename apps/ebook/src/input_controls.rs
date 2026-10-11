@@ -133,7 +133,9 @@ impl NoteEditor {
         root: &ObjId,
     ) -> bool {
         self.sync(state, root);
-        self.host.widget_mut().perform_action(action, state, root)
+        self.host
+            .widget_mut()
+            .perform_action(action, &[], state, root)
     }
 }
 
@@ -288,7 +290,7 @@ impl NumberControls {
             .controls
             .iter_mut()
             .find(|control| control.active && control.field.semantic_target() == target)?;
-        if !control.input.perform_action(action, state, root) {
+        if !control.input.perform_action(action, &[], state, root) {
             return None;
         }
         Some((control.field.clone(), control.input.take_changed()))

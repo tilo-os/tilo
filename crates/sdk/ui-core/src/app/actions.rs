@@ -3173,7 +3173,7 @@ impl App {
             self.layout.node_map.clear();
             self.bindings.clear();
             self.focused_node = None;
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             self.layout.layout_dirty = true;
         }
         for command in commands {
@@ -4159,7 +4159,7 @@ impl App {
         let pending_sync = self.needs_sync;
         let generation = self.actions.resource_generation.get();
         let open_index = self.actions.open_resource_search_cache.get_mut().take();
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.rebuild_structure();
         // Admitting a modal declares no resource of the tree the open-resource
         // index was just built from. Keep that index across the rebuild's own
@@ -4178,7 +4178,7 @@ impl App {
         // Admission is not a layout solve. Keep the native redraw's actual
         // structural-change decision true so fresh nodes are measured before
         // apply, even when the retained background and viewport are unchanged.
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
     }
 
     fn open_ordinary_confirmation(
@@ -4302,7 +4302,7 @@ impl App {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.actions.action_palette = None;
         if self.actions.ordinary_palette_return_focus.is_some() {
             self.rebuild_action_palette_admission();
@@ -4529,7 +4529,7 @@ impl App {
         // The transition may have replaced the field or closed the overlay.
         // Re-admission below retires the old tree and preserves the real
         // redraw's structural-change condition for the next layout solve.
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         let root = self.state.root.clone();
         self.capture_ordinary_palette_request();
         let exact_capture = self

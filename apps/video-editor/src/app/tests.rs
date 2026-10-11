@@ -864,7 +864,7 @@ fn reader_reaches_every_inspector_control_it_can_adjust() {
         let path = vec![Pane::Inspector.key(), NumField::Opacity.a11y_key()];
         let root = automerge::ROOT;
         assert!(
-            app.perform_action_at(
+            app.perform_action(
                 &ui::a11y::Action::Decrement,
                 &path,
                 &mut ui::widget::Edits::lend(&mut doc),
@@ -6430,7 +6430,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         );
 
         let activate = ui::a11y::Action::Activate;
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &activate,
             &[
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
@@ -6441,7 +6441,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         ));
         assert!(app.bin_flap.is_open(app.bin_layout()));
         assert!(
-            !app.perform_action_at(
+            !app.perform_action(
                 &activate,
                 &[
                     ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
@@ -6452,7 +6452,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
             ),
             "the open bin scrim makes other topbar actions unavailable"
         );
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &activate,
             &[
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
@@ -6462,7 +6462,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
             &automerge::ROOT,
         ));
         assert!(!app.bin_flap.is_open(app.bin_layout()));
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &activate,
             &[
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
@@ -8159,7 +8159,7 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
         ];
         let root = automerge::ROOT;
         assert!(
-            app.perform_action_at(
+            app.perform_action(
                 &ui::a11y::Action::Increment,
                 &path,
                 &mut ui::widget::Edits::lend(&mut doc),
@@ -8985,7 +8985,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
             ui::a11y::hash_key(&m.id),
         ];
         assert!(
-            app.perform_action_at(
+            app.perform_action(
                 &ui::a11y::Action::Activate,
                 &path,
                 &mut ui::widget::Edits::lend(&mut doc),
@@ -9021,7 +9021,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
 
         // Setting the note's text writes it through the same commit the
         // inline editor ends at.
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &ui::a11y::Action::SetValue("mind the skyline".into()),
             &verb(0),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -9035,7 +9035,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         );
 
         // And renaming.
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &ui::a11y::Action::SetValue("act three".into()),
             &verb(1),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -9049,7 +9049,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         // An empty name is refused at the commit, so the verb reports the
         // refusal rather than claiming a write it did not make.
         assert!(
-            !app.perform_action_at(
+            !app.perform_action(
                 &ui::a11y::Action::SetValue("   ".into()),
                 &verb(1),
                 &mut ui::widget::Edits::lend(&mut doc),
@@ -9059,7 +9059,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         );
 
         // Activating the delete control removes it, exactly as the X does.
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &ui::a11y::Action::Activate,
             &verb(2),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -9103,7 +9103,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         );
 
         app.playhead = 0.0;
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &ui::a11y::Action::Activate,
             &held,
             &mut ui::widget::Edits::lend(&mut doc),
@@ -9670,7 +9670,7 @@ fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
             app.a11y_project().state.focusable,
             "the compact film icon opens the project menu"
         );
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &ui::a11y::Action::Activate,
             &[
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),

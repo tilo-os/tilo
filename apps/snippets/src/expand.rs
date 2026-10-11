@@ -525,7 +525,7 @@ impl ExpandModal {
             return Some(ExpandOutcome::Stay);
         }
         let field = self.fields.get_mut(index)?;
-        let accepted = field.input.perform_action(action, state, path);
+        let accepted = field.input.perform_action(action, &[], state, path);
         field.input.take_dirty();
         accepted.then_some(ExpandOutcome::Stay)
     }

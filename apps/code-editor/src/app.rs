@@ -198,9 +198,12 @@ impl Widget for BottomPanelToggle {
                     ..
                 }
             )
-            && self
-                .button
-                .perform_action(&ui::a11y::Action::Activate, &mut ctx.state, ctx.path)
+            && self.button.perform_action(
+                &ui::a11y::Action::Activate,
+                &[],
+                &mut ctx.state,
+                ctx.path,
+            )
         {
             *ctx.handled = true;
             return;
@@ -267,10 +270,11 @@ impl Widget for BottomPanelToggle {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        self.button.perform_action(action, state, path)
+        self.button.perform_action(action, &[], state, path)
     }
 
     fn set_interaction_environment(

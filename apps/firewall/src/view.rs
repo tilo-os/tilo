@@ -283,6 +283,7 @@ impl Decorator for LabelledSwitch {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> bool {
@@ -291,7 +292,7 @@ impl Decorator for LabelledSwitch {
                 self.state.update(|on| *on = !*on);
                 true
             }
-            _ => self.row.perform_action(action, state, path),
+            _ => self.row.perform_action(action, &[], state, path),
         }
     }
 }

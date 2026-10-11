@@ -352,6 +352,9 @@ COPY vendor /build/vendor
 COPY dist /build/dist
 COPY docs/developers/tasks /build/docs/developers/tasks
 COPY tools/ci/rustc-thin-app-wrapper.sh tools/ci/runtime-dylib-lazy-link.py /build/tools/ci/
+# build-thin-apps.sh routes a cached build through this dispatcher
+# (RUSTC_WRAPPER), which finds the size wrapper beside it in tools/ci/.
+COPY tools/ci/thin-app/sccache /build/tools/ci/thin-app/sccache
 COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
 COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py

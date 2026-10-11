@@ -184,6 +184,6 @@ impl HostedDropdown {
         state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool {
-        target == self.id && self.widget.perform_action(action, state, root)
+        target == self.id && self.widget.perform_action(action, &[], state, root)
     }
 }

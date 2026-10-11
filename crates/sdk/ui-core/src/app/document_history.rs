@@ -86,7 +86,7 @@ impl App {
         };
         let _ = self.history_local_resources();
         if layout.pane.is_some() != self.document_history.is_open() {
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             self.layout.layout_dirty = true;
             return Err("History presentation requires layout".into());
         }
@@ -869,7 +869,7 @@ impl App {
             self.document_history.remove_fallback_bar();
             if let Some(history) = &mut self.history {
                 history.remove_fallback_bar();
-                self.layout.structure_dirty = true;
+                self.layout.request_rebuild();
             }
             if self.native_document_chrome && self.history.is_none() {
                 self.enable_document_history_chrome();
@@ -878,7 +878,7 @@ impl App {
         }
         if let Some(history) = &mut self.history {
             history.remove_open_button();
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         } else if self.native_document_chrome {
             self.enable_document_history_chrome();
         }
@@ -914,7 +914,7 @@ impl App {
     pub fn enable_document_history_chrome(&mut self) {
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         }
         // A registered framework owner already supplies its own shared History
         // surface and custody. The standalone adapter serves unregistered roots.
@@ -929,7 +929,7 @@ impl App {
         self.invalidate_widget_resource_cache();
         self.document_history.enable_search(self.input.platform);
         self.remember_history_content();
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.layout.layout_dirty = true;
     }
 
@@ -937,8 +937,11 @@ impl App {
         if revision != self.document_history.revision() {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
-            self.layout.structure_dirty |= open != self.document_history.is_open()
-                || self.document_history.take_structure_dirty();
+            if open != self.document_history.is_open()
+                || self.document_history.take_structure_dirty()
+            {
+                self.layout.request_rebuild();
+            }
             if !open && self.document_history.is_open() {
                 self.history_focus_pending = true;
             }

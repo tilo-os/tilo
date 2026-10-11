@@ -331,6 +331,7 @@ macro_rules! bool_control_widget_methods {
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
+            _key_path: &[u64],
             _state: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) -> bool {

@@ -34,6 +34,7 @@ pub(crate) trait RootModel:
     fn provide<'a>(&'a self, request: &mut Request<'a, '_>);
     fn provide_mut<'a>(&'a mut self, request: &mut RequestMut<'a, '_>);
     fn take_structure_dirty(&mut self) -> bool;
+    fn take_structure_change(&mut self) -> ui_core::widget::StructureChange;
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool;
     fn record_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner>;
     fn sync(&mut self, state: &AppModel, path: &ModelPath);
@@ -201,6 +202,10 @@ impl Decorator for RootWidget {
 
     fn take_structure_dirty(&mut self) -> bool {
         self.0.take_structure_dirty()
+    }
+
+    fn take_structure_change(&mut self) -> ui_core::widget::StructureChange {
+        self.0.take_structure_change()
     }
 
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {

@@ -3400,6 +3400,7 @@ impl Widget for TerminalWidget {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
@@ -3427,7 +3428,7 @@ impl Widget for TerminalWidget {
         path: &ModelPath,
     ) -> bool {
         if target == self.terminal_transcript_target() {
-            return self.perform_action(action, state, path);
+            return self.perform_action(action, &[], state, path);
         }
         if target == format!("terminal.target:{}", self.pane_id)
             && matches!(

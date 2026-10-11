@@ -1465,7 +1465,13 @@ impl ui::widget::Decorator for SnippetsApp {
                     core.body.control_mut().set_focused(true);
                     Some(true)
                 } else {
-                    Some(Widget::perform_action(&mut core.body, action, doc, obj))
+                    Some(Widget::perform_action(
+                        &mut core.body,
+                        action,
+                        &[],
+                        doc,
+                        obj,
+                    ))
                 }
             } else {
                 let hit = core.hits().find_map(|(_, candidate)| {
