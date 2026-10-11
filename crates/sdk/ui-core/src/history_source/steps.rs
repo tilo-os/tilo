@@ -504,7 +504,14 @@ pub struct StepIndex {
     positions: std::collections::HashMap<ChangeHash, usize>,
     kinds: std::collections::HashMap<ChangeHash, Kind>,
     heads: Vec<ChangeHash>,
+    /// The changes last read whole, newest last: an undo or redo asks for
+    /// the same few again (its targets, their labels, what they brought
+    /// back). Bounded, so the index stays small however long the history.
+    read_whole: std::cell::RefCell<std::collections::VecDeque<Version>>,
 }
+
+/// How many changes [`StepIndex::full`] keeps read whole.
+const KEPT_WHOLE: usize = 64;
 
 impl StepIndex {
     /// Bring the index up to `doc`'s committed heads.
@@ -552,9 +559,20 @@ impl StepIndex {
     /// again from `doc`.
     pub fn full(&self, doc: &AutoCommit, position: usize) -> Option<Version> {
         let hash = self.steps.get(position)?.hash;
+        let mut kept = self.read_whole.borrow_mut();
+        if let Some(at) = kept.iter().position(|version| version.hash == hash) {
+            let version = kept.remove(at)?;
+            kept.push_back(version.clone());
+            return Some(version);
+        }
         let document = doc.committed_document();
         let meta = document.get_change_meta_by_hash(&hash)?;
-        Some(tilo_resource::history::version_of(document, &meta))
+        let version = tilo_resource::history::version_of(document, &meta);
+        if kept.len() >= KEPT_WHOLE {
+            kept.pop_front();
+        }
+        kept.push_back(version.clone());
+        Some(version)
     }
 
     /// Where a change sits in causal order.
