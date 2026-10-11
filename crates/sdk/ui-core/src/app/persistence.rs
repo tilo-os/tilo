@@ -92,7 +92,9 @@ impl App {
             return false;
         };
         let retirement = component.take_root_retirement();
-        if let Err(error) = component.mount(move |_| handle.wake()) {
+        if let Err(error) =
+            component.mount(move |event| crate::app::forward_component_wake(&handle, &event))
+        {
             let _ = component.close();
             outcome.answer(Err(error.to_string()));
             return false;
