@@ -131,8 +131,9 @@ impl Resource for Notebook {
 
     const READABLE: bool = true;
 
-    /// The notebook as its pages and tags; one page (`notes.page:<id>`) as
-    /// its title and blocks, each with the id the body's edit actions take.
+    /// The notebook as its pages and tags; one page (`notes.page:<id>`) as its
+    /// title and its body as Markdown, a block per line, each ending in the
+    /// `^id` the body's block actions take.
     fn read_content(
         _state: &Workspace,
         doc: &Doc,
@@ -158,18 +159,16 @@ impl Resource for Notebook {
             .and_then(|id| id.parse::<PageId>().ok())
             .and_then(|id| pages.iter().find(|page| page.id == id))
             .ok_or_else(|| format!("no note `{item}`; read the notebook for the pages it holds"))?;
-        let blocks = NotesDoc::page_blocks(doc, page.id);
+        let body = crate::notebook::validated_page_body(doc, page.id)?;
+        let read = tilo_document::block_actions::read_under(doc, &body, None)?;
         Ok(serde_json::json!({
             "kind": "notes.page",
             "item": crate::actions::page_resource_id(page.id),
             "title": page.title,
             "parent": page.parent.map(crate::actions::page_resource_id),
-            "text": blocks.iter().map(|block| block.text.as_str()).collect::<Vec<_>>().join("\n"),
-            "blocks": blocks.iter().map(|block| serde_json::json!({
-                "id": block.id,
-                "kind": block_kind(&block.kind),
-                "text": block.text,
-            })).collect::<Vec<_>>(),
+            "body": crate::actions::page_body_id(page.id),
+            "markdown": read["markdown"],
+            "blocks": read["blocks"],
         }))
     }
 
@@ -239,24 +238,6 @@ fn changed_page_bodies(
         });
     }
     Ok(Some(updates))
-}
-
-/// A block's kind as a reader names it.
-fn block_kind(kind: &ui::widget::BlockKind) -> serde_json::Value {
-    use ui::widget::BlockKind;
-    match kind {
-        BlockKind::Paragraph => "paragraph".into(),
-        BlockKind::Quote => "quote".into(),
-        BlockKind::Heading(level) => serde_json::json!({ "heading": level }),
-        BlockKind::Bullet { indent } => serde_json::json!({ "bullet": indent }),
-        BlockKind::Numbered { indent } => serde_json::json!({ "numbered": indent }),
-        BlockKind::Checklist { indent, done } => {
-            serde_json::json!({ "checklist": indent, "done": done })
-        }
-        BlockKind::CodeBlock { lang } => serde_json::json!({ "code": lang }),
-        BlockKind::Table { .. } => "table".into(),
-        BlockKind::Divider => "divider".into(),
-    }
 }
 
 /// Framework app: the notes widget is the surface over [`Notebook`].
