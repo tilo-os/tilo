@@ -67,6 +67,9 @@ ENGINES = {
     "typst": "Typst, which Typst Editor loads from libtilo_typst_engine.so",
     "typst-library": "Typst's standard library, in libtilo_typst_engine.so",
     "typst-assets": "Typst's 9.6 MB font table, in libtilo_typst_engine.so",
+    "tilo-spotify-engine": "Spotify playback's engine library (libtilo_spotify_engine.so)",
+    "tilo-spotify": "Spotify playback, which Music loads from libtilo_spotify_engine.so",
+    "librespot": "the Spotify client, in libtilo_spotify_engine.so",
 }
 
 
