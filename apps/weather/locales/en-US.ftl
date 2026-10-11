@@ -11,6 +11,7 @@ weather-weather-places = { $op ->
 }
 weather-weather-default-place = Changed the default place
 weather-place-name = Renamed { $item }
+
 weather-morning-summary = { $temperature }, { $condition } · observation { $time }
 weather-morning-source = Open-Meteo · fetched { $fetched }
 weather-morning-fixture = Capture fixture
