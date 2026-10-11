@@ -1280,11 +1280,8 @@ pub struct RichInputConfig {
     pub pointer_speed: f64,
     pub touchpad_pointer_speed: Option<f64>,
     pub mouse_pointer_speed: Option<f64>,
-    /// Legacy fallback for settings written before mouse/touchpad scrolling
-    /// were independently configurable.
-    pub natural_scroll: bool,
-    pub touchpad_natural_scroll: Option<bool>,
-    pub mouse_natural_scroll: Option<bool>,
+    pub touchpad_natural_scroll: bool,
+    pub mouse_natural_scroll: bool,
     pub tap_to_click: bool,
     pub tap_drag: bool,
     /// Keep a tap-and-drag going after the finger lifts, until the next tap.
@@ -1331,9 +1328,8 @@ impl Default for RichInputConfig {
             pointer_speed: 0.5,
             touchpad_pointer_speed: None,
             mouse_pointer_speed: None,
-            natural_scroll: false,
-            touchpad_natural_scroll: Some(DEFAULT_TOUCHPAD_NATURAL_SCROLL),
-            mouse_natural_scroll: Some(DEFAULT_MOUSE_NATURAL_SCROLL),
+            touchpad_natural_scroll: DEFAULT_TOUCHPAD_NATURAL_SCROLL,
+            mouse_natural_scroll: DEFAULT_MOUSE_NATURAL_SCROLL,
             tap_to_click: true,
             tap_drag: true,
             tap_drag_lock: false,
@@ -1505,23 +1501,14 @@ impl RichInputConfig {
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let mut config: Self =
             serde_json::from_value(serde_json::Value::Object(section.clone())).unwrap_or_default();
-        // `natural_scroll` predates per-device preferences.  It must still
-        // win for an old document, but an unset document gets the distinct
-        // platform defaults rather than one global direction for every device.
-        let legacy_natural_scroll = section
-            .get("natural_scroll")
-            .and_then(serde_json::Value::as_bool);
-        config.natural_scroll = legacy_natural_scroll.unwrap_or(false);
         config.touchpad_natural_scroll = section
             .get("touchpad_natural_scroll")
             .and_then(serde_json::Value::as_bool)
-            .or(legacy_natural_scroll)
-            .or(Some(DEFAULT_TOUCHPAD_NATURAL_SCROLL));
+            .unwrap_or(DEFAULT_TOUCHPAD_NATURAL_SCROLL);
         config.mouse_natural_scroll = section
             .get("mouse_natural_scroll")
             .and_then(serde_json::Value::as_bool)
-            .or(legacy_natural_scroll)
-            .or(Some(DEFAULT_MOUSE_NATURAL_SCROLL));
+            .unwrap_or(DEFAULT_MOUSE_NATURAL_SCROLL);
         // Read the keyboard fields independently as well: a wrong-typed
         // pointer field must not discard an otherwise valid input-source
         // list merely because serde rejected the whole rich object.
@@ -3231,19 +3218,11 @@ mod tests {
             assert_eq!(cfg.keyboard_layouts, ["de"]);
             assert_eq!(cfg.active_source_index(), 0);
         }
-        // Phase `scroll_defaults_match_gnome_and_keep_legacy_global_documents`.
+        // Phase `scroll_defaults_match_gnome`.
         {
             let empty = RichInputConfig::from_section(&serde_json::Map::new());
-            assert_eq!(empty.touchpad_natural_scroll, Some(true));
-            assert_eq!(empty.mouse_natural_scroll, Some(false));
-
-            let legacy = serde_json::json!({ "natural_scroll": false })
-                .as_object()
-                .unwrap()
-                .clone();
-            let legacy = RichInputConfig::from_section(&legacy);
-            assert_eq!(legacy.touchpad_natural_scroll, Some(false));
-            assert_eq!(legacy.mouse_natural_scroll, Some(false));
+            assert!(empty.touchpad_natural_scroll);
+            assert!(!empty.mouse_natural_scroll);
         }
         // Phase `keyboard_sources_are_validated_deduplicated_and_bounded`.
         {

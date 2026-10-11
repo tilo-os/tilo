@@ -21,7 +21,6 @@ pub const SECTION: &str = "input";
 /// Settings section of [`AccessibilityInputSettings`].
 pub const ACCESSIBILITY_SECTION: &str = "accessibility";
 
-pub const NATURAL_SCROLL_KEY: &str = "natural_scroll";
 pub const TAP_TO_CLICK_KEY: &str = "tap_to_click";
 pub const POINTER_SPEED_KEY: &str = "pointer_speed";
 pub const KEY_REPEAT_KEY: &str = "key_repeat";
@@ -255,13 +254,10 @@ pub const REPEAT_DELAY_MIN_MS: u32 = 200;
     reason = "persisted input toggles: each is an independent, named setting mirroring the Settings pane, not a state machine"
 )]
 pub struct InputSettings {
-    /// Legacy scrolling preference used when the device-specific fields are
-    /// absent in an older settings document.
-    pub natural_scroll: bool,
     /// Content-follows-finger scrolling for touchpads.
-    pub touchpad_natural_scroll: Option<bool>,
+    pub touchpad_natural_scroll: bool,
     /// Content-follows-finger scrolling for mice and trackballs.
-    pub mouse_natural_scroll: Option<bool>,
+    pub mouse_natural_scroll: bool,
     /// Tap the touchpad to click. **On** by default — see the module docs.
     pub tap_to_click: bool,
     /// Pointer acceleration, `0.0` (slowest) … `1.0` (fastest), `0.5` being libinput's neutral profile.
@@ -297,11 +293,8 @@ pub struct InputSettings {
 impl Default for InputSettings {
     fn default() -> Self {
         Self {
-            natural_scroll: false,
-            touchpad_natural_scroll: Some(
-                settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
-            ),
-            mouse_natural_scroll: Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL),
+            touchpad_natural_scroll: settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
+            mouse_natural_scroll: settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL,
             tap_to_click: true,
             pointer_speed: 0.5,
             touchpad_pointer_speed: None,
@@ -330,9 +323,6 @@ impl InputSettings {
     /// independently, so a document that only sets `tap_to_click` leaves the rest alone, and a wrong-typed value is treated as absent rather than discarding the whole section.
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let d = Self::default();
-        let legacy_natural_scroll = section
-            .get(NATURAL_SCROLL_KEY)
-            .and_then(serde_json::Value::as_bool);
         let bool_at = |k: &str, fallback: bool| {
             section
                 .get(k)
@@ -347,17 +337,8 @@ impl InputSettings {
                 .map_or(fallback, |v| v.clamp(0.0, 1.0))
         };
         Self {
-            natural_scroll: legacy_natural_scroll.unwrap_or(d.natural_scroll),
-            touchpad_natural_scroll: section
-                .get("touchpad_natural_scroll")
-                .and_then(serde_json::Value::as_bool)
-                .or(legacy_natural_scroll)
-                .or(d.touchpad_natural_scroll),
-            mouse_natural_scroll: section
-                .get("mouse_natural_scroll")
-                .and_then(serde_json::Value::as_bool)
-                .or(legacy_natural_scroll)
-                .or(d.mouse_natural_scroll),
+            touchpad_natural_scroll: bool_at("touchpad_natural_scroll", d.touchpad_natural_scroll),
+            mouse_natural_scroll: bool_at("mouse_natural_scroll", d.mouse_natural_scroll),
             tap_to_click: bool_at(TAP_TO_CLICK_KEY, d.tap_to_click),
             pointer_speed: unit_at(POINTER_SPEED_KEY, d.pointer_speed),
             touchpad_pointer_speed: section
@@ -438,13 +419,11 @@ impl InputSettings {
         (speed.clamp(0.0, 1.0) * 2.0) - 1.0
     }
 
-    /// Resolve the per-device preference, falling back to the legacy global
-    /// toggle for settings documents written before the split.
     pub fn natural_scroll_for(&self, touchpad: bool) -> bool {
         if touchpad {
-            self.touchpad_natural_scroll.unwrap_or(self.natural_scroll)
+            self.touchpad_natural_scroll
         } else {
-            self.mouse_natural_scroll.unwrap_or(self.natural_scroll)
+            self.mouse_natural_scroll
         }
     }
 
@@ -800,9 +779,8 @@ mod tests {
         // Phase `the_other_defaults_match_what_the_settings_pane_starts_from`.
         {
             let d = InputSettings::default();
-            assert!(!d.natural_scroll);
-            assert_eq!(d.touchpad_natural_scroll, Some(true));
-            assert_eq!(d.mouse_natural_scroll, Some(false));
+            assert!(d.touchpad_natural_scroll);
+            assert!(!d.mouse_natural_scroll);
             assert_eq!(d.pointer_speed, 0.5);
             assert_eq!(d.key_repeat, 0.5);
         }
@@ -814,23 +792,15 @@ mod tests {
             assert_eq!(plan_for(&settings, &touchpad()).natural_scroll, Some(true));
             assert_eq!(plan_for(&settings, &mouse()).natural_scroll, Some(false));
         }
-        // Phase `legacy_global_scroll_preference_still_applies_to_both_device_classes`.
-        {
-            let settings = InputSettings::from_section(&section(json!({
-                "natural_scroll": false,
-            })));
-            assert!(!settings.natural_scroll_for(true));
-            assert!(!settings.natural_scroll_for(false));
-        }
         // Phase `persisted_values_are_read_back`.
         {
             let s = InputSettings::from_section(&section(json!({
-                "natural_scroll": true,
+                "mouse_natural_scroll": true,
                 "tap_to_click": false,
                 "pointer_speed": 0.9,
                 "key_repeat": 0.25,
             })));
-            assert!(s.natural_scroll);
+            assert!(s.mouse_natural_scroll);
             assert!(!s.tap_to_click, "an explicit off must beat the default on");
             assert_eq!(s.pointer_speed, 0.9);
             assert_eq!(s.key_repeat, 0.25);
@@ -841,7 +811,7 @@ mod tests {
             let s = InputSettings::from_section(&section(json!({ "pointer_speed": 0.1 })));
             assert_eq!(s.pointer_speed, 0.1);
             assert!(s.tap_to_click);
-            assert!(!s.natural_scroll);
+            assert!(!s.mouse_natural_scroll);
             assert_eq!(s.key_repeat, 0.5);
         }
         // Phase `wrong_types_and_out_of_range_values_are_survivable`.
@@ -1072,29 +1042,17 @@ mod tests {
             assert_eq!(plan.disable_while_typing, None);
             assert_eq!(plan.middle_emulation, None);
         }
-        // Phase `legacy_global_natural_scroll_reaches_every_device_when_device_overrides_are_absent`.
-        {
-            let s = InputSettings {
-                natural_scroll: true,
-                touchpad_natural_scroll: None,
-                mouse_natural_scroll: None,
-                ..Default::default()
-            };
-            assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(true));
-            assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(true));
-            // …and none that doesn't.
-            assert_eq!(plan_for(&s, &keyboard()).natural_scroll, None);
-        }
         // Phase `mouse_and_touchpad_can_keep_independent_scroll_directions`.
         {
             let s = InputSettings {
-                natural_scroll: false,
-                touchpad_natural_scroll: Some(true),
-                mouse_natural_scroll: Some(false),
+                touchpad_natural_scroll: false,
+                mouse_natural_scroll: true,
                 ..Default::default()
             };
-            assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(true));
-            assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(false));
+            assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(false));
+            assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(true));
+            // …and none on a device that cannot scroll.
+            assert_eq!(plan_for(&s, &keyboard()).natural_scroll, None);
         }
         // Phase `pointer_speed_reaches_devices_with_acceleration`.
         {
@@ -1121,7 +1079,7 @@ mod tests {
             // Re-applying after a settings change must produce the same plan a freshly-plugged device would get — otherwise a re-plug silently changes behaviour.
             let s = InputSettings {
                 tap_to_click: false,
-                natural_scroll: true,
+                mouse_natural_scroll: true,
                 pointer_speed: 0.75,
                 key_repeat: 0.2,
                 ..Default::default()
