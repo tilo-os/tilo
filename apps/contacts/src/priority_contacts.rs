@@ -7,12 +7,12 @@
 
 use std::sync::LazyLock;
 
-use crate::model::ContactStore;
+use crate::resource::Contacts;
 
 static ENABLED: LazyLock<bool> =
     LazyLock::new(|| std::env::var("TILO_PACKAGE_ID").as_deref() == Ok("so.tilo.contacts"));
 
-pub(crate) fn publish_if_changed(store: &ContactStore) {
+pub(crate) fn publish_if_changed(store: &Contacts) {
     if !ui::priority_contacts::SUPPORTED || !*ENABLED {
         return;
     }

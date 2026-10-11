@@ -4,7 +4,7 @@ use ui::search::SearchProvider as _;
 /// The library's search source as the framework builds it from the
 /// resource's entries.
 fn library_source(app: &MusicApp) -> impl ui::search::SearchProvider + use<> {
-    ui::framework::testing::search_source::<crate::resource::Music>(
+    ui::framework::testing::search_source::<crate::model::Library>(
         crate::search_type::library_entries(&app.lib),
     )
 }
@@ -16,8 +16,7 @@ fn app_with_doc() -> (MusicApp, AutoCommit) {
     // The behaviour tests exercise playback, queueing and playlists against
     // the bundled catalog, as the screenshot scenarios do. A new library
     // starts empty; see `default_startup_has_empty_library`.
-    let mut doc = AutoCommit::new();
-    doc::seed(&mut doc, &seed::sample_library());
+    let doc = seed::sample_document();
     app.reload(&doc);
     (app, doc)
 }
@@ -50,7 +49,7 @@ fn private_queue_metadata_restores_unsaved_songs_before_resume() {
     let mut requested = app.pb.clone();
     requested.playing = true;
     assert!(app.apply_resource_playback(requested).is_ok());
-    assert!(doc::load_library(&doc).tracks.is_empty());
+    assert!(seed::library_of(&doc).tracks.is_empty());
     assert_eq!(doc.get_heads(), before);
     app.audio.stop();
 }
@@ -381,8 +380,7 @@ fn constructors_isolate_caches_profiles_and_never_fabricate_content() {
         // a new record's empty library it must not fabricate a catalog, a
         // playlist, or an app-owned library store.
         let mut app = MusicApp::new();
-        let mut doc = AutoCommit::new();
-        doc::seed(&mut doc, &Library::default());
+        let doc = seed::empty_document();
         app.reload(&doc);
         assert_eq!(
             app.lib.total_tracks(),
@@ -396,12 +394,6 @@ fn constructors_isolate_caches_profiles_and_never_fabricate_content() {
         assert!(
             app.pb.current.is_none(),
             "nothing playing on a fresh launch"
-        );
-        // The platform document is still initialised, just empty; a later host
-        // sync can adopt shared state without re-seeding.
-        assert!(
-            doc::is_seeded(&doc),
-            "the empty library still initialises the doc structure"
         );
     }
 }
@@ -420,10 +412,7 @@ fn picked_covers_normalise_to_portable_values() {
             .unwrap();
         let source = output.into_inner();
         let portable = portable_cover_data_url(&source).expect("small PNG normalizes");
-        let action = crate::actions::set_cover_action("pl_test", &portable);
-        let crate::actions::MusicAction::SetPlaylistCover { cover, .. } = action else {
-            unreachable!("cover builder returns a cover action");
-        };
+        let cover = portable;
         assert!(crate::actions::portable_cover_value(&cover));
         assert!(!cover.contains("file:"));
         assert!(!cover.contains("/tmp/"));
@@ -440,7 +429,7 @@ fn picked_covers_normalise_to_portable_values() {
     // Phase `completed_portal_cover_write_contains_no_device_local_path`.
     {
         let (mut app, mut doc) = app_with_doc();
-        let playlist = app.lib.playlists[0].id.clone();
+        let playlist = app.lib.playlists().next().unwrap().id.clone();
         let mut output = Cursor::new(Vec::new());
         image::DynamicImage::new_rgba8(1, 1)
             .write_to(&mut output, image::ImageFormat::Png)
@@ -453,7 +442,7 @@ fn picked_covers_normalise_to_portable_values() {
         app.cover_embed = Some(receiver);
 
         app.drain_cover_embed(&mut ui::widget::Edits::lend(&mut doc));
-        let persisted = doc::load_library(&doc)
+        let persisted = seed::library_of(&doc)
             .playlist(&playlist)
             .unwrap()
             .cover
@@ -567,7 +556,11 @@ fn continuation_and_media_handoff_restore_known_tracks_locally() {
         // library but must leave this device's transport untouched.
         app.perform_action(
             &mut ui::widget::Edits::lend(&mut doc),
-            &crate::actions::create_playlist_action("pl_peer_library", "Peer library edit"),
+            Library::paths().playlists.insert_as(
+                &ui::tilo_resource::Id::from_raw("pl_peer_library"),
+                0,
+                &crate::model::Playlist::named("pl_peer_library", "Peer library edit"),
+            ),
         );
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -760,17 +753,10 @@ fn click_track(app: &mut MusicApp, doc: &mut AutoCommit, id: &str) {
 }
 
 fn cursor_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 fn press(button: MouseButton) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button,
-    }
+    ui::synthetic_input::mouse_input(ui::winit::event::ElementState::Pressed, button)
 }
 /// Drive one event through the production `handle_event` path.
 /// Send a row-control click through the same custody and action runner as
@@ -811,19 +797,11 @@ fn send_with(
 }
 
 fn released(button: MouseButton) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Released,
-        button,
-    }
+    ui::synthetic_input::mouse_input(ui::winit::event::ElementState::Released, button)
 }
 
 fn wheel(lines_y: f32) -> WindowEvent {
-    WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines_y),
-        phase: winit::event::TouchPhase::Moved,
-    }
+    ui::synthetic_input::mouse_wheel(0.0, lines_y)
 }
 
 /// A character keypress event (logical key + committed text). like the other app event-path tests.
@@ -1169,8 +1147,7 @@ fn request_identities_keep_stale_responses_from_winning() {
     {
         // The real default startup: an empty library, network allowed.
         let mut app = MusicApp::new();
-        let mut doc = AutoCommit::new();
-        doc::seed(&mut doc, &Library::default());
+        let doc = seed::empty_document();
         app.reload(&doc);
         assert!(
             app.lib.tracks.is_empty(),
@@ -1340,8 +1317,8 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
         use ui::widget::Widget as _;
 
         let (mut app, mut doc) = app_with_doc();
-        let playlist = app.lib.playlists[0].clone();
-        let first = playlist.track_ids[0].clone();
+        let playlist = app.lib.playlists().next().unwrap().clone();
+        let first = playlist.track_ids()[0].clone();
         app.view = View::Playlist(playlist.id.clone());
         let tree = app.accessibility().expect("music semantics");
         let page = tree
@@ -1372,7 +1349,10 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        assert_eq!(app.lib.playlist(&playlist.id).unwrap().track_ids[1], first);
+        assert_eq!(
+            app.lib.playlist(&playlist.id).unwrap().track_ids()[1],
+            first
+        );
     }
 
     // Phase `assistive_search_edits_and_navigation_use_normal_routes`.
@@ -1940,7 +1920,7 @@ fn browse_and_the_live_catalogue_answer_platform_search() {
         let (mut app, mut doc) = app_with_doc();
         app.playback_loaded = true;
         let query = ui::search::SearchQuery::new("daft punk");
-        ui::framework::ResourceSurface::<crate::resource::Music, crate::actions::MusicEffect>::search_query(&mut app, &query);
+        ui::framework::ResourceSurface::<crate::model::Library, crate::actions::MusicEffect>::search_query(&mut app, &query);
         assert_eq!(
             app.pending_catalogue_query.as_deref(),
             Some("daft punk"),
@@ -1953,7 +1933,7 @@ fn browse_and_the_live_catalogue_answer_platform_search() {
         app.apply_search_results("daft punk", 40, &sample_bundle());
         assert!(app.live_bundle.is_none(), "a stale worker reply is ignored");
         app.apply_search_results("daft punk", 41, &sample_bundle());
-        let provider = ui::framework::testing::search_source::<crate::resource::Music>(
+        let provider = ui::framework::testing::search_source::<crate::model::Library>(
             app.live_search_entries(),
         );
         let ready = ui::search::SearchProvider::search_page(&provider, &query, None, 100, 100);
@@ -2001,7 +1981,7 @@ fn a_live_catalogue_like_uses_the_admitted_effect_and_one_undo() {
         .iter()
         .find(|hit| hit.title == "One More Time")
         .expect("the real catalogue reply is in platform search");
-    let row = song.action_address().unwrap().resource;
+    let row = song.anchor();
     assert_eq!(
         row.as_str(),
         crate::actions::track_resource_id("yt:vid_one")
@@ -2063,7 +2043,7 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         assert!(app.lib.is_album_saved("al_strata"));
-        assert!(doc::load_library(&doc).is_album_saved("al_strata"));
+        assert!(seed::library_of(&doc).is_album_saved("al_strata"));
         app.dispatch(
             Action::ToggleSaveAlbum("al_strata".into()),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -2084,7 +2064,7 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
             "like is reflected in the snapshot"
         );
         assert!(
-            doc::load_library(&doc).is_liked("tk_g2"),
+            seed::library_of(&doc).is_liked("tk_g2"),
             "like persists to the doc"
         );
         // Liked view surfaces it.
@@ -2110,7 +2090,7 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
             matches!(app.view, View::Playlist(_)),
             "creating opens the new playlist"
         );
-        let created = app.lib.playlists.iter().any(|p| p.name == "Roadtrip");
+        let created = app.lib.playlists().any(|p| p.name == "Roadtrip");
         assert!(created);
     }
 
@@ -2127,7 +2107,7 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
         );
         let pl = app.lib.playlist("pl_morning").unwrap().clone();
         assert_eq!(
-            pl.track_ids.last().map(std::string::String::as_str),
+            pl.track_ids().last().map(std::string::String::as_str),
             Some("tk_h2")
         );
         app.dispatch(
@@ -2137,14 +2117,7 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
             },
             &mut ui::widget::Edits::lend(&mut doc),
         );
-        assert!(
-            !app.lib
-                .playlist("pl_morning")
-                .unwrap()
-                .track_ids
-                .iter()
-                .any(|t| t == "tk_g2")
-        );
+        assert!(!app.lib.playlist("pl_morning").unwrap().contains("tk_g2"));
         app.dispatch(
             Action::MovePlaylistItem {
                 playlist: "pl_morning".into(),
@@ -2154,7 +2127,7 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         assert_eq!(
-            app.lib.playlist("pl_morning").unwrap().track_ids[1],
+            app.lib.playlist("pl_morning").unwrap().track_ids()[1],
             "tk_p1"
         );
     }
@@ -2172,6 +2145,26 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
             Action::DeletePlaylist("pl_focus".into()),
             &mut ui::widget::Edits::lend(&mut doc),
         );
+        assert!(
+            app.lib.playlist("pl_focus").is_some(),
+            "nothing is deleted before the person agrees"
+        );
+        let asked = app
+            .dispatcher
+            .as_ref()
+            .unwrap()
+            .take_asked()
+            .expect("what was asked builds");
+        assert_eq!(asked.len(), 1, "the host asks to delete the playlist");
+        // Confirmed, the door applies what was asked.
+        let mut library = ui::tilo_resource::Replica::<Library>::from_doc(doc.clone());
+        for action in &asked {
+            library
+                .apply_action(action)
+                .expect("a confirmed change applies");
+        }
+        doc = library.doc().clone();
+        app.reload_library(&doc);
         assert!(app.lib.playlist("pl_focus").is_none());
     }
 
@@ -2206,8 +2199,7 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
         );
         let pl = app
             .lib
-            .playlists
-            .iter()
+            .playlists()
             .find(|p| p.name == "Jazz")
             .expect("Enter on the name prompt created the playlist");
         assert!(
@@ -2241,25 +2233,17 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
         );
         let pl = app
             .lib
-            .playlists
-            .iter()
+            .playlists()
             .find(|p| p.name == "Late Night")
             .expect("the playlist was created");
         assert!(
-            pl.track_ids.contains(&"tk_s2".to_string()),
+            pl.contains("tk_s2"),
             "the target track was added to the new playlist"
         );
         // And it round-trips through the document, not just the snapshot.
-        let saved = doc::load_library(&doc);
-        let spl = saved
-            .playlists
-            .iter()
-            .find(|p| p.name == "Late Night")
-            .unwrap();
-        assert!(
-            spl.track_ids.contains(&"tk_s2".to_string()),
-            "the add persists to the doc"
-        );
+        let saved = seed::library_of(&doc);
+        let spl = saved.playlists().find(|p| p.name == "Late Night").unwrap();
+        assert!(spl.contains("tk_s2"), "the add persists to the doc");
     }
 
     // Phase `plain_new_playlist_is_empty`.
@@ -2274,14 +2258,9 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
             Action::CreatePlaylist,
             &mut ui::widget::Edits::lend(&mut doc),
         );
-        let pl = app
-            .lib
-            .playlists
-            .iter()
-            .find(|p| p.name == "Blank")
-            .unwrap();
+        let pl = app.lib.playlists().find(|p| p.name == "Blank").unwrap();
         assert!(
-            pl.track_ids.is_empty(),
+            pl.is_empty(),
             "a plain create (no target track) makes an empty playlist"
         );
     }
@@ -2289,12 +2268,12 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
     // Phase `saved_album_syncs_via_doc`.
     {
         let (mut app, mut doc) = app_with_doc();
-        let before = doc::load_library(&doc).is_album_saved("al_glasslight");
+        let before = seed::library_of(&doc).is_album_saved("al_glasslight");
         app.dispatch(
             Action::ToggleSaveAlbum("al_glasslight".into()),
             &mut ui::widget::Edits::lend(&mut doc),
         );
-        let after = doc::load_library(&doc).is_album_saved("al_glasslight");
+        let after = seed::library_of(&doc).is_album_saved("al_glasslight");
         assert_ne!(
             before, after,
             "toggling flips the saved-album state in the synced doc"
@@ -2302,7 +2281,7 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
         let mut peer = AutoCommit::new();
         crate::sync::converge(&mut doc, &mut peer);
         assert_eq!(
-            doc::load_library(&peer).is_album_saved("al_glasslight"),
+            seed::library_of(&peer).is_album_saved("al_glasslight"),
             after,
             "the saved-album state syncs to another device via the CRDT"
         );
@@ -2323,7 +2302,7 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
         );
         // Persisted to the CRDT — a fresh load from the document sees it.
         assert!(
-            doc::load_library(&doc).followed_artists.contains(&artist),
+            seed::library_of(&doc).followed_artists.contains(&artist),
             "follow round-trips through the document",
         );
         app.dispatch(
@@ -2464,7 +2443,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
         // Real ids straight from the seeded library.
         let album = app.lib.albums.keys().next().unwrap().clone();
         let artist = app.lib.artists.keys().next().unwrap().clone();
-        let playlist = app.lib.playlists.first().unwrap().id.clone();
+        let playlist = app.lib.playlists().next().unwrap().id.clone();
         let track = app.lib.tracks.keys().next().unwrap().clone();
 
         // An album deep-link opens the album page.
@@ -2515,36 +2494,38 @@ fn global_search_and_canonical_views_route_without_mutation() {
         let resources = app.palette_tree(&doc);
         let album = app.lib.albums.values().next().unwrap().clone();
         let artist_for_resolution = app.lib.artists.values().next().unwrap().clone();
-        let playlist = app.lib.playlists.first().unwrap().clone();
+        let playlist = app.lib.playlists().next().unwrap().clone();
         let provider = library_source(&app);
         for (query, expected) in [
             (
                 track.title.as_str(),
-                crate::actions::play_track_address(&track.id),
+                crate::actions::track_resource_id(&track.id),
             ),
             (
                 album.title.as_str(),
-                crate::actions::open_album_address(&album.id),
+                crate::actions::album_resource_id(&album.id),
             ),
             (
                 artist_for_resolution.name.as_str(),
-                crate::actions::open_artist_address(&artist_for_resolution.id),
+                crate::actions::artist_resource_id(&artist_for_resolution.id),
             ),
             (
                 playlist.name.as_str(),
-                crate::actions::open_playlist_address(&playlist.id),
+                crate::actions::playlist_resource_id(&playlist.id),
             ),
         ] {
             let hit = provider
                 .search(query)
                 .into_iter()
-                .find(|hit| hit.action_address().as_ref() == Some(&expected))
-                .expect("each searchable Music entity has its canonical hit");
-            let address = hit.action_address().expect("canonical search address");
+                .find(|hit| hit.anchor() == expected)
+                .expect("each searchable Music entity is anchored at its row");
             assert!(
-                tilo_actions::door::resolve(&resources, &address).is_some(),
-                "{address:?} resolves against the live Music resource tree"
+                tilo_actions::flatten(&resources)
+                    .iter()
+                    .any(|flat| flat.resource_id.as_str() == hit.anchor()),
+                "{expected} is a row of the live Music resource tree"
             );
+            assert!(crate::actions::anchor_effect(&hit.anchor()).is_some());
         }
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
@@ -2558,18 +2539,13 @@ fn global_search_and_canonical_views_route_without_mutation() {
             .expect("song search row is present");
         palette.set_cursor(row);
         palette.activate_selected();
-        let operation = palette.take_operation().expect("play action queued");
-        assert!(palette.take_navigation().is_none());
-        assert_eq!(operation.kind, tilo_actions::OperationKind::Effect);
+        let anchor = palette.take_navigation().expect("the song's row is opened");
         let heads = doc.get_heads();
         let invocation = tilo_actions::InvocationId::new();
         assert!(matches!(
-            app.start_effect(
+            app.begin_effect(
                 invocation,
-                &operation
-                    .encoded()
-                    .expect("test requires prepared encoding")
-                    .payload
+                crate::actions::anchor_effect(&anchor).expect("opening a song plays it")
             )
             .expect("local playback operation starts"),
             ui::framework::Effected::Pending
@@ -2577,12 +2553,12 @@ fn global_search_and_canonical_views_route_without_mutation() {
         assert_eq!(
             app.pb.current.as_deref(),
             Some(track.id.as_str()),
-            "the brokered effect plays the selected track"
+            "opening the hit plays the selected track"
         );
         assert!(app.pb.queue.contains(&track.id));
         assert_eq!(doc.get_heads(), heads, "playback is device-local");
 
-        // Navigation follows the same path but is explicitly a View operation.
+        // Opening an artist hit shows its page and changes no document.
         let heads = doc.get_heads();
         let artist = app.lib.artists.values().next().unwrap().clone();
         let mut palette = ui::ActionPalette::new();
@@ -2597,15 +2573,13 @@ fn global_search_and_canonical_views_route_without_mutation() {
             .expect("artist search row is present");
         palette.set_cursor(row);
         palette.activate_selected();
-        let operation = palette.take_operation().expect("artist view queued");
-        assert_eq!(operation.kind, tilo_actions::OperationKind::View);
+        let anchor = palette
+            .take_navigation()
+            .expect("the artist's row is opened");
         assert!(matches!(
-            app.start_effect(
+            app.begin_effect(
                 ui::tilo_actions::InvocationId::new(),
-                &operation
-                    .encoded()
-                    .expect("test requires prepared encoding")
-                    .payload
+                crate::actions::anchor_effect(&anchor).expect("opening an artist shows it")
             )
             .unwrap(),
             ui::framework::Effected::Done(_)
@@ -2613,7 +2587,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
         assert_eq!(
             app.view,
             View::Artist(artist.id),
-            "brokered view opens the artist page"
+            "opening the hit shows the artist page"
         );
         assert_eq!(doc.get_heads(), heads, "navigation is presentation-only");
     }
@@ -2623,7 +2597,11 @@ fn global_search_and_canonical_views_route_without_mutation() {
         let (mut app, mut doc) = app_with_doc();
         app.perform_action(
             &mut ui::widget::Edits::lend(&mut doc),
-            &crate::actions::create_playlist_action("pl_provider_refresh", "Refresh proof"),
+            Library::paths().playlists.insert_as(
+                &ui::tilo_resource::Id::from_raw("pl_provider_refresh"),
+                0,
+                &crate::model::Playlist::named("pl_provider_refresh", "Refresh proof"),
+            ),
         );
         app.reload_library(&doc);
         assert!(
@@ -2631,8 +2609,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
                 .search("Refresh proof")
                 .iter()
                 .any(|result| {
-                    result.action_address()
-                        == Some(crate::actions::open_playlist_address("pl_provider_refresh"))
+                    result.anchor() == crate::actions::playlist_resource_id("pl_provider_refresh")
                 })
         );
     }
@@ -2640,8 +2617,12 @@ fn global_search_and_canonical_views_route_without_mutation() {
     // Phase `membership_open_operation_reveals_the_current_row_and_refuses_stale_rows`.
     {
         let (mut app, mut doc) = app_with_doc();
-        let playlist = app.lib.playlists.first().expect("seed playlist").clone();
-        let track = playlist.track_ids.first().expect("seed membership").clone();
+        let playlist = app.lib.playlists().next().expect("seed playlist").clone();
+        let track = playlist
+            .track_ids()
+            .first()
+            .cloned()
+            .expect("seed membership");
         let resource_id = crate::actions::playlist_track_resource_id(&playlist.id, &track);
         let resource =
             MusicApp::publish_resource(&app, &resource_id).expect("membership resolves lazily");
@@ -2671,7 +2652,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
 
         app.perform_action(
             &mut ui::widget::Edits::lend(&mut doc),
-            &crate::actions::remove_track_action(&playlist.id, &track),
+            Library::remove_from_playlist(&playlist.id, &track),
         );
         app.reload_library(&doc);
         let error = app
@@ -4403,7 +4384,7 @@ fn canonical_actions_converge_through_the_platform_document() {
     // Phase `canonical_action_host_commit_converges_through_the_platform_document`.
     {
         let (mut app, mut doc) = app_with_doc();
-        assert!(!doc::load_library(&doc).is_liked("tk_g2"));
+        assert!(!seed::library_of(&doc).is_liked("tk_g2"));
         // Like via the normal action pipeline: the framework dispatcher
         // pointer controls and Ctrl+K share, not a Music-owned transport or
         // a side-channel mutation.
@@ -4412,21 +4393,22 @@ fn canonical_actions_converge_through_the_platform_document() {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         assert!(
-            doc::load_library(&doc).is_liked("tk_g2"),
+            seed::library_of(&doc).is_liked("tk_g2"),
             "the canonical action changed the host-owned app document"
         );
         assert_eq!(
             last_action_label(&mut doc).as_deref(),
-            Some("Like song"),
+            Some("edit:liked"),
             "the like is a recorded, attributed action the platform replicates"
         );
+        assert_eq!(last_edit_op(&mut doc), Some(tilo_actions::EditOp::Insert));
         // Model the platform's document replication boundary with an exact
         // Automerge message exchange. Music neither opens a socket nor mints a
         // pairing token; it only reads/writes this canonical document.
         let mut peer = AutoCommit::new();
         crate::sync::converge(&mut doc, &mut peer);
         assert!(
-            doc::load_library(&peer).is_liked("tk_g2"),
+            seed::library_of(&peer).is_liked("tk_g2"),
             "the committed canonical action reaches the peer document"
         );
     }
@@ -4446,28 +4428,49 @@ fn canonical_actions_converge_through_the_platform_document() {
         let center = track_control(&mut app, &mut doc, &id, "like", draw_once).center();
         // The sample library seeds some tracks as already-liked, so assert the
         // membership *flips* rather than assuming a fixed direction.
-        let before = doc::load_library(&doc).is_liked(&id);
+        let before = seed::library_of(&doc).is_liked(&id);
 
         hosted_click(&mut app, &mut doc, center);
 
         assert_eq!(
-            doc::load_library(&doc).is_liked(&id),
+            seed::library_of(&doc).is_liked(&id),
             !before,
             "and it actually toggled the track's liked state in the doc"
         );
         assert_eq!(
-            last_action_label(&mut doc).as_deref(),
-            Some(if before { "Unlike song" } else { "Like song" }),
-            "the click applied the palette's like action"
+            last_edit_op(&mut doc),
+            Some(if before {
+                tilo_actions::EditOp::Remove
+            } else {
+                tilo_actions::EditOp::Insert
+            }),
+            "the click applied the like edit"
         );
     }
 }
 
-/// The history label of the last action applied to `doc`.
-fn last_action_label(doc: &mut AutoCommit) -> Option<String> {
+/// What history recorded for the last action applied to `doc`.
+fn last_action(doc: &mut AutoCommit) -> Option<tilo_actions::Did> {
     let change = doc.get_last_local_change()?;
     let message = change.message()?;
-    tilo_actions::ActionContext::from_change_message(message).map(|context| context.action_label)
+    tilo_actions::ActionContext::from_change_message(message)?.what
+}
+
+/// The last action's verb, or `edit:<field>` for a field edit.
+fn last_action_label(doc: &mut AutoCommit) -> Option<String> {
+    match last_action(doc)? {
+        tilo_actions::Did::Verb(verb) => Some(verb.action.action),
+        tilo_actions::Did::Edit(edit) => Some(format!("edit:{}", edit.field)),
+        _ => None,
+    }
+}
+
+/// The operation of the last field edit applied to `doc`.
+fn last_edit_op(doc: &mut AutoCommit) -> Option<tilo_actions::EditOp> {
+    match last_action(doc)? {
+        tilo_actions::Did::Edit(edit) => Some(edit.op),
+        _ => None,
+    }
 }
 
 // ---- 22. responsive bottom bar: volume + swipe ------------------------
@@ -4542,22 +4545,14 @@ fn app_with_live_results() -> (MusicApp, AutoCommit) {
 
 /// Invoke the published action search `hit` names, as the palette does: on
 /// the row a search provider resolves, else on the app's published tree.
+/// Open the row `hit` is anchored at, as the window's `open` does.
 fn invoke_hit(app: &mut MusicApp, hit: &ui::search::SearchResult, _doc: &mut AutoCommit) {
-    use ui::tilo_resource::Effect;
-    let address = hit
-        .action_address()
-        .expect("a hit invokes a published action");
-    let row = app
-        .device_row(address.resource.as_str())
-        .map(ui::framework::LiveRow::into_resource)
-        .or_else(|| app.publish_resource(address.resource.as_str()))
-        .expect("the actual authority door resolves the hit's row");
-    let rows = [row];
-    let spec = tilo_actions::door::resolve(&rows, &address)
-        .expect("the hit's published action resolves on its actual row");
-    let encoded = ui::testing::action_contract::spec_encoding(spec, None);
-    let effect = crate::actions::MusicEffect::from_payload(&encoded.payload)
-        .expect("the published row names the typed music effect");
+    let anchor = hit.anchor();
+    assert!(
+        app.device_row(&anchor).is_some() || app.publish_resource(&anchor).is_some(),
+        "the hit's row resolves"
+    );
+    let effect = crate::actions::anchor_effect(&anchor).expect("the hit opens its row");
     app.begin_effect(tilo_actions::InvocationId::new(), effect)
         .expect("the actual effect runs");
 }
@@ -4585,16 +4580,13 @@ fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() 
     draw_at(&mut app, &mut doc, 1280.0, 2400.0);
     let toggle = page_widget(&app, "music-recommendations-input-likes");
     hosted_click(&mut app, &mut doc, toggle.center());
-    assert!(!doc::load_library(&doc).recommendations.likes);
-    assert_eq!(
-        last_action_label(&mut doc).as_deref(),
-        Some(crate::i18n::t("music-recommendations-change-inputs").as_str())
-    );
+    assert!(!seed::library_of(&doc).recommendations.likes);
+    assert_eq!(last_action_label(&mut doc).as_deref(), Some("edit:likes"));
     app.dispatch(
-        Action::Recommendation(crate::actions::MusicAction::SetRecommendationInput {
-            input: crate::recommendations::Input::Likes,
-            enabled: true,
-        }),
+        Action::Recommendation(
+            crate::recommendations::Preferences::input_path(crate::recommendations::Input::Likes)
+                .set(true),
+        ),
         &mut ui::widget::Edits::lend(&mut doc),
     );
     draw_at(&mut app, &mut doc, 1280.0, 2400.0);
@@ -4607,14 +4599,13 @@ fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() 
     );
     hosted_click(&mut app, &mut doc, dismiss.center());
     assert!(
-        doc::load_library(&doc)
+        seed::library_of(&doc)
             .recommendations
-            .dismissed
-            .contains(&pick.track)
+            .is_dismissed(&pick.track)
     );
     assert_eq!(
         last_action_label(&mut doc).as_deref(),
-        Some(crate::i18n::t("music-recommendations-dismiss").as_str())
+        Some("edit:dismissed")
     );
 }
 
@@ -4638,9 +4629,7 @@ fn artist_and_album_pages_navigate_and_play() {
 
         let artist = rows
             .iter()
-            .find(|row| {
-                row.action_address() == Some(crate::actions::open_artist_address("UCdaftpunk"))
-            })
+            .find(|row| row.anchor() == crate::actions::artist_resource_id("UCdaftpunk"))
             .expect("the artist's hit");
         invoke_hit(&mut app, artist, &mut doc);
         assert_eq!(app.view, View::Artist("UCdaftpunk".into()));

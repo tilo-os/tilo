@@ -14,6 +14,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use collab_types::CommitNamed as _;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -174,7 +175,7 @@ impl Native {
                 let mut doc = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
                 let heads = doc.get_heads();
                 doc.put(ROOT, key, value).unwrap();
-                doc.commit();
+                doc.commit_edit("fixture", "fixture");
                 view.peer().clone().publish_incremental(
                     APP,
                     "",
@@ -297,7 +298,7 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_room() {
                     .peer()
                     .permissions(device, SystemTime::now())
                     .ok()
-                    .map(|(role, ..)| role))
+                    .map(|member| member.role))
             })
             .unwrap()
     };
@@ -361,7 +362,7 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_room() {
         "Alice's replica admits Bob's device",
         &|peer, _| {
             peer.permissions(desk.device_public_key, SystemTime::now())
-                .is_ok_and(|(role, ..)| role == collab_types::Role::Editor)
+                .is_ok_and(|member| member.role == collab_types::Role::Editor)
         },
     )
     .await;
@@ -369,7 +370,7 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_room() {
     // Alice writes; Bob's native owner admits it.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "from Alice").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "topic");
     let message = alice_peer
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop_key, SystemTime::now())
         .unwrap();
@@ -476,7 +477,7 @@ async fn the_owners_native_device_holds_its_relay_governed_room() {
             Ok(view
                 .peer()
                 .permissions(laptop.device_public_key, SystemTime::now())
-                .map(|(role, ..)| role))
+                .map(|member| member.role))
         })
         .unwrap();
     assert_eq!(role, Ok(collab_types::Role::Owner));

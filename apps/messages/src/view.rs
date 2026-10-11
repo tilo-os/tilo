@@ -731,7 +731,7 @@ fn composer(
                         TextInput::from_state(&draft)
                             .with_id("messages.composer")
                             .with_accessible_name(CATALOG.t("messages-compose"))
-                            .with_placeholder(&CATALOG.t("messages-compose"))
+                            .with_placeholder(CATALOG.t("messages-compose"))
                             .disabled(!enabled),
                     )),
             ))

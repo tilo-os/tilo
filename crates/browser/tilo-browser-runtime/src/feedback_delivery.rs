@@ -5,16 +5,14 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use tilo_actions::remote::feedback::{
-    FeedbackAnswer, FeedbackDestination, FeedbackPublication, FeedbackQuery,
-};
+use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination, FeedbackQuery};
 use tilo_actions::remote::{Caller, RemoteActionFrame, RemoteActionMessage};
 use tilo_app::feedback::{Error, Submission};
 use tilo_browser_peer::{PeerEvent, PeerEvents, PeerHandle};
 use tilo_desktop::feedback::Destination;
 use tilo_desktop::feedback::transport::{Enrollment, NoCapture, SignedReceipt, Startup, Transport};
 use tilo_user_identity::DeviceCert;
-use ui::permissions::{Actor, PermissionContext, Verb};
+use ui::permissions::{Actor, PermissionContext, Standing};
 
 thread_local! { static CONNECTIONS: RefCell<HashMap<u32, Rc<RefCell<Connection>>>> = RefCell::new(HashMap::new()); }
 struct Connection {
@@ -114,7 +112,6 @@ impl Connection {
             correlation: self.serial,
             query: FeedbackQuery {
                 destination: self.destination.clone(),
-                publication: FeedbackPublication::Write,
                 submission: submission
                     .as_ref()
                     .map(serde_json::to_value)
@@ -133,7 +130,6 @@ impl Connection {
     fn admit(&self, answer: &FeedbackAnswer) -> Result<Enrollment, String> {
         let admission = &answer.admission;
         if admission.destination != self.destination
-            || admission.publication != FeedbackPublication::Write
             || admission.owner_user != hex::encode(self.owner.user_public_key)
             || admission.owner_device != hex::encode(self.owner.device_public_key)
             || admission.reporter_user != hex::encode(self.reporter.user_public_key)
@@ -141,9 +137,12 @@ impl Connection {
         {
             return Err("feedback admission identity mismatch".into());
         }
-        let role = serde_json::from_value(admission.role.clone())
-            .map_err(|_| "feedback role unavailable")?;
-        let caps = serde_json::from_value(admission.caps.clone())
+        let standing: Standing = serde_json::from_value(admission.standing.clone())
+            .map_err(|_| "feedback standing unavailable")?;
+        if standing.person != admission.reporter_user {
+            return Err("feedback admission identity mismatch".into());
+        }
+        let sandbox = serde_json::from_value(admission.sandbox.clone())
             .map_err(|_| "feedback capabilities unavailable")?;
         let room = self.destination.room.clone();
         Ok(Enrollment {
@@ -159,12 +158,12 @@ impl Connection {
                 self.reporter.device_public_key,
             )
             .in_room(room.clone()),
-            permissions: PermissionContext::from_capabilities(
-                Actor::person(Some(role), hex::encode(self.reporter.user_public_key)).in_room(room),
-                caps,
+            permissions: PermissionContext::new(
+                Actor::person(standing.person.clone()).in_room(room),
+                sandbox,
+                standing,
             )
             .at_unix_time(admission.unix_time),
-            publication: Verb::Write,
         })
     }
     fn current(&self) -> Result<Enrollment, Error> {

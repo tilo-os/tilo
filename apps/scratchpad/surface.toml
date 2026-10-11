@@ -1,0 +1,16 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "scratchpad.note"
+label = "Note"
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "note"
+path = "body"
+stored = "value"
+title = "Note text"
+type = "String"

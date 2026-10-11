@@ -62,10 +62,13 @@ pub(super) enum Unopened {
     Never,
 }
 
+/// A frame waiting for keys, with the claims its op will carry.
+pub(super) type HeldFrame = (Vec<u8>, Vec<collab_types::ChangeClaim>);
+
 /// A route's keys plus what waits on them.
 pub(super) struct RouteKeys {
     pub(super) keys: Keys,
-    held_outbound: VecDeque<Vec<u8>>,
+    held_outbound: VecDeque<HeldFrame>,
     held_outbound_bytes: usize,
     held_inbound: VecDeque<(SignedOp, String)>,
     reported: Option<ChannelAccessState>,
@@ -242,18 +245,22 @@ impl RouteKeys {
     }
 
     /// Keep a frame until keys arrive. `false` when the hold is full.
-    pub(super) fn hold_outbound(&mut self, frame: Vec<u8>) -> bool {
+    pub(super) fn hold_outbound(
+        &mut self,
+        frame: Vec<u8>,
+        claims: Vec<collab_types::ChangeClaim>,
+    ) -> bool {
         let bytes = self.held_outbound_bytes.saturating_add(frame.len());
         if self.held_outbound.len() >= MAX_HELD_OUTBOUND || bytes > MAX_HELD_OUTBOUND_BYTES {
             return false;
         }
         self.held_outbound_bytes = bytes;
-        self.held_outbound.push_back(frame);
+        self.held_outbound.push_back((frame, claims));
         true
     }
 
     /// Take every held frame, oldest first, once keys are held.
-    pub(super) fn take_held_outbound(&mut self) -> Vec<Vec<u8>> {
+    pub(super) fn take_held_outbound(&mut self) -> Vec<HeldFrame> {
         if !self.state().is_open() {
             return Vec::new();
         }
@@ -282,7 +289,7 @@ impl RouteKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{AttestationId, ChannelId, Ed25519PublicKey, OpClass};
+    use collab_types::{AttestationId, ChannelId, Ed25519PublicKey, OpKind};
     use runtime_identity::wire::ChannelAccess as Wire;
 
     fn keys(channel: ChannelId) -> (channel_crypto::ChannelGroup, Vec<u8>) {
@@ -303,7 +310,7 @@ mod tests {
                 artifact,
                 Ed25519PublicKey::from_bytes([2; 32]),
                 AttestationId::default(),
-                OpClass::Splice,
+                OpKind::Change,
                 std::time::SystemTime::UNIX_EPOCH,
                 1,
                 metadata,
@@ -313,7 +320,7 @@ mod tests {
                 artifact,
                 Ed25519PublicKey::from_bytes([2; 32]),
                 AttestationId::default(),
-                OpClass::Splice,
+                OpKind::Change,
                 std::time::SystemTime::UNIX_EPOCH,
                 1,
             ),
@@ -338,8 +345,8 @@ mod tests {
             route.seal(artifact, ContentRetention::Delta, b"mine".to_vec()),
             Sealed::Hold
         ));
-        assert!(route.hold_outbound(b"first".to_vec()));
-        assert!(route.hold_outbound(b"second".to_vec()));
+        assert!(route.hold_outbound(b"first".to_vec(), Vec::new()));
+        assert!(route.hold_outbound(b"second".to_vec(), Vec::new()));
         let arrived = envelope(sealed, Some(metadata));
         assert!(matches!(route.open(&arrived, true), Err(Unopened::Later)));
         route.hold_inbound(arrived, "peer".into());
@@ -356,7 +363,10 @@ mod tests {
         assert_eq!(route.generation(), 7);
         assert_eq!(
             route.take_held_outbound(),
-            vec![b"first".to_vec(), b"second".to_vec()]
+            vec![
+                (b"first".to_vec(), Vec::new()),
+                (b"second".to_vec(), Vec::new())
+            ]
         );
         let held = route.take_held_inbound();
         assert_eq!(held.len(), 1);
@@ -398,7 +408,7 @@ mod tests {
             .encode()
             .unwrap();
         let mut compaction = envelope(payload, Some(metadata));
-        compaction.op_class = OpClass::Compaction;
+        compaction.kind = OpKind::Compaction;
         let mut route = RouteKeys::requested();
         route.update(Wire::Ready, 1, Some(&encoded));
         assert_eq!(

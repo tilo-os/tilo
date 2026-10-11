@@ -21,6 +21,7 @@ path = "src/lib.rs"
 # no compositor dependency. See `src/lib.rs` for the wire contract.
 
 [dependencies]
+tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 getrandom.workspace = true
 web-time = { version = "1", features = ["serde"] }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
@@ -37,9 +38,17 @@ thiserror.workspace = true
 # `caps::net::EgressPolicy::from_grants` names the grants it ignores.
 tracing.workspace = true
 uuid.workspace = true
+# The action a change claims, named as the executor names it.
+tilo-actions = { version = "0.1.0", path = "../actions" }
+automerge.workspace = true
+tilo-automerge.workspace = true
+# The app surface a receiver decides claims against, read from surface.toml.
+toml.workspace = true
+blake3.workspace = true
+# A continuation's claim is read from its action's JSON payload.
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 
 [[test]]
 name = "it"

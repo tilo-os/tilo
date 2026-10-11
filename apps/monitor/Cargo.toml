@@ -34,6 +34,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [lints]
 workspace = true

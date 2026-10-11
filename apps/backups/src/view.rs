@@ -23,8 +23,8 @@ use ui::widget::{
     TreeRowDecoration, TreeRowTone, TreeView, Widget,
 };
 
-use crate::doc::PolicyField;
 use crate::i18n;
+use crate::model::PolicyField;
 use crate::model::{
     Catalog, DestKind, Destination, Filter, Health, Retention, Schedule, SnapFile, SnapStatus,
     SnapType, Snapshot, Source, SourceKind,
@@ -100,18 +100,7 @@ pub enum Intent {
 }
 
 /// The queue controls write to and the app drains.
-#[derive(Clone, Default)]
-pub struct Intents(Rc<RefCell<Vec<Intent>>>);
-
-impl Intents {
-    pub fn push(&self, intent: Intent) {
-        self.0.borrow_mut().push(intent);
-    }
-
-    pub fn take(&self) -> Vec<Intent> {
-        std::mem::take(&mut *self.0.borrow_mut())
-    }
-}
+pub type Intents = ui::Intents<Intent>;
 
 /// The order the timeline lists snapshots in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

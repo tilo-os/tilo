@@ -12,7 +12,6 @@ use ui::widget::Toggle;
 use super::heading;
 use super::inspector::{grow, labelled, section, tight};
 use crate::model::{Adjust, Artwork, Shape};
-use crate::resource::ArtworkResource;
 use crate::tools::{Live, Tools};
 
 /// One adjustment a slider sets: its name, range and how it reads.
@@ -164,10 +163,10 @@ pub enum Target {
 
 impl Target {
     /// `edit` of the target's adjustments, as one invocation.
-    fn invoke(&self, edit: Adjust) -> Invoke<ArtworkResource> {
+    fn invoke(&self, edit: Adjust) -> Invoke<Artwork> {
         match self {
-            Self::Marks(ids) => ArtworkResource::SET_ADJUST.with((ids.clone(), edit)),
-            Self::Layer(id) => ArtworkResource::SET_LAYER_ADJUST.with((id.clone(), Box::new(edit))),
+            Self::Marks(ids) => Artwork::SET_ADJUST.with((ids.clone(), edit)),
+            Self::Layer(id) => Artwork::SET_LAYER_ADJUST.with((id.clone(), Box::new(edit))),
         }
     }
 
@@ -175,7 +174,7 @@ impl Target {
     /// edit `edit` makes of the control's value.
     fn bind<I: 'static, C: ui::framework::ActionControl<I>>(
         &self,
-        cx: &ViewCx<ArtworkResource>,
+        cx: &ViewCx<Artwork>,
         control: C,
         edit: impl Fn(I) -> Adjust + Send + Sync + 'static,
     ) -> C {
@@ -184,14 +183,14 @@ impl Target {
                 let ids = ids.clone();
                 cx.actions().bind(
                     control,
-                    ArtworkResource::SET_ADJUST.map(move |value: I| (ids.clone(), edit(value))),
+                    Artwork::SET_ADJUST.map(move |value: I| (ids.clone(), edit(value))),
                 )
             }
             Self::Layer(id) => {
                 let id = id.clone();
                 cx.actions().bind(
                     control,
-                    ArtworkResource::SET_LAYER_ADJUST
+                    Artwork::SET_LAYER_ADJUST
                         .map(move |value: I| (id.clone(), Box::new(edit(value)))),
                 )
             }
@@ -237,7 +236,7 @@ impl Target {
 /// The picture's part of the inspector, for the marks `ids` (a picture
 /// first). Its controls follow the artwork in place rather than being
 /// built again at each edit, so a drag begun as an edit lands is kept.
-pub fn panel(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Element {
+pub fn panel(cx: &ViewCx<Artwork>, ids: &[String], tools: &Tools) -> Element {
     tools.live.borrow_mut().clear();
     let first = ids.first().cloned().unwrap_or_default();
     let pixelated =
@@ -248,7 +247,7 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Ele
             .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(
                 "canvas-picture-pixelated",
             )),
-        ArtworkResource::SET_PIXELATED.map({
+        Artwork::SET_PIXELATED.map({
             let ids = ids.to_vec();
             move |on: bool| (ids.clone(), on)
         }),
@@ -267,7 +266,7 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Ele
 
 /// Colour and tone of `target`: light, colour and effects, and starting
 /// over.
-pub fn adjustments(cx: &ViewCx<ArtworkResource>, target: &Target, tools: &Tools) -> Element {
+pub fn adjustments(cx: &ViewCx<Artwork>, target: &Target, tools: &Tools) -> Element {
     let reset = cx
         .button("canvas-adjust-reset", target.invoke(Adjust::default()))
         .role(ButtonRole::Plain);
@@ -311,7 +310,7 @@ pub fn adjustments(cx: &ViewCx<ArtworkResource>, target: &Target, tools: &Tools)
 }
 
 /// Crop on the canvas, fit the artwork to the picture, flip it.
-fn framing(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Element {
+fn framing(cx: &ViewCx<Artwork>, ids: &[String], tools: &Tools) -> Element {
     let first = ids.first().cloned().unwrap_or_default();
     let crop = {
         let crop = tools.crop.clone();
@@ -334,20 +333,14 @@ fn framing(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Eleme
         })
     };
     let fit = cx
-        .button(
-            "canvas-fit-artwork",
-            ArtworkResource::FIT_ARTWORK.with(first),
-        )
+        .button("canvas-fit-artwork", Artwork::FIT_ARTWORK.with(first))
         .tooltip(ui::i18n::I18nManager::lookup_plain(
             "canvas-fit-artwork-hint",
         ));
     let flip = |id: &str, way: &str| {
         Box::new(
-            cx.button(
-                id,
-                ArtworkResource::FLIP.with((ids.to_vec(), way.to_owned())),
-            )
-            .role(ButtonRole::Plain),
+            cx.button(id, Artwork::FLIP.with((ids.to_vec(), way.to_owned())))
+                .role(ButtonRole::Plain),
         ) as Element
     };
     let row = |children: Vec<Element>| {
@@ -371,7 +364,7 @@ fn framing(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Eleme
 
 /// The picture's turn inside its frame, -45° to 45°: dragged (a tenth as
 /// fast with Shift held) or typed to a tenth of a degree.
-fn straighten(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Element {
+fn straighten(cx: &ViewCx<Artwork>, ids: &[String], tools: &Tools) -> Element {
     const ID: &str = "canvas-straighten";
     let first = ids.first().cloned().unwrap_or_default();
     let angle_in = move |art: &Artwork| match art.mark(&first).map(|mark| &mark.shape) {
@@ -412,7 +405,7 @@ fn straighten(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> El
             .with_precision(1)
             .with_id("canvas-straighten-degrees")
             .with_accessible_name(ui::i18n::I18nManager::lookup_plain(ID)),
-        ArtworkResource::SET_STRAIGHTEN.map({
+        Artwork::SET_STRAIGHTEN.map({
             let ids = ids.to_vec();
             move |value: f64| (ids.clone(), (value * 10.0).round() / 10.0)
         }),
@@ -422,7 +415,7 @@ fn straighten(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> El
             .with_id(ID)
             .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(ID))
             .commits_on_release(),
-        ArtworkResource::SET_STRAIGHTEN.map({
+        Artwork::SET_STRAIGHTEN.map({
             let ids = ids.to_vec();
             move |travel: f64| (ids.clone(), to_value(travel))
         }),
@@ -434,12 +427,7 @@ fn straighten(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> El
 }
 
 /// A slider for one adjustment of `target`, following the artwork.
-fn slider(
-    cx: &ViewCx<ArtworkResource>,
-    target: &Target,
-    step: &'static Step,
-    tools: &Tools,
-) -> Element {
+fn slider(cx: &ViewCx<Artwork>, target: &Target, step: &'static Step, tools: &Tools) -> Element {
     let travel_in = {
         let target = target.clone();
         move |art: &Artwork| step.travel((step.read)(&target.adjust_in(art)).unwrap_or(0.0))
@@ -481,7 +469,7 @@ fn slider(
 /// A switch for an adjustment of `target` that is on or off, following
 /// the artwork.
 fn flag(
-    cx: &ViewCx<ArtworkResource>,
+    cx: &ViewCx<Artwork>,
     target: &Target,
     id: &str,
     read: fn(&Adjust) -> Option<bool>,

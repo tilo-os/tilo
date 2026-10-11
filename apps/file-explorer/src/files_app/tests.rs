@@ -1242,7 +1242,7 @@ mod command_path_tests {
             .expect("verified local undo is exported through the folder resource");
         assert_eq!(undo.kind, OperationKind::Effect);
         assert_eq!(undo.operation_type.as_deref(), Some("files.effects"));
-        assert_eq!(undo.contract.permission, PermissionRequirement::Write);
+        assert_eq!(undo.contract.kind, ActionKind::Outside);
         assert_eq!(
             undo.contract.retry,
             ui::tilo_actions::RetryPolicy::AtMostOnce
@@ -1959,7 +1959,7 @@ mod command_path_tests {
             }
         };
 
-        let opened = show("open", &downloads).unwrap();
+        let opened = show("open-folder", &downloads).unwrap();
         assert_eq!(
             opened["resource"],
             <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND
@@ -2494,7 +2494,7 @@ mod command_path_tests {
                 .iter()
                 .find(|action| action.id == "status")
                 .expect("a read-only status action exists in every phase");
-            assert_eq!(status.contract.permission, PermissionRequirement::Read);
+            assert_eq!(status.contract.kind, ActionKind::Read);
             assert_eq!(status.contract.confirmation, ConfirmationPolicy::None);
             let ActionInput::Immediate(encoded) = &status.input else {
                 panic!("status uses the app's opaque row payload")
@@ -3773,41 +3773,26 @@ mod command_path_tests {
         let source = ui::framework::testing::search_source::<crate::resource::FileExplorer>(
             widget.search_entries_shown(),
         );
-        // Find the collaborative hit by its stable record action rather than
+        // Find the collaborative hit by its stable record anchor rather than
         // by position or a developer's local account settings.
         let hit = ui::search::SearchProvider::search(&source, "renamed")
             .into_iter()
             .find(|result| {
-                result.action_address()
-                    == Some(crate::search_provider::record_reveal_address(record_id))
+                result.action_id == crate::search_provider::record_resource_id(record_id)
             })
             .expect("collaborative record is searchable");
-        let mut doc = automerge::AutoCommit::new();
-        let address = hit.action_address().expect("canonical reveal action");
-        let mut resources = crate::files_app::published::tree(&widget, &doc);
-        resources.push(
-            widget
-                .published_row(&address.resource)
-                .expect("late record materializes exactly for this address"),
+        let row = widget
+            .published_row(&hit.anchor())
+            .expect("late record materializes exactly for this anchor");
+        assert!(
+            row.actions
+                .iter()
+                .any(|spec| spec.id == crate::search_provider::REVEAL_ACTION),
+            "the anchored row reveals the record"
         );
-        let spec = ui::tilo_actions::door::resolve(&resources, &address)
-            .expect("search reveal action is exported");
-        let kind = spec.kind;
-        let encoded =
-            ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
-                .expect("reveal action encodes");
-        assert!(matches!(
-            crate::files_app::published::start(
-                &mut widget,
-                kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::framework::Effected::Done(_))
-        ));
+        widget
+            .open_anchor(&hit.anchor())
+            .expect("opening the anchor reveals the record");
         assert_eq!(widget.current_path, nested);
         assert_eq!(widget.selection.primary(), Some(0));
         assert_eq!(widget.entries[0].path, file);
@@ -6216,7 +6201,7 @@ mod recent_resource_tests {
                 "Recent navigation and device history do not mutate shared files"
             );
         }
-        app.set_role(ui::permissions::Role::Denied);
+        app.leave_room();
         for action in ["reveal", "forget-recent"] {
             assert!(app.call_on(&row, action, serde_json::json!({})).is_err());
         }
@@ -6330,20 +6315,25 @@ fn completed_clipboard_undo_feedback_survives_the_actual_listing_refresh() {
     let home = tempfile::tempdir().unwrap();
     let mut widget = FileExplorerWidget::with_persistence(None, Some(home.path().to_owned()));
     widget.navigate(home.path().to_owned());
-    widget.follow_ops(&[]);
+    widget.follow_ops(&ui::tilo_resource::Outbox::new());
     let operation = "e44ac38c-627f-48a9-ad92-4a6cdf249216".to_owned();
-    let queued = crate::file_ops::QueuedOp {
-        id: "clipboard-undo".into(),
-        device: "local".into(),
-        order: 0,
-        op: crate::file_ops::FileOp::Revert {
-            op: operation.clone(),
+    let mut ops = ui::tilo_resource::Outbox::new();
+    let id = ops.push(
+        ui::tilo_resource::Id::from_raw("clipboard-undo"),
+        crate::resource::FileTask {
+            device: "local".into(),
+            op: crate::file_ops::FileOp::Revert {
+                op: operation.clone(),
+            },
         },
-        outcome: Some(crate::file_ops::Outcome::Done {
-            changes: vec![crate::file_ops::Change::ClipboardUndo { operation }],
-        }),
-    };
-    widget.follow_ops(&[queued]);
+    );
+    ops.settle(
+        &id,
+        ui::tilo_resource::Settled::Done(vec![crate::file_ops::Change::ClipboardUndo {
+            operation,
+        }]),
+    );
+    widget.follow_ops(&ops);
     assert_eq!(
         widget.status.as_deref(),
         Some(t("files-clipboard-undone").as_str())

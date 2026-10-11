@@ -11,3 +11,17 @@ pub fn install() {
         eprintln!("localization catalog: {error}");
     }
 }
+
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const CONTROLS_MINUTES_SUFFIX: LabelKey = LabelKey::new("controls-minutes-suffix");
+    pub const CONTROLS_NAME_LABEL: LabelKey = LabelKey::new("controls-name-label");
+    pub const CONTROLS_NAME_PLACEHOLDER: LabelKey = LabelKey::new("controls-name-placeholder");
+    pub const CONTROLS_REFRESH_LABEL: LabelKey = LabelKey::new("controls-refresh-label");
+    pub const CONTROLS_REGION_LABEL: LabelKey = LabelKey::new("controls-region-label");
+    pub const CONTROLS_RESET: LabelKey = LabelKey::new("controls-reset");
+    pub const CONTROLS_TITLE: LabelKey = LabelKey::new("controls-title");
+    pub const CONTROLS_UPDATES_LABEL: LabelKey = LabelKey::new("controls-updates-label");
+    pub const CONTROLS_VOLUME_LABEL: LabelKey = LabelKey::new("controls-volume-label");
+}

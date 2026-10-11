@@ -47,15 +47,12 @@ struct TwoViews(Rc<RefCell<Probe>>);
 fn tree(view: &str) -> Vec<Resource> {
     vec![
         Resource::new("test.doc", "test.document", "Document")
-            .with_action(
-                ActionSpec::immediate_encoded(
-                    "mark",
-                    "Mark",
-                    ExecutionLocus::ClientLocal,
-                    tilo_actions::EncodedAction::encode(MARK_TYPE, &Mark(view.into())).unwrap(),
-                )
-                .requiring(tilo_actions::PermissionRequirement::Write),
-            )
+            .with_action(ActionSpec::immediate_encoded(
+                "mark",
+                "Mark",
+                ExecutionLocus::ClientLocal,
+                tilo_actions::EncodedAction::encode(MARK_TYPE, &Mark(view.into())).unwrap(),
+            ))
             .with_action(
                 ActionSpec::operation("move-caret", "Move", OperationKind::View, VIEW_TYPE, &())
                     .unwrap()

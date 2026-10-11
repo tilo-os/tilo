@@ -15,6 +15,10 @@
 //!   (`RoomOperation::AgentMembership`), and every change to its grant is
 //!   carried onto those rosters: a withdrawn or narrowed grant takes it off
 //!   the room and its channels.
+//! - **Asking first.** An action the person's grants leave to them is put
+//!   to their approving device as a question for that one invocation
+//!   ([`CertificationProtocol::confirm`]); the agent runs it only on the
+//!   witnessed answer, and a question nobody answers in time is refused.
 //!
 //! [`start`] wires both into a relay: the supervisor answers the agent
 //! vocabulary as the host's app-serving plane, and the host's own agents
@@ -24,11 +28,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
+use tilo_actions::remote::{
+    ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
+    Confirmation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+};
 use tilo_agent_participant::room_actions::RoomMember;
 use tilo_agent_participant::{
     AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory, HostActions,
-    HostEndpoint, ModelChoice, RoomActions, RoomRecordsLink, SupervisorHost,
+    HostEndpoint, ModelChoice, RoomActions, RoomRecordsLink, SupervisorHost, Witness,
 };
+use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 
 use tilo_relay_protocol::agents::{AgentDelegation, AgentProposal};
 use tilo_user_identity::{
@@ -41,6 +50,9 @@ use crate::peer::AgentRegistry;
 
 /// How long an agent's approval request waits for an approver.
 const APPROVAL_WAIT_NS: u64 = 10 * 60 * 1_000_000_000;
+
+/// How long an agent's question about one invocation waits for its person.
+const CONFIRMATION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 
 /// The relay as an agent supervisor sees it.
 #[derive(Clone)]
@@ -148,6 +160,123 @@ impl AgentHostLink for RelayAgentLink {
         crate::authority_epoch::bump();
         // Governed rooms take it off their channels and refuse its writes.
         self.reconcile_rooms(agent_device_public_key, None);
+    }
+
+    fn witness(&self, delegation: &AgentDelegation) -> Option<Witness> {
+        Some(Arc::new(RelayWitness {
+            certification: self.certification.clone(),
+            delegation: delegation.clone(),
+            runtime: self.runtime.clone(),
+        }))
+    }
+}
+
+/// The person's side of one agent's actions that ask first: each is a
+/// question on the person's approving devices, through the channel their
+/// grants are approved on. It runs nothing itself.
+struct RelayWitness {
+    certification: CertificationProtocol,
+    delegation: AgentDelegation,
+    runtime: tokio::runtime::Handle,
+}
+
+impl RelayWitness {
+    /// The question `request` puts to the person, when `caller` is this
+    /// witness's agent.
+    fn question(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<PendingConfirmation, ActionHostError> {
+        let agent = &self.delegation;
+        let its_own = caller.principal() == &CallerPrincipal::Agent(agent.agent_id.clone())
+            && caller.user_public_key() == Some(&agent.user_public_key)
+            && caller.device_public_key() == Some(&agent.agent_device_public_key);
+        if !its_own {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let room = caller
+            .room()
+            .filter(|room| agent.scope.rooms.iter().any(|granted| granted == room))
+            .ok_or(ActionHostError::NotPermitted)?;
+        let mut id = [0_u8; 32];
+        getrandom::fill(&mut id).map_err(|error| ActionHostError::Unavailable {
+            reason: error.to_string(),
+        })?;
+        let address = &request.target.address;
+        let context = request.context.as_ref();
+        Ok(PendingConfirmation {
+            id,
+            agent_id: agent.agent_id.clone(),
+            agent_label: agent.label.clone(),
+            action_label: context
+                .and_then(|context| context.purpose.clone())
+                .unwrap_or_else(|| address.action.clone()),
+            resource_label: context
+                .and_then(|context| context.resource.as_ref())
+                .map_or_else(
+                    || address.resource.clone(),
+                    |resource| resource.label.clone(),
+                ),
+            risk: context
+                .and_then(|context| {
+                    context
+                        .facets
+                        .iter()
+                        .find(|facet| facet.key == tilo_actions::RISK_FACET)
+                })
+                .map_or_else(|| "destructive".to_owned(), |facet| facet.value.clone()),
+            room: room.to_owned(),
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(CONFIRMATION_WAIT_NS),
+        })
+    }
+}
+
+impl ActionHost for RelayWitness {
+    fn query(
+        &self,
+        _: &Caller,
+        _: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        Pending::ready(Err(ActionHostError::UnknownAction))
+    }
+
+    fn invoke(
+        &self,
+        _: &Caller,
+        _: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        Pending::ready(Err(ActionHostError::UnknownAction))
+    }
+
+    fn observe(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Result<(), ActionHostError> {
+        Err(ActionHostError::UnknownInvocation)
+    }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<Confirmation, ActionHostError>> {
+        let question = match self.question(caller, request) {
+            Ok(question) => question,
+            Err(error) => return Pending::ready(Err(error)),
+        };
+        let (completer, answer) = tilo_actions::remote::pending();
+        let certification = self.certification.clone();
+        self.runtime.spawn(async move {
+            let token = hex::encode(question.id);
+            completer.complete(match certification.confirm(question).await {
+                Ok(ConfirmationAnswer::AllowOnce) => Ok(Confirmation::Witnessed(token)),
+                Ok(ConfirmationAnswer::Deny) => Err(ActionHostError::NotPermitted),
+                Err(_) => Err(ActionHostError::ConfirmationRequired),
+            });
+        });
+        answer
     }
 }
 

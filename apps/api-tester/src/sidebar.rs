@@ -143,7 +143,12 @@ type Ids = Rc<RefCell<Vec<(Id, Vec<Id>)>>>;
 fn ids_of(view: &SidebarView<'_>) -> Vec<(Id, Vec<Id>)> {
     view.collections
         .iter()
-        .map(|c| (c.id, c.requests.iter().map(|r| r.id).collect()))
+        .map(|c| {
+            (
+                c.id.clone(),
+                c.requests.iter().map(|r| r.id.clone()).collect(),
+            )
+        })
         .collect()
 }
 
@@ -208,17 +213,17 @@ pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHan
                 let ids = action_ids.borrow();
                 let collection = ids.get(ci);
                 let target = FormTarget {
-                    collection: collection.map(|(id, _)| *id),
+                    collection: collection.map(|(id, _)| id.clone()),
                     request: collection
                         .and_then(|(_, requests)| requests.get(ri))
-                        .copied(),
+                        .cloned(),
                 };
-                let mode = if action == DELETE {
-                    FormMode::DeleteRequest
+                let cmd = if action == DELETE {
+                    Cmd::DeleteRequest(target)
                 } else {
-                    FormMode::RenameRequest
+                    Cmd::OpenForm(FormMode::RenameRequest, target)
                 };
-                action_sink.borrow_mut().push(Cmd::OpenForm(mode, target));
+                action_sink.borrow_mut().push(cmd);
             },
         )
         .on_section_action(move |section, _| {
@@ -231,7 +236,7 @@ pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHan
             section_sink.borrow_mut().push(Cmd::OpenForm(
                 FormMode::RenameCollection,
                 FormTarget {
-                    collection: section_ids.borrow().get(ci).map(|(id, _)| *id),
+                    collection: section_ids.borrow().get(ci).map(|(id, _)| id.clone()),
                     request: None,
                 },
             ));

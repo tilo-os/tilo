@@ -11,7 +11,7 @@
 //! CapOverride { subject: Principal::App("so.tilo.ush"),
 //!               scope:   Scope::FsPath("/var/home/you/src"),
 //!               effect:  Effect::Grant,
-//!               verb:    Verb::Write }
+//!               verb:    Access::Write }
 //! ```
 //!
 //! byte-for-byte what the compositor writes for "Always allow" on a
@@ -26,7 +26,7 @@
 use std::path::{Path, PathBuf};
 
 use collab_types::caps::{
-    Actor, CapDecision, CapOverride, Effect, ResourceRef, Scope, Verb, decide_capability,
+    Access, Actor, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_capability,
 };
 use tilo_environment::{RUNTIME_APP_ID, is_grantable};
 
@@ -51,19 +51,19 @@ impl Policy {
 
     /// Every directory the guest may write, as of `now`.
     pub fn trusted_dirs(&self, now: Option<u64>) -> Vec<PathBuf> {
-        self.paths_where(Verb::Write, now)
+        self.paths_where(Access::Write, now)
     }
 
     /// Every directory the guest may read but not write.
     pub fn readable_dirs(&self, now: Option<u64>) -> Vec<PathBuf> {
         let writable = self.trusted_dirs(now);
-        self.paths_where(Verb::Read, now)
+        self.paths_where(Access::Read, now)
             .into_iter()
             .filter(|p| !writable.contains(p))
             .collect()
     }
 
-    fn paths_where(&self, verb: Verb, now: Option<u64>) -> Vec<PathBuf> {
+    fn paths_where(&self, verb: Access, now: Option<u64>) -> Vec<PathBuf> {
         let actor = Self::actor();
         let mut out: Vec<PathBuf> = Vec::new();
         for cap in &self.capabilities {
@@ -115,7 +115,7 @@ impl Policy {
                 continue;
             }
             let resource = ResourceRef::NetHost(host.clone());
-            if decide_capability(&actor, &resource, Verb::Read, &self.capabilities, now)
+            if decide_capability(&actor, &resource, Access::Read, &self.capabilities, now)
                 != CapDecision::Allow
             {
                 continue;
@@ -135,7 +135,7 @@ impl Policy {
     }
 
     /// Is `path` reachable at `verb`? The question `scan` and the broker ask.
-    pub fn permits(&self, path: &Path, verb: Verb, now: Option<u64>) -> bool {
+    pub fn permits(&self, path: &Path, verb: Access, now: Option<u64>) -> bool {
         let actor = Self::actor();
         let resource = ResourceRef::FsPath(path.to_string_lossy().into_owned());
         decide_capability(&actor, &resource, verb, &self.capabilities, now) == CapDecision::Allow
@@ -161,14 +161,14 @@ mod tests {
         );
         assert!(policy.permits(
             Path::new("/var/home/you/src/deep/file.rs"),
-            Verb::Write,
+            Access::Write,
             Some(1_000)
         ));
-        assert!(!policy.permits(Path::new("/var/home/you/.ssh"), Verb::Read, Some(1_000)));
+        assert!(!policy.permits(Path::new("/var/home/you/.ssh"), Access::Read, Some(1_000)));
         assert!(
             !policy.permits(
                 Path::new("/var/home/you/srcextra"),
-                Verb::Write,
+                Access::Write,
                 Some(1_000)
             ),
             "a component-boundary check must not be a prefix check"
@@ -191,7 +191,7 @@ mod tests {
             Subject::Principal(Principal::App(RUNTIME_APP_ID.to_string())),
             Scope::FsPath("/var/home/you/src".to_string()),
             Effect::Restrict,
-            Verb::Read,
+            Access::Read,
         ));
         assert!(policy.trusted_dirs(Some(1_000)).is_empty());
         assert_eq!(
@@ -240,7 +240,7 @@ mod tests {
         let policy = Policy::new(vec![CapOverride::grant(
             Subject::Principal(Principal::App(RUNTIME_APP_ID.to_string())),
             Scope::FsPath("/usr".to_string()),
-            Verb::Write,
+            Access::Write,
         )]);
         assert!(policy.trusted_dirs(Some(1_000)).is_empty());
     }

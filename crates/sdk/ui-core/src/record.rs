@@ -188,6 +188,21 @@ impl RecordId {
         valid_record_id(s, 0).then(|| Self(s.to_string()))
     }
 
+    /// The URI asking an app to open this record
+    /// ([`collab_types::RECORD_URI_SCHEME`]).
+    #[must_use]
+    pub fn uri(&self) -> String {
+        format!("{}:{}", collab_types::RECORD_URI_SCHEME, self.0)
+    }
+
+    /// The record a [`Self::uri`] names.
+    #[must_use]
+    pub fn from_uri(uri: &str) -> Option<Self> {
+        uri.strip_prefix(collab_types::RECORD_URI_SCHEME)?
+            .strip_prefix(':')
+            .and_then(Self::parse)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -656,6 +671,32 @@ pub fn init_scoped(
     if RecordId::parse(id.as_str()).is_none() || !kind.is_valid() {
         return false;
     }
+    // A stamp written on its own is the record's genesis and is committed
+    // as one; written with other pending operations, it is part of the
+    // change those make, which names itself.
+    let alone = doc.pending_ops() == 0;
+    let stamped = stamp_scoped(doc, id, kind, home, room);
+    if alone && stamped && doc.pending_ops() != 0 {
+        commit_genesis(doc);
+    } else if alone && stamped && stamp_surface(doc).is_some() {
+        // The app's package opens a record its surface did not name yet (a
+        // newer package, or a record from before records named one): its
+        // surface decides the record's changes from here on.
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),
+        );
+    }
+    stamped
+}
+
+fn stamp_scoped(
+    doc: &mut AutoCommit,
+    id: &RecordId,
+    kind: &RecordKind,
+    home: &str,
+    room: Option<&str>,
+) -> bool {
     let Some(m) = meta_obj(doc) else {
         // The document's root object is gone — nothing to stamp.
         return false;
@@ -701,6 +742,36 @@ pub fn init_scoped(
     true
 }
 
+/// Commit what a brand-new record starts with (its identity, references and
+/// first content) as its genesis, which names itself as such.
+fn commit_genesis(doc: &mut AutoCommit) {
+    let _ = stamp_surface(doc);
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+    );
+}
+
+/// The key of the record identity naming the surface its changes are
+/// decided against: the content hash of its app package's `surface.toml`.
+pub const SURFACE: &str = "surface";
+
+/// Name, in the record's identity, the surface of its app running here.
+/// `Some(true)` when it replaced another app surface, `Some(false)` when it
+/// named the first, `None` when nothing changed.
+fn stamp_surface(doc: &mut AutoCommit) -> Option<bool> {
+    let m = meta_ro(doc)?;
+    let kind = str_at(doc, &m, "kind")?;
+    let hash = hex::encode(crate::app_surface::hash_of_kind(&kind)?);
+    match str_at(doc, &m, SURFACE) {
+        Some(named) if named == hash => None,
+        named => {
+            doc.put(&m, SURFACE, hash).ok()?;
+            Some(named.is_some())
+        }
+    }
+}
+
 /// The identity stamped into `doc`, if it holds a record.
 pub fn identity(doc: &AutoCommit) -> Option<RecordCheckout> {
     let m = meta_ro(doc)?;
@@ -708,6 +779,11 @@ pub fn identity(doc: &AutoCommit) -> Option<RecordCheckout> {
     let kind = RecordKind::new(str_at(doc, &m, "kind")?);
     let checkout = RecordCheckout::new(id, kind);
     checkout.is_valid().then_some(checkout)
+}
+
+/// [`identity`] of a saved document, as a peer sends it.
+pub fn identity_saved(bytes: &[u8]) -> Option<RecordCheckout> {
+    identity(&AutoCommit::load(bytes).ok()?)
 }
 
 /// Identities this record's document was known by before adoption, oldest
@@ -1990,7 +2066,7 @@ impl RecordSet {
             }
             owner.validate_schema(&doc)?;
             validate_identity(&doc, want, &self.home)?;
-            doc.commit();
+            commit_genesis(&mut doc);
             let owner = Rc::new(owner);
             let autosave = app_state::DocWriter::start_new(&owner, &mut doc)?;
             (doc, autosave)
@@ -2169,7 +2245,7 @@ impl RecordStore {
             .merge_incoming(&mut preserved)
             .map_err(|error| RecordOpenError::Initialization(error.to_string()))?;
         seed(&mut document).map_err(RecordOpenError::Initialization)?;
-        document.commit();
+        commit_genesis(&mut document);
         validate_identity(&document, checkout, &workspace.id)?;
         let bytes = document.save();
         initialization
@@ -2584,22 +2660,43 @@ fn genesis(
                 .map_err(|error| RecordOpenError::Initialization(error.to_string()))?;
         }
     }
-    if !init_scoped(
-        &mut made,
-        &checkout.id,
-        &checkout.kind,
-        workspace,
-        Some(workspace),
-    ) {
+    // Stamped, not committed: the identity is part of the one genesis change.
+    let stamped = if checkout.id.is_package_primary() {
+        init_scoped(
+            &mut made,
+            &checkout.id,
+            &checkout.kind,
+            workspace,
+            Some(workspace),
+        )
+    } else {
+        RecordId::parse(checkout.id.as_str()).is_some()
+            && checkout.kind.is_valid()
+            && stamp_scoped(
+                &mut made,
+                &checkout.id,
+                &checkout.kind,
+                workspace,
+                Some(workspace),
+            )
+    };
+    if !stamped {
         return Err(RecordOpenError::IdentityMismatch);
     }
     initialize(&mut made).map_err(RecordOpenError::Initialization)?;
+    // The app's surface is the same wherever its package is installed: named
+    // in the genesis, not in a change of this device's afterwards.
+    let _ = stamp_surface(&mut made);
     // Every member must derive the same genesis, so the initializer may not
     // author it under an actor of its own.
     if made.get_actor() != &actor {
         return Err(RecordOpenError::IdentityMismatch);
     }
-    made.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+    made.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
+            .with_time(0),
+    );
     let changes = made.get_changes(&[]);
     let mut created = AutoCommit::new().with_actor(doc.get_actor().clone());
     ApplyIncoming::apply_incoming(&mut created, changes)
@@ -2681,7 +2778,7 @@ impl RecordReservation {
         seed(&mut doc).map_err(RecordOpenError::Initialization)?;
         owner.validate_schema(&doc)?;
         validate_identity(&doc, &self.checkout, &workspace)?;
-        doc.commit();
+        commit_genesis(&mut doc);
         let mut set = self.store.0.borrow_mut();
         if set
             .pending
@@ -3170,7 +3267,7 @@ impl RecordStore {
                 &RecordRef::new(target.id.clone(), relation.clone()),
             );
         }
-        doc.commit();
+        commit_genesis(&mut doc);
         let mut autosave = owner.map(|owner| owner.writer());
         if let Some(error) = autosave
             .as_ref()
@@ -3744,6 +3841,53 @@ mod identity_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two devices creating the same record make byte for byte the same
+    /// single genesis change, under the record's own actor at time zero,
+    /// and converge on one record.
+    #[test]
+    fn two_creators_of_one_record_make_one_identical_genesis() {
+        let kind = RecordKind::new("test.genesis-note");
+        // The app's surface is named in the record's identity.
+        crate::app_surface::register_package("so.tilo.test-genesis", b"surface");
+        crate::app_surface::register_kind(kind.as_str(), "so.tilo.test-genesis");
+        let checkout = RecordCheckout::new(RecordId::for_tab(3), kind);
+        let create = |actor: &[u8]| {
+            let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(actor));
+            genesis(&mut doc, &checkout, "room", |doc| {
+                doc.put(automerge::ROOT, "title", "Untitled")
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+            // What a store commits after the seed adds nothing to it.
+            commit_genesis(&mut doc);
+            doc
+        };
+        let mut one = create(b"device-one");
+        let mut two = create(b"device-two");
+        let changes = one.get_changes(&[]);
+        assert_eq!(changes.len(), 1, "genesis is one change");
+        let genesis = &changes[0];
+        assert_eq!(
+            genesis.actor_id(),
+            &genesis_actor_of(&checkout.id, &checkout.kind, "room")
+        );
+        assert_eq!(genesis.timestamp(), 0);
+        assert_eq!(
+            one.get_changes(&[])
+                .iter()
+                .map(|change| change.hash())
+                .collect::<Vec<_>>(),
+            two.get_changes(&[])
+                .iter()
+                .map(|change| change.hash())
+                .collect::<Vec<_>>(),
+            "both devices make the identical genesis"
+        );
+        one.merge(&mut two).unwrap();
+        assert_eq!(one.get_changes(&[]).len(), 1, "they converge on one record");
+    }
 
     /// A Writer record stamped `document` before the kind was renamed opens
     /// as the rich-text kind, and opening it rewrites nothing.

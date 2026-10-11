@@ -29,3 +29,13 @@ terminal-env-unavailable = Environments are managed through Tilo's shell runtime
 terminal-editor-busy = The editor is still confirming the previous input. Check the field before entering more text.
 terminal-editor-rejected = The field changed before this input could be inserted. Check the field before trying again.
 terminal-editor-unconfirmed = The editor did not confirm this input. Check the field before trying again.
+
+# History: what the session recorded.
+terminal-record-target = Moved the session
+terminal-record-relay-session = Changed the relay the session re-attaches to
+terminal-claim-pane = A new process took the session
+terminal-run = Asked the session to run { $command }
+terminal-rerun = Asked the session to run a command again
+terminal-rerun-test = Asked the session to run { $test } again
+terminal-record-run = Ran { $command }
+terminal-remember = Remembered { $command }

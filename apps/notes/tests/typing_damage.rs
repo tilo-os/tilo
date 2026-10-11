@@ -522,33 +522,33 @@ fn bounds_of_target(app: &App, prefix: &str, suffix: &str) -> Rect {
         .unwrap_or_else(|| panic!("no {prefix}…{suffix} on screen"))
 }
 
-/// The ids (from `kind`, as `notes.page:…`) of the published resources of
-/// `kind` named `name`.
-fn resource_ids(app: &App, kind: &str, name: &str) -> Vec<String> {
-    let marker = format!(":{kind}:");
-    app.semantic_tree()
+/// The id of the one item of the notebook's `collection` published under
+/// `name`.
+fn item_id(app: &App, collection: &str, name: &str) -> String {
+    let marker = format!(":notes.notebook/{collection}/");
+    let ids: Vec<String> = app
+        .semantic_tree()
         .iter()
         .filter(|node| node.name.as_deref() == Some(name))
         .filter_map(|node| {
-            let start = node.id.0.find(&marker)?;
-            Some(node.id.0[start..].strip_prefix(':')?.to_owned())
+            let (_, rest) = node.id.0.split_once(&marker)?;
+            Some(rest.to_owned())
         })
-        .collect()
-}
-
-/// The id of the one published resource of `kind` named `name`.
-fn resource_id(app: &App, kind: &str, name: &str) -> String {
-    let ids = resource_ids(app, kind, name);
-    assert_eq!(ids.len(), 1, "one {kind} named {name:?}: {ids:?}");
+        .collect();
+    assert_eq!(
+        ids.len(),
+        1,
+        "one {collection} item named {name:?}: {ids:?}"
+    );
     ids[0].clone()
 }
 
-/// Invoke `action` on `resource` as the app's person does from the palette.
-fn invoke(app: &mut App, resource: &str, action: &str, value: Option<&str>) {
-    let mut arguments = serde_json::Map::new();
-    if let Some(value) = value {
-        arguments.insert(tilo_actions::PROMPTED_PARAM.into(), value.into());
-    }
+/// Invoke `action` on `resource` with `arguments`, as the app's person does
+/// from the palette.
+fn invoke_with(app: &mut App, resource: &str, action: &str, arguments: serde_json::Value) {
+    let serde_json::Value::Object(arguments) = arguments else {
+        panic!("{resource} {action}: arguments are an object");
+    };
     app.invoke_local_resource_action(
         &tilo_actions::ActionAddress::new(resource, action),
         &arguments,
@@ -792,12 +792,17 @@ fn tagging_a_note_damages_its_header_not_the_app() {
             type_text(app, &mut host, "Plan");
             let_the_save_land(app, &mut host);
             host.frames(app, 3);
-            let page = resource_id(app, "notes.page", "Untitled");
+            let page = item_id(app, "pages", "Untitled");
             let tag = |name: &str| {
                 let page = page.clone();
                 let name = name.to_owned();
                 move |app: &mut App, host: &mut Host| {
-                    invoke(app, &page, "new-and-assign-tag", Some(&name));
+                    invoke_with(
+                        app,
+                        &format!("notes.notebook/pages/{page}"),
+                        "tag",
+                        serde_json::json!({ "name": name }),
+                    );
                     host.frames(app, 6);
                 }
             };
@@ -812,11 +817,23 @@ fn tagging_a_note_damages_its_header_not_the_app() {
             let (second, _) = measure(app, &mut host, &theme, &label, tag("home"));
             assert!(shows_name(app, "Tag: home"), "{label}: the chip shows");
             let_the_save_land(app, &mut host);
-            let work = resource_id(app, "notes.tag", "work");
-            let work = work.trim_start_matches("notes.tag:");
+            let work = item_id(app, "tags", "work");
             let label = format!("{name}: removing a tag");
             let (removed, _) = measure(app, &mut host, &theme, &label, |app, host| {
-                invoke(app, &page, &format!("unassign-tag:{work}"), None);
+                // Taking a tag off a note is an edit of the note's tags.
+                let untag = ui::tilo_resource::Invoke::from(
+                    notes::notebook::Notebook::paths()
+                        .pages
+                        .item(&ui::tilo_resource::Id::from(page.as_str()))
+                        .tags
+                        .remove(&ui::tilo_resource::Id::from(work.as_str())),
+                );
+                invoke_with(
+                    app,
+                    "notes.notebook",
+                    untag.id,
+                    serde_json::Value::Object(untag.arguments),
+                );
                 host.frames(app, 6);
             });
             assert!(!shows_name(app, "Tag: work"), "{label}: the chip went");

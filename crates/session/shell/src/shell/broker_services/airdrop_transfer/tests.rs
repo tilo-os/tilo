@@ -504,7 +504,7 @@ fn verified_airdrop_decline_lock_policy_and_source_revocation_send_nothing() {
             }
             3 => {
                 fixture.service.membership.write().desktop.workspaces[0]
-                    .capabilities
+                    .sandbox
                     .clear();
             }
             4 => {

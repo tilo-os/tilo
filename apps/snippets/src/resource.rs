@@ -1,111 +1,209 @@
-//! Snippets as a [`tilo_resource::Resource`]: one action vocabulary, one
-//! published tree for the library.
+//! The library's verbs, the places derived from it, and the app.
 //!
-//! Document mutations (`new-snippet`, per-folder create, per-snippet rename /
-//! language / tags / star / delete, the body as editable text) live on this
-//! resource via [`Resource::declarations`] / [`Resource::children`]. Opening a
-//! snippet, revealing a tag and focusing search are [`SnippetsView`]s the
-//! surface answers; the first two ride the snippet or tag they show.
+//! Plain fields change through the built-in field edits every path offers
+//! (`Snippets::paths().snippets.item(&id).favorite.set(true)`): renaming,
+//! starring, choosing the language, moving to a folder, tagging and typing
+//! in the body. The methods below are the operations that are more than
+//! setting a field. Folders and tags are derived from the snippets and are
+//! published as places that offer the verbs that act on them.
+//!
+//! What the window shows (a tag's snippets, a folder's, the search) are
+//! [`SnippetsView`]s, which change no document.
 
 use std::rc::Rc;
 
 use ui::framework::{EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_actions::{ActionParam, ParamType, Resource as PublishedResource};
-use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{self, ActionCx, Atom, Derived, Effect, Id, Invoke, Refusal, resource};
 use ui::widget::Element;
-use uuid::Uuid;
 
-use crate::actions::{
-    SNIPPETS_ACTION_TYPE, SnippetsAction, SnippetsView, create_snippet_action,
-    open_snippet_address, publish_children, register, reveal_tag_address, titled_snippet,
-};
 use crate::app::SnippetsApp;
-use crate::doc::SnippetsDoc;
-use crate::model::Snippet;
+use crate::model::{Snippet, Snippets};
 
-// Snippets' Fluent catalogs, source locale first.
-ui::embedded_catalog!(pub(crate) static CATALOG, "snippets-library", ["en-US", "de-DE"]);
+/// Snippets' Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[
+    ("en-US", include_str!("../locales/en-US.ftl")),
+    ("de-DE", include_str!("../locales/de-DE.ftl")),
+];
 
-/// The snippets library resource.
-pub struct Snippets;
+static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", LOCALES, "snippets-body-placeholder").with_system_locale();
 
-impl Resource for Snippets {
-    const KIND: &'static str = "snippets.library";
-    const LABEL: &'static str = "Snippets";
-    const ACTION_TYPE: &'static str = SNIPPETS_ACTION_TYPE;
-
-    type State = Vec<Snippet>;
-    type Action = SnippetsAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
+#[resource(kind = "snippets.library", label = "Snippets", children = Snippets::places)]
+impl Snippets {
+    /// Create a snippet.
+    #[action]
+    pub fn new_snippet(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Title")] title: String,
+        #[param("Folder to file it under; none for All snippets")] folder: Option<String>,
+    ) {
+        let folder = folder.unwrap_or_default();
+        self.snippets
+            .push(cx.id(), Snippet::titled(title.trim(), folder.trim()));
     }
 
-    fn read(doc: &Doc) -> Result<Vec<Snippet>, ModelError> {
-        Ok(SnippetsDoc::list(doc))
+    /// Duplicate a snippet.
+    #[action]
+    pub fn duplicate(
+        &mut self,
+        cx: &mut ActionCx,
+        snippet: &Id,
+        #[param("Title of the copy; the original's when none")] title: Option<String>,
+    ) -> Result<(), Refusal> {
+        let original = self.snippets.get(snippet).ok_or("no such snippet")?;
+        let copy = Snippet {
+            title: title.unwrap_or_else(|| original.title.clone()),
+            favorite: false,
+            uses: tilo_resource::Counter::default(),
+            ..original.clone()
+        };
+        let after = self
+            .snippets
+            .position(snippet)
+            .map_or(self.snippets.len(), |at| at + 1);
+        self.snippets.insert(after, cx.id(), copy);
+        Ok(())
     }
 
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
-            ActionDecl::new(
-                "new-snippet",
-                "New snippet",
-                vec![
-                    ActionParam::required("title", ParamType::Text, "Title"),
-                    ActionParam::optional(
-                        "folder",
-                        ParamType::Text,
-                        "Folder to file it under (blank = All Snippets)",
-                    ),
-                ],
-                |args, _| {
-                    Ok(create_snippet_action(titled_snippet(
-                        args.text("title").unwrap_or_default(),
-                        args.text("folder").unwrap_or_default().trim(),
-                    )))
-                },
-            )
-            .describe("Create a new snippet from a typed title."),
-        ]
+    /// Delete a snippet.
+    #[action(destructive)]
+    pub fn delete(&mut self, snippet: &Id) -> Result<(), Refusal> {
+        self.snippets
+            .remove(snippet)
+            .map(drop)
+            .ok_or_else(|| Refusal::new("no such snippet"))
     }
 
-    fn children(state: &Vec<Snippet>) -> Vec<PublishedResource> {
-        publish_children(state)
+    /// Record a use of a snippet.
+    #[action]
+    pub fn record_use(&mut self, snippet: &Id) -> Result<(), Refusal> {
+        let snippet = self.snippets.get_mut(snippet).ok_or("no such snippet")?;
+        snippet.uses.add(1);
+        Ok(())
     }
 
-    /// Every snippet is found by its title, language, folder, tags,
-    /// description or body, and opens; every tag reveals its snippets.
-    fn search(state: &Vec<Snippet>) -> Vec<SearchEntry> {
-        let mut tags = std::collections::BTreeMap::<&str, usize>::new();
-        for tag in state.iter().flat_map(|snippet| &snippet.tags) {
-            *tags.entry(tag).or_default() += 1;
+    /// Rename a folder.
+    #[action]
+    pub fn rename_folder(
+        &mut self,
+        #[param("Folder")] folder: String,
+        #[param("New name")] to: String,
+    ) -> Result<(), Refusal> {
+        let to = to.trim();
+        if to.is_empty() {
+            return Err(Refusal::new("a folder needs a name"));
         }
-        let snippets = state.iter().map(|snippet| {
-            let title = if snippet.title.trim().is_empty() {
-                "Untitled snippet".to_owned()
-            } else {
-                snippet.title.clone()
-            };
-            let text = [
-                snippet.language.label(),
-                &snippet.folder,
-                &snippet.tags.join(" "),
-                &snippet.description,
-                &snippet.body,
-            ]
-            .join("\n");
-            SearchEntry::new(title, text).invoking(open_snippet_address(snippet.id))
-        });
-        let tags = tags.into_iter().map(|(tag, count)| {
-            SearchEntry::new(
-                format!("#{tag}"),
-                format!("{count} snippet{}", if count == 1 { "" } else { "s" }),
-            )
-            .invoking(reveal_tag_address(tag))
-        });
-        snippets.chain(tags).collect()
+        self.each_matching(
+            |s| s.folder.0 == folder,
+            |s| s.folder = Atom(to.to_owned()),
+            "no such folder",
+        )
     }
+
+    /// Rename a tag.
+    #[action]
+    pub fn rename_tag(
+        &mut self,
+        #[param("Tag")] tag: String,
+        #[param("New name")] to: String,
+    ) -> Result<(), Refusal> {
+        let to = to.trim();
+        self.each_matching(
+            |s| s.tags.contains(&tag),
+            |s| {
+                s.tags.remove(&tag);
+                s.tags.insert(to.to_owned());
+            },
+            "no such tag",
+        )
+    }
+
+    /// Remove a tag from every snippet.
+    #[action]
+    pub fn remove_tag(&mut self, #[param("Tag")] tag: String) -> Result<(), Refusal> {
+        self.each_matching(
+            |s| s.tags.contains(&tag),
+            |s| {
+                s.tags.remove(&tag);
+            },
+            "no such tag",
+        )
+    }
+}
+
+impl Snippets {
+    /// Change every snippet `matches` selects; refused with `missing` when
+    /// none does.
+    fn each_matching(
+        &mut self,
+        matches: impl Fn(&Snippet) -> bool,
+        mut change: impl FnMut(&mut Snippet),
+        missing: &str,
+    ) -> Result<(), Refusal> {
+        let mut found = false;
+        for (_, snippet) in self.snippets.iter_mut() {
+            if matches(snippet) {
+                change(snippet);
+                found = true;
+            }
+        }
+        if found {
+            Ok(())
+        } else {
+            Err(Refusal::new(missing))
+        }
+    }
+
+    /// The places derived from the snippets: each folder reveals its
+    /// snippets, files a new one under itself and renames; each tag reveals
+    /// its snippets, renames or comes off.
+    fn places(&self) -> Vec<Derived<Self>> {
+        let folders = self.folders().into_iter().map(Self::folder_place);
+        let tags = self.tags().into_iter().map(|(tag, _)| Self::tag_place(tag));
+        folders.chain(tags).collect()
+    }
+
+    /// The folder `folder` as a place.
+    pub fn folder_place(folder: String) -> Derived<Self> {
+        Derived::new(folder.clone())
+            .of_kind("folder")
+            .identified(format!("folder:{folder}"))
+            .with_effect(&SnippetsView::RevealFolder {
+                folder: folder.clone(),
+            })
+            .with(
+                Self::NEW_SNIPPET.bind(snippets::NewSnippet::paths().folder, Some(folder.clone())),
+            )
+            .with(Self::RENAME_FOLDER.bind(snippets::RenameFolder::paths().folder, folder))
+    }
+
+    /// The tag `tag` as a place.
+    pub fn tag_place(tag: String) -> Derived<Self> {
+        Derived::new(tag.clone())
+            .of_kind("tag")
+            .identified(format!("tag:{tag}"))
+            .with_effect(&SnippetsView::Reveal { tag: tag.clone() })
+            .with(Self::RENAME_TAG.bind(snippets::RenameTag::paths().tag, tag.clone()))
+            .with(Self::REMOVE_TAG.bind(snippets::RemoveTag::paths().tag, tag))
+    }
+}
+
+/// What the library shows, which changes no document. Revealing is
+/// offered on the tag or folder it shows, never with a name to type.
+#[derive(Debug, Clone, PartialEq, Eq, Effect)]
+#[effect(operation = "snippets.view")]
+pub enum SnippetsView {
+    /// Reveal tagged snippets
+    #[effect(view, row)]
+    Reveal { tag: String },
+    /// Reveal snippets in a folder
+    #[effect(view, row)]
+    RevealFolder { folder: String },
+    /// Search snippets
+    #[effect(view)]
+    Search,
 }
 
 /// Framework app: the snippets widget over [`Snippets`].
@@ -118,7 +216,10 @@ impl ResourceApp for SnippetsShell {
     const ICON: Option<&'static str> = Some("snippets");
 
     fn view(cx: &mut ViewCx<Snippets>) -> Element {
-        cx.surface(SnippetsApp::new())
+        let app = SnippetsApp::new();
+        // A search hit, or an agent's `open`, shows the snippet it names.
+        cx.on_open_item(app.opener());
+        cx.surface(app)
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -147,18 +248,17 @@ impl ResourceApp for SnippetsShell {
             return Vec::new();
         }
         crate::seed::starter_library()
-            .into_iter()
-            .zip(1_u128..)
-            .filter_map(|(mut snippet, n)| {
-                snippet.id = Uuid::from_u128(n);
-                Invoke::apply(&create_snippet_action(snippet)).ok()
+            .iter()
+            .enumerate()
+            .filter_map(|(at, snippet)| {
+                Invoke::edit(&Snippets::paths().snippets.insert(at, snippet)).ok()
             })
             .collect()
     }
 }
 
 impl ResourceSurface<Snippets, SnippetsView> for SnippetsApp {
-    fn present(&mut self, state: &Rc<Vec<Snippet>>) {
+    fn present(&mut self, state: &Rc<Snippets>) {
         self.show_library(state);
     }
 
@@ -176,155 +276,4 @@ impl ResourceSurface<Snippets, SnippetsView> for SnippetsApp {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::actions::{
-        body_resource_id, folder_resource_id, snippet_resource_id, tag_resource_id,
-    };
-    use ui::prelude::TestApp;
-
-    fn has_control(app: &mut TestApp<SnippetsShell>, label: &str) -> bool {
-        app.harness()
-            .a11y_nodes()
-            .iter()
-            .any(|(_, node)| node.label() == Some(label))
-    }
-
-    /// A new window starts on an empty library; captures stage the starter
-    /// library through actions and their view state through `stage`.
-    #[test]
-    fn captures_stage_the_starter_library_and_a_new_window_is_empty() {
-        let live = TestApp::<SnippetsShell>::new().unwrap();
-        assert!(live.state().is_empty(), "a fresh install has no snippets");
-
-        let mut empty = TestApp::<SnippetsShell>::capture(Some("empty")).unwrap();
-        assert!(empty.state().is_empty());
-        assert!(has_control(&mut empty, "New snippet"));
-
-        let mut detail = TestApp::<SnippetsShell>::capture(Some("detail")).unwrap();
-        assert_eq!(detail.harness().inspection().viewport, [420, 760]);
-        assert!(detail.state().len() >= 10);
-        assert!(has_control(&mut detail, "Back"), "the detail is pushed in");
-        detail.harness().click_named("nav-shell-back").unwrap();
-        detail.settle();
-        assert!(
-            !has_control(&mut detail, "Back"),
-            "Back returns to the snippet list"
-        );
-
-        let mut narrow = TestApp::<SnippetsShell>::capture(Some("narrow")).unwrap();
-        assert_eq!(narrow.harness().inspection().viewport, [720, 720]);
-        assert!(
-            has_control(&mut narrow, "Hide sidebar"),
-            "the overlay sidebar is open"
-        );
-        narrow.harness().click_named("nav-shell-sidebar").unwrap();
-        narrow.settle();
-        assert!(
-            has_control(&mut narrow, "Show sidebar"),
-            "the sidebar closes through its control"
-        );
-    }
-
-    /// Agents and the palette reach every snippet, tag and folder through the
-    /// one published tree, and each invocation is the library's action.
-    #[test]
-    fn the_published_tree_edits_and_opens_snippets() {
-        let mut app = TestApp::<SnippetsShell>::new().unwrap();
-        app.call(
-            "new-snippet",
-            serde_json::json!({"title": "Deploy", "folder": "Ops"}),
-        )
-        .unwrap();
-        let deploy = app.state()[0].clone();
-        assert_eq!(
-            (deploy.title.as_str(), deploy.folder.as_str()),
-            ("Deploy", "Ops")
-        );
-
-        let surface = app.agent_surface().to_string();
-        assert!(surface.contains("Edit body"), "the catalog labels the tree");
-        app.call_on(
-            &folder_resource_id("Ops"),
-            "new-snippet",
-            serde_json::json!({"title": "Rollback"}),
-        )
-        .unwrap();
-        let rollback = app
-            .state()
-            .into_iter()
-            .find(|s| s.title == "Rollback")
-            .expect("a folder files a new snippet under itself");
-        assert_eq!(rollback.folder, "Ops");
-
-        let snippet = snippet_resource_id(deploy.id);
-        app.call_on(
-            &snippet,
-            "set-tags",
-            serde_json::json!({"tags": "k8s, release"}),
-        )
-        .unwrap();
-        app.call_on(
-            &snippet,
-            "set-language",
-            serde_json::json!({"language": "shell"}),
-        )
-        .unwrap();
-        app.call_on(
-            &body_resource_id(deploy.id),
-            "replace-text",
-            serde_json::json!({"text": "kubectl rollout restart deploy/${name}"}),
-        )
-        .unwrap();
-        let deploy = app.state().into_iter().find(|s| s.id == deploy.id).unwrap();
-        assert_eq!(deploy.tags, ["k8s", "release"]);
-        assert_eq!(deploy.language, crate::model::Language::Shell);
-        assert_eq!(deploy.body, "kubectl rollout restart deploy/${name}");
-        assert!(app.undo(), "the body edit is one undo step");
-        assert_eq!(
-            app.state().iter().find(|s| s.id == deploy.id).unwrap().body,
-            ""
-        );
-
-        app.call_on(&snippet, "open", serde_json::json!({}))
-            .unwrap();
-        app.call_on(&tag_resource_id("k8s"), "reveal", serde_json::json!({}))
-            .unwrap();
-        app.call("search", serde_json::json!({})).unwrap();
-        assert!(
-            !surface.contains("\"snippet\""),
-            "opening is offered on each snippet, never with an id to type"
-        );
-        assert!(
-            app.call_on(
-                &snippet_resource_id(Uuid::nil()),
-                "open",
-                serde_json::json!({})
-            )
-            .is_err(),
-            "a snippet that does not exist is not opened"
-        );
-
-        app.call_on(&snippet, "delete", serde_json::json!({}))
-            .expect_err("deleting asks for confirmation");
-        assert_eq!(app.state().len(), 2);
-    }
-
-    /// Search finds a snippet by anything it holds and opens it; a tag
-    /// reveals its snippets.
-    #[test]
-    fn search_indexes_every_field_and_invokes_the_published_actions() {
-        let mut snippet = Snippet::blank("Ops");
-        snippet.title = "Deploy".into();
-        snippet.tags = vec!["k8s".into()];
-        snippet.body = "kubectl rollout".into();
-        let entries = Snippets::search(&vec![snippet.clone()]);
-        let hit = entries.iter().find(|e| e.title == "Deploy").unwrap();
-        for field in ["Ops", "k8s", "kubectl rollout", snippet.language.label()] {
-            assert!(hit.text.contains(field), "{field} in {:?}", hit.text);
-        }
-        assert_eq!(hit.action, Some(open_snippet_address(snippet.id)));
-        let tag = entries.iter().find(|e| e.title == "#k8s").unwrap();
-        assert_eq!(tag.action, Some(reveal_tag_address("k8s")));
-    }
-}
+mod tests;

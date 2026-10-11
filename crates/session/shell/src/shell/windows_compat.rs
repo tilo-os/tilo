@@ -47,7 +47,7 @@ impl CapabilityAuthority for WorkspaceCapabilityAuthority {
             .find(|workspace| workspace.room.to_string() == workspace_id)
             // Return the canonical list including restrictions. The broker's
             // CapabilityPlan filters it to the server-owned application ID.
-            .map(|workspace| workspace.capabilities.clone())
+            .map(|workspace| workspace.sandbox.clone())
             .ok_or_else(|| "workspace is no longer present in this session".to_string())
     }
 }

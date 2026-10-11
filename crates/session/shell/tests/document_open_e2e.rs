@@ -305,7 +305,7 @@ fn documents_opened_from_the_palette_or_a_drop_open_in_their_own_app() {
                 .expect("an active workspace");
             let want = Subject::app("so.tilo.word-processor");
             let scopes: Vec<&Scope> = ws
-                .capabilities
+                .sandbox
                 .iter()
                 .filter(|c| c.subject == want && c.effect == Effect::Grant)
                 .map(|c| &c.scope)

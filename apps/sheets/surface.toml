@@ -1,0 +1,828 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "sheets.workbook"
+label = "Workbook"
+version = 1
+
+[[resources.fields]]
+owner = "workbook"
+path = "sheets"
+stored = "collection"
+title = "Sheets"
+type = "Collection<Sheet>"
+
+[[resources.fields]]
+label = true
+owner = "sheet"
+path = "sheets.*.name"
+stored = "value"
+title = "Name"
+type = "Atom"
+
+[[resources.fields]]
+owner = "sheet"
+path = "sheets.*.source"
+readonly = true
+stored = "value"
+title = "Source file"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "sheet"
+path = "sheets.*.color"
+stored = "value"
+title = "Tab colour"
+type = "Option<u32>"
+
+[[resources.fields]]
+owner = "sheet"
+path = "sheets.*.cells"
+stored = "value"
+title = "Cells"
+type = "Grid<Cell>"
+
+[[resources.fields]]
+owner = "sheet"
+path = "sheets.*.charts"
+stored = "collection"
+title = "Charts"
+type = "Collection<Chart>"
+
+[[resources.fields]]
+label = true
+owner = "chart"
+path = "sheets.*.charts.*.title"
+stored = "value"
+title = "Title"
+type = "Atom"
+
+[[resources.fields]]
+owner = "chart"
+path = "sheets.*.charts.*.kind"
+stored = "value"
+title = "Chart type"
+type = "ChartKind"
+
+[[resources.fields]]
+owner = "chart"
+path = "sheets.*.charts.*.area"
+stored = "record"
+title = "Range"
+type = "Area"
+
+[[resources.fields]]
+owner = "area"
+path = "sheets.*.charts.*.area.top"
+stored = "value"
+title = "Top"
+type = "Id"
+
+[[resources.fields]]
+owner = "area"
+path = "sheets.*.charts.*.area.left"
+stored = "value"
+title = "Left"
+type = "Id"
+
+[[resources.fields]]
+owner = "area"
+path = "sheets.*.charts.*.area.bottom"
+stored = "value"
+title = "Bottom"
+type = "Id"
+
+[[resources.fields]]
+owner = "area"
+path = "sheets.*.charts.*.area.right"
+stored = "value"
+title = "Right"
+type = "Id"
+
+[[resources.fields]]
+owner = "workbook"
+path = "comments"
+stored = "collection"
+title = "Comments"
+type = "Collection<Comment>"
+unit = true
+
+[[resources.fields]]
+owner = "comment"
+path = "comments.*.sheet"
+readonly = true
+stored = "value"
+title = "Sheet"
+type = "Id"
+
+[[resources.fields]]
+owner = "comment"
+path = "comments.*.area"
+readonly = true
+stored = "record"
+title = "Range"
+type = "Area"
+
+[[resources.fields]]
+owner = "area"
+path = "comments.*.area.top"
+stored = "value"
+title = "Top"
+type = "Id"
+
+[[resources.fields]]
+owner = "area"
+path = "comments.*.area.left"
+stored = "value"
+title = "Left"
+type = "Id"
+
+[[resources.fields]]
+owner = "area"
+path = "comments.*.area.bottom"
+stored = "value"
+title = "Bottom"
+type = "Id"
+
+[[resources.fields]]
+owner = "area"
+path = "comments.*.area.right"
+stored = "value"
+title = "Right"
+type = "Id"
+
+[[resources.fields]]
+owner = "comment"
+path = "comments.*.author"
+readonly = true
+stored = "value"
+title = "Author"
+type = "Atom"
+
+[[resources.fields]]
+owner = "comment"
+path = "comments.*.body"
+stored = "value"
+title = "Comment"
+type = "String"
+
+[[resources.fields]]
+owner = "comment"
+path = "comments.*.resolved"
+stored = "value"
+title = "Resolved"
+type = "bool"
+
+[[resources.fields]]
+owner = "comment"
+path = "comments.*.replies"
+stored = "collection"
+title = "Replies"
+type = "Collection<Reply>"
+
+[[resources.fields]]
+owner = "reply"
+path = "comments.*.replies.*.author"
+readonly = true
+stored = "value"
+title = "Author"
+type = "Atom"
+
+[[resources.fields]]
+owner = "reply"
+path = "comments.*.replies.*.body"
+stored = "value"
+title = "Reply"
+type = "String"
+
+[[resources.fields]]
+owner = "workbook"
+path = "settings"
+stored = "record"
+title = "Document settings"
+type = "DocSettings"
+
+[[resources.fields]]
+owner = "doc-settings"
+path = "settings.currency"
+stored = "value"
+title = "Currency"
+type = "Option<Currency>"
+
+[[resources.fields]]
+owner = "doc-settings"
+path = "settings.date_format"
+stored = "value"
+title = "Date format"
+type = "Option<DateStyle>"
+
+[[resources.fields]]
+owner = "doc-settings"
+path = "settings.time_format"
+stored = "value"
+title = "Time format"
+type = "Option<TimeStyle>"
+
+[[resources.verbs]]
+id = "new-sheet"
+kind = "undoable"
+label = "Add a sheet"
+
+[[resources.verbs.params]]
+name = "name"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "after"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+id = "duplicate-sheet"
+kind = "undoable"
+label = "Duplicate a sheet"
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "delete-sheet"
+kind = "undoable"
+label = "Delete a sheet, with its comments"
+writes = [
+    "record",
+    "comments.*",
+]
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "set-cells"
+kind = "undoable"
+label = "Set cells from a start cell, row by row"
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "start"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "rows"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "array"
+
+[resources.verbs.params.schema.items.items]
+
+[[resources.verbs]]
+id = "write-cells"
+kind = "undoable"
+label = "Write cells: values, formulas, formats and bold"
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "cells"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = """One cell a write changes, by its reference. What it leaves out stays as it is: an input of `""` clears the cell's value."""
+required = ["cell"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.bold]
+description = "Bold text."
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.cell]
+description = "The cell, e.g. `B3`."
+type = "string"
+
+[resources.verbs.params.schema.items.properties.format]
+description = "How it shows."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.input]
+description = "What to type into it: a value, or a formula starting with `=`."
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+id = "format-cells"
+kind = "undoable"
+label = "Format cells"
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "range"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "format"
+required = false
+
+[resources.verbs.params.schema]
+description = "general, number, currency, percent, date, time, boolean or text; currency:EUR, date:US, time:H12 name a style"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "bold"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs]]
+id = "sort-rows"
+kind = "undoable"
+label = "Sort rows by a column"
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "range"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "by"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "descending"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "boolean",
+    "null",
+]
+
+[[resources.verbs]]
+id = "insert-rows"
+kind = "undoable"
+label = "Insert rows above a row"
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "count"
+required = false
+
+[resources.verbs.params.schema]
+maximum = 4294967295
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[[resources.verbs]]
+destructive = true
+id = "delete-rows"
+kind = "undoable"
+label = "Delete rows"
+writes = [
+    "record",
+    "comments.*",
+]
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "rows"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+id = "insert-columns"
+kind = "undoable"
+label = "Insert columns left of a column"
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "count"
+required = false
+
+[resources.verbs.params.schema]
+maximum = 4294967295
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[[resources.verbs]]
+destructive = true
+id = "delete-columns"
+kind = "undoable"
+label = "Delete columns"
+writes = [
+    "record",
+    "comments.*",
+]
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "columns"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
+description = "Adds the sheets of a file as new sheets, in one step; into a new, still blank workbook they replace its empty first sheet."
+id = "import-sheets"
+kind = "undoable"
+label = "Import sheets"
+
+[[resources.verbs.params]]
+name = "sheets"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One sheet an import brings: its name and its cells."
+required = [
+    "name",
+    "cells",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.cells]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.cells.items]
+additionalProperties = false
+description = """One cell a write changes, by its reference. What it leaves out stays as it is: an input of `""` clears the cell's value."""
+required = ["cell"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.cells.items.properties.bold]
+description = "Bold text."
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.cells.items.properties.cell]
+description = "The cell, e.g. `B3`."
+type = "string"
+
+[resources.verbs.params.schema.items.properties.cells.items.properties.format]
+description = "How it shows."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.cells.items.properties.input]
+description = "What to type into it: a value, or a formula starting with `=`."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.name]
+type = "string"
+
+[[resources.verbs.params]]
+name = "source"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+id = "add-chart"
+kind = "undoable"
+label = "Chart a range"
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "range"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "kind"
+required = true
+
+[resources.verbs.params.schema]
+enum = [
+    "column",
+    "line",
+]
+type = "string"
+
+[[resources.verbs.params]]
+name = "title"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "edit-chart"
+kind = "undoable"
+label = "Edit a chart: its title, and its type and cells when given"
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "chart"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "title"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "kind"
+required = false
+
+[[resources.verbs.params.schema.oneOf]]
+type = "null"
+
+[[resources.verbs.params.schema.oneOf]]
+enum = [
+    "column",
+    "line",
+]
+type = "string"
+
+[[resources.verbs.params]]
+name = "range"
+required = false
+
+[resources.verbs.params.schema]
+description = "A cell or a range of cells, e.g. B3 or B2:D6"
+pattern = "^[A-Za-z]+[0-9]+(:[A-Za-z]+[0-9]+)?$"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+destructive = true
+id = "delete-chart"
+kind = "undoable"
+label = "Delete a chart"
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "chart"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "comment"
+kind = "undoable"
+label = "Comment on cells"
+writes = [
+    "record",
+    "comments.*",
+]
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "range"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "reply"
+kind = "undoable"
+label = "Reply to a comment"
+writes = [
+    "record",
+    "comments.*",
+]
+
+[[resources.verbs.params]]
+name = "comment"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "edit-comment"
+kind = "undoable"
+label = "Edit a comment's text"
+writes = [
+    "record",
+    "comments.*",
+]
+
+[[resources.verbs.params]]
+name = "comment"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "body"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+destructive = true
+id = "delete-comment"
+kind = "undoable"
+label = "Delete a comment"
+writes = [
+    "record",
+    "comments.*",
+]
+
+[[resources.verbs.params]]
+name = "comment"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"

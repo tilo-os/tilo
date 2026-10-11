@@ -12,6 +12,7 @@ use tilo_app::a11y::{AccessNode, Action as A11yAction, Role};
 use tilo_app::framework::{Dispatcher, SurfaceCx};
 use tilo_app::prelude::*;
 
+use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Ballot {
     pub yes: i64,
@@ -56,8 +57,8 @@ impl Booth {
             return false;
         };
         match target {
-            "approve" => dispatch.invoke(Ballot::APPROVE.invoke()),
-            "reject" => dispatch.invoke(Ballot::REJECT.invoke()),
+            "approve" => dispatch.submit(Ballot::APPROVE.invoke()),
+            "reject" => dispatch.submit(Ballot::REJECT.invoke()),
             _ => return false,
         }
         true

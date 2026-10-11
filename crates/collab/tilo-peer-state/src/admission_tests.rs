@@ -1,5 +1,6 @@
 use super::*;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
@@ -36,12 +37,12 @@ fn unchanged_permission_queries_share_policy_data_across_peer_clones() {
             .clone()
             .permissions(cert.device_public_key, now)
             .unwrap();
-        assert_eq!(actual.0, expected.0);
+        assert_eq!(actual.role, expected.role);
         assert_eq!(
-            serde_json::to_vec(&actual.1).unwrap(),
-            serde_json::to_vec(&expected.1).unwrap()
+            serde_json::to_vec(&actual.policy).unwrap(),
+            serde_json::to_vec(&expected.policy).unwrap()
         );
-        assert_eq!(actual.2, expected.2);
+        assert_eq!(actual.person, expected.person);
     }
     assert!(
         crate::room::POLICY_READS.with(std::cell::Cell::get) <= 1,
@@ -58,12 +59,12 @@ fn admitted_immutable_certificate_does_not_repeat_signature_checks_per_permissio
             .clone()
             .permissions(cert.device_public_key, now)
             .unwrap();
-        assert_eq!(actual.0, expected.0);
+        assert_eq!(actual.role, expected.role);
         assert_eq!(
-            serde_json::to_vec(&actual.1).unwrap(),
-            serde_json::to_vec(&expected.1).unwrap()
+            serde_json::to_vec(&actual.policy).unwrap(),
+            serde_json::to_vec(&expected.policy).unwrap()
         );
-        assert_eq!(actual.2, expected.2);
+        assert_eq!(actual.person, expected.person);
     }
     assert_eq!(
         crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
@@ -99,9 +100,13 @@ fn exported_certificate_mutation_cannot_change_verified_roster_or_replace_it_via
     assert!(peer.certificates().contains(&cert));
 }
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one cached policy followed through expiry, removal and replacement"
+)]
 fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     use automerge::ReadDoc;
-    use collab_types::caps::{CapOverride, Principal, Scope, Subject, Verb};
+    use tilo_action_policy::{ActionKind, Answer, Grant, KindSet, Lifetime, Subject, TreePath};
     let (key, cert, _, other, now) = fixtures();
     let room_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut doc = crate::room::candidate(
@@ -110,16 +115,29 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     )
     .unwrap();
     doc.put(ROOT, "owner", "another-person").unwrap();
-    let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
-    let person = Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(
-        cert.user_public_key,
-    ));
-    let grant = CapOverride::grant(Subject::Principal(person), Scope::Workspace, Verb::Write)
-        .with_expiry(2001);
+    let members = doc.get(ROOT, "members").unwrap().unwrap().1;
+    let person = hex::encode(cert.user_public_key);
     doc.put(
-        &caps,
-        "membership",
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).unwrap()),
+        &members,
+        person.as_str(),
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&collab_types::Role::Editor).unwrap()),
+    )
+    .unwrap();
+    // A time-limited hold on undoable changes, rechecked at every decision.
+    let grants = doc.get(ROOT, "grants").unwrap().unwrap().1;
+    let hold = Grant::new(
+        "hold",
+        Subject::Person(person.clone()),
+        TreePath::room(room_id),
+        KindSet::UNDOABLE,
+        Answer::Deny,
+        Subject::person("another-person"),
+    )
+    .with_lifetime(Lifetime::Until(2_001_000));
+    doc.put(
+        &grants,
+        "hold",
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&hold).unwrap()),
     )
     .unwrap();
     let changes = doc
@@ -145,16 +163,27 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     )
     .unwrap();
     assert_eq!(
-        peer.permissions(cert.device_public_key, now).unwrap().0,
+        peer.permissions(cert.device_public_key, now).unwrap().role,
         collab_types::Role::Editor
+    );
+    let room_node = TreePath::room(room_id);
+    assert!(
+        !peer
+            .permissions(cert.device_public_key, now)
+            .unwrap()
+            .allows(&room_node, ActionKind::Undoable, now)
     );
     assert!(
         peer.permissions(cert.device_public_key, now + Duration::from_secs(2))
-            .unwrap_err()
-            .contains("membership")
+            .unwrap()
+            .allows(
+                &room_node,
+                ActionKind::Undoable,
+                now + Duration::from_secs(2)
+            )
     );
     let old = peer.clone();
-    doc.delete(&caps, "membership").unwrap();
+    doc.delete(&members, person.as_str()).unwrap();
     let changes = doc
         .get_changes(&[])
         .into_iter()
@@ -175,7 +204,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
             .contains("membership")
     );
     assert_eq!(
-        old.permissions(cert.device_public_key, now).unwrap().0,
+        old.permissions(cert.device_public_key, now).unwrap().role,
         collab_types::Role::Editor
     );
 }
@@ -193,7 +222,7 @@ fn app_waits_for_governance_then_signed_state_converges_without_reexecuting_acti
     .unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "native").unwrap();
-    document.commit();
+    document.commit_edit("fixture", "value");
     let seed = SeedState {
         room_changes: seed_room(room, &ac, &[ac.clone(), bc.clone()]).unwrap(),
         documents: vec![SeedDocument {
@@ -249,7 +278,7 @@ fn source_room_signature_and_aged_checkpoint_fail_closed() {
     .unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", 1).unwrap();
-    document.commit();
+    document.commit_edit("fixture", "value");
     native
         .install_seed(
             SeedState {
@@ -302,6 +331,50 @@ fn source_room_signature_and_aged_checkpoint_fail_closed() {
     );
     assert!(receiver.rows().is_empty());
 }
+/// [`seeded`], with the room owned by another person and the fixture's
+/// person an Editor of it: a member whose grants a governor can narrow.
+pub(crate) fn seeded_editor() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
+    let (a, ac, b, bc, now) = fixtures();
+    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let mut doc = crate::room::candidate(
+        None,
+        &seed_room(room, &ac, &[ac.clone(), bc.clone()]).unwrap(),
+    )
+    .unwrap();
+    doc.put(ROOT, "owner", "another-person").unwrap();
+    let members = doc.get(ROOT, "members").unwrap().unwrap().1;
+    doc.put(
+        &members,
+        hex::encode(bc.user_public_key).as_str(),
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&collab_types::Role::Editor).unwrap()),
+    )
+    .unwrap();
+    let room_changes = doc
+        .get_changes(&[])
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    let mut native = StatePeer::new(
+        room,
+        ac.clone(),
+        vec![ac, bc.clone()],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    native
+        .install_seed(
+            SeedState {
+                room_changes,
+                documents: vec![],
+            },
+            &a,
+            now,
+        )
+        .unwrap();
+    (native, a, b, bc, now)
+}
+
 pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
     let (a, ac, b, bc, now) = fixtures();
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -315,7 +388,7 @@ pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, System
     .unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "native").unwrap();
-    document.commit();
+    document.commit_edit("fixture", "value");
     native
         .install_seed(
             SeedState {
@@ -345,7 +418,6 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         verify_join_proof,
     };
     use automerge::ReadDoc;
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
 
     let (mut peer, authority_key, other_owner_device, _, now) = seeded();
     let now_ns: u64 = now
@@ -421,7 +493,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     assert_eq!(
         peer.permissions(guest_cert.device_public_key, now)
             .unwrap()
-            .0,
+            .role,
         collab_types::Role::Editor
     );
     let access = peer.governed_access(now).unwrap();
@@ -555,27 +627,21 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         panic!("unexpected fixture shape")
     };
     let mut room_doc = crate::room::candidate(None, &changes).unwrap();
-    let capabilities = room_doc.get(ROOT, "capabilities").unwrap().unwrap().1;
+    let members = room_doc.get(ROOT, "members").unwrap().unwrap().1;
     let before = room_doc.get_heads();
     room_doc.set_actor(automerge::ActorId::from(
         authority_key.verifying_key().to_bytes().to_vec(),
     ));
-    let shadowing = CapOverride::grant(
-        Subject::User(collab_types::Ed25519PublicKey::from_bytes(
-            guest_cert.user_public_key,
-        )),
-        Scope::Workspace,
-        Verb::Admin,
-    )
-    .with_id("legacy-strong-membership");
     room_doc
         .put(
-            &capabilities,
-            "legacy-strong-membership",
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&shadowing).unwrap()),
+            &members,
+            hex::encode(guest_cert.user_public_key),
+            automerge::ScalarValue::Bytes(
+                serde_json::to_vec(&collab_types::Role::Commenter).unwrap(),
+            ),
         )
         .unwrap();
-    room_doc.commit();
+    room_doc.commit_edit("fixture", "fixture");
     restored
         .receive_from(
             TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
@@ -594,8 +660,8 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         restored
             .permissions(guest_cert.device_public_key, now)
             .unwrap()
-            .0,
-        collab_types::Role::Owner
+            .role,
+        collab_types::Role::Commenter
     );
     assert!(
         restored
@@ -611,7 +677,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         restored
             .permissions(guest_cert.device_public_key, now)
             .unwrap()
-            .0,
+            .role,
         collab_types::Role::Viewer
     );
     restored
@@ -763,7 +829,7 @@ fn host_without_device_enrollment_power_needs_explicit_room_delegation() {
             .unwrap()
     );
     assert_eq!(
-        peer.permissions(guest.device_public_key, now).unwrap().0,
+        peer.permissions(guest.device_public_key, now).unwrap().role,
         collab_types::Role::Commenter
     );
 }
@@ -889,7 +955,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         authority_key.verifying_key().to_bytes().to_vec(),
     ));
     legacy.delete(ROOT, "invitation_receipts_v1").unwrap();
-    legacy.commit();
+    legacy.commit_edit("fixture", "invitation_receipts_v1");
     base.receive_from(
         TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
         NeighbourMsg::SyncResp {
@@ -1058,7 +1124,7 @@ fn conflicting_crdt_values_for_one_invite_fail_closed() {
         automerge::ScalarValue::Bytes(serde_json::to_vec(&receipt([99; 32], [100; 32])).unwrap()),
     )
     .unwrap();
-    left.commit();
+    left.commit_edit("fixture", "fixture");
     right.set_actor(automerge::ActorId::from(vec![101; 32]));
     right
         .put(
@@ -1069,7 +1135,7 @@ fn conflicting_crdt_values_for_one_invite_fail_closed() {
             ),
         )
         .unwrap();
-    right.commit();
+    right.commit_edit("fixture", "fixture");
     let message = |mut branch: AutoCommit| NeighbourMsg::SyncResp {
         changes: branch
             .get_changes(&base_heads)
@@ -1133,7 +1199,7 @@ fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_seque
     let mut doc = AutoCommit::load(&native.document("test.app", "tab:1").unwrap()).unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "other", "B").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "other");
     let old = native
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
@@ -1198,7 +1264,7 @@ fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_seque
     let mut doc = AutoCommit::load(&reload.document("test.app", "tab:1").unwrap()).unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "new", "B2").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "new");
     let next = reload
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
@@ -1272,7 +1338,7 @@ fn forged_or_mismatched_coverage_cannot_install_snapshot() {
     if let NeighbourMsg::AppDocument { envelope, .. } = &mut mismatch {
         let mut replacement = AutoCommit::new();
         replacement.put(ROOT, "attack", true).unwrap();
-        replacement.commit();
+        replacement.commit_edit("fixture", "attack");
         envelope.payload = collab_types::DocumentMutation::Snapshot(replacement.save())
             .encode()
             .unwrap();
@@ -1308,7 +1374,7 @@ fn checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regress() {
     };
     let mut doc = room::candidate(None, &changes).unwrap();
     doc.delete(ROOT, coverage::FIELD_V2).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let legacy = NeighbourMsg::SyncResp {
         room: room.clone(),
         changes: doc
@@ -1623,7 +1689,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     let mut doc = AutoCommit::load(&native.document("test.app", "tab:1").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "new", "forbidden").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "new");
     let op = native
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &b, now)
         .unwrap();
@@ -1798,7 +1864,7 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
             .put_object(ROOT, "text", automerge::ObjType::Text)
             .unwrap();
         doc.splice_text(&text, 0, 0, "saved once").unwrap();
-        doc.commit();
+        doc.commit_edit("fixture", "fixture");
         let original = client
             .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
             .unwrap();
@@ -1949,13 +2015,13 @@ fn higher_governor_floor_without_causal_changes_does_not_acknowledge_outbox() {
         .put_object(ROOT, "text", automerge::ObjType::Text)
         .unwrap();
     doc.splice_text(&text, 0, 0, "one ").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let first = client
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
     let before = doc.get_heads();
     doc.splice_text(&text, 4, 0, "two").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let second = client
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
@@ -2032,13 +2098,13 @@ fn reordered_incrementals_are_pending_durable_and_drain_after_predecessor() {
 
     let before = document.get_heads();
     document.put(ROOT, "first", "A").unwrap();
-    document.commit();
+    document.commit_edit("fixture", "first");
     let first = author
         .publish_incremental(app, record, document.save_after(&before), &author_key, now)
         .unwrap();
     let before = document.get_heads();
     document.put(ROOT, "second", "B").unwrap();
-    document.commit();
+    document.commit_edit("fixture", "second");
     let second = author
         .publish_incremental(app, record, document.save_after(&before), &author_key, now)
         .unwrap();
@@ -2094,14 +2160,14 @@ fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry()
         .put_object(ROOT, "text", automerge::ObjType::Text)
         .unwrap();
     doc.splice_text(&text, 0, 0, "one ").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let first = client
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
     let recent = now + Duration::from_secs(290);
     let before = doc.get_heads();
     doc.splice_text(&text, 4, 0, "two").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let second = client
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, recent)
         .unwrap();
@@ -2203,7 +2269,7 @@ fn dynamic_governed_identity_import_preserves_history_and_requires_authority() {
     ));
     let before = doc.get_heads();
     doc.put(ROOT, "joined", true).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "joined");
     let message = existing
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &new_key, now)
         .unwrap();
@@ -2449,7 +2515,7 @@ fn governed_import_is_atomic_even_for_direct_admission() {
             automerge::ScalarValue::Bytes(vec![0]),
         )
         .unwrap();
-    candidate.commit();
+    candidate.commit_edit("fixture", "fixture");
     let changes = candidate
         .get_changes(&[])
         .into_iter()
@@ -2490,7 +2556,7 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     .unwrap();
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "value", 1).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "value");
     native
         .install_seed(
             SeedState {
@@ -2586,7 +2652,7 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     let heads = browser.document_heads("test.app", "tab:1").unwrap();
     assert_eq!(heads, doc.get_heads());
     doc.put(ROOT, "value", 2).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "value");
     let local = browser
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &b, now)
         .unwrap();
@@ -2658,7 +2724,7 @@ fn nonowner_topology_and_record_route_changes_are_rejected_before_admission() {
         .unwrap();
     doc.put(&tab, "title", "Original").unwrap();
     doc.put(&tab, "record_id", "tab:0000000000000001").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "record_id");
     let mut peer =
         StatePeer::new(room, ac.clone(), vec![ac, bc], RevocationList::new(), now).unwrap();
     peer.install_seed(
@@ -2680,7 +2746,7 @@ fn nonowner_topology_and_record_route_changes_are_rejected_before_admission() {
     ));
     doc.put(&tab, "title", "Stolen").unwrap();
     doc.put(&tab, "record_id", "tab:0000000000000012").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "record_id");
     let result = peer.receive(
         b.verifying_key().to_bytes(),
         NeighbourMsg::SyncResp {
@@ -2731,7 +2797,7 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, "foreign", "original effect").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "foreign");
     let change = doc.save_after(&heads);
     let original = governor
         .publish_incremental(app, record, change.clone(), &b, now)
@@ -2780,7 +2846,7 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     before = governor.clone();
     let mut new = AutoCommit::new();
     new.put(ROOT, "created", true).unwrap();
-    new.commit();
+    new.commit_edit("fixture", "created");
     governor
         .publish_document("new.app", "new-record", new.save(), &a, now)
         .unwrap();

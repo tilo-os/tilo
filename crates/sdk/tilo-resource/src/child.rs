@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use tilo_actions::EncodedAction;
 
-use crate::group::{ActionGroup, GROUP, group_type};
-use crate::resource::{APPLY, Resource, apply_label, group_label, publish_parts};
+use crate::group::{ActionGroup, group_type};
+use crate::resource::{Resource, publish_parts};
 
 /// The id a child resource named `name` of `R` is published under:
 /// `<kind>/<name>`, beside the item resources of `R`'s collections.
@@ -62,17 +62,9 @@ fn rewrap<C: Resource, R: Resource>(
         .into_iter()
         .map(|spec| {
             let wrap = Arc::clone(wrap);
-            let named = spec.id.clone();
-            let spec = spec.rewrapped(R::ACTION_TYPE, move |encoded| {
+            spec.rewrapped(R::ACTION_TYPE, move |encoded| {
                 wrap_encoded::<C, R>(&encoded, wrap.as_ref())
-            });
-            // A typed edit is named in history after what it did as the
-            // parent's action; a named one keeps its own label.
-            match named.as_str() {
-                APPLY => spec.with_history_label(apply_label::<R>),
-                GROUP => spec.with_history_label(group_label::<R>),
-                _ => spec,
-            }
+            })
         })
         .collect();
     resource.children = std::mem::take(&mut resource.children)
@@ -89,13 +81,13 @@ fn wrap_encoded<C: Resource, R: Resource>(
     wrap: &(dyn Fn(C::Action) -> R::Action + Send + Sync),
 ) -> EncodedAction {
     let wrapped = if encoded.type_id == C::ACTION_TYPE {
-        serde_json::from_slice::<C::Action>(&encoded.payload)
+        tilo_actions::decode_json::<C::Action>(&encoded.payload)
             .map_err(|error| error.to_string())
             .and_then(|action| {
                 crate::resource::encode::<R>(&wrap(action)).map_err(|error| error.to_string())
             })
     } else if encoded.type_id == group_type::<C>() {
-        serde_json::from_slice::<ActionGroup<C::Action>>(&encoded.payload)
+        tilo_actions::decode_json::<ActionGroup<C::Action>>(&encoded.payload)
             .map_err(|error| error.to_string())
             .and_then(|group| {
                 let group = ActionGroup {

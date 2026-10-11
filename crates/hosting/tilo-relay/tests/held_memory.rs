@@ -88,7 +88,7 @@ fn app_document_checkpoint(size: usize) -> Vec<u8> {
         collab_types::document_artifact_id("so.tilo.notes", "cluster", "note-1"),
         collab_types::Ed25519PublicKey::from_bytes([7; 32]),
         collab_types::document_attestation_id("so.tilo.notes", "cluster", "note-1"),
-        collab_types::OpClass::Splice,
+        collab_types::OpKind::Change,
         std::time::UNIX_EPOCH,
         1,
     );

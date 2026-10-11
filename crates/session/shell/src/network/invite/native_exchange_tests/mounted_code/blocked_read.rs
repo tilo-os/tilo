@@ -144,9 +144,15 @@ fn prepare_edit(
                 device.identity.device_cert.device_public_key.to_vec(),
             ));
             let before = document.get_heads();
-            code_editor::actions::text_edit_action(FILE.into(), base, expected)
+            code_editor::actions::text_edit_action(FILE, base, expected)
                 .apply(&mut document)
                 .unwrap();
+            // Applied here without the executor, so the test names the step.
+            collab_types::CommitNamed::commit_edit(
+                &mut document,
+                cold_code::PROJECT_KIND,
+                "buffers",
+            );
             Ok(document.save_after(&before))
         })
         .unwrap();

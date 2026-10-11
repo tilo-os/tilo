@@ -212,10 +212,26 @@ pub fn sign_op(
     op: &mut SignedOp,
     secret_key: &ed25519_dalek::SigningKey,
 ) -> Result<(), CanonicalError> {
+    #[cfg(debug_assertions)]
+    assert_claimed(op);
     let bytes = op.signing_bytes()?;
     let sig = secret_key.sign(&bytes);
     op.signature = Signature(sig.to_bytes());
     Ok(())
+}
+
+/// Every change a device signs names its action: a debug build refuses to
+/// sign one that does not, so a producer outside the executor is found by
+/// its tests rather than by the peers that refuse its changes.
+#[cfg(debug_assertions)]
+#[expect(
+    clippy::panic,
+    reason = "a debug build's check that every produced change is claimed"
+)]
+fn assert_claimed(op: &SignedOp) {
+    if let Err(unclaimed) = crate::claim::check_claimed(op) {
+        panic!("signing a document op whose changes are not all claimed: {unclaimed}");
+    }
 }
 
 /// Verify a `SignedOp` against its declared author key — the

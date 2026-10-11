@@ -6,7 +6,7 @@
 //! the theme decides how it looks. Interaction leaves as an [`Intent`] the
 //! app applies to the window and the machine.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use ui::format::bytes_si;
@@ -41,18 +41,7 @@ pub(crate) enum Intent {
 }
 
 /// The queue controls write to and the app drains.
-#[derive(Clone, Default)]
-pub(crate) struct Intents(Rc<RefCell<Vec<Intent>>>);
-
-impl Intents {
-    pub(crate) fn push(&self, intent: Intent) {
-        self.0.borrow_mut().push(intent);
-    }
-
-    pub(crate) fn take(&self) -> Vec<Intent> {
-        std::mem::take(&mut *self.0.borrow_mut())
-    }
-}
+pub(crate) type Intents = ui::Intents<Intent>;
 
 /// Everything the detail page shows, borrowed from the app.
 pub(crate) struct DetailModel<'a> {
@@ -119,13 +108,12 @@ pub(crate) fn rescan_button(intents: &Intents) -> Button {
 
 /// Nothing to show: the system reported no block devices.
 pub(crate) fn empty_state(intents: &Intents) -> Element {
-    let intents = intents.clone();
     Box::new(
         EmptyState::new("No drives found")
             .with_icon(Icon::HardDrive)
             .with_message("Attach a drive, then rescan.")
             .with_action("Rescan")
-            .on_effect(move || intents.push(Intent::Rescan)),
+            .on_effect(intents.sender(Intent::Rescan)),
     )
 }
 

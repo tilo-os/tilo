@@ -261,3 +261,51 @@ panel-align-center = Centre
 panel-align-right = Right
 panel-align-justify = Justify
 a11y-more-tools = More formatting and document tools
+
+## History: what each change did, by field and by verb
+word-processor-document-body = { $op ->
+    [splice] Edited the text
+    [mark] { $on ->
+        [true] Made { $characters } characters { $mark ->
+            [strong] bold
+            [em] italic
+            [underline] underlined
+            [strike] struck through
+           *[other] { $mark }
+        }
+       *[false] Removed { $mark } from { $characters } characters
+    }
+    [set] { $kind ->
+        [heading] Made a heading of level { $level }
+        [list_item] Made a list
+        [paragraph] Made a body paragraph
+       *[other] Changed the paragraph style
+    }
+    [insert] { $object ->
+        [table] Inserted a table
+        [image] Inserted an image
+        [page-break] Inserted a page break
+       *[other] Inserted into the text
+    }
+    [remove] Removed { $blocks } objects
+    [replace] Replaced the whole text
+   *[other] Edited the text
+}
+word-processor-append-paragraph = Added a paragraph
+word-processor-insert-table = Inserted a table of { $rows } by { $columns }
+word-processor-add-row = Added a row to a table
+word-processor-add-column = Added a column to a table
+word-processor-delete-row = Deleted a row of a table
+word-processor-delete-column = Deleted a column of a table
+word-processor-delete-table = Deleted a table
+word-processor-delete-image = Deleted an image
+word-processor-accept-change = Accepted a change
+word-processor-reject-change = Rejected a change
+word-processor-accept-all-changes = Accepted every change
+word-processor-reject-all-changes = Rejected every change
+word-processor-add-comment = Commented: { $text }
+word-processor-reply-to-comment = Replied: { $text }
+word-processor-resolve-comment = Resolved a comment
+word-processor-set-page-margins = Changed the page margins
+word-processor-generate-toc = Added a table of contents
+word-processor-note-file-written = Saved to its file

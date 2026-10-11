@@ -294,7 +294,7 @@ impl CollabHistoryStore {
 mod tests {
     use super::*;
     use collab_types::{
-        AttestationId, ChannelId, ContentRetention, Ed25519PublicKey, EncryptionMetadata, OpClass,
+        AttestationId, ChannelId, ContentRetention, Ed25519PublicKey, EncryptionMetadata, OpKind,
     };
 
     fn op(artifact: ArtifactId, seq: u64, encryption: Option<EncryptionMetadata>) -> SignedOp {
@@ -303,7 +303,7 @@ mod tests {
             artifact,
             Ed25519PublicKey::from_bytes([4; 32]),
             AttestationId::new(),
-            OpClass::Splice,
+            OpKind::Change,
             std::time::SystemTime::UNIX_EPOCH,
             seq,
         );

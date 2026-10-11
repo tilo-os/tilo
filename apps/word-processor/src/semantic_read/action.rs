@@ -46,11 +46,9 @@ fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticR
     }
     let request: Request =
         serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
-    if resource.kind != "tilo.rich-text"
-        || !matches!(
-            resource.id.as_str(),
-            "word-processor.document" | "tilo.rich-text"
-        )
+    let kind = <crate::model::Document as ui::tilo_resource::Resource>::KIND;
+    if resource.kind != kind
+        || resource.id.as_str() != kind
         || !(1..=64).contains(&request.page_size)
     {
         return Err(SemanticReadError::InvalidRequest);
@@ -124,7 +122,7 @@ pub fn spec() -> ActionSpec {
     crate::actions::continuation::pure(
         spec,
         "qualified-read-parameter-protocol.v1",
-        vec![b"word_processor.document".to_vec()],
+        vec![b"word-processor.document".to_vec()],
     )
 }
 

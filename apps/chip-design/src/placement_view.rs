@@ -1,5 +1,5 @@
 //! Reported macro footprints with shared manual layout and retained cards.
-use crate::resource::{ChipProject, ProjectState};
+use crate::resource::{Project as ChipProject, ProjectState};
 use crate::verification::placement::Placement;
 use crate::view::ChipEffect;
 use ui::framework::ViewCx;

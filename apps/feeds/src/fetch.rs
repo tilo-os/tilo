@@ -19,9 +19,7 @@ use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
-use uuid::Uuid;
-
-use crate::model::{Article, Feed, FeedKind, Id};
+use crate::model::{FeedKind, Fetched, Id};
 use crate::{gemtext, html};
 
 /// A request from the UI thread to the fetch worker.
@@ -32,12 +30,9 @@ pub enum FetchRequest {
         feed_id: Id,
         url: String,
         kind: FeedKind,
-        /// The feed's [`Feed::certificate_pin`]; the server must match it.
+        /// The feed's [`crate::model::Feed::certificate_pin`]; the server must match it.
         certificate_pin: Option<String>,
     },
-    /// Resolve a brand-new subscription URL: discover the feed metadata
-    /// and its initial articles.
-    Subscribe { url: String, folder: Option<Id> },
 }
 
 /// A result posted back to the UI thread.
@@ -47,13 +42,11 @@ pub enum FetchResult {
     Articles {
         feed_id: Id,
         title: Option<String>,
-        articles: Vec<Article>,
+        articles: Vec<Fetched>,
         /// The certificate a gemini server presented, for a feed to pin on
         /// its first fetch.
         certificate_pin: Option<String>,
     },
-    /// A newly-discovered feed and its initial articles.
-    Subscribed { feed: Feed, articles: Vec<Article> },
     /// Something went wrong; `feed_id` is set for a refresh failure.
     Failed {
         feed_id: Option<Id>,
@@ -182,76 +175,28 @@ async fn handle(client: Option<&tilo_net::Client>, req: FetchRequest) -> FetchRe
             kind,
             certificate_pin,
         } => match fetch_feed(client, &url, kind, certificate_pin.as_deref()).await {
-            Ok(Fetched {
+            Ok(Found {
                 title,
                 articles,
                 certificate_pin,
-            }) => {
-                let articles = articles
-                    .into_iter()
-                    .map(|mut a| {
-                        a.feed_id = feed_id;
-                        a
-                    })
-                    .collect();
-                FetchResult::Articles {
-                    feed_id,
-                    title,
-                    articles,
-                    certificate_pin,
-                }
-            }
+            }) => FetchResult::Articles {
+                feed_id,
+                title,
+                articles,
+                certificate_pin,
+            },
             Err(e) => FetchResult::Failed {
                 feed_id: Some(feed_id),
                 message: e,
             },
         },
-        FetchRequest::Subscribe { url, folder } => {
-            let kind = if url.starts_with("gemini://") {
-                FeedKind::Gemini
-            } else {
-                FeedKind::Rss
-            };
-            match fetch_feed(client, &url, kind, None).await {
-                Ok(Fetched {
-                    title,
-                    articles,
-                    certificate_pin,
-                }) => {
-                    let feed_id = Uuid::new_v4();
-                    let site_url = derive_site_url(&url);
-                    let feed = Feed {
-                        id: feed_id,
-                        title: title.unwrap_or_else(|| url.clone()),
-                        url: url.clone(),
-                        site_url,
-                        folder,
-                        order: 0,
-                        kind,
-                        certificate_pin,
-                    };
-                    let articles = articles
-                        .into_iter()
-                        .map(|mut a| {
-                            a.feed_id = feed_id;
-                            a
-                        })
-                        .collect();
-                    FetchResult::Subscribed { feed, articles }
-                }
-                Err(e) => FetchResult::Failed {
-                    feed_id: None,
-                    message: e,
-                },
-            }
-        }
     }
 }
 
 /// What one fetch found.
-struct Fetched {
+struct Found {
     title: Option<String>,
-    articles: Vec<Article>,
+    articles: Vec<Fetched>,
     /// The certificate a gemini server presented; `None` over HTTP.
     certificate_pin: Option<String>,
 }
@@ -263,7 +208,7 @@ async fn fetch_feed(
     url: &str,
     kind: FeedKind,
     certificate_pin: Option<&str>,
-) -> Result<Fetched, String> {
+) -> Result<Found, String> {
     if kind == FeedKind::Gemini || url.starts_with("gemini://") {
         return fetch_gemini(url, certificate_pin).await;
     }
@@ -283,7 +228,7 @@ async fn fetch_feed(
     let (title, articles) = ui::rt::cpu(move || parse_http_feed(&bytes))
         .await
         .map_err(|e| format!("parse: {e}"))??;
-    Ok(Fetched {
+    Ok(Found {
         title,
         articles,
         certificate_pin: None,
@@ -294,7 +239,7 @@ async fn fetch_feed(
 const MAX_FEED_BYTES: usize = 16 * 1024 * 1024;
 
 /// Parse RSS/Atom/JSON-feed bytes into our model via feed-rs.
-fn parse_http_feed(bytes: &[u8]) -> Result<(Option<String>, Vec<Article>), String> {
+fn parse_http_feed(bytes: &[u8]) -> Result<(Option<String>, Vec<Fetched>), String> {
     let parsed = feed_rs::parser::parse(Cursor::new(bytes)).map_err(|e| format!("parse: {e}"))?;
     let title = parsed.title.map(|t| t.content);
 
@@ -333,18 +278,13 @@ fn parse_http_feed(bytes: &[u8]) -> Result<(Option<String>, Vec<Article>), Strin
         };
         let blocks = html::to_blocks(&body_html);
 
-        articles.push(Article {
-            id: Uuid::new_v4(),
-            feed_id: Uuid::nil(), // filled in by caller
+        articles.push(Fetched {
             title,
             author,
             url,
             published,
             summary,
             blocks,
-            read: false,
-            starred: false,
-            tags: Vec::new(),
         });
     }
     Ok((title, articles))
@@ -380,7 +320,7 @@ pub(crate) fn derive_site_url(feed_url: &str) -> String {
 // Gemini (gemini://, port 1965, TOFU)
 // =====================================================================
 
-async fn fetch_gemini(url: &str, certificate_pin: Option<&str>) -> Result<Fetched, String> {
+async fn fetch_gemini(url: &str, certificate_pin: Option<&str>) -> Result<Found, String> {
     let (body, presented) = gemini_request(url, certificate_pin).await?;
     let (body, blocks) = ui::rt::cpu(move || {
         let blocks = gemtext::to_blocks(&body);
@@ -394,20 +334,15 @@ async fn fetch_gemini(url: &str, certificate_pin: Option<&str>) -> Result<Fetche
         .find(|b| matches!(b.kind, crate::model::BlockKind::Heading1))
         .map(|b| b.text.clone());
     let summary: String = body.chars().take(200).collect();
-    let article = Article {
-        id: Uuid::new_v4(),
-        feed_id: Uuid::nil(),
+    let article = Fetched {
         title: title.clone().unwrap_or_else(|| url.to_string()),
         author: String::new(),
         url: url.to_string(),
         published: ui::clock::local_now().timestamp(),
         summary,
         blocks,
-        read: false,
-        starred: false,
-        tags: Vec::new(),
     };
-    Ok(Fetched {
+    Ok(Found {
         title,
         articles: vec![article],
         certificate_pin: Some(presented),
@@ -521,9 +456,9 @@ mod tests {
                 // A worker with no fetch thread. Enqueuing must be instant (no I/O).
                 let (mut w, res_tx) = FetchWorker::for_test();
                 let start = ui::time::now();
-                for _ in 0..50 {
+                for n in 0..50 {
                     w.send(FetchRequest::Refresh {
-                        feed_id: Uuid::new_v4(),
+                        feed_id: Id::from_raw(format!("feed-{n}")),
                         url: "https://example.invalid/feed.xml".into(),
                         kind: FeedKind::Rss,
                         certificate_pin: None,
@@ -538,10 +473,10 @@ mod tests {
                 assert!(w.poll().is_empty());
 
                 // A "worker thread" posts a result; the UI drains it non-blockingly.
-                let fid = Uuid::new_v4();
+                let fid = Id::from_raw("refreshed");
                 res_tx
                     .send(FetchResult::Articles {
-                        feed_id: fid,
+                        feed_id: fid.clone(),
                         title: Some("T".into()),
                         articles: vec![],
                         certificate_pin: None,
@@ -551,8 +486,8 @@ mod tests {
                 assert_eq!(drained.len(), 1);
                 assert_eq!(w.pending(), 49, "poll decrements the in-flight counter");
                 match &drained[0] {
-                    FetchResult::Articles { feed_id, .. } => assert_eq!(*feed_id, fid),
-                    _ => panic!("wrong result variant"),
+                    FetchResult::Articles { feed_id, .. } => assert_eq!(feed_id, &fid),
+                    FetchResult::Failed { .. } => panic!("wrong result variant"),
                 }
             }
             worker_send_is_nonblocking_and_poll_drains();

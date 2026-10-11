@@ -92,7 +92,6 @@ def source_snapshot():
         "apps/code-editor/src/text_operations_tests.rs",
         "crates/sdk/tilo-resource/src/resource.rs",
         "crates/sdk/tilo-resource/src/action.rs",
-        "crates/sdk/tilo-resource/src/low_mutation.rs",
         "crates/sdk/ui-core/src/semantic_document_read.rs",
         "apps/code-editor/src/app.rs",
         "crates/sdk/ui-core/src/invocation_scope.rs",
@@ -330,14 +329,16 @@ def run_native(args, output, profile, env, observed_sources, observed_binaries):
                     raise RuntimeError("source chunk differs from actual published workspace/app")
                 if chunk["record"]["recordId"] != action["record"]:
                     raise RuntimeError("source chunk differs from actual published canonical record")
-                if chunk["content"]["file"] != action["semantic_identity"]["key"].removeprefix("code_editor.file:"):
+                if chunk["content"]["file"] != action["semantic_identity"]["key"].rsplit("/", 1)[-1]:
                     raise RuntimeError("source chunk differs from exact file target")
                 if not terminal["update"]["invocation"] or chunk["content"]["text_sha256"] != digest(fixture):
                     raise RuntimeError("source chunk lacks original terminal or complete source identity")
-            edit = {"expected_base_digest": observed["text_sha256"], "start_chars": 1,
+            file_id = resource.rsplit("/", 1)[-1]
+            edit = {"edit": {"path": [{"field": "buffers"}, {"key": file_id}], "op": {"op": "rich", "rich": {
+                "action": "contextual", "expected_base_digest": observed["text_sha256"], "start_chars": 1,
                 "delete_chars": 2, "insert": "X", "deleted_text": observed["text"],
-                "before_context": observed["before_context"], "after_context": observed["after_context"]}
-            perform("edit-text", edit, "edit", resource)
+                "before_context": observed["before_context"], "after_context": observed["after_context"]}}}}
+            perform("field-edit", edit, "edit")
             _, changed = perform("read-text", {"start_chars": 0, "max_chars": 4096}, "read-after", resource)
             expected = "αXγ\nfinal"
             if changed["text"] != expected or changed["text_sha256"] != hashlib.sha256(expected.encode()).hexdigest():
@@ -354,7 +355,7 @@ def run_native(args, output, profile, env, observed_sources, observed_binaries):
                     raise RuntimeError("terminal refusal does not prove exact-head snapshot staleness")
             else:
                 raise RuntimeError("stale source snapshot unexpectedly succeeded")
-            stale_action = bootstrap.wait_for("same file edit action", lambda: offered("edit-text", resource), shell)
+            stale_action = bootstrap.wait_for("project field edit action", lambda: offered("field-edit"), shell)
             stale = bootstrap.invoke(socket, stale_action, edit)
             private_json(output / "stale-accepted.json", stale)
             failure_path = output / "stale-failure.json"
@@ -364,7 +365,7 @@ def run_native(args, output, profile, env, observed_sources, observed_binaries):
                 if not failure_path.exists():
                     raise
                 refused = json.loads(failure_path.read_text())
-                if refused.get("update", {}).get("state") != "failed" or "stale text edit" not in json.dumps(refused):
+                if refused.get("update", {}).get("state") != "failed" or "the text changed where the edit was made" not in json.dumps(refused):
                     raise RuntimeError("failed operation does not prove contextual stale refusal")
             else:
                 raise RuntimeError("overlapping stale edit unexpectedly succeeded")

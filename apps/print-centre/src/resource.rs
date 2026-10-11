@@ -8,7 +8,7 @@ use ui::framework::{
     RunMode, SurfaceCx, ViewCx,
 };
 use ui::prelude::*;
-use ui::tilo_resource::{self, Invoke};
+use ui::tilo_resource::{self, Atom, Invoke};
 
 use crate::surface::PrintCentre;
 
@@ -27,19 +27,21 @@ pub const OCR_LANGUAGES: [(&str, &str); 4] = [
 ];
 
 /// How a person prints and scans unless they choose otherwise for one
-/// document. It follows them to every device.
+/// document. It follows them to every device. Each default is edited at its
+/// path; a value that is not offered is refused however it is set.
 #[derive(Model, Clone, Debug, PartialEq)]
+#[model(check = PrintDefaults::offered)]
 pub struct PrintDefaults {
     /// Print on both sides of the paper.
     pub two_sided: bool,
     /// Scan resolution, one of [`SCAN_RESOLUTIONS`].
     pub scan_resolution: u16,
     /// Scan appearance, one of [`SCAN_COLORS`].
-    pub scan_color: String,
+    pub scan_color: Atom,
     /// Paper source, one of [`SCAN_SOURCES`].
-    pub scan_source: String,
+    pub scan_source: Atom,
     /// Language text is recognized in, one of [`OCR_LANGUAGES`].
-    pub ocr_language: String,
+    pub ocr_language: Atom,
 }
 
 impl Default for PrintDefaults {
@@ -47,75 +49,37 @@ impl Default for PrintDefaults {
         Self {
             two_sided: false,
             scan_resolution: 300,
-            scan_color: SCAN_COLORS[0].to_owned(),
-            scan_source: SCAN_SOURCES[0].to_owned(),
-            ocr_language: OCR_LANGUAGES[0].0.to_owned(),
+            scan_color: Atom(SCAN_COLORS[0].to_owned()),
+            scan_source: Atom(SCAN_SOURCES[0].to_owned()),
+            ocr_language: Atom(OCR_LANGUAGES[0].0.to_owned()),
         }
     }
 }
 
 #[resource(kind = "print-centre.defaults", label = "Print Centre")]
-impl PrintDefaults {
-    /// Print on both sides.
-    #[action]
-    pub fn set_two_sided(&mut self, #[param("Whether to print on both sides")] two_sided: bool) {
-        self.two_sided = two_sided;
-    }
+impl PrintDefaults {}
 
-    /// Set the scan resolution.
-    #[action]
-    pub fn set_scan_resolution(
-        &mut self,
-        #[param("Dots per inch: 150, 300 or 600")] dpi: u16,
-    ) -> Result<(), &'static str> {
-        if !SCAN_RESOLUTIONS.contains(&dpi) {
+impl PrintDefaults {
+    /// Every default is one the scan and print controls offer.
+    fn offered(&self) -> Result<(), &'static str> {
+        if !SCAN_RESOLUTIONS.contains(&self.scan_resolution) {
             return Err("scan at 150, 300 or 600 dpi");
         }
-        self.scan_resolution = dpi;
-        Ok(())
-    }
-
-    /// Set the scan appearance.
-    #[action]
-    pub fn set_scan_color(
-        &mut self,
-        #[param("color, grayscale or line-art")] color: String,
-    ) -> Result<(), &'static str> {
-        if !SCAN_COLORS.contains(&color.as_str()) {
+        if !SCAN_COLORS.contains(&self.scan_color.0.as_str()) {
             return Err("scan in color, grayscale or line-art");
         }
-        self.scan_color = color;
-        Ok(())
-    }
-
-    /// Set the paper source.
-    #[action]
-    pub fn set_scan_source(
-        &mut self,
-        #[param("flatbed, feeder or feeder-duplex")] source: String,
-    ) -> Result<(), &'static str> {
-        if !SCAN_SOURCES.contains(&source.as_str()) {
+        if !SCAN_SOURCES.contains(&self.scan_source.0.as_str()) {
             return Err("scan from the flatbed, feeder or feeder-duplex");
         }
-        self.scan_source = source;
-        Ok(())
-    }
-
-    /// Set the text recognition language.
-    #[action]
-    pub fn set_ocr_language(
-        &mut self,
-        #[param("eng, deu, fra or spa")] language: String,
-    ) -> Result<(), &'static str> {
-        if !OCR_LANGUAGES.iter().any(|(code, _)| *code == language) {
+        if !OCR_LANGUAGES
+            .iter()
+            .any(|(code, _)| *code == self.ocr_language.0)
+        {
             return Err("recognize eng, deu, fra or spa");
         }
-        self.ocr_language = language;
         Ok(())
     }
-}
 
-impl PrintDefaults {
     /// The offered resolution's index, as the scan controls show it.
     pub fn resolution_index(&self) -> usize {
         SCAN_RESOLUTIONS
@@ -127,21 +91,21 @@ impl PrintDefaults {
     pub fn color_index(&self) -> usize {
         SCAN_COLORS
             .iter()
-            .position(|color| *color == self.scan_color)
+            .position(|color| *color == self.scan_color.0)
             .unwrap_or_default()
     }
 
     pub fn source_index(&self) -> usize {
         SCAN_SOURCES
             .iter()
-            .position(|source| *source == self.scan_source)
+            .position(|source| *source == self.scan_source.0)
             .unwrap_or_default()
     }
 
     pub fn language_index(&self) -> usize {
         OCR_LANGUAGES
             .iter()
-            .position(|(code, _)| *code == self.ocr_language)
+            .position(|(code, _)| *code == self.ocr_language.0)
             .unwrap_or_default()
     }
 }
@@ -152,7 +116,7 @@ impl PrintDefaults {
 #[effect(operation = "print-centre.effects", device_only)]
 pub enum PrintCentreEffect {
     /// Refresh printers and documents.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Refresh,
     /// Find network printers.
     #[effect(job)]
@@ -324,6 +288,7 @@ impl ResourceApp for PrintCentreShell {
     }
 
     fn view(cx: &mut ViewCx<PrintDefaults>) -> Element {
+        crate::locales::install();
         cx.surface(PrintCentre::new())
     }
 
@@ -359,7 +324,9 @@ impl ResourceApp for PrintCentreShell {
     /// Printing shows a document set to print on both sides.
     fn scenario(name: Option<&str>) -> Vec<Invoke<PrintDefaults>> {
         if name.is_some_and(|name| name.starts_with("print")) {
-            vec![PrintDefaults::SET_TWO_SIDED.with(true)]
+            Invoke::edit(&PrintDefaults::paths().two_sided.set(true))
+                .into_iter()
+                .collect()
         } else {
             Vec::new()
         }
@@ -410,19 +377,24 @@ impl ResourceSurface<PrintDefaults, PrintCentreEffect> for PrintCentre {
 mod tests {
     use super::*;
 
+    fn set(app: &mut TestApp<PrintCentreShell>, edit: &ui::tilo_resource::Edit<PrintDefaults>) {
+        let _ = Invoke::edit(edit).map(|edit| app.invoke(edit));
+    }
+
     #[test]
-    fn defaults_follow_their_actions_and_refuse_what_is_not_offered() {
+    fn defaults_follow_their_edits_and_refuse_what_is_not_offered() {
         let mut app = TestApp::<PrintCentreShell>::capture(Some("empty")).unwrap();
         assert_eq!(app.state(), PrintDefaults::default());
-        app.invoke(PrintDefaults::SET_SCAN_RESOLUTION.with(600))
-            .unwrap();
-        app.invoke(PrintDefaults::SET_SCAN_COLOR.with("grayscale".into()))
-            .unwrap();
-        app.invoke(PrintDefaults::SET_SCAN_SOURCE.with("feeder".into()))
-            .unwrap();
-        app.invoke(PrintDefaults::SET_OCR_LANGUAGE.with("fra".into()))
-            .unwrap();
-        app.invoke(PrintDefaults::SET_TWO_SIDED.with(true)).unwrap();
+        let paths = PrintDefaults::paths();
+        for edit in [
+            paths.scan_resolution.set(600),
+            paths.scan_color.set(Atom("grayscale".into())),
+            paths.scan_source.set(Atom("feeder".into())),
+            paths.ocr_language.set(Atom("fra".into())),
+            paths.two_sided.set(true),
+        ] {
+            app.invoke(Invoke::edit(&edit).unwrap()).unwrap();
+        }
         let state = app.state();
         assert_eq!(
             (
@@ -435,8 +407,43 @@ mod tests {
             (2, 1, 1, 2, true)
         );
         // A resolution or language that is not offered changes nothing.
-        let _ = app.invoke(PrintDefaults::SET_SCAN_RESOLUTION.with(1200));
-        let _ = app.invoke(PrintDefaults::SET_OCR_LANGUAGE.with("klingon".into()));
+        set(&mut app, &paths.scan_resolution.set(1200));
+        set(&mut app, &paths.ocr_language.set(Atom("klingon".into())));
         assert_eq!(app.state(), state);
+    }
+
+    #[test]
+    fn history_says_which_default_changed() {
+        let mut app = TestApp::<PrintCentreShell>::capture(Some("empty")).unwrap();
+        let paths = PrintDefaults::paths();
+        for edit in [
+            paths.two_sided.set(true),
+            paths.scan_resolution.set(600),
+            paths.scan_color.set(Atom("line-art".into())),
+            paths.scan_source.set(Atom("feeder-duplex".into())),
+            paths.ocr_language.set(Atom("deu".into())),
+        ] {
+            app.invoke(Invoke::edit(&edit).unwrap()).unwrap();
+        }
+        let catalogue =
+            tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let sentences: Vec<String> = app
+            .versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .filter(|entry| entry.what.is_some())
+            .map(|entry| reader.sentence(&entry))
+            .collect();
+        assert_eq!(
+            sentences,
+            [
+                "Printing on both sides from now on",
+                "Scanning at 600 dpi from now on",
+                "Scanning in line art from now on",
+                "Scanning both sides from the feeder from now on",
+                "Recognizing German text from now on",
+            ]
+        );
     }
 }

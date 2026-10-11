@@ -1,8 +1,8 @@
 # tilo-agent — Tilo application manifest.
 #
-# A participant, not a window: the agent joins a room's word-processor
-# document through the compositor's collaboration broker and edits it
-# with the app's own exported actions. Nothing is ever drawn, so
+# A participant, not a window: the agent carries out broker-leased tasks
+# through the actions the session's apps publish to it. Nothing is ever
+# drawn, so
 # `kind = "service"` keeps it out of the command palette and the
 # entrypoint is `cli` — the pair that decides whether the launcher hands
 # it a surface at all.

@@ -77,27 +77,6 @@ pub async fn admit_link(uri: String) -> Result<RecipientSubscriptionStatusV1, St
         })
 }
 
-/// Retry one previously admitted received-file subscription.
-///
-/// # Errors
-///
-/// Returns a localized error when the service is unavailable, refuses the
-/// retry, or returns an invalid response.
-pub async fn retry(
-    key: fs_protocol::RecipientSubscriptionKeyV1,
-) -> Result<RecipientSubscriptionStatusV1, String> {
-    transact(RecipientControlOperationV1::Retry { key })
-        .await
-        .and_then(|response| match response.result {
-            RecipientControlResultV1::Status(status) => Ok(status),
-            RecipientControlResultV1::Error { code } => Err(t_args(
-                "files-received-retry-refused",
-                &[arg("code", format!("{code:?}"))],
-            )),
-            RecipientControlResultV1::Admitted { .. } => Err(t("files-received-wrong-response")),
-        })
-}
-
 /// One request/response exchange with the recipient service. Must be polled
 /// in a tokio runtime context (the app runtime), which drives the socket.
 async fn transact(

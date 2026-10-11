@@ -117,6 +117,7 @@ mod tests {
             action_label: "Draft with the agent".into(),
             risk: tilo_actions::RiskLevel::Low,
             needs_confirmation: false,
+            confirming: false,
         }
     }
 

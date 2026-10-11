@@ -683,18 +683,18 @@ impl UsersModel {
             .with_kind(TextInputKind::Name)
             .with_id("users.form.full_name")
             .with_external_buffer(Arc::clone(&self.form.full_name))
-            .with_placeholder(&t("settings-users-placeholder-full-name"));
+            .with_placeholder(t("settings-users-placeholder-full-name"));
         let user = TextInput::local()
             .with_kind(TextInputKind::Username)
             .with_id("users.form.username")
             .with_external_buffer(Arc::clone(&self.form.username))
-            .with_placeholder(&t("settings-users-placeholder-username"));
+            .with_placeholder(t("settings-users-placeholder-username"));
         let password = TextInput::local()
             .with_kind(TextInputKind::Password)
             .with_id("users.form.password")
             .with_external_buffer(Arc::clone(&self.form.password))
             .with_secret(true)
-            .with_placeholder(&t("settings-users-placeholder-password"));
+            .with_placeholder(t("settings-users-placeholder-password"));
         let username = Arc::clone(&self.form.username);
         let full_name = Arc::clone(&self.form.full_name);
         let create = self.cx.bind(

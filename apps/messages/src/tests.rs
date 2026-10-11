@@ -23,8 +23,13 @@ fn live_starts_empty_and_transport_action_is_explicitly_unavailable() {
         operation: "fixture-operation".into(),
         text: "fixture text".into(),
     };
+    let heads = app.read_document(|doc| doc.clone().get_heads());
     assert!(app.effect(&send).is_err());
-    assert_eq!(app.state().schema_version, 0);
+    assert_eq!(
+        app.read_document(|doc| doc.clone().get_heads()),
+        heads,
+        "a refused send writes nothing"
+    );
     assert!(directory.get().people.is_empty());
 }
 

@@ -18,17 +18,12 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use shell::shell::state::WorkspaceAuthority as _;
-use std::io;
 use std::path::Path;
 use std::time::Duration;
 
 use ed25519_dalek::{Signer as _, SigningKey};
-use tilo_actions::{ActionAddress, ActionRegistry, LocalTransport, Resource};
 use tilo_agent::wire::Link;
-use ui::collaboration::{
-    CertifiedEndpointIdentity, CollabEvent, CollabRequest, DocumentMutation, ExportedAction,
-};
+use ui::collaboration::{CertifiedEndpointIdentity, CollabEvent, CollabRequest};
 
 const TEST_ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x6f2a_5fce_f612_46ac_9228_f6a3_ace4_9a11);
 const ROOT_KEY: [u8; 32] = [91; 32];
@@ -46,12 +41,6 @@ fn device_key(handle: &str) -> SigningKey {
     }
     seed[31] ^= 0xA5;
     SigningKey::from_bytes(&seed)
-}
-
-/// The stable human principal authenticated by this fixture's certificate.
-/// A display handle is deliberately not an authority or presence identifier.
-pub fn principal_id() -> String {
-    hex::encode(SigningKey::from_bytes(&ROOT_KEY).verifying_key().to_bytes())
 }
 
 /// # Panics
@@ -154,237 +143,6 @@ impl TypedPeer {
     }
 }
 
-/// # Errors
-///
-/// Returns an error when announcing the route fails (for a `Hello` request)
-/// or when the peer's underlying send fails.
-pub fn send(peer: &mut TypedPeer, request: &CollabRequest) -> io::Result<()> {
-    let result = if matches!(request, CollabRequest::Hello { .. }) {
-        let path = peer.path.clone();
-        peer.announce(&path, request)
-    } else {
-        peer.send(request)
-    };
-    result.map_err(io::Error::other)
-}
-
-/// # Panics
-///
-/// Panics if the underlying typed link errors, which in these tests means
-/// the collaboration broker has gone away.
-pub fn recv(peer: &mut TypedPeer) -> Option<CollabEvent> {
-    peer.recv()
-        .expect("receive from typed collaboration service")
-}
-
-pub fn document_mutation(event: &CollabEvent) -> Option<DocumentMutation> {
-    event.document_mutation()?.ok()
-}
-
-/// The same resource descriptors the toolkit publishes for a windowed
-/// application.
-pub fn exported_actions(resources: &[Resource]) -> Vec<ExportedAction> {
-    tilo_actions::door::survey(resources)
-        .into_iter()
-        .map(|descriptor| ExportedAction::from(&descriptor))
-        .collect()
-}
-
-/// Replace this peer's broker catalogue with a production resource tree.
-///
-/// # Panics
-///
-/// Panics if the typed test peer cannot publish to its collaboration broker.
-pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource]) {
-    let actions = exported_actions(resources);
-    let expected: Vec<_> = actions
-        .iter()
-        .map(|action| (action.resource.clone(), action.action.clone()))
-        .collect();
-    peer.send(&CollabRequest::PublishActions {
-        app_id: app_id.to_string(),
-        actions,
-    })
-    .unwrap();
-
-    // Publishing is one-way; ask the action host until it offers what
-    // was published before a test launches an agent that plans against it.
-    let deadline = tilo_test_env::hang_deadline();
-    let mut deferred = Vec::new();
-    let mut correlation = 0_u64;
-    while ui::time::now() < deadline {
-        correlation = correlation.wrapping_add(1);
-        let link = peer
-            .link
-            .as_mut()
-            .expect("peer announced before publishing actions");
-        link.send(&CollabRequest::RemoteAction {
-            message: tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
-                correlation,
-                query: tilo_actions::remote::CatalogueQuery {
-                    provider: None,
-                    max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
-                    ..tilo_actions::remote::CatalogueQuery::default()
-                },
-            },
-        })
-        .expect("ask the action host for its catalogue");
-        let answered = ui::time::now()
-            .checked_add(Duration::from_millis(500))
-            .expect("half a second fits in Instant");
-        while ui::time::now() < answered {
-            match link
-                .recv(Duration::from_millis(100))
-                .expect("receive the action host's answer")
-            {
-                Some(CollabEvent::RemoteAction {
-                    message:
-                        tilo_actions::remote::RemoteActionMessage::CatalogueResponse {
-                            correlation: answer,
-                            result: Ok(catalogue),
-                        },
-                }) if answer == correlation => {
-                    let offered = expected.iter().all(|(resource, action)| {
-                        catalogue.rows.iter().any(|row| {
-                            row.app_id == app_id
-                                && row.action.as_ref().is_some_and(|action_row| {
-                                    action_row.address.resource == resource.as_str()
-                                        && action_row.address.action == action.as_str()
-                                })
-                        })
-                    });
-                    if offered {
-                        link.defer(deferred);
-                        return;
-                    }
-                    break;
-                }
-                Some(event) => deferred.push(event),
-                None => {}
-            }
-        }
-    }
-    peer.link
-        .as_mut()
-        .expect("peer remains announced")
-        .defer(deferred);
-    panic!("broker did not publish {app_id}'s action catalogue in time");
-}
-
-/// A document invocation as the broker delivers it to the app host.
-pub struct DocumentInvocation<'a> {
-    /// The broker-minted end-to-end invocation identity. The connection-local
-    /// numeric correlation key remains solely on the response RPC.
-    pub invocation: tilo_actions::InvocationId,
-    pub address: ActionAddress,
-    pub argument: Option<&'a str>,
-    pub actor: &'a str,
-    /// The invocation's own provenance (the calling run's intent group),
-    /// recorded with the change exactly as the toolkit host records it.
-    pub context: Option<&'a tilo_actions::ActionContext>,
-}
-
-/// Resolve and execute a document invocation through an application's real
-/// action registry, broadcasting the resulting CRDT delta like the toolkit
-/// host. The caller owns when to send the returned terminal update, allowing
-/// concurrency tests to interleave another participant first.
-///
-/// # Panics
-///
-/// Panics if a successful document action produces no CRDT delta or that
-/// delta cannot be sent through the typed test peer.
-pub fn service_document_invocation(
-    peer: &mut TypedPeer,
-    replica: &mut automerge::AutoCommit,
-    resources: &[Resource],
-    register: fn(&mut ActionRegistry),
-    invocation: DocumentInvocation<'_>,
-) -> tilo_actions::InvocationUpdate {
-    let DocumentInvocation {
-        invocation,
-        address,
-        argument,
-        actor,
-        context,
-    } = invocation;
-    let provenance = tilo_actions::door::InvocationProvenance {
-        actor: actor.as_bytes(),
-        ambient: context,
-    };
-    let registry = ActionRegistry::with(register);
-    let mut transport = LocalTransport::new();
-    let before = replica.get_heads();
-    let result = if let Some(json) =
-        argument.and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
-    {
-        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
-            .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))
-            .and_then(|arguments| {
-                tilo_actions::door::invoke_json_confirmed(
-                    replica,
-                    resources,
-                    &address,
-                    &arguments,
-                    provenance,
-                    &registry,
-                    &mut transport,
-                )
-            })
-    } else {
-        tilo_actions::door::invoke_confirmed(
-            replica,
-            resources,
-            &address,
-            argument,
-            provenance,
-            &registry,
-            &mut transport,
-        )
-    };
-    match result {
-        Ok(_) => {
-            let delta = replica.save_after(&before);
-            assert!(!delta.is_empty(), "the invoked document action was a no-op");
-            peer.send(&CollabRequest::document_incremental(delta))
-                .unwrap();
-            tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            }
-        }
-        Err(error) => tilo_actions::InvocationUpdate::Failed {
-            invocation,
-            error: tilo_actions::ActionFailure {
-                code: "tilo.test_app_host".into(),
-                message: error.to_string(),
-                details: None,
-                retryable: false,
-            },
-        },
-    }
-}
-
-/// The word processor's document, the resource its editing actions are on.
-pub const WP_DOCUMENT: &str =
-    <word_processor::framework::Document as ui::tilo_resource::Resource>::KIND;
-
-/// # Panics
-///
-/// Panics if the typed collaboration service cannot bind `path`.
-pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
-    spawn_with_agent_actions(
-        path,
-        &[
-            ("dev.tilo.word-processor", WP_DOCUMENT, "align-center"),
-            ("dev.tilo.word-processor", WP_DOCUMENT, "insert-table"),
-            ("dev.tilo.word-processor", WP_DOCUMENT, "place-image"),
-            ("so.tilo.word-processor", WP_DOCUMENT, "align-center"),
-            ("so.tilo.word-processor", WP_DOCUMENT, "insert-table"),
-            ("so.tilo.word-processor", WP_DOCUMENT, "place-image"),
-        ],
-    )
-}
-
 /// Spawn the production broker harness with precisely the action grants a
 /// scenario reviews. Document-write authority is separate so a denied agent
 /// can still write a human-readable refusal without discovering the denied
@@ -402,6 +160,24 @@ pub fn spawn_with_agent_actions(
     path: &Path,
     actions: &[(&str, &str, &str)],
 ) -> shell::shell::collab_broker::BrokerHandle {
+    spawn_with_agent_grants(path, actions, &[])
+}
+
+/// [`spawn_with_agent_actions`], with the agent refused the `denied`
+/// actions outright: what its operator preset would otherwise let it do.
+///
+/// # Panics
+///
+/// As [`spawn_with_agent_actions`].
+#[allow(
+    clippy::too_many_lines,
+    reason = "builds the whole agent test room in one place"
+)]
+pub fn spawn_with_agent_grants(
+    path: &Path,
+    actions: &[(&str, &str, &str)],
+    denied: &[(&str, &str, &str)],
+) -> shell::shell::collab_broker::BrokerHandle {
     let parent = path.parent().expect("typed broker socket has a parent");
     shell::shell::collab_broker_capnp::tests::secure_socket_parent(parent)
         .expect("secure typed broker fixture root");
@@ -415,57 +191,78 @@ pub fn spawn_with_agent_actions(
         shell::shell::state::WorkspaceId(1),
         "Agent integration room",
     );
-    workspace.room = shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap();
+    workspace.set_room(shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap());
     workspace.set_owner(principal.clone());
-    workspace
-        .grant_as(
-            &principal,
-            ui::permissions::CapOverride::membership(
-                ui::permissions::Subject::agent("scribe"),
-                workspace.room.to_string(),
-                ui::permissions::Verb::Write,
-            ),
+    let owner = tilo_action_policy::Subject::person(principal);
+    // Operators answer in the room's documents.
+    workspace.admit_agent_preset(
+        "scribe",
+        tilo_action_policy::roles::AgentPreset::Operator,
+        &owner,
+    );
+    let everything = |id: String, agent: &str, node: tilo_action_policy::TreePath| {
+        tilo_action_policy::Grant::new(
+            id,
+            tilo_action_policy::Subject::agent(agent),
+            node,
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Allow,
+            owner.clone(),
         )
-        .expect("the harness owner admits the test agent");
-    workspace
-        .grant_as(
-            &principal,
-            ui::permissions::CapOverride::grant(
-                ui::permissions::Subject::agent("scribe"),
-                ui::permissions::Scope::ResourceType(collab_types::ArtifactKind::Note),
-                ui::permissions::Verb::Write,
-            ),
-        )
-        .expect("the harness owner lets the test agent answer in documents");
+    };
+    // In an app it was given actions of, Scribe takes exactly those: every
+    // other action there is refused, its documents stay its to answer in.
     for (app, resource, action) in actions {
-        workspace
-            .grant_as(
-                &principal,
-                ui::permissions::CapOverride::grant(
-                    ui::permissions::Subject::agent("scribe"),
-                    ui::permissions::Scope::Action {
-                        app: (*app).to_string(),
-                        resource: (*resource).to_string(),
-                        action: (*action).to_string(),
-                    },
-                    ui::permissions::Verb::Write,
-                ),
-            )
-            .expect("the harness owner grants a reviewed test action");
+        workspace.grant(tilo_action_policy::Grant::new(
+            format!("reviewed:{app}:other-actions"),
+            tilo_action_policy::Subject::agent("scribe"),
+            workspace
+                .node()
+                .app(*app)
+                .rest()
+                .any(tilo_action_policy::Level::Action),
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Deny,
+            owner.clone(),
+        ));
+        let node = workspace
+            .node()
+            .app(*app)
+            .rest()
+            .resource(*resource)
+            .rest()
+            .action(*action);
+        workspace.grant(everything(
+            format!("reviewed:{app}:{resource}:{action}"),
+            "scribe",
+            node,
+        ));
+    }
+    for (app, resource, action) in denied {
+        let node = workspace
+            .node()
+            .app(*app)
+            .rest()
+            .resource(*resource)
+            .rest()
+            .action(*action);
+        workspace.grant(tilo_action_policy::Grant::new(
+            format!("refused:{app}:{resource}:{action}"),
+            tilo_action_policy::Subject::agent("scribe"),
+            node,
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Deny,
+            owner.clone(),
+        ));
     }
     // App fixtures use the same agent-only endpoint as Scribe. Device
     // enrollment, room membership, and exact app authority remain separate.
     for host in ["ada", "photos", "files"] {
-        workspace
-            .grant_as(
-                &principal,
-                ui::permissions::CapOverride::membership(
-                    ui::permissions::Subject::agent(host),
-                    workspace.room.to_string(),
-                    ui::permissions::Verb::Write,
-                ),
-            )
-            .expect("the harness owner admits an app fixture");
+        workspace.admit_agent_preset(
+            host,
+            tilo_action_policy::roles::AgentPreset::Operator,
+            &owner,
+        );
     }
     // Integration fixtures exercise the canonical routes and the dev.tilo test
     // routes. Grant each observed route explicitly: the production capability
@@ -477,16 +274,8 @@ pub fn spawn_with_agent_actions(
         ("photos", "so.tilo.photos"),
         ("files", "so.tilo.file-explorer"),
     ] {
-        workspace
-            .grant_as(
-                &principal,
-                ui::permissions::CapOverride::grant(
-                    ui::permissions::Subject::agent(host),
-                    ui::permissions::Scope::App(app.to_string()),
-                    ui::permissions::Verb::Write,
-                ),
-            )
-            .expect("the harness owner grants an app fixture its own surface");
+        let node = workspace.node().app(app);
+        workspace.grant(everything(format!("fixture:{host}:{app}"), host, node));
     }
     let mut tree = shell::shell::state::WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);

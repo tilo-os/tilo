@@ -54,7 +54,7 @@ canvas-layer-mask-off = Switch the mask off
 canvas-layer-mask-on = Switch the mask on
 canvas-layer-paint-name = Paint { $name }
 canvas-layer-paint-mask-name = Paint the mask of { $name }
-canvas-layer-clip = Clip to the layer below
+canvas-command-layer-clip = Clip to the layer below
 canvas-medium-mask = Mask
 canvas-tool-eraser = Eraser
 canvas-colour = Colour
@@ -105,18 +105,18 @@ canvas-layer-unlock-name = Unlock { $name }
 canvas-layer-up = Raise layer
 canvas-layer-down = Lower layer
 canvas-layer-remove-name = Remove { $name }
-canvas-layer-opacity = Layer opacity
+canvas-label-layer-opacity = Layer opacity
 canvas-layer-opacity-value = Opacity { $percent }
-canvas-add-layer = Add layer
+canvas-command-add-layer = Add layer
 canvas-artwork = Artwork
 canvas-untitled = Untitled
-canvas-artwork-title = Artwork title
+canvas-label-artwork-title = Artwork title
 canvas-zoom-in = Zoom in
 canvas-zoom-out = Zoom out
 canvas-zoom-fit = Fit to window
 canvas-well = Brush loaded with { $paint }, { $size } wide
-canvas-artwork-width = Width
-canvas-artwork-height = Height
+canvas-label-artwork-width = Width
+canvas-label-artwork-height = Height
 canvas-ground = Ground
 canvas-ground-smooth = Smooth
 canvas-ground-paper = Paper
@@ -185,7 +185,7 @@ canvas-forward = Forward
 canvas-backward = Backward
 canvas-front = To front
 canvas-back = To back
-canvas-remove-marks = Remove
+canvas-command-remove-marks = Remove
 canvas-undo = Undo
 canvas-redo = Redo
 canvas-undo-run = Undo everything { $run } did
@@ -230,7 +230,7 @@ canvas-add-picture = Add picture
 canvas-add-picture-title = Add a picture
 canvas-add-picture-confirm = Add
 canvas-pictures = Pictures
-canvas-layer-adjust = Layer colour and tone
+canvas-label-layer-adjust = Layer colour and tone
 canvas-layer-adjust-show = Show the layer's adjustments
 canvas-layer-adjust-hide = Hide the layer's adjustments
 canvas-export = Export
@@ -264,7 +264,7 @@ canvas-menu-export = Export…
 canvas-menu-keys = Keyboard shortcuts
 canvas-menu-recent = Open { $name }
 canvas-export-open = Export a picture
-canvas-new-artwork = New artwork
+canvas-command-new-artwork = New artwork
 canvas-create = Create
 canvas-cancel = Cancel
 canvas-done = Done
@@ -357,7 +357,7 @@ canvas-export-no-selection = Select marks to export just them
 canvas-export-failed = Could not export: { $why }
 canvas-exported = Exported { $name }
 canvas-open-title = Open an artwork
-canvas-open = Open
+canvas-command-open = Open
 canvas-filter-artwork = Canvas artwork
 canvas-filter-svg = SVG drawing
 canvas-opened = Opened { $name }
@@ -400,3 +400,72 @@ canvas-size-pixel-32 = Sprite · 32 × 32
 canvas-size-pixel-64 = Sprite · 64 × 64
 canvas-size-pixel-128 = Scene · 128 × 128
 canvas-start-transparent = Transparent
+
+## History: what each change did, by field and by verb
+
+canvas-artwork-title = Titled the artwork { $new }
+canvas-artwork-width = Set the artwork's width
+canvas-artwork-height = Set the artwork's height
+canvas-artwork-ground = Changed the ground
+canvas-artwork-layers = Changed the layers
+canvas-artwork-marks = Changed the marks
+canvas-artwork-media = Changed the saved media
+canvas-artwork-reference = Changed the reference picture
+canvas-artwork-selection = Changed the selection
+canvas-layer-id = Renamed the id of { $item }
+canvas-layer-name = Renamed the layer { $item }
+canvas-layer-group = Filed { $item } in a folder
+canvas-layer-order = Moved { $item } among the layers
+canvas-layer-medium = Changed the medium of { $item }
+canvas-layer-opacity = Changed the opacity of { $item }
+canvas-layer-visible = { $new ->
+    [true] Showed { $item }
+   *[false] Hid { $item }
+}
+canvas-layer-texture = Changed how the ground shows through { $item }
+canvas-layer-locked = { $new ->
+    [true] Locked { $item }
+   *[false] Unlocked { $item }
+}
+canvas-layer-adjust = Adjusted the colour of { $item }
+canvas-layer-mask-of = Made { $item } a mask
+canvas-layer-base = Changed the mask of { $item }
+canvas-layer-invert = Inverted the mask of { $item }
+canvas-layer-clip = { $new ->
+    [true] Clipped { $item } to the layer below
+   *[false] Unclipped { $item }
+}
+canvas-layer-unlinked = { $new ->
+    [true] Kept the mask of { $item } in place
+   *[false] Moved the mask of { $item } with its layer
+}
+canvas-mark-id = Changed the id of a mark
+canvas-mark-layer = Moved { $item } to another layer
+canvas-mark-order = Restacked { $item }
+canvas-mark-name = Named a mark { $new }
+canvas-mark-shape = Reshaped { $item }
+canvas-mark-style = Restyled { $item }
+canvas-mark-transform = Moved { $item }
+canvas-mark-group = Grouped { $item }
+canvas-mark-clip = Clipped { $item }
+canvas-mark-area = Changed what { $item } fills
+canvas-paint = Painted
+canvas-draw = Drew
+canvas-edit-marks = Edited marks
+canvas-remove-marks = Removed marks
+canvas-arrange = Restacked marks
+canvas-add-layer = Added the layer { $name }
+canvas-edit-layer = Changed a layer
+canvas-remove-layer = Removed a layer
+canvas-set-artwork = Changed the artwork
+canvas-save-medium = Saved a medium
+canvas-remove-medium = Removed a medium
+canvas-align = Aligned marks
+canvas-set-reference = Changed the reference picture
+canvas-import-svg = Imported an SVG
+canvas-open-picture = Opened a picture
+canvas-new-artwork = Started a new artwork
+canvas-open-artwork = Opened an artwork
+canvas-select = Selected an area
+canvas-use-selection = Used the selection
+canvas-combine = Combined shapes

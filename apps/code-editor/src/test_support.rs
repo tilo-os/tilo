@@ -91,3 +91,21 @@ pub(crate) fn with_doc<T: 'static>(
     let result = out.borrow_mut().take();
     result.expect("the editor settled")
 }
+
+/// A collaborator's file `id` named `name` in `language`, holding `text`,
+/// written into `doc` as the project's own actions write one.
+pub(crate) fn peer_file(
+    doc: &mut automerge::AutoCommit,
+    id: &str,
+    name: &str,
+    language: &str,
+    text: &str,
+) {
+    use ui::tilo_actions::Action as _;
+    crate::actions::record_entry_action(id, crate::project::EntryKind::File, name, None, language)
+        .apply(doc)
+        .unwrap();
+    crate::actions::record_text_action(id, text)
+        .apply(doc)
+        .unwrap();
+}

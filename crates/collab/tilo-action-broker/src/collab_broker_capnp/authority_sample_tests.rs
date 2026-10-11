@@ -186,7 +186,7 @@ fn write_surface(room: &str) -> PublishedSurface {
             operation_kind: tilo_actions::OperationKind::Effect,
             params: Vec::new(),
             contract: tilo_actions::ActionContract {
-                permission: tilo_actions::PermissionRequirement::Write,
+                kind: tilo_actions::ActionKind::Undoable,
                 ..Default::default()
             },
             input: PublishedInput::None,
