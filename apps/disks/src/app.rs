@@ -3,8 +3,8 @@
 //! [`DisksApp`] is a [`NavShell`] window: the drive list is the sidebar and the
 //! selected drive is the content (see [`crate::view`]). This module owns what
 //! the shell cannot: this machine's probed [`Topology`], the selection, the
-//! tab and the transient result toast. The selection, the tab and the status
-//! are this window's own; the devices are live state, published as rows whose
+//! tab and the result status. The selection, the tab and the status are this
+//! window's own; the devices are live state, published as rows whose
 //! effects the app answers ([`crate::resource::DisksEffect`]).
 
 use std::cell::Cell;
@@ -15,21 +15,17 @@ use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, LiveRow, RunMo
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::time::{Duration, Instant};
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Point, Rect};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::vello::kurbo::Affine;
+use ui::widget::toast::ToastKind;
 use ui::widget::{AppModel, ModelPath, NavShell, Widget};
-use ui::winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use ui::winit::event::{ElementState, KeyEvent, WindowEvent};
 use ui::winit::keyboard::Key;
 
 use crate::model::{Drive, Topology};
 use crate::ops::{self, Op};
 use crate::resource::{Disks, DisksEffect};
 use crate::view::{self, DetailModel, Intent, Intents};
-
-/// How long a result toast stays before it hides itself.
-const TOAST_TTL: Duration = Duration::from_secs(5);
 
 impl ActionKind {
     /// The real operation this action maps to.
@@ -184,17 +180,6 @@ impl StatusTone {
     }
 }
 
-/// The result toast currently on screen.
-struct ToastState {
-    text: String,
-    tone: StatusTone,
-    shown: Instant,
-    /// A capture holds it so it is still there when the frame is taken.
-    pinned: bool,
-    /// The close control, from the last paint.
-    close: Rect,
-}
-
 /// What the shell currently shows, so it is rebuilt only when it changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ViewKey {
@@ -242,9 +227,6 @@ pub struct DisksApp {
     /// The detail page's scroll offset, kept across rebuilds.
     scroll: Rc<Cell<(f32, f32)>>,
     built: Option<ViewKey>,
-    toast: Option<ToastState>,
-    /// The pointer, for the toast's close control.
-    cursor: Point,
 }
 
 impl Default for DisksApp {
@@ -287,8 +269,6 @@ impl DisksApp {
             dirty: true,
             scroll: Rc::new(Cell::new((0.0, 0.0))),
             built: None,
-            toast: None,
-            cursor: Point::ZERO,
         }
     }
 
@@ -479,60 +459,8 @@ impl DisksApp {
     /// shows it once.
     fn report(&mut self, text: String, tone: StatusTone) {
         self.status.clone_from(&text);
-        self.toast = Some(ToastState {
-            text,
-            tone,
-            shown: ui::time::now(),
-            pinned: false,
-            close: Rect::ZERO,
-        });
+        self.shell.toast(text, tone.kind());
         self.dirty = true;
-    }
-
-    /// Show `text` as a held toast. Captures stage with it.
-    fn pin_status(&mut self, text: &str, tone: StatusTone) {
-        self.report(text.to_owned(), tone);
-        if let Some(toast) = self.toast.as_mut() {
-            toast.pinned = true;
-        }
-    }
-
-    fn toast_visible(&self) -> bool {
-        self.toast
-            .as_ref()
-            .is_some_and(|t| t.pinned || t.shown.elapsed() < TOAST_TTL)
-    }
-
-    /// Paint the result toast, if one is showing.
-    fn paint_toast(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        window: Rect,
-    ) {
-        if !self.toast_visible() {
-            self.toast = None;
-            return;
-        }
-        let Some(toast) = self.toast.as_mut() else {
-            return;
-        };
-        let close_hovered = toast.close.contains(self.cursor);
-        let card = ToastCard::new(&toast.text, toast.tone.kind())
-            .closable(true)
-            .close_hovered(close_hovered);
-        let hit = paint_transient(
-            scene,
-            transform,
-            text,
-            theme,
-            window,
-            ToastAnchor::BottomCenter,
-            &card,
-        );
-        toast.close = hit.close_rect;
     }
 
     // ---- interaction ---------------------------------------------------
@@ -619,9 +547,12 @@ impl DisksApp {
                 self.select(2);
                 self.set_tab(Tab::Smart);
             }
-            Some("toast") => self.pin_status("Mounted /dev/sdc1", StatusTone::Success),
+            Some("toast") => self.report("Mounted /dev/sdc1".into(), StatusTone::Success),
             Some("toast-error") => {
-                self.pin_status("Mount failed: the device is busy", StatusTone::Danger);
+                self.report(
+                    "Mount failed: the device is busy".into(),
+                    StatusTone::Danger,
+                );
             }
             _ => {}
         }
@@ -814,27 +745,6 @@ impl ui::widget::Decorator for DisksApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-        }
-        // The toast's close control.
-        if matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            }
-        ) && self
-            .toast
-            .as_ref()
-            .is_some_and(|t| t.close.contains(self.cursor))
-        {
-            self.toast = None;
-            self.dirty = true;
-            *ctx.handled = true;
-            return;
-        }
         self.shell.handle_event(event, ctx);
         self.drain_intents();
         if !*ctx.handled
@@ -875,20 +785,14 @@ impl ui::widget::Decorator for DisksApp {
     ) {
         self.shell
             .draw_overlay(scene, transform, text, theme, presence);
-        let window = presence
-            .viewport
-            .get()
-            .unwrap_or_else(|| self.shell.get_rect());
-        self.paint_toast(scene, transform, text, theme, window);
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames coming while a toast counts down.
-        self.toast.as_ref().is_some_and(|t| !t.pinned) || self.shell.needs_animation_frame()
+        self.shell.needs_animation_frame()
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.toast.is_some() || self.shell.needs_redraw()
+        self.dirty || self.shell.needs_redraw()
     }
 
     fn mark_drawn(&mut self) {
@@ -917,6 +821,7 @@ impl ui::widget::Decorator for DisksApp {
 mod tests {
     use super::*;
     use ui::headless::Framed;
+    use ui::vello::kurbo::{Point, Rect};
     use ui::widget::SidebarPlacement;
 
     fn sample_app() -> DisksApp {
@@ -1044,21 +949,14 @@ mod tests {
         );
     }
 
-    /// A result's tone comes from what happened, and the window announces it.
+    /// A result shows as a toast, and the window announces it.
     #[test]
-    fn results_toast_with_their_tone_and_are_announced() {
+    fn results_toast_and_are_announced() {
         let mut app = sample_app();
         app.report("Mounted /dev/sda1".into(), StatusTone::Success);
-        assert_eq!(
-            app.toast.as_ref().map(|t| t.tone),
-            Some(StatusTone::Success)
-        );
+        assert_eq!(app.shell.toast_text(), Some("Mounted /dev/sda1"));
         app.report("Mount failed: busy".into(), StatusTone::Danger);
-        assert_eq!(
-            app.toast.as_ref().map(|t| t.tone),
-            Some(StatusTone::Danger),
-            "a failure's tone comes from the result, not from its wording"
-        );
+        assert_eq!(app.shell.toast_text(), Some("Mount failed: busy"));
         let node = ui::widget::Decorator::accessibility(&app).expect("disks exports a window");
         assert_eq!(node.role, ui::a11y::Role::Window);
         assert!(

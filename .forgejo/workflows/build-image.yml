@@ -144,10 +144,12 @@ jobs:
   # 40 minutes after the commit lands, and main has usually moved on by then,
   # so a dispatch made once the collection exists finds a head it does not
   # match. Dispatch while Release / apps is publishing for the head instead:
-  # this job waits for every Release / apps main run that was queued or running
-  # when the dispatch was made, so `plan`, which reads the collection
-  # variables when it starts, sees what that run published. It decides
-  # nothing; `plan` still refuses a collection whose app inputs differ.
+  # this job waits for every Release / apps main run, pushed or dispatched,
+  # that was queued or running when the dispatch was made (on a quiet main,
+  # dispatch a full Release / apps publication first), so `plan`, which
+  # reads the collection variables when it starts, sees what that run
+  # published. It decides nothing; `plan` still refuses a collection whose
+  # app inputs differ.
   await-app-collection:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.app_collection_source == '' && github.event.inputs.signed_development_board != 'true'
     runs-on: runner-quality
@@ -175,7 +177,7 @@ jobs:
           since=$(get "$api/$GITHUB_RUN_ID" | jq -er '.created') || since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           deadline=$((SECONDS + 100 * 60))
           while :; do
-            publishing=$(get "$api?workflow_id=release-apps.yml&event=push&limit=50" | jq -r --arg since "$since" \
+            publishing=$(get "$api?workflow_id=release-apps.yml&limit=50" | jq -r --arg since "$since" \
               '[.workflow_runs[] | select(.prettyref == "main" and .created <= $since
                  and (.status == "running" or .status == "waiting" or .status == "blocked"))
                | .index_in_repo] | map(tostring) | join(" ")') || publishing=unknown
