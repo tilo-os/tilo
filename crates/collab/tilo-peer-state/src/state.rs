@@ -30,6 +30,7 @@ use backend::{LegacyNative, PeerCore, PeerDocument};
 mod local_admission;
 mod local_outbox;
 mod owner_membership;
+mod topology_namespace;
 mod workspace_effects;
 mod workspace_membership;
 mod workspace_permission_profile;
@@ -1448,11 +1449,51 @@ impl StatePeer {
         if let TransportOrigin::RetainedNativePublication { publisher } = origin {
             return self.receive_native_publication(publisher, message, now, true);
         }
+        if matches!(&message, NeighbourMsg::AppDocument { .. })
+            && let Some(report) = self.lookup_exact_document_report(origin, &message, now)?
+        {
+            return Ok(report);
+        }
         let (source, retained_replay) = self.resolve_origin(origin, &message, now)?;
         let mut candidate = self.clone();
         let report = candidate.receive_with_context(source, message, now, retained_replay, true)?;
         *self = candidate;
         Ok(report)
+    }
+
+    /// Authenticate an already recorded document without copying mutable state.
+    /// The report observes the existing admission, never a new commit barrier.
+    ///
+    /// # Errors
+    /// Current publisher authority, transport, route or signature is invalid.
+    pub fn lookup_exact_document_report(
+        &self,
+        origin: TransportOrigin,
+        message: &NeighbourMsg,
+        now: SystemTime,
+    ) -> Result<Option<AdmissionReport>, AdmissionError> {
+        if !self.core.admission_v5 {
+            return Err(AdmissionError::WriterSelectionRequired);
+        }
+        if let Some(publisher) = self.core.native_cut_publisher {
+            self.validate_native_publisher(publisher, now)?;
+        }
+        let (source, _) = self.resolve_origin(origin, message, now)?;
+        if self.core.room_doc.is_none() || !self.core.certificates.contains_key(&source) {
+            return Ok(None);
+        }
+        self.lookup_exact_document(origin, message, now)
+            .map(|exact| {
+                exact.map(|admitted| {
+                    AdmissionReport::new(
+                        InputDisposition::Duplicate(admitted),
+                        ReceiveOutcome {
+                            duplicate: true,
+                            ..Default::default()
+                        },
+                    )
+                })
+            })
     }
 
     /// A read-only exact retry lookup. Current authority and signature/route still

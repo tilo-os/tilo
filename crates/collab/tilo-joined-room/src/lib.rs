@@ -547,13 +547,41 @@ impl NativeWorkspaceOwner {
             return Err("native owner admits only workspace state messages".into());
         }
         let _turn = self.0.mutation.lock();
+        if matches!(&message, NeighbourMsg::AppDocument { .. })
+            && !matches!(origin, TransportOrigin::RetainedNativePublication { .. })
+            && let Some(report) = self.with_current(room, |view| {
+                let exact = view
+                    .peer
+                    .lookup_exact_document_report(origin, &message, now)
+                    .map_err(|error| error.to_string())?;
+                if exact.is_some() && publication::exact_replay_unchanged(view)? {
+                    Ok(exact)
+                } else {
+                    Ok(None)
+                }
+            })?
+        {
+            return Ok(report);
+        }
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         let report = candidate
             .peer
             .receive_from_report(origin, message, now)
             .map_err(|e| e.to_string())?;
+        let previous_publication = candidate.record.publication.clone();
         publication::retire(&mut candidate)?;
-        candidate.record.peer = candidate.peer.durable()?;
+        publication::refresh_governance_checkpoint(&mut candidate)?;
+        let durable = candidate.peer.durable()?;
+        // Authentication and causal admission still run for every replay.
+        // Reuse the actual committed barrier only when both durable peer
+        // state and outgoing custody are byte-for-byte unchanged. In
+        // particular, newly settled prerequisites or retired obligations
+        // still require publication before they can be observed.
+        if durable == candidate.record.peer && candidate.record.publication == previous_publication
+        {
+            return Ok(report);
+        }
+        candidate.record.peer = durable;
         candidate.record.generation = candidate
             .record
             .generation

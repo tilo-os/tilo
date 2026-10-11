@@ -209,13 +209,15 @@ impl ShellNetwork {
         let Ok(command) = serde_json::to_string(&bound) else {
             return;
         };
-        let answer = self.invoke_governor(
-            room,
-            tilo_desktop_model::commands::APP_ID,
-            tilo_desktop_model::commands::RESOURCE,
-            tilo_desktop_model::commands::ACTION,
-            Some(serde_json::json!({ "command": command })),
-        );
+        let answer = self.claim_namespace_at_host(room, salt).unwrap_or_else(|| {
+            self.invoke_governor(
+                room,
+                tilo_desktop_model::commands::APP_ID,
+                tilo_desktop_model::commands::RESOURCE,
+                tilo_desktop_model::commands::ACTION,
+                Some(serde_json::json!({ "command": command })),
+            )
+        });
         let Some(runtime) = self.runtime.as_ref() else {
             return;
         };

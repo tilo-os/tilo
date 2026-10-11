@@ -23,6 +23,7 @@ struct Enrolled {
     owner: NativeWorkspaceOwner,
     room: RoomId,
     now: SystemTime,
+    replay: NeighbourMsg,
 }
 
 /// Enroll through the file store and admit the governor's history.
@@ -35,6 +36,12 @@ fn enrolled() -> Enrolled {
     let enrollment = crate::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
     let room = RoomId::parse(ROOM).unwrap();
+    let replay = messages
+        .iter()
+        .rev()
+        .find(|message| matches!(message, NeighbourMsg::AppDocument { .. }))
+        .expect("fixture has signed app state")
+        .clone();
     for message in messages.into_iter().skip(1) {
         owner
             .receive(
@@ -51,6 +58,7 @@ fn enrolled() -> Enrolled {
         owner,
         room,
         now,
+        replay,
     }
 }
 
@@ -1824,4 +1832,45 @@ fn legacy_int_array_owner_file_still_loads() {
         rewritten
     );
     assert_eq!(state(&reread), after);
+}
+
+#[test]
+fn retained_replay_reuses_exact_committed_publication() {
+    let joined = enrolled();
+    let governor = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.governor().device_public_key))
+        .unwrap();
+    let message = joined.replay.clone();
+    let before = std::fs::read(&joined.path).unwrap();
+    let generation = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.generation()))
+        .unwrap();
+    let report = joined
+        .owner
+        .receive(
+            joined.room,
+            TransportOrigin::RetainedRelayDelta(governor),
+            message,
+            joined.now,
+        )
+        .unwrap();
+    assert!(matches!(
+        report.primary(),
+        tilo_peer_state::InputDisposition::Duplicate(_)
+    ));
+    assert_eq!(
+        joined
+            .owner
+            .with_current(joined.room, |view| Ok(view.generation()))
+            .unwrap(),
+        generation,
+        "an unchanged authenticated replay must reuse the actual committed generation"
+    );
+    assert_eq!(
+        std::fs::read(&joined.path).unwrap(),
+        before,
+        "an unchanged authenticated replay must not rewrite durable owner state"
+    );
 }

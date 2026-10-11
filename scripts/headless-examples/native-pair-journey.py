@@ -38,8 +38,9 @@ spec.loader.exec_module(packaged)
 
 
 class Fixture:
-    def __init__(self, output, binaries, pipewire):
+    def __init__(self, output, binaries, pipewire, routing_diagnostics=False):
         self.output, self.binaries, self.pipewire = output, binaries, pipewire
+        self.routing_diagnostics = routing_diagnostics
         self.root_owner = tempfile.TemporaryDirectory(prefix="tilo-native-pair-")
         self.root = pathlib.Path(self.root_owner.name)
         self.root.chmod(0o700)
@@ -77,6 +78,12 @@ class Fixture:
                "TILO_LAUNCHER_BIN": str(self.binaries / "tilo-launcher"),
                "RUST_LOG": "warn,tilo_joined_room::voice=debug,tilo_media::voice::gst=debug,shell::network::native_media=debug,shell::shell::native_media=debug,tilo_action_broker::collab_broker_capnp::native_media=debug",
                "GST_DEBUG": "pipewiresrc:6,pipewirecore:5,appsink:5,opusenc:5,basesink:5,basesrc:6"}
+        if self.routing_diagnostics:
+            env["TILO_RELAY_PHASE_DIAGNOSTICS"] = "1"
+            env["TILO_RELAY_CORRELATED_DIAGNOSTICS"] = "1"
+            env["RUST_LOG"] += (",tilo_relay::peer=info,tilo_relay::rooms=debug,tilo_relay::native_publication=debug"
+                                ",shell::network::actor=debug"
+                                ",shell::shell::network::native_ingress=debug")
         if self.pipewire is not None:
             env["GST_PLUGIN_PATH"] = str(self.pipewire / "usr/lib64/gstreamer-1.0")
         else:
@@ -310,9 +317,40 @@ class Fixture:
     def act(self, session, room, operation, args=None, resource=None):
         socket, process = session
         row = self.operation(socket, room, operation, process, resource)
-        receipt = packaged.wait_terminal(socket, packaged.invoke(socket, row, args), process,
-                                        public_failure_path=self.output / f"failed-{operation}.json")
+        acknowledgement = packaged.invoke(socket, row, args)
+        failure_path = self.output / f"failed-{operation}.json"
+        try:
+            receipt = packaged.wait_terminal(socket, acknowledgement, process,
+                                            public_failure_path=failure_path)
+        except RuntimeError:
+            if not failure_path.exists():
+                # Public, test-owned operations only. Observe the original job;
+                # never re-invoke it or export arguments/results on timeout.
+                initial = acknowledgement.get("receipt", {})
+                job = initial.get("broker_invocation_id")
+                observation = {"observation": "terminal_not_observed",
+                               "action": packaged.public_action_observation(row),
+                               "original": self.action_status(initial)}
+                if type(job) is int and job > 0 and process.poll() is None:
+                    try:
+                        status = call(socket, {"op": "actions_status", "invocation_id": job})
+                        observation["last"] = self.action_status(status.get("answer", {}).get("receipt", {}))
+                        error = status.get("err")
+                        if isinstance(error, dict):
+                            observation["status_error"] = {key: value[:4096] for key, value in error.items()
+                                                           if key in {"code", "message"} and isinstance(value, str)}
+                    except Exception as diagnostic_error:
+                        observation["status_unobservable"] = type(diagnostic_error).__name__
+                failure_path.write_text(json.dumps(observation, indent=2) + "\n")
+            raise
         return receipt.get("update", {}).get("output", {}).get("value")
+
+    @staticmethod
+    def action_status(receipt):
+        update = receipt.get("update") or {}
+        return {"broker_invocation_id": receipt.get("broker_invocation_id"),
+                "invocation": update.get("invocation"), "state": update.get("state")}
+
 
     def shared_state(self, sessions, room):
         alice, bob = sessions["alice"], sessions["bob"]
@@ -828,7 +866,9 @@ class Fixture:
             before = packaged.presented_primary_frame(call(session[0], {"op": "foreign_frames"}), "so.tilo.chat")
             if before is None:
                 raise RuntimeError("native app disappeared before state rendering")
-            self.act(session, room, "open-channel", resource=channels(session[0])[early])
+            resource = packaged.wait_for("current exact channel navigation action",
+                                         lambda: channels(session[0]).get(early), session[1])
+            self.act(session, room, "open-channel", resource=resource)
             def painted():
                 frame = packaged.presented_primary_frame(call(session[0], {"op": "foreign_frames"}), "so.tilo.chat")
                 return frame if frame and frame["frame_seq"] > before["frame_seq"] else None
@@ -1040,6 +1080,8 @@ def main():
                         help="private extracted PipeWire server/config/plugin payload")
     parser.add_argument("--cleanup-proof", action="store_true", help="test exact private daemon cleanup without launching Chat")
     parser.add_argument("--voice-proof", action="store_true", help="test governed native voice without qualifying follow or the combined pair")
+    parser.add_argument("--routing-diagnostics", action="store_true",
+                        help="retain existing relay phase diagnostics in this fixture's private logs")
     parser.add_argument("--state-proof", action="store_true",
                         help="qualify native app state independently of voice and following")
     parser.add_argument("--automatic-opening-proof", action="store_true",
@@ -1077,7 +1119,8 @@ def main():
                    and "ro" in row.split()[5].split(",") for row in mounts):
             raise RuntimeError("canonical OS font namespace is not read-only")
     args.out.mkdir(parents=True, exist_ok=False, mode=0o700)
-    fixture = Fixture(args.out.resolve(), args.binaries.resolve(), args.pipewire.resolve() if args.pipewire else None)
+    fixture = Fixture(args.out.resolve(), args.binaries.resolve(), args.pipewire.resolve() if args.pipewire else None,
+                      routing_diagnostics=args.routing_diagnostics)
     qualified, state_qualified, error = False, False, None
     try:
         if args.cleanup_proof:
@@ -1101,6 +1144,7 @@ def main():
             "mode": f"same-person-{continuity}-proof" if continuity else "native-app-state-proof" if args.state_proof else "cleanup-proof" if args.cleanup_proof else "native-voice-proof" if args.voice_proof else "native-pair",
             "error": error, "cleanup_error": cleanup_error, "stages": fixture.stages,
             "real_microphone": False, "video_screen_sharing": False,
+            "routing_diagnostics": args.routing_diagnostics,
             "same_person_devices_qualified": state_qualified and continuity is not None,
             "automatic_peer_app_launch_qualified": state_qualified and continuity == "automatic",
             "offline_reconnect_qualified": state_qualified and continuity == "reconnect",

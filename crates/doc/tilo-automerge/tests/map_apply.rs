@@ -20,29 +20,12 @@ use automerge::legacy::{Key, ObjectId, Op, OpId, OpType, SortedVec};
 use automerge::transaction::Transactable;
 use automerge::{
     ActorId, AutoCommit, Change, ChangeHash, ExpandedChange, ObjId, ObjType, ROOT, ReadDoc,
-    ScalarValue,
+    ScalarValue, TextEncoding,
 };
 use tilo_automerge::ApplyIncoming;
 
-/// xorshift64*: a reproducible stream per seed.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
-    }
-
-    fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
-        &items[self.below(items.len() as u64) as usize]
-    }
-}
+mod upstream;
+use upstream::{Replica, Rng, agrees_with_upstream};
 
 const KEYS: &[&str] = &["a", "b", "desktop", "k1", "k2", "k3", "zz"];
 
@@ -172,101 +155,23 @@ fn forged(doc: &mut AutoCommit, forgers: &mut u8) -> Option<Change> {
     Some(Change::from(change))
 }
 
-/// Deliveries of the changes: mostly one to three at a time, sometimes a
-/// burst, sometimes two neighbours swapped so one arrives before its
-/// dependency and waits in the queue.
-fn deliveries(changes: &[Vec<u8>], rng: &mut Rng) -> Vec<Vec<u8>> {
-    let mut order: Vec<&Vec<u8>> = changes.iter().collect();
-    for i in 1..order.len() {
-        if rng.below(12) == 0 {
-            order.swap(i - 1, i);
-        }
-    }
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < order.len() {
-        let n = if rng.below(25) == 0 {
-            40
-        } else {
-            1 + rng.below(3) as usize
-        };
-        out.push(
-            order[i..(i + n).min(order.len())]
-                .iter()
-                .copied()
-                .flatten()
-                .copied()
-                .collect(),
-        );
-        i += n;
-    }
-    out
-}
-
-fn heads_hex(heads: impl IntoIterator<Item = String>) -> Vec<String> {
-    let mut heads: Vec<String> = heads.into_iter().collect();
-    heads.sort();
-    heads
-}
-
-/// Feeds the same deliveries to the fork and to crates.io automerge 0.12.0
-/// and asserts they agree after every one.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "upstream automerge is the reference here, called as it ships"
-)]
-fn agrees_with_upstream(seed: u64, steps: usize, diff: bool) {
+fn agrees(seed: u64, steps: usize, diff: bool) {
     let (base, changes) = history(seed, steps);
-    let mut rng = Rng(seed ^ 0x5555);
-    let mut ours = AutoCommit::load(&base).unwrap();
-    let mut theirs = upstream_automerge::AutoCommit::load(&base).unwrap();
-    if diff {
-        ours.update_diff_cursor();
-        theirs.update_diff_cursor();
-    }
-    for (n, delivery) in deliveries(&changes, &mut rng).iter().enumerate() {
-        let ours_ok = ours.load_incoming(delivery).map_err(|e| e.to_string());
-        let theirs_ok = theirs.load_incremental(delivery).map_err(|e| e.to_string());
-        assert_eq!(ours_ok, theirs_ok, "seed {seed}: delivery {n} result");
-        assert_eq!(
-            heads_hex(ours.get_heads().iter().map(ToString::to_string)),
-            heads_hex(theirs.get_heads().iter().map(ToString::to_string)),
-            "seed {seed}: heads after delivery {n}"
-        );
-        if diff {
-            assert_eq!(
-                format!("{:?}", ours.diff_incremental()),
-                format!("{:?}", theirs.diff_incremental()),
-                "seed {seed}: patches of delivery {n}"
-            );
-        }
-        if n % 16 == 0 {
-            assert_eq!(
-                ours.save(),
-                theirs.save(),
-                "seed {seed}: document after delivery {n}"
-            );
-        }
-    }
-    assert_eq!(ours.save(), theirs.save(), "seed {seed}: final document");
-    assert_eq!(
-        ours.save_nocompress(),
-        theirs.save_nocompress(),
-        "seed {seed}: final document, uncompressed"
-    );
+    let encoding = TextEncoding::UnicodeCodePoint;
+    agrees_with_upstream(seed, &base, &changes, Replica { diff, encoding });
 }
 
 #[test]
 fn incoming_map_changes_match_upstream() {
     for seed in 1..=6 {
-        agrees_with_upstream(seed, 1_500, false);
+        agrees(seed, 1_500, false);
     }
 }
 
 #[test]
 fn incoming_map_patches_match_upstream() {
     for seed in 101..=104 {
-        agrees_with_upstream(seed, 1_500, true);
+        agrees(seed, 1_500, true);
     }
 }
 

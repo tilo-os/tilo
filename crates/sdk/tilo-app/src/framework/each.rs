@@ -904,6 +904,22 @@ impl<R: Resource> Widget for Each<R> {
         });
     }
 
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        permissions: &ui_core::permissions::PermissionContext,
+    ) {
+        self.remounts = 0;
+        self.for_each_mounted(|view| {
+            view.widget
+                .draw_with_presence(scene, transform, text, theme, presence, permissions);
+        });
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui_core::widget::EventCtx<'_>) {
         if self.menu_event(event, ctx) {
             return;

@@ -1834,6 +1834,32 @@ impl Renderer {
         self.engine.clear_pool();
     }
 
+    /// Hand back scratch a busier scene needed once the scene has stayed
+    /// smaller (off by default): pooled buffers no render has taken for a
+    /// while are destroyed, and the bump reservation comes down to a few
+    /// times what recent dense frames used. Without it a renderer that once
+    /// drew a busy scene keeps that scene's working memory for good.
+    pub fn set_shrink_scratch(&mut self, enabled: bool) {
+        self.budget.set_shrink(enabled);
+        self.engine
+            .set_pool_keep(enabled.then_some(wgpu_engine::POOL_KEEP_RECORDINGS));
+    }
+
+    /// The scene got smaller for good (a window closed): with
+    /// [`Self::set_shrink_scratch`], scratch comes down within the next few
+    /// renders rather than after a hundred, so a desktop that goes idle
+    /// gives the memory back.
+    pub fn shrink_scratch_soon(&mut self) {
+        self.budget.shrink_soon();
+        self.engine.shrink_pool_soon();
+    }
+
+    /// Times the bump reservation shrank ([`Self::set_shrink_scratch`]):
+    /// each dropped every buffer pooled at the larger sizes.
+    pub fn scratch_shrinks(&self) -> u64 {
+        self.budget.shrinks()
+    }
+
     /// Whether shared compute-pass encoding is effective for future recordings.
     ///
     /// This is enabled by default in release GPU rendering. Full CPU and
@@ -2490,7 +2516,7 @@ impl Renderer {
             &mut self.profiler,
         )?;
         if let Some(bump_buf) = bump_buf {
-            self.budget.begin_readback(&self.engine, bump_buf);
+            self.budget.begin_dense_readback(&self.engine, bump_buf);
         }
         self.last_canonical_segment_order_selected = canonical_segment_order_selected;
         self.last_area_ppt8_selected = area_ppt8_selected;
@@ -2575,7 +2601,7 @@ impl Renderer {
             &mut self.profiler,
         )?;
         if let Some(bump_buf) = bump_buf {
-            self.budget.begin_readback(&self.engine, bump_buf);
+            self.budget.begin_dense_readback(&self.engine, bump_buf);
         }
         self.last_canonical_segment_order_selected = canonical;
         self.last_area_ppt8_selected = ppt8;
@@ -6258,6 +6284,163 @@ mod tests {
             }
         }
         panic!("dense reference remained overflowed after bounded recovery");
+    }
+
+    const SCRATCH_SIDE: u32 = 512;
+
+    fn scratch_params() -> RenderParams {
+        RenderParams {
+            base_color: Color::TRANSPARENT,
+            width: SCRATCH_SIDE,
+            height: SCRATCH_SIDE,
+            antialiasing_method: AaConfig::Area,
+        }
+    }
+
+    /// Eight bands of long zigzags: far more path segments than a 512x512
+    /// viewport's floors reserve, so the bump reservation grows for them.
+    fn busy_scene() -> Scene {
+        let mut scene = Scene::new();
+        for band in 0..8_u32 {
+            let top = 4.0 + f64::from(band) * 63.0;
+            let mut path = BezPath::new();
+            path.move_to((8.0, top));
+            for i in 0..2000_u32 {
+                let x = if i % 2 == 0 { 504.0 } else { 8.0 };
+                path.line_to((x, top + f64::from(i) * 0.03));
+            }
+            path.close_path();
+            scene.fill(Fill::NonZero, Affine::IDENTITY, Color::WHITE, None, &path);
+        }
+        scene
+    }
+
+    /// What is left once the busy part is gone: a backdrop and one shape.
+    fn light_scene() -> Scene {
+        let side = f64::from(SCRATCH_SIDE);
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(0x1A, 0x1B, 0x26),
+            None,
+            &Rect::new(0.0, 0.0, side, side),
+        );
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::WHITE,
+            None,
+            &kurbo::Circle::new((side / 2.0, side / 2.0), side / 5.0),
+        );
+        scene
+    }
+
+    /// A renderer as a compositor makes one: segments summed in a fixed
+    /// order, so repeated renders of a scene are bit-identical, and scratch
+    /// shrinking as `shrink` says.
+    fn scratch_renderer(device: &Device, shrink: bool) -> Renderer {
+        let mut renderer = Renderer::new(device, RendererOptions::default()).unwrap();
+        renderer.enable_canonical_segment_order(device).unwrap();
+        renderer.set_shrink_scratch(shrink);
+        renderer
+    }
+
+    /// Render `scene` densely into `target`, overflow recovery included, and
+    /// read the pixels back.
+    fn scratch_pixels(
+        renderer: &mut Renderer,
+        device: &Device,
+        queue: &Queue,
+        target: &(wgpu::Texture, TextureView),
+        scene: &Scene,
+    ) -> Vec<u8> {
+        render_dense_with_recovery(renderer, device, queue, scene, &target.1, &scratch_params());
+        readback_texture_rows(device, queue, &target.0, SCRATCH_SIDE, SCRATCH_SIDE).0
+    }
+
+    // Catches scratch that stays sized for the busiest scene a renderer
+    // drew, and a shrink that changes a pixel of the lighter scene or of the
+    // busy one drawn again after it.
+    #[test]
+    fn shrunk_scratch_draws_the_same_pixels_and_holds_less() {
+        let (device, queue) = checked_bump_device();
+        let target = damage_target_with_size(&device, &queue, SCRATCH_SIDE, SCRATCH_SIDE);
+        let mut renderer = scratch_renderer(&device, true);
+        let busy = scratch_pixels(&mut renderer, &device, &queue, &target, &busy_scene());
+        let at_peak = renderer.memory_stats();
+        renderer.shrink_scratch_soon();
+        let mut light = Vec::new();
+        for _ in 0..3 {
+            light = scratch_pixels(&mut renderer, &device, &queue, &target, &light_scene());
+        }
+        let after = renderer.memory_stats();
+        let shrinks = renderer.scratch_shrinks();
+        assert_eq!(shrinks, 1, "one shrink, two frames into the light scene");
+        assert!(
+            after.bump_budget_bytes * 8 <= at_peak.bump_budget_bytes * 7,
+            "the reservation came down: {} bytes at the busy scene, {} after",
+            at_peak.bump_budget_bytes,
+            after.bump_budget_bytes,
+        );
+        assert!(
+            after.pooled_buffer_bytes < at_peak.pooled_buffer_bytes,
+            "the pool came down: {} bytes at the busy scene, {} after",
+            at_peak.pooled_buffer_bytes,
+            after.pooled_buffer_bytes,
+        );
+        let mut fresh = scratch_renderer(&device, false);
+        let reference = scratch_pixels(&mut fresh, &device, &queue, &target, &light_scene());
+        let alike = light == reference;
+        assert!(alike, "the shrunk renderer draws the light scene alike");
+        // The busy scene drawn again fits what one shrink left: its first
+        // frame renders whole, without an overflow to repaint.
+        renderer
+            .render_to_texture(&device, &queue, &busy_scene(), &target.1, &scratch_params())
+            .unwrap();
+        let overflowed = renderer.settle_bump_budget(&device);
+        assert!(
+            !overflowed,
+            "the busy scene's first frame after the shrink overflowed"
+        );
+        let again = readback_texture_rows(&device, &queue, &target.0, SCRATCH_SIDE, SCRATCH_SIDE);
+        assert!(again.0 == busy, "and draws the busy scene alike");
+    }
+
+    // Catches size classes a busier scene asked for kept in the pool for
+    // good: a renderer that opted in destroys what no recording takes, and
+    // keeps exactly what each frame takes.
+    #[test]
+    fn pooled_buffers_no_recording_takes_are_destroyed() {
+        let (device, queue) = checked_bump_device();
+        let target = damage_target_with_size(&device, &queue, SCRATCH_SIDE, SCRATCH_SIDE);
+        let pooled_after = |shrink: bool, first: Option<&Scene>, frames: u64| {
+            let mut renderer = scratch_renderer(&device, shrink);
+            if let Some(first) = first {
+                scratch_pixels(&mut renderer, &device, &queue, &target, first);
+            }
+            for _ in 0..frames {
+                render_dense_with_recovery(
+                    &mut renderer,
+                    &device,
+                    &queue,
+                    &light_scene(),
+                    &target.1,
+                    &scratch_params(),
+                );
+            }
+            renderer.memory_stats().pooled_buffer_bytes
+        };
+        let frames = wgpu_engine::POOL_KEEP_RECORDINGS + 1;
+        let light_only = pooled_after(true, None, frames);
+        // The zigzag stays within the viewport's floors: only the classes
+        // its encoding asked for differ from the light scene's.
+        let zigzag = zigzag_scene();
+        assert!(
+            pooled_after(false, Some(&zigzag), frames) > light_only,
+            "upstream keeps the zigzag's classes, so this test can see them go"
+        );
+        assert_eq!(pooled_after(true, Some(&zigzag), frames), light_only);
     }
 
     fn solid_scene() -> Scene {

@@ -28,7 +28,6 @@ use ui::chrome::SelectionState;
 use ui::format::bytes as format_bytes;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -5224,19 +5223,6 @@ impl Widget for MapsApp {
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.motion_reduced = reduced;
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        // Root fills the window — never cull.
-        self.draw(scene, transform, text_renderer, theme, presence);
     }
 }
 

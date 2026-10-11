@@ -52,7 +52,6 @@ mod tests;
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -3115,19 +3114,6 @@ impl Widget for CodeApp {
                 t.draw(scene, transform, text_renderer, theme, presence);
             }
         }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        // Root spans the whole window — always paint.
-        self.draw(scene, transform, text_renderer, theme, presence);
     }
 
     /// The top layer: the open question, over the whole window.

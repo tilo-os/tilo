@@ -22,6 +22,8 @@ pub(crate) mod live_interaction;
 mod native_enrollment;
 mod native_ingress;
 #[cfg(test)]
+mod native_replay_budget_tests;
+#[cfg(test)]
 mod paired_continuity_tests;
 mod personal_device_peers;
 #[cfg(test)]
@@ -6275,8 +6277,8 @@ impl ShellNetwork {
 
     /// Drain a bounded batch of pending [`NetEvent`]s from the actor, forward `Msg`
     /// variants into the replica's `handle`, and publish each resulting
-    /// outbound message via `cmd_tx`. Non-blocking — never stalls the
-    /// render loop even on a starved channel.
+    /// outbound message via `cmd_tx`. Transport polling never blocks; durable
+    /// native admission yields after one event so replay cannot monopolize a turn.
     pub fn tick(&self) {
         self.remote_action_replies.expire(std::time::Instant::now());
         self.note_session_reachability(false);
@@ -6299,7 +6301,14 @@ impl ShellNetwork {
             let Ok(event) = event_rx.try_recv() else {
                 break;
             };
+            let native_admission = matches!(&event, NetEvent::NativeInput(_));
             self.dispatch_net_event(event);
+            // Signed replay may cross a durable writer and publish app state.
+            // Leave the remaining FIFO queued until the next UI turn, where
+            // control requests can progress between actual admissions.
+            if native_admission {
+                break;
+            }
         }
     }
 

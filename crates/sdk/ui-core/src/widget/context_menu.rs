@@ -243,6 +243,11 @@ pub struct ContextMenu {
     /// `MouseInput` carries no position, so this is tracked from
     /// `CursorMoved` to map a press to a row.
     last_cursor: Point,
+    /// Where the menu was opened at the pointer, until the pointer moves
+    /// away from there. A host repeats a still pointer's position after a
+    /// rebuild ([`crate::pointer_replay`]); that repeat is not the person
+    /// pointing at a row, so it leaves the keyboard's row where it is.
+    opened_under: Option<Point>,
     /// Set by `handle_event`, drained by [`ContextMenu::take_selection`].
     /// The `&mut self` + CRDT-friendly action channel: instead of forcing
     /// every menu action through an `Arc<dyn Fn()>` (which can't splice
@@ -291,6 +296,7 @@ impl ContextMenu {
             rect: Rect::ZERO,
             hovered: None,
             last_cursor: Point::ZERO,
+            opened_under: None,
             selection: None,
             bounds: None,
             row_height: ROW_HEIGHT,
@@ -374,6 +380,7 @@ impl ContextMenu {
         self.bounds = None;
         self.scroll_offset = 0.0;
         self.open = true;
+        self.opened_under = Some(Point::new(f64::from(position[0]), f64::from(position[1])));
         self.position = Some(position);
         self.measured_width = MENU_WIDTH * self.text_scale;
         self.row_height = ROW_HEIGHT * self.text_scale;
@@ -429,6 +436,7 @@ impl ContextMenu {
     /// call `layout_within` with the renderer before painting to settle text metrics.
     pub fn open_anchored(&mut self, anchor: Rect, viewport: Rect) {
         self.open = true;
+        self.opened_under = None;
         self.hovered = None;
         self.scroll_offset = 0.0;
         self.reanchor(anchor, viewport);
@@ -704,6 +712,7 @@ impl ContextMenu {
     /// Safe to call when already closed.
     pub fn close(&mut self) {
         self.open = false;
+        self.opened_under = None;
         self.active_touch = None;
         self.anchor_row = None;
         self.submenu = None;
@@ -1060,6 +1069,10 @@ const SEPARATOR_HEIGHT: f64 = 9.0;
 )]
 const ANCHOR_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
 const MENU_WIDTH: f64 = 220.0;
+/// How far, in logical pixels, the pointer may be from where the menu opened
+/// and still count as not having moved: the opening position went through
+/// `f32`, the pointer's did not.
+const STILL_POINTER: f64 = 0.5;
 /// The panel's vertical inset around its rows: the `s2` menu inset
 /// (`floating_surface::menu_inset`), so the armed row runs concentric with
 /// the panel at the top and bottom too.
@@ -1414,6 +1427,15 @@ impl Widget for ContextMenu {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                // Hover follows the pointer once it moves; until then the
+                // row the menu opened on (or the keyboard moved to) stays.
+                if self
+                    .opened_under
+                    .is_some_and(|at| at.distance(self.last_cursor) <= STILL_POINTER)
+                {
+                    return;
+                }
+                self.opened_under = None;
                 self.hovered = self
                     .item_at([self.last_cursor.x, self.last_cursor.y])
                     .filter(|index| self.items[*index].is_enabled());

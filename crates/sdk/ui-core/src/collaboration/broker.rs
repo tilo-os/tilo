@@ -3060,6 +3060,9 @@ impl CollaborationManager {
             cluster_id,
             record,
         } = route;
+        // The connect's phases, so a launch's startup file splits it from the
+        // rest of the time before `app-prepare`.
+        tilo_startup_metrics::startup_mark("collab-connect");
         let mut identity = match endpoint_identity {
             Some(identity) => Some(identity),
             None if matches!(&source, SdkConnectSource::Host(_, _)) => None,
@@ -3075,7 +3078,9 @@ impl CollaborationManager {
         if let Some(identity) = &mut identity {
             identity.participant_kind = participant_kind;
         }
+        tilo_startup_metrics::startup_mark("collab-identity-ready");
         let mut transport = Self::spawn_sdk(source, identity)?;
+        tilo_startup_metrics::startup_mark("collab-transport-ready");
         let mut primary_route = PrimaryRouteState::default();
         primary_route.announce(RouteSpec {
             app_id: app_id.clone(),
@@ -3090,6 +3095,7 @@ impl CollaborationManager {
             handle,
         }));
         await_primary_route_on(&mut transport, &mut primary_route)?;
+        tilo_startup_metrics::startup_mark("collab-primary-ready");
         Ok(ConnectedBroker {
             transport,
             primary_route,
@@ -3991,15 +3997,19 @@ async fn drive_shovel(
                     Err(_) => Err(PRIMARY_ROUTE_TIMED_OUT.to_string()),
                 };
                 primary = primary_result.is_ok().then_some(key);
+                // The startup file splits the owner's wait for `PrimaryReady`.
+                tilo_startup_metrics::startup_mark("collab-route-joined");
                 if let Some(route) = primary.as_ref().and_then(|key| routes.get(key)) {
                     settings_link = link_settings(&route.channel, &inbound_tx).await;
                     if let Some(link) = settings_link.as_ref() {
                         link.flush(&inbound_tx).await;
                     }
+                    tilo_startup_metrics::startup_mark("collab-settings-linked");
                     live_activity_link = link_live_activity(&route.channel, &inbound_tx).await;
                     if let Some(link) = live_activity_link.as_ref() {
                         link.flush(true).await;
                     }
+                    tilo_startup_metrics::startup_mark("collab-activity-linked");
                 }
             }
             SdkCommand::Primary(request) => {

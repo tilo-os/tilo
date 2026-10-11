@@ -337,20 +337,32 @@ impl Lease {
 
     #[cfg(target_os = "linux")]
     pub(super) fn register_sandbox(&mut self, pid: u32) -> std::io::Result<()> {
+        self.register_in(pid, &PUBLISHED, crate::shell::durable_writer::global())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn register_in(
+        &mut self,
+        pid: u32,
+        accepted: &Mutex<Published>,
+        writer: &crate::shell::durable_writer::DurableWriter,
+    ) -> std::io::Result<()> {
+        let sandbox =
+            sandbox_revocation::Sandbox::capture(pid, self.binding.clone(), &self.capabilities)?;
         // Opening a document queues its grant on the existing state writer.
-        // Wait on this launch worker, before taking PUBLISHED or opening the
-        // child gate. A refused/superseded write still cannot authorize it.
-        if !self.capabilities.is_empty()
-            && !crate::shell::durable_writer::global().flush_timeout(Duration::from_secs(10))
-        {
+        // Unless the accepted policy already holds every captured grant, wait
+        // for that publication on this launch worker, before opening the
+        // child gate; waiting when it does would only wait for unrelated
+        // writes. A revocation still queued is enforced on its publication
+        // (`sandbox_revocation::reconcile`), as one queued after the launch.
+        // A refused/superseded write still cannot authorize it.
+        if !sandbox.authorized(&lock(accepted)) && !writer.flush_timeout(Duration::from_secs(10)) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "filesystem authority publication did not complete",
             ));
         }
-        let mut published = lock(&PUBLISHED);
-        let sandbox =
-            sandbox_revocation::Sandbox::capture(pid, self.binding.clone(), &self.capabilities)?;
+        let mut published = lock(accepted);
         if !sandbox.authorized(&published) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -673,5 +685,88 @@ mod tests {
         }
         drop(published);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// A launch whose grants the accepted policy already holds does not wait
+    /// for the state writer, however busy it is with other writes; one whose
+    /// grant is still queued waits for that publication and then registers.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_launch_waits_on_the_state_writer_only_for_a_grant_not_yet_published() {
+        struct Process(std::process::Child);
+        impl Drop for Process {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let sleeper = || {
+            Process(
+                std::process::Command::new("sleep")
+                    .arg("60")
+                    .spawn()
+                    .unwrap(),
+            )
+        };
+        let app = "so.tilo.files";
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.workspaces[0].room;
+        let held = CapOverride::grant(
+            Subject::app(app),
+            Scope::FsPath("/disposable/held".into()),
+            Verb::Read,
+        )
+        .with_id("held");
+        tree.desktop.workspaces[0].capabilities.push(held.clone());
+        let accepted: &'static Mutex<Published> = Box::leak(Box::new(Mutex::new(Published {
+            rooms: Export::of(&tree).0,
+            ..Published::default()
+        })));
+        let writer = crate::shell::durable_writer::DurableWriter::spawn("register-sandbox-test");
+        let (release, busy) = std::sync::mpsc::channel::<()>();
+        writer.submit(PathBuf::from("unrelated"), move || {
+            let _ = busy.recv();
+        });
+        let lease = |capabilities: Vec<CapOverride>| Lease {
+            binding: (room, app.into(), "person".into()),
+            capabilities,
+            pid: None,
+            capabilities_file: None,
+        };
+
+        let first = sleeper();
+        let started = Instant::now();
+        let mut published_grant = lease(vec![held.clone()]);
+        published_grant
+            .register_in(first.0.id(), accepted, &writer)
+            .expect("a published grant registers");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a published grant must not wait for unrelated writes"
+        );
+        assert!(lock(accepted).sandboxes.contains_key(&first.0.id()));
+
+        let queued = CapOverride::grant(
+            Subject::app(app),
+            Scope::FsPath("/disposable/queued".into()),
+            Verb::Read,
+        )
+        .with_id("queued");
+        tree.desktop.workspaces[0].capabilities.push(queued.clone());
+        let rooms = Export::of(&tree).0;
+        writer.submit(PathBuf::from("publication"), move || {
+            lock(accepted).rooms = rooms;
+        });
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            release.send(()).unwrap();
+        });
+        let second = sleeper();
+        let mut queued_grant = lease(vec![held, queued]);
+        queued_grant
+            .register_in(second.0.id(), accepted, &writer)
+            .expect("a queued grant registers once published");
+        assert!(lock(accepted).sandboxes.contains_key(&second.0.id()));
+        releaser.join().unwrap();
     }
 }

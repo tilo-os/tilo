@@ -985,6 +985,16 @@ mod tests {
     }
 
     #[test]
+    fn a_drawn_frame_hands_chat_the_hosts_permissions() {
+        let mut viewer = TestApp::<ChatShell>::with_role(ui::permissions::Role::Viewer).unwrap();
+        viewer.harness().resize((960, 720)).unwrap();
+        assert_eq!(
+            viewer.with_surface::<ChatApp, _>(|surface| surface.perms.can_participate()),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn resource_range_opens_and_highlights_current_text_through_the_public_view() {
         let mut app = TestApp::<ChatShell>::new().unwrap();
         app.call_on(
