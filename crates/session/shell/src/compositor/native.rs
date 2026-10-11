@@ -8975,6 +8975,15 @@ pub fn run() {
     let test_control_listener_wake = test_control_listener
         .as_ref()
         .and_then(|listener| control_listener_wake(listener, &event_loop.handle()));
+    // Beside the control socket, answered off the loop: whether the loop
+    // still turns, and where every thread is when it does not.
+    let test_control_liveness = test_control_listener.as_ref().and_then(|_| {
+        test_control_path(
+            crate::compositor::dev_env::DEV_ENV_OVERRIDES,
+            std::env::var_os(TEST_CONTROL_ENV),
+        )
+        .and_then(|path| crate::compositor::liveness::serve(&path, &event_loop.handle()))
+    });
     let agent_control_listener_wake = agent_control_listener
         .as_ref()
         .and_then(|listener| control_listener_wake(listener, &event_loop.handle()));
@@ -13459,6 +13468,7 @@ pub fn run() {
     drop(agent_door_consent);
     // Explicitly drop service guards in dependency order so the next session
     // cannot observe stale endpoints while backend teardown finishes.
+    drop(test_control_liveness);
     drop(test_control_unlink);
     drop(agent_control_unlink);
     // Same reasoning for the collab broker: its `Drop` quiesces the drain

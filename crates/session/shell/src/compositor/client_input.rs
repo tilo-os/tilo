@@ -543,8 +543,7 @@ impl State {
         } else {
             KeyState::Released
         };
-        let observed_surface = keyboard
-            .current_focus()
+        let observed_surface = crate::compositor::seat_lock::keyboard_focus(&keyboard)
             .as_ref()
             .map(super::state::surface_id);
         let delivery_time_ns = (forward
@@ -652,7 +651,7 @@ impl State {
         let smithay_grabbed = self
             .seat
             .get_pointer()
-            .is_some_and(|pointer| pointer.is_grabbed());
+            .is_some_and(|pointer| crate::compositor::seat_lock::pointer_is_grabbed(&pointer));
         if self.client_input.pointer_focus.is_none()
             && self.selection.chrome_drag.is_none()
             && !smithay_grabbed
@@ -1620,7 +1619,7 @@ fn route_mouse_input(
             let smithay_grabbed = state
                 .seat
                 .get_pointer()
-                .is_some_and(|pointer| pointer.is_grabbed());
+                .is_some_and(|pointer| crate::compositor::seat_lock::pointer_is_grabbed(&pointer));
             if !smithay_grabbed {
                 state.client_input.grab = Some(match hit {
                     Some(h) => PointerOwner::Client(h.surface_id),
@@ -1640,7 +1639,7 @@ fn route_mouse_input(
     let smithay_grabbed = state
         .seat
         .get_pointer()
-        .is_some_and(|pointer| pointer.is_grabbed());
+        .is_some_and(|pointer| crate::compositor::seat_lock::pointer_is_grabbed(&pointer));
     let to_client = smithay_grabbed
         || (matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
             && state.client_input.pointer_focus.is_some())

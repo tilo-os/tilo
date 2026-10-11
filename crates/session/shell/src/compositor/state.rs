@@ -2407,7 +2407,7 @@ impl State {
                 .map(|(id, _)| *id)
         };
         let pointer = self.seat.get_pointer().and_then(|pointer| {
-            let location = pointer.current_location();
+            let location = crate::compositor::seat_lock::pointer_location(&pointer);
             output_at((location.x, location.y).into())
         });
         let focus = self
@@ -3914,7 +3914,7 @@ impl State {
         let Some(pointer) = self.seat.get_pointer() else {
             return false;
         };
-        let loc = pointer.current_location();
+        let loc = crate::compositor::seat_lock::pointer_location(&pointer);
         self.move_seat_pointer(&pointer, None, (loc.x + dx, loc.y + dy), (serial, time));
         // Also surface the raw delta for clients consuming `wp_relative_pointer` (games, pointer-locked apps).
         pointer.relative_motion(
@@ -6916,6 +6916,7 @@ impl SeatHandler for State {
     }
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&WlSurface>) {
+        let _scope = crate::compositor::seat_lock::Callback::enter();
         self.cancel_active_dictation();
     }
 
@@ -6924,6 +6925,7 @@ impl SeatHandler for State {
         _seat: &Seat<Self>,
         image: smithay::input::pointer::CursorImageStatus,
     ) {
+        let _scope = crate::compositor::seat_lock::Callback::enter();
         // A window another device of the person points at shapes that
         // device's cursor, not this one's.
         if self.personal_pointer_hold {

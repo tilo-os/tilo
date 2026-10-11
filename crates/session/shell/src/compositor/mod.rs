@@ -66,6 +66,8 @@ pub mod input_method;
 #[cfg(target_os = "linux")]
 pub mod input_method_service;
 pub mod key_latency;
+#[cfg(target_os = "linux")]
+pub mod liveness;
 pub(crate) mod lock_actions;
 pub mod lock_auth;
 pub mod lock_controller;
@@ -100,6 +102,8 @@ pub mod render_node;
 #[cfg(target_os = "linux")]
 pub mod scanout_feedback;
 pub mod screen_dim;
+#[cfg(target_os = "linux")]
+pub mod seat_lock;
 pub mod selection;
 pub mod session_env;
 #[cfg(target_os = "linux")]
