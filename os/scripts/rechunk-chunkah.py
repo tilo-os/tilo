@@ -57,8 +57,8 @@ TREES = {
     # the main run's components a new or resized binary moved RPMs between
     # layers (21 MB of unchanged packages re-sent); on their own, with a budget
     # above their count, each binary is one layer and nothing is packed.
-    "tilo": ["/usr/bin/shell", "/usr/bin/fs", "/usr/bin/app", "/usr/bin/tilo-*", "/usr/libexec/tilo*",
-             "/usr/lib/tilo", "/usr/share/tilo", "/boot/EFI/Linux"],
+    "tilo": ["/usr/bin/shell", "/usr/bin/fs", "/usr/bin/app", "/usr/bin/tilo", "/usr/bin/tilo-*",
+             "/usr/libexec/tilo*", "/usr/lib/tilo", "/usr/share/tilo", "/boot/EFI/Linux"],
 }
 # Layers a tree's own run may pack its components into. A runtime changes as
 # a whole, so few layers serve it; the tilo tree has ~40 components and must
