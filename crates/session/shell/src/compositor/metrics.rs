@@ -1441,6 +1441,45 @@ mod tests {
     }
 
     #[test]
+    fn csv_row_column_count_matches_the_header() {
+        let mut buf = Vec::new();
+        FrameSample {
+            seq: 1,
+            start_us: 2,
+            period_us: 3,
+            input_us: 4,
+            pump_us: 5,
+            layout_us: 6,
+            scene_us: 7,
+            submit_us: 8,
+            testctl_us: 9,
+            clients_us: 10,
+            sleep_us: 11,
+            painted: true,
+            present_async: false,
+            input_latency_us: Some(12),
+            input_retirement_latency_us: Some(13),
+            backpressured: true,
+            deadline_late_us: 14,
+            wake: "cadence",
+            cpu_us: Some(15),
+            input_step: "events",
+            input_step_us: 16,
+            paint_reasons: paint_reason::APPS | paint_reason::REVISION,
+            paint_clients: "so.tilo.file-explorer",
+        }
+        .write_csv_row(&mut buf)
+        .expect("write csv row into a Vec");
+        let row = String::from_utf8(buf).expect("csv row is utf8");
+        assert_eq!(
+            row.trim_end().split(',').count(),
+            CSV_HEADER.split(',').count(),
+            "trace rows must have exactly as many columns as the header:\n  header: {CSV_HEADER}\n  row:    {}",
+            row.trim_end()
+        );
+    }
+
+    #[test]
     fn metrics_cli_and_trace_output_are_well_formed() {
         // Phase `parse_run_seconds_accepts_positive_values_only`.
         assert_eq!(
@@ -1465,44 +1504,6 @@ mod tests {
                 super::parse_run_seconds(bad),
                 None,
                 "{bad:?} must mean run-forever, not exit-immediately"
-            );
-        }
-        // Phase `csv_row_column_count_matches_the_header`.
-        {
-            let mut buf = Vec::new();
-            FrameSample {
-                seq: 1,
-                start_us: 2,
-                period_us: 3,
-                input_us: 4,
-                pump_us: 5,
-                layout_us: 6,
-                scene_us: 7,
-                submit_us: 8,
-                testctl_us: 9,
-                clients_us: 10,
-                sleep_us: 11,
-                painted: true,
-                present_async: false,
-                input_latency_us: Some(12),
-                input_retirement_latency_us: Some(13),
-                backpressured: true,
-                deadline_late_us: 14,
-                wake: "cadence",
-                cpu_us: Some(15),
-                input_step: "events",
-                input_step_us: 16,
-                paint_reasons: paint_reason::APPS | paint_reason::REVISION,
-                paint_clients: "so.tilo.file-explorer",
-            }
-            .write_csv_row(&mut buf)
-            .expect("write csv row into a Vec");
-            let row = String::from_utf8(buf).expect("csv row is utf8");
-            assert_eq!(
-                row.trim_end().split(',').count(),
-                CSV_HEADER.split(',').count(),
-                "trace rows must have exactly as many columns as the header:\n  header: {CSV_HEADER}\n  row:    {}",
-                row.trim_end()
             );
         }
         // Phase `production_trace_flushes_periodically_without_waiting_for_clean_exit`.
