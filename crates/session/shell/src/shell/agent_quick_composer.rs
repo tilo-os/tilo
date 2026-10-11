@@ -3504,6 +3504,20 @@ mod tests {
                 status: ReceiptStatus::Accepted,
             }),
         });
+        let observing = actions.take_collab_requests();
+        let [
+            CollabRequest::RemoteAction {
+                message:
+                    RemoteActionMessage::Observe {
+                        invocation: observed,
+                        ..
+                    },
+            },
+        ] = observing.as_slice()
+        else {
+            panic!("one accepted invocation observation is dispatched")
+        };
+        assert_eq!(*observed, invocation);
         actions.handle_collab_event(&CollabEvent::RemoteAction {
             message: RemoteActionMessage::Update {
                 invocation,
