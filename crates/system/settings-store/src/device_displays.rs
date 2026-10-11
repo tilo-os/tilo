@@ -73,7 +73,7 @@ impl DeviceDisplaySnapshot {
         // The clock's sample must not re-author unchanged runtime observations.
         // Loading still validates the live PID/start-time lease; missing,
         // corrupt, changed or stale-publisher state takes the atomic path.
-        if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file())
+        if tilo_files::native::is_regular_file(&path).unwrap_or(false)
             && Self::load_at(&path).as_ref() == Some(self)
         {
             return Ok(());
