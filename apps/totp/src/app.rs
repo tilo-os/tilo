@@ -12,7 +12,7 @@
 //!
 //!  * the [`AccountList`] (main screen), with a banner above it when a
 //!    secret could not be saved on this device,
-//!  * a toast for what just happened,
+//!  * a [`Notice`] for what just happened, which the shell shows as a toast,
 //!  * the [`AddAccountPanel`] sheet (second screen), in the window's top layer.
 //!
 //! The list is painted from the root rect rather than through the taffy tree:
@@ -30,7 +30,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
+use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::framework::Dispatcher;
 use ui::paint::PaintCtx;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
@@ -38,7 +38,7 @@ use ui::presence::PresenceCtx;
 use ui::secrets::SecretStore;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::{Banner, BannerContent, BannerKind, TaffyTreeExt, Widget};
 
 use crate::actions::TotpAction;
@@ -56,8 +56,13 @@ const CAPTURE_ELAPSED: u64 = 11;
 /// few, when the rings turn to their warning tone.
 const CAPTURE_EXPIRING_ELAPSED: u64 = 27;
 
-/// How long a toast stays on screen.
-const TOAST_TTL: Duration = Duration::from_millis(1800);
+/// What the window's toast should do next, for the shell around the
+/// surface.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Notice {
+    Show(String, ToastKind),
+    Clear,
+}
 
 fn qr_image_request() -> PickRequest {
     PickRequest::open("Choose a QR image", "Open")
@@ -109,7 +114,8 @@ pub struct AuthenticatorApp {
 
     last_mouse: Point,
     selected: Option<AccountId>,
-    toast: Option<(String, Instant, ToastKind)>,
+    /// Where the surface raises its notices; the shell shows them.
+    notice: ui::LocalState<Option<Notice>>,
     /// The exact code string most recently written to the clipboard by a copy
     /// action. Lets callers (and tests) observe what was copied without
     /// round-tripping the system clipboard, which is unavailable headless.
@@ -169,7 +175,7 @@ impl AuthenticatorApp {
             structure_dirty: false,
             last_mouse: Point::ZERO,
             selected: None,
-            toast: None,
+            notice: ui::LocalState::new(None),
             last_copied: None,
             pending_delete: None,
             list_dirty: false,
@@ -195,6 +201,13 @@ impl AuthenticatorApp {
     #[must_use]
     pub(crate) fn with_count_signal(mut self, signal: ui::LocalState<usize>) -> Self {
         self.account_count = Some(signal);
+        self
+    }
+
+    /// Raise notices through `signal`, for the shell's toast.
+    #[must_use]
+    pub(crate) fn with_notice_signal(mut self, signal: ui::LocalState<Option<Notice>>) -> Self {
+        self.notice = signal;
         self
     }
 
@@ -276,7 +289,7 @@ impl AuthenticatorApp {
         // A durable, actionable banner supersedes the transient toast. Keeping
         // both is noisy and obscures the account list, especially on narrow
         // windows.
-        self.toast = None;
+        self.notice.set(Some(Notice::Clear));
     }
 
     /// Try this device's secret store again, as the person asked.
@@ -318,8 +331,8 @@ impl AuthenticatorApp {
         }
     }
 
-    fn toast(&mut self, msg: impl Into<String>, kind: ToastKind) {
-        self.toast = Some((msg.into(), ui::time::now(), kind));
+    fn toast(&self, msg: impl Into<String>, kind: ToastKind) {
+        self.notice.set(Some(Notice::Show(msg.into(), kind)));
     }
 
     fn copy_account(&mut self, id: AccountId) {
@@ -748,7 +761,6 @@ impl AuthenticatorApp {
     /// holds their keys (all but the first for "provision" and
     /// "missing-secret"). Never called in a live window.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        self.toast = None;
         self.stage_clock(scenario);
         match scenario {
             Some("add") => self.seed_open_add(),
@@ -769,10 +781,6 @@ impl AuthenticatorApp {
                     self.list.set_selected(self.selected);
                     self.list.stage_hover(1, true);
                     self.copy_account(id);
-                    // A capture is not on the toast's clock: it stays up.
-                    if let Some((_, shown, _)) = &mut self.toast {
-                        *shown = ui::time::now() + Duration::from_secs(60 * 60);
-                    }
                 }
             }
             _ => {}
@@ -885,30 +893,6 @@ impl AuthenticatorApp {
             self.banner_rect,
             &self.banner_content(),
             self.last_mouse,
-        );
-    }
-
-    fn draw_toast(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some((msg, when, kind)) = &self.toast else {
-            return;
-        };
-        if ui::widget::toast::transient_expired(*when, TOAST_TTL) {
-            return;
-        }
-        paint_transient(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.rect,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new(msg, *kind),
         );
     }
 }
@@ -1025,7 +1009,6 @@ impl Widget for AuthenticatorApp {
         self.place(&mut ctx);
         self.paint_banner(&mut ctx);
         self.list.draw(&mut ctx);
-        self.draw_toast(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1242,15 +1225,6 @@ impl Widget for AuthenticatorApp {
                 .with_bounds(self.rect)
                 .with_children(account_rows),
         );
-        if let Some((message, when, _)) = &self.toast
-            && when.elapsed() <= TOAST_TTL
-        {
-            children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(message)
-                    .with_live(Politeness::Polite),
-            );
-        }
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Authenticator")
@@ -1309,6 +1283,7 @@ mod tests {
     use crate::model::demo_accounts;
     use crate::resource::{Totp, TotpEffect};
     use crate::test_events::{named_press, no_mods};
+    use ui::a11y::Politeness;
     use ui::headless::Framed;
 
     /// The surface over the demo accounts, every seed on this device, as the
@@ -1402,10 +1377,9 @@ mod tests {
             app.apply_list_event(ListEvent::Copy(id));
             let after = totp::current_code(&acc);
             assert_eq!(app.selected, Some(id), "the copied row becomes selected");
-            let (msg, _, kind) = app
-                .toast
-                .clone()
-                .expect("copying shows a confirmation toast");
+            let Some(Notice::Show(msg, kind)) = app.notice.with(Clone::clone) else {
+                panic!("copying shows a confirmation toast");
+            };
             assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
             assert_eq!(kind, ToastKind::Success);
             // The copied string is the account's live TOTP code. It equals the
@@ -1436,7 +1410,9 @@ mod tests {
                 copied == before || copied == after,
                 "Enter copies the account's live TOTP code ({copied:?} vs {before:?}/{after:?})"
             );
-            let (msg, _, kind) = app.toast.clone().expect("Enter shows a copy toast");
+            let Some(Notice::Show(msg, kind)) = app.notice.with(Clone::clone) else {
+                panic!("Enter shows a copy toast");
+            };
             assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
             assert_eq!(kind, ToastKind::Success);
         }
@@ -1447,7 +1423,10 @@ mod tests {
             let id = app.vault.ordered()[0].id;
             app.apply_list_event(ListEvent::Copy(id));
             assert!(app.last_copied().is_none(), "no secret, no code");
-            assert_eq!(app.toast.as_ref().map(|t| t.2), Some(ToastKind::Error));
+            assert!(matches!(
+                app.notice.with(Clone::clone),
+                Some(Notice::Show(_, ToastKind::Error))
+            ));
         }
     }
 
@@ -1670,7 +1649,7 @@ mod tests {
         let mut framed = Framed::new(state, app, (390, 720), Theme::dark());
         let (app, state) = Framed::split(&mut framed);
         assert!(
-            app.toast.is_none(),
+            app.notice.with(|notice| notice == &Some(Notice::Clear)),
             "durable banner replaces duplicate toast"
         );
         assert!(app.retry_rect.x0 >= app.rect.x0 && app.retry_rect.x1 <= app.rect.x1);
