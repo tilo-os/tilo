@@ -958,6 +958,13 @@ fn browse_remote(id: &str, state: &mut State, snapshots: &Snapshots) -> (bool, O
             }
             Ok((items, remote.title.clone()))
         });
+    if let Some(remote) = state
+        .remotes
+        .iter_mut()
+        .find(|remote| remote.resource_id() == id)
+    {
+        remote.catalogue_error = result.as_ref().err().cloned();
+    }
     match result {
         Ok((items, title)) => {
             // Browsing may discover more apps than the first catalogue page.
@@ -1297,7 +1304,8 @@ fn refresh_flatpak(state: &mut State) {
             state.flatpak_available = status.available;
             state.installed = installed_flatpaks(&status.installed);
             state.installed_origins = crate::flathub_client::installed_origins(&status.installed);
-            state.remotes = crate::flathub_client::list_remotes(&status.remotes);
+            state.remotes =
+                crate::flathub_client::refreshed_remotes(&status.remotes, &state.remotes);
         }
         Err(error) => {
             tracing::error!(%error, "could not observe host Flatpak state");
