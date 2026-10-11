@@ -2077,7 +2077,10 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
             let idle = app.harness_mut().frame_schedule();
             assert!(
                 !idle.needs_animation_frame && idle.next_wake_deadline.is_none(),
-                "with the toast gone the loop can settle back to idle"
+                "with the toast gone the loop can settle back to idle; requesters {:?}; observed clock {:?}, last polled clock {:?}",
+                app.harness_mut().frame_requesters(),
+                ui::time::now(),
+                expired + Duration::from_millis(1600)
             );
         });
     }
