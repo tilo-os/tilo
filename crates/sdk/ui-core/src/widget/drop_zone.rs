@@ -321,7 +321,7 @@ impl Widget for DropZone {
         let node = match self.action_node {
             Some(child) => {
                 // The button is placed absolutely under the text in
-                // `adjust_layout_with_measure`.
+                // `adjust_layout_style`.
                 if let Ok(current) = taffy.style(child) {
                     let mut child_style = current.clone();
                     child_style.position = taffy::Position::Absolute;
@@ -335,7 +335,7 @@ impl Widget for DropZone {
         node
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,

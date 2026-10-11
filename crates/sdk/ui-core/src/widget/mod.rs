@@ -1252,15 +1252,6 @@ pub trait Widget {
     ) -> taffy::Size<f32> {
         taffy::Size::ZERO
     }
-    /// Adjust this node's style using its allocated size, before final geometry
-    /// is applied. Return true only when the style changed. Do not replace
-    /// children or mutate widget structure here. The shared host solver repeats
-    /// layout at most eight times and skips a frame that does not settle.
-    /// Overrides affect only this node; the host visits every registered widget.
-    fn adjust_layout_style(&mut self, _taffy: &mut TaffyTree<()>, _node: NodeId) -> bool {
-        false
-    }
-
     /// Owned manual policy descriptor; the host invokes it outside widget borrows.
     #[doc(hidden)]
     fn manual_layout_policy(&self) -> Option<ManualPolicy> {
@@ -1274,20 +1265,21 @@ pub trait Widget {
         None
     }
 
-    /// Renderer-aware prepaint policy adjustment. The default preserves the
-    /// existing self-node-only `adjust_layout_style` contract. An override may
-    /// measure its owned children through ordinary references, entering their
-    /// callback binding when present. Never reenter descendants through the raw
-    /// node map while borrowing their parent, change topology, or build another
-    /// layout tree. Change only this node's style; inherited decisions may be
-    /// retained for child hooks. Return true if styles or those decisions change.
-    fn adjust_layout_with_measure(
+    /// Adjust this node's style using its allocated size, before final
+    /// geometry is applied. Return true only when the style changed (or an
+    /// inherited decision child hooks read). An override may measure its owned
+    /// children through ordinary references, entering their callback binding
+    /// when present. Never reenter descendants through the raw node map while
+    /// borrowing their parent, change topology, or build another layout tree.
+    /// The shared host solver visits every registered widget, repeats layout
+    /// at most eight times and skips a frame that does not settle.
+    fn adjust_layout_style(
         &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
+        _taffy: &mut TaffyTree<()>,
+        _node: NodeId,
         _text: &mut TextRenderer,
     ) -> bool {
-        self.adjust_layout_style(taffy, node)
+        false
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);

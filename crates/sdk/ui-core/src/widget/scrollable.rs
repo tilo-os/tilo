@@ -1261,7 +1261,12 @@ impl crate::widget::Decorator for ViewportContent {
         node
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut TextRenderer,
+    ) -> bool {
         let Ok(style) = taffy.style(node) else {
             return false;
         };
@@ -1272,17 +1277,6 @@ impl crate::widget::Decorator for ViewportContent {
         let mut style = style.clone();
         style.min_size.height = height;
         taffy.set_style(node, style).is_ok()
-    }
-
-    // The host adjusts styles through this entry point; route it to the
-    // hook above rather than to the inner container's.
-    fn adjust_layout_with_measure(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        _text: &mut TextRenderer,
-    ) -> bool {
-        crate::widget::Decorator::adjust_layout_style(self, taffy, node)
     }
 
     fn name(&self) -> &'static str {
@@ -1477,7 +1471,12 @@ impl Widget for Scrollable {
         node
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut TextRenderer,
+    ) -> bool {
         let mut changed = false;
         if self.height_limit_dirty {
             let Ok(mut style) = taffy.style(node).cloned() else {
@@ -2644,7 +2643,7 @@ mod tests {
                 .unwrap();
             // The host's adjust pass reserves the lane once the content
             // overflows; solve again as the host does.
-            assert!(scroll.adjust_layout_style(&mut taffy, node));
+            assert!(scroll.adjust_layout_style(&mut taffy, node, &mut tr));
             taffy
                 .compute_layout_with_measure(
                     parent,
@@ -2662,7 +2661,7 @@ mod tests {
                 )
                 .unwrap();
             assert!(
-                !scroll.adjust_layout_style(&mut taffy, node),
+                !scroll.adjust_layout_style(&mut taffy, node, &mut tr),
                 "the lane settles in one step"
             );
             scroll.apply_layout(&taffy, node, Point::ZERO);

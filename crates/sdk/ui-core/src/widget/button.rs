@@ -1343,6 +1343,22 @@ impl Button {
 }
 
 impl Button {
+    fn pin_measured_width(&self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Some(width) = self.measured_width.filter(|_| !self.fill_width) else {
+            return false;
+        };
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let width = Dimension::length(width);
+        if style.size.width == width {
+            return false;
+        }
+        let mut style = style.clone();
+        style.size.width = width;
+        taffy.set_style(node, style).is_ok()
+    }
+
     /// Run the native handler for a `tilo.ui.control.invoke` addressed to
     /// this button. `Ok(false)` when the operation is not this button's.
     fn invoke_native_control(
@@ -1459,26 +1475,10 @@ impl Widget for Button {
         }
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        let Some(width) = self.measured_width.filter(|_| !self.fill_width) else {
-            return false;
-        };
-        let Ok(style) = taffy.style(node) else {
-            return false;
-        };
-        let width = Dimension::length(width);
-        if style.size.width == width {
-            return false;
-        }
-        let mut style = style.clone();
-        style.size.width = width;
-        taffy.set_style(node, style).is_ok()
-    }
-
     /// An intrinsic button's width is its measured content. Taffy only asks
     /// `measure` for an axis it cannot resolve, so the label is measured
     /// here as well and the width pinned when the solver has not done so.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -1490,7 +1490,7 @@ impl Widget for Button {
         if self.measured_width.is_none() {
             self.measured_width = Some(self.intrinsic_width(text));
         }
-        self.adjust_layout_style(taffy, node)
+        self.pin_measured_width(taffy, node)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
