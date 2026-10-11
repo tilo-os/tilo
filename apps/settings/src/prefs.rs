@@ -54,7 +54,7 @@
 //! clobbers another pane's — or the region store's — section.
 
 use serde::{Deserialize, Serialize};
-use settings_store::screen_reader::ScreenReaderVoice;
+use settings_store::accessibility::AccessibilitySettings;
 
 /// Remembered default audio devices, persistent transforms and which system
 /// events make a sound.
@@ -789,293 +789,6 @@ impl Default for NotificationPrefs {
     }
 }
 
-/// Assistive-technology preferences the compositor's input + accessibility
-/// layer reads. The *vision* comforts a low-vision user reaches for first —
-/// high contrast, reduced motion, text size — live in [`AppearancePrefs`]
-/// (the single source of truth the whole system themes against); this section
-/// carries the pointer, typing, hearing, and screen-reader assists that do
-/// not belong to the theme. Every field is `#[serde(default)]` so older
-/// configs load.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
-              independently meaningful serialized setting, not a related toggle group"
-)]
-pub struct AccessibilityPrefs {
-    /// Enlarge the mouse pointer to [`Self::cursor_size`].
-    #[serde(default)]
-    pub large_cursor: bool,
-    /// Pointer size in logical pixels (the compositor's cursor theme size).
-    #[serde(default = "default_cursor_size")]
-    pub cursor_size: u32,
-    /// Run the AT-SPI screen reader.
-    #[serde(default)]
-    pub screen_reader: bool,
-    /// When the on-screen keyboard runs: automatically on touch-only use,
-    /// always, or never.
-    #[serde(default)]
-    pub on_screen_keyboard: OnScreenKeyboard,
-    /// Latch modifier keys so chords can be typed one key at a time.
-    #[serde(default)]
-    pub sticky_keys: bool,
-    /// Require a key to be held briefly before it registers, ignoring
-    /// accidental brushes.
-    #[serde(default)]
-    pub slow_keys: bool,
-    /// Ignore a second press of the same key soon after its release.
-    #[serde(default)]
-    pub bounce_keys: bool,
-    /// The bounce-keys window in milliseconds.
-    #[serde(default = "default_bounce_keys_delay_ms")]
-    pub bounce_keys_delay_ms: u32,
-    /// Flash the visual alert when bounce keys ignores a press.
-    #[serde(default)]
-    pub bounce_keys_alert: bool,
-    /// Move the pointer with the numeric keypad.
-    #[serde(default)]
-    pub mouse_keys: bool,
-    /// Flash the screen instead of (or alongside) an audible alert.
-    #[serde(default)]
-    pub visual_alerts: bool,
-    /// Whole-desktop colour transform owned by the compositor.
-    #[serde(default)]
-    pub color_filter: ColorFilter,
-    /// Desktop magnification factor. `1` means disabled.
-    #[serde(default = "default_magnifier_zoom")]
-    pub magnifier_zoom: u8,
-    /// A lens around the point of interest, or the whole screen magnified.
-    #[serde(default)]
-    pub magnifier_view: settings_store::magnifier::MagnifierView,
-    /// Paint full-screen guide lines through the hardware pointer.
-    #[serde(default)]
-    pub cursor_crosshair: bool,
-    /// Make text insertion carets wider in every Tilo toolkit application.
-    #[serde(default)]
-    pub thick_text_caret: bool,
-    /// Turn F6/F7 switch signals into standard scan-next/activate actions.
-    #[serde(default)]
-    pub switch_control: bool,
-    /// Which ordinary function-key pair a two-switch device emits.
-    #[serde(default)]
-    pub switch_key_pair: SwitchKeyPair,
-    /// Automatic scan period in milliseconds; zero means manual two-switch scanning.
-    #[serde(default)]
-    pub switch_scan_ms: u16,
-    /// Normalised screen-reader speech rate, where 100 is engine default.
-    #[serde(default = "default_screen_reader_rate")]
-    pub screen_reader_rate: u16,
-    /// Backend-neutral voice/language preset.
-    #[serde(default)]
-    pub screen_reader_voice: ScreenReaderVoice,
-    /// Personal recognition language; selecting it never grants microphone access.
-    #[serde(default)]
-    pub dictation_language: settings_store::dictation::DictationLanguage,
-    /// Preserve recognised speech without removing explicit self-repairs.
-    #[serde(default)]
-    pub dictation_literal: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ColorFilter {
-    #[default]
-    None,
-    Grayscale,
-    Inverted,
-    GrayscaleInverted,
-}
-
-impl ColorFilter {
-    pub const OPTIONS: &'static [&'static str] =
-        &["Off", "Grayscale", "Inverted", "Grayscale + inverted"];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::None => "Off",
-            Self::Grayscale => "Grayscale",
-            Self::Inverted => "Inverted",
-            Self::GrayscaleInverted => "Grayscale + inverted",
-        }
-    }
-
-    pub fn from_label(label: &str) -> Option<Self> {
-        Some(match label {
-            "Off" => Self::None,
-            "Grayscale" => Self::Grayscale,
-            "Inverted" => Self::Inverted,
-            "Grayscale + inverted" => Self::GrayscaleInverted,
-            _ => return None,
-        })
-    }
-}
-
-/// When the compositor runs the on-screen keyboard. `Auto` follows the
-/// hardware in use: a touchscreen with no physical typing since the last
-/// touch, or a convertible folded into tablet mode.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OnScreenKeyboard {
-    #[default]
-    Auto,
-    Always,
-    Never,
-}
-
-impl OnScreenKeyboard {
-    pub const OPTIONS: &'static [&'static str] = &["Automatic", "Always", "Never"];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Auto => "Automatic",
-            Self::Always => "Always",
-            Self::Never => "Never",
-        }
-    }
-
-    pub fn from_label(label: &str) -> Option<Self> {
-        Some(match label {
-            "Automatic" => Self::Auto,
-            "Always" => Self::Always,
-            "Never" => Self::Never,
-            _ => return None,
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SwitchKeyPair {
-    #[default]
-    F6F7,
-    F9F10,
-    Digits12,
-}
-
-impl SwitchKeyPair {
-    pub const OPTIONS: &'static [&'static str] = &["F6 / F7", "F9 / F10", "1 / 2"];
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::F6F7 => "F6 / F7",
-            Self::F9F10 => "F9 / F10",
-            Self::Digits12 => "1 / 2",
-        }
-    }
-    pub fn from_label(label: &str) -> Option<Self> {
-        Some(match label {
-            "F6 / F7" => Self::F6F7,
-            "F9 / F10" => Self::F9F10,
-            "1 / 2" => Self::Digits12,
-            _ => return None,
-        })
-    }
-}
-
-fn default_cursor_size() -> u32 {
-    24
-}
-
-fn default_bounce_keys_delay_ms() -> u32 {
-    settings_store::hardware::BOUNCE_KEYS_DEFAULT_DELAY_MS
-}
-
-fn default_magnifier_zoom() -> u8 {
-    1
-}
-
-fn default_screen_reader_rate() -> u16 {
-    settings_store::screen_reader::DEFAULT_RATE
-}
-
-impl Default for AccessibilityPrefs {
-    fn default() -> Self {
-        Self {
-            large_cursor: false,
-            cursor_size: default_cursor_size(),
-            screen_reader: false,
-            on_screen_keyboard: OnScreenKeyboard::Auto,
-            sticky_keys: false,
-            slow_keys: false,
-            bounce_keys: false,
-            bounce_keys_delay_ms: default_bounce_keys_delay_ms(),
-            bounce_keys_alert: false,
-            mouse_keys: false,
-            visual_alerts: false,
-            color_filter: ColorFilter::None,
-            magnifier_zoom: default_magnifier_zoom(),
-            magnifier_view: settings_store::magnifier::MagnifierView::Lens,
-            cursor_crosshair: false,
-            thick_text_caret: false,
-            switch_control: false,
-            switch_key_pair: SwitchKeyPair::F6F7,
-            switch_scan_ms: 0,
-            screen_reader_rate: default_screen_reader_rate(),
-            screen_reader_voice: ScreenReaderVoice::System,
-            dictation_language: settings_store::dictation::DictationLanguage::default(),
-            dictation_literal: false,
-        }
-    }
-}
-
-/// The person's assists, read by the compositor's input and accessibility
-/// layer.
-impl ui::storage::SettingsSchema for AccessibilityPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("accessibility");
-}
-
-impl AccessibilityPrefs {
-    /// The offered bounce-keys windows as `(display label, milliseconds)`.
-    pub const BOUNCE_DELAYS: &'static [(&'static str, u32)] = &[
-        ("100 ms", 100),
-        ("200 ms", 200),
-        ("300 ms", 300),
-        ("500 ms", 500),
-        ("800 ms", 800),
-    ];
-
-    /// The offered bounce-keys window closest to `ms`.
-    pub fn bounce_delay_label(ms: u32) -> &'static str {
-        Self::BOUNCE_DELAYS
-            .iter()
-            .min_by_key(|(_, d)| d.abs_diff(ms))
-            .map_or("300 ms", |(l, _)| *l)
-    }
-
-    /// Map a bounce-keys label back to milliseconds, if recognised.
-    pub fn bounce_delay_ms(label: &str) -> Option<u32> {
-        Self::BOUNCE_DELAYS
-            .iter()
-            .find(|(l, _)| *l == label)
-            .map(|(_, d)| *d)
-    }
-
-    /// The offered pointer sizes as `(display label, size px)`. The compositor
-    /// applies [`Self::cursor_size`] as its cursor-theme size when
-    /// [`Self::large_cursor`] is set.
-    pub const CURSOR_SIZES: &'static [(&'static str, u32)] = &[
-        ("Default", 24),
-        ("Large", 36),
-        ("Larger", 48),
-        ("Largest", 64),
-    ];
-
-    /// Map a cursor size to its closest offered label.
-    pub fn cursor_size_label(size: u32) -> &'static str {
-        Self::CURSOR_SIZES
-            .iter()
-            .min_by_key(|(_, s)| s.abs_diff(size))
-            .map_or("Default", |(l, _)| *l)
-    }
-
-    /// Map a cursor-size label back to its pixel size, if recognised.
-    pub fn cursor_size_px(label: &str) -> Option<u32> {
-        Self::CURSOR_SIZES
-            .iter()
-            .find(|(l, _)| *l == label)
-            .map(|(_, s)| *s)
-    }
-}
-
 /// The preference sections this store owns. Loaded from and merged
 /// back into the shared `settings.json`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1087,7 +800,7 @@ pub struct SystemPrefs {
     pub updates: UpdatePrefs,
     pub appearance: AppearancePrefs,
     pub notifications: NotificationPrefs,
-    pub accessibility: AccessibilityPrefs,
+    pub accessibility: AccessibilitySettings,
 }
 
 impl SystemPrefs {
@@ -1313,16 +1026,6 @@ mod tests {
             !n.show_on_lock_screen,
             "lock screen is the most exposed surface"
         );
-
-        let a = AccessibilityPrefs::default();
-        assert!(!a.large_cursor);
-        assert_eq!(a.cursor_size, 24);
-        assert!(!a.screen_reader);
-        // Label ↔ px mapping is exact for the offered sizes.
-        assert_eq!(AccessibilityPrefs::cursor_size_label(24), "Default");
-        assert_eq!(AccessibilityPrefs::cursor_size_label(48), "Larger");
-        assert_eq!(AccessibilityPrefs::cursor_size_px("Largest"), Some(64));
-        assert_eq!(AccessibilityPrefs::cursor_size_px("nope"), None);
     }
 
     #[test]
@@ -1389,14 +1092,6 @@ mod tests {
         assert!(!pressed.input.touchpad_enabled);
         let saved: serde_json::Value = serde_json::from_str(&pressed.to_json_merged("")).unwrap();
         assert_eq!(saved["input"][TOUCHPAD_ENABLED_KEY], false);
-    }
-
-    #[test]
-    fn bounce_delay_labels_map_both_ways() {
-        assert_eq!(AccessibilityPrefs::bounce_delay_label(300), "300 ms");
-        assert_eq!(AccessibilityPrefs::bounce_delay_label(450), "500 ms");
-        assert_eq!(AccessibilityPrefs::bounce_delay_ms("800 ms"), Some(800));
-        assert_eq!(AccessibilityPrefs::bounce_delay_ms("forever"), None);
     }
 
     #[test]

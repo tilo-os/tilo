@@ -10,14 +10,16 @@
 //!   system themes against, also editable from the Appearance pane, through
 //!   the same [`AppearanceEffect`]s); and
 //! - the **pointer, typing, hearing, and screen-reader** assists in
-//!   [`crate::prefs::AccessibilityPrefs`], read by the compositor's input +
+//!   [`settings_store::accessibility::AccessibilitySettings`], read by the compositor's input +
 //!   accessibility layer, each set by an [`AccessibilityEffect`].
 
 use std::collections::HashMap;
 
+use settings_store::accessibility::{
+    AccessibilitySettings, ColorFilter, OnScreenKeyboard, ScreenReaderVoice, SwitchKeyPair,
+};
 use settings_store::dictation::DictationLanguage;
 use settings_store::magnifier;
-use settings_store::screen_reader::ScreenReaderVoice;
 use taffy::{NodeId, TaffyTree};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus};
@@ -31,9 +33,7 @@ use crate::i18n::{t, t_args};
 use crate::panes::appearance::{
     AppearanceEffect, text_size_label, text_size_name, text_size_options,
 };
-use crate::prefs::{
-    AccessibilityPrefs, AppearancePrefs, ColorFilter, OnScreenKeyboard, SwitchKeyPair,
-};
+use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
@@ -107,7 +107,7 @@ pub enum AccessibilityEffect {
     /// Set the size of the large cursor.
     #[effect(idempotent)]
     SetCursorSize {
-        #[param("The cursor size", choices = labels(AccessibilityPrefs::CURSOR_SIZES))]
+        #[param("The cursor size", choices = labels(AccessibilitySettings::CURSOR_SIZES))]
         size: String,
     },
     /// Turn the pointer crosshair on or off.
@@ -131,7 +131,7 @@ pub enum AccessibilityEffect {
     /// Set how long bounce keys ignores a repeated key.
     #[effect(idempotent)]
     SetBounceKeysDelay {
-        #[param("The delay", choices = labels(AccessibilityPrefs::BOUNCE_DELAYS))]
+        #[param("The delay", choices = labels(AccessibilitySettings::BOUNCE_DELAYS))]
         delay: String,
     },
     /// Flash the screen when bounce keys ignores a key, or stop.
@@ -213,10 +213,10 @@ pub(crate) fn answer(
 ) -> EffectAnswer {
     use AccessibilityEffect as E;
     let not = |value: &str, what: &str| format!("`{value}` is not a {what}");
-    let change: Box<dyn FnOnce(&mut AccessibilityPrefs)> = match effect {
+    let change: Box<dyn FnOnce(&mut AccessibilitySettings)> = match effect {
         E::SetLargeCursor { on } => Box::new(move |p| p.large_cursor = on),
         E::SetCursorSize { size } => {
-            let px = AccessibilityPrefs::cursor_size_px(&size)
+            let px = AccessibilitySettings::cursor_size_px(&size)
                 .ok_or_else(|| not(&size, "cursor size"))?;
             Box::new(move |p| p.cursor_size = px)
         }
@@ -227,7 +227,7 @@ pub(crate) fn answer(
         E::SetSlowKeys { on } => Box::new(move |p| p.slow_keys = on),
         E::SetBounceKeys { on } => Box::new(move |p| p.bounce_keys = on),
         E::SetBounceKeysDelay { delay } => {
-            let ms = AccessibilityPrefs::bounce_delay_ms(&delay)
+            let ms = AccessibilitySettings::bounce_delay_ms(&delay)
                 .ok_or_else(|| not(&delay, "bounce keys delay"))?;
             Box::new(move |p| p.bounce_keys_delay_ms = ms)
         }
@@ -344,7 +344,7 @@ struct Shown {
 }
 
 impl Shown {
-    fn of(appearance: &AppearancePrefs, access: &AccessibilityPrefs) -> Self {
+    fn of(appearance: &AppearancePrefs, access: &AccessibilitySettings) -> Self {
         let flag = || LocalState::new(false);
         let text = || LocalState::new(String::new());
         let shown = Self {
@@ -386,7 +386,7 @@ impl Shown {
         self.text_size.set(text_size_label(appearance.text_scale));
     }
 
-    fn show_access(&self, access: &AccessibilityPrefs) {
+    fn show_access(&self, access: &AccessibilitySettings) {
         self.color_filter
             .set(access.color_filter.label().to_owned());
         self.magnifier
@@ -396,14 +396,14 @@ impl Shown {
         self.mouse_keys.set(access.mouse_keys);
         self.large_cursor.set(access.large_cursor);
         self.cursor_size
-            .set(AccessibilityPrefs::cursor_size_label(access.cursor_size).to_owned());
+            .set(AccessibilitySettings::cursor_size_label(access.cursor_size).to_owned());
         self.cursor_crosshair.set(access.cursor_crosshair);
         self.thick_text_caret.set(access.thick_text_caret);
         self.sticky_keys.set(access.sticky_keys);
         self.slow_keys.set(access.slow_keys);
         self.bounce_keys.set(access.bounce_keys);
         self.bounce_delay
-            .set(AccessibilityPrefs::bounce_delay_label(access.bounce_keys_delay_ms).to_owned());
+            .set(AccessibilitySettings::bounce_delay_label(access.bounce_keys_delay_ms).to_owned());
         self.bounce_alert.set(access.bounce_keys_alert);
         self.on_screen_keyboard
             .set(access.on_screen_keyboard.label().to_owned());
@@ -427,7 +427,7 @@ impl Shown {
 pub struct AccessibilityPane {
     cx: PaneCx,
     appearance: Followed<AppearancePrefs>,
-    access: Followed<AccessibilityPrefs>,
+    access: Followed<AccessibilitySettings>,
     shown: Shown,
     /// The speech engine the screen reader would speak through.
     speech: Option<&'static str>,
@@ -469,7 +469,7 @@ impl Software {
 impl AccessibilityPane {
     pub fn new(cx: PaneCx, software: Software) -> Self {
         let appearance = cx.follow::<AppearancePrefs>();
-        let access = cx.follow::<AccessibilityPrefs>();
+        let access = cx.follow::<AccessibilitySettings>();
         let shown = Shown::of(appearance.get(), access.get());
         Self {
             cx,
@@ -481,7 +481,7 @@ impl AccessibilityPane {
         }
     }
 
-    pub fn access(&self) -> &AccessibilityPrefs {
+    pub fn access(&self) -> &AccessibilitySettings {
         self.access.get()
     }
 
@@ -618,7 +618,7 @@ impl AccessibilityPane {
                     &t("a11y-cursor-size"),
                     self.choice(
                         "a11y.cursor_size",
-                        labels(AccessibilityPrefs::CURSOR_SIZES),
+                        labels(AccessibilitySettings::CURSOR_SIZES),
                         &shown.cursor_size,
                         AccessibilityEffect::SET_CURSOR_SIZE,
                     ),
@@ -692,7 +692,7 @@ impl AccessibilityPane {
                     &t("a11y-bounce-delay"),
                     self.choice(
                         "a11y.bounce_delay",
-                        labels(AccessibilityPrefs::BOUNCE_DELAYS),
+                        labels(AccessibilitySettings::BOUNCE_DELAYS),
                         &shown.bounce_delay,
                         AccessibilityEffect::SET_BOUNCE_KEYS_DELAY,
                     ),
@@ -904,9 +904,14 @@ mod tests {
                 language: "de".into(),
             },
         );
-        let preferences = app.settings::<AccessibilityPrefs>();
+        let preferences = app.settings::<AccessibilitySettings>();
         let section = preferences.document().section("accessibility");
-        assert_eq!(DictationLanguage::from_section(&section).code(), "de");
+        assert_eq!(
+            AccessibilitySettings::from_section(&section)
+                .dictation_language
+                .code(),
+            "de"
+        );
         assert!(preferences.get().sticky_keys);
         let before = preferences.get();
         assert!(
@@ -917,7 +922,7 @@ mod tests {
             ))
             .is_err()
         );
-        assert_eq!(app.settings::<AccessibilityPrefs>().get(), before);
+        assert_eq!(app.settings::<AccessibilitySettings>().get(), before);
         for language in DictationLanguage::ALL {
             assert_ne!(t(&language.label_key()), language.label_key());
         }
@@ -937,7 +942,7 @@ mod tests {
             &mut app,
             AccessibilityEffect::SetDictationLiteral { on: true },
         );
-        let preferences = app.settings::<AccessibilityPrefs>();
+        let preferences = app.settings::<AccessibilitySettings>();
         assert!(preferences.get().dictation_literal);
         assert!(preferences.get().sticky_keys);
         assert_eq!(preferences.get().dictation_language.code(), "en");
@@ -952,7 +957,11 @@ mod tests {
             &mut app,
             AccessibilityEffect::SetDictationLiteral { on: false },
         );
-        assert!(!app.settings::<AccessibilityPrefs>().get().dictation_literal);
+        assert!(
+            !app.settings::<AccessibilitySettings>()
+                .get()
+                .dictation_literal
+        );
     }
 
     /// The vision comforts are the appearance section's (one stored value,
@@ -1011,7 +1020,7 @@ mod tests {
                 rate: "Fast".into(),
             },
         );
-        let access = app.settings::<AccessibilityPrefs>().get();
+        let access = app.settings::<AccessibilitySettings>().get();
         assert!(access.large_cursor);
         assert_eq!(access.cursor_size, 64);
         assert!(access.sticky_keys);
@@ -1025,7 +1034,7 @@ mod tests {
             size: "Huge".into(),
         };
         assert!(app.effect(&SettingsEffect::from(refused)).is_err());
-        assert_eq!(app.settings::<AccessibilityPrefs>().get(), access);
+        assert_eq!(app.settings::<AccessibilitySettings>().get(), access);
     }
 
     /// The magnifier's zoom and view land where the compositor's magnifier
@@ -1033,7 +1042,7 @@ mod tests {
     #[test]
     fn magnifier_effects_reach_the_compositor_section() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        let document = app.settings::<AccessibilityPrefs>().document().clone();
+        let document = app.settings::<AccessibilitySettings>().document().clone();
         let mut remembered = serde_json::Map::new();
         remembered.insert("magnifier_last_zoom".into(), 3.into());
         document
@@ -1067,11 +1076,11 @@ mod tests {
     fn the_pane_follows_both_sections() {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
-        cx.settings::<AccessibilityPrefs>()
-            .set(&AccessibilityPrefs {
+        cx.settings::<AccessibilitySettings>()
+            .set(&AccessibilitySettings {
                 magnifier_zoom: 5,
                 cursor_size: 64,
-                ..AccessibilityPrefs::default()
+                ..AccessibilitySettings::default()
             })
             .unwrap();
         let mut pane = AccessibilityPane::new(cx.clone(), Software::installed());
@@ -1081,7 +1090,7 @@ mod tests {
         cx.settings::<AppearancePrefs>()
             .update(|prefs| prefs.high_contrast = true)
             .unwrap();
-        cx.settings::<AccessibilityPrefs>()
+        cx.settings::<AccessibilitySettings>()
             .update(|prefs| prefs.sticky_keys = true)
             .unwrap();
         let doc = ui::automerge::AutoCommit::new();
