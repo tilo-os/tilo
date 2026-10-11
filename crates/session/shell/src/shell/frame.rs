@@ -13,7 +13,7 @@
 use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable as _};
 use taffy::prelude::*;
@@ -651,7 +651,8 @@ pub struct FrameBuilder {
     /// chrome wears for the active workspace, and what each app window is
     /// sent for the workspace it is in.
     windows: super::window_appearance::WindowAppearances,
-    theme_store_stamp: Option<SystemTime>,
+    /// The generation of the followed settings the theme was last read at.
+    theme_store_stamp: Option<u64>,
     last_theme_store_check: Instant,
     appearance_generation: u64,
     night_light: bool,
@@ -764,7 +765,7 @@ struct FramePresentationInputs {
     text_renderer: TextRenderer,
     theme: Theme,
     own_identity: String,
-    theme_store_stamp: Option<std::time::SystemTime>,
+    theme_store_stamp: Option<u64>,
 }
 
 /// Every counter that moves when the desktop tree may have changed: a peer's
@@ -933,8 +934,7 @@ impl FrameBuilder {
             theme: Self::shots_theme_override().unwrap_or_else(Theme::dark),
             text_renderer: TextRenderer::new(),
             own_identity: crate::shell::state::local_user_id(),
-            theme_store_stamp: settings_store::settings_path()
-                .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
+            theme_store_stamp: None,
         };
         Self::from_parts_with_presentation(parts, viewport, presentation)
     }
@@ -2987,8 +2987,10 @@ impl FrameBuilder {
             return;
         }
         self.last_theme_store_check = Instant::now();
-        let stamp = settings_store::settings_path()
-            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        // The followed document's generation, one atomic load: the watcher
+        // that parses the file on change publishes it, so paint never asks
+        // the filesystem whether the settings moved.
+        let stamp = Some(self.followed_settings_generation());
         let phase_changed = self
             .day_phase
             .is_some_and(|(schedule, night)| schedule.is_night(ui::theme::local_moment()) != night);
@@ -3117,7 +3119,15 @@ impl FrameBuilder {
     /// Read settings in paint from `settings`, the session's one followed
     /// document, rather than from the file.
     pub fn follow_settings(&mut self, settings: settings_store::live::LiveSettings) {
+        self.theme_store_stamp = Some(settings.generation());
         self.live_settings = Some(settings);
+    }
+
+    /// The generation of the settings paint follows.
+    fn followed_settings_generation(&mut self) -> u64 {
+        self.live_settings
+            .get_or_insert_with(|| settings_store::live::LiveSettings::start(|| {}))
+            .generation()
     }
 
     /// Enable the session-wide configured theme and live settings watcher.
@@ -3130,8 +3140,7 @@ impl FrameBuilder {
         crate::shell::i18n::apply_configured_locale();
         self.appearance_generation = self.chrome.borrow().appearance_generation;
         self.refresh_display_comfort();
-        self.theme_store_stamp = settings_store::settings_path()
-            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        self.theme_store_stamp = Some(self.followed_settings_generation());
         self.rebuild_layout_tree();
         self.relayout();
     }

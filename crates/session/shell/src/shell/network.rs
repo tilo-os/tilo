@@ -1046,6 +1046,12 @@ fn persist_personal_continuity(path: &Path, value: &PersistedPersonalContinuity)
     let Ok(bytes) = postcard::to_allocvec(value) else {
         return false;
     };
+    write_personal_continuity(path, bytes)
+}
+
+/// Write the encoded continuity to `path`, with its backup. Waits for the
+/// disk: callers on the compositor thread hand it to the state writer.
+fn write_personal_continuity(path: &Path, bytes: Vec<u8>) -> bool {
     if let Some(parent) = path.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
     {
@@ -3611,15 +3617,20 @@ impl ShellNetwork {
         let Ok(bytes) = serde_json::to_vec(&ids) else {
             return;
         };
-        // Runs on every home-peer refresh; the room list rarely changes, and
-        // an unchanged rewrite still costs a file and a directory fsync.
-        if std::fs::read(&path).is_ok_and(|current| current == bytes) {
-            return;
-        }
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = tilo_files::native::atomic::write(&path, &bytes);
+        // Runs on every home-peer refresh, on the compositor's loop; the room
+        // list rarely changes, and an unchanged rewrite still costs a file and
+        // a directory fsync. The comparison and the write belong to the state
+        // writer, which keeps the newest per file.
+        let target = path.clone();
+        crate::shell::durable_writer::global().submit(path, move || {
+            if std::fs::read(&target).is_ok_and(|current| current == bytes) {
+                return;
+            }
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = tilo_files::native::atomic::write(&target, &bytes);
+        });
     }
 
     /// Attach an always-on home or hosted workspace server. The actor keeps
@@ -4434,7 +4445,12 @@ impl ShellNetwork {
             registry.clear_remote();
         }
         if let Some(path) = self.personal_continuity_path.as_deref() {
-            purge_personal_continuity_store(path);
+            // Behind any write queued for the store, so a write the policy
+            // change overtook cannot bring the file back.
+            let target = path.to_path_buf();
+            crate::shell::durable_writer::global().submit(path.to_path_buf(), move || {
+                purge_personal_continuity_store(&target);
+            });
         }
         if let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) {
             let mut tree = tree.write();
@@ -4576,13 +4592,27 @@ impl ShellNetwork {
         ) else {
             return false;
         };
-        let durable = persist_personal_continuity(
-            path,
-            &PersistedPersonalContinuity {
-                counter: *counter,
-                continuity: continuity.clone(),
-            },
-        );
+        let value = PersistedPersonalContinuity {
+            counter: *counter,
+            continuity: continuity.clone(),
+        };
+        let durable = if claims.is_some() {
+            // The acknowledgement below says this exact value is on disk.
+            persist_personal_continuity(path, &value)
+        } else {
+            // Every sync round asks for this, from the compositor's loop; the
+            // write (a backup and a primary, four fsyncs) goes to the state
+            // writer, which keeps the newest per file. Nothing here reads the
+            // result as proof of durability.
+            let Ok(bytes) = postcard::to_allocvec(&value) else {
+                return false;
+            };
+            let target = path.to_path_buf();
+            crate::shell::durable_writer::global().submit(path.to_path_buf(), move || {
+                write_personal_continuity(&target, bytes);
+            });
+            true
+        };
         // The acknowledgement refers to the exact value durably written
         // while these ledger/counter locks remain held, never a later capture.
         if durable
@@ -8198,8 +8228,11 @@ mod tests {
         env.set("XDG_STATE_HOME", &state);
         let (net, _commands) = personal_continuity_network_for_test([0x44; 32]);
         assert!(net.join_default_workspace());
+        // The export is written by the state writer, not the calling thread.
+        crate::shell::persist::wait_for_saves();
         let published = std::fs::metadata(&export).expect("export").ino();
         let _ = net.refresh_home_peer_hosts();
+        crate::shell::persist::wait_for_saves();
         assert_eq!(
             std::fs::metadata(&export).expect("export").ino(),
             published,
@@ -9363,10 +9396,12 @@ mod tests {
             let path = dir.path().join("personal-continuity.postcard");
             net.personal_continuity_path = Some(path.clone());
             assert!(net.persist_personal_continuity());
+            crate::shell::persist::wait_for_saves();
             assert!(path.exists());
 
             net.continuity_policy_override = Some(test_continuity_policy(true, false, true));
             assert!(!net.enforce_app_continuations_policy());
+            crate::shell::persist::wait_for_saves();
 
             assert!(
                 net.personal_continuity
@@ -9903,6 +9938,38 @@ mod tests {
         crate::shell::persist::wait_for_saves();
         assert!(checkpoint_path.is_file(), "the writer never wrote it");
         assert!(device_fabric_backup_path(&checkpoint_path).is_file());
+    }
+
+    #[test]
+    fn a_sync_round_persists_continuity_without_waiting_for_the_disk() {
+        // It runs from the compositor's loop on every sync round. Park the
+        // state writer: the call may not wait for it, and nothing reaches the
+        // disk until it is released.
+        let user = ed25519_dalek::SigningKey::from_bytes(&[0xE6; 32])
+            .verifying_key()
+            .to_bytes();
+        let (mut net, _commands) = personal_continuity_network_for_test(user);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal-continuity.postcard");
+        net.personal_continuity_path = Some(path.clone());
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let (started, running) = std::sync::mpsc::channel::<()>();
+        crate::shell::durable_writer::global().submit(
+            dir.path().join("parked-writer-blocker"),
+            move || {
+                started.send(()).unwrap();
+                let _ = parked.recv();
+            },
+        );
+        running.recv().unwrap();
+        assert!(net.persist_personal_continuity());
+        assert!(
+            !path.exists(),
+            "the continuity store was written on the calling thread"
+        );
+        release.send(()).unwrap();
+        crate::shell::persist::wait_for_saves();
+        assert!(path.is_file(), "the writer never wrote it");
     }
 
     #[test]
