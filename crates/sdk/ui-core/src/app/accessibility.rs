@@ -455,6 +455,15 @@ impl App {
                 &self.permission_ctx,
             )
         };
+        // What the whole view says about history is read once per sweep, not
+        // once per node (each read walks the tree, a bound status opens its
+        // record): only a request taken in the sweep can change it.
+        let mut embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
+        let mut local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
+        let mut bound_statuses: Vec<(
+            crate::bound_dispatch::CallbackBinding,
+            crate::undo::UndoStatus,
+        )> = Vec::new();
         let mut visited = std::collections::HashSet::new();
         for (&node, pointer) in &self.layout.node_map {
             // SAFETY: this layout is unchanged, so every node pointer is live.
@@ -505,11 +514,14 @@ impl App {
                     }
                 };
                 changed |= entry.is_some();
+                embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
+                local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
+                bound_statuses.clear();
             }
             // The former eager status read flushed open transactions whenever
             // history existed. Preserve that boundary without deriving labels.
             if binding.is_none()
-                && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+                && !embedded
                 && (self
                     .state
                     .can_undo_as(Some(&self.collaboration.local_author))
@@ -523,13 +535,21 @@ impl App {
             // across pending edits and dynamically mounted controls.
             let bound_status = binding
                 .as_ref()
-                .map(|binding| binding.undo_status(&mut self.state.doc).unwrap_or_default())
+                .map(|binding| {
+                    if let Some((_, status)) = bound_statuses
+                        .iter()
+                        .find(|(seen, _)| seen.same_component(binding))
+                    {
+                        return status.clone();
+                    }
+                    let status = binding.undo_status(&mut self.state.doc).unwrap_or_default();
+                    bound_statuses.push((binding.clone(), status.clone()));
+                    status
+                })
                 .or_else(|| {
                     self.bindings
                         .legacy_status(node, &self.collaboration.local_author)
                 });
-            let embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
-            let local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
             let mut status = || {
                 bound_status.clone().unwrap_or_else(|| {
                     if let Some(local) = &local_status {
