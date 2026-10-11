@@ -39,6 +39,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::blobs_capnp::DurabilityStatus;
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use serde::{Deserialize, Serialize};
@@ -152,6 +153,15 @@ pub enum ReadOutcome {
     Pending,
     /// Not readable through this capability, now or later.
     Unavailable,
+}
+
+/// An exact scope's current persistence witness. Presence is insufficient.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlobDurability {
+    Unsupported,
+    /// Missing bytes and out-of-scope hashes are indistinguishable.
+    Unavailable,
+    Durable,
 }
 
 /// Why a blob operation failed.
@@ -276,6 +286,23 @@ pub type BlobFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 /// The store behind the capability. Every call carries the scope the
 /// connection was authenticated for; the backend decides reachability.
 pub trait BlobBackend: Send + Sync + 'static {
+    /// Prove this scope's current persisted bytes, or refuse to attest.
+    /// Does not fetch content, add references or grant access.
+    ///
+    /// `Durable` requires verified current bytes at the requested address,
+    /// completed data and namespace persistence barriers, and a current
+    /// scope reference before and after those barriers. Memory, read caches,
+    /// pending transfers and `has()` cannot provide this proof. An unqualified
+    /// backend must keep the default `Unsupported`; missing or inaccessible
+    /// content must share the `Unavailable` answer. Storage failures are errors.
+    fn durability(
+        self: Arc<Self>,
+        _scope: BlobScope,
+        _hash: String,
+    ) -> BlobFuture<Result<BlobDurability, BlobError>> {
+        Box::pin(async { Ok(BlobDurability::Unsupported) })
+    }
+
     fn put(
         self: Arc<Self>,
         scope: BlobScope,
@@ -549,6 +576,28 @@ impl document_blobs::Server for ScopedBlobs {
             Ok(())
         })
     }
+
+    fn durability(
+        self: Rc<Self>,
+        params: document_blobs::DurabilityParams,
+        mut results: document_blobs::DurabilityResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let hash = checked_hash(params.get()?.get_hash())?;
+            let status = on_runtime(
+                &self.runtime,
+                Arc::clone(&self.backend).durability(self.scope.clone(), hash),
+            )
+            .await?
+            .map_err(|error| refuse(&error))?;
+            results.get().set_status(match status {
+                BlobDurability::Unsupported => DurabilityStatus::Unsupported,
+                BlobDurability::Unavailable => DurabilityStatus::Unavailable,
+                BlobDurability::Durable => DurabilityStatus::Durable,
+            });
+            Ok(())
+        })
+    }
 }
 
 fn write_ref(mut target: crate::blobs_capnp::blob_ref::Builder<'_>, stored: &BlobRef) {
@@ -662,6 +711,11 @@ type Reply<T> = std::sync::mpsc::SyncSender<Result<T, BlobError>>;
 /// so a long transfer never holds the driver while other callers wait.
 enum Job {
     Store(StoreJob),
+    Durability {
+        target: u64,
+        hash: String,
+        reply: Reply<BlobDurability>,
+    },
     Read {
         target: u64,
         hash: String,
@@ -938,6 +992,23 @@ impl BlobClient {
             hash,
             offset,
             max_len,
+            reply,
+        })
+    }
+
+    /// Ask the storage owner for this scope's current durable custody.
+    /// Older servers return Unsupported; cached reads cannot answer this.
+    ///
+    /// # Errors
+    /// Refuses invalid hashes, root-session data access and failed barriers.
+    pub fn durability(&self, hash: &str) -> Result<BlobDurability, BlobError> {
+        let target = self.data_target()?;
+        if !valid_hash(hash) {
+            return Err(BlobError::InvalidHash);
+        }
+        self.call(|reply| Job::Durability {
+            target,
+            hash: hash.to_owned(),
             reply,
         })
     }
@@ -1266,12 +1337,52 @@ fn drive(fd: RawFd, session: bool, mut jobs: tokio::sync::mpsc::UnboundedReceive
     });
 }
 
+fn query_durability(
+    connection: &Connection,
+    target: u64,
+    hash: &str,
+) -> Promise<BlobDurability, BlobError> {
+    let client = match connection.scope(target) {
+        Ok(client) => client,
+        Err(error) => return Promise::err(error),
+    };
+    let mut request = client.durability_request();
+    request.get().set_hash(hash);
+    let response = request.send().promise;
+    Promise::from_future(async move {
+        let answer = match response.await {
+            Ok(answer) => answer,
+            Err(error) if error.kind == capnp::ErrorKind::Unimplemented => {
+                return Ok(BlobDurability::Unsupported);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let status = answer
+            .get()?
+            .get_status()
+            .map_err(|error| BlobError::Refused(error.to_string()))?;
+        Ok(match status {
+            DurabilityStatus::Unsupported => BlobDurability::Unsupported,
+            DurabilityStatus::Unavailable => BlobDurability::Unavailable,
+            DurabilityStatus::Durable => BlobDurability::Durable,
+        })
+    })
+}
+
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc clients are Rc-based and driven on this thread's LocalSet"
 )]
 async fn run_job(job: Job, connection: &Connection) {
     match job {
+        Job::Durability {
+            target,
+            hash,
+            reply,
+        } => {
+            let result = query_durability(connection, target, &hash).await;
+            let _ = reply.send(result);
+        }
         Job::Store(job) => store(job, connection).await,
         Job::Read {
             target,

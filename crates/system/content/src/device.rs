@@ -153,6 +153,22 @@ impl DeviceBackend {
 }
 
 impl ContentBackend for DeviceBackend {
+    fn durability(&self, hash: &str) -> Result<crate::ContentDurability, ContentError> {
+        use crate::ContentDurability;
+        use runtime_fs::blobs::BlobDurability;
+        if !valid_hash(hash) {
+            return Err(ContentError::InvalidHash(hash.to_owned()));
+        }
+        self.client
+            .durability(&hash.to_ascii_lowercase())
+            .map(|status| match status {
+                BlobDurability::Unsupported => ContentDurability::Unsupported,
+                BlobDurability::Unavailable => ContentDurability::Absent,
+                BlobDurability::Durable => ContentDurability::Durable,
+            })
+            .map_err(store_error)
+    }
+
     /// Streams `reader` to the daemon, holding at most one chunk of it. Nothing is cached: the
     /// writer already has the bytes.
     fn put(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError> {
@@ -231,6 +247,34 @@ mod tests {
 
     fn item(byte: u8) -> Arc<[u8]> {
         vec![byte; 4].into()
+    }
+
+    #[test]
+    fn durability_refuses_cached_bytes_when_the_owner_is_disconnected() {
+        let (stream, peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let backend = DeviceBackend::new(BlobClient::from_app_stream(stream).unwrap());
+        let bytes = b"cached reviewed media";
+        let hash = crate::hash_bytes(bytes);
+        backend
+            .cache
+            .lock()
+            .unwrap()
+            .insert(&hash, bytes.as_slice().into());
+        drop(peer);
+
+        let mut cached = Vec::new();
+        backend
+            .open(&hash)
+            .unwrap()
+            .unwrap()
+            .read_to_end(&mut cached)
+            .unwrap();
+        assert_eq!(cached, bytes);
+        assert!(backend.durability(&hash).is_err());
+        assert!(matches!(
+            backend.durability("../private"),
+            Err(ContentError::InvalidHash(_))
+        ));
     }
 
     #[test]

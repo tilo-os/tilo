@@ -80,15 +80,19 @@ impl ContentBackend for FilesBackend {
         let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let dir = self.dir()?;
         let path = Self::path(&hash)?;
-        // Re-storing content already retained consumes no more quota.
-        if blocking::metadata(&dir, &path).is_ok() {
-            return Ok(Stored { hash, len });
-        }
         let entries = self.entries(&dir)?;
-        let held = entries.iter().fold(0_usize, |sum, (_, len)| {
-            sum.saturating_add(usize::try_from(*len).unwrap_or(usize::MAX))
-        });
-        check_new_item(&self.limits, held, entries.len(), bytes.len())?;
+        let replacing = entries.iter().any(|(address, _)| address == &hash);
+        let held = entries
+            .iter()
+            .filter(|(address, _)| address != &hash)
+            .fold(0_usize, |sum, (_, len)| {
+                sum.saturating_add(usize::try_from(*len).unwrap_or(usize::MAX))
+            });
+        let count = entries.len().saturating_sub(usize::from(replacing));
+        check_new_item(&self.limits, held, count, bytes.len())?;
+        // The browser mirror retains bytes even when their OPFS write failed.
+        // Presence cannot suppress a retry: queue this exact write again, and
+        // replace corrupt bytes at the address without double-counting quota.
         blocking::write_atomic(&dir, &path, &bytes).map_err(|error| io(&error))?;
         Ok(Stored { hash, len })
     }
@@ -163,5 +167,41 @@ mod tests {
             .expect("a files store collects");
         assert_eq!(collected.hashes, vec![kept]);
         assert!(store.put(b"67890").is_ok());
+    }
+
+    #[test]
+    fn retry_reissues_the_content_write_without_consuming_more_quota() {
+        let location = tilo_paths::AppPaths::memory("so.tilo.content-retry").data();
+        let dir = Dir::open(location.clone()).unwrap();
+        let watch = dir.watch(&VPath::root()).unwrap();
+        let store = ContentStore::new(FilesBackend::new(
+            location,
+            ContentLimits {
+                max_total_bytes: 5,
+                max_entries: 1,
+                ..ContentLimits::default()
+            },
+        ));
+        let hash = store.put(b"12345").unwrap();
+        assert!(watch.try_next().is_some());
+        while watch.try_next().is_some() {}
+        assert_eq!(store.put(b"12345").unwrap(), hash);
+        assert!(
+            watch.try_next().is_some(),
+            "a retry must issue another storage write even when the mirror has the bytes"
+        );
+        assert_eq!(store.read(&hash).as_deref(), Some(&b"12345"[..]));
+    }
+
+    #[test]
+    fn retry_replaces_corrupt_bytes_at_the_existing_address() {
+        let location = tilo_paths::AppPaths::memory("so.tilo.content-repair").data();
+        let dir = Dir::open(location.clone()).unwrap();
+        let store = ContentStore::new(FilesBackend::new(location, ContentLimits::default()));
+        let hash = store.put(b"reviewed image").unwrap();
+        blocking::write_atomic(&dir, &FilesBackend::path(&hash).unwrap(), b"corrupt").unwrap();
+        assert_ne!(store.read(&hash).as_deref(), Some(&b"reviewed image"[..]));
+        assert_eq!(store.put(b"reviewed image").unwrap(), hash);
+        assert_eq!(store.read(&hash).as_deref(), Some(&b"reviewed image"[..]));
     }
 }

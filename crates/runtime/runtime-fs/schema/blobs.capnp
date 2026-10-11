@@ -41,6 +41,17 @@ interface DocumentBlobs {
 
   # The content length of a readable `hash`, if this device knows it.
   size @4 (hash :Text) -> (known :Bool, len :UInt64);
+
+  # Current owner-scoped persistence witness, never a cache/presence check.
+  # Unavailable covers both missing bytes and a hash outside this scope.
+  # Unqualified backends and older servers cannot attest durability.
+  durability @5 (hash :Text) -> (status :DurabilityStatus);
+}
+
+enum DurabilityStatus {
+  unsupported @0;
+  unavailable @1;
+  durable @2;
 }
 
 interface BlobUpload {

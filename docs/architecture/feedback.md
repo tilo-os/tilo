@@ -286,8 +286,22 @@ Peer close retires unused custody. URL/JSON launch options have no authority
 fields. `NoCapture` explicitly supports description-only review until a qualified
 focused-surface capture/context adapter is supplied; opt-in capture then refuses.
 The canonical service refuses screenshot-bearing acknowledgments until a durable
-content witness is integrated; Saved report metadata alone cannot confirm an
-attachment.
+owner-scoped media reader is bound; Saved report metadata alone cannot confirm
+an attachment. The append-only `DocumentBlobs.durability`
+query carries a backend's current scoped witness over the existing launch
+capability. `DeviceBackend` delegates it without consulting its read cache or
+`has()`. Older servers and unqualified backends answer `Unsupported`; neither
+that query nor metadata transaction completion qualifies the filesystem daemon
+or relay as a durable image owner. Their persistence barriers and receipt
+binding remain implementation work coordinated with the document-media owner.
+
+The page's `FilesBackend` reissues an atomic write when reviewed content is
+stored again, even if its address already exists in the synchronous mirror.
+This retries a failed OPFS write and replaces corrupt bytes without counting
+the replacement twice against quota. Completion of that synchronous call
+still cannot attest OPFS commit: browser media custody needs fresh persisted
+readback and a per-address witness, not mirror presence or a cleared global
+write-failure indicator.
 
 These are source hooks, not an enabled public guest endpoint. The current
 `RoomRecordsLink::view_document`/`RelayRecordsLink` interface carries verified

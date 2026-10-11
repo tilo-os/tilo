@@ -140,6 +140,67 @@ impl Harness {
 }
 
 #[test]
+fn durability_does_not_promote_present_memory_or_unscoped_access() {
+    let harness = Harness::start();
+    let client = harness.app("room-1", "so.tilo.chat");
+    let stored = client.put(b"present but ephemeral", "image/png").unwrap();
+    assert!(client.has(&stored.hash).unwrap());
+    assert!(matches!(
+        client.read_all(&stored.hash).unwrap(),
+        ReadOutcome::Ready { .. }
+    ));
+    harness.backend.reads.lock().unwrap().clear();
+    assert_eq!(
+        client.durability(&stored.hash).unwrap(),
+        BlobDurability::Unsupported
+    );
+    assert!(harness.backend.reads.lock().unwrap().is_empty());
+    let stranger = harness.app("room-2", "so.tilo.chat");
+    assert_eq!(
+        stranger.durability(&stored.hash).unwrap(),
+        BlobDurability::Unsupported
+    );
+    assert_eq!(client.durability("../private"), Err(BlobError::InvalidHash));
+    let session = BlobClient::connect_session(&harness.socket).unwrap();
+    assert_eq!(
+        session.durability(&stored.hash),
+        Err(BlobError::InvalidScope)
+    );
+}
+
+// An older server has no implementation of the appended method. Exercise
+// the production job handler against that Cap'n Proto method response.
+struct LegacyBlobs;
+impl document_blobs::Server for LegacyBlobs {}
+
+#[test]
+fn durability_treats_an_older_server_as_unsupported() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    tokio::task::LocalSet::new().block_on(&runtime, async {
+        let connection = Connection {
+            session_root: None,
+            scopes: RefCell::new(HashMap::from([(0, capnp_rpc::new_client(LegacyBlobs))])),
+            uploads: RefCell::default(),
+            next_id: Cell::new(1),
+        };
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        run_job(
+            Job::Durability {
+                target: 0,
+                hash: blake3::hash(b"legacy").to_hex().to_string(),
+                reply,
+            },
+            &connection,
+        )
+        .await;
+        assert_eq!(answer.recv().unwrap().unwrap(), BlobDurability::Unsupported);
+    });
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario, one labelled phase per merged case"
