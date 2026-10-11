@@ -25,7 +25,7 @@ impl App {
             self.bindings.clear();
             self.focused_node = None;
             history.invalidate_owner();
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         }
         self.persistence.autosave = Some(autosave);
         self
@@ -44,7 +44,7 @@ impl App {
             self.bindings.clear();
             self.focused_node = None;
             history.invalidate_owner();
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         }
         // Learn the current room grant before the widget selects a record.
         // Discovery is metadata-only: it must not create an empty record
@@ -131,7 +131,7 @@ impl App {
         self.layout.node_map.clear();
         self.bindings.clear();
         self.focused_node = None;
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.layout.layout_dirty = true;
         self.needs_sync = true;
         if let Some(registration) = history
@@ -226,7 +226,7 @@ impl App {
                     self.bindings.clear();
                     self.focused_node = None;
                     history.invalidate_owner();
-                    self.layout.structure_dirty = true;
+                    self.layout.request_rebuild();
                 }
                 self.state.rebase_outbound();
                 // Preserve the launcher's unqualified route for the room

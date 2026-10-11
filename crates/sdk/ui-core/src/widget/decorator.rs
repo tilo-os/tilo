@@ -640,6 +640,14 @@ pub trait Decorator: Sized + 'static {
         self.inner_mut().take_structure_dirty()
     }
 
+    /// A decorator's structure flag is its own [`Decorator::take_structure_dirty`]
+    /// (which may add flags of its own), so by default it says
+    /// [`super::StructureChange::Rebuild`]; one that adds no flags forwards
+    /// its inner widget's change by overriding this.
+    fn take_structure_change(&mut self) -> super::StructureChange {
+        super::StructureChange::of(Decorator::take_structure_dirty(self))
+    }
+
     fn has_pending_visual_work(&self) -> bool {
         self.inner().has_pending_visual_work()
     }
@@ -1281,6 +1289,10 @@ impl<T: Decorator> Widget for T {
 
     fn take_structure_dirty(&mut self) -> bool {
         Decorator::take_structure_dirty(self)
+    }
+
+    fn take_structure_change(&mut self) -> super::StructureChange {
+        Decorator::take_structure_change(self)
     }
 
     fn has_pending_visual_work(&self) -> bool {

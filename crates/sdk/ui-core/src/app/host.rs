@@ -131,7 +131,7 @@ fn draw_frame_content(
             &app.presence_ctx,
         ) {
             tracing::debug!(?error, "history frame refused");
-            app.layout.structure_dirty = true;
+            app.layout.request_rebuild();
             app.layout.layout_dirty = true;
         }
     }
@@ -534,7 +534,7 @@ fn run_layout_pass(
     let viewport_changed = app.layout.last_layout_logical != Some(logical);
     if app.history_chrome_enabled {
         if (app.history_viewport_width >= 900.0) != (logical.0 >= 900.0) {
-            app.layout.structure_dirty = true;
+            app.layout.request_rebuild();
         }
         app.history_viewport_width = logical.0;
         let _ = app.history_local_resources();
@@ -658,7 +658,13 @@ fn run_layout_pass(
         app.layout.last_layout_logical = None;
         return None;
     }
+    if recomposed && viewport_changed {
+        // Composition settled against a new allocation: what moved is not
+        // a change any widget described.
+        app.layout.frame_rebuilds_described = false;
+    }
     if app.settle_history_presentation() {
+        app.layout.frame_rebuilds_described = false;
         let root = app.layout.root_node?;
         return run_layout_pass(app, root, width, height, scale_factor, true, native_host);
     }

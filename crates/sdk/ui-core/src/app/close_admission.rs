@@ -26,7 +26,7 @@ impl App {
         self.actions.action_palette = None;
         self.bindings.clear();
         self.layout.node_map.clear();
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.layout.layout_dirty = true;
     }
     /// Refusal keeps every live owner and wake scope available for editing.

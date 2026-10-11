@@ -983,6 +983,12 @@ impl Decorator for HostedSurface {
         self.host.view_only_scroll(event)
     }
 
+    // The host adds no structure of its own: a change its surface can
+    // describe stays described.
+    fn take_structure_change(&mut self) -> ui_core::widget::StructureChange {
+        self.host.surface_mut().take_structure_change()
+    }
+
     // The host is invisible to whoever reaches the surface by its type (a
     // test driving it, a host that embeds it): it answers as the surface.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
