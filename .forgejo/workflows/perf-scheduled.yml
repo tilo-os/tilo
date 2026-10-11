@@ -415,7 +415,9 @@ jobs:
   # Render frame time at native 4K (TIL-582): the toolkit's dashboard harness
   # (`ui-perf dashboard_perf_bench`, 1,000 events) and the shell's
   # `redraw_bench` (1,000 clicks through FrameBuilder, the DRM bridge's render,
-  # readback and XRGB swizzle), both release builds made once here, through
+  # readback and XRGB swizzle) and its `strip_pan_bench` (strip pans and
+  # strip-to-strip moves composited from retained layers), all
+  # release builds made once here, through
   # scripts/perf/render_bench.py: retained-frame pixel parity first, then the
   # timed runs, then the toolkit's runner-independent counters (the per-change
   # gate, ci-render-counters.yml). The runner has no GPU; lavapipe times the
@@ -458,6 +460,8 @@ jobs:
             cargo build --locked --release -p ui-examples --example ui-perf
           bash scripts/ci-run.sh "redraw_bench release build" -- \
             cargo build --locked --release -p shell --example redraw_bench
+          bash scripts/ci-run.sh "strip_pan_bench release build" -- \
+            cargo build --locked --release -p shell --example strip_pan_bench
           bash scripts/ci-run.sh "framework-scaling release build" -- \
             cargo build --locked --release -p tilo-app --features test-support --example framework-scaling
 
@@ -471,6 +475,7 @@ jobs:
             --virtualization kvm --runner runner > perf/env.json
           python3 scripts/perf/render_bench.py timing target/release/examples/ui-perf \
             target/release/examples/redraw_bench --env-json perf/env.json --out perf \
+            --strip-pan-bench target/release/examples/strip_pan_bench \
             --records perf/render.jsonl
           # Opening a framework app over a long list (TIL-758).
           target/release/examples/framework-scaling 5000,50000 open | tee perf/framework-open.log

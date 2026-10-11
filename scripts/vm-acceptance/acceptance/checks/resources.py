@@ -481,6 +481,69 @@ def write_footprint(ctx, name: str, fp: dict, ram_mib: float, variant: str = "")
     record_footprint(ctx, fp, ram_mib, variant)
 
 
+# Mapping classes that hold no memory of their own: address space reserved by
+# guards and glibc's arena tails, and the kernel's vdso/vvar pages.
+SHELL_UNCOUNTED = ("reserved", "kernel_pages")
+
+
+def parse_shell_memory_map(answer) -> dict:
+    """The compositor's `process_memory` answer -> the report, checked: Unobservable
+    unless it names its RSS and at least one class of mapping with resident memory."""
+    if not isinstance(answer, dict):
+        raise core.Unobservable(f"process_memory gave no answer: {str(answer)[:200]!r}")
+    classes = (answer.get("mappings") or {}).get("classes") or {}
+    if not answer.get("status_kib", {}).get("RssAnon") or not any(
+            c.get("resident_kib") for name, c in classes.items() if name not in SHELL_UNCOUNTED):
+        raise core.Unobservable(f"process_memory named no resident mappings: {str(answer)[:200]!r}")
+    return answer
+
+
+def shell_memory_map(ctx) -> dict:
+    """The compositor's own breakdown of its memory by kind of mapping (mincore over
+    /proc/self/maps, in-process, as Tilo's kernel has no smaps), glibc's heap split and
+    its threads by name: `tilo-control raw '{"op":"process_memory"}'`."""
+    try:
+        reply = ctx.vm.raw({"op": "process_memory"})
+    except Exception as e:  # noqa: BLE001 - any failure to ask is an unobserved subject
+        raise core.Unobservable(f"process_memory: {e}") from e
+    return parse_shell_memory_map((reply or {}).get("answer"))
+
+
+def shell_parts_mib(report: dict) -> dict:
+    """Resident MiB per mapping class, largest first, plus glibc's heap in use and free."""
+    classes = report["mappings"]["classes"]
+    parts = {name: round(c["resident_kib"] / 1024, 1)
+             for name, c in sorted(classes.items(), key=lambda kv: -kv[1]["resident_kib"])
+             if name not in SHELL_UNCOUNTED}
+    malloc = report.get("malloc") or {}
+    if "in_use_kib" in malloc:
+        parts["malloc_in_use"] = round(malloc["in_use_kib"] / 1024, 1)
+        parts["malloc_free"] = round(malloc["free_kib"] / 1024, 1)
+    return parts
+
+
+def record_shell_parts(ctx, report: dict, variant: str = "") -> None:
+    """`memory.shell_parts_mib.<class>`: the compositor's resident memory per mapping
+    class; `memory.shell_parts_mib.malloc_{in_use,free}`: glibc's heap split;
+    `memory.shell_threads`: its thread count. `variant` is a suffix."""
+    suffix = f".{variant}" if variant else ""
+    for name, value in shell_parts_mib(report).items():
+        ctx.record(f"memory.shell_parts_mib.{name}{suffix}", "MiB", [value],
+                   what="compositor resident memory by mapping class (resources.py shell_memory_map)")
+    threads = report["status_kib"].get("Threads")
+    if threads is not None:
+        ctx.record(f"memory.shell_threads{suffix}", "count", [threads], what="compositor threads")
+
+
+def shell_idle_anon_problems(anon_mib: float, budgets: dict) -> list[str]:
+    """The idle compositor's anonymous RSS against `shell_idle_anon_mb`."""
+    budget = budgets["shell_idle_anon_mb"]
+    if anon_mib > budget:
+        return [f"idle compositor anonymous RSS {anon_mib} MB > {budget} MB "
+                "(R01-shell-memory-map.json names its mappings)"]
+    return []
+
+
 def shell_anon_mib(table: dict, slot_uid: int) -> float | None:
     """The compositor's anonymous RSS in a `core.parse_processes` table."""
     slot = {p["pid"]: p for p in table["procs"].values() if p["uid"] == slot_uid}
@@ -668,6 +731,7 @@ def idle_empty(ctx, res):
         res.metrics["shell_anon_rss_mib"] = smaps["anon_rss_mib"]
         ctx.record("memory.shell_anon_mib.empty", "MiB", [smaps["anon_rss_mib"]])
         _record_shell_shm(ctx, res, smaps)
+        problems += shell_idle_anon_problems(smaps["anon_rss_mib"], ctx.config["budgets"])
     # What the idle RAM is made of, every user's processes and cgroups.
     try:
         fp = footprint(ctx)
@@ -676,6 +740,15 @@ def idle_empty(ctx, res):
     else:
         write_footprint(ctx, "R01-footprint.json", fp, m["guest_ram_used_mib"])
         res.metrics["footprint_mib"] = _footprint_summary(fp, m["guest_ram_used_mib"])
+    # What the compositor's own memory is: heap, stacks, GPU driver memory, fonts.
+    try:
+        report = shell_memory_map(ctx)
+    except core.Unobservable as e:
+        problems.append(f"compositor memory map: {e}")
+    else:
+        ctx.write("R01-shell-memory-map.json", json.dumps(report, indent=1))
+        record_shell_parts(ctx, report)
+        res.metrics["shell_parts_mib"] = shell_parts_mib(report)
     expect(not problems, "; ".join(problems))
 
 
@@ -813,6 +886,13 @@ def mem(ctx, res):
         # each trim's release of freed device memory.
         ctx.write("R03-renderer-memory.log", ctx.vm.exec(
             f'grep -a -E "RENDERER-MEMORY|DEVICE-MEMORY" "{core.SESSION_LOG}"; true', check=False))
+        try:
+            report = shell_memory_map(ctx)
+        except core.Unobservable as e:
+            unobserved.append(f"compositor memory map after the apps closed: {e}")
+        else:
+            ctx.write("R03-shell-memory-map-after-close.json", json.dumps(report, indent=1))
+            record_shell_parts(ctx, report, "after_close")
     try:
         res.metrics["disk"] = record_disk(ctx)
     except core.Unobservable as e:
