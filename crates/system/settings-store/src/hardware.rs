@@ -1493,6 +1493,11 @@ fn valid_xkb_name(value: &str) -> bool {
 }
 
 impl RichInputConfig {
+    /// The persisted input section, parsed by [`Self::from_section`].
+    pub fn load() -> Self {
+        Self::from_section(&super::load_section(INPUT_SECTION))
+    }
+
     /// Parse the input section field by field: a missing or wrong-typed
     /// value only resets itself to its default. Old single-layout documents
     /// are then reconciled with the ordered source list, so
