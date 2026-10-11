@@ -1031,7 +1031,12 @@ impl<T: Model> Model for Grid<T> {
 /// How the owning device settled an [`Outbox`] entry, with what its handler
 /// reports back (`O`): where a trashed file went, the name a copy got, the
 /// id a server gave the upload.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Its JSON form is `{"state": "done", "result": O}` or `{"state": "failed",
+/// "result": {"reason": .., "partial": O}}`. It is read through one JSON value
+/// ([`Settled::from_json_value`]), so `O` is decoded by its value decoder
+/// alone, never through serde's buffered copy of a tagged enum.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", content = "result", rename_all = "kebab-case")]
 pub enum Settled<O = ()> {
     /// The outside consequence happened.
@@ -1068,6 +1073,77 @@ impl<O> Settled<O> {
     }
 }
 
+impl<'de, O: serde::de::DeserializeOwned> Deserialize<'de> for Settled<O> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <serde_json::Value as Deserialize>::deserialize(deserializer)?;
+        Self::from_json_value(value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl<O: serde::de::DeserializeOwned> Settled<O> {
+    /// Read from its JSON form.
+    ///
+    /// # Errors
+    /// Why `value` is not a settlement with an `O`.
+    pub fn from_json_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+        Ok(match settled_parts(value)? {
+            (true, result) => Self::Done(serde_json::from_value(result)?),
+            (false, result) => {
+                let (reason, partial) = failed_parts(result)?;
+                Self::Failed {
+                    reason,
+                    partial: serde_json::from_value(partial)?,
+                }
+            }
+        })
+    }
+}
+
+/// Whether a settlement's JSON form says done, and its `result`.
+#[inline(never)]
+fn settled_parts(value: serde_json::Value) -> Result<(bool, serde_json::Value), serde_json::Error> {
+    use serde::de::Error as _;
+    let serde_json::Value::Object(mut fields) = value else {
+        return Err(serde_json::Error::custom("a settlement is an object"));
+    };
+    let done = match fields.remove("state") {
+        Some(serde_json::Value::String(state)) if state == "done" => true,
+        Some(serde_json::Value::String(state)) if state == "failed" => false,
+        Some(serde_json::Value::String(state)) => {
+            return Err(serde_json::Error::unknown_variant(
+                &state,
+                &["done", "failed"],
+            ));
+        }
+        Some(_) => return Err(serde_json::Error::custom("`state` is a string")),
+        None => return Err(serde_json::Error::missing_field("state")),
+    };
+    let result = fields
+        .remove("result")
+        .ok_or_else(|| serde_json::Error::missing_field("result"))?;
+    Ok((done, result))
+}
+
+/// A failed settlement's `reason` and its `partial` result.
+#[inline(never)]
+fn failed_parts(
+    result: serde_json::Value,
+) -> Result<(String, serde_json::Value), serde_json::Error> {
+    use serde::de::Error as _;
+    let serde_json::Value::Object(mut fields) = result else {
+        return Err(serde_json::Error::custom("a failure is an object"));
+    };
+    let reason = match fields.remove("reason") {
+        Some(serde_json::Value::String(reason)) => reason,
+        Some(_) => return Err(serde_json::Error::custom("`reason` is a string")),
+        None => return Err(serde_json::Error::missing_field("reason")),
+    };
+    let partial = fields
+        .remove("partial")
+        .ok_or_else(|| serde_json::Error::missing_field("partial"))?;
+    Ok((reason, partial))
+}
+
 impl<O: Default> Settled<O> {
     /// Failed for good with nothing done.
     #[must_use]
@@ -1089,13 +1165,14 @@ impl<O: Serialize + serde::de::DeserializeOwned + 'static> Model for Settled<O> 
     }
     #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
-        serde_json::from_value(value.clone())
-            .map_err(|error| ModelError::invalid(error.to_string()))
+        Self::from_json_value(value.clone()).map_err(|error| ModelError::invalid(error.to_string()))
     }
     #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         let text = String::load(doc, value, id)?;
-        serde_json::from_str(&text).map_err(|error| ModelError::invalid(error.to_string()))
+        serde_json::from_str::<serde_json::Value>(&text)
+            .and_then(Self::from_json_value)
+            .map_err(|error| ModelError::invalid(error.to_string()))
     }
     #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {

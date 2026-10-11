@@ -495,3 +495,37 @@ fn a_change_too_large_to_record_its_restoring_edits_still_undoes_through_apply()
         "taking events back queues nothing new for them"
     );
 }
+
+/// A settlement's JSON form is read back as written, both ways it can end,
+/// and a form that is no settlement says why.
+#[test]
+fn a_settlement_reads_back_its_json_form() {
+    use tilo_resource::Settled;
+    let done: Settled<Vec<String>> = Settled::Done(vec!["a.txt".into()]);
+    let failed: Settled<Vec<String>> = Settled::Failed {
+        reason: "disk full".into(),
+        partial: vec!["b.txt".into()],
+    };
+    for settled in [done, failed] {
+        let text = serde_json::to_string(&settled).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Settled<Vec<String>>>(&text).unwrap(),
+            settled
+        );
+        let value = serde_json::to_value(&settled).unwrap();
+        assert_eq!(Settled::from_json_value(value).unwrap(), settled);
+    }
+    assert_eq!(
+        serde_json::to_string(&Settled::<u8>::Done(3)).unwrap(),
+        r#"{"state":"done","result":3}"#
+    );
+    for wrong in [
+        serde_json::json!({"state": "maybe", "result": 1}),
+        serde_json::json!({"result": 1}),
+        serde_json::json!({"state": "done"}),
+        serde_json::json!({"state": "failed", "result": {"partial": 1}}),
+        serde_json::json!([1]),
+    ] {
+        assert!(Settled::<u8>::from_json_value(wrong).is_err());
+    }
+}
