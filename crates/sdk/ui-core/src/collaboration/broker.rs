@@ -497,7 +497,11 @@ impl CollabTransport for BrokerTransport {
     }
 
     fn document_publishable(&self, channel: Option<&str>) -> bool {
-        channel.is_some_and(|channel| self.state.document_reads.publishable(channel))
+        // Withdrawn health withdraws read readiness at once: the route's
+        // reader only clears its gate when it next wakes, and a route whose
+        // transport failed elsewhere (a refused commit) is not publishable.
+        self.state.is_healthy()
+            && channel.is_some_and(|channel| self.state.document_reads.publishable(channel))
     }
 
     #[cfg(any(test, feature = "test-support"))]
