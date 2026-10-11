@@ -80,7 +80,6 @@ pub struct Desktop {
     control: PathBuf,
     /// The public Wayland socket clients connect to.
     wayland_socket: PathBuf,
-    size: (i32, i32),
     log: Arc<Mutex<Vec<String>>>,
     watch: Arc<Watch>,
     monitor: Option<std::thread::JoinHandle<()>>,
@@ -163,7 +162,6 @@ impl Desktop {
         let public = found["public"].clone();
         let mut desktop = Self {
             child: Mutex::new(child),
-            size,
             wayland_socket: runtime_dir.join(public),
             control: PathBuf::from(&found["control"]),
             runtime_dir,
@@ -180,11 +178,6 @@ impl Desktop {
             Arc::clone(&desktop.watch),
         ));
         desktop
-    }
-
-    /// The headless screen, `(width, height)`.
-    pub const fn size(&self) -> (i32, i32) {
-        self.size
     }
 
     /// The wayland socket's file name, as `WAYLAND_DISPLAY` takes it.
@@ -331,14 +324,26 @@ impl Desktop {
 
     /// Wait for `condition` to hold, polling; a stall or the hang bound fails.
     #[track_caller]
-    pub fn wait_for(&self, what: &str, mut condition: impl FnMut() -> bool) {
+    pub fn wait_for(&self, what: &str, condition: impl FnMut() -> bool) {
+        self.wait_for_with(what, String::new, condition);
+    }
+
+    /// [`Self::wait_for`], with `context` called to add to the failure message.
+    #[track_caller]
+    pub fn wait_for_with(
+        &self,
+        what: &str,
+        context: impl Fn() -> String,
+        mut condition: impl FnMut() -> bool,
+    ) {
         let started = Instant::now();
         while !condition() {
             self.check();
             assert!(
                 started.elapsed() < tilo_test_env::hang_bound(),
-                "gave up waiting for {what} after {:?}\n{}",
+                "gave up waiting for {what} after {:?}\n{}\n{}",
                 started.elapsed(),
+                context(),
                 self.recent_log(40)
             );
             std::thread::sleep(Duration::from_millis(20));
@@ -402,27 +407,6 @@ impl Desktop {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_else(|| panic!("windows answered {reply}"))
-    }
-
-    /// The named widget rectangles, `(name, [x, y, w, h])`.
-    #[track_caller]
-    pub fn targets(&self) -> Vec<(String, [f64; 4])> {
-        let reply = self.ok(&json!({"op": "list_targets"}));
-        reply
-            .get("targets")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|entry| {
-                let name = entry.get("name")?.as_str()?.to_string();
-                let rect = entry.get("rect")?.as_array()?;
-                let mut out = [0.0; 4];
-                for (slot, value) in out.iter_mut().zip(rect) {
-                    *slot = value.as_f64()?;
-                }
-                Some((name, out))
-            })
-            .collect()
     }
 
     /// The tracked foreign (Wayland) surfaces.
