@@ -229,6 +229,22 @@ pub enum StoreEffect {
         #[param("App identity (for example so.tilo.notes)")]
         app: String,
     },
+    /// Review the exact runtime required by an app; installing remains a separate step.
+    #[effect(job, permission = "read")]
+    ShowRuntimeDetails {
+        #[param("Exact runtime reference, for example tilo-runtime/2026.10.4-chromium")]
+        runtime: String,
+        #[param("Optional enabled repository name; omit only when its offer is unambiguous")]
+        registry: Option<String>,
+    },
+    /// Install the reviewed signed runtime without launching an application.
+    #[effect(job)]
+    InstallRuntime {
+        #[param("Reviewed runtime package identity")]
+        app: String,
+        #[param("Exact reviewed signed package root")]
+        root: String,
+    },
     /// Show or hide technical package details.
     #[effect(permission = "read")]
     SetTechnicalDetails {
@@ -406,8 +422,17 @@ pub enum StoreEffect {
 
 impl StoreEffect {
     /// The effect that carries out `action` on `app`.
-    pub fn package(action: ActionKind, app: String) -> Self {
+    pub fn package(action: ActionKind, item: &crate::StoreItem) -> Self {
+        let app = item.id.clone();
         match action {
+            ActionKind::RuntimeInstall => Self::InstallRuntime {
+                app,
+                root: item
+                    .versions
+                    .first()
+                    .and_then(|version| version.root_hash_hex.clone())
+                    .unwrap_or_default(),
+            },
             ActionKind::Open => Self::Open { app },
             ActionKind::Update => Self::Update { app },
             ActionKind::Remove => Self::Remove { app },
@@ -425,6 +450,7 @@ impl StoreEffect {
     /// one.
     pub fn as_package(&self) -> Option<(&str, ActionKind)> {
         let (app, action) = match self {
+            Self::InstallRuntime { app, .. } => (app, ActionKind::RuntimeInstall),
             Self::Open { app } => (app, ActionKind::Open),
             Self::Update { app } => (app, ActionKind::Update),
             Self::Remove { app } => (app, ActionKind::Remove),
@@ -572,6 +598,12 @@ impl ResourceApp for StoreShell {
             if argument == "tilo-store:catalogue" {
                 StoreEffect::ShowCatalogue
             } else if argument.starts_with("tilo-store:") {
+                if let Some(runtime) = argument.strip_prefix("tilo-store:runtime/") {
+                    return vec![Invoke::effect(&StoreEffect::ShowRuntimeDetails {
+                        runtime: runtime.to_owned(),
+                        registry: None,
+                    })];
+                }
                 match parse_store_uri(argument) {
                     Ok(app) => StoreEffect::ShowDetails { app },
                     Err(error) => {

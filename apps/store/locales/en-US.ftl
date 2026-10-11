@@ -76,3 +76,13 @@ store-operation-failed = Could not complete the operation
 store-error-refresh = Refresh apps
 store-repository-timeout = { $name } did not respond. Other apps remain available. Refresh apps to try again.
 store-build-version = Full build version
+
+store-runtime-install = Install runtime
+store-runtime-reference = Required runtime
+store-runtime-installed = Installed { $name } { $version }. Open the app again to use it.
+store-runtime-reviewed = Reviewed { $name }. Installation remains a separate step.
+store-runtime-changed = The reviewed runtime package changed; review it again.
+store-runtime-service-unavailable = The app service is unavailable. No runtime operation was attempted.
+store-runtime-offer-mismatch = The signed runtime offer does not match the requested identity.
+store-runtime-offer-ambiguous = More than one repository offers this runtime. Choose one repository before installing.
+store-runtime-unavailable = No enabled repository offers the required runtime for this device.

@@ -300,6 +300,34 @@ impl BlockingClient {
         self.complete(self.begin_registry_catalogue(registry))
     }
 
+    /// Resolve a signed offer providing exactly this runtime, without
+    /// installation, as its JSON catalogue entry (`null` when none is offered).
+    /// The caller owns parsing, so this client stays free of the installer.
+    ///
+    /// # Errors
+    /// Returns a repository proof, transport or response error.
+    pub fn runtime_offer(
+        &self,
+        registry: &str,
+        runtime: &str,
+    ) -> Result<String, String> {
+        let mut request = self.client.runtime_offer_request();
+        request.get().set_registry(registry);
+        request.get().set_runtime(runtime);
+        let response = self.wait(request.send().promise)?;
+        let json = response
+            .get()
+            .map_err(|error| error.to_string())?
+            .get_offer()
+            .map_err(|error| error.to_string())?
+            .to_string()
+            .map_err(|error| error.to_string())?;
+        if json.len() > 256 * 1024 {
+            return Err("runtime offer exceeds the response limit".into());
+        }
+        Ok(json)
+    }
+
     /// Read cached app metadata from one configured Flatpak repository.
     ///
     /// # Errors

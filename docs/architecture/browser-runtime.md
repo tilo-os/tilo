@@ -1421,3 +1421,5 @@ If the exact engine is not offered, this command fails. The maintained
 `engine_runtime_only=true`, `architectures=aarch64`, `apps=browser`, and
 `publish=true`. Publication and an installed, verified engine are separate
 prerequisites; an accepted Browser Open is not proof of either.
+
+The Browser's Install engine action opens `tilo-store:runtime/tilo-runtime/2026.10.4-chromium`. Store asks its launcher-issued AppHost capability to resolve that precise runtime from the person's enabled, independently pinned repositories, including retained versions. The ordinary details sheet shows the signed runtime reference and package version. Review installs nothing. The separate Install runtime action binds the selected signed root and uses the same exact-version InstallOffer downloader/installer as other Store packages, with no launch of the engine host. A changed review, missing offer or ambiguous repository selection refuses rather than choosing another runtime. Matching Store and AppHost schema versions must be delivered together.
