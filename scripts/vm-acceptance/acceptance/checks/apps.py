@@ -267,11 +267,12 @@ def _close(ctx, res, label, gid, app_procs, toasts0):
     launch = ctx.facts[f"launch:{label}"]
     queue = [gid]
     closed = {}
+    invoked = set()
     examined = set(before)
 
     def observe(st, closing=None):
         groups = core.all_groups(st)
-        candidates = [g for g in groups if g["id"] != gid and
+        candidates = [g for g in groups if g["id"] != gid and g["id"] not in invoked and
                       (g["id"] in queue or g["id"] not in examined)]
         eligible = set()
         if candidates:
@@ -290,6 +291,8 @@ def _close(ctx, res, label, gid, app_procs, toasts0):
         # Capture all pending titles before invoking a close: it can end dialogs too.
         for group in groups:
             group_id = group["id"]
+            if group_id in invoked:
+                continue
             if group_id == gid or group_id in eligible:
                 closed[group_id] = [tab.get("title") or "" for tab in group["tabs"]]
             elif group_id in queue:
@@ -304,7 +307,15 @@ def _close(ctx, res, label, gid, app_procs, toasts0):
     deadline = time.monotonic() + 10
     for other in queue:
         expect(time.monotonic() < deadline, f"new app windows kept appearing while closing {label} for 10 s")
-        close_group(ctx, other, lambda st: observe(st, other))
+        def guard(st):
+            accepted = observe(st, other)
+            if accepted and core.group_by_id(st, other) is not None:
+                # Foreign process exit and compositor group removal can happen
+                # separately. Once issued, retain this close's captured metadata.
+                invoked.add(other)
+            return accepted
+
+        close_group(ctx, other, guard)
         observe(ctx.state())
     ctx.wait_state(lambda s: core.group_by_id(s, gid) is None, 10, f"{label}'s window gone after close")
     left = wait_until(lambda: not lingering(_procs(ctx), launch, app_procs) or None, CLOSE_GRACE_S, 1.0)
