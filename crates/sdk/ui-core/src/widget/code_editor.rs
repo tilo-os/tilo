@@ -758,13 +758,14 @@ impl Widget for CodeEditor {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if self.read_only && matches!(action, crate::a11y::Action::SetValue(_)) {
             return false;
         }
-        self.inner.perform_action(action, state, path)
+        self.inner.perform_action(action, &[], state, path)
     }
 
     fn wants_pointer_capture(&self) -> bool {

@@ -1057,6 +1057,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         state: &mut Edits<'_>,
         path: &ModelPath,
     ) -> bool {
@@ -1075,7 +1076,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             }
             // What the action edited is written by the settle pass that
             // follows.
-            _ => self.editor.perform_action(action, state, path),
+            _ => self.editor.perform_action(action, &[], state, path),
         }
     }
 }

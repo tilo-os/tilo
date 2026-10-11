@@ -1923,6 +1923,7 @@ impl Widget for MainPanel {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
@@ -1971,10 +1972,10 @@ impl Widget for MainPanel {
             return true;
         }
         if target == "notes.first_note" && self.page_id.is_none() {
-            return self.perform_action(action, state, path);
+            return self.perform_action(action, &[], state, path);
         }
         if target == "notes.page-title" {
-            return Widget::perform_action(&mut self.title_label, action, state, path);
+            return Widget::perform_action(&mut self.title_label, action, &[], state, path);
         }
         false
     }
@@ -2136,6 +2137,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             assert!(p.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut Edits::lend(&mut doc),
                 &ObjId::Root
             ));

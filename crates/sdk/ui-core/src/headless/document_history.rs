@@ -875,7 +875,7 @@ impl FrameHarness {
                         path,
                     )
                 } else {
-                    widget.perform_action(action, &mut crate::widget::Edits::lend(doc), path)
+                    widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), path)
                 }
             })
             .map_err(|error| format!("History action refused: {error:?}"))?;

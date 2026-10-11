@@ -2902,39 +2902,32 @@ impl Widget for ListRow {
         !self.activation.state.disabled
     }
 
+    /// An action on the row itself, or on one of its action buttons (its
+    /// children in the accessibility tree, by position).
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _root: &crate::widget::ModelPath,
-    ) -> bool {
-        use crate::a11y::Action;
-        match action {
-            Action::Activate => {
-                if let Some(armed) = self.armed_action {
-                    return self.run_action(armed);
-                }
-                if self.activation.activate() {
-                    return true;
-                }
-                self.toggle_checkbox()
-            }
-            Action::ToggleCheck => self.toggle_checkbox(),
-            _ => false,
-        }
-    }
-
-    /// An action addressed to one of the row's action buttons (its children
-    /// in the accessibility tree, by position).
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
     ) -> bool {
         match key_path {
-            [] => self.perform_action(action, state, path),
+            [] => {
+                use crate::a11y::Action;
+                match action {
+                    Action::Activate => {
+                        if let Some(armed) = self.armed_action {
+                            return self.run_action(armed);
+                        }
+                        if self.activation.activate() {
+                            return true;
+                        }
+                        self.toggle_checkbox()
+                    }
+                    Action::ToggleCheck => self.toggle_checkbox(),
+                    _ => false,
+                }
+            }
             [index] if matches!(action, crate::a11y::Action::Activate) => {
                 usize::try_from(*index).is_ok_and(|index| self.run_action(index))
             }
@@ -3054,7 +3047,7 @@ impl Widget for ListRow {
     ) -> bool {
         let id = self.activation.id().to_owned();
         if target == id {
-            return self.perform_action(action, state, path);
+            return self.perform_action(action, &[], state, path);
         }
         let Some(index) = target
             .strip_prefix(id.as_str())
@@ -3402,6 +3395,7 @@ impl crate::widget::Decorator for ControlRow {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
@@ -3409,7 +3403,7 @@ impl crate::widget::Decorator for ControlRow {
             crate::a11y::Action::Activate | crate::a11y::Action::SetSelection { .. } => {
                 self.choose()
             }
-            _ => self.content.perform_action(action, state, path),
+            _ => self.content.perform_action(action, &[], state, path),
         }
     }
 }
@@ -3438,6 +3432,7 @@ mod control_row_tests {
         assert!(Widget::perform_action(
             &mut oil,
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &root
         ));
@@ -3453,6 +3448,7 @@ mod control_row_tests {
         Widget::perform_action(
             &mut oil,
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &root,
         );

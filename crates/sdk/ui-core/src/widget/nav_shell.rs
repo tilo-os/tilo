@@ -2520,7 +2520,7 @@ impl NavShell {
             if let Some(row) = header.more.take_choice()
                 && let Some(action) = header.actions.get_mut(shown.saturating_add(row))
             {
-                action.perform_action(&crate::a11y::Action::Activate, state, path);
+                action.perform_action(&crate::a11y::Action::Activate, &[], state, path);
                 acted = true;
             }
         }
