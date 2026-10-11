@@ -388,13 +388,13 @@ mod tests {
     /// its grants reach as its own agent, and loses them with its membership.
     #[test]
     fn an_admitted_agent_lists_the_live_apps_through_the_door_and_loses_them_on_removal() {
+        use crate::shell::chrome_state::SearchScope;
         use crate::shell::chrome_state::{ChromeState, PromptRequest};
+        use crate::shell::search::SearchRegistry;
         use crate::shell::search::action_api::{ActionCatalog, AllVisible, ArgValue, ResourceRef};
         use crate::shell::search::providers::permission_prompts::{
             PROVIDER_ID, PermissionPromptsProvider,
         };
-        use crate::shell::chrome_state::SearchScope;
-        use crate::shell::search::SearchRegistry;
         use crate::shell::state::{FreshId as _, WorkspaceAuthority as _};
         use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
         use collab_types::caps::{CapOverride, Scope, Subject, Verb};

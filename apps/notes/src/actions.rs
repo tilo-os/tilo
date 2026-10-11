@@ -92,9 +92,10 @@ pub(crate) fn created_page_result(
             return None;
         };
         let id = key.parse::<PageId>().ok()?;
-        known.iter().any(|page| page.id == id).then(|| {
-            serde_json::json!({"page": id.to_string(), "resource": page_resource_id(id)})
-        })
+        known
+            .iter()
+            .any(|page| page.id == id)
+            .then(|| serde_json::json!({"page": id.to_string(), "resource": page_resource_id(id)}))
     })
 }
 

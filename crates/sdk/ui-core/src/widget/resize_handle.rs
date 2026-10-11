@@ -521,11 +521,12 @@ mod tests {
         // Case `windows_can_be_wider_than_the_strip_and_narrower_than_a_share`.
         {
             let (min, max) = bounds();
-            let (l, _) =
-                ResizeHandle::compute_independent_widths(1000.0, 700.0, 3000.0, min, max);
-            assert_eq!(l, 4000.0, "past the 2000 px strip: no ceiling at the display");
-            let (l, _) =
-                ResizeHandle::compute_independent_widths(1000.0, 700.0, -990.0, min, max);
+            let (l, _) = ResizeHandle::compute_independent_widths(1000.0, 700.0, 3000.0, min, max);
+            assert_eq!(
+                l, 4000.0,
+                "past the 2000 px strip: no ceiling at the display"
+            );
+            let (l, _) = ResizeHandle::compute_independent_widths(1000.0, 700.0, -990.0, min, max);
             assert_eq!(l, min, "only the floor stops a narrow window");
             assert!(min < 0.1 * USABLE, "the floor is not a share of the strip");
         }

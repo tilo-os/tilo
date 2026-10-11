@@ -6902,7 +6902,12 @@ mod tests {
         );
         // The right edge is unchanged.
         let target = pan
-            .scroll_target_for(Rect::new(704.0 - 400.0 + 500.0, 0.0, 1404.0 - 400.0 + 500.0, 600.0))
+            .scroll_target_for(Rect::new(
+                704.0 - 400.0 + 500.0,
+                0.0,
+                1404.0 - 400.0 + 500.0,
+                600.0,
+            ))
             .expect("a group cut on the right is revealed");
         assert!((target - 904.0).abs() < 0.01, "{target}");
     }

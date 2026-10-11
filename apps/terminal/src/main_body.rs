@@ -1627,7 +1627,10 @@ impl TerminalWidget {
 
     /// The framework's verdict on `effect` as this terminal's own gesture.
     #[cfg(test)]
-    pub(crate) fn own_gesture_verdict(&self, effect: &crate::resource::TerminalEffect) -> Option<bool> {
+    pub(crate) fn own_gesture_verdict(
+        &self,
+        effect: &crate::resource::TerminalEffect,
+    ) -> Option<bool> {
         self.dispatch.as_ref().map(|d| d.is_own_gesture(effect))
     }
 

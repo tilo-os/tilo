@@ -464,7 +464,12 @@ mod tests {
         let launch = plan(&spotify(), &bridged).expect("plans");
         assert_eq!(
             launch.args,
-            vec!["run", "--socket=x11", "--file-forwarding", "com.spotify.Client"]
+            vec![
+                "run",
+                "--socket=x11",
+                "--file-forwarding",
+                "com.spotify.Client"
+            ]
         );
         let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
         assert!(
