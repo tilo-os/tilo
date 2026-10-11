@@ -32,7 +32,10 @@ use crate::i18n::{t, t_args};
 use crate::prefs::{PowerActionPref, PowerPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{El, caption, card, choice_row, error_caption, rows, setting_row, value_row};
+use crate::widgets::{
+    El, Item, SettingsSection, block, card, choice_row, error_caption, note, row, rows,
+    setting_row, untitled, value_row,
+};
 use ui::i18n::ArgValue;
 
 /// Idle-suspend timeout options, `(label, minutes)`. `0` = never.
@@ -722,32 +725,30 @@ impl PowerPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut cards = vec![
-            self.battery_card(),
-            self.profile_card(),
-            self.idle_card(),
-            self.actions_card(),
-        ];
-        if let Some(device_card) = self.devices_card() {
-            cards.insert(1, device_card);
-        }
+        let mut cards = self.battery_card();
+        cards.extend(self.devices_card());
+        cards.push(self.profile_card());
+        cards.extend(self.idle_card());
+        cards.push(self.actions_card());
         crate::widgets::cards(cards)
     }
 
-    fn battery_card(&self) -> El {
+    fn battery_card(&self) -> Vec<SettingsSection> {
         if !self.state.battery.present {
-            return card(
+            return vec![card(
                 &t("power-source-title"),
                 rows(vec![
                     value_row(&t("power-source"), &t("power-source-ac")),
-                    caption(&t("power-source-caption")),
+                    note(&t("power-source-caption")),
                 ]),
-            );
+            )];
         }
         let charge = format!("{}%", self.state.battery.capacity);
         let status = battery_status_shown(&self.state.battery);
-        let mut battery_rows: Vec<El> = vec![
-            Box::new(ProgressBar::new(self.state.battery.capacity as f32 / 100.0)),
+        let mut battery_rows: Vec<Item> = vec![
+            block(Box::new(ProgressBar::new(
+                self.state.battery.capacity as f32 / 100.0,
+            ))),
             value_row(&t("power-charge"), &charge),
             value_row(&t("power-status"), &status),
         ];
@@ -756,7 +757,7 @@ impl PowerPane {
         }
         if let Some(health) = self.state.battery.health_percent() {
             battery_rows.push(value_row(&t("power-health"), &format!("{health}%")));
-            battery_rows.push(caption(&health_explanation_shown(&self.state.battery)));
+            battery_rows.push(note(&health_explanation_shown(&self.state.battery)));
         } else {
             battery_rows.push(value_row(&t("power-health"), &t("power-health-unknown")));
         }
@@ -767,14 +768,6 @@ impl PowerPane {
             .iter()
             .map(|p| p.capacity as f32)
             .collect();
-        if trend.len() >= 2 {
-            battery_rows.push(Box::new(
-                Sparkline::new(trend, Theme::dark().tokens.colors.text_primary)
-                    .with_max(100.0)
-                    .with_size(320.0, 56.0),
-            ));
-            battery_rows.push(caption(&t("power-history-caption")));
-        }
         if let Some(capability) = &self.state.charge_cap {
             let choices: Vec<String> = capability
                 .choices
@@ -806,7 +799,7 @@ impl PowerPane {
                 }
                 ChargeCapBackend::PowerSupply => t("power-charge-cap-stop"),
             };
-            battery_rows.push(caption(&detail));
+            battery_rows.push(note(&detail));
         } else {
             battery_rows.push(value_row(
                 &t("power-charge-cap"),
@@ -814,12 +807,24 @@ impl PowerPane {
             ));
         }
         if let Some(notice) = &self.notices.charge {
-            battery_rows.push(caption(notice));
+            battery_rows.push(note(notice));
         }
-        card(&t("power-battery-title"), rows(battery_rows))
+        let mut sections = vec![card(&t("power-battery-title"), rows(battery_rows))];
+        if trend.len() >= 2 {
+            sections.push(untitled(rows(vec![
+                // A chart is not a row.
+                block(Box::new(
+                    Sparkline::new(trend, Theme::dark().tokens.colors.text_primary)
+                        .with_max(100.0)
+                        .with_size(320.0, 56.0),
+                )),
+                note(&t("power-history-caption")),
+            ])));
+        }
+        sections
     }
 
-    fn profile_card(&self) -> El {
+    fn profile_card(&self) -> SettingsSection {
         let profile_opts: Vec<String> = self
             .state
             .available_profiles
@@ -853,14 +858,14 @@ impl PowerPane {
                 ),
             )]
         };
-        profile_rows.push(caption(&t("power-profile-caption")));
+        profile_rows.push(note(&t("power-profile-caption")));
         if let Some(notice) = &self.notices.profile {
-            profile_rows.push(caption(notice));
+            profile_rows.push(note(notice));
         } else if let Some(unavailable) = &self.state.profiles_unavailable {
             profile_rows.push(if self.state.profile_unread {
-                error_caption(unavailable)
+                row(error_caption(unavailable))
             } else {
-                caption(unavailable)
+                note(unavailable)
             });
         }
         card(&t("power-profile-title"), rows(profile_rows))
@@ -898,44 +903,48 @@ impl PowerPane {
         )
     }
 
-    fn idle_card(&self) -> El {
+    fn idle_card(&self) -> [SettingsSection; 2] {
         let prefs = *self.prefs();
-        card(
-            &t("power-idle-title"),
-            rows(vec![
-                setting_row(
-                    &t("power-suspend-idle"),
-                    Box::new(
-                        self.cx.bind(
-                            Toggle::from_state(&LocalState::new(prefs.auto_suspend))
-                                .with_id("power.auto_suspend"),
-                            effect(PowerEffect::SET_AUTO_SUSPEND),
+        [
+            card(
+                &t("power-idle-title"),
+                rows(vec![
+                    setting_row(
+                        &t("power-suspend-idle"),
+                        Box::new(
+                            self.cx.bind(
+                                Toggle::from_state(&LocalState::new(prefs.auto_suspend))
+                                    .with_id("power.auto_suspend"),
+                                effect(PowerEffect::SET_AUTO_SUSPEND),
+                            ),
                         ),
                     ),
-                ),
-                choice_row(
-                    &t("power-suspend-after"),
-                    self.suspend_timeout("default", &suspend_label(prefs.suspend_minutes)),
-                ),
-                choice_row(
-                    &t("power-blank"),
-                    self.timeout(
-                        Some("power.blank"),
-                        BLANK_OPTIONS,
-                        &blank_label(prefs.blank_minutes),
-                        PowerEffect::SET_BLANK_AFTER,
+                    choice_row(
+                        &t("power-suspend-after"),
+                        self.suspend_timeout("default", &suspend_label(prefs.suspend_minutes)),
                     ),
-                ),
-                choice_row(
-                    &t("power-lock-after"),
-                    self.timeout(
-                        Some("power.lock"),
-                        LOCK_OPTIONS,
-                        &lock_label(prefs.lock_minutes),
-                        PowerEffect::SET_LOCK_AFTER,
+                    choice_row(
+                        &t("power-blank"),
+                        self.timeout(
+                            Some("power.blank"),
+                            BLANK_OPTIONS,
+                            &blank_label(prefs.blank_minutes),
+                            PowerEffect::SET_BLANK_AFTER,
+                        ),
                     ),
-                ),
-                caption(&t("power-idle-caption")),
+                    choice_row(
+                        &t("power-lock-after"),
+                        self.timeout(
+                            Some("power.lock"),
+                            LOCK_OPTIONS,
+                            &lock_label(prefs.lock_minutes),
+                            PowerEffect::SET_LOCK_AFTER,
+                        ),
+                    ),
+                    note(&t("power-idle-caption")),
+                ]),
+            ),
+            untitled(rows(vec![
                 choice_row(
                     &t("power-saver-suspend"),
                     self.suspend_timeout("saver", &suspend_label(prefs.saver_suspend_minutes)),
@@ -954,9 +963,9 @@ impl PowerPane {
                         &suspend_label(prefs.performance_suspend_minutes),
                     ),
                 ),
-                caption(&t("power-profile-idle-caption")),
-            ]),
-        )
+                note(&t("power-profile-idle-caption")),
+            ])),
+        ]
     }
 
     /// A button-action chooser.
@@ -976,7 +985,7 @@ impl PowerPane {
         )
     }
 
-    fn actions_card(&self) -> El {
+    fn actions_card(&self) -> SettingsSection {
         let prefs = *self.prefs();
         let warn = t_args(
             "power-warn-caption",
@@ -1015,12 +1024,12 @@ impl PowerPane {
                         PowerEffect::SET_CRITICAL_ACTION,
                     ),
                 ),
-                caption(&warn),
+                note(&warn),
             ]),
         )
     }
 
-    fn devices_card(&self) -> Option<El> {
+    fn devices_card(&self) -> Option<SettingsSection> {
         if self.state.devices.len() <= 1 {
             return None;
         }

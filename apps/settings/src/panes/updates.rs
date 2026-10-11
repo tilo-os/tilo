@@ -15,7 +15,7 @@ use std::time::Duration;
 use tracing::warn;
 use ui::framework::{EffectReply, Effected};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Column, Dropdown, ProgressBar, Row, Spacer, Text, Toggle, Widget};
+use ui::widget::{Button, Dropdown, ProgressBar, Row, Text, Toggle, Widget};
 use ui::{LocalState, WakeHandle};
 
 use crate::codec_pack::{CodecAction, CodecPackStatus, MesaState, PackState};
@@ -24,7 +24,8 @@ use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::prefs::UpdatePrefs;
 use crate::widgets::{
-    El, caption, card, choice_row, error_caption, error_row, rows, setting_row, value_row,
+    Body, Item, SettingsSection, card, choice_row, error_caption, error_row, note, row, rows,
+    setting_row, setting_row_described, value_row,
 };
 
 const UPDATE_SCHEDULES: &[&str] = &["System schedule", "Daily", "Weekly"];
@@ -1111,25 +1112,25 @@ impl UpdatesModel {
             .collect()
     }
 
-    fn codecs_card(&self) -> El {
+    fn codecs_card(&self) -> SettingsSection {
         let mut body = vec![
-            caption(&codecs_explanation()),
+            note(&codecs_explanation()),
             value_row(&t("upd-status"), &self.codec_status_line()),
         ];
         if let Some(fraction) = self.codec_progress() {
-            body.push(Box::new(
+            body.push(row(Box::new(
                 ProgressBar::new(fraction).with_label(t("upd-installing-codecs")),
-            ));
+            )));
         }
         if let Some(problem) = self.codec_refresh_problem_shown() {
-            body.push(caption(&problem));
+            body.push(note(&problem));
         }
         if let Some(applies) = self.codec_applies_shown() {
-            body.push(caption(&applies));
+            body.push(note(&applies));
         }
         let buttons = self.codec_buttons();
         if !buttons.is_empty() {
-            let mut row = Row::new();
+            let mut line = Row::new();
             for (label, control_id, effect) in buttons {
                 let primary = matches!(&effect, UpdatesEffect::InstallCodecs);
                 let button = self.button(control_id, &label, effect);
@@ -1138,9 +1139,9 @@ impl UpdatesModel {
                 } else {
                     button
                 };
-                row = row.push(Box::new(button));
+                line = line.push(Box::new(button));
             }
-            body.push(Box::new(row.push(Box::new(Spacer::new()))));
+            body.push(row(Box::new(line)));
         }
         card(&codecs_card_title(), rows(body))
     }
@@ -1298,7 +1299,7 @@ impl UpdatesModel {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut all = vec![
+        let mut all: Vec<SettingsSection> = vec![
             self.overview_card(),
             self.status_card(),
             self.firmware_card(),
@@ -1322,7 +1323,9 @@ impl UpdatesModel {
                 0,
                 card(
                     &t("upd-notice-title"),
-                    rows(vec![Box::new(Text::new(msg).with_role(ui::TextRole::Body))]),
+                    rows(vec![row(Box::new(
+                        Text::new(msg).with_role(ui::TextRole::Body),
+                    ))]),
                 ),
             );
         }
@@ -1330,46 +1333,41 @@ impl UpdatesModel {
     }
 
     /// Status card — current + staged + the primary action.
-    fn status_card(&self) -> El {
+    fn status_card(&self) -> SettingsSection {
         if let Some(error) = &self.status.staged_error {
             return card(
                 &t("upd-software"),
-                error_caption(&t_args(
+                rows(vec![row(error_caption(&t_args(
                     "upd-status-error",
                     &[("error", error.as_str().into())],
-                )),
+                )))]),
             );
         }
-        let action: El = match &self.status.staged_version {
-            Some(staged) => Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(Box::new(
-                        Text::new(&t_args("upd-ready", &[("version", staged.as_str().into())]))
-                            .with_role(ui::TextRole::Body),
-                    ))
-                    .push(Box::new(
-                        Text::new(&t("upd-restart-apply"))
-                            .with_role(ui::TextRole::Caption)
-                            .dimmed(),
-                    ))
-                    .push(Box::new(
-                        Row::new()
-                            .push(Box::new(self.button(
-                                "settings.updates.restart",
-                                &t("upd-restart-update"),
-                                UpdatesEffect::RestartToUpdate,
-                            )))
-                            .push(Box::new(Spacer::new())),
-                    )),
+        let body = match &self.status.staged_version {
+            Some(staged) => setting_row_described(
+                &t_args("upd-ready", &[("version", staged.as_str().into())]),
+                &t("upd-restart-apply"),
+                Box::new(self.button(
+                    "settings.updates.restart",
+                    &t("upd-restart-update"),
+                    UpdatesEffect::RestartToUpdate,
+                )),
             ),
-            None => Box::new(Text::new(&t("upd-up-to-date")).with_role(ui::TextRole::Body)),
+            None => row(Box::new(
+                Text::new(&t("upd-up-to-date")).with_role(ui::TextRole::Body),
+            )),
         };
-        card(&t("upd-software"), action)
+        card(&t("upd-software"), rows(vec![body]))
     }
 
-    fn overview_card(&self) -> El {
+    /// A line holding one button, at the leading edge of its section.
+    fn button_row(&self, control_id: &str, label: &str, effect: UpdatesEffect) -> Item {
+        row(Box::new(
+            Row::new().push(Box::new(self.button(control_id, label, effect))),
+        ))
+    }
+
+    fn overview_card(&self) -> SettingsSection {
         let mut overview = vec![match &self.status.staged_error {
             Some(error) => error_row(
                 &t("upd-os"),
@@ -1391,7 +1389,7 @@ impl UpdatesModel {
         card(&t("upd-overview"), rows(overview))
     }
 
-    fn detail_card(&self) -> El {
+    fn detail_card(&self) -> SettingsSection {
         let automatic = t("upd-automatic");
         let unavailable = t("upd-unavailable");
         let schedule_label = t("upd-schedule");
@@ -1458,20 +1456,16 @@ impl UpdatesModel {
                     ),
                     None => value_row(&t("upd-metered-short"), &t("upd-metered-unavailable")),
                 },
-                Box::new(
-                    Row::new()
-                        .push(Box::new(self.button(
-                            "settings.updates.check",
-                            &check_label,
-                            UpdatesEffect::CheckForUpdates,
-                        )))
-                        .push(Box::new(Spacer::new())),
+                self.button_row(
+                    "settings.updates.check",
+                    &check_label,
+                    UpdatesEffect::CheckForUpdates,
                 ),
             ]),
         )
     }
 
-    fn lifecycle_card(&self) -> El {
+    fn lifecycle_card(&self) -> SettingsSection {
         let not_reported = t("upd-not-reported");
         let no_doc = t("upd-no-doc-url");
         let mut lifecycle_rows = vec![value_row(
@@ -1486,14 +1480,14 @@ impl UpdatesModel {
             self.details.release_notes.as_deref().unwrap_or(&no_doc),
         ));
         if self.details.history.is_empty() {
-            lifecycle_rows.push(caption(&t("upd-no-bootc-history")));
+            lifecycle_rows.push(note(&t("upd-no-bootc-history")));
         } else {
-            lifecycle_rows.extend(self.details.history.iter().map(|line| caption(line)));
+            lifecycle_rows.extend(self.details.history.iter().map(|line| note(line)));
         }
         card(&t("upd-lifecycle"), rows(lifecycle_rows))
     }
 
-    fn firmware_card(&self) -> El {
+    fn firmware_card(&self) -> SettingsSection {
         let body = match &self.firmware_updates {
             Err(error) => self.firmware_card_error(error),
             Ok(updates) if updates.is_empty() => self.firmware_card_up_to_date(),
@@ -1502,7 +1496,7 @@ impl UpdatesModel {
         card(&t("upd-firmware"), body)
     }
 
-    fn firmware_card_error(&self, error: &str) -> El {
+    fn firmware_card_error(&self, error: &str) -> Body {
         let refresh_label = if self.firmware_refresh_pending {
             t("upd-refreshing")
         } else {
@@ -1510,34 +1504,26 @@ impl UpdatesModel {
         };
         rows(vec![
             value_row(&t("upd-fw-status"), &t("upd-fw-query-failed")),
-            caption(&t_args("upd-fwupd-reported", &[("error", error.into())])),
-            Box::new(
-                Row::new()
-                    .push(Box::new(self.button(
-                        "settings.updates.firmware.refresh",
-                        &refresh_label,
-                        UpdatesEffect::RefreshFirmware,
-                    )))
-                    .push(Box::new(Spacer::new())),
+            self.button_row(
+                "settings.updates.firmware.refresh",
+                &refresh_label,
+                UpdatesEffect::RefreshFirmware,
             ),
+            note(&t_args("upd-fwupd-reported", &[("error", error.into())])),
         ])
     }
 
-    fn firmware_card_up_to_date(&self) -> El {
+    fn firmware_card_up_to_date(&self) -> Body {
         let mut body = vec![value_row(&t("upd-fw-status"), &t("upd-fw-current-status"))];
         if matches!(
             self.firmware_state,
             FirmwareUiState::Complete { needs_reboot: true }
         ) {
             body.push(value_row(&t("upd-activation"), &t("upd-restart-required")));
-            body.push(Box::new(
-                Row::new()
-                    .push(Box::new(self.button(
-                        "settings.updates.firmware.restart",
-                        &t("upd-restart-now"),
-                        UpdatesEffect::RestartToUpdate,
-                    )))
-                    .push(Box::new(Spacer::new())),
+            body.push(self.button_row(
+                "settings.updates.firmware.restart",
+                &t("upd-restart-now"),
+                UpdatesEffect::RestartToUpdate,
             ));
         } else {
             let check_fw = if self.firmware_refresh_pending {
@@ -1545,21 +1531,17 @@ impl UpdatesModel {
             } else {
                 t("upd-check-firmware")
             };
-            body.push(Box::new(
-                Row::new()
-                    .push(Box::new(self.button(
-                        "settings.updates.firmware.refresh",
-                        &check_fw,
-                        UpdatesEffect::RefreshFirmware,
-                    )))
-                    .push(Box::new(Spacer::new())),
+            body.push(self.button_row(
+                "settings.updates.firmware.refresh",
+                &check_fw,
+                UpdatesEffect::RefreshFirmware,
             ));
         }
         rows(body)
     }
 
-    fn firmware_card_available(&self, updates: &[os_actions::FirmwareUpdate]) -> El {
-        let mut items: Vec<El> = updates
+    fn firmware_card_available(&self, updates: &[os_actions::FirmwareUpdate]) -> Body {
+        let mut items: Vec<Item> = updates
             .iter()
             .map(|update| {
                 let version = match (&update.current_version, &update.new_version) {
@@ -1567,33 +1549,36 @@ impl UpdatesModel {
                     (_, Some(to)) => t_args("upd-update-to", &[("version", to.as_str().into())]),
                     _ => t("upd-update-available"),
                 };
-                value_row(&update.device, &version)
+                // What is worth knowing about this device hugs its own row.
+                let mut details = Vec::new();
+                if let Some(description) = &update.description {
+                    details.push(description.clone());
+                }
+                if !update.problems.is_empty() {
+                    details.push(t_args(
+                        "upd-before-installing",
+                        &[("problems", update.problems.join(", ").into())],
+                    ));
+                }
+                if details.is_empty() {
+                    value_row(&update.device, &version)
+                } else {
+                    setting_row_described(
+                        &update.device,
+                        &details.join("\n"),
+                        Box::new(Text::new(&version).numeric().dimmed()),
+                    )
+                }
             })
             .collect();
-        for update in updates {
-            if let Some(description) = &update.description {
-                items.push(caption(description));
-            }
-            if !update.problems.is_empty() {
-                items.push(caption(&t_args(
-                    "upd-before-installing",
-                    &[("problems", update.problems.join(", ").into())],
-                )));
-            }
-        }
-        items.push(caption(&t("upd-fw-caption")));
         match &self.firmware_state {
-            FirmwareUiState::Idle => items.push(Box::new(
-                Row::new()
-                    .push(Box::new(self.button(
-                        "settings.updates.firmware.install",
-                        &t("upd-install-firmware"),
-                        UpdatesEffect::InstallFirmware,
-                    )))
-                    .push(Box::new(Spacer::new())),
+            FirmwareUiState::Idle => items.push(self.button_row(
+                "settings.updates.firmware.install",
+                &t("upd-install-firmware"),
+                UpdatesEffect::InstallFirmware,
             )),
             FirmwareUiState::Installing { percent, message } => {
-                items.push(Box::new(ProgressBar::new(f32::from(*percent) / 100.0)));
+                items.push(row(Box::new(ProgressBar::new(f32::from(*percent) / 100.0))));
                 items.push(value_row(&t("upd-installing"), message));
             }
             FirmwareUiState::Complete { needs_reboot } => {
@@ -1604,26 +1589,24 @@ impl UpdatesModel {
                 };
                 items.push(value_row(&t("upd-installation"), &installed));
                 if *needs_reboot {
-                    items.push(Box::new(
-                        Row::new()
-                            .push(Box::new(self.button(
-                                "settings.updates.firmware.restart",
-                                &t("upd-restart-now"),
-                                UpdatesEffect::RestartToUpdate,
-                            )))
-                            .push(Box::new(Spacer::new())),
+                    items.push(self.button_row(
+                        "settings.updates.firmware.restart",
+                        &t("upd-restart-now"),
+                        UpdatesEffect::RestartToUpdate,
                     ));
                 }
             }
         }
+        items.push(note(&t("upd-fw-caption")));
         rows(items)
     }
 
-    fn firmware_history_card(&self) -> El {
+    fn firmware_history_card(&self) -> SettingsSection {
         match &self.firmware_history {
-            Ok(history) if history.is_empty() => {
-                card(&t("upd-fw-history"), caption(&t("upd-fw-history-empty")))
-            }
+            Ok(history) if history.is_empty() => card(
+                &t("upd-fw-history"),
+                rows(vec![note(&t("upd-fw-history-empty"))]),
+            ),
             Ok(history) => {
                 let mut entries = Vec::new();
                 for item in history.iter().take(8) {
@@ -1632,13 +1615,14 @@ impl UpdatesModel {
                         (_, Some(to)) => format!("{to}\n{}", item.state),
                         _ => item.state.clone(),
                     };
-                    entries.push(value_row(&item.device, &versions));
-                    if let Some(error) = &item.error {
-                        entries.push(caption(&t_args(
-                            "upd-fwupd-error",
-                            &[("error", error.as_str().into())],
-                        )));
-                    }
+                    entries.push(match &item.error {
+                        Some(error) => setting_row_described(
+                            &item.device,
+                            &t_args("upd-fwupd-error", &[("error", error.as_str().into())]),
+                            Box::new(Text::new(&versions).numeric().dimmed()),
+                        ),
+                        None => value_row(&item.device, &versions),
+                    });
                 }
                 card(&t("upd-fw-history"), rows(entries))
             }
@@ -1646,7 +1630,7 @@ impl UpdatesModel {
                 &t("upd-fw-history"),
                 rows(vec![
                     value_row(&t("upd-fw-status"), &t("upd-history-query-failed")),
-                    caption(&t_args(
+                    note(&t_args(
                         "upd-fwupd-reported",
                         &[("error", error.as_str().into())],
                     )),
@@ -1661,70 +1645,52 @@ impl UpdatesModel {
     /// card reads as an absent feature.
     /// Built from the same strings `rollback_card_lines` reports, so what a
     /// test asserts on and what a person reads cannot come apart.
-    fn rollback_card(&self) -> El {
+    fn rollback_card(&self) -> SettingsSection {
         let lines = self.rollback_card_lines();
-        let rollback_body: El = match (&self.rollback_target, self.rollback_armed, lines.as_slice())
-        {
-            (Err(_), _, [_, error, ..]) => error_caption(error),
-            (Ok(None), _, [_, no_previous, no_previous_caption, ..]) => Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(Box::new(
-                        Text::new(no_previous).with_role(ui::TextRole::Body),
-                    ))
-                    .push(caption(no_previous_caption)),
-            ),
-            (Ok(Some(_)), false, [_, previous, intro, button_label, ..]) => Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(Box::new(Text::new(previous).with_role(ui::TextRole::Body)))
-                    .push(caption(intro))
-                    .push(Box::new(
-                        Row::new()
-                            .push(Box::new(self.button(
-                                "settings.updates.rollback",
-                                button_label,
-                                UpdatesEffect::ReviewRollback,
-                            )))
-                            .push(Box::new(Spacer::new())),
+        let rollback_body = match (&self.rollback_target, self.rollback_armed, lines.as_slice()) {
+            (Err(_), _, [_, error, ..]) => vec![row(error_caption(error))],
+            (Ok(None), _, [_, no_previous, no_previous_caption, ..]) => vec![
+                row(Box::new(
+                    Text::new(no_previous).with_role(ui::TextRole::Body),
+                )),
+                note(no_previous_caption),
+            ],
+            (Ok(Some(_)), false, [_, previous, intro, button_label, ..]) => {
+                vec![setting_row_described(
+                    previous,
+                    intro,
+                    Box::new(self.button(
+                        "settings.updates.rollback",
+                        button_label,
+                        UpdatesEffect::ReviewRollback,
                     )),
-            ),
+                )]
+            }
             // Armed: what it does not undo, in front of the button that does it.
             (Ok(Some(_)), true, [_, prompt, caveats @ .., confirm_label]) => {
-                let mut col = Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(Box::new(Text::new(prompt).with_role(ui::TextRole::Body)));
-                for c in caveats {
-                    col = col.push(caption(c));
-                }
-                Box::new(
-                    col.push(Box::new(
-                        Row::new()
-                            .push(Box::new(self.button(
-                                "settings.updates.rollback.confirm",
-                                confirm_label,
-                                UpdatesEffect::RollBack,
-                            )))
-                            .push(Box::new(Spacer::new())),
+                vec![setting_row_described(
+                    prompt,
+                    &caveats.join("\n"),
+                    Box::new(self.button(
+                        "settings.updates.rollback.confirm",
+                        confirm_label,
+                        UpdatesEffect::RollBack,
                     )),
-                )
+                )]
             }
             // `rollback_card_lines` always returns a shape matching one of
             // the arms above for the same `(rollback_target,
             // rollback_armed)` state it was built from; render nothing
             // sooner than panic if that invariant is ever broken.
-            _ => Box::new(Column::new()),
+            _ => Vec::new(),
         };
-        card(&rollback_card_title(), rollback_body)
+        card(&rollback_card_title(), rows(rollback_body))
     }
 
-    fn help_card(&self) -> El {
+    fn help_card(&self) -> SettingsSection {
         card(
             &t("upd-help-title"),
-            rows(self.help_lines().iter().map(|l| caption(l)).collect()),
+            rows(self.help_lines().iter().map(|l| note(l)).collect()),
         )
     }
 

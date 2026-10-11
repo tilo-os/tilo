@@ -17,11 +17,12 @@
 //! nothing. When there are no grants — a fresh session, or one where no app
 //! has been approved for anything — it shows an empty state.
 
-use ui::tokens::SpacingStep;
+use ui::tokens::Rhythm;
 
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, StatusTone, caption, card, cards, error_row, gap, rows, semantic_status_pill, value_row,
+    El, Item, SettingsSection, StatusTone, card, cards, error_row, note, row, rows,
+    semantic_status_pill, untitled, value_row,
 };
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
 use serde::Deserialize;
@@ -29,7 +30,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_resource;
-use ui::widget::{Button, Row, Spacer, Text, Widget};
+use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
 
 use crate::host::PaneCx;
 use crate::resource::Settings;
@@ -395,10 +396,11 @@ fn grant_count(all: &[WsGrants]) -> usize {
 
 /// One capability line: a tinted kind pill, the detail, and a trailing
 /// lifetime chip. Read-only — no controls.
-fn cap_row(view: &CapView) -> El {
+fn cap_row(view: &CapView) -> Item {
     let kind = kind_shown(view.kind);
     let expiry = expiry_shown(view.expiry);
-    Box::new(
+    // why: kind pill + detail + lifetime chip is not a label/control pair.
+    row(Box::new(
         Row::new()
             .push(semantic_status_pill(&kind, view.tint.tone()))
             .push(Box::new(
@@ -408,19 +410,16 @@ fn cap_row(view: &CapView) -> El {
             ))
             .push(Box::new(Spacer::new()))
             .push(semantic_status_pill(&expiry, StatusTone::Neutral)),
-    )
+    ))
 }
 
 /// One app's block within a workspace card: the app id, then its grants.
-fn app_block(grants: &AppGrants) -> El {
-    let mut items: Vec<El> = Vec::new();
-    items.push(Box::new(
+fn app_block(grants: &AppGrants) -> Vec<Item> {
+    let mut items = vec![row(Box::new(
         Text::new(&grants.app).with_role(ui::TextRole::Body),
-    ));
-    for cap in &grants.caps {
-        items.push(cap_row(cap));
-    }
-    rows(items)
+    ))];
+    items.extend(grants.caps.iter().map(cap_row));
+    items
 }
 
 pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
@@ -429,10 +428,16 @@ pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
 
 /// Include the hosted disk-unlock model beside the device security summary.
 pub(crate) fn build_with_disk_unlock(cx: &PaneCx, disk_unlock: El) -> Box<dyn Widget> {
-    crate::widgets::rows(vec![build(cx), disk_unlock])
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_rhythm(Rhythm::Group)
+            .push(build(cx))
+            .push(disk_unlock),
+    )
 }
 
-fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> El {
+fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> SettingsSection {
     let microphone_present = privacy.microphone_muted.is_some();
     let mute = match privacy.microphone_muted {
         Some(true) => t("perm-muted"),
@@ -455,9 +460,9 @@ fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> El {
     )
 }
 
-fn active_privacy_use_card(privacy: &os_actions::PrivacyStatus) -> El {
-    let usage_rows: Vec<El> = if privacy.active_media.is_empty() {
-        vec![caption(&t("perm-no-active-use"))]
+fn active_privacy_use_card(privacy: &os_actions::PrivacyStatus) -> SettingsSection {
+    let usage_rows: Vec<Item> = if privacy.active_media.is_empty() {
+        vec![note(&t("perm-no-active-use"))]
     } else {
         privacy
             .active_media
@@ -474,7 +479,7 @@ fn active_privacy_use_card(privacy: &os_actions::PrivacyStatus) -> El {
     card(&t("perm-active-use"), rows(usage_rows))
 }
 
-fn device_security_card() -> El {
+fn device_security_card() -> SettingsSection {
     let security = device_security();
     card(
         &t("perm-device-security"),
@@ -488,7 +493,7 @@ fn device_security_card() -> El {
                     &t_args("perm-firewall-error", &[("error", error.as_str().into())]),
                 ),
             },
-            caption(&t("perm-security-caption")),
+            note(&t("perm-security-caption")),
         ]),
     )
 }
@@ -498,39 +503,36 @@ fn device_security_card() -> El {
 /// collaborators, roles, and app access belong to the workspace that owns
 /// them. Keeping the distinction in the first visible card prevents this
 /// cross-workspace overview from looking like an editor for every workspace.
-fn scope_card() -> El {
+fn scope_card() -> SettingsSection {
     card(
         &t("perm-this-device"),
-        rows(vec![Box::new(
-            Text::new(&t("perm-this-device-body")).with_role(ui::TextRole::Caption),
-        )]),
+        rows(vec![note(&t("perm-this-device-body"))]),
     )
 }
 
 /// Intro card: what these grants are and where they come from.
-fn workspace_grants_intro_card(cx: &PaneCx) -> El {
+fn workspace_grants_intro_card(cx: &PaneCx) -> SettingsSection {
     let open = t("perm-open-workspace");
     card(
         &t("perm-workspace-intro-title"),
         rows(vec![
-            Box::new(Text::new(&t("perm-workspace-intro-body")).with_role(ui::TextRole::Caption)),
-            Box::new(cx.bind_invocation(
+            note(&t("perm-workspace-intro-body")),
+            row(Box::new(cx.bind_invocation(
                 Button::new("open-workspace-privacy", &open),
                 PermissionsEffect::OpenWorkspacePrivacy,
-            )),
+            ))),
         ]),
     )
 }
 
 /// Empty state — a successfully loaded workspace record contains no
 /// app grants.
-fn no_workspace_grants_card() -> El {
+fn no_workspace_grants_card() -> SettingsSection {
     card(
         &t("perm-no-grants-title"),
         rows(vec![
-            Box::new(Text::new(&t("perm-no-grants-body")).with_role(ui::TextRole::Caption)),
-            gap(SpacingStep::S1),
-            caption(&t("perm-no-grants-caption")),
+            note(&t("perm-no-grants-body")),
+            note(&t("perm-no-grants-caption")),
         ]),
     )
 }
@@ -538,19 +540,19 @@ fn no_workspace_grants_card() -> El {
 /// Loading workspace state is distinct from successfully reading a workspace
 /// that has no app grants. A privacy surface must never turn an I/O or parse
 /// failure into a claim that access is absent.
-fn workspace_grants_unavailable_card() -> El {
+fn workspace_grants_unavailable_card() -> SettingsSection {
     card(
         &t("perm-unavailable-title"),
         rows(vec![
-            Box::new(Text::new(&t("perm-unavailable-body")).with_role(ui::TextRole::Caption)),
-            caption(&t("perm-unavailable-caption")),
+            note(&t("perm-unavailable-body")),
+            note(&t("perm-unavailable-caption")),
         ]),
     )
 }
 
 /// A quiet summary line above the per-workspace cards, followed by one card
 /// per workspace with a grant.
-fn push_workspace_grant_cards(panel: &mut Vec<El>, all: &[WsGrants], total: usize) {
+fn push_workspace_grant_cards(panel: &mut Vec<SettingsSection>, all: &[WsGrants], total: usize) {
     let ws_n = all.len();
     let grants = i64::try_from(total).unwrap_or(i64::MAX);
     let workspaces = i64::try_from(ws_n).unwrap_or(i64::MAX);
@@ -558,21 +560,10 @@ fn push_workspace_grant_cards(panel: &mut Vec<El>, all: &[WsGrants], total: usiz
         "perm-grants-summary",
         &[("grants", grants.into()), ("workspaces", workspaces.into())],
     );
-    panel.push(Box::new(
-        Text::new(&summary)
-            .with_role(ui::TextRole::Caption)
-            .dimmed(),
-    ));
+    panel.push(untitled(rows(vec![note(&summary)])));
 
     for ws in all {
-        let mut body: Vec<El> = Vec::new();
-        let last = ws.apps.len().saturating_sub(1);
-        for (i, app) in ws.apps.iter().enumerate() {
-            body.push(app_block(app));
-            if i != last {
-                body.push(gap(SpacingStep::S3));
-            }
-        }
+        let body: Vec<Item> = ws.apps.iter().flat_map(app_block).collect();
         let unnamed = t("perm-workspace-unnamed");
         let title = if ws.name.trim().is_empty() {
             unnamed
@@ -584,10 +575,10 @@ fn push_workspace_grant_cards(panel: &mut Vec<El>, all: &[WsGrants], total: usiz
 }
 
 /// Where the compositor enforces the grants.
-fn enforcement_card() -> El {
+fn enforcement_card() -> SettingsSection {
     card(
         &t("perm-enforcement-title"),
-        rows(vec![caption(&t("perm-enforcement-caption"))]),
+        rows(vec![note(&t("perm-enforcement-caption"))]),
     )
 }
 
@@ -596,7 +587,7 @@ fn enforcement_card() -> El {
 fn build_view(cx: &PaneCx, state_json: Option<&str>) -> Box<dyn Widget> {
     let workspace_access = state_json.map(project).transpose();
 
-    let mut panel: Vec<El> = Vec::new();
+    let mut panel: Vec<SettingsSection> = Vec::new();
 
     let privacy = os_actions::get_privacy_status();
     panel.push(scope_card());
@@ -816,7 +807,7 @@ mod tests {
                 "two pills per grant"
             );
             // Intro + one workspace + enforcement cards are all present.
-            assert!(count_named(pane.as_ref(), "Section") >= 3);
+            assert!(count_named(pane.as_ref(), "FormSection") >= 3);
         }
     }
 

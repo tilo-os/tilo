@@ -195,7 +195,7 @@ pub(crate) const LIVE_AREAS: &[LiveArea] = &[
     // its own; it has nothing slow to put off.
     LiveArea {
         name: "settings.rows.input",
-        pane: Category::MouseKeyboard,
+        pane: Category::Keyboard,
         is_open: |_| true,
         rows: |app| app.input().rows(),
         background: None,
