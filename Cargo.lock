@@ -13029,7 +13029,6 @@ dependencies = [
  "tilo-clock",
  "tilo-test-env",
  "tokio",
- "tokio-util",
  "workspace-hack",
 ]
 
@@ -18370,7 +18369,6 @@ dependencies = [
  "tilo-vello-encoding",
  "tilo-winit",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "two-face",
