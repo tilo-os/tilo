@@ -33,7 +33,7 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::control_size::ControlSize;
-use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget};
+use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget, layout_rect};
 
 /// The banner's metrics, from the theme.
 #[derive(Clone, Copy, Debug)]
@@ -158,12 +158,6 @@ pub struct BannerHit {
     pub secondary_action: Option<Rect>,
     /// The dismiss control's face, when the banner is dismissible.
     pub dismiss: Option<Rect>,
-}
-
-/// The node's box in absolute coordinates.
-fn layout_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
-    let l = taffy.layout(node).copied().unwrap_or_default();
-    crate::widget::placed(&l, origin)
 }
 
 /// The face of a banner's action: the main one a secondary control, the
