@@ -1199,9 +1199,7 @@ impl DrmDispatchState {
             tablets: TabletRuntime::load(),
             keyboard,
             keyboard_device: None,
-            keyboard_config: settings_store::hardware::RichInputConfig::from_section(
-                &settings_store::load_section("input"),
-            ),
+            keyboard_config: settings_store::hardware::RichInputConfig::load(),
             keyboard_cache: BTreeMap::new(),
             keyboard_identities: BTreeMap::new(),
             keyboard_key_owners: BTreeMap::new(),
@@ -4184,7 +4182,7 @@ impl DrmRuntime {
         // The persisted preferences, read once here so the same values drive libinput device config, gesture direction and the per-output scale override.
         let input = InputSettings::load();
         let accessibility = AccessibilityInputSettings::load();
-        let scale_override = load_display_scale_override();
+        let scale_override = settings_store::display_scale::load_user_scale();
         tracing::info!(
             tap_to_click = input.tap_to_click,
             natural_scroll = input.natural_scroll_for(true),
@@ -4310,9 +4308,7 @@ impl DrmRuntime {
 
     /// Switch the physical keyboard to input source `index` at once.
     pub fn set_keyboard_source(&mut self, index: usize) {
-        self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::from_section(
-            &settings_store::load_section("input"),
-        );
+        self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::load();
         self.dispatch.keyboard_cache.clear();
         let scope = self
             .dispatch
@@ -4329,9 +4325,7 @@ impl DrmRuntime {
     /// New devices receive these settings when they appear.
     pub fn reload_input_settings(&mut self) {
         let input = InputSettings::load();
-        self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::from_section(
-            &settings_store::load_section("input"),
-        );
+        self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::load();
         self.dispatch.keyboard_cache.clear();
         let scope = self
             .dispatch
@@ -4462,7 +4456,7 @@ impl DrmDispatchState {
     /// keyboard dispatch for seconds on a DP-MST dock. What is connected
     /// changes only through a udev edge, which re-probes.
     pub fn reload_display_settings(&mut self) {
-        let scale_override = load_display_scale_override();
+        let scale_override = settings_store::display_scale::load_user_scale();
         if scale_override != self.scale_override {
             self.scale_override = scale_override;
             self.relayout_outputs();
@@ -4904,15 +4898,6 @@ fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
         is_tablet_pad: device
             .has_capability(smithay::reexports::input::DeviceCapability::TabletPad),
     }
-}
-
-/// The `display.scale` the user has set, or `None`. Distinguishing
-/// "unset" from "set to 1.0" is the point: unset derives the scale from the panel, 1.0 means the user chose 100% on a `HiDPI` panel.
-fn load_display_scale_override() -> Option<f64> {
-    settings_store::load_section("display")
-        .get("scale")
-        .and_then(serde_json::Value::as_f64)
-        .filter(|s| (0.5..=3.0).contains(s))
 }
 
 /// Touch slot as a plain integer for the backend event. libinput reports `-1` for single-touch devices with no slot concept — all one finger, so slot 0 is honest.
