@@ -1476,8 +1476,13 @@ impl SidebarWheelDisc {
         // extended a little beyond the viewport so the fill and rim cannot
         // reveal a short end at either edge.
         let sweep = (half_h / r_out).clamp(-1.0, 1.0).asin() + SWEEP_SLOP_DEG.to_radians();
+        // The body is a pie slice from the centre, which lies far left of the
+        // slot. Clipping it at the slot's left edge cut the disc off there
+        // whenever the strip was pulled past its start and the slot rode in
+        // from the screen edge, leaving a bare gap; clipped at the centre it
+        // keeps continuing past the end of the screen.
         let group_clip = Rect::new(
-            self.rect.x0,
+            c.x.min(self.rect.x0),
             self.rect.y0,
             self.rect.x1 + RIM_SHADOW_REACH,
             self.rect.y1,
@@ -2393,6 +2398,20 @@ mod tests {
     /// that care which rows are visible need this, not `mk`'s square rect.
     fn live_slot() -> Rect {
         Rect::new(0.0, 40.0, 234.0, 830.0)
+    }
+
+    #[test]
+    fn disc_body_continues_left_of_its_slot_past_the_screen_edge() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        // A strip pulled 120 px past its start moves the slot in from the edge.
+        layout_into_slot(&mut d, Rect::new(120.0, 40.0, 354.0, 830.0));
+        let geom = d.disc_geometry(&Theme::dark()).expect("laid out");
+        assert!(
+            geom.group_clip.x0 <= 0.0,
+            "the body must reach the screen edge behind an overscrolled slot: {:?}",
+            geom.group_clip
+        );
+        assert!(geom.group_clip.x1 >= d.rect.x1, "the rim still paints");
     }
 
     #[test]

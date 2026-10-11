@@ -1598,9 +1598,15 @@ fn axis_gather_stops_old_snap_when_focus_is_already_visible() {
     h.lay_out();
     h.tick();
     assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
+    // Group 0 is already wholly on screen where the old motion left the
+    // strip, so the gather reveals nothing more (a reveal is the least pan
+    // that shows the group) but still cancels the motion toward group 4.
+    let stopped = h.scroll_x();
+    h.tick();
+    h.lay_out();
     assert_eq!(
         h.scroll_x(),
-        0.0,
+        stopped,
         "already-visible gather still cancels old motion"
     );
 }
