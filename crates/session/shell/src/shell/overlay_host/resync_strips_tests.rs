@@ -71,6 +71,62 @@ fn one_group_seed() -> (WorkspaceTree, StripId, GroupId) {
     (tree, strip_id, group_id)
 }
 
+#[test]
+fn closing_a_window_is_quiet_and_still_reopens_its_exact_tab() {
+    let (mut tree, strip_id, group_id) = one_group_seed();
+    tree.seed_doc_from_cache();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let counts = {
+        let state = chrome.borrow();
+        (
+            state.notification_count(),
+            state.notification_history().len(),
+        )
+    };
+    assert!(host.close_tab_in_group(group_id, Some(1)));
+    {
+        let state = chrome.borrow();
+        assert!(
+            state.tree().desktop.workspaces[0].strips[0]
+                .window_groups
+                .is_empty()
+        );
+        assert_eq!(
+            state.notification_count(),
+            counts.0,
+            "closing is its own feedback, not a notification"
+        );
+        assert_eq!(state.notification_history().len(), counts.1);
+    }
+    host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+        .expect("valid default shortcut configuration");
+    let modifiers =
+        winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT;
+    let mut handled = false;
+    assert!(host.handle_shell_keyboard_event(
+        &winit::keyboard::Key::Character("T".into()),
+        modifiers.into(),
+        false,
+        &AutoCommit::new(),
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert!(
+        handled,
+        "the OS frame owns Ctrl+Shift+T before the app receives it"
+    );
+    let state = chrome.borrow();
+    let tree = state.tree();
+    let group = &tree.desktop.workspaces[0].strips[0].window_groups[0];
+    assert_eq!((group.id, group.active_tab), (group_id, 1));
+    assert_eq!(
+        tree.desktop.active_strip.get(&tree.desktop.active),
+        Some(&strip_id)
+    );
+    drop(tree);
+    assert_eq!(state.notification_count(), counts.0);
+}
+
 fn make_stub_group(id: GroupId, label: &str) -> StateGroup {
     let tab_id = id.saturating_add(1000);
     StateGroup {

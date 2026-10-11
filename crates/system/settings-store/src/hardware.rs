@@ -2406,6 +2406,7 @@ impl Default for ShortcutConfig {
 /// sorted order, key)`. Never remove an entry: a settings file written by
 /// any earlier release may still carry it.
 const RETIRED_DEFAULTS: &[(ShortcutAction, &[&str], &str)] = &[
+    (ShortcutAction::ReopenClosedTab, &["Shift", "Super"], "t"),
     (ShortcutAction::PreviousStrip, &["Shift", "Super"], "up"),
     (ShortcutAction::NextStrip, &["Shift", "Super"], "down"),
     (ShortcutAction::ToggleMaximize, &["Super"], "up"),
@@ -2909,6 +2910,24 @@ mod tests {
             ShortcutConfig::normalise(loaded).bindings[&ShortcutAction::ReopenClosedTab],
             KeyChord::parse("Alt+Shift+T").unwrap()
         );
+    }
+
+    #[test]
+    fn reopening_migrates_the_old_default_and_preserves_custom_bindings() {
+        let action = ShortcutAction::ReopenClosedTab;
+        let mut old = ShortcutConfig::default();
+        old.bindings
+            .insert(action, KeyChord::parse("Super+Shift+T").unwrap());
+        let migrated = ShortcutConfig::normalise(old);
+        assert_eq!(
+            migrated.bindings[&action],
+            KeyChord::parse("Ctrl+Shift+T").unwrap()
+        );
+        assert!(migrated.validate().is_ok());
+        let custom = KeyChord::parse("Ctrl+Alt+Shift+T").unwrap();
+        let mut edited = ShortcutConfig::default();
+        edited.set(action, custom.clone()).unwrap();
+        assert_eq!(ShortcutConfig::normalise(edited).bindings[&action], custom);
     }
 
     #[test]
