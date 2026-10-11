@@ -393,6 +393,24 @@ struct JobCustody {
     custody: Option<ResourceInvocationScope>,
 }
 
+impl JobCustody {
+    /// The custody of a job an effect running under `worker` and `custody`
+    /// starts.
+    #[inline(never)]
+    fn of(worker: Option<&ResourceEffectScope>, custody: Option<&ResourceInvocationScope>) -> Self {
+        Self {
+            worker: worker.cloned(),
+            custody: custody.cloned(),
+        }
+    }
+}
+
+/// `custody` owned, for an effect context to keep.
+#[inline(never)]
+fn owned_scope(custody: Option<&ResourceInvocationScope>) -> Option<ResourceInvocationScope> {
+    custody.cloned()
+}
+
 /// Start tracking a job in `started` for `owner`, with the completion
 /// `then`; the [`Progress`] its work reports through. A job already
 /// started there is stopped: an effect runs one job at a time.
@@ -469,7 +487,7 @@ fn complete<R: Resource, H: 'static>(
     let Ok(then) = then.downcast::<Then<R, H>>() else {
         return Err("a job's completion is of another type".into());
     };
-    let scope = custody.clone();
+    let scope = owned_scope(custody.as_ref());
     let mut cx = EffectCx::<R, H>::new(env.clone(), invocation).with_custody(custody)?;
     let mut then = Some(*then);
     let mut value = Some(value);
@@ -606,12 +624,10 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     }
 
     fn with_custody(mut self, custody: Option<ResourceInvocationScope>) -> Result<Self, String> {
-        self.worker_custody = custody
-            .as_ref()
-            .map(ResourceInvocationScope::effect_scope)
-            .transpose()?;
-        if let Some(scope) = &custody {
-            self.env.dispatch = self.env.dispatch.for_custody(scope.clone());
+        let (worker, lent) = custody_scopes(custody.as_ref())?;
+        self.worker_custody = worker;
+        if let Some(scope) = lent {
+            self.env.dispatch = self.env.dispatch.for_custody(scope);
         }
         self.custody = custody;
         Ok(self)
@@ -720,10 +736,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         track_job(
             &mut self.started,
             &self.env.wake,
-            JobCustody {
-                worker: self.worker_custody.clone(),
-                custody: self.custody.clone(),
-            },
+            JobCustody::of(self.worker_custody.as_ref(), self.custody.as_ref()),
             then,
             std::any::TypeId::of::<Then<R, H>>(),
         )
@@ -1449,16 +1462,13 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
             .and_then(|decl| place_of(decl, &effect));
         let job = admitted(declaration.as_ref(), id, request.kind)?;
         let mut cx = EffectCx::new(self.env.clone(), Some(request.invocation))
-            .with_custody(custody.cloned())?;
+            .with_custody(owned_scope(custody))?;
         cx.target = op.target().cloned();
         cx.place.clone_from(&place);
         // Keep an immutable snapshot for this effect invocation, including any
         // pending edits. The effect may also read a historical version; neither
         // read borrows the author's document mutably.
-        cx.document = doc.map(|doc| {
-            cx.heads = doc.base_heads();
-            Rc::new(RefCell::new(doc.clone()))
-        });
+        (cx.document, cx.heads) = lend(doc);
         let mut handling = Some((handle, effect));
         let answer = run_under(
             Some(request.invocation),
@@ -1483,10 +1493,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
                 track_job(
                     &mut cx.started,
                     &cx.env.wake,
-                    JobCustody {
-                        worker: cx.worker_custody.clone(),
-                        custody: cx.custody.clone(),
-                    },
+                    JobCustody::of(cx.worker_custody.as_ref(), cx.custody.as_ref()),
                     None,
                     std::any::TypeId::of::<Then<R, H>>(),
                 )
@@ -1520,6 +1527,30 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
                 complete::<R, H>(env, host, then, value, custody, invocation)
             },
         )
+    }
+}
+
+/// The scope a worker runs under for `custody`, and the custody the
+/// effect's dispatcher keeps.
+fn custody_scopes(
+    custody: Option<&ResourceInvocationScope>,
+) -> Result<(Option<ResourceEffectScope>, Option<ResourceInvocationScope>), String> {
+    let Some(custody) = custody else {
+        return Ok((None, None));
+    };
+    Ok((Some(custody.effect_scope()?), Some(custody.clone())))
+}
+
+/// A snapshot of `doc` to lend an effect's handler, and its heads.
+fn lend(
+    doc: Option<&tilo_resource::Doc>,
+) -> (
+    Option<Rc<RefCell<tilo_resource::Doc>>>,
+    Vec<ui_core::automerge::ChangeHash>,
+) {
+    match doc {
+        Some(doc) => (Some(Rc::new(RefCell::new(doc.clone()))), doc.base_heads()),
+        None => (None, Vec::new()),
     }
 }
 
@@ -1873,7 +1904,8 @@ where
         invocation: Option<InvocationId>,
         custody: Option<&ResourceInvocationScope>,
     ) -> Result<(), String> {
-        let mut cx = EffectCx::new(self.env.clone(), invocation).with_custody(custody.cloned())?;
+        let mut cx =
+            EffectCx::new(self.env.clone(), invocation).with_custody(owned_scope(custody))?;
         let mut value = Some(value);
         let run = &mut self.run;
         let answer = run_under(invocation, custody, &mut || match value.take() {
