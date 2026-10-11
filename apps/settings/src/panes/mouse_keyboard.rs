@@ -838,6 +838,12 @@ pub enum InputEffect {
     /// Choose the discovered keyboard assignment to inspect and edit.
     #[effect(idempotent)]
     SelectKeyboardScope { scope: String },
+    /// Make a keyboard that types its own sources type the shared ones again,
+    /// forgetting its own list.
+    UseSharedSources {
+        #[param("The keyboard's device key, as `InspectKeyboardSources` reports it")]
+        scope: String,
+    },
     /// Select a configured source without changing what the keyboard types.
     #[effect(idempotent)]
     SelectConfiguredSource { source: String },
@@ -1301,6 +1307,7 @@ fn apply(
         | E::SetSourceOptionsVisible { .. }
         | E::SetSourceInspectionVisible { .. }
         | E::SelectKeyboardScope { .. }
+        | E::UseSharedSources { .. }
         | E::SelectConfiguredSource { .. }
         | E::OpenSourcePicker
         | E::CloseSourcePicker

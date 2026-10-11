@@ -113,7 +113,10 @@ pub(super) fn scopes(
         return vec![(OSK.into(), t("a11y-osk"))];
     }
     if !osk && keyboards.len() == 1 {
-        return keyboards;
+        // The only keyboard edits the shared sources: a list of its own
+        // would override them invisibly, since no selector names it.
+        let title = keyboards.pop().map(|(_, title)| title).unwrap_or_default();
+        return vec![(ALL.into(), title)];
     }
     if !osk && keyboards.is_empty() {
         return vec![(ALL.into(), t("input-scope-all"))];
@@ -126,10 +129,62 @@ pub(super) fn scopes(
     result
 }
 
+/// Attached physical keyboards that type their own sources instead of the
+/// shared ones, with their titles, in key order.
+pub(super) fn keyboards_with_own_sources(
+    snapshot: Option<&InputHardwareSnapshot>,
+    input: &InputPrefs,
+) -> Vec<(String, String)> {
+    let Some(snapshot) = snapshot else {
+        return Vec::new();
+    };
+    let mut keyboards: Vec<_> = snapshot
+        .of_kind(InputDeviceKind::Keyboard)
+        .into_iter()
+        .filter(|device| {
+            !matches!(device.key.as_str(), ALL | OSK)
+                && input.keyboard_assignments.contains_key(&device.key)
+        })
+        .map(|device| (device.key.clone(), device_title(device)))
+        .collect();
+    keyboards.sort_by(|a, b| a.0.cmp(&b.0));
+    keyboards.dedup_by(|a, b| a.0 == b.0);
+    keyboards
+}
+
+/// An edit of the shared sources must be what an attached keyboard types
+/// when that keyboard is not offered for editing on its own: its retained
+/// list would otherwise keep overriding the edit with nothing on screen
+/// saying so. Disconnected keyboards keep their lists.
+fn drop_hidden_assignments(input: &mut InputPrefs, area: &InputArea) {
+    let offered = area.keyboard_scopes();
+    for (key, _) in keyboards_with_own_sources(area.devices().as_ref(), input) {
+        if !offered.iter().any(|(scope, _)| scope == &key) {
+            input.keyboard_assignments.remove(&key);
+        }
+    }
+}
+
+/// Make one keyboard type the shared sources again.
+fn use_shared_sources(app: &SettingsApp, scope: &str) -> EffectAnswer {
+    let settings = app.host().settings::<InputPrefs>();
+    let mut input = settings.get();
+    if matches!(scope, ALL | OSK) || input.keyboard_assignments.remove(scope).is_none() {
+        return Err(t("input-error-keyboard-shared"));
+    }
+    settings
+        .set(&input)
+        .map(|()| Effected::done())
+        .map_err(|error| error.to_string())
+}
+
 pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Option<EffectAnswer> {
     let area = app.input();
     if matches!(operation, InputEffect::InspectKeyboardSources) {
         return Some(Ok(inspect_sources(app)));
+    }
+    if let InputEffect::UseSharedSources { scope } = operation {
+        return Some(use_shared_sources(app, scope));
     }
     let mut editor = area.editor.get();
     let input = app.host().settings::<InputPrefs>().get();
@@ -229,7 +284,8 @@ fn inspect_sources(app: &SettingsApp) -> Effected {
         .into_iter()
         .map(|(id, label)| {
             let profile = area.profile(&input, &id);
-            serde_json::json!({"id": id, "label": label, "sources": profile.sources, "active": profile.active})
+            let own = !matches!(id.as_str(), ALL | OSK) && input.keyboard_assignments.contains_key(&id);
+            serde_json::json!({"id": id, "label": label, "sources": profile.sources, "active": profile.active, "own": own})
         })
         .collect();
     let editor = area.editor.get();
@@ -386,6 +442,7 @@ pub(super) fn apply_scoped(
     if editor.scope == ALL {
         input.keyboard_layouts.clone_from(&profile.sources);
         input.keyboard_layout.clone_from(&profile.active);
+        drop_hidden_assignments(input, area);
     }
     input.keyboard_assignments.insert(editor.scope, profile);
     Ok(())
@@ -683,6 +740,9 @@ impl MouseKeyboardPane {
                 content.push(caption(&t("input-scope-inheritance")));
             }
         }
+        if self.editor.get().scope == ALL {
+            content.extend(self.own_source_rows());
+        }
         content.push(caption(&t("input-sources-selection-description")));
         content.push(self.source_list(&profile));
         let add = Box::new(self.cx.bind_invocation(
@@ -745,6 +805,27 @@ impl MouseKeyboardPane {
             content.push(self.source_options_card(&selected));
         }
         crate::widgets::card_with_action(&t("input-sources-title"), add, rows(content))
+    }
+
+    /// One row per attached keyboard whose own list overrides the shared
+    /// sources, so what that keyboard types is never a surprise.
+    fn own_source_rows(&self) -> Vec<El> {
+        let snapshot = self.hardware.borrow().1.clone();
+        keyboards_with_own_sources(snapshot.as_ref(), &self.last)
+            .into_iter()
+            .map(|(scope, title)| {
+                setting_row(
+                    &t_args("input-scope-own", &[("name", ArgValue::from(title))]),
+                    Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("input.keyboard.shared.{scope}"),
+                            &t("input-scope-use-shared"),
+                        ),
+                        InputEffect::UseSharedSources { scope },
+                    )),
+                )
+            })
+            .collect()
     }
 
     fn source_options_card(&self, selected: &str) -> El {
@@ -1193,8 +1274,9 @@ mod tests {
                 .iter()
                 .map(|entry| entry.0.as_str())
                 .collect::<Vec<_>>(),
-            ["keyboard-0"]
+            [ALL]
         );
+        assert_eq!(scopes(Some(&snapshot(1, false)), false)[0].1, "Keyboard");
         assert_eq!(
             scopes(Some(&snapshot(2, false)), false)
                 .iter()
@@ -1311,11 +1393,11 @@ mod tests {
                     (to.center().x, to.y0 + 2.0),
                 );
                 app.settle();
-                let profile =
-                    app.settings::<InputPrefs>().get().keyboard_assignments["fixture-input-0"]
-                        .clone();
-                assert_eq!(profile.sources, ["fr", "us", "de"]);
-                assert_eq!(profile.active, "us");
+                // The only keyboard edits the shared sources, not a list of its own.
+                let stored = app.settings::<InputPrefs>().get();
+                assert_eq!(stored.keyboard_layouts, ["fr", "us", "de"]);
+                assert_eq!(stored.keyboard_layout, "us");
+                assert!(!stored.keyboard_assignments.contains_key("fixture-input-0"));
                 app.harness().render_png(&directory.join("reordered.png"));
             }
             if matches!(scenario, "keyboard-many" | "keyboard-touch") {
@@ -1339,6 +1421,114 @@ mod tests {
             assert!(app.harness().component_contract_violations().is_empty());
         }
     }
+    fn fork(sources: &[&str]) -> KeyboardProfile {
+        KeyboardProfile {
+            sources: sources.iter().map(|source| (*source).into()).collect(),
+            active: sources[0].into(),
+            options: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn the_only_keyboard_edits_the_shared_sources_and_loses_its_hidden_list() {
+        let mut app = fixture_app("keyboard-single", (1200, 900));
+        let mut input = app.settings::<InputPrefs>().get();
+        input
+            .keyboard_assignments
+            .insert("fixture-input-0".into(), fork(&["us"]));
+        app.settings::<InputPrefs>().set(&input).unwrap();
+        app.settle();
+        // What the built-in keyboard types differs from the shared list: say so.
+        assert!(
+            app.harness()
+                .targets()
+                .contains_key("input.keyboard.shared.fixture-input-0")
+        );
+        perform(
+            &mut app,
+            InputEffect::AddSource {
+                source: "de".into(),
+            },
+        );
+        perform(
+            &mut app,
+            InputEffect::SetActiveSource {
+                source: "de".into(),
+            },
+        );
+        let stored = app.settings::<InputPrefs>().get();
+        assert_eq!(stored.keyboard_layout, "de");
+        assert!(stored.keyboard_layouts.contains(&"de".to_string()));
+        assert!(!stored.keyboard_assignments.contains_key("fixture-input-0"));
+        assert_eq!(
+            settings_store::keyboard_sources::effective(&stored.rich_input(), "fixture-input-0")
+                .keyboard_layout,
+            "de",
+            "the keyboard types what the page edited"
+        );
+        assert!(
+            !app.harness()
+                .targets()
+                .contains_key("input.keyboard.shared.fixture-input-0")
+        );
+    }
+
+    #[test]
+    fn a_keyboard_with_its_own_list_is_shown_and_can_use_the_shared_one() {
+        let mut app = fixture_app("keyboard-many", (1200, 900));
+        let mut input = app.settings::<InputPrefs>().get();
+        input
+            .keyboard_assignments
+            .insert("fixture-input-1".into(), fork(&["fr"]));
+        app.settings::<InputPrefs>().set(&input).unwrap();
+        app.settle();
+        let result = app
+            .effect(&SettingsEffect::from(InputEffect::InspectKeyboardSources))
+            .unwrap()
+            .value
+            .unwrap();
+        let own = |id: &str| {
+            result["scopes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|scope| scope["id"] == id)
+                .unwrap()["own"]
+                .clone()
+        };
+        assert_eq!(own("fixture-input-1"), true);
+        assert_eq!(own("fixture-input-0"), false);
+        // A shared edit leaves a keyboard offered on its own alone.
+        perform(
+            &mut app,
+            InputEffect::AddSource {
+                source: "de".into(),
+            },
+        );
+        assert!(
+            app.settings::<InputPrefs>()
+                .get()
+                .keyboard_assignments
+                .contains_key("fixture-input-1")
+        );
+        app.harness()
+            .click_named("input.keyboard.shared.fixture-input-1")
+            .unwrap();
+        app.settle();
+        assert!(
+            !app.settings::<InputPrefs>()
+                .get()
+                .keyboard_assignments
+                .contains_key("fixture-input-1")
+        );
+        assert!(
+            app.effect(&SettingsEffect::from(InputEffect::UseSharedSources {
+                scope: "fixture-input-1".into()
+            }))
+            .is_err()
+        );
+    }
+
     #[test]
     fn keyboard_editor_hotplug_preserves_assignments_and_reconnects_by_identity() {
         let mut app = fixture_app("keyboard-many", (1200, 900));

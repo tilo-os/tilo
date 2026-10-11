@@ -4173,7 +4173,7 @@ impl DrmRuntime {
         let handle: LoopHandle<'static, DrmDispatchState> = event_loop.handle();
         register_event_sources(&handle, session_notifier, udev, libinput_backend)?;
 
-        // Compile the xkb keymap once at startup from the session's `XKB_DEFAULT_*` environment (installer-seeded, PAM-exported); a failure is non-fatal, running pointer-only rather than refusing to boot.
+        // Compile the xkb keymap once at startup from the person's input sources, or the machine's layout when they chose none (`XKB_DEFAULT_*`, localed; see `keyboard_sources::system_sources`); a failure is non-fatal, running pointer-only rather than refusing to boot.
         let keyboard = KeyboardXkb::new();
         if keyboard.is_some() {
             tracing::info!("DRM backend: xkb keyboard initialised");

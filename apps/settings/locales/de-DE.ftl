@@ -2031,6 +2031,9 @@ input-dictionary-all-languages = Alle Sprachen
 
 input-scope-all = Alle Tastaturen
 input-scope-inheritance = Physische Tastaturen nutzen diese Quellen, bis du die eigene Liste einer Tastatur änderst. Die Bildschirmtastatur hat eigene Quellen.
+input-scope-own = { $name } nutzt eigene Tastaturbelegungen
+input-scope-use-shared = Gemeinsame Belegungen nutzen
+input-error-keyboard-shared = Diese Tastatur nutzt bereits die gemeinsamen Belegungen.
 input-keyboard-scope = Tastatur
 input-source-activate = Aktivieren
 input-sources-selection-description = Wähle eine Quelle zum Ansehen oder Bearbeiten. Ziehe sie, um die Reihenfolge zu ändern.
