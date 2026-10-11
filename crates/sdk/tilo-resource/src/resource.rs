@@ -819,10 +819,16 @@ fn edit_paths(
 
 /// The published spec of [`FIELD_EDIT`].
 fn field_edit_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
+    // Built once per type: it describes every editable path, which only
+    // the type decides.
+    let schema = per_type(vocabulary, TypeSchema::Edit, &|| {
+        Some(edit_schema(vocabulary))
+    })
+    .unwrap_or_else(|| Arc::new(edit_schema(vocabulary)));
     rooted_edit_spec(
         vocabulary,
         (Vec::new(), (vocabulary.shape)()),
-        edit_schema(vocabulary),
+        schema,
         format!("Edit a {} field", vocabulary.label),
         "The path of the field from the record's root, and the operation",
     )
@@ -888,19 +894,19 @@ pub(crate) fn field_edit_spec_at_of(
     if shape.fields().is_empty() || readonly {
         return None;
     }
-    let ops: Vec<(String, serde_json::Value)> = (vocabulary.op_schemas)()
-        .into_iter()
-        .filter_map(|(path, schema)| {
-            path.strip_prefix(&dotted)
-                .map(|rest| (rest.to_owned(), schema))
-        })
-        .collect();
-    let mut alternatives = Vec::new();
-    edit_paths(shape, &[], "", &ops, &mut alternatives);
-    if alternatives.is_empty() {
-        return None;
-    }
-    let schema = described_edit(&alternatives, &ops);
+    // The same for every item: built once per type and path.
+    let schema = per_type_at(vocabulary, TypeSchema::Edit, &dotted, &|| {
+        let ops: Vec<(String, serde_json::Value)> = (vocabulary.op_schemas)()
+            .into_iter()
+            .filter_map(|(path, schema)| {
+                path.strip_prefix(&dotted)
+                    .map(|rest| (rest.to_owned(), schema))
+            })
+            .collect();
+        let mut alternatives = Vec::new();
+        edit_paths(shape, &[], "", &ops, &mut alternatives);
+        (!alternatives.is_empty()).then(|| described_edit(&alternatives, &ops))
+    })?;
     Some(rooted_edit_spec(
         vocabulary,
         (prefix, Some(shape)),
@@ -914,7 +920,7 @@ pub(crate) fn field_edit_spec_at_of(
 fn rooted_edit_spec(
     vocabulary: &'static Vocabulary,
     (prefix, root): (Vec<crate::Segment>, Option<crate::Shape>),
-    schema: serde_json::Value,
+    schema: Arc<serde_json::Value>,
     label: String,
     description: &'static str,
 ) -> ActionSpec {
@@ -938,7 +944,7 @@ fn rooted_edit_spec(
 fn edit_spec(
     vocabulary: &'static Vocabulary,
     prefix: Vec<crate::Segment>,
-    schema: serde_json::Value,
+    schema: Arc<serde_json::Value>,
     label: String,
     description: &'static str,
 ) -> ActionSpec {
@@ -960,7 +966,7 @@ fn edit_spec(
         ExecutionLocus::ClientLocal,
         vec![
             ActionParam::required_owned(EDIT_PARAM, ParamType::Object, description)
-                .with_schema(schema),
+                .with_shared_schema(schema),
         ],
         move |args| {
             let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
@@ -1951,12 +1957,15 @@ pub(crate) fn apply_param(vocabulary: &Vocabulary) -> ActionParam {
 enum TypeSchema {
     Apply,
     Group,
+    /// The field edit's, at the paths under a dotted prefix (`""` for the
+    /// record's root, `notes.*.` for an item of `notes`).
+    Edit,
 }
 
 #[derive(Default)]
 struct CompiledSchemas {
     epoch: u64,
-    entries: HashMap<(TypeId, TypeSchema), Option<Arc<serde_json::Value>>>,
+    entries: HashMap<(TypeId, TypeSchema, String), Option<Arc<serde_json::Value>>>,
 }
 
 static SCHEMAS: OnceLock<Mutex<CompiledSchemas>> = OnceLock::new();
@@ -1988,13 +1997,27 @@ fn per_type(
     schema: TypeSchema,
     build: &dyn Fn() -> Option<serde_json::Value>,
 ) -> Option<Arc<serde_json::Value>> {
+    per_type_at(vocabulary, schema, "", build)
+}
+
+/// [`per_type`] for the paths under the dotted prefix `at`.
+fn per_type_at(
+    vocabulary: &Vocabulary,
+    schema: TypeSchema,
+    at: &str,
+    build: &dyn Fn() -> Option<serde_json::Value>,
+) -> Option<Arc<serde_json::Value>> {
     let cache = SCHEMAS.get_or_init(Mutex::default);
-    cached_schema(cache, ((vocabulary.type_id)(), schema), build)
+    cached_schema(
+        cache,
+        ((vocabulary.type_id)(), schema, at.to_owned()),
+        build,
+    )
 }
 
 fn cached_schema(
     cache: &Mutex<CompiledSchemas>,
-    key: (TypeId, TypeSchema),
+    key: (TypeId, TypeSchema, String),
     build: &dyn Fn() -> Option<serde_json::Value>,
 ) -> Option<Arc<serde_json::Value>> {
     let epoch = {
@@ -2654,17 +2677,22 @@ mod schema_sharing_tests {
     #[test]
     fn shared_schema_reloads_do_not_retain_or_repopulate_stale_generation() {
         let cache = Mutex::new(CompiledSchemas::default());
-        let key = (TypeId::of::<()>(), TypeSchema::Apply);
-        let first = cached_schema(&cache, key, &|| Some(serde_json::json!({"minimum":1}))).unwrap();
-        let reused =
-            cached_schema(&cache, key, &|| panic!("cached type must not rebuild")).unwrap();
+        let key = (TypeId::of::<()>(), TypeSchema::Apply, String::new());
+        let first = cached_schema(&cache, key.clone(), &|| {
+            Some(serde_json::json!({"minimum":1}))
+        })
+        .unwrap();
+        let reused = cached_schema(&cache, key.clone(), &|| {
+            panic!("cached type must not rebuild")
+        })
+        .unwrap();
         assert!(Arc::ptr_eq(&first, &reused));
         {
             let mut store = cache.lock().unwrap();
             store.epoch += 1;
             store.entries.clear();
         }
-        let old_build = cached_schema(&cache, key, &|| {
+        let old_build = cached_schema(&cache, key.clone(), &|| {
             let mut store = cache.lock().unwrap();
             store.epoch += 1;
             store.entries.clear();
