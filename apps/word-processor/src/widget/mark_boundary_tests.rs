@@ -246,8 +246,7 @@ fn mark_boundary_runs_merge_equal_styles_and_match_the_reference() {
                     children: vec![],
                 };
                 for review in [false, true] {
-                    let (actual, actual_underlines, actual_strikes) =
-                        block_runs_markup(&block, review);
+                    let (actual, actual_underlines, actual_strikes) = block_runs(&block, review);
                     let (expected, expected_underlines, expected_strikes) =
                         reference_block_runs_markup(&block, review);
                     let fields = |r: RichSpan| {
