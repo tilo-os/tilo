@@ -102,6 +102,8 @@ tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "mi
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 
 [dev-dependencies]
+# Real kernel executing-peer handshakes in the disposable source/commit probes.
+runtime-portal = { path = "../runtime-portal" }
 # `standalone::joined` tests start a real relay.
 tilo-relay = { path = "../../hosting/tilo-relay" }
 # The steward channel fixtures owner tests seal writes with.

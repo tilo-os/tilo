@@ -13,8 +13,23 @@ uninstalled executable's native launch authority.
 
 ## What the owner would approve
 
-The developer selects an already joined room and existing records, then asks
-the trusted platform host to prepare a development launch. Preparation creates
+The developer requests a specific operation on an already joined room's existing
+record, then asks the trusted platform host to prepare a development launch.
+Derive record IDs and the Read/Write requirement from the platform's actual
+open/action request, not from a generic app id, room id or arbitrary app argv.
+Inspection needs Read; an edit needs its action's existing Write requirement.
+If the operation actually needs several records, show that exact deduplicated
+set and why each is required. A count bound is a safety limit, never a default
+selection. The current `run_app(profile, app_id, room, executable, args)` has no
+trusted record selection, operation or deadline; it cannot infer this scope.
+An incomplete request must ask for those missing choices rather than receive
+all records or an editing role.
+
+Derive expiry from the request's finite operation/session deadline, clamped to
+current room policy, device certificate and authority-session expiry. Completion
+or closing the requested view ends the binding earlier. An interactive request
+without a finite deadline needs an explicit owner-selected end time; there is
+no default 30-minute grant and no hidden auto-renewal. Preparation creates
 no grant and releases no document or identity descriptor to the child. It holds
 the actual child at the existing launch gate while the platform obtains consent.
 
@@ -35,10 +50,14 @@ Proposed platform prompt (values come from retained host evidence):
 >
 > **Records:** {explicit existing record names and stable IDs}
 >
-> **Access:** {Read only | Read and edit}, within this person's current room
+> **Access:** {the request's minimum Read/Write requirement and named operation},
+> within this person's current room
 > permissions. Reading includes all contents and history of those records.
 >
-> **Duration:** this one launch, at most 30 minutes. Ending the app, restarting
+> **Purpose:** {the requested inspection or edit and why each record is needed}
+>
+> **Duration:** until {the requested operation completes or explicit end time}.
+> Ending the app, restarting
 > the host, revoking access or replacing the executable ends this authorization.
 >
 > This does not approve an installed package, create records, change room
@@ -63,9 +82,9 @@ cannot approve itself by adding fields to a launch request.
 | Room approval | Current governing owner approves the complete request digest through authenticated governance authority. Local profile ownership cannot approve a foreign room. |
 | Code | One bounded verified executable digest, separate `DevelopmentSource`, app id and immutable launch configuration. An installed package cannot take this path. A path or mutable checkout is not a code identity. |
 | Process | Actual launcher and executing PID/start identities, retained pidfds and the existing executing-peer challenge. No wire PID, creator-only handoff or unrelated same-UID task can redeem the binding. |
-| Data | One canonical room and app; at most 64 explicitly selected existing record IDs. No wildcard, future record, foreign-room bootstrap or missing-record creation. Child-resource labels do not narrow whole-document reads. |
-| Operations | Read or Read-and-edit ceiling, intersected with current governor/device/person/record/action policy. No Owner/Admin, invitation, hardware, filesystem, production service or arbitrary command authority. Effects need their existing authorization independently. |
-| Lifetime | Single prepared process; approval request expires after two minutes; approval expires no later than 30 minutes after issuance. Also ends on process death, source replacement, profile/identity/enrollment replacement, host restart, consent revocation or loss of the live authority session. |
+| Data | Exact existing record IDs required by the trusted open/action request in one canonical room and app. No default bundle, wildcard, future record, foreign-room bootstrap or missing-record creation. Child-resource labels do not narrow whole-document reads; disclose the whole CRDT graph/history required by the native read contract. |
+| Operations | The actual operation's minimum Read or Write requirement, intersected with current governor/device/person/record/action policy. No default Editor role, Owner/Admin, invitation, hardware, filesystem, production service or arbitrary command authority. Effects need their existing authorization independently. |
+| Lifetime | One prepared process and requested view/operation, ending at completion/close or the explicit finite request deadline, whichever comes first; further clamped by current room/device/authority expiry. Preparation and consent also need bounded deadlines. No default duration or silent renewal. Also ends on process death, source replacement, profile/identity/enrollment replacement, host restart or consent revocation. |
 
 The approval is a new, temporary launch authority, not an inferred existing
 grant. Its exact signed/request-bound representation needs a separate review.
@@ -131,6 +150,28 @@ Two implementation gates remain unresolved:
   implementation cannot claim race-free custody from repeated stamp reads.
 
 Do not activate the proposed authority until both gates are demonstrated.
+
+The proof branch adds probes for the current paths: an uninstalled native
+`run_app` can read an owner-only non-secret profile canary; the default
+application seccomp filter permits a real exec; and a genuine executing peer's
+source custody retires on exec while the device-valid `OwnerCommitRequest`
+still commits and survives reopen. The last probe directly tests the canonical
+owner service, not an end-to-end joined SDK grant. It demonstrates that the
+owner request does not carry the native execution lease, not that signatures or
+current room policy were bypassed. Existing replicated device-valid operations
+must retain their contract; a new local development side-effect lease needs a
+separate, host-local commit-boundary integration.
+Another real probe execs the same executable again: PID/start, pidfd and the
+source stamp remain current. Code identity is therefore not an execution
+generation proof; a single-launch contract that fences every exec must observe
+the actual transition, including a same-image exec.
+
+Linux documents filter inheritance across permitted exec in its
+[seccomp guide](https://www.kernel.org/doc/html/v7.0/userspace-api/seccomp_filter.html).
+The [pidfd manual](https://www.man7.org/linux/man-pages/man2/pidfd_open.2.html)
+describes polling for task termination. The probes test the repository's actual
+use of those mechanisms; they do not claim every possible kernel supervisor
+cannot observe exec.
 
 ## Disposable acceptance cases
 

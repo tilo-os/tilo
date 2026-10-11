@@ -1155,3 +1155,7 @@ mod tests;
 #[cfg(all(test, target_os = "linux"))]
 #[path = "daemon/independent_tests.rs"]
 mod independent_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "daemon/development_proof_tests.rs"]
+mod development_proof_tests;

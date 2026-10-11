@@ -694,6 +694,39 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
+    fn default_application_filter_allows_exec_and_is_not_a_source_transition_fence() {
+        let program = baseline_program(SeccompProfile::TiloDefault).unwrap();
+        let path = c"/bin/true";
+        let argv = [path.as_ptr(), std::ptr::null()];
+        let envp = [std::ptr::null::<libc::c_char>()];
+        // SAFETY: only filter installation, execve and _exit occur in the
+        // child; none returns into the multithreaded test harness.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            if seccompiler::apply_filter(&program).is_err() {
+                // SAFETY: report filter failure without allocation or unwind.
+                unsafe { libc::_exit(12) };
+            }
+            // SAFETY: fixed valid NUL-terminated argument vectors.
+            unsafe {
+                libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr());
+                libc::_exit(11);
+            }
+        }
+        let mut status = 0;
+        // SAFETY: wait for precisely the child created above.
+        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "the actual default filter must permit startup exec; it is not an exec-retirement fence"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
     fn seccomp_baselines_compile_serialise_and_select_write_exec_rules() {
         // Phase `baseline_compiles_and_blob_alignment`.
         {

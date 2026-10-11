@@ -3,6 +3,10 @@ use automerge::{ReadDoc, transaction::Transactable};
 use collab_types::{Ed25519PublicKey, OpClass, SignedOp};
 use tilo_user_identity::DeviceCapabilities;
 
+#[cfg(target_os = "linux")]
+#[path = "owner_source_proof_tests.rs"]
+mod source_proof_tests;
+
 const APP: &str = "dev.tilo.notes";
 const RECORD: &str = "tab:0000000000000001";
 const KIND: &str = "notes.notebook";
