@@ -136,6 +136,8 @@ mod tests {
             "chat-agent-send-message",
             "chat-agent-send-queue",
             "chat-agent-send-steer",
+            "chat-agent-queue-send-failed",
+            "chat-agent-steer-send-failed",
             "chat-agent-select-task",
             "chat-agent-stop-current",
         ] {

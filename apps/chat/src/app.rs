@@ -3161,9 +3161,27 @@ impl ChatApp {
                         agent,
                         submission.draft_revision,
                     );
+                    self.agent_submission_errors
+                        .update(|errors| _ = errors.remove(key));
                     settled.push(key.clone());
                 }
-                AgentTaskSubmissionOutcome::Failed => settled.push(key.clone()),
+                AgentTaskSubmissionOutcome::Failed => {
+                    let error = match submission.intent {
+                        AgentComposerIntent::Queue => {
+                            crate::i18n::t("chat-agent-queue-send-failed")
+                        }
+                        AgentComposerIntent::Steer => {
+                            crate::i18n::t("chat-agent-steer-send-failed")
+                        }
+                        AgentComposerIntent::Message => {
+                            crate::i18n::t("chat-agent-message-send-failed")
+                        }
+                    };
+                    self.agent_submission_errors.update(|errors| {
+                        errors.insert(key.clone(), error);
+                    });
+                    settled.push(key.clone());
+                }
                 AgentTaskSubmissionOutcome::Pending => {}
             }
         }

@@ -1838,9 +1838,12 @@ impl ChatApp {
             crate::app::AgentComposerIntent::Message => false,
         };
         if submitted {
+            let key = (workspace, agent);
+            self.agent_submission_errors
+                .update(|errors| _ = errors.remove(&key));
             self.agent_submissions.update(|pending| {
                 pending.insert(
-                    (workspace, agent),
+                    key,
                     crate::app::AgentSubmission {
                         text,
                         draft_revision,
@@ -2244,8 +2247,8 @@ mod tests {
         Pending, ReceiptStatus, pending,
     };
     use tilo_actions::{
-        ActionAddress, ActionContract, ActionDescriptor, ActionOutput, ExecutionLocus, InputSpec,
-        InvocationId, OperationKind, ResourceSemanticIdentity,
+        ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionOutput,
+        ExecutionLocus, InputSpec, InvocationId, OperationKind, ResourceSemanticIdentity,
     };
     use tilo_automerge::ApplyIncoming;
 
@@ -2545,6 +2548,7 @@ mod tests {
         message_refused: AtomicBool,
         message_catalogue_mode: AtomicU8,
         task_controls_revoked: AtomicBool,
+        task_submission_failed: AtomicBool,
         visual_task_reads: Mutex<std::collections::BTreeMap<String, serde_json::Value>>,
     }
 
@@ -2599,6 +2603,10 @@ mod tests {
 
         fn revoke_task_controls(&self) {
             self.task_controls_revoked.store(true, Ordering::Release);
+        }
+
+        fn fail_task_submissions(&self, failed: bool) {
+            self.task_submission_failed.store(failed, Ordering::Release);
         }
 
         fn set_current_projection(&self, value: serde_json::Value) {
@@ -2945,6 +2953,21 @@ mod tests {
             }
             if request.target.address.action == "read-current-tasks" {
                 return Pending::ready(Ok(self.current_tasks_receipt(&request)));
+            }
+            if matches!(request.target.address.action.as_str(), "queue" | "direct")
+                && self.task_submission_failed.load(Ordering::Acquire)
+            {
+                return Pending::ready(Ok(InvocationReceipt {
+                    invocation: request.invocation,
+                    status: ReceiptStatus::Failed {
+                        error: ActionFailure {
+                            code: "owner_failed".into(),
+                            message: "owner failed the task mutation".into(),
+                            details: None,
+                            retryable: true,
+                        },
+                    },
+                }));
             }
             let task = request
                 .target
@@ -3987,6 +4010,126 @@ mod tests {
             tasks.borrow().stop_state(),
             AgentStopState::Stopping { run_epoch: 7, .. }
         ));
+    }
+
+    fn failed_agent_task_submission(
+        intent: AgentComposerIntent,
+        instruction: &str,
+        expected_status: &str,
+    ) -> (ChatApp, AutoCommit, Arc<TaskControlHost>, String) {
+        let (mut app, mut doc, host) = agent_task_control_app();
+        host.fail_task_submissions(true);
+        app.on_hit(
+            Hit::AgentIntent(intent),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, instruction);
+        app.composer_main.select(2, 9);
+        render_frame(&mut app, 1280.0, 800.0);
+        assert!(ui::Widget::perform_semantic_action(
+            &mut app,
+            &Hit::Send.semantic_id(),
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        settle_agent_submissions(&mut app);
+
+        assert!(app.agent_submissions.get().is_empty());
+        assert_eq!(
+            app.agent_submission_errors
+                .get()
+                .get(&("ws_home".into(), "scribe".into()))
+                .map(String::as_str),
+            Some(expected_status)
+        );
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some(instruction)
+        );
+        assert_eq!(app.composer_main.selection(), (2, 9));
+        assert!(
+            ChatDoc::list_messages(
+                &doc,
+                &ChatDoc::agent_conversation_channel_id("ws_home", "scribe")
+            )
+            .is_empty(),
+            "a failed task command cannot fabricate a Chat message"
+        );
+        let accessible = ui::Widget::accessibility(&app).expect("Chat accessibility tree");
+        assert!(accessible.children.iter().any(|node| {
+            node.role == ui::a11y::Role::StaticText && node.name.as_deref() == Some(expected_status)
+        }));
+
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("the failed private draft can move to its exact child");
+        adopt_agent_surface(
+            &mut app,
+            &request.id,
+            request.initial_rect.expect("Float retains exact geometry"),
+        );
+        draw_detached_agent_surface(&mut app, &request.id);
+        let surface = app
+            .agent_surfaces
+            .values()
+            .find(|surface| surface.id == request.id)
+            .expect("the adopted failed-submission conversation");
+        assert_eq!(
+            surface.view.composer_main.private_plain().as_deref(),
+            Some(instruction)
+        );
+        assert_eq!(surface.view.composer_main.selection(), (2, 9));
+        let child_accessibility =
+            ui::Widget::accessibility(&*surface.view).expect("detached Chat accessibility tree");
+        assert!(child_accessibility.children.iter().any(|node| {
+            node.role == ui::a11y::Role::StaticText && node.name.as_deref() == Some(expected_status)
+        }));
+        (app, doc, host, request.id)
+    }
+
+    #[test]
+    fn failed_queue_and_steer_receipts_keep_private_drafts_and_explain_the_failure() {
+        let (mut queue, mut queue_doc, queue_host, queue_surface) = failed_agent_task_submission(
+            AgentComposerIntent::Queue,
+            "Queue this exact instruction",
+            "Task was not queued. Your instruction is still here.",
+        );
+        let _steer = failed_agent_task_submission(
+            AgentComposerIntent::Steer,
+            "Steer with this exact direction",
+            "Direction was not saved. Your draft is still here.",
+        );
+
+        queue_host.fail_task_submissions(false);
+        draw_detached_agent_surface(&mut queue, &queue_surface);
+        assert!(
+            ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
+                &mut queue,
+                &queue_surface,
+                &format!("agent-surface:{queue_surface}|{}", Hit::Send.semantic_id()),
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut queue_doc),
+                &automerge::ROOT,
+            )
+        );
+        settle_agent_submissions(&mut queue);
+        let child = queue
+            .agent_surfaces
+            .values()
+            .find(|surface| surface.id == queue_surface)
+            .expect("the retry returns through the same detached conversation");
+        assert_eq!(
+            child.view.composer_main.private_plain().as_deref(),
+            Some("")
+        );
+        assert!(
+            !queue
+                .agent_submission_errors
+                .get()
+                .contains_key(&("ws_home".into(), "scribe".into())),
+            "an explicitly accepted retry clears the prior fixed failure status"
+        );
     }
 
     #[test]
@@ -5890,6 +6033,143 @@ mod tests {
         );
         assert!(app.composer_main.is_focused());
         assert!(app.focused_agent_surface.is_none());
+    }
+
+    fn assert_exact_agent_child_focus(app: &ChatApp, children: &[(String, String)], id: &str) {
+        use ui::widget::FloatingSurfaceWidgetExt as Floating;
+
+        assert!(!app.composer_main.is_focused());
+        for (channel, candidate_id) in children {
+            let focused = candidate_id == id;
+            assert_eq!(
+                app.agent_surfaces[channel].view.composer_main.is_focused(),
+                focused
+            );
+            let tree = Floating::floating_surface_accessibility(app, candidate_id).unwrap();
+            let target = format!("agent-surface:{candidate_id}|chat.composer");
+            let composer = tree
+                .children
+                .iter()
+                .find(|node| node.action_target.as_deref() == Some(target.as_str()))
+                .unwrap();
+            assert_eq!(composer.state.focused, focused);
+        }
+    }
+
+    fn select_exact_agent_child(app: &mut ChatApp, doc: &mut AutoCommit, id: &str, other_id: &str) {
+        use ui::widget::FloatingSurfaceWidgetExt as Floating;
+
+        let target = format!("agent-surface:{id}|chat.composer");
+        let action = ui::a11y::Action::SetSelection {
+            anchor: 0,
+            focus: 1,
+        };
+        assert!(!Floating::perform_floating_surface_accessibility_action(
+            app,
+            other_id,
+            &target,
+            &action,
+            &mut ui::widget::Edits::lend(doc),
+            &automerge::ROOT,
+        ));
+        assert!(Floating::perform_floating_surface_accessibility_action(
+            app,
+            id,
+            &target,
+            &action,
+            &mut ui::widget::Edits::lend(doc),
+            &automerge::ROOT,
+        ));
+    }
+
+    #[test]
+    fn two_adopted_agent_conversations_keep_exact_editor_and_input_custody() {
+        use ui::widget::FloatingSurfaceWidgetExt as Floating;
+
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.extend(["scribe".into(), "tide".into()]);
+        app.reload(&doc);
+        let mut children = Vec::new();
+        for (agent, draft, selection) in [
+            ("scribe", "Scribe draft", (1, 3)),
+            ("tide", "Tide draft", (2, 4)),
+        ] {
+            render_frame(&mut app, 1200.0, 800.0);
+            app.on_hit(
+                Hit::Agent(agent.into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            type_str(&mut app, &mut doc, draft);
+            app.composer_main.select(selection.0, selection.1);
+            app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+            let id = Floating::take_floating_surface_request(&mut app)
+                .unwrap()
+                .id;
+            adopt_agent_surface(
+                &mut app,
+                &id,
+                vello::kurbo::Rect::new(80.0, 60.0, 600.0, 700.0),
+            );
+            children.push((ChatDoc::agent_conversation_channel_id("ws_home", agent), id));
+        }
+        assert_eq!(app.agent_surfaces.len(), 2);
+        assert_ne!(children[0].1, children[1].1);
+        let active = Floating::active_floating_surface_ids(&app);
+        assert!(children.iter().all(|(_, id)| active.contains(id)));
+        let room_before = doc.save();
+        let parent_before = (app.composer_main.value(), app.composer_main.selection());
+        for (index, (channel, id)) in children.iter().enumerate() {
+            let (other_channel, other_id) = &children[1 - index];
+            let other = &app.agent_surfaces[other_channel].view.composer_main;
+            let other_before = (other.value(), other.selection());
+            Floating::on_floating_surface_focus_changed(&mut app, Some(id), true);
+            Floating::on_floating_surface_ime_source_changed(&mut app, Some(id));
+            assert_eq!(app.focused_agent_surface.as_deref(), Some(id.as_str()));
+            assert_eq!(app.ime_source_agent_surface.as_deref(), Some(id.as_str()));
+            render_detached_surfaces(&mut app);
+            assert_exact_agent_child_focus(&app, &children, id);
+            Floating::on_floating_surface_event_source(&mut app, Some(id));
+            feed_root_mods(&mut app, &mut doc, &char_key("!"), Modifiers::default());
+            Floating::on_floating_surface_event_source(&mut app, None);
+            let expected = if index == 0 {
+                "S!ibe draft"
+            } else {
+                "Ti! draft"
+            };
+            assert_eq!(
+                app.agent_surfaces[channel].view.composer_main.value(),
+                expected
+            );
+            select_exact_agent_child(&mut app, &mut doc, id, other_id);
+            assert_eq!(
+                app.agent_surfaces[channel].view.composer_main.selection(),
+                (0, 1)
+            );
+            render_detached_surfaces(&mut app);
+            assert_exact_agent_child_focus(&app, &children, id);
+            let other = &app.agent_surfaces[other_channel].view.composer_main;
+            assert_eq!((other.value(), other.selection()), other_before);
+            assert_eq!(
+                (app.composer_main.value(), app.composer_main.selection()),
+                parent_before
+            );
+            Floating::on_floating_surface_focus_changed(&mut app, Some(id), false);
+            assert_exact_agent_child_focus(&app, &children, id);
+            Floating::on_floating_surface_ime_source_changed(&mut app, None);
+            assert!(
+                app.agent_surfaces
+                    .values()
+                    .all(|surface| !surface.view.composer_main.is_focused())
+            );
+        }
+        assert_eq!(
+            doc.save(),
+            room_before,
+            "private child edits never mutate the room"
+        );
+        assert!(app.agent_submissions.get().is_empty());
     }
 
     #[test]
