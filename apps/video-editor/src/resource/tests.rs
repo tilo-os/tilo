@@ -1128,20 +1128,12 @@ fn an_agents_edits_render_as_the_editors_sentences() {
             .unwrap_or_else(|error| panic!("{verb}: {error:?}"));
     }
 
-    let catalogue = tilo_history::Catalogue::new("en-US", &[LOCALES[0].1]);
-    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
-    let sentences: Vec<String> = app
-        .versions()
-        .into_iter()
-        .filter_map(|version| version.context)
-        .filter(|entry| {
-            entry
-                .invoker
-                .as_ref()
-                .is_some_and(|invoker| invoker.actor == "agent:claude")
-        })
-        .map(|entry| reader.sentence(&entry))
-        .collect();
+    let sentences = app.sentences(app.history().iter().filter(|entry| {
+        entry
+            .invoker
+            .as_ref()
+            .is_some_and(|invoker| invoker.actor == "agent:claude")
+    }));
     assert_eq!(
         sentences,
         [

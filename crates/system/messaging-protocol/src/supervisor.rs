@@ -18,6 +18,10 @@ struct Runtime {
     #[cfg(feature = "whatsapp-sdk")]
     whatsapp_source: Option<Arc<whatsapp_rust::Client>>,
     #[cfg(feature = "whatsapp-sdk")]
+    whatsapp_backend: Option<crate::whatsapp_store::EncryptedBackend>,
+    #[cfg(feature = "whatsapp-sdk")]
+    whatsapp_broker: Option<Arc<crate::external_broker::ExternalBroker>>,
+    #[cfg(feature = "whatsapp-sdk")]
     lifecycle: Option<whatsapp_rust::wacore::types::events::Subscription>,
 }
 enum Receiver {
@@ -94,6 +98,10 @@ impl AccountSupervisor {
                 receipt_task: None,
                 #[cfg(feature = "whatsapp-sdk")]
                 whatsapp_source: None,
+                #[cfg(feature = "whatsapp-sdk")]
+                whatsapp_backend: None,
+                #[cfg(feature = "whatsapp-sdk")]
+                whatsapp_broker: None,
                 #[cfg(feature = "whatsapp-sdk")]
                 lifecycle: None,
             }),
@@ -247,7 +255,7 @@ impl AccountSupervisor {
         if broker.owner() != &self.owner || self.owner.service != crate::Service::Whatsapp {
             return Err(SendError::Revoked);
         }
-        let (source, hook) = (bootstrap.source, bootstrap.hook);
+        let (source, hook, backend) = (bootstrap.source, bootstrap.hook, bootstrap.backend);
         let handle = tokio::runtime::Handle::try_current().map_err(|_| SendError::Unavailable)?;
         if self
             .runtime
@@ -259,6 +267,7 @@ impl AccountSupervisor {
             return Err(SendError::AlreadyReserved);
         }
         hook.bind(&broker, &source).await?;
+        hook.bind_groups(self)?;
         let mut subscription =
             crate::external_broker::WhatsappReceiptSubscription::attach(&broker, source.clone())
                 .await?;
@@ -278,6 +287,7 @@ impl AccountSupervisor {
         let lifecycle = whatsapp::subscribe_lifecycle(self, &source);
         let (start, started) = tokio::sync::oneshot::channel();
         let supervisor = Arc::downgrade(self);
+        let group_broker = broker.clone();
         let task = handle.spawn(async move {
             // Keep this precise supervisor binding alive until teardown. Client
             // clones alone must never prolong the durability hook's admission.
@@ -296,6 +306,8 @@ impl AccountSupervisor {
         });
         let mut runtime = self.runtime.lock().map_err(|_| SendError::Unavailable)?;
         runtime.whatsapp_source = Some(source);
+        runtime.whatsapp_backend = Some(backend);
+        runtime.whatsapp_broker = Some(group_broker);
         runtime.lifecycle = Some(lifecycle);
         runtime.receipt_task = Some(ReceiptTask(task));
         runtime.state = state;
@@ -388,6 +400,17 @@ impl AccountSupervisor {
     }
 }
 impl MessagingHost for AccountSupervisor {
+    fn groups(&self, account: &ServiceAccount) -> Option<tilo_messaging::GroupClient> {
+        #[cfg(feature = "whatsapp-sdk")]
+        {
+            self.whatsapp_groups(account)
+        }
+        #[cfg(not(feature = "whatsapp-sdk"))]
+        {
+            let _ = account;
+            None
+        }
+    }
     fn setup(&self, account: &ServiceAccount) -> Option<tilo_messaging::SetupClient> {
         if account != &self.account {
             return None;

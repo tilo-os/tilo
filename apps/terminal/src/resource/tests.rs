@@ -162,14 +162,7 @@ fn a_session_nested_in_another_record_stays_under_its_object() {
 fn history_entries_render_as_the_apps_sentences() {
     let mut app = TestApp::<TerminalShell>::new().expect("terminal");
     app.invoke(target_action(&SessionTarget::Host)).unwrap();
-    let catalogue = tilo_history::Catalogue::new("en-US", &[LOCALES[0].1]);
-    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
-    let sentences: Vec<String> = app
-        .versions()
-        .into_iter()
-        .filter_map(|version| version.context)
-        .map(|entry| reader.sentence(&entry))
-        .collect();
+    let sentences = app.sentences(&app.history());
     assert!(
         sentences
             .iter()

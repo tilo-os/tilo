@@ -248,6 +248,15 @@ impl WhatsappLinking {
         {
             return Err(SendError::Revoked);
         }
+        if state
+            .presentation
+            .as_ref()
+            .is_some_and(|p| p.expires <= Instant::now())
+        {
+            drop(state);
+            self.cancel();
+            return Err(SendError::Revoked);
+        }
         let verified = state.verified.clone().ok_or(SendError::Unavailable)?;
         drop(state);
         let current = self.source.persistence_manager().get_device_snapshot();
@@ -465,6 +474,24 @@ mod tests {
         linker.event(&qr("refused-code"));
         assert!(linker.state.lock().unwrap().presentation.is_none());
         assert_eq!(linker.finish(&next), Err(SendError::Revoked));
+    }
+    #[tokio::test]
+    async fn expired_private_sdk_attempt_refuses_completion_before_identity_or_connection() {
+        let (_root, linker, _gate) = fixture().await;
+        linker.event(&qr("private-expiring-code"));
+        let attempt = {
+            let mut state = linker.state.lock().unwrap();
+            let presentation = state.presentation.as_mut().unwrap();
+            presentation.expires = Instant::now();
+            let attempt = presentation.attempt.clone();
+            drop(state);
+            attempt
+        };
+        assert_eq!(linker.finish(&attempt), Err(SendError::Revoked));
+        assert!(linker.state.lock().unwrap().presentation.is_none());
+        assert_eq!(linker.check_linking(), Err(SendError::Revoked));
+        assert!(!linker.source.is_logged_in());
+        assert!(!linker.source.is_connected());
     }
     #[tokio::test]
     async fn restart_without_exact_encrypted_self_identity_cannot_connect_or_pair() {

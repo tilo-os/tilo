@@ -79,7 +79,22 @@ use tilo_identity_ceremony::IdentityRecord;
 /// that wake; TIL-756 counts per tick.) A ten-second window holds a
 /// minute boundary one run in six, so that is part of the spread: its top
 /// plus a half, 7.5/s.
-const IDLE_WAKEUP_BUDGET: f64 = 7.5;
+///
+/// That minute wake then grew: every one of the gate's 15 failures from run
+/// 94897 to 99577 (7.59–9.70/s, in the shell shard) held it. It re-stamped
+/// the device fabric's unchanged snapshot as a presence heartbeat and wrote
+/// three files, synced, on the frame thread (9–10 blocking switches, plus the
+/// state directory's watchers), and each of its ~20 settings reads woke the
+/// settings reader. Neither happens now while nobody can hear the heartbeat
+/// or the settings copy is unchanged, and the audio policy no longer polls
+/// for a `PipeWire` that is not running. Alone on a runner, main before the
+/// last two blocked 3.40–5.90/s (runs 100177–100181); with them, ten runs
+/// blocked 2.90–4.20/s (runs 100296–100305), of it 2.20–3.40/s the
+/// collaboration shovels' channel-key rounds early in the session and
+/// 0.50–0.60/s the filesystem authority worker retrying a publisher the
+/// headless session does not have. Their top plus a little under a half:
+/// 6/s.
+const IDLE_WAKEUP_BUDGET: f64 = 6.0;
 
 /// Most CPU the idle desktop's threads may use, in percent of one core over
 /// the window. The wakeup count leaves out preemptions, so this is what

@@ -613,12 +613,7 @@ fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
     app.settle();
     let reacted = messages(&app).pop().unwrap();
     assert_eq!(reacted.reactions[0].emoji, "👀");
-    let entry = app
-        .versions()
-        .into_iter()
-        .filter_map(|version| version.context)
-        .next_back()
-        .unwrap();
+    let entry = app.history().pop().unwrap();
     let invoker = entry.invoker.unwrap();
     assert_eq!(
         (invoker.kind, invoker.on_behalf_of.as_deref()),
@@ -681,20 +676,11 @@ fn history_entries_render_as_the_apps_sentences() {
         .unwrap();
     app.settle();
 
-    let english = include_str!("../../locales/en-US.ftl");
-    let catalogue = tilo_history::Catalogue::new("en-US", &[english]);
-    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
-    let sentences: Vec<String> = app
-        .versions()
-        .into_iter()
-        .filter_map(|version| version.context)
-        .filter(|entry| {
-            entry.invoker.as_ref().is_some_and(|invoker| {
-                invoker.actor == "agent-task:55555555-5555-4555-8555-555555555555"
-            })
+    let sentences = app.sentences(app.history().iter().filter(|entry| {
+        entry.invoker.as_ref().is_some_and(|invoker| {
+            invoker.actor == "agent-task:55555555-5555-4555-8555-555555555555"
         })
-        .map(|entry| reader.sentence(&entry))
-        .collect();
+    }));
     assert_eq!(
         sentences,
         [
