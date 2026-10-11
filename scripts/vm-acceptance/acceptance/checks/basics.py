@@ -20,6 +20,18 @@ def _hw(ctx) -> dict:
     return {k: int(v) for k, _, v in (l.partition("=") for l in out.splitlines()) if v.strip().isdigit()}
 
 
+def _named(action_id: str, names) -> bool:
+    """Whether an action's address ends in one of `names` (an app's action
+    address is its provider, resource and action joined by \\x1f)."""
+    return action_id.rsplit("\x1f", 1)[-1] in names
+
+
+def _offered(ctx, names) -> list:
+    """Every published action named one of `names`, with its availability."""
+    return [(a["id"], a["contract"]["availability"]) for a in ctx.vm.actions()
+            if _named(a["id"], names)]
+
+
 def _action(ctx, query, action_id):
     return next((a for a in ctx.vm.actions(query) if a["id"] == action_id), None)
 
@@ -74,6 +86,12 @@ def wifi(ctx, res):
     problems, targets = _no_hardware_control(ctx, res, "wifi", "wifi",
                                              "quick-settings.wifi.set-enabled", {"enabled": True},
                                              ("wifi", "wi-fi", "wlan"))
+    # Settings switches the same radio; it must not offer what Quick Settings withholds.
+    settings = _offered(ctx, ("set-wifi", "set-hotspot", "start-hotspot"))
+    res.metrics["settings_actions"] = settings
+    live = [a for a, av in settings if av.get("state") == "available"]
+    if live:
+        problems.append(f"Wi-Fi actions offered as available with no adapter: {live}")
     expect(not problems, "; ".join(problems))
 
 
@@ -83,8 +101,11 @@ def bluetooth(ctx, res):
     res.metrics["hardware"] = hw
     if hw.get("bluetooth"):
         raise Unobservable("this VM has a Bluetooth adapter")
-    actions = [(a["id"], a["contract"]["availability"]) for a in ctx.vm.actions("bluetooth")
-               if "bluetooth" in a["id"] and "pairing" not in a["id"]]
+    # Settings' radio effects by name (`set-discovering` does not say
+    # "bluetooth"), and every other Bluetooth action but the pairing prompts.
+    actions = [(a["id"], a["contract"]["availability"]) for a in ctx.vm.actions()
+               if ("bluetooth" in a["id"] and "pairing" not in a["id"])
+               or _named(a["id"], ("set-bluetooth", "set-discovering", "refresh-bluetooth"))]
     res.metrics["actions"] = actions
     targets = _qs_targets(ctx, ("bluetooth",))
     res.metrics["quick_settings_targets"] = targets

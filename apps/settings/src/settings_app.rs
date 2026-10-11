@@ -811,6 +811,7 @@ impl Widget for SettingsApp {
         self.accounts.poll();
         self.displays.poll();
         self.network.poll();
+        self.bluetooth.poll();
         // After the first frame, the areas read one at a time until every
         // area's rows are published.
         if self.area_reads.take_due() {

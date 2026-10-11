@@ -31,6 +31,8 @@ pub struct PaneCx {
     storage: AppStorage,
     mode: RunMode,
     scene: Option<Rc<crate::scenarios::CaptureScene>>,
+    /// The radios this device has; never read when it reaches no device.
+    radios: crate::radios::Radios,
 }
 
 impl PaneCx {
@@ -44,6 +46,7 @@ impl PaneCx {
             storage,
             mode: RunMode::Capture,
             scene: None,
+            radios: crate::radios::Radios::unread(),
         }
     }
 
@@ -60,7 +63,7 @@ impl PaneCx {
 
     /// The panes of the surface attached through `cx`.
     pub(crate) fn attached(cx: &ui::framework::SurfaceCx<Settings>) -> Self {
-        Self {
+        let mut attached = Self {
             door: Some(Door {
                 actions: cx.actions(),
                 dispatcher: cx.dispatcher(),
@@ -68,7 +71,12 @@ impl PaneCx {
             storage: cx.storage(),
             mode: cx.mode(),
             scene: cx.fixture::<crate::scenarios::CaptureScene>(),
+            radios: crate::radios::Radios::unread(),
+        };
+        if attached.reaches_devices() {
+            attached.radios = crate::radios::Radios::of_device();
         }
+        attached
     }
 
     /// The app's storage: its settings document, files and secrets.
@@ -122,6 +130,12 @@ impl PaneCx {
     #[must_use]
     pub fn reaches_devices(&self) -> bool {
         self.is_live() && !cfg!(test)
+    }
+
+    /// The radios this device has, read off the UI thread and followed as
+    /// adapters come and go.
+    pub(crate) fn radios(&self) -> &crate::radios::Radios {
+        &self.radios
     }
 
     /// The stand-ins a screenshot shows in place of this device's hardware
