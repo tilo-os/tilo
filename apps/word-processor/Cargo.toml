@@ -67,6 +67,8 @@ path = "tests/it.rs"
 settings-store = { path = "../../crates/system/settings-store" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 tempfile.workspace = true
+# Reads the parts of a saved DOCX package.
+zip.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

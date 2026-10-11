@@ -758,6 +758,9 @@ impl Resource for RichText {
             // leave its writer's caret after the text.
             .describe("Add a new paragraph containing the text at the end of the document."),
             write_markdown_declaration(),
+            append_markdown_declaration(),
+            replace_text_declaration(),
+            align_paragraph_declaration(),
         ]
     }
 
@@ -1019,8 +1022,9 @@ impl RichText {
     }
 }
 
-/// `write-markdown`: the whole text from Markdown, a new document in one
-/// step.
+/// `write-markdown`: the whole body replaced from Markdown, a new document
+/// in one step. Edits use `append-markdown` and `replace-text`, which keep
+/// what is there.
 fn write_markdown_declaration() -> tilo_resource::ActionDecl<RichText> {
     use tilo_actions::{ActionParam, ParamType};
     tilo_resource::ActionDecl::new(
@@ -1037,8 +1041,92 @@ fn write_markdown_declaration() -> tilo_resource::ActionDecl<RichText> {
         },
     )
     .describe(
-        "Replace the document's whole text with Markdown: # heading, ## subheading, - list \
-         item, a blank line between paragraphs. Writes a new document in one step.",
+        "Replace the document's whole body with Markdown: # heading, ## subheading, - list \
+         item, a blank line between paragraphs. Deletes everything already there, images \
+         included. To add at the end use append-markdown; to edit text use replace-text.",
+    )
+}
+
+/// `append-markdown`: blocks added at the end, whatever was written there
+/// since the caller read the document.
+fn append_markdown_declaration() -> tilo_resource::ActionDecl<RichText> {
+    use tilo_actions::{ActionParam, ParamType};
+    tilo_resource::ActionDecl::new(
+        "append-markdown",
+        "Append Markdown",
+        vec![ActionParam::required_owned(
+            "markdown",
+            ParamType::Text,
+            "The text to add, as Markdown",
+        )],
+        |args, _| {
+            let markdown = args.text("markdown").ok_or("missing markdown")?.to_owned();
+            Ok(RichTextAction::AppendMarkdown { markdown })
+        },
+    )
+    .describe(
+        "Add Markdown at the end of the document: # heading, ## subheading, - list item, a \
+         blank line between paragraphs. Existing content, and what others add meanwhile, stays.",
+    )
+}
+
+/// `replace-text`: find and replace in place.
+fn replace_text_declaration() -> tilo_resource::ActionDecl<RichText> {
+    use tilo_actions::{ActionParam, ParamType};
+    tilo_resource::ActionDecl::new(
+        "replace-text",
+        "Replace text",
+        vec![
+            ActionParam::required_owned("find", ParamType::Text, "Exact text to find"),
+            ActionParam::required_owned("replace", ParamType::Text, "Text to put in its place"),
+            ActionParam::optional_owned(
+                "all",
+                ParamType::Boolean,
+                "Replace every occurrence (default: the first only)",
+            ),
+        ],
+        |args, _| {
+            let find = args.text("find").ok_or("missing find")?.to_owned();
+            if find.is_empty() {
+                return Err("`find` is empty: name the text to replace".into());
+            }
+            let replace = args.text("replace").ok_or("missing replace")?.to_owned();
+            let all = args.boolean("all").unwrap_or(false);
+            Ok(RichTextAction::ReplaceText { find, replace, all })
+        },
+    )
+    .describe(
+        "Replace the exact text `find` with `replace` where it is, within paragraphs; \
+         formatting, images and other paragraphs stay. Refused when `find` is not in the \
+         document.",
+    )
+}
+
+/// `align-paragraph`: a paragraph's alignment, the paragraph named by its
+/// text.
+fn align_paragraph_declaration() -> tilo_resource::ActionDecl<RichText> {
+    use tilo_actions::{ActionParam, ParamType};
+    tilo_resource::ActionDecl::new(
+        "align-paragraph",
+        "Align paragraph",
+        vec![
+            ActionParam::required_owned(
+                "text",
+                ParamType::Text,
+                "The paragraph's text, or its start",
+            ),
+            ActionParam::required_owned("align", ParamType::Text, "left, center, right or justify")
+                .with_choices(["left", "center", "right", "justify"]),
+        ],
+        |args, _| {
+            let text = args.text("text").ok_or("missing text")?.to_owned();
+            let align = args.text("align").ok_or("missing align")?.to_owned();
+            Ok(RichTextAction::AlignParagraph { text, align })
+        },
+    )
+    .describe(
+        "Align a paragraph or heading left, center (centre), right or justify: the first whose \
+         text is `text`, else the first that starts with it.",
     )
 }
 

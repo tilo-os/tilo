@@ -122,6 +122,36 @@ fn set_cells_writes_values_and_formulas_that_read_back_computed() {
     assert_eq!(read(&doc, Some("B4"))["rows"], json!([[210.0]]));
 }
 
+/// The first sheet exported to XLSX: its `xl/styles.xml` and
+/// `xl/worksheets/sheet1.xml` parts, and the tables reading the file back
+/// gives.
+fn exported(doc: &AutoCommit) -> (String, String, Vec<crate::xlsx::SheetTable>) {
+    let snap = SheetsDoc::snapshot_sheet(doc, 0, Currency::USD);
+    let values = crate::formula::recalculate(&snap.raw);
+    let table =
+        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &snap.fmt, &values, &snap.bold);
+    let path = std::env::temp_dir().join(format!("sheets-export-{}.xlsx", uuid::Uuid::new_v4()));
+    crate::xlsx::write_xlsx(&path, std::slice::from_ref(&table)).unwrap();
+    let back = crate::xlsx::read_xlsx(&path).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut part = |name: &str| {
+        let mut out = String::new();
+        archive
+            .by_name(name)
+            .unwrap()
+            .read_to_string(&mut out)
+            .unwrap();
+        out
+    };
+    (
+        part("xl/styles.xml"),
+        part("xl/worksheets/sheet1.xml"),
+        back,
+    )
+}
+
 #[test]
 fn bold_is_stored_read_back_and_exported_to_xlsx() {
     let mut doc = workbook(&[&["Region", "Q1"], &["North", "120"]]);
@@ -137,26 +167,7 @@ fn bold_is_stored_read_back_and_exported_to_xlsx() {
     );
     assert_eq!(read(&doc, None)["bold"], json!(["A1", "B1"]));
 
-    let snap = SheetsDoc::snapshot_sheet(&doc, 0, Currency::USD);
-    let values = crate::formula::recalculate(&snap.raw);
-    let table =
-        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &snap.fmt, &values, &snap.bold);
-    let path = std::env::temp_dir().join(format!("sheets-bold-{}.xlsx", uuid::Uuid::new_v4()));
-    crate::xlsx::write_xlsx(&path, std::slice::from_ref(&table)).unwrap();
-    let bytes = std::fs::read(&path).unwrap();
-    let _ = std::fs::remove_file(&path);
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-    let mut part = |name: &str| {
-        let mut out = String::new();
-        archive
-            .by_name(name)
-            .unwrap()
-            .read_to_string(&mut out)
-            .unwrap();
-        out
-    };
-    let styles = part("xl/styles.xml");
-    let sheet = part("xl/worksheets/sheet1.xml");
+    let (styles, sheet, _) = exported(&doc);
     assert!(styles.contains(r"<font><b/>"), "{styles}");
     // A1 and B1 share the bold style; B2 has the currency style only.
     assert!(
@@ -216,6 +227,206 @@ fn sort_rows_reorders_by_a_column_and_moves_formulas_with_their_row() {
     );
 }
 
+/// A formula's result sorts by its number even once a currency format shows
+/// it as "$1,635.00", which as text would sort before "$216.00".
+#[test]
+fn sort_rows_orders_formatted_formula_results_by_value() {
+    let mut doc = workbook(&[
+        &["sku", "qty", "price", "value"],
+        &["A-100", "5", "123.75", "=B2*C2"],
+        &["A-101", "12", "39", "=B3*C3"],
+        &["A-102", "8", "42", "=B4*C4"],
+        &["A-103", "4", "54", "=B5*C5"],
+        &["A-104", "15", "109", "=B6*C6"],
+        &["A-105", "", "", "pending"],
+    ]);
+    invoke(
+        &mut doc,
+        "format-cells",
+        &json!({"range": "C2:D7", "format": "currency"}),
+    );
+    let skus = |doc: &AutoCommit| {
+        read(doc, Some("A2:A7"))["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row[0].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    invoke(&mut doc, "sort-rows", &json!({"range": "A2:D7", "by": "D"}));
+    // Numbers by value, then text.
+    assert_eq!(
+        skus(&doc),
+        ["A-103", "A-102", "A-101", "A-100", "A-104", "A-105"]
+    );
+
+    invoke(
+        &mut doc,
+        "sort-rows",
+        &json!({"range": "A2:D6", "by": "D", "descending": true}),
+    );
+    assert_eq!(
+        skus(&doc),
+        ["A-104", "A-100", "A-101", "A-102", "A-103", "A-105"]
+    );
+    assert_eq!(
+        read(&doc, Some("D2:D6"))["rows"],
+        json!([[1635.0], [618.75], [468.0], [336.0], [216.0]])
+    );
+
+    // A literal amount shown as currency sorts by its number too.
+    invoke(&mut doc, "sort-rows", &json!({"range": "A2:D6", "by": "C"}));
+    assert_eq!(
+        skus(&doc),
+        ["A-101", "A-102", "A-103", "A-104", "A-100", "A-105"]
+    );
+
+    // The exported file carries the sorted rows, formulas pointing at their
+    // own row.
+    let (_, _, back) = exported(&doc);
+    let rows = &back[0].rows;
+    let column = |col: usize| {
+        rows.iter()
+            .skip(1)
+            .take(5)
+            .map(|row| row[col].as_ref().unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        column(0)
+            .iter()
+            .map(|cell| cell.raw.as_str())
+            .collect::<Vec<_>>(),
+        ["A-101", "A-102", "A-103", "A-104", "A-100"]
+    );
+    assert_eq!(
+        column(3)
+            .iter()
+            .map(|cell| cell.formula.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        ["=B2*C2", "=B3*C3", "=B4*C4", "=B5*C5", "=B6*C6"]
+    );
+}
+
+/// `read-cells` names each formatted cell's number format as `format-cells`
+/// takes it, so another sheet can be laid out exactly like this one.
+#[test]
+fn read_cells_answers_number_formats_by_their_format_cells_names() {
+    let mut doc = workbook(&[
+        &["Visits", "Orders", "Revenue", "Conversion"],
+        &["1000", "25", "1200", "=B2/A2"],
+        &["800", "30", "1500", "=B3/A3"],
+    ]);
+    assert_eq!(read(&doc, None)["formats"], json!({}));
+    invoke(
+        &mut doc,
+        "format-cells",
+        &json!({"range": "D2:D3", "format": "percent"}),
+    );
+    invoke(
+        &mut doc,
+        "format-cells",
+        &json!({"range": "C2:C3", "format": "currency"}),
+    );
+    invoke(
+        &mut doc,
+        "format-cells",
+        &json!({"range": "B2", "format": "number"}),
+    );
+    let page = read(&doc, None);
+    assert_eq!(
+        page["formats"],
+        json!({"B2": "number", "C2": "currency", "C3": "currency",
+            "D2": "percent", "D3": "percent"})
+    );
+    // The rest of the answer keeps its shape.
+    assert_eq!(page["formulas"], json!({"D2": "=B2/A2", "D3": "=B3/A3"}));
+    assert_eq!(page["rows"][1], json!([1000.0, 25.0, 1200.0, 0.025]));
+    assert_eq!(
+        read(&doc, Some("A1:B2"))["formats"],
+        json!({"B2": "number"})
+    );
+
+    // Each name is one format-cells takes, and applying it stores the same
+    // format: copying the formats onto other cells reads back the same.
+    let formats = page["formats"].as_object().unwrap().clone();
+    for (cell, name) in &formats {
+        let target = cell.replace('2', "5").replace('3', "6");
+        invoke(
+            &mut doc,
+            "format-cells",
+            &json!({"range": target, "format": name}),
+        );
+    }
+    assert_eq!(
+        read(&doc, Some("A5:D6"))["formats"],
+        json!({"B5": "number", "C5": "currency", "C6": "currency",
+            "D5": "percent", "D6": "percent"})
+    );
+}
+
+/// An ISO date written by `set-cells` is a real date: a serial in the date
+/// format that calculates, reads as a number, shows as the date and exports
+/// to XLSX as a date. Other date-like text stays text.
+#[test]
+fn set_cells_turns_exact_iso_dates_into_real_dates() {
+    let mut doc = workbook(&[&["task", "start", "days", "end"]]);
+    let answered = answer(
+        &mut doc,
+        "set-cells",
+        &json!({"start": "A2", "rows": [
+            ["Launch", "2026-10-22", 10, "=B2+C2"],
+            ["Review", "2026-10-22T09:30"],
+            ["Slash", "22/10/2026"],
+            ["Impossible", "2026-02-30"],
+            ["Loose", "2026-1-5"],
+            ["Spaced", " 2026-10-22"]
+        ]}),
+    );
+    let serial = crate::model::date_to_serial(2026, 10, 22);
+    assert_eq!(
+        answered["rows"][0],
+        json!(["Launch", serial, 10.0, serial + 10.0])
+    );
+    assert_eq!(answered["formats"], json!({"B2": "date", "B3": "date"}));
+    let review = answered["rows"][1][1].as_f64().unwrap();
+    assert!((review - (serial + 9.5 / 24.0)).abs() < 1e-6, "{review}");
+    assert_eq!(
+        read(&doc, Some("B4:B7"))["rows"],
+        json!([
+            ["22/10/2026"],
+            ["2026-02-30"],
+            ["2026-1-5"],
+            [" 2026-10-22"]
+        ])
+    );
+
+    // It shows as the date it is.
+    let state = {
+        use ui::tilo_resource::Resource as _;
+        crate::resource::SheetsWorkbook::read(&doc).unwrap()
+    };
+    let start = state.sheets[0]
+        .cells()
+        .iter()
+        .find(|cell| (cell.col, cell.row) == (1, 1))
+        .unwrap()
+        .display
+        .clone();
+    assert_eq!(start, "2026-10-22");
+
+    let (styles, _, back) = exported(&doc);
+    assert!(styles.contains("yyyy-mm-dd"), "{styles}");
+    let rows = &back[0].rows;
+    let start = rows[1][1].as_ref().unwrap();
+    assert_eq!(start.format, CellFormat::Date(DateStyle::Iso));
+    assert_eq!(start.raw, serial.to_string());
+    let impossible = rows[4][1].as_ref().unwrap();
+    assert_eq!(impossible.raw, "2026-02-30");
+    assert_ne!(impossible.format, CellFormat::Date(DateStyle::Iso));
+}
+
 #[test]
 fn delete_rows_removes_several_rows_in_one_step_and_moves_bold() {
     let mut doc = workbook(&[&["h"], &["a"], &["dup"], &["b"], &["dup"], &["c"]]);
@@ -251,7 +462,7 @@ fn cell_edits_answer_with_the_range_they_changed() {
     assert_eq!(
         set,
         json!({"sheet": "Data", "range": "A4:B4", "rows": [["Total", 210.0]],
-            "formulas": {"B4": "=SUM(B2:B3)"}, "bold": []})
+            "formulas": {"B4": "=SUM(B2:B3)"}, "bold": [], "formats": {}})
     );
     let bolded = answer(
         &mut doc,

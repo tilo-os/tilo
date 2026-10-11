@@ -812,3 +812,74 @@ fn a_stroke_grows_twigs_or_dabs_and_cuts_in_to_a_shape() {
         assert!(error.contains(says), "{error}");
     }
 }
+
+/// A panel placed by fractions of the artwork lands where the fractions
+/// say, and `fit_to` crops centred and scales every mark with the artwork,
+/// so the panel keeps its place however the steps are ordered.
+#[test]
+fn a_placed_panel_keeps_its_place_through_fit_to() {
+    let mut art = Replica::<ArtworkResource>::new();
+    apply(
+        &mut art,
+        CanvasAction::SetArtwork(canvas::actions::SetArtwork {
+            width: Some(1000.0),
+            height: Some(750.0),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    let panel = NewMark {
+        id: Some("panel".into()),
+        fill: Some("#0f4c5c".into()),
+        place: Some([0.62, 0.0, 0.38, 1.0]),
+        ..NewMark::new(Shape::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+            radius: 0.0,
+        })
+    };
+    apply(
+        &mut art,
+        CanvasAction::Draw(Draw {
+            layer: None,
+            marks: vec![panel],
+        }),
+    )
+    .unwrap();
+    let state = art.state().unwrap();
+    assert!(matches!(state.mark("panel").unwrap().shape,
+        Shape::Rect { x, width, height, .. } if (x - 620.0).abs() < 1e-6 && (width - 380.0).abs() < 1e-6 && height == 750.0));
+    // 4:3 to 16:9 crops top and bottom, centred, then scales to 1520 by 855.
+    apply(
+        &mut art,
+        CanvasAction::SetArtwork(canvas::actions::SetArtwork {
+            fit_to: Some([1520.0, 855.0]),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    let state = art.state().unwrap();
+    assert_eq!((state.width, state.height), (1520.0, 855.0));
+    let Shape::Rect { x, width, .. } = state.mark("panel").unwrap().shape else {
+        panic!("the panel stays a rectangle");
+    };
+    assert!((x / 1520.0 - 0.62).abs() < 0.002, "panel starts at {x}");
+    assert!(
+        (width / 1520.0 - 0.38).abs() < 0.002,
+        "panel is {width} wide"
+    );
+    assert!(
+        apply(
+            &mut art,
+            CanvasAction::SetArtwork(canvas::actions::SetArtwork {
+                fit_to: Some([1520.0, 855.0]),
+                width: Some(100.0),
+                ..Default::default()
+            }),
+        )
+        .unwrap_err()
+        .contains("fit_to alone")
+    );
+}

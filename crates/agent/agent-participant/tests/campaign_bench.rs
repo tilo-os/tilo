@@ -73,9 +73,9 @@ use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::agents::{
-    AGENTS_PROVIDER, AgentStatus, AgentsStatus, GrantState, MESSAGE_ACTION, REQUEST_GRANT_ACTION,
-    REVOKE_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE, TaskState,
-    agent_resource,
+    AGENTS_PROVIDER, AgentStatus, AgentTask, AgentsStatus, GrantState, MESSAGE_ACTION,
+    REQUEST_GRANT_ACTION, REVOKE_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION,
+    SUPERVISOR_RESOURCE, TaskState, agent_resource,
 };
 use tilo_relay_protocol::live::{LiveFrame, ParticipantKind, PresenceFrame};
 use tilo_user_identity::{
@@ -565,147 +565,153 @@ fn activity(presence: &PresenceFrame) -> String {
 const CANVAS: &str = "so.tilo.canvas";
 const WRITER: &str = "so.tilo.word-processor";
 
-/// One agent of the campaign and the apps its grant covers.
+/// A benchmark workload, as `bench/campaign/SCENARIOS.md` (in the benchmark
+/// harness) describes it: the agents and their grants, room content, steps as
+/// a dependency graph, the outputs kept and harness-side faults.
+struct Scenario {
+    id: String,
+    agents: Vec<Role>,
+    content: Vec<(String, std::path::PathBuf)>,
+    steps: Vec<Stage>,
+    outputs: Vec<(String, String, String)>,
+    faults: Vec<Fault>,
+}
+
+/// One agent of a scenario and the apps its grant covers.
 struct Role {
-    name: &'static str,
-    apps: &'static [&'static str],
+    name: String,
+    apps: Vec<String>,
 }
 
-const ROLES: &[Role] = &[
-    Role {
-        name: "Mina",
-        apps: &[CANVAS, WRITER],
-    },
-    Role {
-        name: "Eli",
-        apps: &[SHEETS],
-    },
-    Role {
-        name: "Kai",
-        apps: &[SHEETS],
-    },
-    Role {
-        name: "Noor",
-        apps: &[SHEETS],
-    },
-    Role {
-        name: "Jules",
-        apps: &[SHEETS, WRITER],
-    },
-    Role {
-        name: "Ren",
-        apps: &[NOTES, SHEETS],
-    },
-];
-
-const FACTS: &str =
-    "available October 22; $129; chalk-white finish; 14 cm base; three brightness levels";
-
-/// The workflow. Agents have no file access: the photo is handed in as room content
-/// (`photo` is its `tilo.content:` address) and every export keeps its result as
-/// content, which the host reads back afterwards.
-fn steps(photo: &str) -> Vec<Vec<(&'static str, String)>> {
-    vec![
-        vec![(
-            "Mina",
-            format!(
-                "In Canvas, open the picture at content address {photo}. Adjust it (raise exposure or contrast slightly). \
-                 Add a deep-teal (#0F4C5C) filled rectangle panel covering the right 38% of the picture, beside \
-                 the lamp. Make the artwork 16:9 at exactly 1520 by 855 pixels, cropping as needed. Export it \
-                 as a PNG at scale 1, kept as content."
-            ),
-        )],
-        vec![(
-            "Eli",
-            "In Sheets, create the campaign plan spreadsheet. On a sheet named \"Headline tests\" \
-             enter columns Headline, Visits, Signups, Conversion with these rows: \"Small desk. Clear head.\" \
-             240 18; \"Light that stays out of the way.\" 240 12; \"Your desk, finally calm.\" 240 9. Make \
-             Conversion a formula Signups/Visits formatted as a percentage, and add a row \"Winner\" naming \
-             \"Small desk. Clear head.\" at 7.5%. These are synthetic planning figures."
-                .into(),
-        )],
-        vec![(
-            "Ren",
-            "In Notes, create a note titled \"Launch headline\" whose text is the winning headline from the \
-             campaign spreadsheet: Small desk. Clear head."
-                .into(),
-        )],
-        vec![(
-            "Jules",
-            format!(
-                "In the Word Processor, create the launch page: a new document whose first heading is \"Small \
-                 desk. Clear head.\" (documents are named by their first heading), right under it the line \
-                 \"Caption: The chalk-white desk light beside the campaign's deep-teal panel.\", then a \
-                 short introduction \
-                 paragraph for the chalk-white desk light, a \"Specifications\" section, an \"Availability\" \
-                 section and an \"FAQ\" section with three questions and answers, using only these facts: \
-                 {FACTS}. Check every product claim against those facts, keep the introduction tight, and \
-                 end with a paragraph starting \"Review:\" listing what you checked."
-            ),
-        )],
-        // The spreadsheet exists before anyone else adds a sheet to it; each
-        // adds its own, with its content, at once.
-        vec![
-            (
-                "Kai",
-                "In the Sheets spreadsheet \"Campaign plan\", add a sheet \"Channel allocation\" splitting a \
-                 synthetic $4,000 launch budget across Email, Social, Partners and Search."
-                    .into(),
-            ),
-            (
-                "Noor",
-                "In the Sheets spreadsheet \"Campaign plan\", add a sheet \"Email funnel\" with Sent, Opened, \
-                 Clicked and Signed up stages (synthetic figures)."
-                    .into(),
-            ),
-            (
-                "Ren",
-                "In the Sheets spreadsheet \"Campaign plan\", add a sheet \"Partner dates\" with three \
-                 fictional partners and dates in October."
-                    .into(),
-            ),
-            (
-                "Jules",
-                "In the Sheets spreadsheet \"Campaign plan\", add a sheet \"Budget check\" comparing planned \
-                 and allocated spend against the $4,000 budget (synthetic figures)."
-                    .into(),
-            ),
-            (
-                "Eli",
-                "In the Sheets spreadsheet \"Campaign plan\", add a sheet \"Deliverables\" tracking: campaign \
-                 image, launch page, email, partner kit, each with an owner and status."
-                    .into(),
-            ),
-        ],
-        vec![(
-            "Mina",
-            "In Canvas, export the current artwork as a PNG at scale 1 kept as content, then in the Word \
-             Processor document \"Small desk. Clear head.\" insert that exported image right under its first \
-             heading (others are editing the paragraphs; the caption already follows the heading). Then \
-             export that document as DOCX, kept as content."
-                .into(),
-        )],
-        vec![(
-            "Eli",
-            "Export the Sheets spreadsheet \"Campaign plan\" with all its sheets as an Excel workbook, kept as content."
-                .into(),
-        )],
-        vec![(
-            "Ren",
-            "Export the note \"Launch headline\" as Markdown, kept as content.".into(),
-        )],
-    ]
+/// A step: tasks issued together once the steps it comes after have ended.
+struct Stage {
+    id: String,
+    after: Vec<usize>,
+    tasks: Vec<(String, String)>,
 }
 
-/// Which steps (1-based) each step waits for: three rounds. First the image
-/// (1), the spreadsheet (2), the note (3) and the checked page (4) at once;
-/// then the other sheets, one or two each (5), and the image placed in the
-/// page and the page exported (6); then the workbook's export (7) and the
-/// note's (8).
-const DEPENDS: &[&[usize]] = &[&[], &[], &[], &[], &[2], &[1, 4], &[5], &[3]];
+/// A fault the harness causes `at` after the clock starts.
+struct Fault {
+    kind: String,
+    at: Duration,
+    agent: Option<String>,
+}
+
+/// The app id a scenario's short app name stands for.
+fn app_id(name: &str) -> String {
+    match name {
+        "canvas" => CANVAS.into(),
+        "sheets" => SHEETS.into(),
+        "notes" => NOTES.into(),
+        "word-processor" | "writer" => WRITER.into(),
+        other => other.into(),
+    }
+}
+
+fn text_list(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.as_str().map(str::to_owned))
+        .collect()
+}
+
+impl Scenario {
+    /// The scenario at `path`; content paths are relative to its directory.
+    fn load(path: &Path) -> Self {
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).expect("the scenario file")).unwrap();
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        let field = |item: &serde_json::Value, key: &str| {
+            item[key]
+                .as_str()
+                .unwrap_or_else(|| panic!("a scenario's {key}"))
+                .to_owned()
+        };
+        let agents = value["agents"]
+            .as_array()
+            .expect("the scenario's agents")
+            .iter()
+            .map(|agent| Role {
+                name: field(agent, "name"),
+                apps: text_list(&agent["apps"])
+                    .iter()
+                    .map(|app| app_id(app))
+                    .collect(),
+            })
+            .collect();
+        let content = value["content"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(name, file)| (name.clone(), base.join(file.as_str().unwrap())))
+            .collect();
+        let raw = value["steps"].as_array().expect("the scenario's steps");
+        let ids: Vec<String> = raw.iter().map(|step| field(step, "id")).collect();
+        let steps = raw
+            .iter()
+            .zip(&ids)
+            .map(|(step, id)| Stage {
+                id: id.clone(),
+                after: text_list(&step["after"])
+                    .iter()
+                    .map(|need| {
+                        ids.iter().position(|id| id == need).unwrap_or_else(|| {
+                            panic!("step {id} comes after an unknown step {need}")
+                        })
+                    })
+                    .collect(),
+                tasks: step["tasks"]
+                    .as_array()
+                    .expect("a step's tasks")
+                    .iter()
+                    .map(|task| (field(task, "agent"), field(task, "text")))
+                    .collect(),
+            })
+            .collect();
+        let outputs = value["outputs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|output| {
+                (
+                    field(output, "step"),
+                    field(output, "agent"),
+                    field(output, "file"),
+                )
+            })
+            .collect();
+        let faults = value["faults"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|fault| Fault {
+                kind: field(fault, "kind"),
+                at: Duration::from_secs_f64(fault["at_seconds"].as_f64().unwrap_or(0.0)),
+                agent: fault["agent"].as_str().map(str::to_owned),
+            })
+            .collect();
+        Self {
+            id: field(&value, "id"),
+            agents,
+            content,
+            steps,
+            outputs,
+            faults,
+        }
+    }
+}
 
 fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_owned())
+}
+
+fn unix_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
 }
 
 /// Request and wait for one approved grant.
@@ -735,52 +741,97 @@ async fn grant_for(browser: &mut Browser, role: &Role) -> String {
     grant
 }
 
-/// Wait (up to `limit`) until every listed task of these agents has ended.
-async fn wait_tasks(
-    browser: &mut Browser,
-    wanted: &[(String, usize)],
-    limit: Duration,
-) -> AgentsStatus {
-    let deadline = Instant::now() + limit;
-    loop {
-        let status = browser.status().await;
-        let ended = wanted.iter().all(|(agent, index)| {
-            status.agents.iter().any(|a| {
-                a.id == *agent
-                    && a.tasks.get(*index).is_some_and(|t| {
-                        t.state != TaskState::Queued && t.state != TaskState::Running
-                    })
-            })
-        });
-        if ended || Instant::now() >= deadline {
-            return status;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+/// Spawn the agent of `grant` in the room.
+async fn spawn(browser: &mut Browser, grant: &str) {
+    browser
+        .call(
+            SUPERVISOR_RESOURCE,
+            SPAWN_ACTION,
+            InvokeArgument::Json(
+                serde_json::json!({"grant": grant, "room": ROOM})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+}
+
+/// Give the agent of `grant` the task `text`; its task id.
+async fn message(browser: &mut Browser, grant: &str, text: &str) -> String {
+    let answer = browser
+        .call(
+            &agent_resource(grant),
+            MESSAGE_ACTION,
+            InvokeArgument::Text(text.to_owned()),
+        )
+        .await
+        .unwrap();
+    answer["taskId"].as_str().unwrap_or_default().to_owned()
+}
+
+/// The task `id` of the agent of `grant`, as `status` has it.
+fn task_in(status: &AgentsStatus, grant: &str, id: &str) -> Option<AgentTask> {
+    status
+        .agents
+        .iter()
+        .filter(|agent| agent.id == grant)
+        .flat_map(|agent| agent.tasks.iter())
+        .find(|task| task.id == id)
+        .cloned()
+}
+
+fn ended(task: Option<&AgentTask>) -> bool {
+    task.is_some_and(|t| t.state != TaskState::Queued && t.state != TaskState::Running)
+}
+
+/// One issued task of a step.
+struct Issued {
+    agent: String,
+    grant: String,
+    text: String,
+    task: String,
+    launched_ms: u128,
+    restarted: u32,
 }
 
 /// Environment:
-/// - `TILO_BENCH_OUT`: run directory (deliverables, `tasks.json`, `usage.jsonl`).
-/// - `TILO_BENCH_PHOTO`: the source photo, handed to the agents as room content.
+/// - `TILO_BENCH_OUT`: run directory (outputs, `tasks.json`, `timing.json`).
+/// - `TILO_BENCH_SCENARIO`: the scenario file (`bench/campaign/scenarios/*.json`).
 /// - `TILO_AGENT_API_KEY_FILE`: the model provider's key; `TILO_BENCH_MODEL`
-///   (`gpt-6-astra`; a `claude-` model goes to `TILO_BENCH_ANTHROPIC_URL`);
+///   (`gpt-6-astra`; a `claude-` model goes to `TILO_BENCH_ANTHROPIC_URL`, a
+///   model behind `TILO_BENCH_OPENAI_COMPAT_URL` to chat completions there);
 ///   `TILO_BENCH_BASE_URL` (`https://api.openai.com/v1`); `TILO_BENCH_TASK_SECS` (600).
 /// - `TILO_AGENT_USAGE_LOG`: where each model call's usage is logged (the run
 ///   directory's `usage.jsonl`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "campaign benchmark: spends real model tokens; run explicitly"]
 async fn campaign_bench() {
+    // `TILO_BENCH_TRACE` (an env filter, e.g. `tilo_agent_participant=debug`)
+    // writes the agents' trace to stderr, which the harness keeps.
+    if let Ok(filter) = std::env::var("TILO_BENCH_TRACE") {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+            .with_writer(std::io::stderr)
+            .try_init();
+    }
     let out = std::path::PathBuf::from(std::env::var("TILO_BENCH_OUT").expect("TILO_BENCH_OUT"));
     std::fs::create_dir_all(&out).unwrap();
     let out = out.canonicalize().unwrap();
-    let photo = std::env::var("TILO_BENCH_PHOTO").expect("TILO_BENCH_PHOTO");
+    let scenario = Scenario::load(Path::new(
+        &std::env::var("TILO_BENCH_SCENARIO").expect("TILO_BENCH_SCENARIO"),
+    ));
     let key = std::path::PathBuf::from(
         std::env::var("TILO_AGENT_API_KEY_FILE").expect("TILO_AGENT_API_KEY_FILE"),
     );
     let model_name = env_or("TILO_BENCH_MODEL", "gpt-6-astra");
     // Claude through Anthropic's Messages API; OpenAI's reasoning models take
-    // function tools with reasoning only on the Responses API.
-    let spec = if model_name.starts_with("claude") {
+    // function tools with reasoning only on the Responses API; a local
+    // server (Ollama, llama.cpp) through chat completions.
+    let spec = if let Ok(url) = std::env::var("TILO_BENCH_OPENAI_COMPAT_URL") {
+        format!("openai:{url}")
+    } else if model_name.starts_with("claude") {
         format!(
             "anthropic:{}",
             env_or("TILO_BENCH_ANTHROPIC_URL", "https://api.anthropic.com/v1")
@@ -807,32 +858,19 @@ async fn campaign_bench() {
     let hosted = start_with(&root, &host, state.path(), model).await;
     let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
-    eprintln!("bench: host started");
+    eprintln!("bench: host started for scenario {}", scenario.id);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
-    eprintln!("bench: browser open");
 
     let mut grants = BTreeMap::new();
-    for role in ROLES {
-        grants.insert(role.name, grant_for(&mut browser, role).await);
-        eprintln!("bench: grant approved for {}", role.name);
+    for role in &scenario.agents {
+        grants.insert(role.name.clone(), grant_for(&mut browser, role).await);
     }
+    eprintln!("bench: {} grants approved", grants.len());
     // The team joins the room before the work begins, as people are in it
     // before anyone hands out tasks: each agent holds the room's keys when
     // the records it will work on are made. The clock starts after.
-    for role in ROLES {
-        browser
-            .call(
-                SUPERVISOR_RESOURCE,
-                SPAWN_ACTION,
-                InvokeArgument::Json(
-                    serde_json::json!({"grant": grants[role.name], "room": ROOM})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                ),
-            )
-            .await
-            .unwrap();
+    for grant in grants.values() {
+        spawn(&mut browser, grant).await;
     }
     browser
         .until("every agent to join the room", |status| {
@@ -845,89 +883,122 @@ async fn campaign_bench() {
         })
         .await;
     eprintln!("bench: agents joined");
-    let mut spawned = BTreeMap::<&str, usize>::new();
-    let mut log = Vec::new();
-    let photo = hosted
-        .agents
-        .put_content(ROOM, &std::fs::read(&photo).unwrap())
-        .unwrap();
-    // Steps run as a dependency graph: each starts once the steps it needs have
-    // ended, so independent work (the image, the spreadsheet, the note, the page)
-    // proceeds at the same time. An agent still works its own tasks in order.
-    let steps = steps(&photo);
-    assert_eq!(steps.len(), DEPENDS.len());
+    let mut addresses = BTreeMap::new();
+    for (name, file) in &scenario.content {
+        let address = hosted
+            .agents
+            .put_content(ROOM, &std::fs::read(file).unwrap())
+            .unwrap();
+        addresses.insert(format!("{{content:{name}}}"), address);
+    }
+    let fill = |text: &str| {
+        addresses
+            .iter()
+            .fold(text.to_owned(), |text, (slot, address)| {
+                text.replace(slot, address)
+            })
+    };
+
+    // Steps run as a dependency graph: each starts once the steps it needs
+    // have ended, so independent work proceeds at the same time. An agent
+    // still works its own tasks in order.
     let run_started = Instant::now();
     let started = std::time::SystemTime::now();
-    let mut launched: BTreeMap<usize, (Instant, Vec<(String, usize)>)> = BTreeMap::new();
-    let mut ended: BTreeMap<usize, f64> = BTreeMap::new();
-    while ended.len() < steps.len() {
-        for (index, step) in steps.iter().enumerate() {
-            let number = index + 1;
-            if launched.contains_key(&number)
-                || !DEPENDS[index].iter().all(|need| ended.contains_key(need))
+    let mut launched: BTreeMap<usize, (Instant, Vec<Issued>)> = BTreeMap::new();
+    let mut finished_steps: BTreeMap<usize, f64> = BTreeMap::new();
+    let mut log: Vec<serde_json::Value> = Vec::new();
+    let mut faults_done = vec![false; scenario.faults.len()];
+    let mut fault_log = Vec::new();
+    while finished_steps.len() < scenario.steps.len() {
+        for (index, stage) in scenario.steps.iter().enumerate() {
+            if launched.contains_key(&index)
+                || !stage
+                    .after
+                    .iter()
+                    .all(|need| finished_steps.contains_key(need))
             {
                 continue;
             }
-            let mut wanted = Vec::new();
-            for (name, task) in step {
-                let grant = grants[name].clone();
-                let count = spawned.entry(name).or_insert(0);
-                browser
-                    .call(
-                        &agent_resource(&grant),
-                        MESSAGE_ACTION,
-                        InvokeArgument::Text(task.clone()),
-                    )
-                    .await
-                    .unwrap();
-                wanted.push((grant, *count));
-                *count += 1;
+            let mut issued = Vec::new();
+            for (agent, text) in &stage.tasks {
+                let grant = grants
+                    .get(agent)
+                    .unwrap_or_else(|| panic!("step {} names an unknown agent {agent}", stage.id))
+                    .clone();
+                let text = fill(text);
+                let task = message(&mut browser, &grant, &text).await;
+                issued.push(Issued {
+                    agent: agent.clone(),
+                    grant,
+                    text,
+                    task,
+                    launched_ms: unix_ms(),
+                    restarted: 0,
+                });
             }
             eprintln!(
-                "bench: step {number} started at {:.1}s (unix ms {})",
-                run_started.elapsed().as_secs_f64(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis()
+                "bench: step {} started at {:.1}s",
+                stage.id,
+                run_started.elapsed().as_secs_f64()
             );
-            launched.insert(number, (Instant::now(), wanted));
+            launched.insert(index, (Instant::now(), issued));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
+        // Harness-side faults that are due.
+        for (number, fault) in scenario.faults.iter().enumerate() {
+            if faults_done[number] || run_started.elapsed() < fault.at {
+                continue;
+            }
+            faults_done[number] = true;
+            let outcome = match (fault.kind.as_str(), fault.agent.as_ref()) {
+                ("kill_agent", Some(agent)) => {
+                    let grant = grants[agent].clone();
+                    restart_agent(&mut browser, &grant, &mut launched).await
+                }
+                (kind, _) => format!("unsupported fault {kind}"),
+            };
+            eprintln!(
+                "bench: fault {} at {:.1}s: {outcome}",
+                fault.kind,
+                run_started.elapsed().as_secs_f64()
+            );
+            fault_log.push(serde_json::json!({
+                "kind": fault.kind,
+                "agent": fault.agent,
+                "at_seconds": run_started.elapsed().as_secs_f64(),
+                "outcome": outcome,
+            }));
+        }
         let status = browser.status().await;
-        let task_of = |grant: &str, index: usize| {
-            status
-                .agents
+        for (&index, (step_started, issued)) in &launched {
+            if finished_steps.contains_key(&index) {
+                continue;
+            }
+            let done = issued
                 .iter()
-                .find(|a| a.id == grant)
-                .and_then(|a| a.tasks.get(index))
-                .cloned()
-        };
-        for (&number, (started, wanted)) in &launched {
-            if ended.contains_key(&number) {
+                .all(|one| ended(task_in(&status, &one.grant, &one.task).as_ref()));
+            if !done && step_started.elapsed() < task_limit {
                 continue;
             }
-            let done = wanted.iter().all(|(grant, index)| {
-                task_of(grant, *index)
-                    .is_some_and(|t| t.state != TaskState::Queued && t.state != TaskState::Running)
-            });
-            let timed_out = started.elapsed() >= task_limit;
-            if !done && !timed_out {
-                continue;
-            }
-            ended.insert(number, run_started.elapsed().as_secs_f64());
-            for ((name, text), (grant, task_index)) in steps[number - 1].iter().zip(wanted) {
-                let task = task_of(grant, *task_index);
+            finished_steps.insert(index, run_started.elapsed().as_secs_f64());
+            for one in issued {
+                let task = task_in(&status, &one.grant, &one.task);
                 log.push(serde_json::json!({
-                    "step": number,
-                    "agent": name,
-                    "agent_id": grant,
-                    "task": text,
+                    "step": scenario.steps[index].id,
+                    "agent": one.agent,
+                    "agent_id": one.grant,
+                    "task_id": one.task,
+                    "task": one.text,
                     "state": task.as_ref().map(|t| format!("{:?}", t.state)),
                     "error": task.as_ref().and_then(|t| t.error.clone()),
                     "actions": task.as_ref().map(|t| t.steps.iter().map(|s| s.action.clone()).collect::<Vec<_>>()),
+                    "apps": task.as_ref().map(|t| t.steps.iter().map(|s| s.app.clone()).collect::<Vec<_>>()),
+                    "resources": task.as_ref().map(|t| t.steps.iter().map(|s| s.resource.clone()).collect::<Vec<_>>()),
                     "content": task.as_ref().map(|t| t.steps.iter().flat_map(|s| s.content.clone()).collect::<Vec<_>>()),
-                    "step_seconds": started.elapsed().as_secs_f64(),
+                    "restarted": one.restarted,
+                    "launched_at_unix_ms": one.launched_ms,
+                    "ended_at_unix_ms": unix_ms(),
+                    "step_seconds": step_started.elapsed().as_secs_f64(),
                     "ended_at_seconds": run_started.elapsed().as_secs_f64(),
                 }));
             }
@@ -939,8 +1010,8 @@ async fn campaign_bench() {
         }
     }
     let finished = std::time::SystemTime::now();
-    // The last content each export step produced, by the step that asked for it.
-    let produced = |step: usize, agent: &str| {
+    // The last content each output's task produced.
+    let produced = |step: &str, agent: &str| {
         log.iter()
             .filter(|row| row["step"] == step && row["agent"] == agent)
             .filter_map(|row| {
@@ -952,12 +1023,7 @@ async fn campaign_bench() {
             })
             .last()
     };
-    for (step, agent, file) in [
-        (1, "Mina", "asset.png"),
-        (7, "Eli", "campaign.xlsx"),
-        (8, "Ren", "notes.md"),
-        (6, "Mina", "launch-page.docx"),
-    ] {
+    for (step, agent, file) in &scenario.outputs {
         if let Some(bytes) =
             produced(step, agent).and_then(|address| hosted.agents.content(ROOM, &address))
         {
@@ -971,8 +1037,8 @@ async fn campaign_bench() {
     };
     std::fs::write(
         out.join("timing.json"),
-        serde_json::json!({"started_at": unix(started), "finished_at": unix(finished),
-                           "agents": grants.iter().map(|(n, g)| (n.to_string(), g.clone())).collect::<BTreeMap<_, _>>()})
+        serde_json::json!({"scenario": scenario.id, "started_at": unix(started), "finished_at": unix(finished),
+                           "agents": grants, "faults": fault_log})
             .to_string(),
     )
     .unwrap();
@@ -980,4 +1046,64 @@ async fn campaign_bench() {
     drop(hosted.web);
     hosted.agents.shutdown();
     hosted.relay.shutdown().await;
+}
+
+/// Stop the agent of `grant`, spawn it again on the same grant and give it
+/// again each of its launched tasks that had not ended, as a supervisor
+/// restarting a crashed worker would. Says what happened.
+async fn restart_agent(
+    browser: &mut Browser,
+    grant: &str,
+    launched: &mut BTreeMap<usize, (Instant, Vec<Issued>)>,
+) -> String {
+    let status = browser.status().await;
+    let unfinished: Vec<(usize, usize)> = launched
+        .iter()
+        .flat_map(|(&step, (_, issued))| {
+            issued
+                .iter()
+                .enumerate()
+                .filter(|(_, one)| {
+                    one.grant == grant && !ended(task_in(&status, grant, &one.task).as_ref())
+                })
+                .map(move |(slot, _)| (step, slot))
+        })
+        .collect();
+    if let Err(error) = browser
+        .call(&agent_resource(grant), STOP_ACTION, InvokeArgument::None)
+        .await
+    {
+        return format!("stop failed: {error:?}");
+    }
+    browser
+        .until("the stopped agent to leave", |status| {
+            !status
+                .agents
+                .iter()
+                .any(|a| a.id == grant && a.status != AgentStatus::Stopped)
+        })
+        .await;
+    // `TILO_BENCH_RESPAWN_MS`: how long the stopped agent stays down.
+    let down = env_or("TILO_BENCH_RESPAWN_MS", "0").parse().unwrap_or(0);
+    tokio::time::sleep(Duration::from_millis(down)).await;
+    spawn(browser, grant).await;
+    browser
+        .until("the restarted agent to join", |status| {
+            status
+                .agents
+                .iter()
+                .any(|a| a.id == grant && a.status == AgentStatus::Waiting)
+        })
+        .await;
+    for &(step, slot) in &unfinished {
+        if let Some((_, issued)) = launched.get_mut(&step) {
+            let text = issued[slot].text.clone();
+            issued[slot].task = message(browser, grant, &text).await;
+            issued[slot].restarted += 1;
+        }
+    }
+    format!(
+        "restarted; {} unfinished task(s) given again",
+        unfinished.len()
+    )
 }

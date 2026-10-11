@@ -15991,6 +15991,7 @@ dependencies = [
  "tokio-rustls",
  "totp",
  "tracing",
+ "tracing-subscriber",
  "tube",
  "typst-editor",
  "url",
@@ -22020,6 +22021,7 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
+ "zip",
 ]
 
 [[package]]

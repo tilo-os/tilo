@@ -198,9 +198,11 @@ pub enum NotesAction {
         title: String,
         /// Parent page uuid, or `""` for a root page.
         parent: String,
-        /// The new note's first text, a paragraph per line; empty for an
-        /// empty note. Written with the note, so whoever makes a note and
-        /// its text does it in one step.
+        /// The new note's first text, as Markdown: headings, bullet,
+        /// numbered and checklist items, tables, quotes, code fences and
+        /// emphasis keep their structure, and every other line becomes a
+        /// paragraph of its own. Empty for an empty note. Written with the
+        /// note, so whoever makes a note and its text does it in one step.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         text: String,
     },
@@ -774,6 +776,68 @@ fn import_markdown(
     NotesDoc::fill_page_body(doc, id, &blocks)
 }
 
+/// The blocks a new note's `text` is written with: its Markdown parsed as an
+/// import parses it (headings, lists, checklists, tables, quotes, code,
+/// emphasis, `[[Title]]` links to the notebook's notes), each other line a
+/// paragraph of its own.
+///
+/// A line that is no list item loses its surrounding whitespace, and every
+/// line its trailing whitespace, outside code fences, so plain text keeps
+/// becoming one paragraph per non-blank line, as it always has.
+fn note_text_blocks(
+    text: &str,
+    id: PageId,
+    title: &str,
+    pages: &[PageMeta],
+) -> Result<Vec<BlockContent>, String> {
+    let markdown = note_text_markdown(text);
+    check_markdown_import(&markdown)?;
+    Ok(crate::MainPanel::seed_blocks(&markdown, |target| {
+        if target == title {
+            return Some(id);
+        }
+        pages
+            .iter()
+            .find(|candidate| candidate.title == target)
+            .map(|candidate| candidate.id)
+    }))
+}
+
+/// `text` with the whitespace of its lines settled as [`note_text_blocks`]
+/// describes: code fences verbatim, list items keeping their nesting indent.
+fn note_text_markdown(text: &str) -> String {
+    let mut fenced = false;
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let kept = if trimmed.starts_with("```") {
+            fenced = !fenced;
+            line.trim_end()
+        } else if fenced {
+            line
+        } else if list_item_line(trimmed) {
+            line.trim_end()
+        } else {
+            trimmed
+        };
+        out.push_str(kept);
+        out.push('\n');
+    }
+    out
+}
+
+/// Whether `line` (already trimmed) opens a bullet, checklist or numbered item.
+fn list_item_line(line: &str) -> bool {
+    if line.starts_with("- ") || line.starts_with("* ") {
+        return true;
+    }
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    digits > 0
+        && line
+            .get(digits..)
+            .is_some_and(|rest| rest.starts_with(". ") || rest.starts_with(") "))
+}
+
 /// Import `markdown` as a new note titled `title`.
 pub fn import_markdown_action(
     page: PageId,
@@ -855,13 +919,9 @@ impl Action for NotesAction {
                         order,
                     },
                 );
-                let blocks: Vec<BlockContent> = text
-                    .lines()
-                    .map(str::trim)
-                    .filter(|line| !line.is_empty())
-                    .map(|line| BlockContent::paragraph("", line))
-                    .collect();
-                if !blocks.is_empty() {
+                if !text.trim().is_empty() {
+                    let blocks =
+                        note_text_blocks(text, id, title, &pages).map_err(ActionError::Refused)?;
                     NotesDoc::fill_page_body(doc, id, &blocks).map_err(ActionError::Refused)?;
                 }
             }
@@ -2190,7 +2250,9 @@ pub(crate) fn notebook_bound_declarations(
                 ActionParam::optional(
                     NOTE_TEXT_PARAM,
                     ParamType::Text,
-                    "The note's text, a paragraph per line",
+                    "The note's text as Markdown: `# heading`, `- bullet`, `1. item`, \
+                     `- [ ] to-do`, `| a | b |` tables with a `| --- | --- |` row, \
+                     **bold** and *italic*; any other line is a paragraph",
                 ),
             ],
             move |args, _| {
@@ -2208,7 +2270,7 @@ pub(crate) fn notebook_bound_declarations(
                 Ok(action)
             },
         )
-        .describe("Create a new root note, with its text when given."),
+        .describe("Create a new root note, with its text (Markdown) when given."),
     ];
     let title = today_title();
     if !workspace.pages().iter().any(|page| page.title == title) {

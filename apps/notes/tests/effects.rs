@@ -283,3 +283,84 @@ fn markdown_text_an_agent_hands_over_becomes_a_shown_note() {
     assert_eq!(body(&app, page), ["Ship it"], "its title is not repeated");
     assert_eq!(shown(&mut app), Some(page));
 }
+
+/// A new note titled `title` made through the notebook's `new-page` action,
+/// with `text` as an agent hands it over.
+fn new_page(
+    app: &mut ui::framework::testing::TestApp<notes::NotesShell>,
+    title: &str,
+    text: &str,
+) -> notes::PageId {
+    app.call(
+        "new-page",
+        serde_json::json!({ "value": title, "text": text }),
+    )
+    .unwrap();
+    app.settle();
+    app.state()
+        .pages()
+        .iter()
+        .find(|page| page.title == title)
+        .map(|page| page.id)
+        .expect("new-page made the note")
+}
+
+/// Note `page` as the Markdown an agent reads back.
+fn exported(
+    app: &mut ui::framework::testing::TestApp<notes::NotesShell>,
+    page: notes::PageId,
+) -> String {
+    let output = app
+        .effect_on(
+            &page_resource_id(page),
+            &NotesEffect::ExportMarkdownContent { page },
+        )
+        .unwrap();
+    let [address] = output.resources.as_slice() else {
+        panic!("one content resource: {output:?}");
+    };
+    let hash = address
+        .strip_prefix("tilo.content:")
+        .expect("a content address");
+    String::from_utf8(app.content().read(hash).expect("the bytes are kept")).unwrap()
+}
+
+#[test]
+fn a_markdown_table_given_to_a_new_note_exports_as_one_table() {
+    let mut app = notes();
+    let page = new_page(
+        &mut app,
+        "Pancakes",
+        "| Ingredient | Amount |\n| --- | --- |\n| Flour | 300 g |\n| Milk | 450 ml |\n",
+    );
+    assert_eq!(
+        exported(&mut app, page),
+        "# Pancakes\n\n| Ingredient | Amount |\n| --- | --- |\n| Flour | 300 g |\n| Milk | 450 ml |\n"
+    );
+}
+
+#[test]
+fn headings_lists_and_checklists_given_to_a_new_note_keep_their_structure() {
+    let mut app = notes();
+    let page = new_page(
+        &mut app,
+        "Plan",
+        "## Method\n- [ ] Preheat the pan\n- [x] Whisk the eggs\n1. Pour\n2. Flip\n- Serve **warm**\n  - with syrup\n### Notes\nKeep it *light*.\n",
+    );
+    assert_eq!(
+        exported(&mut app, page),
+        "# Plan\n\n## Method\n\n- [ ] Preheat the pan\n\n- [x] Whisk the eggs\n\n1. Pour\n\n2. Flip\n\n\
+         - Serve **warm**\n\n  - with syrup\n\n### Notes\n\nKeep it *light*.\n"
+    );
+}
+
+#[test]
+fn plain_text_given_to_a_new_note_is_a_paragraph_per_line() {
+    let mut app = notes();
+    let page = new_page(&mut app, "Groceries", "oat milk\n  bread  \n\n\tapples\r\n");
+    assert_eq!(body(&app, page), ["oat milk", "bread", "apples"]);
+    assert_eq!(
+        exported(&mut app, page),
+        "# Groceries\n\noat milk\n\nbread\n\napples\n"
+    );
+}

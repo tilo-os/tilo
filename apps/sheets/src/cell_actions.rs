@@ -95,7 +95,9 @@ pub(crate) fn format_code(name: &str) -> Option<String> {
 }
 
 /// The cells `rows` write rightward and down from `start`: "=…" a formula,
-/// "" a clear, null a skip.
+/// "" a clear, null a skip, and an exact ISO date ("2026-10-22", optionally
+/// with a time "2026-10-22T09:30") a real date: its serial in the date
+/// format, so it calculates and exports as a date. Other text stays text.
 ///
 /// # Errors
 ///
@@ -112,11 +114,16 @@ pub(crate) fn cells_from_rows(
             .ok_or("each row must be an array of values")?;
         for (dc, value) in (0u32..).zip(row) {
             if let Some(raw) = raw_of(value)? {
+                let date = value.as_str().and_then(crate::infer::iso_date_entry);
+                let (raw, fmt) = match date {
+                    Some(date) => (date.raw, Some(date.format.as_str())),
+                    None => (raw, None),
+                };
                 cells.push(CellWrite {
                     col: start.0.saturating_add(dc),
                     row: start.1.saturating_add(dr),
                     raw,
-                    fmt: None,
+                    fmt,
                 });
             }
         }
@@ -183,7 +190,8 @@ fn set_cells_spec(sheet: usize, sheet_id: &str) -> ActionSpec {
             ActionParam::required(
                 "rows",
                 ParamType::Array,
-                "Rows of values written rightward and down from start; \"=…\" is a formula, \"\" clears, null skips",
+                "Rows of values written rightward and down from start; \"=…\" is a formula, \"\" clears, null skips, \
+                 an ISO date such as \"2026-10-22\" (or \"2026-10-22T09:30\") becomes a real date",
             ),
         ],
         move |args| {
@@ -249,22 +257,22 @@ enum SortKey {
     Blank,
 }
 
+/// What a cell sorts by: its computed value, so a formula's result and a
+/// number shown as `$1,200.00` or `12.50%` sort as the numbers they are.
 fn sort_key(cell: Option<&SearchableCell>) -> SortKey {
     let Some(cell) = cell else {
         return SortKey::Blank;
     };
-    let shown = if cell.raw.starts_with('=') {
-        &cell.display
-    } else {
-        &cell.raw
+    let text = match &cell.value {
+        CellValue::Empty => return SortKey::Blank,
+        CellValue::Number(number) => return SortKey::Number(*number),
+        CellValue::Text(text) => text.trim().to_owned(),
+        CellValue::Bool(_) | CellValue::Error(_) => cell.value.to_plain_string(),
     };
-    let shown = shown.trim();
-    if shown.is_empty() {
+    if text.is_empty() {
         SortKey::Blank
-    } else if let Ok(number) = shown.parse::<f64>() {
-        SortKey::Number(number)
     } else {
-        SortKey::Text(shown.to_lowercase())
+        SortKey::Text(text.to_lowercase())
     }
 }
 
@@ -325,7 +333,7 @@ pub fn sort_writes(
     writes
 }
 
-/// Sorting reads what the sheet's cells show, calculated when a sort is
+/// Sorting reads the sheet's computed values, calculated when a sort is
 /// asked for rather than whenever the sheet is published.
 fn sort_rows_spec(
     sheet: usize,
@@ -344,7 +352,12 @@ fn sort_rows_spec(
                 ParamType::Text,
                 "Rows to reorder, e.g. A2:C9 (leave the header out)",
             ),
-            ActionParam::required("by", ParamType::Text, "Column letter to sort by, e.g. C"),
+            ActionParam::required(
+                "by",
+                ParamType::Text,
+                "Column letter to sort by, e.g. C; numbers (formula results too, whatever their \
+                 format) sort by value before text, blanks last",
+            ),
             ActionParam::optional(
                 "descending",
                 ParamType::Boolean,
@@ -434,7 +447,9 @@ fn read_cells_spec(sheet_id: &str) -> ActionSpec {
         vec![ActionParam::optional(
             "range",
             ParamType::Text,
-            "Cell or range, e.g. A1:D6; omit for the used range",
+            "Cell or range, e.g. A1:D6; omit for the used range. Answers computed rows, \
+             formulas, bold cells and number formats ({\"D2\": \"percent\"}, the names \
+             format-cells takes)",
         )],
         move |args| {
             let request = ReadRequest {
@@ -511,8 +526,8 @@ fn json_value(value: &CellValue) -> serde_json::Value {
     }
 }
 
-/// `rows` are computed values (numbers stay numbers), `formulas` and `bold`
-/// name only the cells that have them.
+/// `rows` are computed values (numbers stay numbers), `formulas`, `bold` and
+/// `formats` name only the cells that have them.
 fn project_read(
     document: &AutoCommit,
     _heads: &[ChangeHash],
@@ -541,12 +556,29 @@ fn project_read(
     })
 }
 
-/// `start..=end` of `snap` as `read-cells` answers it.
+/// The name `format-cells` takes for `format`, or `None` for the default
+/// (general) and the formats no action sets.
+fn format_name(format: CellFormat) -> Option<&'static str> {
+    match format {
+        CellFormat::General | CellFormat::Boolean => None,
+        CellFormat::Number => Some("number"),
+        CellFormat::Currency(_) => Some("currency"),
+        CellFormat::Percent => Some("percent"),
+        CellFormat::Date(_) => Some("date"),
+        CellFormat::Time(_) => Some("time"),
+        CellFormat::Text => Some("text"),
+    }
+}
+
+/// `start..=end` of `snap` as `read-cells` answers it: `formats` maps each
+/// cell with a number format to the name `format-cells` takes, so a layout
+/// copies from one sheet to another.
 fn range_content(snap: &crate::doc::SheetSnapshot, start: Addr, end: Addr) -> serde_json::Value {
     let values = crate::formula::recalculate(&snap.raw);
     let mut rows = Vec::new();
     let mut formulas = serde_json::Map::new();
     let mut bold = Vec::new();
+    let mut formats = serde_json::Map::new();
     for row in start.1..=end.1 {
         let mut line = Vec::new();
         for col in start.0..=end.0 {
@@ -561,6 +593,9 @@ fn range_content(snap: &crate::doc::SheetSnapshot, start: Addr, end: Addr) -> se
             if snap.bold.contains(&(col, row)) {
                 bold.push(serde_json::Value::String(addr_to_a1(col, row)));
             }
+            if let Some(name) = snap.fmt.get(&(col, row)).copied().and_then(format_name) {
+                formats.insert(addr_to_a1(col, row), name.into());
+            }
         }
         rows.push(serde_json::Value::Array(line));
     }
@@ -570,6 +605,7 @@ fn range_content(snap: &crate::doc::SheetSnapshot, start: Addr, end: Addr) -> se
         "rows": rows,
         "formulas": formulas,
         "bold": bold,
+        "formats": formats,
     })
 }
 
@@ -637,7 +673,8 @@ pub fn read_result_schema() -> &'static serde_json::Value {
             "range":{"type":"string"},
             "rows":{"type":"array","items":{"type":"array"}},
             "formulas":{"type":"object","additionalProperties":true},
-            "bold":{"type":"array","items":{"type":"string"}}
+            "bold":{"type":"array","items":{"type":"string"}},
+            "formats":{"type":"object","additionalProperties":true}
         }});
         serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{
             "version":{"type":"integer","enum":[1]},

@@ -1978,12 +1978,15 @@ pub fn set_doc_settings_action(settings: &DocSettings) -> SheetsAction {
 // ===========================================================================
 
 /// A populated cell with what it shows, for search and sorting.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SearchableCell {
     pub col: u32,
     pub row: u32,
     pub raw: String,
     pub display: String,
+    /// The computed value, which sorting orders by (a formula's result, a
+    /// currency amount as its number rather than its `$1,200.00`).
+    pub value: crate::model::CellValue,
 }
 
 fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {

@@ -125,14 +125,15 @@ impl SheetInfo {
                                 })
                                 .unwrap_or(CellFormat::General)
                         });
-                    let display = values
-                        .get(&(col, row))
-                        .map_or_else(String::new, |value| format_value(value, fmt));
+                    let value = values.get(&(col, row));
+                    let display = value.map_or_else(String::new, |value| format_value(value, fmt));
+                    let value = value.cloned().unwrap_or(crate::model::CellValue::Empty);
                     SearchableCell {
                         col,
                         row,
                         raw: raw.clone(),
                         display,
+                        value,
                     }
                 })
                 .collect::<Vec<_>>();
@@ -251,7 +252,8 @@ impl Resource for SheetsWorkbook {
                     ActionParam::optional(
                         "rows",
                         ParamType::Array,
-                        "Its first content: rows of values from A1, \"=…\" a formula",
+                        "Its first content: rows of values from A1, \"=…\" a formula, an ISO date such as \
+                         \"2026-10-22\" a real date",
                     ),
                     ActionParam::optional(
                         "formats",

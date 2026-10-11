@@ -3021,7 +3021,11 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
         | RichTextAction::ReplaceBody { .. }
         | RichTextAction::ReplaceFormatted { .. }
         | RichTextAction::NoteFileWritten { .. }
-        | RichTextAction::EnsureRegionBlock { .. } => tilo_actions::InteractionAnchor::Resource,
+        | RichTextAction::EnsureRegionBlock { .. }
+        // Resolved against the body's end or text at apply time.
+        | RichTextAction::AppendMarkdown { .. }
+        | RichTextAction::ReplaceText { .. }
+        | RichTextAction::AlignParagraph { .. } => tilo_actions::InteractionAnchor::Resource,
         RichTextAction::SetStyleProperty { style, .. }
         | RichTextAction::DeleteStyle { style, .. } => object_anchor(style),
         RichTextAction::EditTable { table, .. } => object_anchor(table),

@@ -43,6 +43,10 @@ pub struct SetArtwork {
     pub crop: Option<[f64; 4]>,
     /// Crop to what this mark or group shows.
     pub fit: Option<String>,
+    /// Make the artwork exactly `[width, height]`: crop it, centred, to
+    /// that shape, then scale it and everything on it to that size (16:9 at
+    /// 1520 by 855 is `[1520, 855]`).
+    pub fit_to: Option<[f64; 2]>,
 }
 
 /// Start over on a blank artwork: its size, ground and first layer. The
@@ -213,6 +217,10 @@ pub struct NewMark {
     pub clip: Option<String>,
     /// An affine `[a, b, c, d, e, f]` on the geometry, as `inspect` shows.
     pub transform: Option<[f64; 6]>,
+    /// A rect's or ellipse's box as fractions of the artwork, `[x, y,
+    /// width, height]` from 0 to 1, instead of units: `[0.62, 0, 0.38, 1]`
+    /// is the right 38% at full height.
+    pub place: Option<[f64; 4]>,
 }
 
 impl NewMark {
@@ -244,6 +252,7 @@ impl NewMark {
             group: None,
             clip: None,
             transform: None,
+            place: None,
         }
     }
 }
@@ -928,6 +937,41 @@ pub(crate) fn clip_named(
 /// The clip that keeps a new mark inside the selection.
 pub const SELECTION_CLIP: &str = "selection";
 
+/// `mark`'s shape, its box set from `place` (fractions of `art`) when given.
+fn placed_shape(art: &Artwork, mark: &NewMark) -> Result<Shape, ActionError> {
+    let Some([fx, fy, fw, fh]) = mark.place else {
+        return Ok(mark.shape.clone());
+    };
+    if ![fx, fy, fw, fh]
+        .iter()
+        .all(|value| (0.0..=1.0).contains(value))
+        || fw <= 0.0
+        || fh <= 0.0
+    {
+        return Err(refuse(
+            "place is [x, y, width, height] as fractions of the artwork, each 0 to 1",
+        ));
+    }
+    let (x, y) = (fx * art.width, fy * art.height);
+    let (width, height) = (fw * art.width, fh * art.height);
+    match &mark.shape {
+        Shape::Rect { radius, .. } => Ok(Shape::Rect {
+            x,
+            y,
+            width,
+            height,
+            radius: *radius,
+        }),
+        Shape::Ellipse { .. } => Ok(Shape::Ellipse {
+            cx: x + width / 2.0,
+            cy: y + height / 2.0,
+            rx: width / 2.0,
+            ry: height / 2.0,
+        }),
+        _ => Err(refuse("place sets the box of a rect or an ellipse")),
+    }
+}
+
 impl Draw {
     fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
         let layer = target_layer(art, self.layer.as_deref())?;
@@ -936,6 +980,11 @@ impl Draw {
             .iter()
             .map(|mark| clip_named(art, mark.clip.as_deref()))
             .collect::<Result<Vec<(String, String)>, ActionError>>()?;
+        let shapes = self
+            .marks
+            .iter()
+            .map(|mark| placed_shape(art, mark))
+            .collect::<Result<Vec<Shape>, ActionError>>()?;
         let marks = self
             .marks
             .iter()
@@ -993,7 +1042,10 @@ impl Draw {
                     ..placed(
                         id,
                         mark.name.clone().unwrap_or_default(),
-                        mark.shape.clone(),
+                        shapes
+                            .get(index)
+                            .cloned()
+                            .unwrap_or_else(|| mark.shape.clone()),
                         style,
                     )
                 };
@@ -1730,6 +1782,14 @@ impl tilo_actions::Action for CanvasAction {
 fn set_artwork(doc: &mut Doc, art: &Artwork, set: &SetArtwork) -> Result<(), ActionError> {
     use ui::automerge::ROOT;
     use ui::automerge::transaction::Transactable as _;
+    if let Some(size) = set.fit_to {
+        if set.crop.is_some() || set.fit.is_some() || set.width.is_some() || set.height.is_some() {
+            return Err(refuse(
+                "give fit_to alone, not with crop, fit, width or height",
+            ));
+        }
+        fit_artwork(doc, art, size)?;
+    }
     let crop = match (&set.crop, &set.fit) {
         (Some(_), Some(_)) => return Err(refuse("give crop or fit, not both")),
         (Some([x, y, width, height]), None) => {
@@ -2001,6 +2061,59 @@ fn replace(doc: &mut Doc, file: &crate::document::ArtworkFile) -> Result<(), Act
 
 /// The artwork cut down to `area`: its corner becomes the origin, every
 /// mark and the reference moving with it.
+/// Crop `art`, centred, to the shape of `[width, height]`, then scale it and
+/// every mark (and the reference's frame) to exactly that size.
+fn fit_artwork(doc: &mut Doc, art: &Artwork, [width, height]: [f64; 2]) -> Result<(), ActionError> {
+    use ui::automerge::ROOT;
+    use ui::automerge::transaction::Transactable as _;
+    if ![width, height]
+        .iter()
+        .all(|side| (16.0..=MAX_SIDE).contains(side))
+    {
+        return Err(refuse(format!(
+            "fit_to is [width, height], each 16 to {MAX_SIDE}"
+        )));
+    }
+    let ratio = width / height;
+    let area = if art.width / art.height > ratio {
+        let kept = art.height * ratio;
+        ui::vello::kurbo::Rect::new(
+            (art.width - kept) / 2.0,
+            0.0,
+            f64::midpoint(art.width, kept),
+            art.height,
+        )
+    } else {
+        let kept = art.width / ratio;
+        ui::vello::kurbo::Rect::new(
+            0.0,
+            (art.height - kept) / 2.0,
+            art.width,
+            f64::midpoint(art.height, kept),
+        )
+    };
+    crop_artwork(doc, art, area)?;
+    let cropped = doc::read(doc);
+    let scale =
+        ui::vello::kurbo::Affine::scale_non_uniform(width / cropped.width, height / cropped.height);
+    for mark in &cropped.marks {
+        doc::write_mark(doc, &mark.transformed(scale))?;
+    }
+    if let Some(reference) = &cropped.reference
+        && let Some([x, y, w, h]) = reference.frame
+    {
+        let (sx, sy) = (width / cropped.width, height / cropped.height);
+        let scaled = Reference {
+            frame: Some([x * sx, y * sy, w * sx, h * sy]),
+            ..reference.clone()
+        };
+        doc::write_reference(doc, Some(&scaled))?;
+    }
+    doc.put(&ROOT, "width", width)?;
+    doc.put(&ROOT, "height", height)?;
+    Ok(())
+}
+
 fn crop_artwork(
     doc: &mut Doc,
     art: &Artwork,

@@ -107,6 +107,11 @@ const ROOM_SETTLE: Duration = Duration::from_millis(300);
 /// would not find it.
 const COMMIT_WAIT: Duration = Duration::from_secs(20);
 
+/// The longest a plan waits for the keys of a record it is about. Keys a
+/// steward never sends (a device it no longer admits) must not hold the
+/// agent forever: the task is planned with what the room shows.
+const KEYS_WAIT: Duration = Duration::from_secs(10);
+
 /// When the agent's loop should pump again, unless woken sooner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Next {
@@ -163,6 +168,12 @@ struct Running {
     /// target) is fixed rather than ending it, and a step that cannot work
     /// still fails the task.
     repaired: bool,
+    /// The records its steps opened or acted on: what a re-plan is always
+    /// offered, whatever the rest of the task calls them.
+    touched: Vec<DocumentRoute>,
+    /// How many of its performed steps did something (not only opened a
+    /// record).
+    acted: usize,
 }
 
 impl Running {
@@ -195,6 +206,8 @@ impl Running {
             produced: Vec::new(),
             observed: VecDeque::new(),
             repaired: false,
+            touched: Vec::new(),
+            acted: 0,
         };
         for seen in read {
             running.observe(seen);
@@ -279,6 +292,8 @@ pub struct AgentParticipant {
     finishing: Option<Finishing>,
     /// The task begun but waiting for the keys of a record it names.
     starting: Option<(String, String)>,
+    /// Since when a plan waits for a record's keys ([`KEYS_WAIT`]).
+    keys_wait: Option<Instant>,
     left: bool,
     /// Bumped whenever what the open records publish may have changed; the
     /// revision remote catalogues are issued at.
@@ -355,6 +370,7 @@ impl AgentParticipant {
             settling: None,
             finishing: None,
             starting: None,
+            keys_wait: None,
             left: false,
             generation: 0,
             remote: Vec::new(),
@@ -419,7 +435,7 @@ impl AgentParticipant {
     fn next_pump(&self) -> Next {
         // Waiting on the host (a finished task's changes, the keys of a
         // record the next task names): look again shortly.
-        if self.finishing.is_some() || self.starting.is_some() {
+        if self.finishing.is_some() || self.starting.is_some() || self.keys_wait.is_some() {
             return Next::Within(Duration::from_millis(10));
         }
         let work = self.running.is_some() || self.control.has_queued();
@@ -598,17 +614,28 @@ impl AgentParticipant {
             return false;
         };
         let id = running.id.clone();
+        let (request, previous) = (running.request.clone(), running.last.clone());
+        if matches!(step.action, StepAction::Continue(_))
+            && self.touched_keys_pending()
+            && self.may_wait_for_keys()
+        {
+            // A record the task just opened is planned with once it opens.
+            if let Some(running) = self.running.as_mut() {
+                running.steps.push_front(step);
+            }
+            return false;
+        }
+        self.keys_wait = None;
         if let StepAction::Continue(rest) = &step.action {
             // The rest is planned with the request as it was given beside
             // it, so what the model left out of the rest is still asked.
-            let (rest, request) = (rest.clone(), running.request.clone());
+            let rest = rest.clone();
             self.plan(id, &rest, Some(request));
             return false;
         }
         if let Some(ready_at) = self.plan_ready_at.take() {
             tracing::debug!(after = ?ready_at.elapsed(), "agent: a plan's first step starts");
         }
-        let previous = running.last.clone();
         let outcome = self.perform(&step, previous.as_ref());
         let (resource, action) = step.log_names();
         let content = match &outcome {
@@ -634,6 +661,9 @@ impl AgentParticipant {
                     return false;
                 };
                 running.performed = running.performed.saturating_add(1);
+                if matches!(step.action, StepAction::Invoke { .. }) {
+                    running.acted = running.acted.saturating_add(1);
+                }
                 if let Some(output) = output {
                     running.answered(&step, output);
                 }
@@ -663,10 +693,11 @@ impl AgentParticipant {
         let Some((id, text)) = self.starting.take().or_else(|| self.control.begin_next()) else {
             return;
         };
-        if self.keys_pending_for(&text) {
+        if self.keys_pending_for(&text) && self.may_wait_for_keys() {
             self.starting = Some((id, text));
             return;
         }
+        self.keys_wait = None;
         self.plan(id, &text, None);
     }
 
@@ -759,7 +790,7 @@ impl AgentParticipant {
                     self.running
                         .take()
                         .filter(|running| {
-                            continues && running.performed > 0 && error.starts_with(NOTHING_LEFT)
+                            continues && running.acted > 0 && error.starts_with(NOTHING_LEFT)
                         })
                         .map(|running| running.done())
                 } else {
@@ -834,6 +865,39 @@ impl AgentParticipant {
     /// Whether a record of the room the agent may work on has arrived sealed
     /// and opens once the agent holds its channel keys: until then the room
     /// is only half seen.
+    /// Whether a plan may still wait for keys: [`KEYS_WAIT`] from the first
+    /// time it did.
+    fn may_wait_for_keys(&mut self) -> bool {
+        let since = *self.keys_wait.get_or_insert_with(Instant::now);
+        if since.elapsed() < KEYS_WAIT {
+            return true;
+        }
+        tracing::warn!("agent: a record's keys did not arrive; planning without them");
+        false
+    }
+
+    /// The records the running task's steps opened or acted on.
+    fn touched(&self) -> Vec<DocumentRoute> {
+        self.running
+            .as_ref()
+            .map(|running| running.touched.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether a record the running task opened still waits for its keys.
+    fn touched_keys_pending(&self) -> bool {
+        let Some(running) = &self.running else {
+            return false;
+        };
+        let status = self.peer.status();
+        running.touched.iter().any(|route| {
+            status
+                .routes
+                .get(route)
+                .is_some_and(|route| route.awaiting_keys > 0)
+        })
+    }
+
     fn keys_pending_for(&self, task: &str) -> bool {
         self.peer.status().routes.iter().any(|(route, status)| {
             status.awaiting_keys > 0
@@ -871,6 +935,11 @@ impl AgentParticipant {
                 None => self.open(&step.app, None)?,
             },
         };
+        if let Some(running) = self.running.as_mut()
+            && !running.touched.contains(&route)
+        {
+            running.touched.push(route.clone());
+        }
         match (&step.action, arguments) {
             (StepAction::Invoke { address, .. }, Some(arguments)) => {
                 self.invoke(&route, address, &arguments)
@@ -944,11 +1013,14 @@ impl AgentParticipant {
         // about, and only theirs are offered: a record open from an earlier
         // task (the note, beside the page under review) would cost its
         // whole list on every plan. A task that names none is offered all.
+        let touched = self.touched();
         let named: Vec<DocumentRoute> = open
             .iter()
             .map(|(route, _)| route)
             .filter(|route| {
-                about.contains(route) || crate::model::task_names_app(task, &route.app_id)
+                about.contains(route)
+                    || touched.contains(route)
+                    || crate::model::task_names_app(task, &route.app_id)
             })
             .cloned()
             .collect();

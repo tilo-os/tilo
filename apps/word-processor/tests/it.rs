@@ -18,6 +18,8 @@ mod e2e_html;
 #[path = "e2e_odt.rs"]
 mod e2e_odt;
 
+#[path = "agent_edits.rs"]
+mod agent_edits;
 mod canonical_component;
 #[path = "concurrent_paragraph_edits.rs"]
 mod concurrent_paragraph_edits;

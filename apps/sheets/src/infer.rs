@@ -238,6 +238,70 @@ fn parse_date(s: &str) -> Option<f64> {
     None
 }
 
+/// An exact ISO date (see [`iso_date_serial`]) as the cell typing it makes:
+/// its serial shown in the ISO date format, as an XLSX import stores a date.
+pub(crate) fn iso_date_entry(text: &str) -> Option<Inferred> {
+    iso_date_serial(text).map(|serial| Inferred {
+        raw: trim_float(serial),
+        format: CellFormat::Date(DateStyle::Iso),
+    })
+}
+
+/// The Excel serial of an exact ISO date `YYYY-MM-DD`, optionally followed by
+/// a time `THH:MM` or ` HH:MM` with optional `:SS` (the time is the serial's
+/// fraction). Anything looser — a missing zero, an impossible day such as
+/// `2026-02-30`, a zone suffix — is not a date here, so text stays text.
+pub(crate) fn iso_date_serial(text: &str) -> Option<f64> {
+    fn digits(part: &str) -> Option<u32> {
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        part.parse().ok()
+    }
+    let (date, time) = match text.len() {
+        10 => (text, None),
+        16 | 19 => {
+            let (date, rest) = (text.get(..10)?, text.get(10..)?);
+            let time = rest.strip_prefix('T').or_else(|| rest.strip_prefix(' '))?;
+            (date, Some(time))
+        }
+        _ => return None,
+    };
+    if date.get(4..5) != Some("-") || date.get(7..8) != Some("-") {
+        return None;
+    }
+    let year = digits(date.get(..4)?)?;
+    let month = digits(date.get(5..7)?)?;
+    let day = digits(date.get(8..10)?)?;
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if year == 0 || day == 0 || day > days_in_month {
+        return None;
+    }
+    let serial = date_to_serial(i64::from(year), month, day);
+    let Some(time) = time else {
+        return Some(serial);
+    };
+    let mut parts = time.split(':');
+    let hour = parts.next().filter(|p| p.len() == 2).and_then(digits)?;
+    let minute = parts.next().filter(|p| p.len() == 2).and_then(digits)?;
+    let second = match parts.next() {
+        Some(part) if part.len() == 2 => digits(part)?,
+        Some(_) => return None,
+        None => 0,
+    };
+    if parts.next().is_some() || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    Some(serial + f64::from(hour * 3600 + minute * 60 + second) / 86400.0)
+}
+
 /// Parse a `HH:MM` or `HH:MM:SS` time literal into the fractional day part
 /// of an Excel serial.
 fn parse_time(s: &str) -> Option<f64> {
@@ -432,6 +496,45 @@ mod tests {
             assert_eq!(r.format, CellFormat::Time(TimeStyle::H24));
             let n: f64 = r.raw.parse().unwrap();
             assert_eq!(crate::model::serial_to_time(n, TimeStyle::H24), "14:05");
+        }
+    }
+
+    /// Only exact ISO dates, with an optional minute or second time, are
+    /// dates for an agent's write.
+    #[test]
+    fn only_exact_iso_dates_are_agent_dates() {
+        let day = date_to_serial(2026, 10, 22);
+        let entry = iso_date_entry("2026-10-22").unwrap();
+        assert_eq!(entry.raw, trim_float(day));
+        assert_eq!(entry.format, CellFormat::Date(DateStyle::Iso));
+        for (text, seconds) in [
+            ("2026-10-22T09:30", 9 * 3600 + 30 * 60),
+            ("2026-10-22 09:30", 9 * 3600 + 30 * 60),
+            ("2026-10-22T23:59:59", 86_399),
+        ] {
+            let serial = iso_date_serial(text).unwrap();
+            assert!(
+                (serial - day - f64::from(seconds) / 86400.0).abs() < 1e-9,
+                "{text}"
+            );
+        }
+        assert!(iso_date_serial("2024-02-29").is_some());
+        for text in [
+            "2026-02-29",
+            "2026-04-31",
+            "2026-13-01",
+            "2026-1-05",
+            "26-10-22",
+            " 2026-10-22",
+            "2026-10-22Z",
+            "2026-10-22T9:30",
+            "2026-10-22T24:00",
+            "2026-10-22T09:30:00Z",
+            "2026/10/22",
+            "+026-10-22",
+            "0000-01-01",
+        ] {
+            assert_eq!(iso_date_serial(text), None, "{text}");
         }
     }
 

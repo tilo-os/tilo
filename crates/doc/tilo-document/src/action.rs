@@ -412,6 +412,24 @@ pub enum RichTextAction {
     /// restore a version): every existing body block is removed, then the
     /// Markdown is imported as fresh blocks.
     ReplaceBody { markdown: String },
+    /// Import `markdown` as new blocks after the last body block, resolved
+    /// at apply time; every existing block stays. An empty trailing
+    /// `paragraph` (a fresh document's only line) is replaced.
+    AppendMarkdown { markdown: String },
+    /// Replace the first occurrence of `find` in the body's text (every
+    /// occurrence with `all`) by `replace`, in place: other text, marks,
+    /// images and blocks stay. Resolved at apply time; refused when `find`
+    /// is not in the body.
+    ReplaceText {
+        find: String,
+        replace: String,
+        #[serde(default)]
+        all: bool,
+    },
+    /// Set `align` (`left`/`center`/`right`/`justify`) on the first body
+    /// paragraph whose text is `text`, else the first that starts with it
+    /// (whitespace collapsed). Resolved at apply time; refused when none does.
+    AlignParagraph { text: String, align: String },
     /// Replace the body with `bytes` decoded as `format`. A decode failure
     /// refuses the action so the open document stays as it was. The
     /// document remembers the bytes' content address as the file it was
@@ -489,8 +507,11 @@ impl RichTextAction {
             | Self::RemoveRegionBlocks { .. }
             | Self::EnsureRegionBlock { .. }
             | Self::ReplaceBody { .. }
+            | Self::AppendMarkdown { .. }
+            | Self::ReplaceText { .. }
             | Self::ReplaceFormatted { .. } => ActionDomain::Text,
             Self::SetParagraphStyle { .. }
+            | Self::AlignParagraph { .. }
             | Self::ApplyNamedStyle { .. }
             | Self::SetBlockAttr { .. }
             | Self::ClearBlockAttr { .. }
@@ -908,6 +929,14 @@ impl<'a> ActionValidator<'a> {
             }
             RichTextAction::EnsureRegionBlock { .. } => true,
             RichTextAction::ReplaceBody { markdown } => Self::safe_text(markdown),
+            RichTextAction::AppendMarkdown { markdown } => {
+                !markdown.trim().is_empty() && Self::safe_text(markdown)
+            }
+            RichTextAction::ReplaceText { find, replace, .. } => {
+                Self::safe_text(find)
+                    && Self::safe_text(replace)
+                    && text_refusal(self.doc, self.containers, action).is_none()
+            }
             RichTextAction::ReplaceFormatted { bytes, .. } => bytes.len() <= MAX_IMPORT_BYTES,
             _ => false,
         }
@@ -955,6 +984,9 @@ impl<'a> ActionValidator<'a> {
             blocks,
             key,
         } => self.unique_existing(*region, blocks) && Self::clearable_attr(key),
+        RichTextAction::AlignParagraph { text, .. } => {
+            Self::safe_text(text) && text_refusal(self.doc, self.containers, action).is_none()
+        }
         RichTextAction::NoteFileWritten { digest } => {
             !digest.is_empty()
                 && digest.len() <= 128
@@ -2107,6 +2139,209 @@ fn apply_replace_body(dm: &mut DocMut, markdown: &str) {
     keep_a_paragraph(dm);
 }
 
+fn apply_append_markdown(dm: &mut DocMut, markdown: &str) {
+    use tilo_doc_codecs::FormatProvider;
+    let mut before = tilo_doc::model::blocks_in_order(dm.doc, dm.c);
+    let existing: HashSet<String> = before.iter().cloned().collect();
+    // A fresh document's only line, empty, is not kept above the text.
+    if let Some(last) = before.last().cloned()
+        && let end = body_end_at(dm.doc, dm.c, last)
+        && end.chars == 0
+        && end.kind.as_deref() == Some("paragraph")
+    {
+        dm.tombstone_block_in(Region::Body, &end.id);
+        before.pop();
+    }
+    let _ = tilo_doc_codecs::MarkdownCodec.import(
+        markdown.as_bytes(),
+        dm,
+        &mut tilo_content::ContentInputs::new(),
+    );
+    // The importer writes at the start of the body: its blocks move, in
+    // order, after the last block that was there.
+    if let Some(anchor) = before.pop() {
+        let mut imported = tilo_doc::model::blocks_in_order(dm.doc, dm.c)
+            .into_iter()
+            .filter(|id| !existing.contains(id));
+        if let Some(first) = imported.next() {
+            dm.move_block(&first, Some(&anchor));
+            // The rest are keyed as extensions of the first's key, so the run
+            // sorts whole on one side of a concurrent append after `anchor`
+            // (whose key differs within the first's digits): two writers'
+            // sections never interleave.
+            let head = order_key(dm.doc, &dm.c.blocks, &first).map(|(_, key)| key);
+            for (index, id) in imported.enumerate() {
+                let (Some(head), Some((obj, _))) = (&head, order_key(dm.doc, &dm.c.blocks, &id))
+                else {
+                    continue;
+                };
+                let rank = u32::try_from(index).unwrap_or(u32::MAX).saturating_add(1);
+                let mut key = head.clone();
+                key.extend_from_slice(&rank.to_be_bytes());
+                let _ = dm.doc.put(
+                    &obj,
+                    tilo_doc::schema::BLOCK_ORDER,
+                    automerge::ScalarValue::Bytes(key),
+                );
+            }
+        }
+    }
+    keep_a_paragraph(dm);
+}
+
+/// Body block `id`'s object and fractional order key.
+fn order_key(doc: &AutoCommit, blocks: &ObjId, id: &str) -> Option<(ObjId, Vec<u8>)> {
+    let Ok(Some((automerge::Value::Object(automerge::ObjType::Map), obj))) = doc.get(blocks, id)
+    else {
+        return None;
+    };
+    let Ok(Some((automerge::Value::Scalar(value), _))) =
+        doc.get(&obj, tilo_doc::schema::BLOCK_ORDER)
+    else {
+        return None;
+    };
+    match value.as_ref() {
+        automerge::ScalarValue::Bytes(key) => Some((obj, key.clone())),
+        _ => None,
+    }
+}
+
+fn apply_replace_text(dm: &mut DocMut, find: &str, replace: &str, all: bool) {
+    let mut spans = text_matches(dm.doc, dm.c, find, all);
+    // Back to front, so a block's earlier offsets still hold.
+    spans.reverse();
+    for span in &spans {
+        apply_splice_text(
+            dm,
+            Region::Body,
+            &span.block,
+            span.start,
+            span.end.saturating_sub(span.start),
+            replace,
+        );
+    }
+}
+
+/// Every body block in order: its id, kind and text.
+fn body_texts(doc: &AutoCommit, c: &Containers) -> Vec<(String, Option<String>, String)> {
+    tilo_doc::model::blocks_in_order(doc, c)
+        .into_iter()
+        .map(|id| {
+            let kind = tilo_doc::model::block_kind(doc, c, &id);
+            let text = tilo_doc::model::block_text(doc, c, &id).unwrap_or_default();
+            (id, kind, text)
+        })
+        .collect()
+}
+
+/// Where `find` occurs in the body's text outside images: character spans
+/// in document order, the first only unless `all`.
+fn text_matches(doc: &AutoCommit, c: &Containers, find: &str, all: bool) -> Vec<Span> {
+    let mut spans = Vec::new();
+    if find.is_empty() {
+        return spans;
+    }
+    let width = find.chars().count();
+    for (block, kind, text) in body_texts(doc, c) {
+        if kind.as_deref() == Some("image") {
+            continue;
+        }
+        for (byte, _) in text.match_indices(find) {
+            let start = text.get(..byte).map_or(0, |head| head.chars().count());
+            spans.push(Span {
+                block: block.clone(),
+                start,
+                end: start.saturating_add(width),
+            });
+            if !all {
+                return spans;
+            }
+        }
+    }
+    spans
+}
+
+/// The paragraph kinds `align-paragraph` finds a paragraph among.
+const ALIGNABLE: &[&str] = &["paragraph", "heading", "list_item"];
+
+fn collapsed(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The body paragraph `text` names for `align-paragraph`: the first whose
+/// text is `text`, else the first that starts with it, whitespace collapsed.
+fn found_paragraph(doc: &AutoCommit, c: &Containers, text: &str) -> Option<String> {
+    let wanted = collapsed(text);
+    if wanted.is_empty() {
+        return None;
+    }
+    let paragraphs: Vec<(String, String)> = body_texts(doc, c)
+        .into_iter()
+        .filter(|(_, kind, _)| {
+            kind.as_deref()
+                .is_some_and(|kind| ALIGNABLE.contains(&kind))
+        })
+        .map(|(id, _, text)| (id, collapsed(&text)))
+        .collect();
+    paragraphs
+        .iter()
+        .find(|(_, text)| *text == wanted)
+        .or_else(|| {
+            paragraphs
+                .iter()
+                .find(|(_, text)| text.starts_with(&wanted))
+        })
+        .map(|(id, _)| id.clone())
+}
+
+/// `text` quoted for a refusal, shortened when long.
+fn quoted(text: &str) -> String {
+    let mut short: String = text.chars().take(80).collect();
+    if short.len() < text.len() {
+        short.push('…');
+    }
+    format!("`{short}`")
+}
+
+/// Why an action that names its target by text does not apply to the
+/// document as it is now, in words its caller can act on; `None` when it
+/// applies or names no text.
+pub fn text_refusal(doc: &AutoCommit, c: &Containers, action: &RichTextAction) -> Option<String> {
+    match action {
+        RichTextAction::ReplaceText { find, .. } if find.is_empty() => {
+            Some("`find` is empty: name the text to replace".into())
+        }
+        RichTextAction::ReplaceText { find, .. } => {
+            text_matches(doc, c, find, false).is_empty().then(|| {
+                format!(
+                    "the text {} is not in the document: read it and use its exact text",
+                    quoted(find)
+                )
+            })
+        }
+        RichTextAction::AlignParagraph { align, .. }
+            if !matches!(align.as_str(), "left" | "center" | "right" | "justify") =>
+        {
+            Some(format!(
+                "align must be left, center, right or justify, not {}",
+                quoted(align)
+            ))
+        }
+        RichTextAction::AlignParagraph { text, .. } => {
+            found_paragraph(doc, c, text).is_none().then(|| {
+                format!(
+                    "no paragraph's text is or starts with {}: read the document and use a paragraph's text",
+                    quoted(text)
+                )
+            })
+        }
+        RichTextAction::AppendMarkdown { markdown } if markdown.trim().is_empty() => {
+            Some("`markdown` is empty".into())
+        }
+        _ => None,
+    }
+}
+
 /// A body replaced by nothing (an empty file, an empty template) still has
 /// a paragraph to write in, as a new document does.
 fn keep_a_paragraph(dm: &mut DocMut) {
@@ -2346,6 +2581,10 @@ fn apply_block_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             apply_ensure_region_block(dm, region.to_region());
         }
         RichTextAction::ReplaceBody { markdown } => apply_replace_body(dm, markdown),
+        RichTextAction::AppendMarkdown { markdown } => apply_append_markdown(dm, markdown),
+        RichTextAction::ReplaceText { find, replace, all } => {
+            apply_replace_text(dm, find, replace, *all);
+        }
         RichTextAction::ReplaceFormatted { format, bytes } => {
             apply_replace_formatted(dm, *format, bytes);
         }
@@ -2384,6 +2623,11 @@ fn apply_formatting_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             key,
             value,
         } => apply_set_block_attr(dm, region.to_region(), blocks, key, value),
+        RichTextAction::AlignParagraph { text, align } => {
+            if let Some(block) = found_paragraph(dm.doc, dm.c, text) {
+                dm.set_attr(&block, "align", align.as_str());
+            }
+        }
         RichTextAction::ClearBlockAttr {
             region,
             blocks,
@@ -2613,6 +2857,9 @@ impl RichTextAction {
         // before creating the mutable editing view.  In particular, do not let
         // a stale multi-block format/delete partially affect still-existing
         // blocks when one peer has already removed another target.
+        if let Some(reason) = text_refusal(doc, &c, self) {
+            return Err(ActionError::Refused(reason));
+        }
         if !action_is_valid(self, doc, &c) {
             return Err(ActionError::Refused(
                 "action targets are stale or its arguments are outside Writer's safe limits".into(),
