@@ -1,0 +1,796 @@
+{
+  "schema": 1,
+  "goal_complete": false,
+  "source_commit": "ced75e5a74c6a21b67f6be99694b46c3956634c9",
+  "source_base": "262cc1f34ae145c106fd265aba232d84d2df2dbd",
+  "qualified_finish_source_preserved": "7da64cc415fcdfba6e2b169e1b554eaee388760d",
+  "native_asr_bridge_sha256": "d5db407837283aa293cf0ab4ab3ba616d5b164b3a836386fcb918fd763a87c84",
+  "model": {
+    "id": "silero-v6.2.0-ggml",
+    "artifact_format": "silero_ggml",
+    "capability": "speech_activity",
+    "revision": "9ffd54a1e1ee413ddf265af9913beaf518d1639b",
+    "url": "https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin",
+    "bytes": 885098,
+    "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+    "license": "MIT",
+    "license_source_revision": "1e261b036686cd0017d500ee96acd1c4ba572a9d",
+    "license_sha256": "2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b",
+    "normal_catalogue_admitted": false
+  },
+  "policy": {
+    "decoder": "Existing Whisper full-context decoder; native parameters and all original ASR PCM unchanged",
+    "analysis": "Raw and private peak-normalized analysis copies; successful graph execution required",
+    "detector_cpu_threads": 1,
+    "admission": "No independent activity means empty output; heard speech remains admitted for the owned append-only session even after louder noise changes analysis gain",
+    "preview": "Existing two-second context requirement measured from acoustic onset; final speech does not wait",
+    "trust": "Separately signed catalogue artifact, matching installed capability/revision/hash/licence and sealed descriptor; declared missing/unaccepted/changed graph fails before Ready/capture",
+    "compatibility": "Legacy catalogues lacking the graph retain recognizer-only behavior. This source alone does not activate noise filtering. Existing Whistle handler unchanged.",
+    "microphone": "No capture, account or persistent permission grant by this service"
+  },
+  "primary_sources": [
+    "https://github.com/ggml-org/whisper.cpp/blob/v1.8.3/models/download-vad-model.sh",
+    "https://huggingface.co/ggml-org/whisper-vad",
+    "https://github.com/snakers4/silero-vad/blob/1e261b036686cd0017d500ee96acd1c4ba572a9d/LICENSE"
+  ],
+  "evidence": {
+    "two_thread_experiment_runs": 24,
+    "single_thread_regression_runs": 32,
+    "session_admission_diagnostic_runs": 3,
+    "same_final_text_for_six_languages_and_both_switches": true,
+    "noise_pairs": [
+      {
+        "case": "noise-auto-repeat1",
+        "same_input": true,
+        "baseline_text": "Thank you. Bye.",
+        "candidate_text": "",
+        "same_final_text": false,
+        "baseline_finish_ms": 6003.3039169502445,
+        "candidate_finish_ms": 12.508625979535282,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": null,
+        "candidate_final_errors": null,
+        "reference_units": null,
+        "metric": "WER"
+      },
+      {
+        "case": "noise-auto-repeat2",
+        "same_input": true,
+        "baseline_text": "Thank you. Bye.",
+        "candidate_text": "",
+        "same_final_text": false,
+        "baseline_finish_ms": 5647.823586012237,
+        "candidate_finish_ms": 11.771498946473002,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": null,
+        "candidate_final_errors": null,
+        "reference_units": null,
+        "metric": "WER"
+      },
+      {
+        "case": "short-auto",
+        "same_input": true,
+        "baseline_text": "Thank you. Bye.",
+        "candidate_text": "",
+        "same_final_text": false,
+        "baseline_finish_ms": 5518.670131976251,
+        "candidate_finish_ms": 11.571549985092133,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": null,
+        "candidate_final_errors": null,
+        "reference_units": null,
+        "metric": "WER"
+      },
+      {
+        "case": "short-fixed",
+        "same_input": true,
+        "baseline_text": "Danke fürs Zusehen.",
+        "candidate_text": "",
+        "same_final_text": false,
+        "baseline_finish_ms": 5445.474003034178,
+        "candidate_finish_ms": 11.282988009043038,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": null,
+        "candidate_final_errors": null,
+        "reference_units": null,
+        "metric": "WER"
+      }
+    ],
+    "paired_results": [
+      {
+        "case": "full-ar_eg",
+        "same_input": true,
+        "baseline_text": "تشكلت في المحيط الأطلسي اليوم عايش رعاصفة مسمى لموسى من الأعاصير الأطلسية العاصفة شبه الاستوائية جري",
+        "candidate_text": "تشكلت في المحيط الأطلسي اليوم عايش رعاصفة مسمى لموسى من الأعاصير الأطلسية العاصفة شبه الاستوائية جري",
+        "same_final_text": true,
+        "baseline_finish_ms": 5627.680982986931,
+        "candidate_finish_ms": 5727.746191027109,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": 6,
+        "candidate_final_errors": 6,
+        "reference_units": 15,
+        "metric": "WER"
+      },
+      {
+        "case": "full-cmn_hans_cn",
+        "same_input": true,
+        "baseline_text": "這並不是告別,這是一個偏張的結束,也是新偏張的開始。",
+        "candidate_text": "這並不是告別,這是一個偏張的結束,也是新偏張的開始。",
+        "same_final_text": true,
+        "baseline_finish_ms": 10562.499813968316,
+        "candidate_finish_ms": 10584.719278034754,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": 11,
+        "candidate_final_errors": 11,
+        "reference_units": 23,
+        "metric": "CER"
+      },
+      {
+        "case": "full-de_de",
+        "same_input": true,
+        "baseline_text": "Für die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+        "candidate_text": "Für die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+        "same_final_text": true,
+        "baseline_finish_ms": 5558.75114898663,
+        "candidate_finish_ms": 5585.148833983112,
+        "baseline_first_correct_prefix_ms": 12379.605143039953,
+        "candidate_first_correct_prefix_ms": 12336.130764975678,
+        "baseline_final_errors": 0,
+        "candidate_final_errors": 0,
+        "reference_units": 18,
+        "metric": "WER"
+      },
+      {
+        "case": "full-en_us",
+        "same_input": true,
+        "baseline_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+        "candidate_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+        "same_final_text": true,
+        "baseline_finish_ms": 5473.7451919936575,
+        "candidate_finish_ms": 5360.1606379961595,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": 9238.20745095145,
+        "baseline_final_errors": 1,
+        "candidate_final_errors": 1,
+        "reference_units": 19,
+        "metric": "WER"
+      },
+      {
+        "case": "full-es_419",
+        "same_input": true,
+        "baseline_text": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+        "candidate_text": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+        "same_final_text": true,
+        "baseline_finish_ms": 5620.655831007753,
+        "candidate_finish_ms": 5766.64761302527,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": 1,
+        "candidate_final_errors": 1,
+        "reference_units": 29,
+        "metric": "WER"
+      },
+      {
+        "case": "full-fr_fr",
+        "same_input": true,
+        "baseline_text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela était causé par un incendie malveillant.",
+        "candidate_text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela était causé par un incendie malveillant.",
+        "same_final_text": true,
+        "baseline_finish_ms": 5631.994256051257,
+        "candidate_finish_ms": 5573.66355904378,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": 2,
+        "candidate_final_errors": 2,
+        "reference_units": 20,
+        "metric": "WER"
+      },
+      {
+        "case": "noise-auto-repeat1",
+        "same_input": true,
+        "baseline_text": "Thank you. Bye.",
+        "candidate_text": "",
+        "same_final_text": false,
+        "baseline_finish_ms": 6003.3039169502445,
+        "candidate_finish_ms": 12.508625979535282,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": null,
+        "candidate_final_errors": null,
+        "reference_units": null,
+        "metric": "WER"
+      },
+      {
+        "case": "noise-auto-repeat2",
+        "same_input": true,
+        "baseline_text": "Thank you. Bye.",
+        "candidate_text": "",
+        "same_final_text": false,
+        "baseline_finish_ms": 5647.823586012237,
+        "candidate_finish_ms": 11.771498946473002,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": null,
+        "candidate_final_errors": null,
+        "reference_units": null,
+        "metric": "WER"
+      },
+      {
+        "case": "short-auto",
+        "same_input": true,
+        "baseline_text": "Thank you. Bye.",
+        "candidate_text": "",
+        "same_final_text": false,
+        "baseline_finish_ms": 5518.670131976251,
+        "candidate_finish_ms": 11.571549985092133,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": null,
+        "candidate_final_errors": null,
+        "reference_units": null,
+        "metric": "WER"
+      },
+      {
+        "case": "short-fixed",
+        "same_input": true,
+        "baseline_text": "Danke fürs Zusehen.",
+        "candidate_text": "",
+        "same_final_text": false,
+        "baseline_finish_ms": 5445.474003034178,
+        "candidate_finish_ms": 11.282988009043038,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": null,
+        "candidate_final_errors": null,
+        "reference_units": null,
+        "metric": "WER"
+      },
+      {
+        "case": "speech-auto",
+        "same_input": true,
+        "baseline_text": "für die besten Aussichten auf Hongkong.",
+        "candidate_text": "für die besten Aussichten auf Hongkong.",
+        "same_final_text": true,
+        "baseline_finish_ms": 5467.532014008611,
+        "candidate_finish_ms": 5233.6312719853595,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": null,
+        "candidate_final_errors": null,
+        "reference_units": null,
+        "metric": "WER"
+      },
+      {
+        "case": "speech-fixed",
+        "same_input": true,
+        "baseline_text": "für die besten Aussichten auf Hongkong.",
+        "candidate_text": "für die besten Aussichten auf Hongkong.",
+        "same_final_text": true,
+        "baseline_finish_ms": 5318.034577008802,
+        "candidate_finish_ms": 5230.819594988134,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": null,
+        "candidate_final_errors": null,
+        "reference_units": null,
+        "metric": "WER"
+      },
+      {
+        "case": "speech-quiet",
+        "same_input": true,
+        "baseline_text": "Für die besten Aussichten auf Hongkong.",
+        "candidate_text": "Für die besten Aussichten auf Hongkong.",
+        "same_final_text": true,
+        "baseline_finish_ms": 5308.797299047001,
+        "candidate_finish_ms": 5168.989975005388,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": null,
+        "candidate_final_errors": null,
+        "reference_units": null,
+        "metric": "WER"
+      },
+      {
+        "case": "speech-quiet100",
+        "same_input": true,
+        "baseline_text": "Für die besten Aussichtern of Hongkong",
+        "candidate_text": "Für die besten Aussichtern of Hongkong",
+        "same_final_text": true,
+        "baseline_finish_ms": 5304.611738014501,
+        "candidate_finish_ms": 5199.165655008983,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": null,
+        "baseline_final_errors": null,
+        "candidate_final_errors": null,
+        "reference_units": null,
+        "metric": "WER"
+      },
+      {
+        "case": "switch-en-de",
+        "same_input": true,
+        "baseline_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. Für die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+        "candidate_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. Für die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+        "same_final_text": true,
+        "baseline_finish_ms": 5448.992271965835,
+        "candidate_finish_ms": 5582.880490983371,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": 9392.77046895586,
+        "baseline_final_errors": 1,
+        "candidate_final_errors": 1,
+        "reference_units": 37,
+        "metric": "WER"
+      },
+      {
+        "case": "switch-fr-es",
+        "same_input": true,
+        "baseline_text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela était causé par un incendie malveillant. Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+        "candidate_text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela était causé par un incendie malveillant. Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+        "same_final_text": true,
+        "baseline_finish_ms": 5995.23387697991,
+        "candidate_finish_ms": 5934.214451990556,
+        "baseline_first_correct_prefix_ms": null,
+        "candidate_first_correct_prefix_ms": 10315.424145024735,
+        "baseline_final_errors": 3,
+        "candidate_final_errors": 3,
+        "reference_units": 49,
+        "metric": "WER"
+      }
+    ],
+    "mixed_quiet_noise": {
+      "schema": 1,
+      "goal_complete": false,
+      "cases": [
+        {
+          "variant": "quiet100-loud-tail-baseline",
+          "result": {
+            "case": "de_de-0",
+            "profile": "speech-quiet100-loud-tail",
+            "first_delay_seconds": 2,
+            "language": "de",
+            "source_pcm_sha256": "216d1a7ad118b69713e81e48ade80b462f7e15bb8eea707ce5333d38b501c534",
+            "samples": 96000,
+            "capture_duration_ms": 6000.0,
+            "max_capture_lateness_ms": 5.051520012784749,
+            "review_pcm_offset_seconds": 4,
+            "review_amplitude_scale": 0.01,
+            "loud_tail": true,
+            "loud_tail_source_seconds": [
+              0,
+              3
+            ],
+            "loud_tail_normalized_peak": 0.5,
+            "onset_ground_truth": "Unaligned public excerpt; leading noise identified by waveform-energy review",
+            "first_lexical_preview_ms": null,
+            "drafts": [
+              {
+                "sequence": 102,
+                "kind": 2,
+                "samples": 32000,
+                "queued_ms": 2000.6432950031012,
+                "write_started_ms": 2000.6891249795444,
+                "written_ms": 2000.6934849661775,
+                "text": "",
+                "reply_ms": 6164.262512000278,
+                "inference_ms": 4163.5690270341,
+                "suppressed_after_finish": true
+              }
+            ],
+            "final_text": "Wir sehen uns bald wieder.",
+            "reference": "Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+            "append_case": null,
+            "finish_to_final_ms": 5453.975351003464,
+            "total_wall_ms": 11457.960596017074,
+            "preparation": {
+              "verify_ms": 134.2013,
+              "native_ms": 125.011656,
+              "flash_attention": true
+            },
+            "full_reference_aligned": false,
+            "physical_microphone": false,
+            "normal_admission": false,
+            "owned_source_worker_witness_exited": true
+          }
+        },
+        {
+          "variant": "quiet100-loud-tail-candidate",
+          "result": {
+            "case": "de_de-0",
+            "profile": "speech-quiet100-loud-tail",
+            "first_delay_seconds": 2,
+            "language": "de",
+            "source_pcm_sha256": "216d1a7ad118b69713e81e48ade80b462f7e15bb8eea707ce5333d38b501c534",
+            "samples": 96000,
+            "capture_duration_ms": 6000.0,
+            "max_capture_lateness_ms": 5.03739999840036,
+            "review_pcm_offset_seconds": 4,
+            "review_amplitude_scale": 0.01,
+            "loud_tail": true,
+            "loud_tail_source_seconds": [
+              0,
+              3
+            ],
+            "loud_tail_normalized_peak": 0.5,
+            "onset_ground_truth": "Unaligned public excerpt; leading noise identified by waveform-energy review",
+            "first_lexical_preview_ms": null,
+            "drafts": [
+              {
+                "sequence": 102,
+                "kind": 2,
+                "samples": 32000,
+                "queued_ms": 2001.6771550290287,
+                "write_started_ms": 2001.7377859912813,
+                "written_ms": 2001.7419760115445,
+                "text": "",
+                "reply_ms": 2009.5496359863319,
+                "inference_ms": 7.807659974787384,
+                "suppressed_after_finish": false
+              },
+              {
+                "sequence": 153,
+                "kind": 2,
+                "samples": 48000,
+                "queued_ms": 3004.336190992035,
+                "write_started_ms": 3004.38454200048,
+                "written_ms": 3004.389651992824,
+                "text": "",
+                "reply_ms": 6058.471592026763,
+                "inference_ms": 3054.0819400339387,
+                "suppressed_after_finish": true
+              }
+            ],
+            "final_text": "Wir sehen uns bald wieder.",
+            "reference": "Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+            "append_case": null,
+            "finish_to_final_ms": 5409.046571003273,
+            "total_wall_ms": 11411.690732988063,
+            "preparation": {
+              "verify_ms": 126.709614,
+              "native_ms": 112.402118,
+              "flash_attention": true
+            },
+            "full_reference_aligned": false,
+            "physical_microphone": false,
+            "normal_admission": false,
+            "owned_source_worker_witness_exited": true
+          }
+        },
+        {
+          "variant": "quiet100-loud-tail-previous",
+          "result": {
+            "case": "de_de-0",
+            "profile": "speech-quiet100-loud-tail",
+            "first_delay_seconds": 2,
+            "language": "de",
+            "source_pcm_sha256": "216d1a7ad118b69713e81e48ade80b462f7e15bb8eea707ce5333d38b501c534",
+            "samples": 96000,
+            "capture_duration_ms": 6000.0,
+            "max_capture_lateness_ms": 5.02412102650851,
+            "review_pcm_offset_seconds": 4,
+            "review_amplitude_scale": 0.01,
+            "loud_tail": true,
+            "loud_tail_source_seconds": [
+              0,
+              3
+            ],
+            "loud_tail_normalized_peak": 0.5,
+            "onset_ground_truth": "Unaligned public excerpt; leading noise identified by waveform-energy review",
+            "first_lexical_preview_ms": null,
+            "drafts": [
+              {
+                "sequence": 102,
+                "kind": 2,
+                "samples": 32000,
+                "queued_ms": 2003.4520929912105,
+                "write_started_ms": 2003.4818639978766,
+                "written_ms": 2003.4870239906013,
+                "text": "",
+                "reply_ms": 2011.3420540001243,
+                "inference_ms": 7.855030009523034,
+                "suppressed_after_finish": false
+              },
+              {
+                "sequence": 153,
+                "kind": 2,
+                "samples": 48000,
+                "queued_ms": 3006.356792000588,
+                "write_started_ms": 3006.384603038896,
+                "written_ms": 3006.396023032721,
+                "text": "",
+                "reply_ms": 6119.075960014015,
+                "inference_ms": 3112.6799369812943,
+                "suppressed_after_finish": true
+              }
+            ],
+            "final_text": "",
+            "reference": "Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+            "append_case": null,
+            "finish_to_final_ms": 139.24876204691827,
+            "total_wall_ms": 6143.3024480356835,
+            "preparation": {
+              "verify_ms": 130.827386,
+              "native_ms": 106.491777,
+              "flash_attention": true
+            },
+            "full_reference_aligned": false,
+            "physical_microphone": false,
+            "normal_admission": false,
+            "owned_source_worker_witness_exited": true
+          }
+        }
+      ],
+      "same_original_input": true,
+      "all_children_capsules_cgroups_removed": true,
+      "admission_repaired": true,
+      "recognition_accuracy_qualified": false,
+      "limitation": "Both the ungated baseline and the repaired admitted-speech worker return Wir sehen uns bald wieder. for the quiet Hongkong excerpt followed by louder non-speech. Historical acoustic admission prevents the earlier voice from disappearing but does not repair this full-context Whisper decoding error. Do not present matching wrong text as correct speech retention.",
+      "input": "de_de-0[4s:7s], amplitude0.01, followed by original de_de-0[0s:3s] normalized to PCM peak0.5",
+      "word_time_aligned": false
+    },
+    "no_holdout": "Previously exposed first public development clip per language; these are regressions, not general accuracy coverage.",
+    "public_audio_attribution": "Google FLEURS authors, CC-BY-4.0; revision70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+    "all_owned_workers_capsules_cgroups_removed": true
+  },
+  "withdrawn": "WebRTC/libfvad rejects quiet speech or admits noise; never adopted. Two-thread detector configuration withdrawn after a6.5s noise outlier. Earlier global timer/no-timestamp/no-speech-confidence/pause-cache experiments remain withdrawn. 262 is evidence-only, not a latency source win.",
+  "known_limits": [
+    "Spanish and later German previews still contain wrong words; raw bad previews retained in detailed evidence.",
+    "French and Arabic have no useful preview before Finish on these standalone clips. No universal preview-latency claim.",
+    "Small-q5_1 final scores remain AR6/15 WER errors and ZH11/23 CER errors with no script/numeric rewrite.",
+    "Quiet speech followed by loud noise causes an unrelated full-context transcription in both baseline and candidate. Acoustic admission is not decoder confidence and does not fix this model error.",
+    "No normal desktop, real microphone, installed browser/GTK/terminal journeys or image/VM build qualified by this increment.",
+    "Bookmark identities Whistle and phonnon2 are not verified by this acoustic-model evaluation."
+  ],
+  "normal_path_observation": {
+    "latest": {
+      "observed_at": "2026-10-11T22:21:26.953151+00:00",
+      "paths": {
+        "/usr/share/tilo/system-extensions/local-model-catalog.json": false,
+        "/usr/share/tilo/system-extensions/local-model-keys.json": false,
+        "/usr/bin/tilo-speech-worker": false,
+        "/usr/bin/tilo-control": false,
+        "/usr/bin/tilo-model-manager": true,
+        "/run/user/1000/tilo-session/test-control.sock": false
+      },
+      "effective_control_socket": "/run/user/1000/tilo-session/test-control.sock",
+      "model_url": "https://code.tilo.so/api/packages/tilo/generic/whisper-small-q5_1/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q5_1.bin",
+      "action": "read-only HEAD; no model downloaded or installed",
+      "model_http_status": 404
+    },
+    "previous_confirmed_model_http_status": 404,
+    "previous_confirmed_at": "2026-10-11T21:22:32Z",
+    "note": "Latest HEAD failed DNS resolution, so it cannot establish current publication status. Correct image key path checked explicitly."
+  },
+  "delivery_owner": "01a12552-20f4-75eb-b710-4fb0523cb01e",
+  "publication": false,
+  "installation": false,
+  "real_microphone_attempts": 0,
+  "reboot": false,
+  "fixture_contract": {
+    "short-auto": {
+      "public_case": "de_de-0",
+      "source_pcm_sha256": "a4c398a020bbb3d595da10b6e5a58dad63f43d998eb6db061eb49dea979d5281",
+      "samples": 48000,
+      "source_offset_seconds": 0,
+      "amplitude_scale": 1,
+      "content_class": "leading-noise control",
+      "expected_final_if_noise": "",
+      "expected_spoken_content": null,
+      "observed_regression_text": "",
+      "word_time_aligned": false,
+      "score_full_sentence_wer": false,
+      "validation_basis": "Corrected pinned source fixture and independent acoustic evidence; onset timing inferred, no microphone or word-time ground truth",
+      "quiet100_regression_output_is_not_ground_truth": false
+    },
+    "short-fixed": {
+      "public_case": "de_de-0",
+      "source_pcm_sha256": "a4c398a020bbb3d595da10b6e5a58dad63f43d998eb6db061eb49dea979d5281",
+      "samples": 48000,
+      "source_offset_seconds": 0,
+      "amplitude_scale": 1,
+      "content_class": "leading-noise control",
+      "expected_final_if_noise": "",
+      "expected_spoken_content": null,
+      "observed_regression_text": "",
+      "word_time_aligned": false,
+      "score_full_sentence_wer": false,
+      "validation_basis": "Corrected pinned source fixture and independent acoustic evidence; onset timing inferred, no microphone or word-time ground truth",
+      "quiet100_regression_output_is_not_ground_truth": false
+    },
+    "speech-auto": {
+      "public_case": "de_de-0",
+      "source_pcm_sha256": "4e14c2ae1933b8acac34864b7cb0031a2243e24b4e522f1592e79adda3700ccd",
+      "samples": 48000,
+      "source_offset_seconds": 4,
+      "amplitude_scale": 1,
+      "content_class": "spoken Hongkong excerpt",
+      "expected_final_if_noise": null,
+      "expected_spoken_content": "Für die besten Aussichten auf Hongkong.",
+      "observed_regression_text": "für die besten Aussichten auf Hongkong.",
+      "word_time_aligned": false,
+      "score_full_sentence_wer": false,
+      "validation_basis": "Corrected pinned source fixture and independent acoustic evidence; onset timing inferred, no microphone or word-time ground truth",
+      "quiet100_regression_output_is_not_ground_truth": false
+    },
+    "speech-fixed": {
+      "public_case": "de_de-0",
+      "source_pcm_sha256": "4e14c2ae1933b8acac34864b7cb0031a2243e24b4e522f1592e79adda3700ccd",
+      "samples": 48000,
+      "source_offset_seconds": 4,
+      "amplitude_scale": 1,
+      "content_class": "spoken Hongkong excerpt",
+      "expected_final_if_noise": null,
+      "expected_spoken_content": "Für die besten Aussichten auf Hongkong.",
+      "observed_regression_text": "für die besten Aussichten auf Hongkong.",
+      "word_time_aligned": false,
+      "score_full_sentence_wer": false,
+      "validation_basis": "Corrected pinned source fixture and independent acoustic evidence; onset timing inferred, no microphone or word-time ground truth",
+      "quiet100_regression_output_is_not_ground_truth": false
+    },
+    "speech-quiet": {
+      "public_case": "de_de-0",
+      "source_pcm_sha256": "8aeefd8128b0b7a7b0838d49940d3a2adb465137be768b99eb6eb29373809a6b",
+      "samples": 48000,
+      "source_offset_seconds": 4,
+      "amplitude_scale": 0.1,
+      "content_class": "spoken Hongkong excerpt",
+      "expected_final_if_noise": null,
+      "expected_spoken_content": "Für die besten Aussichten auf Hongkong.",
+      "observed_regression_text": "Für die besten Aussichten auf Hongkong.",
+      "word_time_aligned": false,
+      "score_full_sentence_wer": false,
+      "validation_basis": "Corrected pinned source fixture and independent acoustic evidence; onset timing inferred, no microphone or word-time ground truth",
+      "quiet100_regression_output_is_not_ground_truth": false
+    },
+    "speech-quiet100": {
+      "public_case": "de_de-0",
+      "source_pcm_sha256": "55c0cf1b7321639d6614c64fb86e97fef3d5da18ce690044a4e36e44dc466c95",
+      "samples": 48000,
+      "source_offset_seconds": 4,
+      "amplitude_scale": 0.01,
+      "content_class": "spoken Hongkong excerpt",
+      "expected_final_if_noise": null,
+      "expected_spoken_content": "Für die besten Aussichten auf Hongkong.",
+      "observed_regression_text": "Für die besten Aussichtern of Hongkong",
+      "word_time_aligned": false,
+      "score_full_sentence_wer": false,
+      "validation_basis": "Corrected pinned source fixture and independent acoustic evidence; onset timing inferred, no microphone or word-time ground truth",
+      "quiet100_regression_output_is_not_ground_truth": true
+    }
+  },
+  "rejected_experiments_exact": [
+    {
+      "experiment": "smoke",
+      "configuration": {
+        "first_draft_seconds": 3,
+        "interval_seconds": 1,
+        "language": "auto",
+        "native_asr": "unchanged"
+      },
+      "configuration_sha256": "5e05d11b678a59eb377f14983b4ef80ea260bead33818785856b10048c8fec15",
+      "helper_sha256": "d83dfe447095c598f32ca4e44ff954d7214e9706815e0b37a6ff6362646dff98",
+      "decision": "withdrawn; do not repeat unchanged premise",
+      "reason": "Wrong early text; German first3s is noise, not speech.",
+      "worker_sha256": "9248ada6bd2202861944caf31500a93ab171301e819863a5c702c429cdee89b6",
+      "native_speech_source_sha256": "d5db407837283aa293cf0ab4ab3ba616d5b164b3a836386fcb918fd763a87c84"
+    },
+    {
+      "experiment": "five-second",
+      "configuration": {
+        "first_draft_seconds": 5,
+        "interval_seconds": 1,
+        "language": "auto",
+        "native_asr": "unchanged"
+      },
+      "configuration_sha256": "dc22887cb8c273284124ec9521b07fba6490512993a32b09fe8372b30efce329",
+      "helper_sha256": "dfeb9d2b051695212a608c995c7b1e6e2517c5c3f1d2ec6334677fd6c8b1a1a2",
+      "decision": "withdrawn; do not repeat unchanged premise",
+      "reason": "Wrong German preview and no useful prefix before Finish; a global timer is not speech admission.",
+      "worker_sha256": "9248ada6bd2202861944caf31500a93ab171301e819863a5c702c429cdee89b6",
+      "native_speech_source_sha256": "d5db407837283aa293cf0ab4ab3ba616d5b164b3a836386fcb918fd763a87c84"
+    },
+    {
+      "experiment": "timestamp",
+      "configuration": {
+        "native_no_timestamps": "sample_count<=4*16000",
+        "first_draft_seconds": 2,
+        "interval_seconds": 1
+      },
+      "configuration_sha256": "03a7fcc08fb8efe8d5f836069c168c30fb937d23b4ec0d508f3c543d60f915ee",
+      "helper_sha256": "dfeb9d2b051695212a608c995c7b1e6e2517c5c3f1d2ec6334677fd6c8b1a1a2",
+      "decision": "withdrawn; do not repeat unchanged premise",
+      "reason": "Automatic leading-noise output cleared, fixed German still inserted und.",
+      "worker_sha256": "1cc6e23f15e128b4ae29d265ca6a558c6cfbc2985b90f0f2c43b79474d498eba",
+      "native_speech_source_sha256": "b617c7a6680baf4d2cbadbee9736ed7048e7e90a04f4acff5d8cf68650ff212c"
+    },
+    {
+      "experiment": "no-speech",
+      "configuration": {
+        "native_no_timestamps": "sample_count<=4*16000",
+        "segment_veto": "whisper_full_get_segment_no_speech_prob>0.6 unconditionally",
+        "first_draft_seconds": 2,
+        "interval_seconds": 1
+      },
+      "configuration_sha256": "4f56b5e096dac0a526d81973cdc949eec5e8284d9a2f607bb744164d03613b9c",
+      "helper_sha256": "29d6f3598e806b9fdfff38f12c244090401bb9dc5a67adee4393fd1400b76441",
+      "decision": "withdrawn; do not repeat unchanged premise",
+      "reason": "Fixed German noise still inserted und; decoder confidence did not qualify admission.",
+      "worker_sha256": "ff03281493fc6bb2ec09af5ef8bf42860a0ba11ffd99c4d0a6cd969e988f8842",
+      "native_speech_source_sha256": "d9d347113fb91f8aa2f214e9295b5f52b71e3def8d9018064c84eaeccd70014b"
+    },
+    {
+      "experiment": "libfvad",
+      "source_commit": "532ab666c20d3cfda38bca63abbb0f152706c369",
+      "configuration": {
+        "rate_hz": 16000,
+        "frame_samples": 320,
+        "modes": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "views": [
+          "raw",
+          "whole-input peak0.5 analysis-only"
+        ]
+      },
+      "decisions": 88,
+      "decision": "rejected; never adopted",
+      "reason": "Raw sensitive mode marked leading noise; stricter modes rejected quiet100 and French/quiet10. Normalized analysis marked the noise in every mode."
+    },
+    {
+      "experiment": "two-thread Silero worker",
+      "configuration": {
+        "detector_threads": 2,
+        "views": [
+          "raw",
+          "whole-input peak0.5 analysis-only"
+        ],
+        "preview_context_seconds_since_onset": 2
+      },
+      "runs": 24,
+      "configuration_sha256": "9bfd0cd5eecdbb744780798a471cccb4b0c6bd52a2994d581705e5ca8fd0051f",
+      "decision": "two-thread configuration withdrawn",
+      "reason": "Automatic noise Finish6.514s outlier; single-thread qualification retained3 automatic and1 fixed noise outputs empty at11–13ms."
+    }
+  ],
+  "validation": {
+    "speech_and_receipt_tests": "22 PASS, final source",
+    "provider_catalogue_tests": "11 PASS",
+    "actual_finish_actor_tests": "2 PASS",
+    "all_affected_targets_clippy": "PASS -D warnings including audio-evidence-review example",
+    "shell_integration_targets_compile": "PASS rcargo check -p shell --tests",
+    "source_staged_contracts_format_secrets": "PASS before signed commit",
+    "source_signature": "PASS existing configured key; no new trust grant",
+    "ci": "Not submitted by source owner: the sole delivery owner assembles this source into the coherent Dictation feature PR and owns CI/integration.",
+    "affected_plan": "Not run: exact-source CI metadata bundle unavailable; no local Cargo metadata attempted",
+    "desktop_and_microphone": "Not run: normal signed model/feed/runtime absent;0 of3 authorized public phrases used"
+  },
+  "signed_source_artifacts": {
+    "source_commit": "ced75e5a74c6a21b67f6be99694b46c3956634c9",
+    "source_clean_before_build": true,
+    "binaries": {
+      "worker": {
+        "path": "/var/tmp/tilo-dictation-text-only-joh1oumd/audio-admission-source-signed/worker",
+        "bytes": 25428920,
+        "sha256": "9262c6d6309e50ea103e301c6fdcf6db44bcb03abe493312b35af3075d5233db"
+      },
+      "witness": {
+        "path": "/var/tmp/tilo-dictation-text-only-joh1oumd/audio-admission-source-signed/witness",
+        "bytes": 43907984,
+        "sha256": "3dc8feef077618e73e7fb64f36de75c01f5923c953ae01fa61c445a381d18d55"
+      }
+    },
+    "identical_to_executed_v4": {
+      "worker": true,
+      "witness": true
+    },
+    "source_inputs_count": 176,
+    "qualification_scope": "Scoped acoustic-admission regression only; product goal remains incomplete."
+  }
+}

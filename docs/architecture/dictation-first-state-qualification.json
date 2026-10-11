@@ -1,0 +1,1173 @@
+{
+  "goal_complete": false,
+  "adopted": true,
+  "decision": "Qualified as removal of one redundant virgin-state initialization; no general latency improvement or goal completion claim.",
+  "cases": {
+    "auto-en-baseline": {
+      "case": "en_us-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "d198de7e45f0bf6ee402460bced35787500db07a2afb5a78f39ee86c371aee59",
+      "full_pcm_sha256": "0529d921fe2b0e39200728e68b214e57d76ebd08f39ae06e4caafe642c897388",
+      "first_text": "However, it is not a very good idea to do this.",
+      "full_draft": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+      "final_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+      "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year.",
+      "first_inference_ms": 5606.170859013218,
+      "first_inference_cpu_seconds": 11.07,
+      "full_inference_ms": 5797.4822760152165,
+      "full_inference_cpu_seconds": 11.18,
+      "preparation": {
+        "verify_ms": 138.805773,
+        "native_ms": 124.26037099999999,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 890408,
+        "VmSize": 890408,
+        "VmHWM": 372096,
+        "VmRSS": 372096,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 1,
+      "reference_units": 19,
+      "error_metric": "WER",
+      "log_sha256": "c06f9c7ebe505b61780e800ea5cc6a8ceadc3be9980e74bb29159df5e585ddc7",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-09dd4457a1db43fa"
+    },
+    "auto-en-candidate": {
+      "case": "en_us-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "d198de7e45f0bf6ee402460bced35787500db07a2afb5a78f39ee86c371aee59",
+      "full_pcm_sha256": "0529d921fe2b0e39200728e68b214e57d76ebd08f39ae06e4caafe642c897388",
+      "first_text": "However, it is not a very good idea to do this.",
+      "full_draft": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+      "final_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+      "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year.",
+      "first_inference_ms": 5796.628765994683,
+      "first_inference_cpu_seconds": 11.47,
+      "full_inference_ms": 6207.410981995054,
+      "full_inference_cpu_seconds": 11.399999999999999,
+      "preparation": {
+        "verify_ms": 156.5635,
+        "native_ms": 130.19737800000001,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 890540,
+        "VmSize": 890540,
+        "VmHWM": 358464,
+        "VmRSS": 358464,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 1,
+      "reference_units": 19,
+      "error_metric": "WER",
+      "log_sha256": "3a5fc3e7a4fe880ea9f2eaa8d4c0d00c222f154ccb4ef7ba7e740f85a4617bd9",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-024dfff21097487f"
+    },
+    "auto-de-candidate": {
+      "case": "de_de-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "c0c51639dd4e630d263de72d2a764c4cef9c065e2e0e35be9af48b7913b27f8c",
+      "full_pcm_sha256": "fe4d2a3b4113fb327094d0628ff7ed07e40726c1ab20564d01d3a745cba349b0",
+      "first_text": "",
+      "full_draft": "Für die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "final_text": "Für die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "reference": "Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "first_inference_ms": 5807.1236719843,
+      "first_inference_cpu_seconds": 11.32,
+      "full_inference_ms": 5787.977539992426,
+      "full_inference_cpu_seconds": 11.290000000000001,
+      "preparation": {
+        "verify_ms": 141.22324,
+        "native_ms": 124.099379,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 892232,
+        "VmSize": 892232,
+        "VmHWM": 359616,
+        "VmRSS": 359616,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 0,
+      "reference_units": 18,
+      "error_metric": "WER",
+      "log_sha256": "a5fb4eb02cf57c067f0722d01a897ac49f22146834ee42397e446bb5d5d8d95d",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-322d794f567c42cf"
+    },
+    "auto-de-baseline": {
+      "case": "de_de-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "c0c51639dd4e630d263de72d2a764c4cef9c065e2e0e35be9af48b7913b27f8c",
+      "full_pcm_sha256": "fe4d2a3b4113fb327094d0628ff7ed07e40726c1ab20564d01d3a745cba349b0",
+      "first_text": "",
+      "full_draft": "Für die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "final_text": "Für die besten Aussichten auf Hongkong sollten sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "reference": "Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "first_inference_ms": 5417.831605009269,
+      "first_inference_cpu_seconds": 10.74,
+      "full_inference_ms": 6064.973229018506,
+      "full_inference_cpu_seconds": 11.85,
+      "preparation": {
+        "verify_ms": 135.738329,
+        "native_ms": 126.52222599999999,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 891896,
+        "VmSize": 891896,
+        "VmHWM": 366808,
+        "VmRSS": 366808,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 0,
+      "reference_units": 18,
+      "error_metric": "WER",
+      "log_sha256": "9b0072e0743847ae9f49789d2665d97eb69ab197023d97f4f480335c3bd15e0a",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-1139b1d731904144"
+    },
+    "auto-fr-baseline": {
+      "case": "fr_fr-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "956e63afd8938bee17de48f56bdbb22d5a1f5b5dc984ae23febd39e2955a3608",
+      "full_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+      "first_text": "",
+      "full_draft": "L'accident a eu lieu en terrain montagneux et il semblerait que cela était causé par un incendie malveillant.",
+      "final_text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela était causé par un incendie malveillant.",
+      "reference": "L’accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+      "first_inference_ms": 5426.464771007886,
+      "first_inference_cpu_seconds": 10.54,
+      "full_inference_ms": 5803.102806996321,
+      "full_inference_cpu_seconds": 11.36,
+      "preparation": {
+        "verify_ms": 129.50229,
+        "native_ms": 109.7691,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 890372,
+        "VmSize": 890372,
+        "VmHWM": 372096,
+        "VmRSS": 372096,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 2,
+      "reference_units": 20,
+      "error_metric": "WER",
+      "log_sha256": "07381ef017d5121bd44bd11a65916cde082d09dd5871b1da04d438edb778ecf9",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-0f51b5a06f0e4c89"
+    },
+    "auto-fr-candidate": {
+      "case": "fr_fr-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "956e63afd8938bee17de48f56bdbb22d5a1f5b5dc984ae23febd39e2955a3608",
+      "full_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+      "first_text": "",
+      "full_draft": "L'accident a eu lieu en terrain montagneux et il semblerait que cela était causé par un incendie malveillant.",
+      "final_text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela était causé par un incendie malveillant.",
+      "reference": "L’accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+      "first_inference_ms": 5505.126995005412,
+      "first_inference_cpu_seconds": 10.700000000000001,
+      "full_inference_ms": 5788.76841798774,
+      "full_inference_cpu_seconds": 11.099999999999998,
+      "preparation": {
+        "verify_ms": 143.71816800000002,
+        "native_ms": 121.43563,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 890504,
+        "VmSize": 890504,
+        "VmHWM": 358572,
+        "VmRSS": 358572,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 2,
+      "reference_units": 20,
+      "error_metric": "WER",
+      "log_sha256": "03aed95e3b750cde4d8668364099b22531d3719335d4862bcd4625b7ff8ef372",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-e5e1b2c16bf0462f"
+    },
+    "auto-es-candidate": {
+      "case": "es_419-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "fe4dfc709dfd47c6241cdb172d6472e40569115861b575f5cc845714d421cf17",
+      "full_pcm_sha256": "e2b9e95c2670346bb4ef3e8161cd427576fc450c355109b9fb161380efdecbc7",
+      "first_text": "Thank you.",
+      "full_draft": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+      "final_text": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+      "reference": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo de clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+      "first_inference_ms": 6010.651903983671,
+      "first_inference_cpu_seconds": 10.920000000000002,
+      "full_inference_ms": 5652.013127983082,
+      "full_inference_cpu_seconds": 11.139999999999999,
+      "preparation": {
+        "verify_ms": 193.495961,
+        "native_ms": 150.807026,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 890752,
+        "VmSize": 890752,
+        "VmHWM": 358764,
+        "VmRSS": 358764,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 1,
+      "reference_units": 29,
+      "error_metric": "WER",
+      "log_sha256": "12c51ea0423341302bd4c9c420b395dbb71ff05de8eb7ef53bb1c51c520c392e",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-e539b211ca124068"
+    },
+    "auto-es-baseline": {
+      "case": "es_419-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "fe4dfc709dfd47c6241cdb172d6472e40569115861b575f5cc845714d421cf17",
+      "full_pcm_sha256": "e2b9e95c2670346bb4ef3e8161cd427576fc450c355109b9fb161380efdecbc7",
+      "first_text": "Thank you.",
+      "full_draft": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+      "final_text": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+      "reference": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo de clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+      "first_inference_ms": 5628.831390000414,
+      "first_inference_cpu_seconds": 10.96,
+      "full_inference_ms": 5927.176677010721,
+      "full_inference_cpu_seconds": 11.469999999999999,
+      "preparation": {
+        "verify_ms": 137.393867,
+        "native_ms": 115.936859,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 890620,
+        "VmSize": 890620,
+        "VmHWM": 372332,
+        "VmRSS": 372332,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 1,
+      "reference_units": 29,
+      "error_metric": "WER",
+      "log_sha256": "f078779c95819bf29d1bd094bbff745c2bbc60d5e1941fbfee3a58cdb96f8342",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-88c8d94412a146d9"
+    },
+    "auto-ar-baseline": {
+      "case": "ar_eg-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "2d4b68c26bcc862334ca9484a513813fa5cbce5a3f31ab4580e46204c813ce25",
+      "full_pcm_sha256": "c1524c77a3444b345c4a4156c4762930fa478673a1ef75222d6afc64d119969e",
+      "first_text": "تشكلت في المحيط الأطلاسي اليوغل",
+      "full_draft": "تشكلت في المحيط الأطلسي اليوم عايش رعاصفة مسمى لموسى من الأعاصير الأطلسية العاصفة شبه الاستوائية جري",
+      "final_text": "تشكلت في المحيط الأطلسي اليوم عايش رعاصفة مسمى لموسى من الأعاصير الأطلسية العاصفة شبه الاستوائية جري",
+      "reference": "تشكلت في المحيط الأطلسي اليوم عاشر عاصفة مُسماة لموسم الأعاصير الأطلسية، العاصفة شبه الاستوائية جيري.",
+      "first_inference_ms": 6445.990164007526,
+      "first_inference_cpu_seconds": 11.229999999999999,
+      "full_inference_ms": 6295.678772992687,
+      "full_inference_cpu_seconds": 12.030000000000001,
+      "preparation": {
+        "verify_ms": 159.12173800000002,
+        "native_ms": 157.951696,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 890184,
+        "VmSize": 890184,
+        "VmHWM": 371808,
+        "VmRSS": 371808,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 6,
+      "reference_units": 15,
+      "error_metric": "WER",
+      "log_sha256": "dbaf4d9afa8d349d97abf908e0ec6a14ab1fe0e0d8620b1440bd45fb8e72cdc2",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-94fb4a4859014dd8"
+    },
+    "auto-ar-candidate": {
+      "case": "ar_eg-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "2d4b68c26bcc862334ca9484a513813fa5cbce5a3f31ab4580e46204c813ce25",
+      "full_pcm_sha256": "c1524c77a3444b345c4a4156c4762930fa478673a1ef75222d6afc64d119969e",
+      "first_text": "تشكلت في المحيط الأطلاسي اليوغل",
+      "full_draft": "تشكلت في المحيط الأطلسي اليوم عايش رعاصفة مسمى لموسى من الأعاصير الأطلسية العاصفة شبه الاستوائية جري",
+      "final_text": "تشكلت في المحيط الأطلسي اليوم عايش رعاصفة مسمى لموسى من الأعاصير الأطلسية العاصفة شبه الاستوائية جري",
+      "reference": "تشكلت في المحيط الأطلسي اليوم عاشر عاصفة مُسماة لموسم الأعاصير الأطلسية، العاصفة شبه الاستوائية جيري.",
+      "first_inference_ms": 5663.316493999446,
+      "first_inference_cpu_seconds": 11.020000000000001,
+      "full_inference_ms": 5887.6652469916735,
+      "full_inference_cpu_seconds": 11.5,
+      "preparation": {
+        "verify_ms": 173.719181,
+        "native_ms": 137.952373,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 890312,
+        "VmSize": 890312,
+        "VmHWM": 358128,
+        "VmRSS": 358128,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 6,
+      "reference_units": 15,
+      "error_metric": "WER",
+      "log_sha256": "e93c350a410acb0760dec004a92578d09e725fd836c616cd14297d6d6983593c",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-0a7436c275804759"
+    },
+    "auto-zh-candidate": {
+      "case": "cmn_hans_cn-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "fa45f9f447041517481e604a047c9de0bf416124d86f15aeb1112d0f1a6c006a",
+      "full_pcm_sha256": "f9889e70a671612d4da013d67b5cec6faab2e995db9e936f050e97d3a2dce464",
+      "first_text": "Thank you.",
+      "full_draft": "這並不是告別,這是一個偏張的結束,也是新偏張的開始。",
+      "final_text": "這並不是告別,這是一個偏張的結束,也是新偏張的開始。",
+      "reference": "“这并不是告别。这是一个篇章的结束，也是新篇章的开始。”",
+      "first_inference_ms": 5597.808556020027,
+      "first_inference_cpu_seconds": 10.81,
+      "full_inference_ms": 11616.804123012116,
+      "full_inference_cpu_seconds": 22.6,
+      "preparation": {
+        "verify_ms": 153.618308,
+        "native_ms": 276.791067,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 890252,
+        "VmSize": 889820,
+        "VmHWM": 357716,
+        "VmRSS": 357716,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 11,
+      "reference_units": 23,
+      "error_metric": "CER",
+      "log_sha256": "2555af78c319619d0ce350ce7037bef6c3b81cc8d0b2ab8b638bd414254e7df0",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-9f652881b34840dd"
+    },
+    "auto-zh-baseline": {
+      "case": "cmn_hans_cn-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "fa45f9f447041517481e604a047c9de0bf416124d86f15aeb1112d0f1a6c006a",
+      "full_pcm_sha256": "f9889e70a671612d4da013d67b5cec6faab2e995db9e936f050e97d3a2dce464",
+      "first_text": "Thank you.",
+      "full_draft": "這並不是告別,這是一個偏張的結束,也是新偏張的開始。",
+      "final_text": "這並不是告別,這是一個偏張的結束,也是新偏張的開始。",
+      "reference": "“这并不是告别。这是一个篇章的结束，也是新篇章的开始。”",
+      "first_inference_ms": 5910.05959600443,
+      "first_inference_cpu_seconds": 11.1,
+      "full_inference_ms": 12072.987183986697,
+      "full_inference_cpu_seconds": 22.77,
+      "preparation": {
+        "verify_ms": 178.282882,
+        "native_ms": 277.96486999999996,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 890120,
+        "VmSize": 889688,
+        "VmHWM": 371272,
+        "VmRSS": 371272,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 11,
+      "reference_units": 23,
+      "error_metric": "CER",
+      "log_sha256": "a8afd8ad467e03dedeedc2b6ac0e961f5bd7fbdd53adc7fdb3180afd36ca77e1",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-25d0e3570ef641f2"
+    },
+    "transition-en-de-baseline": {
+      "case": "en_us-0",
+      "append_case": [
+        "de_de-0"
+      ],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "d198de7e45f0bf6ee402460bced35787500db07a2afb5a78f39ee86c371aee59",
+      "full_pcm_sha256": "5dae37146aa94f07e4498c3191a4cb55909219dd667d85c05925c6b63ee58525",
+      "first_text": "However, it is not a very good idea to do this.",
+      "full_draft": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "final_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year. Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "first_inference_ms": 5982.663322996814,
+      "first_inference_cpu_seconds": 11.08,
+      "full_inference_ms": 11088.266438018763,
+      "full_inference_cpu_seconds": 21.729999999999997,
+      "preparation": {
+        "verify_ms": 185.782826,
+        "native_ms": 282.577031,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 892052,
+        "VmSize": 892052,
+        "VmHWM": 374328,
+        "VmRSS": 374328,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 1,
+      "reference_units": 37,
+      "error_metric": "WER",
+      "log_sha256": "2c4ebde7a9c2ca2cd45cc6ed0e5f2cd9e74d15d31c605b573476f08ab140ecfc",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-b0f6702833144cdd"
+    },
+    "transition-en-de-candidate": {
+      "case": "en_us-0",
+      "append_case": [
+        "de_de-0"
+      ],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "d198de7e45f0bf6ee402460bced35787500db07a2afb5a78f39ee86c371aee59",
+      "full_pcm_sha256": "5dae37146aa94f07e4498c3191a4cb55909219dd667d85c05925c6b63ee58525",
+      "first_text": "However, it is not a very good idea to do this.",
+      "full_draft": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "final_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year. Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "first_inference_ms": 5382.432131009409,
+      "first_inference_cpu_seconds": 10.66,
+      "full_inference_ms": 10994.485266011907,
+      "full_inference_cpu_seconds": 21.709999999999997,
+      "preparation": {
+        "verify_ms": 179.320314,
+        "native_ms": 171.54156700000001,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 892384,
+        "VmSize": 892384,
+        "VmHWM": 360408,
+        "VmRSS": 360408,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 1,
+      "reference_units": 37,
+      "error_metric": "WER",
+      "log_sha256": "96751dcf2d78a1c2c53132302f1aa57198f8c21f2f58af2e8e292c34761d9de7",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-d11ddd444f884f51"
+    },
+    "transition-fr-es-candidate": {
+      "case": "fr_fr-0",
+      "append_case": [
+        "es_419-0"
+      ],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "956e63afd8938bee17de48f56bdbb22d5a1f5b5dc984ae23febd39e2955a3608",
+      "full_pcm_sha256": "b7b8b701768726c4c92c44e79a50f9f1412963e2bc48f9fa3ff80c2f58fdeb45",
+      "first_text": "",
+      "full_draft": "L'accident a eu lieu en terrain montagneux et il semblerait que cela était causé par un incendie malveillant. Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+      "final_text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela était causé par un incendie malveillant. Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+      "reference": "L’accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant. Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo de clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+      "first_inference_ms": 6107.9179859953,
+      "first_inference_cpu_seconds": 11.08,
+      "full_inference_ms": 13630.096234002849,
+      "full_inference_cpu_seconds": 25.020000000000003,
+      "preparation": {
+        "verify_ms": 164.829373,
+        "native_ms": 151.398323,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 891876,
+        "VmSize": 891876,
+        "VmHWM": 359724,
+        "VmRSS": 359724,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 3,
+      "reference_units": 49,
+      "error_metric": "WER",
+      "log_sha256": "273e81ae108d1757cd623a28dd93730a97b949f276d9d96746a12f04b55c2530",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-aa257fdafc8b459e"
+    },
+    "transition-fr-es-baseline": {
+      "case": "fr_fr-0",
+      "append_case": [
+        "es_419-0"
+      ],
+      "language": "auto",
+      "prefix_samples": 32000,
+      "first_pcm_sha256": "956e63afd8938bee17de48f56bdbb22d5a1f5b5dc984ae23febd39e2955a3608",
+      "full_pcm_sha256": "b7b8b701768726c4c92c44e79a50f9f1412963e2bc48f9fa3ff80c2f58fdeb45",
+      "first_text": "",
+      "full_draft": "L'accident a eu lieu en terrain montagneux et il semblerait que cela était causé par un incendie malveillant. Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+      "final_text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela était causé par un incendie malveillant. Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+      "reference": "L’accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant. Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo de clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+      "first_inference_ms": 6071.859254996525,
+      "first_inference_cpu_seconds": 11.03,
+      "full_inference_ms": 12897.100475005573,
+      "full_inference_cpu_seconds": 23.9,
+      "preparation": {
+        "verify_ms": 248.965688,
+        "native_ms": 237.638492,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 891540,
+        "VmSize": 891540,
+        "VmHWM": 373436,
+        "VmRSS": 373436,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 3,
+      "reference_units": 49,
+      "error_metric": "WER",
+      "log_sha256": "a1b0b9fb189dba4439acd008f4aee980d5f96e272d3a5b3e73aa650b7aeed969",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-7633bd2675704e1d"
+    },
+    "auto-en-32001-baseline": {
+      "case": "en_us-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32001,
+      "first_pcm_sha256": "321caeac3da5107456e4ba476bfcee98bcb1936dd8f2c720ab3834f851c4e3d4",
+      "full_pcm_sha256": "0529d921fe2b0e39200728e68b214e57d76ebd08f39ae06e4caafe642c897388",
+      "first_text": "However, it is not a very good idea to do this.",
+      "full_draft": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+      "final_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+      "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year.",
+      "first_inference_ms": 6610.218288988108,
+      "first_inference_cpu_seconds": 11.76,
+      "full_inference_ms": 5880.691629979992,
+      "full_inference_cpu_seconds": 11.200000000000001,
+      "preparation": {
+        "verify_ms": 269.547616,
+        "native_ms": 194.146828,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 890408,
+        "VmSize": 890408,
+        "VmHWM": 372056,
+        "VmRSS": 372056,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 1,
+      "reference_units": 19,
+      "error_metric": "WER",
+      "log_sha256": "e72638ea2fae635db9ef36a9fc81cd7083bba6c2f67e3f5ff22cb2daa6fd99ab",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-c76660119ced4a59"
+    },
+    "auto-en-32001-candidate": {
+      "case": "en_us-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32001,
+      "first_pcm_sha256": "321caeac3da5107456e4ba476bfcee98bcb1936dd8f2c720ab3834f851c4e3d4",
+      "full_pcm_sha256": "0529d921fe2b0e39200728e68b214e57d76ebd08f39ae06e4caafe642c897388",
+      "first_text": "However, it is not a very good idea to do this.",
+      "full_draft": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+      "final_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+      "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year.",
+      "first_inference_ms": 5382.040297990898,
+      "first_inference_cpu_seconds": 10.63,
+      "full_inference_ms": 5505.250166985206,
+      "full_inference_cpu_seconds": 10.88,
+      "preparation": {
+        "verify_ms": 159.336502,
+        "native_ms": 125.028529,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 890540,
+        "VmSize": 890540,
+        "VmHWM": 358600,
+        "VmRSS": 358600,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 1,
+      "reference_units": 19,
+      "error_metric": "WER",
+      "log_sha256": "a72f848e984784479e28ecd678261d93382b7382f2b37e9d3a853997229a130f",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-6c2bb3698b824a86"
+    },
+    "auto-en-32002-candidate": {
+      "case": "en_us-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32002,
+      "first_pcm_sha256": "5edbbb13a2cfb52d0a664e85b9257ef58a61c1fc813269cbc95c6de2c512ece4",
+      "full_pcm_sha256": "0529d921fe2b0e39200728e68b214e57d76ebd08f39ae06e4caafe642c897388",
+      "first_text": "However,",
+      "full_draft": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+      "final_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+      "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year.",
+      "first_inference_ms": 5260.67617800436,
+      "first_inference_cpu_seconds": 10.45,
+      "full_inference_ms": 5358.265441987896,
+      "full_inference_cpu_seconds": 10.600000000000001,
+      "preparation": {
+        "verify_ms": 137.866453,
+        "native_ms": 112.104986,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 890540,
+        "VmSize": 890540,
+        "VmHWM": 358492,
+        "VmRSS": 358492,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 1,
+      "reference_units": 19,
+      "error_metric": "WER",
+      "log_sha256": "287debe50d58f171c625f2ca0238b88bae69722519e97b19a5a952f5e8576793",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-f10f8c73310f45a4"
+    },
+    "auto-en-32002-baseline": {
+      "case": "en_us-0",
+      "append_case": [],
+      "language": "auto",
+      "prefix_samples": 32002,
+      "first_pcm_sha256": "5edbbb13a2cfb52d0a664e85b9257ef58a61c1fc813269cbc95c6de2c512ece4",
+      "full_pcm_sha256": "0529d921fe2b0e39200728e68b214e57d76ebd08f39ae06e4caafe642c897388",
+      "first_text": "However,",
+      "full_draft": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+      "final_text": "However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years.",
+      "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year.",
+      "first_inference_ms": 5546.358393999981,
+      "first_inference_cpu_seconds": 10.53,
+      "full_inference_ms": 5457.854719978059,
+      "full_inference_cpu_seconds": 10.780000000000001,
+      "preparation": {
+        "verify_ms": 130.84857399999999,
+        "native_ms": 109.531218,
+        "flash_attention": true
+      },
+      "memory_peak": {
+        "VmPeak": 890408,
+        "VmSize": 890408,
+        "VmHWM": 371940,
+        "VmRSS": 371940,
+        "Threads": 1
+      },
+      "worker_address_space_bytes": 1073741824,
+      "cpu_affinity_count": 2,
+      "physical_microphone": false,
+      "normal_admission": false,
+      "source_pacing": "Isolated identical fixed PCM, not real-time source/capture latency",
+      "owned_worker_and_witness_exited": true,
+      "final_errors": 1,
+      "reference_units": 19,
+      "error_metric": "WER",
+      "log_sha256": "337ce1e216de10481819192d6c4b1cb1fed86cff336f0b70bdf8ba1333c61056",
+      "observed_capsule_controls": {
+        "memory.max": "3221225472",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "pids.max": "64"
+      },
+      "owned_capsule_verified_absent": "dictation-pristine-fixed-732139b157a14b92"
+    }
+  },
+  "pairs": [
+    {
+      "case": "auto-en",
+      "identical_pcm": true,
+      "first_output_byte_equal": true,
+      "final_output_byte_equal": true,
+      "no_final_error_increase": true,
+      "first_inference_ms_baseline": 5606.170859013218,
+      "first_inference_ms_candidate": 5796.628765994683,
+      "first_inference_cpu_seconds_baseline": 11.07,
+      "first_inference_cpu_seconds_candidate": 11.47
+    },
+    {
+      "case": "auto-de",
+      "identical_pcm": true,
+      "first_output_byte_equal": true,
+      "final_output_byte_equal": true,
+      "no_final_error_increase": true,
+      "first_inference_ms_baseline": 5417.831605009269,
+      "first_inference_ms_candidate": 5807.1236719843,
+      "first_inference_cpu_seconds_baseline": 10.74,
+      "first_inference_cpu_seconds_candidate": 11.32
+    },
+    {
+      "case": "auto-fr",
+      "identical_pcm": true,
+      "first_output_byte_equal": true,
+      "final_output_byte_equal": true,
+      "no_final_error_increase": true,
+      "first_inference_ms_baseline": 5426.464771007886,
+      "first_inference_ms_candidate": 5505.126995005412,
+      "first_inference_cpu_seconds_baseline": 10.54,
+      "first_inference_cpu_seconds_candidate": 10.700000000000001
+    },
+    {
+      "case": "auto-es",
+      "identical_pcm": true,
+      "first_output_byte_equal": true,
+      "final_output_byte_equal": true,
+      "no_final_error_increase": true,
+      "first_inference_ms_baseline": 5628.831390000414,
+      "first_inference_ms_candidate": 6010.651903983671,
+      "first_inference_cpu_seconds_baseline": 10.96,
+      "first_inference_cpu_seconds_candidate": 10.920000000000002
+    },
+    {
+      "case": "auto-ar",
+      "identical_pcm": true,
+      "first_output_byte_equal": true,
+      "final_output_byte_equal": true,
+      "no_final_error_increase": true,
+      "first_inference_ms_baseline": 6445.990164007526,
+      "first_inference_ms_candidate": 5663.316493999446,
+      "first_inference_cpu_seconds_baseline": 11.229999999999999,
+      "first_inference_cpu_seconds_candidate": 11.020000000000001
+    },
+    {
+      "case": "auto-zh",
+      "identical_pcm": true,
+      "first_output_byte_equal": true,
+      "final_output_byte_equal": true,
+      "no_final_error_increase": true,
+      "first_inference_ms_baseline": 5910.05959600443,
+      "first_inference_ms_candidate": 5597.808556020027,
+      "first_inference_cpu_seconds_baseline": 11.1,
+      "first_inference_cpu_seconds_candidate": 10.81
+    },
+    {
+      "case": "transition-en-de",
+      "identical_pcm": true,
+      "first_output_byte_equal": true,
+      "final_output_byte_equal": true,
+      "no_final_error_increase": true,
+      "first_inference_ms_baseline": 5982.663322996814,
+      "first_inference_ms_candidate": 5382.432131009409,
+      "first_inference_cpu_seconds_baseline": 11.08,
+      "first_inference_cpu_seconds_candidate": 10.66
+    },
+    {
+      "case": "transition-fr-es",
+      "identical_pcm": true,
+      "first_output_byte_equal": true,
+      "final_output_byte_equal": true,
+      "no_final_error_increase": true,
+      "first_inference_ms_baseline": 6071.859254996525,
+      "first_inference_ms_candidate": 6107.9179859953,
+      "first_inference_cpu_seconds_baseline": 11.03,
+      "first_inference_cpu_seconds_candidate": 11.08
+    },
+    {
+      "case": "auto-en-32001",
+      "identical_pcm": true,
+      "first_output_byte_equal": true,
+      "final_output_byte_equal": true,
+      "no_final_error_increase": true,
+      "first_inference_ms_baseline": 6610.218288988108,
+      "first_inference_ms_candidate": 5382.040297990898,
+      "first_inference_cpu_seconds_baseline": 11.76,
+      "first_inference_cpu_seconds_candidate": 10.63
+    },
+    {
+      "case": "auto-en-32002",
+      "identical_pcm": true,
+      "first_output_byte_equal": true,
+      "final_output_byte_equal": true,
+      "no_final_error_increase": true,
+      "first_inference_ms_baseline": 5546.358393999981,
+      "first_inference_ms_candidate": 5260.67617800436,
+      "first_inference_cpu_seconds_baseline": 10.53,
+      "first_inference_cpu_seconds_candidate": 10.45
+    }
+  ],
+  "normal_admission": false,
+  "physical_microphone": false,
+  "new_model_acquisition": false,
+  "scope": "Consume the native readiness arena only on its first inference; retain fresh state for every subsequent inference. Full encoder context, decoding parameters, model, vocabulary and language detection unchanged.",
+  "matrix_receipt": {
+    "configuration_sha256": "49c1d76d46a8f6e53fe7da6235e1933adfed401a9c37593f26381fa9fbc94ba5",
+    "cases": 20,
+    "executed": true,
+    "all_processes_successful": true,
+    "source_and_binary_pins_unchanged": true,
+    "model_acquired": false,
+    "physical_microphone": false,
+    "installed": false,
+    "goal_complete": false
+  },
+  "quality_gates": {
+    "identical_pcm": true,
+    "first_output_byte_equal": true,
+    "final_output_byte_equal": true,
+    "no_final_error_increase": true
+  },
+  "timing_summary": {
+    "first_inference_ms_baseline": 5864.644764602417,
+    "first_inference_ms_candidate": 5651.372297998751,
+    "first_inference_cpu_seconds_baseline": 11.004,
+    "first_inference_cpu_seconds_candidate": 10.906,
+    "pairs_faster": 5,
+    "pairs_slower": 5,
+    "interpretation": "Timing noise prevents a general latency improvement claim; this removes one redundant virgin-state allocation only."
+  },
+  "schema_version": 1,
+  "base_commit": "8a7e2e8936a4ea8d688555294cad06713ad32ab0",
+  "native_shim_sha256": "194626205ac0b435bf81326e5c9560a1a2e8c76f36010a3d05c0a47034d3c2eb",
+  "limitations": [
+    "20 isolated identical-PCM runs are not real-time capture latency evidence.",
+    "First previews retain existing hallucinations and empty results; byte equivalence is not correctness.",
+    "No physical microphone capture or normal signed-catalogue admission.",
+    "Five pairs faster and five slower; no general latency improvement claim."
+  ],
+  "rejected_experiments": [
+    "Cropped encoder context changed final words and hallucinated: restored original native context.",
+    "Timestamp-free decoder flags worsened multilingual previews and latency: rejected.",
+    "Three-second and four-second opening delay retained incorrect previews: rejected."
+  ],
+  "public_audio": {
+    "dataset": "google/fleurs",
+    "revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+    "manifest_sha256": "7cb63d4b6b67aa47df22dcab3ed424100312865b01275b4ffbcc2fc378d33469",
+    "license": "CC-BY-4.0",
+    "attribution": "Google FLEURS dataset authors"
+  },
+  "checks": {
+    "focused_speech_tests": {
+      "status": "PASS",
+      "selected": 18,
+      "passed": 18,
+      "excluded_by_filter": 27,
+      "command": "rcargo --no-fallback test --locked --offline -j2 -p local-model-service --lib speech::",
+      "log_sha256": "5d0adc38562e8832e4cf5d42d90bdc04f54db2ffea12e7a7b32995dd832458f8"
+    },
+    "service_all_targets_check": {
+      "status": "PASS",
+      "command": "rcargo --no-fallback --no-fetch check --locked --offline -j2 -p local-model-service --all-targets",
+      "log_sha256": "31750e908124f991b1d36f6f9e26c511a59357d48e02d78f53f55bc9510e1215"
+    },
+    "clippy": {
+      "status": "PASS",
+      "command": "rcargo --no-fallback --no-fetch clippy --locked --offline -j2 -p local-model-service --all-targets -- -D warnings",
+      "log_sha256": "cb8bd34dcbd70bd08044294f681e63fb78ea013d5375130597217cb0759835c1"
+    },
+    "shell_tests_compile": {
+      "status": "PASS",
+      "command": "rcargo --no-fallback --no-fetch check --locked --offline -j2 -p shell --tests",
+      "log_sha256": "a70f398686cc547e529267700c17edf689dd52f5331103c740ca4a6ddc2ce697"
+    }
+  },
+  "assembled_journeys": {
+    "status": "PASS",
+    "receipt_sha256": "5e76bfcdd7c2d577172aa25f9ce5d2dba21b89be3a1216b35851b20ad4cebb29",
+    "receipt": {
+      "speech_base_commit": "8a7e2e8936a4ea8d688555294cad06713ad32ab0",
+      "candidate_native_sha256": "194626205ac0b435bf81326e5c9560a1a2e8c76f36010a3d05c0a47034d3c2eb",
+      "speech_worker_sha256": "31da460f81b9a422a9311e3fd7422ec98b659630bede11263c0e8491c99fd493",
+      "source_commit": "d10168594baae872329ae2325183af2091af1c32",
+      "runtime": "/var/tmp/tilo-dictation-text-only-joh1oumd/recovered-browser-runtime/chromium",
+      "runtime_host_sha256": "486fbdeba20beee3b7d787364c5344d969c2f3db9dedbdaa0097cdf88dfc49d9",
+      "runtime_libcef_sha256": "c8c3c51ebcb086b5b22cfdcdc07115826332ed3c6e038b316ec593951cf4e3da",
+      "execution": "existing bubblewrap private namespace in bounded transient user service; OCI default seccomp was incompatible with CEF zygote",
+      "records": [
+        {
+          "case": "assembled-recorded",
+          "exit": 0,
+          "expected_tests": 4,
+          "executed_tests": 4,
+          "seconds": 111.6614688319969,
+          "capsule_id": "dictation-recovered-browser-305429cf21ae428d.service",
+          "observed_controls": {
+            "memory.max": "3221225472",
+            "memory.swap.max": "0",
+            "cpu.max": "200000 100000",
+            "pids.max": "256"
+          },
+          "verified_absent": "dictation-recovered-browser-305429cf21ae428d",
+          "log_sha256": "f416ff83e14a8507a0861f1d5816219521a61b156c8c8355d0389fc85e6919ef",
+          "fixture_sha256": "75e9346db3ed1e66105c28d2f9046c6009b0ef45bc86859b592a6ba0e17c416c"
+        }
+      ],
+      "physical_microphone": false,
+      "new_model_acquisition": false,
+      "private_payload_transfer": false,
+      "installed": false,
+      "goal_complete": false,
+      "output": "/var/tmp/tilo-dictation-recovered-browser-xr2_7xtz"
+    },
+    "scope": "Actual candidate speech worker and unchanged production CEF runtime, public recorded German; selected replacement/undo/redo, focus refusal, cancel, fresh successor."
+  },
+  "model": {
+    "id": "small-q5_1",
+    "bytes": 190085487,
+    "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+    "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+    "license": "MIT"
+  },
+  "binary_pins": {
+    "binaries": {
+      "worker": {
+        "path": "/var/tmp/tilo-dictation-text-only-joh1oumd/pristine-arena-candidate/worker",
+        "bytes": 25242984,
+        "sha256": "31da460f81b9a422a9311e3fd7422ec98b659630bede11263c0e8491c99fd493"
+      },
+      "witness": {
+        "path": "/var/tmp/tilo-dictation-text-only-joh1oumd/pristine-arena-candidate/witness",
+        "bytes": 43626032,
+        "sha256": "b836473843afbf21c8b49acc3d53e808650811c40dc77a02c0ad5cd2af5fb690"
+      }
+    },
+    "recognition_sha256": "9f1f1eb115926f94410ed6a581e78db4488111060a1534da719fdae584a3aa18",
+    "accepted_source_commit": "8a7e2e8936a4ea8d688555294cad06713ad32ab0",
+    "published": false
+  },
+  "evidence_pins": {
+    "pristine-arena-fixed-comparison-result.json": "fdf0e4cec63e2cd77088f53f9cee05a5360ddce5a6dd323cfc693466144819db",
+    "pristine-arena-fixed-paired-builder.log": "43f751e31c45dd678b8910dd8dfbb78c91ab66f939304b71c42135abb1e5c6df",
+    "pristine-arena-assembled-builder.log": "c4bafac62f9c745245d58408d16083dc6566d6c6e4a0dc16adea8b0ec5b6f56d",
+    "probe-fixed-full-context.py": "3dcdde292d47682aed5f79b866958877bc5bb8607509aaa3f4180d593740d797"
+  }
+}
