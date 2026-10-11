@@ -177,13 +177,16 @@ enum PresentMsg {
     },
     /// Idle work for [`Presenter::warm`]; never presented, never counted in
     /// flight. Its client frames stay pinned until it is done.
-    Warm {
-        frame: Box<FramePaint>,
-        pins: crate::shell::gpu_frames::FramePins,
-    },
+    Warm(Box<Warm>),
     Resize((u32, u32)),
     Dpms(bool),
     Stop,
+}
+
+/// Idle work for the render thread ([`PresentPipe::warm`]).
+struct Warm {
+    frame: FramePaint,
+    pins: crate::shell::gpu_frames::FramePins,
 }
 
 /// Signalled by the render thread each time a frame retires. Boxed as a trait object so
@@ -295,6 +298,17 @@ impl RetireBoard {
             .push_back(outcome);
     }
 
+    /// Run [`Presenter::warm`] for `frame` while no frame is in flight: a
+    /// frame handed over before or during it goes first. Its client frames
+    /// go back once it is done.
+    fn warm(&self, presenter: &mut dyn Presenter, Warm { frame, pins }: Warm) {
+        let idle = || self.inflight.load(Ordering::Acquire) == 0;
+        if idle() {
+            presenter.warm(&frame, &idle);
+        }
+        drop(pins);
+    }
+
     /// Publish one finished frame, ending with the in-flight decrement that
     /// returns its capacity.
     fn publish(&self, retirement: Retirement, queue_depth: usize) {
@@ -310,22 +324,6 @@ impl RetireBoard {
         // Decrement *after* the present so the logic thread's capacity check reflects work actually finished, not work dequeued.
         self.inflight.fetch_sub(1, Ordering::Release);
     }
-}
-
-/// Run [`Presenter::warm`] for `frame` while no frame is in flight: a frame
-/// handed over before or during it goes first. Its client frames go back
-/// once it is done.
-fn warm_while_idle(
-    presenter: &mut dyn Presenter,
-    frame: &FramePaint,
-    pins: crate::shell::gpu_frames::FramePins,
-    inflight: &AtomicUsize,
-) {
-    let idle = || inflight.load(Ordering::Acquire) == 0;
-    if idle() {
-        presenter.warm(frame, &idle);
-    }
-    drop(pins);
 }
 
 /// Log one presented frame: its lifecycle record and the presenter's own detail.
@@ -455,9 +453,7 @@ impl PresentPipe {
                             // Then wake the loop — strictly after the decrement, so a loop that wakes on this signal is guaranteed to see the capacity.
                             on_retire();
                         }
-                        PresentMsg::Warm { frame, pins } => {
-                            warm_while_idle(&mut *presenter, &frame, pins, &board.inflight)
-                        }
+                        PresentMsg::Warm(warm) => board.warm(&mut *presenter, *warm),
                         PresentMsg::Resize(size) => presenter.resize(size),
                         PresentMsg::Dpms(on) => presenter.set_dpms(on),
                         PresentMsg::Stop => break,
@@ -644,10 +640,7 @@ impl PresentPipe {
     pub fn warm(&self, frame: FramePaint) -> bool {
         let pins = frame.client_frame_pins();
         self.tx
-            .send(PresentMsg::Warm {
-                frame: Box::new(frame),
-                pins,
-            })
+            .send(PresentMsg::Warm(Box::new(Warm { frame, pins })))
             .is_ok()
     }
 

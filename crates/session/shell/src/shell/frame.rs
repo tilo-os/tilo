@@ -2379,7 +2379,7 @@ impl FrameBuilder {
             return;
         }
         if frame.cache.is_none() && after_layers {
-            frame.cache = self.layers_at_rest();
+            frame.cache = self.draw_layers_at_rest();
         }
         if frame.cache.is_some() {
             self.layers_stale = false;
@@ -2405,8 +2405,20 @@ impl FrameBuilder {
     /// pans' motion stay as the frames left them. `None` when the desktop is
     /// not drawn as layers: on several displays, under a filter over the
     /// whole desktop, with a strip panned between pixels or materials up.
+    ///
+    /// The desktop is drawn as layers twice. The first canvas draw after
+    /// frames drawn in screen space fills the widgets' canvas caches, and a
+    /// widget replayed from its cache encodes otherwise than one drawn
+    /// afresh; the second draw is what the frames of a pan then draw, so
+    /// the presenter's layers compare equal to the pan's first frame.
     pub fn layers_at_rest(&mut self) -> Option<FrameCache> {
         self.layers_stale = false;
+        self.draw_layers_at_rest()?;
+        self.draw_layers_at_rest()
+    }
+
+    /// One draw of [`Self::layers_at_rest`].
+    fn draw_layers_at_rest(&mut self) -> Option<FrameCache> {
         if self.drawing_layers_at_rest
             || self.layer_policy != LayerPolicy::WhilePanning
             || self.retained_layer_width.is_none()
