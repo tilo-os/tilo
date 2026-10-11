@@ -439,6 +439,21 @@ pub struct DocumentVersion {
     pub name: String,
 }
 
+/// Run an effect's job on the app runtime. Every effect's future is boxed
+/// into this one task type, so the runtime's task machinery is compiled once
+/// rather than once per effect.
+fn spawn_job(
+    job: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+) -> ui_core::rt::JoinHandle<()> {
+    ui_core::rt::app().spawn(job)
+}
+
+/// Run an effect's blocking job on the app runtime's blocking threads, as one
+/// task type for every effect ([`spawn_job`]).
+fn spawn_blocking_job(job: Box<dyn FnOnce() + Send>) -> ui_core::rt::JoinHandle<()> {
+    ui_core::rt::app().spawn_blocking(job)
+}
+
 impl<R: Resource, H: 'static> EffectCx<R, H> {
     pub(crate) fn new(env: EffectEnv<R>, invocation: Option<InvocationId>) -> Self {
         Self {
@@ -621,7 +636,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     {
         let (progress, _) = self.track(Some(Self::then(then)));
         let future = work(progress.clone());
-        let task = ui_core::rt::app().spawn(async move {
+        let task = spawn_job(Box::pin(async move {
             let mut future = std::pin::pin!(future);
             let value = std::future::poll_fn(|cx| {
                 match progress.with_effect(|| Ok(future.as_mut().poll(cx))) {
@@ -635,7 +650,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
                 Ok(value) => progress.finish(Box::new(value)),
                 Err(error) => progress.fail(error),
             }
-        });
+        }));
         if let Some(started) = self.started.as_mut() {
             started.core.task = Some(task);
         }
@@ -654,12 +669,12 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         T: Send + 'static,
     {
         let (progress, _) = self.track(Some(Self::then(then)));
-        let task = ui_core::rt::app().spawn_blocking(move || {
+        let task = spawn_blocking_job(Box::new(move || {
             match progress.with_effect(|| Ok(work(progress.clone()))) {
                 Ok(value) => progress.finish(Box::new(value)),
                 Err(error) => progress.fail(error),
             }
-        });
+        }));
         if let Some(started) = self.started.as_mut() {
             started.core.task = Some(task);
         }
