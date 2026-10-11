@@ -1279,10 +1279,15 @@ impl<R: Resource> RootModel for ResourceRoot<R> {
         self.content.view_only_scroll(event)
     }
 
-    // The root adds no structure of its own: a change its content can
-    // describe stays described.
+    // The root adds no structure of its own beyond swapping its view for
+    // the unreadable state: a change its view can describe stays described.
     fn take_structure_change(&mut self) -> ui_core::widget::StructureChange {
-        self.content.take_structure_change()
+        let change = self.view_mut().take_structure_change();
+        if std::mem::take(&mut self.swapped) {
+            ui_core::widget::StructureChange::Rebuild
+        } else {
+            change
+        }
     }
 
     fn record_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
