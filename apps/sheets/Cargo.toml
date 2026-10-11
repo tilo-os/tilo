@@ -37,11 +37,11 @@ tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features 
 uuid.workspace = true
 
 [dev-dependencies]
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # Builds real-world-shaped .xlsx/.ods fixtures and inspects exported packages.
 zip.workspace = true
 tempfile.workspace = true
-tilo-automerge.workspace = true
 
 [lints]
 workspace = true

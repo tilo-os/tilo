@@ -1,9 +1,14 @@
 //! Damage from the outer, ordinarily mounted component after real note input.
 use crate::component_support::*;
-use notes::{actions, doc::NotesDoc};
+use notes::read;
 use std::{cell::RefCell, rc::Rc};
 use ui::{Widget, headless::FrameHarness};
 use vello::{Scene, kurbo::Rect, peniko::Color};
+
+/// Bounds a wait that ends as soon as the window settles; only a hang
+/// reaches it. Settling is a fixed amount of work, but how long it takes on
+/// a builder running every other test beside it is not.
+const HANG_BOUND: ui::time::Duration = ui::time::Duration::from_secs(30);
 
 struct DamageWitness {
     inner: Box<dyn Widget>,
@@ -67,13 +72,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     )
     .unwrap();
     driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
-    invoke(
-        &mut driver,
-        11,
-        actions::page_resource_id(f.child),
-        "open",
-        None,
-    );
+    open_note(&mut driver, 11, f.child, None);
     driver
         .perform_named("block_editor", &ui::a11y::Action::Focus)
         .unwrap();
@@ -82,7 +81,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     // ordinary edit proves stable app chrome forwards the paragraph damage.
     driver.key("x");
     let started = ui::time::now();
-    let settled = driver.settle_for_capture(ui::time::Duration::from_secs(2));
+    let settled = driver.settle_for_capture(HANG_BOUND);
     if !settled {
         eprintln!(
             "paragraph-settle-demand key={key:?} reduce_motion={reduce_motion} timestamp={advance_timestamp} elapsed={:?}",
@@ -106,7 +105,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     let actual = f
         .records
         .read(&checkout.id, |doc| {
-            NotesDoc::page_block_snapshots(doc, f.child)
+            read::page_block_snapshots(doc, f.child)
                 .into_iter()
                 .map(|(_, text)| text)
                 .collect::<Vec<_>>()

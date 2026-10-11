@@ -300,7 +300,7 @@ fn replacing_the_room_requires_fresh_component_contexts() {
     let records = RecordStore::in_memory();
     let mut surface =
         DesktopSurface::build(&tree, &records, &mut Unavailable, SurfaceChrome::default());
-    tree.workspaces[0].room = tilo_desktop_model::RoomId::new();
+    tree.workspaces[0].set_room(tilo_desktop_model::RoomId::new());
     assert_eq!(
         surface.reconcile(&tree, &records, &mut Unavailable),
         tilo_desktop::composition::ReconcileOutcome::RebuildRequired

@@ -1,5 +1,5 @@
 //! Read-only reported dependency graph, using the shared retained canvas.
-use crate::resource::{ChipProject, ProjectState};
+use crate::resource::{Project as ChipProject, ProjectState};
 use crate::verification::flow::{
     Comparison, DependencyKind, EvidenceFlow, Observation, SimulationOutcome,
 };
@@ -18,8 +18,12 @@ fn tr(key: &str) -> String {
 pub fn anchor(report: &str, kind: &str, id: &str) -> String {
     format!("{report}/{kind}/{id}")
 }
+/// The id the evidence item is published under.
 pub fn resource_id(report: &str, kind: &str, id: &str) -> String {
-    format!("chip_design.flow:{}", anchor(report, kind, id))
+    format!(
+        "chip_design.project/derived/flow:{}",
+        anchor(report, kind, id)
+    )
 }
 pub fn split(value: &str) -> Option<(&str, &str, &str)> {
     let mut parts = value.splitn(3, '/');
@@ -244,7 +248,7 @@ fn inspector(
         let mut body = Column::new().push(Box::new(PropertyList::new(properties)));
         if target.is_some() {
             body = body.push(Box::new(cx.effect_button(
-                &tr("chip-flow-open-subflow"),
+                tr("chip-flow-open-subflow"),
                 &ChipEffect::OpenEvidenceSubflow {
                     report: report.into(),
                     id: id.into(),
@@ -367,11 +371,14 @@ pub fn present(
     let target = match effect {
         ChipEffect::OpenEvidenceSubflow { report, id } => cx
             .live()
-            .with(|state| subflow_target(state, &report, &id).map(str::to_owned))
+            .with(|state| subflow_target(&ProjectState::of(state), &report, &id).map(str::to_owned))
             .ok_or_else(|| tr("chip-flow-not-imported"))?,
         ChipEffect::InspectEvidence { report, item: part } => {
             let target = format!("{report}/{part}");
-            if !cx.live().with(|state| item(state, &target).is_some()) {
+            if !cx
+                .live()
+                .with(|state| item(&ProjectState::of(state), &target).is_some())
+            {
                 return Err(tr("chip-report-missing"));
             }
             target

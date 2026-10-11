@@ -23,16 +23,17 @@ use taffy::{NodeId, TaffyTree};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
-use ui::tilo_resource::{self, ActionRef};
-use ui::widget::{AppModel, Dropdown, ModelPath, ProgressBar, Sparkline, Toggle, Widget};
+use ui::tilo_resource;
+use ui::widget::{AppModel, ModelPath, ProgressBar, Sparkline, Widget};
 
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
-use crate::i18n::{t, t_args};
+use crate::i18n::{english, t, t_args};
 use crate::prefs::{PowerActionPref, PowerPrefs};
 use crate::resource::Settings;
+use crate::row::Row;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{El, caption, card, choice_row, error_caption, rows, setting_row, value_row};
+use crate::widgets::{El, caption, card, error_caption, rows, value_row};
 use ui::i18n::ArgValue;
 
 /// Idle-suspend timeout options, `(label, minutes)`. `0` = never.
@@ -208,14 +209,6 @@ fn health_explanation_shown(battery: &BatteryInfo) -> String {
         Some(_) => t("power-health-severe"),
     }
 }
-
-/// The English names of a `(label, value)` table, as an effect's choices.
-fn english<T>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = &'static str> {
-    table.iter().map(|(label, _)| *label)
-}
-
-/// The idle-suspend timeouts: the default one, and one per profile.
-const SUSPEND_PROFILES: [&str; 4] = ["default", "saver", "balanced", "performance"];
 
 /// This device's power hardware, as the pane and the effects reach it.
 pub trait PowerControl: Send + Sync {
@@ -483,99 +476,17 @@ pub enum PowerEffect {
         #[param("The cap, in percent")]
         percent: u32,
     },
-    /// Suspend when idle, or never.
-    #[effect(idempotent)]
-    SetAutoSuspend { on: bool },
-    /// Set how long the device waits before suspending.
-    #[effect(idempotent)]
-    SetSuspendAfter {
-        #[param("Which timeout: the default, or a profile's", choices = SUSPEND_PROFILES)]
-        profile: String,
-        #[param("How long", choices = english(SUSPEND_OPTIONS))]
-        after: String,
-    },
-    /// Set how long the screen stays on while idle.
-    #[effect(idempotent)]
-    SetBlankAfter {
-        #[param("How long", choices = english(BLANK_OPTIONS))]
-        after: String,
-    },
-    /// Set how long before an idle session locks.
-    #[effect(idempotent)]
-    SetLockAfter {
-        #[param("How long", choices = english(LOCK_OPTIONS))]
-        after: String,
-    },
-    /// Set what closing the lid does.
-    #[effect(idempotent)]
-    SetLidAction {
-        #[param("What it does", choices = ACTION_OPTIONS.iter().map(|pref| pref.display()))]
-        action: String,
-    },
-    /// Set what the power key does.
-    #[effect(idempotent)]
-    SetPowerKeyAction {
-        #[param("What it does", choices = ACTION_OPTIONS.iter().map(|pref| pref.display()))]
-        action: String,
-    },
-    /// Set what happens when the battery is critically low.
-    #[effect(idempotent)]
-    SetCriticalAction {
-        #[param("What it does", choices = ACTION_OPTIONS.iter().map(|pref| pref.display()))]
-        action: String,
-    },
 }
 
-/// Answer `effect`: hardware changes run off the UI thread; the idle and
-/// button preferences are the device's `power` settings.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per power effect, each a short hardware or preference change"
-)]
+/// Answer `effect`: hardware changes run off the UI thread. The idle and
+/// button preferences are field edits of the `power` section.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: PowerEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
-    let host = app.host();
     let not = |value: &str| format!("`{value}` is not offered");
-    let duration = |options: &[(&str, u32)], after: &str| {
-        duration_from_options(options, after).ok_or_else(|| not(after))
-    };
-    let action = |label: &str| action_from_label(label).ok_or_else(|| not(label));
     match effect {
-        PowerEffect::SetAutoSuspend { on } => {
-            host.update(|power: &mut PowerPrefs| power.auto_suspend = on)
-        }
-        PowerEffect::SetSuspendAfter { profile, after } => {
-            let minutes = duration(SUSPEND_OPTIONS, &after)?;
-            host.update(|power: &mut PowerPrefs| match profile.as_str() {
-                "saver" => power.saver_suspend_minutes = minutes,
-                "balanced" => power.balanced_suspend_minutes = minutes,
-                "performance" => power.performance_suspend_minutes = minutes,
-                _ => power.suspend_minutes = minutes,
-            })
-        }
-        PowerEffect::SetBlankAfter { after } => {
-            let minutes = duration(BLANK_OPTIONS, &after)?;
-            host.update(|power: &mut PowerPrefs| power.blank_minutes = minutes)
-        }
-        PowerEffect::SetLockAfter { after } => {
-            let minutes = duration(LOCK_OPTIONS, &after)?;
-            host.update(|power: &mut PowerPrefs| power.lock_minutes = minutes)
-        }
-        PowerEffect::SetLidAction { action: label } => {
-            let pref = action(&label)?;
-            host.update(|power: &mut PowerPrefs| power.lid_close_action = pref)
-        }
-        PowerEffect::SetPowerKeyAction { action: label } => {
-            let pref = action(&label)?;
-            host.update(|power: &mut PowerPrefs| power.power_key_action = pref)
-        }
-        PowerEffect::SetCriticalAction { action: label } => {
-            let pref = action(&label)?;
-            host.update(|power: &mut PowerPrefs| power.critical_action = pref)
-        }
         PowerEffect::SetPowerProfile { profile } => {
             let profile = profile_from_label(&profile).ok_or_else(|| not(&profile))?;
             let area = app.power();
@@ -703,22 +614,6 @@ impl PowerPane {
         self.prefs.get()
     }
 
-    /// A dropdown over `options`, showing `current`, bound to `set`.
-    fn choice(
-        &self,
-        id: Option<&str>,
-        options: Vec<String>,
-        current: &str,
-        set: impl tilo_resource::Binds<crate::effects::SettingsEffect, String>,
-    ) -> El {
-        let mut dropdown = Dropdown::from_state(options, &LocalState::new(current.to_owned()))
-            .with_placeholder(current);
-        if let Some(id) = id {
-            dropdown = dropdown.with_id(id);
-        }
-        Box::new(self.cx.bind(dropdown, set))
-    }
-
     fn build_composition(&self) -> Box<dyn Widget> {
         let mut cards = vec![
             self.battery_card(),
@@ -780,13 +675,13 @@ impl PowerPane {
                 .map(|limit| format!("{limit}%"))
                 .collect();
             let current = format!("{}%", capability.current);
-            battery_rows.push(choice_row(
-                &t("power-charge-cap"),
-                Box::new(
-                    self.cx.bind(
-                        Dropdown::from_state(choices, &LocalState::new(current.clone()))
-                            .with_id("power.charge_limit")
-                            .with_placeholder(&current),
+            battery_rows.push(
+                self.cx
+                    .row(t("power-charge-cap"))
+                    .id("power.charge_limit")
+                    .choice_effect(
+                        choices,
+                        &LocalState::new(current),
                         effect(PowerEffect::SET_CHARGE_LIMIT).map(|shown: String| {
                             shown
                                 .trim_end_matches('%')
@@ -794,8 +689,7 @@ impl PowerPane {
                                 .unwrap_or_default()
                         }),
                     ),
-                ),
-            ));
+            );
             let detail = match capability.backend {
                 ChargeCapBackend::ConservationMode => t("power-charge-cap-conservation"),
                 ChargeCapBackend::HuaweiWmi => t("power-charge-cap-huawei"),
@@ -835,21 +729,22 @@ impl PowerPane {
                 &t("power-profile-unavailable"),
             )]
         } else {
-            vec![choice_row(
-                &t("power-profile"),
-                self.choice(
-                    Some("power.profile"),
-                    profile_opts,
-                    &current,
-                    effect(PowerEffect::SET_POWER_PROFILE).map(|shown: String| {
-                        profile_from_label(&shown)
-                            .and_then(|profile| {
-                                PROFILES.iter().find(|(_, known)| *known == profile)
-                            })
-                            .map_or(shown, |(english, _)| (*english).to_owned())
-                    }),
-                ),
-            )]
+            vec![
+                self.cx
+                    .row(t("power-profile"))
+                    .id("power.profile")
+                    .choice_effect(
+                        profile_opts,
+                        &LocalState::new(current),
+                        effect(PowerEffect::SET_POWER_PROFILE).map(|shown: String| {
+                            profile_from_label(&shown)
+                                .and_then(|profile| {
+                                    PROFILES.iter().find(|(_, known)| *known == profile)
+                                })
+                                .map_or(shown, |(english, _)| (*english).to_owned())
+                        }),
+                    ),
+            ]
         };
         profile_rows.push(caption(&t("power-profile-caption")));
         if let Some(notice) = &self.notices.profile {
@@ -864,36 +759,39 @@ impl PowerPane {
         card(&t("power-profile-title"), rows(profile_rows))
     }
 
-    /// A timeout chooser: the shown label becomes the English one the effect
-    /// takes.
+    /// `row` choosing a timeout among `options`, showing `current`.
     fn timeout(
-        &self,
-        id: Option<&str>,
+        row: Row<'_>,
         options: &'static [(&'static str, u32)],
         current: &str,
-        set: ActionRef<PowerEffect, String>,
+        field: tilo_resource::Path<PowerPrefs, u32>,
     ) -> El {
-        self.choice(
-            id,
+        row.choice(
             duration_options(options),
-            current,
-            effect(set).map(move |shown: String| duration_english(options, &shown)),
+            &LocalState::new(current.to_owned()),
+            field,
+            move |shown: String| {
+                duration_from_options(options, &shown)
+                    .ok_or_else(|| format!("`{shown}` is not offered"))
+            },
         )
     }
 
-    /// A per-profile suspend timeout chooser.
-    fn suspend_timeout(&self, profile: &'static str, current: &str) -> El {
-        self.choice(
-            (profile == "default").then_some("power.suspend"),
-            duration_options(SUSPEND_OPTIONS),
-            current,
-            effect(PowerEffect::SET_SUSPEND_AFTER).map(move |shown: String| {
-                (
-                    profile.to_owned(),
-                    duration_english(SUSPEND_OPTIONS, &shown),
-                )
-            }),
-        )
+    /// `row` choosing the suspend timeout of `profile`.
+    fn suspend_timeout(row: Row<'_>, profile: &'static str, current: &str) -> El {
+        let paths = PowerPrefs::paths();
+        let field = match profile {
+            "saver" => paths.saver_suspend_minutes,
+            "balanced" => paths.balanced_suspend_minutes,
+            "performance" => paths.performance_suspend_minutes,
+            _ => paths.suspend_minutes,
+        };
+        let row = if profile == "default" {
+            row.id("power.suspend")
+        } else {
+            row
+        };
+        Self::timeout(row, SUSPEND_OPTIONS, current, field)
     }
 
     fn idle_card(&self) -> El {
@@ -901,76 +799,64 @@ impl PowerPane {
         card(
             &t("power-idle-title"),
             rows(vec![
-                setting_row(
-                    &t("power-suspend-idle"),
-                    Box::new(
-                        self.cx.bind(
-                            Toggle::from_state(&LocalState::new(prefs.auto_suspend))
-                                .with_id("power.auto_suspend"),
-                            effect(PowerEffect::SET_AUTO_SUSPEND),
-                        ),
+                self.cx
+                    .row(t("power-suspend-idle"))
+                    .id("power.auto_suspend")
+                    .toggle(
+                        &LocalState::new(prefs.auto_suspend),
+                        PowerPrefs::paths().auto_suspend,
                     ),
+                Self::suspend_timeout(
+                    self.cx.row(t("power-suspend-after")),
+                    "default",
+                    &suspend_label(prefs.suspend_minutes),
                 ),
-                choice_row(
-                    &t("power-suspend-after"),
-                    self.suspend_timeout("default", &suspend_label(prefs.suspend_minutes)),
+                Self::timeout(
+                    self.cx.row(t("power-blank")).id("power.blank"),
+                    BLANK_OPTIONS,
+                    &blank_label(prefs.blank_minutes),
+                    PowerPrefs::paths().blank_minutes,
                 ),
-                choice_row(
-                    &t("power-blank"),
-                    self.timeout(
-                        Some("power.blank"),
-                        BLANK_OPTIONS,
-                        &blank_label(prefs.blank_minutes),
-                        PowerEffect::SET_BLANK_AFTER,
-                    ),
-                ),
-                choice_row(
-                    &t("power-lock-after"),
-                    self.timeout(
-                        Some("power.lock"),
-                        LOCK_OPTIONS,
-                        &lock_label(prefs.lock_minutes),
-                        PowerEffect::SET_LOCK_AFTER,
-                    ),
+                Self::timeout(
+                    self.cx.row(t("power-lock-after")).id("power.lock"),
+                    LOCK_OPTIONS,
+                    &lock_label(prefs.lock_minutes),
+                    PowerPrefs::paths().lock_minutes,
                 ),
                 caption(&t("power-idle-caption")),
-                choice_row(
-                    &t("power-saver-suspend"),
-                    self.suspend_timeout("saver", &suspend_label(prefs.saver_suspend_minutes)),
+                Self::suspend_timeout(
+                    self.cx.row(t("power-saver-suspend")),
+                    "saver",
+                    &suspend_label(prefs.saver_suspend_minutes),
                 ),
-                choice_row(
-                    &t("power-balanced-suspend"),
-                    self.suspend_timeout(
-                        "balanced",
-                        &suspend_label(prefs.balanced_suspend_minutes),
-                    ),
+                Self::suspend_timeout(
+                    self.cx.row(t("power-balanced-suspend")),
+                    "balanced",
+                    &suspend_label(prefs.balanced_suspend_minutes),
                 ),
-                choice_row(
-                    &t("power-performance-suspend"),
-                    self.suspend_timeout(
-                        "performance",
-                        &suspend_label(prefs.performance_suspend_minutes),
-                    ),
+                Self::suspend_timeout(
+                    self.cx.row(t("power-performance-suspend")),
+                    "performance",
+                    &suspend_label(prefs.performance_suspend_minutes),
                 ),
                 caption(&t("power-profile-idle-caption")),
             ]),
         )
     }
 
-    /// A button-action chooser.
+    /// `row` choosing what a button or a critical battery does.
     fn action_choice(
-        &self,
-        id: &str,
+        row: Row<'_>,
         current: PowerActionPref,
-        set: ActionRef<PowerEffect, String>,
+        field: tilo_resource::Path<PowerPrefs, PowerActionPref>,
     ) -> El {
-        self.choice(
-            Some(id),
+        row.choice(
             action_options(),
-            &action_shown(current),
-            effect(set).map(|shown: String| {
-                action_from_label(&shown).map_or(shown, |pref| pref.display().to_owned())
-            }),
+            &LocalState::new(action_shown(current)),
+            field,
+            |shown: String| {
+                action_from_label(&shown).ok_or_else(|| format!("`{shown}` is not offered"))
+            },
         )
     }
 
@@ -989,29 +875,20 @@ impl PowerPane {
         card(
             &t("power-behaviour-title"),
             rows(vec![
-                choice_row(
-                    &t("power-lid"),
-                    self.action_choice(
-                        "power.lid",
-                        prefs.lid_close_action,
-                        PowerEffect::SET_LID_ACTION,
-                    ),
+                Self::action_choice(
+                    self.cx.row(t("power-lid")).id("power.lid"),
+                    prefs.lid_close_action,
+                    PowerPrefs::paths().lid_close_action,
                 ),
-                choice_row(
-                    &t("power-power-key"),
-                    self.action_choice(
-                        "power.power_key",
-                        prefs.power_key_action,
-                        PowerEffect::SET_POWER_KEY_ACTION,
-                    ),
+                Self::action_choice(
+                    self.cx.row(t("power-power-key")).id("power.power_key"),
+                    prefs.power_key_action,
+                    PowerPrefs::paths().power_key_action,
                 ),
-                choice_row(
-                    &t("power-critical"),
-                    self.action_choice(
-                        "power.critical",
-                        prefs.critical_action,
-                        PowerEffect::SET_CRITICAL_ACTION,
-                    ),
+                Self::action_choice(
+                    self.cx.row(t("power-critical")).id("power.critical"),
+                    prefs.critical_action,
+                    PowerPrefs::paths().critical_action,
                 ),
                 caption(&warn),
             ]),
@@ -1040,14 +917,6 @@ impl PowerPane {
         }
         Some(card(&t("power-devices-title"), rows(entries)))
     }
-}
-
-/// The English name of a duration shown in either language.
-fn duration_english(options: &[(&'static str, u32)], shown: &str) -> String {
-    options
-        .iter()
-        .find(|(english, _)| *english == shown || duration_shown(english) == shown)
-        .map_or_else(|| shown.to_owned(), |(english, _)| (*english).to_owned())
 }
 
 impl Widget for PowerPane {
@@ -1229,24 +1098,20 @@ mod tests {
     #[test]
     fn idle_and_button_preferences_write_the_power_section() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        for effect in [
-            PowerEffect::SetAutoSuspend { on: false },
-            PowerEffect::SetBlankAfter {
-                after: "30 minutes".into(),
-            },
-            PowerEffect::SetLockAfter {
-                after: "Never".into(),
-            },
-            PowerEffect::SetSuspendAfter {
-                profile: "saver".into(),
-                after: "5 minutes".into(),
-            },
-            PowerEffect::SetLidAction {
-                action: PowerActionPref::Lock.display().into(),
-            },
-        ] {
-            app.effect(&SettingsEffect::from(effect)).unwrap();
-        }
+        crate::host::testing::edit_field(
+            &mut app,
+            crate::host::testing::POWER,
+            "auto_suspend",
+            false,
+        )
+        .unwrap();
+        let edit = |app: &mut TestApp<SettingsShell>, field: &str, value: serde_json::Value| {
+            crate::host::testing::edit_field(app, crate::host::testing::POWER, field, value)
+        };
+        edit(&mut app, "blank_minutes", 30.into()).unwrap();
+        edit(&mut app, "lock_minutes", 0.into()).unwrap();
+        edit(&mut app, "saver_suspend_minutes", 5.into()).unwrap();
+        edit(&mut app, "lid_close_action", "lock".into()).unwrap();
         let power = app.settings::<PowerPrefs>().get();
         assert!(!power.auto_suspend);
         assert_eq!(power.blank_minutes, 30);
@@ -1254,10 +1119,8 @@ mod tests {
         assert_eq!(power.saver_suspend_minutes, 5);
         assert_eq!(power.lid_close_action, PowerActionPref::Lock);
         assert!(
-            app.effect(&SettingsEffect::from(PowerEffect::SetBlankAfter {
-                after: "7 minutes".into(),
-            }))
-            .is_err()
+            edit(&mut app, "blank_minutes", (25 * 60).into()).is_err(),
+            "a delay past a day is refused"
         );
     }
 }

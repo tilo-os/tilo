@@ -1,13 +1,14 @@
 //! Pure data model for the Camera app.
 //!
-//! Everything here is plain data + pure logic — no rendering, no CRDT, no
-//! IO. The CRDT bridge lives in [`crate::doc`]; the widget in
+//! Everything here is plain data + pure logic — no rendering, no document,
+//! no IO. The record lives in [`crate::record`]; the widget in
 //! [`crate::app`]. Keeping the model pure makes it unit-testable without a
 //! GPU or an event loop.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, JsonSchema, Model};
 
 /// Top-level screen / mode the app is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,8 +79,9 @@ impl CaptureMode {
 }
 
 /// Which physical camera is selected.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum Facing {
+    #[default]
     Back,
     Front,
     Wide,
@@ -363,8 +365,9 @@ impl ui::storage::SettingsSchema for CameraDevicePreferences {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum CaptureKind {
+    #[default]
     Photo,
     Video,
 }
@@ -419,9 +422,11 @@ impl Capture {
 /// One entry in the scan history — the raw decoded text plus when it was
 /// seen. The [`CodeKind`] and display summary are derived on demand via
 /// [`classify`], so only the ground-truth payload is persisted.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScanEntry {
+    /// What the code said.
     pub raw: String,
+    /// When it was scanned, in Unix seconds.
     pub ts: i64,
 }
 

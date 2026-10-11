@@ -329,7 +329,7 @@ impl PasswordsModel {
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<PasswordsShell>()
+    ui::built_in_definition!(PasswordsShell)
 }
 
 #[cfg(test)]

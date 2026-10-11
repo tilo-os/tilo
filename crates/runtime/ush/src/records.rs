@@ -221,8 +221,9 @@ impl Records {
             .ok_or_else(|| RecordError::Missing(key.to_owned()))?;
         let mut replica = Replica::<Environment>::from_doc(doc).as_author(AUTHOR);
         replica.set_now_ms(now_ms());
+        // The person asked for this at the shell: that is the confirmation.
         replica
-            .apply(invoke)
+            .apply_confirmed(invoke)
             .map_err(|e| RecordError::Refused(e.to_string()))?;
         store
             .append(replica.doc_mut())
@@ -385,7 +386,7 @@ mod tests {
         assert_eq!(stored.tools[0].packages, vec!["pandoc".to_string()]);
         assert_eq!(stored.grants.0.len(), 1);
         assert!(matches!(
-            records.apply("absent", Environment::RENAME.with("x".into())),
+            records.apply("absent", Environment::RENAME.with("x")),
             Err(RecordError::Missing(_))
         ));
     }

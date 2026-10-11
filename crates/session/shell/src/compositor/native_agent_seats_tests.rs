@@ -28,7 +28,7 @@ impl Fixture {
             crate::shell::state::WorkspaceId(91),
             "Agents' machine",
         );
-        workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         tree.desktop.workspaces.push(workspace);
         tree.set_active(crate::shell::state::WorkspaceId(91));
         let frame_builder = FrameBuilder::with_handle(tree.shared(), false, (800, 600));

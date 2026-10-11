@@ -140,6 +140,9 @@ pub(super) struct ActionRuntime {
     pub(super) action_palette: Option<crate::action_palette::ActionPalette>,
     /// Stable opener identity, never a node or pointer from the modal's old tree.
     pub(super) ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
+    /// The control an accessibility action focused while the same action
+    /// replaced widgets: focused again once the next layout admits them.
+    pub(super) focus_after_rebuild: Option<crate::widget::layout::CompositionFocus>,
     pub(super) action_registry: tilo_actions::ActionRegistry,
     // Independent from scheduling invalidation: mutable unbound decoder access.
     pub(super) action_registry_generation: u64,
@@ -223,6 +226,7 @@ impl ActionRuntime {
             published_invocations: Default::default(),
             action_palette: None,
             ordinary_palette_return_focus: None,
+            focus_after_rebuild: None,
             action_registry: tilo_actions::ActionRegistry::new(),
             action_registry_generation: 0,
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
@@ -376,6 +380,7 @@ impl CollaborationRuntime {
         manager: CollaborationManager,
         local_author: crate::permissions::UserId,
     ) -> Self {
+        crate::history_source::authors::read_as(&local_author.0);
         Self {
             manager,
             room_manager: None,

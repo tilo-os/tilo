@@ -14,7 +14,7 @@ fn kinds() -> Kinds {
 #[test]
 fn a_kind_reads_and_publishes_what_the_typed_resource_does() {
     let mut replica = Replica::<Board>::new();
-    replica.apply(Board::RENAME.with("Launch".into())).unwrap();
+    replica.apply(Board::RENAME.with("Launch")).unwrap();
     let kinds = kinds();
     let board = kinds.get("test.board").expect("registered by kind");
     assert_eq!(
@@ -49,7 +49,7 @@ fn a_kind_names_an_open_resource_from_its_state() {
             .map(|board| board.title.clone())
     }
     let mut replica = Replica::<Board>::new();
-    replica.apply(Board::RENAME.with("Roadmap".into())).unwrap();
+    replica.apply(Board::RENAME.with("Roadmap")).unwrap();
     let board = ResourceKind::of::<Board>().named(titled);
     assert_eq!(
         board.publish("test.board", replica.doc()).unwrap().label,

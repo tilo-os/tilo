@@ -15,7 +15,28 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::{ShellNetwork, room_topic_id, shell_network_for_test};
 use crate::network::protocol::NeighbourMsg;
-use crate::shell::state::{RoomId, Verb, WorkspaceTree};
+use crate::shell::state::{RoomId, WorkspaceTree};
+use tilo_action_policy::{ActionKind, TreePath};
+
+use super::room_gate::RoomAction;
+
+/// Reading the room.
+fn read() -> RoomAction {
+    (TreePath::root(), ActionKind::Read)
+}
+
+/// Changing the room.
+fn change() -> RoomAction {
+    (TreePath::root(), ActionKind::Undoable)
+}
+
+/// The least change of a document: a comment.
+fn comment() -> RoomAction {
+    (
+        TreePath::root().field(tilo_action_policy::roles::COMMENTS_FIELD),
+        ActionKind::Undoable,
+    )
+}
 
 const ROOM: &str = "6b3f9a10-0000-4000-8000-00000000000c";
 
@@ -37,19 +58,19 @@ fn envelope() -> Box<collab_types::SignedOp> {
         collab_types::document_artifact_id("so.tilo.notes", ROOM, "notes"),
         collab_types::Ed25519PublicKey::from_bytes([2; 32]),
         collab_types::document_attestation_id("so.tilo.notes", ROOM, "notes"),
-        collab_types::OpClass::Comment,
+        collab_types::OpKind::Change,
         std::time::SystemTime::UNIX_EPOCH,
         1,
     ))
 }
 
-/// One message of every variant with the verb the gate must demand of it.
+/// One message of every variant with the action the gate must decide it as.
 /// The gate's own match is exhaustive; this table pins each decision.
 #[allow(
     clippy::too_many_lines,
     reason = "one entry per wire variant keeps the whole admission table in one place"
 )]
-fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
+fn every_variant() -> Vec<(NeighbourMsg, Option<RoomAction>)> {
     use collab_types::{
         ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
         MlsGovernanceFrameV1, PeerPresence, PeerPresencePayload, Signature,
@@ -65,14 +86,14 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 invite_id: None,
                 nonce: 0,
             },
-            Some(Verb::Read),
+            Some(read()),
         ),
         (
             NeighbourMsg::SyncResp {
                 changes: Vec::new(),
                 room: ROOM.into(),
             },
-            Some(Verb::Write),
+            Some(change()),
         ),
         (
             NeighbourMsg::PresenceMoved {
@@ -83,14 +104,14 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 ts: 0,
                 colour: None,
             },
-            Some(Verb::Read),
+            Some(read()),
         ),
         (
             NeighbourMsg::PresenceCleared {
                 peer: 1,
                 key: "cursor".into(),
             },
-            Some(Verb::Read),
+            Some(read()),
         ),
         (
             NeighbourMsg::SurfaceFrame {
@@ -99,7 +120,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 encoded_h264: Vec::new(),
                 ts: 0,
             },
-            Some(Verb::Write),
+            Some(change()),
         ),
         (
             NeighbourMsg::SurfaceStreamStart {
@@ -116,7 +137,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 app_id: String::new(),
                 tab: 0,
             },
-            Some(Verb::Write),
+            Some(change()),
         ),
         (
             NeighbourMsg::SurfaceStreamEnd {
@@ -124,7 +145,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 source_peer: 1,
                 ts: 0,
             },
-            Some(Verb::Write),
+            Some(change()),
         ),
         (
             NeighbourMsg::RemoteInput {
@@ -132,7 +153,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 surface: 7,
                 event: Vec::new(),
             },
-            Some(Verb::Write),
+            Some(change()),
         ),
         (
             NeighbourMsg::PermissionRequest {
@@ -146,9 +167,9 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 peer: 1,
                 capability: "workspace-control:7:granted".into(),
             },
-            Some(Verb::Write),
+            Some(change()),
         ),
-        (NeighbourMsg::Heartbeat { peer: 1, ts: 0 }, Some(Verb::Read)),
+        (NeighbourMsg::Heartbeat { peer: 1, ts: 0 }, Some(read())),
         (
             NeighbourMsg::IdentityHello {
                 cert: device_cert(),
@@ -164,7 +185,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 record_id: "notes".into(),
                 envelope: envelope(),
             },
-            Some(Verb::Comment),
+            Some(comment()),
         ),
         (
             NeighbourMsg::AppPresenceV2 {
@@ -177,7 +198,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 },
                 colour: None,
             },
-            Some(Verb::Read),
+            Some(read()),
         ),
         (
             NeighbourMsg::ScrollbackRequest {
@@ -186,7 +207,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 max: 1,
                 requester: 1,
             },
-            Some(Verb::Read),
+            Some(read()),
         ),
         (
             NeighbourMsg::ScrollbackResponse {
@@ -194,7 +215,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 ops: vec![envelope()],
                 responder: 1,
             },
-            Some(Verb::Read),
+            Some(read()),
         ),
         (
             NeighbourMsg::IdentityAnnouncement {
@@ -209,7 +230,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 device_cert: device_cert(),
                 revocations: Vec::new(),
             },
-            Some(Verb::Read),
+            Some(read()),
         ),
         (
             NeighbourMsg::PersonalContinuityRequest {
@@ -228,7 +249,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
         ),
         (
             NeighbourMsg::RemoteAction { frame: Vec::new() },
-            Some(Verb::Read),
+            Some(read()),
         ),
         (
             NeighbourMsg::MediaCapabilities {
@@ -259,7 +280,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 }),
                 delivery: 0,
             },
-            Some(Verb::Read),
+            Some(read()),
         ),
         (
             NeighbourMsg::MlsAccessRequest {
@@ -274,7 +295,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 }),
                 delivery: 0,
             },
-            Some(Verb::Read),
+            Some(read()),
         ),
         (
             NeighbourMsg::MlsGovernanceAck {
@@ -288,7 +309,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 }),
                 delivery: 0,
             },
-            Some(Verb::Read),
+            Some(read()),
         ),
         (
             NeighbourMsg::PersonalWorkspaces {
@@ -309,7 +330,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 cluster_id: ROOM.into(),
                 hash: "ab".into(),
             },
-            Some(Verb::Read),
+            Some(read()),
         ),
         (
             NeighbourMsg::RecordContentPiece {
@@ -322,13 +343,13 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<Verb>)> {
                 offset: 0,
                 bytes: vec![1],
             },
-            Some(Verb::Read),
+            Some(read()),
         ),
     ]
 }
 
 #[test]
-fn required_room_verb_is_explicit_for_every_variant() {
+fn required_room_action_is_explicit_for_every_variant() {
     let table = every_variant();
     let covered: std::collections::HashSet<_> = table
         .iter()
@@ -342,7 +363,7 @@ fn required_room_verb_is_explicit_for_every_variant() {
     assert_eq!(table.len(), 28, "every NeighbourMsg variant has an entry");
     for (message, expected) in &table {
         assert_eq!(
-            ShellNetwork::required_room_verb(message),
+            ShellNetwork::required_room_action(message),
             *expected,
             "{message:?}"
         );
@@ -415,13 +436,9 @@ fn viewer_app_document_is_dropped_at_the_gate() {
     let room = RoomId::parse(ROOM).expect("room id");
     let mut workspace =
         crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(17), "Shared");
-    workspace.room = room;
+    workspace.set_room(room);
     workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
-    workspace.grant_capability(collab_types::CapOverride::membership(
-        collab_types::Subject::person(person.clone()),
-        room.to_string(),
-        collab_types::Verb::Read,
-    ));
+    workspace.admit(person.clone(), tilo_action_policy::Role::Viewer);
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     let (mut net, _commands) = shell_network_for_test(tree.shared(), 99);
@@ -473,7 +490,7 @@ fn viewer_app_document_is_dropped_at_the_gate() {
     net.dispatch_neighbour_msg(ws, peer, None, false, document());
     let logs = captured.take();
     assert!(logs.contains(GATE_REFUSAL), "{logs}");
-    assert!(logs.contains("Some(Comment)"), "{logs}");
+    assert!(logs.contains(r#"Name(Field, "comments")"#), "{logs}");
 
     let tree = net.replica.lock().expect("replica").tree.clone();
     tree.write()
@@ -482,11 +499,7 @@ fn viewer_app_document_is_dropped_at_the_gate() {
         .iter_mut()
         .find(|workspace| workspace.room == room)
         .expect("workspace")
-        .grant_capability(collab_types::CapOverride::membership(
-            collab_types::Subject::person(person),
-            room.to_string(),
-            collab_types::Verb::Comment,
-        ));
+        .admit(person, tilo_action_policy::Role::Commenter);
     net.dispatch_neighbour_msg(ws, peer, None, false, document());
     let logs = captured.take();
     assert!(!logs.contains(GATE_REFUSAL), "{logs}");

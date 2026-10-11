@@ -21,9 +21,13 @@ pub(crate) struct InputContext<'a> {
 }
 
 impl InputContext<'_> {
-    /// The toolkit's event context for this input, for handing the event to
-    /// one of Calendar's widgets.
+    /// The widget event context for this input, aimed at its own node.
     pub(crate) fn event_ctx(&mut self) -> ui::widget::EventCtx<'_> {
+        self.event_ctx_at(self.node_id)
+    }
+
+    /// The widget event context for this input, aimed at `node_id`.
+    pub(crate) fn event_ctx_at(&mut self, node_id: NodeId) -> ui::widget::EventCtx<'_> {
         ui::widget::EventCtx {
             scale_factor: self.scale_factor,
             modifiers: &self.modifiers,
@@ -31,7 +35,7 @@ impl InputContext<'_> {
             path: self.path,
             handled: self.handled,
             focus_target: self.focus_target,
-            node_id: self.node_id,
+            node_id,
             taffy: self.taffy,
         }
     }

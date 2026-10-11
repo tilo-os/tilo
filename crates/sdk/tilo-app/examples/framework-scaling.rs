@@ -65,7 +65,7 @@ use tilo_app::prelude::*;
 use tilo_app::tilo_resource::profiling::observe;
 use tilo_app::time::Instant;
 use tilo_app::winit::dpi::{PhysicalPosition, PhysicalSize};
-use tilo_app::winit::event::DeviceId;
+use tilo_app::winit::event::{DeviceId, WindowEvent};
 use tilo_app::winit::window::CursorIcon;
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
@@ -136,12 +136,6 @@ pub struct Checklist {
 
 #[resource(kind = "example.framework-scaling", label = "Checklist")]
 impl Checklist {
-    /// Set the next task's title.
-    #[action]
-    pub fn draft(&mut self, title: String) {
-        self.draft = title;
-    }
-
     /// Add `count` tasks at once.
     #[action]
     pub fn seed(&mut self, cx: &mut ActionCx, count: u32) {
@@ -154,16 +148,6 @@ impl Checklist {
                 },
             );
         }
-    }
-
-    /// Mark a task completed or open.
-    ///
-    /// # Errors
-    /// Refuses a task that no longer exists.
-    #[action]
-    pub fn set_done(&mut self, task: &Id, done: bool) -> Result<(), &'static str> {
-        self.tasks.get_mut(task).ok_or("gone")?.done = done;
-        Ok(())
     }
 }
 
@@ -186,22 +170,17 @@ impl ResourceApp for Scaling {
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
-        let draft = cx
-            .input(|list| list.draft.clone(), Checklist::DRAFT)
-            .with_id("draft");
+        let draft = cx.input(Checklist::paths().draft).with_id("draft");
         let rows = cx.each(
             |list| &list.tasks,
             |row| {
-                let Some(id) = row.item().cloned() else {
+                if row.item().is_none() {
                     return Box::new(Column::new()) as Element;
-                };
+                }
+                let done = row.paths().done;
                 Box::new(tilo_app::row![
                     row.text(|task| task.title.clone()),
-                    row.checkbox(
-                        "scaling-done",
-                        |task| task.done,
-                        Checklist::SET_DONE.map(move |done| (id.clone(), done))
-                    ),
+                    row.checkbox("scaling-done", done),
                 ]) as Element
             },
         );
@@ -397,7 +376,7 @@ fn pointer_moves(app: &mut tilo_app::App) -> (f64, usize) {
 /// at rest, then the accessibility tree the host's walk reads.
 fn host_frame(app: &mut tilo_app::App) {
     for _ in 0..3 {
-        let mut scene = Scene::new();
+        let mut scene = tilo_app::advanced::Scene::new();
         if !app.surface_frame(&Surface, &mut scene) || !app.unsettled() {
             break;
         }
@@ -583,7 +562,7 @@ fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool) -> Scrolling {
         SurfaceDamage::default()
     };
     app.init_layout();
-    let mut scene = Scene::new();
+    let mut scene = tilo_app::advanced::Scene::new();
     app.surface_input(
         &Surface,
         WindowEvent::CursorMoved {

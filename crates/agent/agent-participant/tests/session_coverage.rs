@@ -39,7 +39,6 @@ use std::time::{Duration, Instant};
 
 use common::{Driveable, KeywordModel, catalogue, find_edit};
 use tilo_actions::InvocationId;
-use tilo_actions::door::ActionAddress;
 use tilo_actions::door::ActionDescriptor;
 use tilo_actions::remote::{
     ActionHostError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
@@ -208,7 +207,6 @@ async fn every_web_app_over_the_session() {
         AgentScope {
             rooms: vec![ROOM.into()],
             apps: catalogue.iter().map(|d| d.app_id.to_owned()).collect(),
-            may_confirm: false,
         },
         now,
         now + 3_600_000_000_000,
@@ -399,15 +397,20 @@ async fn every_web_app_over_the_session() {
     }
     eprintln!("{table}");
 
-    // A task in plain words, planned by the model planner.
-    let scratchpad = agent
-        .known_records()
-        .into_iter()
-        .chain(received.keys().cloned())
-        .find(|route| route.app_id == "so.tilo.scratchpad")
-        .unwrap();
+    // A task in plain words, planned by the model planner: a verb with a
+    // text parameter the planner fills from the words.
+    let record_of = |app: &str| {
+        agent
+            .known_records()
+            .into_iter()
+            .chain(received.keys().cloned())
+            .find(|route| route.app_id == app)
+            .unwrap()
+    };
+    let scratchpad = record_of("so.tilo.scratchpad");
+    let notes = record_of("so.tilo.notes");
     control
-        .message(r#"In the scratchpad, edit the note to say "Said in plain words""#)
+        .message(r#"In the notes, add a new note titled "Said in plain words""#)
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -434,7 +437,9 @@ async fn every_web_app_over_the_session() {
             task.state != TaskState::Running && task.state != TaskState::Queued
         });
         if done
-            && page(&catalogue, &scratchpad, &received[&scratchpad]).contains("said in plain words")
+            && received.get(&notes).is_some_and(|changes| {
+                page(&catalogue, &notes, changes).contains("said in plain words")
+            })
         {
             break;
         }
@@ -442,7 +447,7 @@ async fn every_web_app_over_the_session() {
     }
     let task = control.info().tasks.last().cloned().unwrap();
     assert_eq!(task.state, TaskState::Completed);
-    assert_eq!(task.steps[0].action, "edit");
+    assert_eq!(task.steps[0].action, "new-note");
 
     // actionsV1 for apps: the browser drives the agent's open records with
     // the remote-action frames it uses for everything else.
@@ -473,15 +478,14 @@ async fn every_web_app_over_the_session() {
         .rows
         .iter()
         .filter_map(tilo_actions::remote::CatalogueRow::target)
-        .find(|target| target.address == ActionAddress::new("scratchpad.note", "edit"))
+        .find(|target| target.address == common::scratchpad_body("").0)
         .expect("the record's declared action is offered");
     assert_eq!(
         offered.rows.len(),
         agent.survey(&scratchpad).len(),
         "the catalogue is the record's whole door, declared and projected"
     );
-    let mut text = serde_json::Map::new();
-    text.insert("text".into(), "Invoked over actionsV1".into());
+    let text = common::scratchpad_body("Invoked over actionsV1").1;
     let request = InvokeRequest {
         on_behalf_of: None,
         invocation: InvocationId::new(),

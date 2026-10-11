@@ -1043,18 +1043,19 @@ fn committed_snapshot(doc: &AutoCommit) -> AutoCommit {
 }
 
 /// The feed lists what people did to the workspace: housekeeping about a
-/// document (a read marker, a reading position) stays in that document's own
-/// history.
+/// document (a read marker, a reading position) and content that came from
+/// outside (a refresh's articles, a process's output) stay in that document's
+/// own history.
 fn insert_rows(
     target: &mut BTreeMap<WorkspaceHistoryId, WorkspaceHistoryEntry>,
     origin: &HistoryOrigin,
     rows: Vec<HistoryEntry>,
 ) {
     for entry in rows {
-        if entry
+        if !entry
             .context
             .as_ref()
-            .is_some_and(ui::tilo_actions::ActionContext::is_housekeeping)
+            .is_none_or(ui::tilo_actions::ActionContext::is_activity)
         {
             continue;
         }

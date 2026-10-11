@@ -34,6 +34,9 @@ launcher = { path = "../../packaging/launcher" }
 runtime-bundle = { path = "../../packaging/runtime-bundle" }
 blake3.workspace = true
 tilo-caps = { path = "../../sdk/tilo-caps" }
+# History's message convention, which `check` lists missing messages by.
+tilo-history = { path = "../../sdk/tilo-history" }
+tilo-actions = { path = "../../collab/actions" }
 sha2.workspace = true
 registry-types = { path = "../../packaging/registry-types" }
 registry-client = { path = "../../packaging/registry-client" }

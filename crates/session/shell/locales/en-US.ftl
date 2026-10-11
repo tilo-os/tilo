@@ -381,6 +381,8 @@ portal-grant-once = Allow once
 portal-grant-session = Allow for this session
 portal-grant-always = Always allow in this workspace
 portal-grant-deny = Deny
+portal-confirm-title = { $who } wants to act for you
+portal-confirm-detail = { $risk } · only this once; nothing is remembered
 portal-risk-none = Only shows information
 portal-risk-low = Low risk: an ordinary, reversible change
 portal-risk-destructive = Destructive: can delete or overwrite
@@ -2058,9 +2060,14 @@ window-transfer-failed-timeout = The app didn't open a window in the other works
 window-transfer-failed-closed = The new window was closed before it opened.
 window-transfer-reopen-failed = The document is here, but the app didn't open a window. Open it again to continue.
 window-transfer-bringing-edits = Bringing over your last edits…
-window-transfer-receipt-copied = Copied “{ $window }” here from { $from }
-window-transfer-receipt-moved-out = Moved “{ $window }” to { $to }
-window-transfer-receipt-moved-in = Moved “{ $window }” here from { $from }
+workspace-allow-app-action = { $lifetime ->
+    [once] Allowed { $app } to use { $target }: { $action }, once
+    [session] Allowed { $app } to use { $target }: { $action }, for this session
+   *[workspace] Allowed { $app } to use { $target }: { $action }, in this workspace
+}
+shell-copy-window-in = Copied “{ $window }” here from { $from }
+shell-move-window-out = Moved “{ $window }” to { $to }
+shell-move-window-in = Moved “{ $window }” here from { $from }
 window-transfer-lost-title = “{ $window }” closed while it was moving
 window-transfer-lost-detail = The app closed unexpectedly, so edits from its last few seconds may be missing. Everything it had saved is now in { $to }.
 window-transfer-late-edits-title = Your last edits in “{ $window }” came along

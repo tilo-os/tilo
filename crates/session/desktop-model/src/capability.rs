@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use collab_types::caps::{CapOverride, Expiry, Scope, Verb};
+use collab_types::caps::{Access, CapOverride, Expiry, Scope};
 
 /// Filesystem-grant access mode. Mirrors the read / read-write split
 /// the portal D-Bus backend surfaces to apps.
@@ -75,38 +75,38 @@ pub enum Capability {
 }
 
 impl Capability {
-    /// The `(scope, verb)` this request descriptor asks for —
+    /// The `(scope, access)` this request descriptor asks for —
     /// [`Capability`] is what an app *asks* for, granting one writes
     /// [`CapOverride`]s. A host allowlist becomes one capability per
     /// host, so dropping one is a meaningful act.
-    pub fn requested_scopes(&self) -> Vec<(Scope, Verb)> {
+    pub fn requested_scopes(&self) -> Vec<(Scope, Access)> {
         match self {
             Capability::Filesystem { path, mode, .. } => {
-                let verb = match mode {
-                    FsMode::Read => Verb::Read,
-                    FsMode::ReadWrite => Verb::Write,
+                let access = match mode {
+                    FsMode::Read => Access::Read,
+                    FsMode::ReadWrite => Access::Write,
                 };
-                vec![(Scope::FsPath(path.to_string_lossy().into_owned()), verb)]
+                vec![(Scope::FsPath(path.to_string_lossy().into_owned()), access)]
             }
-            Capability::Camera { .. } => vec![(Scope::Device("camera".into()), Verb::Read)],
+            Capability::Camera { .. } => vec![(Scope::Device("camera".into()), Access::Read)],
             Capability::Microphone { .. } => {
-                vec![(Scope::Device("microphone".into()), Verb::Read)]
+                vec![(Scope::Device("microphone".into()), Access::Read)]
             }
             Capability::Screencast { .. } => {
-                vec![(Scope::Device("screencast".into()), Verb::Read)]
+                vec![(Scope::Device("screencast".into()), Access::Read)]
             }
             // Remote desktop is screencast plus input injection, so it
-            // gets its own write-verb device scope — revoking one must
+            // gets its own write-access device scope — revoking one must
             // not revoke the other.
             Capability::RemoteDesktop { .. } => {
-                vec![(Scope::Device("remote-desktop".into()), Verb::Write)]
+                vec![(Scope::Device("remote-desktop".into()), Access::Write)]
             }
             // Printing is an *output* action, producing a physical
-            // artifact, so it asks for the write verb, not the read
+            // artifact, so it asks for write access, not the read
             // one a device probe would use.
-            Capability::Print { .. } => vec![(Scope::Device("printer".into()), Verb::Write)],
+            Capability::Print { .. } => vec![(Scope::Device("printer".into()), Access::Write)],
             Capability::HostShell { .. } => {
-                vec![(Scope::Device("host-shell".into()), Verb::Write)]
+                vec![(Scope::Device("host-shell".into()), Access::Write)]
             }
             Capability::Network { hosts, .. } => match hosts {
                 // An allowlist means exactly those hosts; `None` is the
@@ -115,9 +115,9 @@ impl Capability {
                 // prevents.
                 Some(list) => list
                     .iter()
-                    .map(|h| (Scope::NetHost(h.clone()), Verb::Write))
+                    .map(|h| (Scope::NetHost(h.clone()), Access::Write))
                     .collect(),
-                None => vec![(Scope::NetHost("*".into()), Verb::Write)],
+                None => vec![(Scope::NetHost("*".into()), Access::Write)],
             },
         }
     }
@@ -143,7 +143,7 @@ impl Capability {
         match &cap.scope {
             Scope::FsPath(p) => Some(Capability::Filesystem {
                 path: std::path::PathBuf::from(p),
-                mode: if cap.verb.implies(Verb::Write) {
+                mode: if cap.access.implies(Access::Write) {
                     FsMode::ReadWrite
                 } else {
                     FsMode::Read

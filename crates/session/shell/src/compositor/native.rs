@@ -26,7 +26,7 @@ use automerge::{AutoCommit, ObjId};
 
 use crate::shell::collab_broker_capnp::LocalSessionLifecycle;
 use crate::shell::search::action_api::{ActionArgs, ActionVisibility, ResourceRef};
-use crate::shell::search::visibility::CapabilityVisibility;
+use crate::shell::search::visibility::PolicyVisibility;
 
 /// The gate makes the action API answer *for a caller*: a resource the
 /// capability model denies is absent from enumeration and selection alike.
@@ -69,7 +69,7 @@ fn with_action_gate<R>(
     };
     let actor_id = chrome.local_user_for_room(&workspace.room);
     let actor = workspace.actor_for_person(&actor_id);
-    let gate = CapabilityVisibility::new(&workspace, actor);
+    let gate = PolicyVisibility::new(&workspace, actor);
     Ok(f(&chrome, &gate))
 }
 use smithay::reexports::calloop::{self, EventLoop, Interest, Mode, PostAction, generic::Generic};
@@ -831,6 +831,15 @@ fn widget_deadline_for_presenter(
     widget_deadline: Option<Instant>,
 ) -> Option<Instant> {
     widget_deadline.filter(|_| pipe_ready)
+}
+
+/// A widget deadline wakes the loop once. A widget may keep an overdue
+/// deadline until a paint consumes it, while a due deadline alone does not
+/// paint (`present_for_app_poll`): a deadline that was already due when
+/// this tick started was answered by it, and waking for it again would run
+/// the loop flat out without painting until something unrelated paints.
+fn widget_park_deadline(tick_started: Instant, deadline: Option<Instant>) -> Option<Instant> {
+    deadline.filter(|deadline| *deadline > tick_started)
 }
 
 // A due animation remains dirty until it paints, but is no longer a wake
@@ -2832,7 +2841,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         &self,
         subject: &str,
         scope: &str,
-        verb: &str,
+        access: &str,
         id: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         use crate::shell::state::CapOverride;
@@ -2848,22 +2857,123 @@ impl ControlState for FrameBuilderControlState<'_> {
             .active_workspace()
             .map(|w| w.id)
             .ok_or_else(|| "no active workspace".to_string())?;
-        let room_key = ws_id.raw().to_string();
         let subject = test_control::parse_subject(subject)?;
-        let scope = test_control::parse_scope(scope, &room_key)?;
-        let verb = test_control::parse_verb(verb)?;
-        let mut cap = CapOverride::grant(subject, scope, verb);
+        let scope = test_control::parse_scope(scope)?;
+        let access = test_control::parse_access(access)?;
+        let mut cap = CapOverride::grant(subject, scope, access);
         if let Some(id) = id {
             cap = cap.with_id(id);
         }
         // Through the tree's entry point, not `grant_as` directly, so this answers
         // with the same authority the rest of the compositor grants under.
-        let granted = tree.grant_in_workspace(ws_id, &user, cap).ok_or_else(|| {
-            format!("{user} may not administer this workspace, so nothing was granted")
-        })?;
+        let granted = tree
+            .grant_sandbox_in_workspace(ws_id, &user, cap)
+            .ok_or_else(|| {
+                format!("{user} may not administer this workspace, so nothing was granted")
+            })?;
         // Nothing past this point touches the tree.
         drop(tree);
         Ok(serde_json::json!({ "granted": granted, "grantor": user }))
+    }
+
+    /// Give a grant on the active workspace through the room's governance,
+    /// as the user at this session.
+    fn allow(
+        &self,
+        subject: &str,
+        node: &str,
+        kinds: &[String],
+        answer: &str,
+        id: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let subject = test_control::parse_policy_subject(subject)?;
+        let node: tilo_action_policy::TreePath = node
+            .parse()
+            .map_err(|error: tilo_action_policy::PathError| error.to_string())?;
+        let kinds = kinds
+            .iter()
+            .map(|kind| test_control::parse_kind(kind))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .fold(
+                tilo_action_policy::KindSet::NONE,
+                tilo_action_policy::KindSet::with,
+            );
+        let answer = test_control::parse_answer(answer)?;
+        let chrome = self.fb.chrome();
+        let user = chrome.local_user_id.clone();
+        let tree_handle = chrome.tree_handle();
+        drop(chrome);
+        let mut tree = tree_handle.write();
+        let (ws_id, room) = tree
+            .desktop
+            .active_workspace()
+            .map(|w| (w.id, w.node()))
+            .ok_or_else(|| "no active workspace".to_string())?;
+        let grant = tilo_action_policy::Grant::new(
+            id.map_or_else(|| format!("grant:{}", uuid::Uuid::new_v4()), str::to_owned),
+            subject,
+            room.join(&node),
+            kinds,
+            answer,
+            tilo_action_policy::Subject::person(user.clone()),
+        );
+        let granted = tree
+            .grant_in_workspace(ws_id, &user, grant)
+            .ok_or_else(|| format!("{user} may not grant that in this workspace"))?;
+        drop(tree);
+        Ok(serde_json::json!({ "granted": granted, "grantor": user }))
+    }
+
+    /// Take back a grant on the active workspace through its governance.
+    fn disallow(&self, id: &str) -> Result<serde_json::Value, String> {
+        let chrome = self.fb.chrome();
+        let user = chrome.local_user_id.clone();
+        let tree_handle = chrome.tree_handle();
+        drop(chrome);
+        let mut tree = tree_handle.write();
+        let ws_id = tree
+            .desktop
+            .active_workspace()
+            .map(|w| w.id)
+            .ok_or_else(|| "no active workspace".to_string())?;
+        let revoked = tree.revoke_in_workspace(ws_id, &user, &tilo_action_policy::GrantId::new(id));
+        drop(tree);
+        if revoked {
+            Ok(serde_json::json!({ "revoked": id, "revoker": user }))
+        } else {
+            Err(format!("{user} took back nothing named {id}"))
+        }
+    }
+
+    /// Admit a person with a role on the active workspace, as the user at
+    /// this session.
+    fn admit(&self, person: &str, role: &str) -> Result<serde_json::Value, String> {
+        let role = match role {
+            "viewer" => tilo_action_policy::Role::Viewer,
+            "commenter" => tilo_action_policy::Role::Commenter,
+            "editor" => tilo_action_policy::Role::Editor,
+            _ => {
+                return Err(format!(
+                    "role must be viewer / commenter / editor, got `{role}`"
+                ));
+            }
+        };
+        let chrome = self.fb.chrome();
+        let user = chrome.local_user_id.clone();
+        let tree_handle = chrome.tree_handle();
+        drop(chrome);
+        let mut tree = tree_handle.write();
+        let ws_id = tree
+            .desktop
+            .active_workspace()
+            .map(|w| w.id)
+            .ok_or_else(|| "no active workspace".to_string())?;
+        let admitted = tree.admit_in_workspace(ws_id, &user, person, role);
+        drop(tree);
+        admitted
+            .map(|_| serde_json::json!({ "admitted": person, "admitter": user }))
+            .ok_or_else(|| format!("{user} may not admit {person} to this workspace"))
     }
 
     /// Revoke on the active workspace through `Workspace::revoke_as` — same authority check as a grant.
@@ -2883,28 +2993,23 @@ impl ControlState for FrameBuilderControlState<'_> {
         let ws = tree
             .desktop
             .workspaces
-            .iter_mut()
+            .iter()
             .find(|w| w.id == ws_id)
             .ok_or_else(|| "no active workspace".to_string())?;
-        // Distinguish the two failures: `revoke_as` returns false both for "you
+        // Distinguish the two failures: a revoke returns false both for "you
         // may not" and "no such capability" — conflating them hides an unauthorised revoke as a no-op.
-        let may = ws.may_administer(&user);
-        if !may {
+        if !ws.may_administer(&user) {
             return Err(format!(
                 "{user} may not administer this workspace, so nothing was revoked"
             ));
         }
-        let removed = ws.revoke_as(&user, id);
-        if removed {
-            tree.doc_revoke_capability(ws_id, id);
-            tree.queue_save();
-        }
+        let removed = tree.revoke_sandbox_in_workspace(ws_id, &user, id);
         // Nothing past this point touches the tree.
         drop(tree);
         Ok(serde_json::json!({ "revoked": removed, "revoker": user, "id": id }))
     }
 
-    /// Answer the in-app action gate for the live workspace.
+    /// What the room's policy answers the live workspace's actor for one action.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "ws (borrowed from tree) is read all the way through building the final \
@@ -2917,11 +3022,9 @@ impl ControlState for FrameBuilderControlState<'_> {
         app: &str,
         resource: &str,
         action: &str,
-        verb: &str,
+        kind: &str,
         destructive: bool,
     ) -> Result<serde_json::Value, String> {
-        use crate::shell::actions::{ActionDecl, ActionRegistry, check_action};
-        use crate::shell::state::ResourceRef;
         let chrome = self.fb.chrome();
         // Same early-drop as `grant_capability`: only the tree is read below.
         let tree_handle = chrome.tree_handle();
@@ -2931,7 +3034,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             .desktop
             .active_workspace()
             .ok_or_else(|| "no active workspace".to_string())?;
-        let verb = test_control::parse_verb(verb)?;
+        let kind = test_control::parse_kind(kind)?;
         let actor = match actor.split_once(':') {
             Some(("person", id)) => ws.actor_for_person(&id.to_string()),
             Some(("app", id)) => ws.actor_for_app(id),
@@ -2942,21 +3045,16 @@ impl ControlState for FrameBuilderControlState<'_> {
                 ));
             }
         };
-        let mut registry = ActionRegistry::new();
-        let mut decl = ActionDecl::new(app, action, verb);
-        if destructive {
-            decl = decl.destructive();
-        }
-        registry.declare(decl);
-        let resource = ResourceRef::Action {
-            app: app.to_string(),
-            resource: resource.to_string(),
-            action: action.to_string(),
-        };
-        let outcome = check_action(ws, &registry, &actor, app, action, &resource);
+        let node = tilo_action_policy::TreePath::root()
+            .app(app)
+            .resource(resource)
+            .action(action);
+        let answer = crate::shell::search::visibility::answer_for(ws, &actor, &node, kind);
+        let permitted = crate::shell::search::visibility::permits(ws, &actor, &node, kind);
         Ok(serde_json::json!({
-            "outcome": format!("{outcome:?}"),
-            "permitted": outcome.is_permitted(),
+            "answer": format!("{answer:?}"),
+            "permitted": permitted,
+            "needs_confirmation": permitted && destructive,
             "workspace": ws.id.raw(),
             "room": ws.room.to_string(),
         }))
@@ -13154,7 +13252,10 @@ pub fn run() {
             [
                 (
                     "widget",
-                    widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
+                    widget_deadline_for_presenter(
+                        pipe_ready,
+                        widget_park_deadline(iter_t0, frame_builder.next_wake_deadline()),
+                    ),
                 ),
                 (
                     "lock-animation",
@@ -13638,8 +13739,7 @@ mod tests {
 
     #[test]
     fn pointer_hover_preserves_touch_keyboard_until_pointer_activation() {
-        use crate::compositor::input_method::{OskInput, osk_wanted};
-        use settings_store::accessibility::OnScreenKeyboard;
+        use crate::compositor::input_method::{OskInput, OskPreference, osk_wanted};
 
         let mut ctx = TestControlCtx::new();
         let mut fb = FrameBuilder::new((800, 600));
@@ -13654,20 +13754,17 @@ mod tests {
             &mut fb,
         );
         assert!(osk_wanted(
-            OnScreenKeyboard::Auto,
+            OskPreference::Auto,
             OskInput::from_environment(&ctx.input)
         ));
         ctx.note_injected_input(&PlannedAction::CursorMoved { x: 110.0, y: 100.0 }, &mut fb);
         assert!(
-            osk_wanted(
-                OnScreenKeyboard::Auto,
-                OskInput::from_environment(&ctx.input)
-            ),
+            osk_wanted(OskPreference::Auto, OskInput::from_environment(&ctx.input)),
             "incidental pointer hover must not dismiss a touch-started keyboard"
         );
         ctx.note_injected_input(&PlannedAction::MouseLeftButton { pressed: true }, &mut fb);
         assert!(!osk_wanted(
-            OnScreenKeyboard::Auto,
+            OskPreference::Auto,
             OskInput::from_environment(&ctx.input)
         ));
     }
@@ -14350,6 +14447,39 @@ mod tests {
                 Some(Duration::from_millis(42))
             );
         }
+        // Phase `an_answered_widget_deadline_does_not_spin_the_loop`.
+        {
+            let due_at = Instant::now();
+            let tick_started = due_at + Duration::from_millis(1);
+            let now = tick_started + Duration::from_millis(1);
+            let frame = now + Duration::from_millis(8);
+            assert_eq!(
+                native_loop_park(
+                    now,
+                    false,
+                    false,
+                    false,
+                    frame,
+                    [widget_deadline_for_presenter(
+                        true,
+                        widget_park_deadline(tick_started, Some(due_at)),
+                    )],
+                ),
+                Some(IDLE_BACKEND_POLL),
+                "a deadline this tick already woke for parks the loop instead of spinning it"
+            );
+            let became_due = tick_started + Duration::from_micros(500);
+            assert_eq!(
+                widget_park_deadline(tick_started, Some(became_due)),
+                Some(became_due),
+                "a deadline that fell due during this tick still wakes the next one"
+            );
+            let future = now + Duration::from_millis(42);
+            assert_eq!(
+                widget_park_deadline(tick_started, Some(future)),
+                Some(future)
+            );
+        }
         // Phase `blanked_lock_stops_animating_until_the_panel_wakes`.
         {
             let theme = ui::theme::Theme::dark();
@@ -14993,7 +15123,7 @@ mod tests {
         for desk in 0..8_u64 {
             let mut workspace = template.clone();
             workspace.id = WorkspaceId(100 + desk);
-            workspace.room = RoomId::new();
+            workspace.set_room(RoomId::new());
             workspace.strips.truncate(1);
             workspace.strips[0].window_groups = (0..24_u64)
                 .map(|window| {
@@ -15040,7 +15170,7 @@ mod tests {
         }
         let gated = started.elapsed();
         eprintln!(
-            "TIL-136 legacy-share pass per idle wakeup, 8 workspaces x 24 windows: walked {:?}, gated {:?}",
+            "legacy-share pass per idle wakeup, 8 workspaces x 24 windows: walked {:?}, gated {:?}",
             walked / WAKEUPS,
             gated / WAKEUPS,
         );
@@ -15058,7 +15188,7 @@ mod tests {
         // A second workspace this device is not showing.
         let mut background = tree.desktop.workspaces[0].clone();
         background.id = WorkspaceId(90);
-        background.room = RoomId::new();
+        background.set_room(RoomId::new());
         background.strips.truncate(1);
         background.strips[0].window_groups = vec![WindowGroup {
             id: 91,
@@ -15210,7 +15340,7 @@ mod tests {
             assert!(command.agent_permitted(), "{permitted}");
         }
         for refused in [
-            r#"{"op":"grant","subject":"agent:x","scope":"workspace","verb":"admin"}"#,
+            r#"{"op":"grant","subject":"agent:x","scope":"workspace","access":"write"}"#,
             r#"{"op":"revoke","id":"x"}"#,
             r#"{"op":"state_dump"}"#,
             r#"{"op":"actions_invoke","provider":"actions","id":"x"}"#,
@@ -15286,7 +15416,7 @@ mod tests {
             crate::shell::state::WorkspaceId(71),
             "Directory socket room",
         );
-        workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         tree.desktop.workspaces.push(workspace);
         tree.set_active(crate::shell::state::WorkspaceId(71));
         tree.shared()
@@ -16728,7 +16858,7 @@ mod tests {
             r#"{"op":"click_at","x":10,"y":10}"#,
             r#"{"op":"type","text":"hello"}"#,
             r#"{"op":"snapshot","path":"admin.png"}"#,
-            r#"{"op":"grant","subject":"agent:x","scope":"workspace","verb":"admin"}"#,
+            r#"{"op":"grant","subject":"agent:x","scope":"workspace","access":"write"}"#,
             r#"{"op":"provision_test_identity"}"#,
             r#"{"op":"actions_enumerate","query":"","agent":"bot"}"#,
             r#"{"op":"state_dump","window":"so.tilo.notes"}"#,
@@ -17696,7 +17826,7 @@ mod tests {
                 .desktop
                 .active_workspace_mut()
                 .unwrap()
-                .owner = Some(actor.clone());
+                .set_owner(actor.clone());
             let broker = crate::shell::broker_services::test_broker_with_membership(
                 fb.chrome().tree_handle(),
             );
@@ -18099,7 +18229,6 @@ mod tests {
         {
             use crate::compositor::tab_binding::{self, Placement};
             use crate::network::streaming::{ShareRegistry, StreamingShare};
-            use crate::shell::state::{CapOverride, Subject, Verb};
 
             const AGENT_PEER: u64 = 0xA9;
             const SURFACE: u64 = 71_900;
@@ -18114,14 +18243,12 @@ mod tests {
                     .desktop
                     .active_workspace_mut()
                     .expect("active workspace");
-                workspace.owner = Some("owner".to_string());
-                let room = workspace.id.raw().to_string();
-                workspace
-                    .grant_as(
-                        &"owner".to_string(),
-                        CapOverride::membership(Subject::agent("release-notes"), room, Verb::Write),
-                    )
-                    .expect("owner admits agent");
+                workspace.set_owner("owner".to_string());
+                workspace.admit_agent_preset(
+                    "release-notes",
+                    tilo_action_policy::roles::AgentPreset::Operator,
+                    &tilo_action_policy::Subject::person("owner".to_string()),
+                );
                 workspace.collaborators.push(
                     crate::shell::state::Collaborator::new("release-notes", "Release Notes Agent")
                         .with_session(AGENT_PEER),

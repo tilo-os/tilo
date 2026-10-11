@@ -22,7 +22,7 @@
 //! a restricted `PermissionContext` (a member role without the relevant grant)
 //! gates exactly the actions it should.
 
-use ui::permissions::{PermissionContext, PermissionScope, Verb};
+use ui::permissions::{ActionKind, PermissionContext, PermissionScope};
 
 use crate::call::CallAction;
 
@@ -66,7 +66,10 @@ impl ChatPermissions {
                 | crate::images::DEMO_NOTES
                 | crate::images::DEMO_CLIP
         );
-        (valid_hash || valid_demo) && self.ctx.check(&PermissionScope::workspace(Verb::Read))
+        (valid_hash || valid_demo)
+            && self
+                .ctx
+                .check(&PermissionScope::workspace(ActionKind::Read))
     }
 
     /// May this peer post / react / join a call here? `Write` on the room (a
@@ -79,7 +82,8 @@ impl ChatPermissions {
     /// underscore. An argument that is carried and dropped is worse than one
     /// that was never asked for: it describes a boundary that does not exist.
     pub fn can_participate(&self) -> bool {
-        self.ctx.check(&PermissionScope::workspace(Verb::Write))
+        self.ctx
+            .check(&PermissionScope::workspace(ActionKind::Undoable))
     }
 
     /// Join/listen requires Read; publication requires Write. This UI check
@@ -88,7 +92,9 @@ impl ChatPermissions {
     pub fn allows(&self, action: CallAction) -> bool {
         match action {
             CallAction::Leave => true,
-            CallAction::Join => self.ctx.check(&PermissionScope::workspace(Verb::Read)),
+            CallAction::Join => self
+                .ctx
+                .check(&PermissionScope::workspace(ActionKind::Read)),
             _ => self.can_participate(),
         }
     }
@@ -97,15 +103,12 @@ impl ChatPermissions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::permissions::{Actor, Role};
+    use ui::permissions::Role;
 
     /// A read-only member with no file capabilities — the restricted peer a
     /// real invite without write or file access would produce.
     fn restricted_member() -> ChatPermissions {
-        ChatPermissions::from_context(PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Viewer), "u_guest"),
-            vec![],
-        ))
+        ChatPermissions::from_context(PermissionContext::member("u_guest", Role::Viewer))
     }
 
     #[test]
@@ -138,7 +141,7 @@ mod tests {
         // A member without admin still passes the View check on a workspace
         // (they can read channels) — it's Edit that's gated.
         let p = restricted_member();
-        let view_ok = p.ctx.check(&PermissionScope::workspace(Verb::Read));
+        let view_ok = p.ctx.check(&PermissionScope::workspace(ActionKind::Read));
         assert!(view_ok, "a member can read the workspace");
         assert!(!p.can_participate(), "but cannot write to it");
     }

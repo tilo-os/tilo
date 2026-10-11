@@ -23,7 +23,6 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # OSC 8 links open through `ui::portal::open_uri` (the OpenURI portal on Linux).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 uuid.workspace = true
@@ -50,6 +49,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 # Serialises the tests that touch the shared system clipboard / primary
 # selection so they don't race each other under the default parallel runner
 # (selecting text sets the primary selection, which a middle-click paste test

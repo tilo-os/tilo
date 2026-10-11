@@ -2,8 +2,8 @@
 //! nests the line under the one above in the notebook, Shift+Tab and undo
 //! take that back, and Escape lets the next Tab leave the editor.
 
-use notes::actions::new_page_action;
-use notes::doc::NotesDoc;
+use notes::actions::create_page_action;
+use notes::read;
 use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Invoke;
@@ -12,7 +12,7 @@ fn two_lines() -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&new_page_action(page, None, "a".into(), "First")).unwrap())
+    app.invoke(Invoke::apply(&create_page_action(page, None, "First")).unwrap())
         .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
@@ -25,7 +25,7 @@ fn two_lines() -> (TestApp<NotesShell>, PageId) {
 /// Each line of the note with how deep it is nested.
 fn outline(app: &TestApp<NotesShell>, page: PageId) -> Vec<(String, u8)> {
     app.read_document(|doc| {
-        NotesDoc::page_blocks(doc, page)
+        read::page_blocks(doc, page)
             .into_iter()
             .map(|block| (block.text, block.nesting))
             .collect()

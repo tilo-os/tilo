@@ -497,7 +497,11 @@ impl CollabTransport for BrokerTransport {
     }
 
     fn document_publishable(&self, channel: Option<&str>) -> bool {
-        channel.is_some_and(|channel| self.state.document_reads.publishable(channel))
+        // Withdrawn health withdraws read readiness at once: the route's
+        // reader only clears its gate when it next wakes, and a route whose
+        // transport failed elsewhere (a refused commit) is not publishable.
+        self.state.is_healthy()
+            && channel.is_some_and(|channel| self.state.document_reads.publishable(channel))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -3733,6 +3737,7 @@ async fn drive_shovel(
         participant_kind,
         mut signer,
     } = identity;
+    let person = person_room_presentation(&presentation, &mut signer).await;
     let media_routes = native_media::Routes::default();
     let _media_worker = native_media::start(media_rx, media_routes.clone());
     // Every route of a certified endpoint is an encrypted channel whose keys
@@ -3831,6 +3836,7 @@ async fn drive_shovel(
                             key_signals: &key_signals,
                             client: &client,
                             presentation: &presentation,
+                            person: person.as_ref(),
                             participant_handle: participant_handle.as_deref(),
                             participant_kind,
                             inbound_tx: &inbound_tx,
@@ -3896,6 +3902,7 @@ async fn drive_shovel(
                         key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
+                        person: person.as_ref(),
                         participant_handle: participant_handle.as_deref(),
                         participant_kind,
                         inbound_tx: &inbound_tx,
@@ -3915,6 +3922,7 @@ async fn drive_shovel(
                         key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
+                        person: person.as_ref(),
                         participant_handle: participant_handle.as_deref(),
                         participant_kind,
                         inbound_tx: &inbound_tx,
@@ -3979,6 +3987,7 @@ async fn drive_shovel(
                         key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
+                        person: person.as_ref(),
                         participant_handle: participant_handle.as_deref(),
                         participant_kind,
                         inbound_tx: &inbound_tx,
@@ -4120,6 +4129,50 @@ async fn install_sdk_encryption(
     Ok(())
 }
 
+/// This device's join proof for its person's own room, as the identity
+/// service lends it to an app that keeps records of theirs there; `None`
+/// for any other app, or a connection without a certified identity.
+#[allow(
+    clippy::future_not_send,
+    reason = "the host identity transport is constructed and retained only on the shovel LocalSet"
+)]
+async fn person_room_presentation(
+    presentation: &[u8],
+    signer: &mut LocalSdkDocumentSigner,
+) -> Option<(String, Vec<u8>)> {
+    #[derive(serde::Deserialize)]
+    struct Root {
+        user_public_key: [u8; 32],
+    }
+    let launch = runtime_collab::CertifiedJoinIdentity::decode(presentation).ok()??;
+    let root: Root = serde_json::from_slice(&launch.device_certificate).ok()?;
+    let room = collab_types::person_room(&root.user_public_key).to_string();
+    if room == launch.workspace_id {
+        return None;
+    }
+    let proof = match signer {
+        LocalSdkDocumentSigner::Host(identity) => {
+            identity.sign_collaboration_join(&room).await.ok()?
+        }
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
+            let (identity, asked) = (std::sync::Arc::clone(identity), room.clone());
+            tokio::task::spawn_blocking(move || identity.sign_collaboration_join(&asked))
+                .await
+                .ok()?
+                .ok()?
+        }
+        LocalSdkDocumentSigner::Inherited(_) => return None,
+    };
+    let bytes = runtime_collab::CertifiedJoinIdentity {
+        workspace_id: room.clone(),
+        device_certificate: launch.device_certificate,
+        proof: proof.to_vec(),
+    }
+    .encode()
+    .ok()?;
+    Some((room, bytes))
+}
+
 #[derive(Clone, Copy)]
 struct SdkJoinContext<'a> {
     asks_channel_keys: bool,
@@ -4127,6 +4180,10 @@ struct SdkJoinContext<'a> {
     key_signals: &'a tokio_mpsc::UnboundedSender<KeySignal>,
     client: &'a runtime_collab::CollabClient,
     presentation: &'a [u8],
+    /// The person's own room and this device's join proof for it, when the
+    /// identity service lends one: what a route of a record of theirs
+    /// presents instead of the launch room's.
+    person: Option<&'a (String, Vec<u8>)>,
     participant_handle: Option<&'a str>,
     participant_kind: &'a str,
     inbound_tx: &'a InboundBridge,
@@ -4161,7 +4218,8 @@ async fn ensure_sdk_route(
         asks_channel_keys,
         key_signals,
         client,
-        presentation: identity_bytes,
+        presentation,
+        person,
         participant_handle,
         participant_kind,
         inbound_tx,
@@ -4171,6 +4229,10 @@ async fn ensure_sdk_route(
     if routes.contains_key(&channel_id) {
         return Ok(());
     }
+    let identity_bytes = match person {
+        Some((room, proof)) if *room == spec.cluster_id.to_string() => proof.as_slice(),
+        _ => presentation,
+    };
     let channel = match client
         .join_channel_as_kind(
             &channel_id,
@@ -5101,9 +5163,11 @@ async fn send_document_mutation(
             ));
         }
     };
+    let claims = origin_claims(&route.spec.app_id, &mutation);
     let count = frames.len();
     for (index, frame) in frames.into_iter().enumerate() {
-        if let Err(error) = send_document_frame(route, signer, frame, &inbound.state).await {
+        if let Err(error) = send_document_frame(route, signer, frame, &claims, &inbound.state).await
+        {
             if count > 1 {
                 tracing::warn!(
                     segment = index,
@@ -5115,6 +5179,69 @@ async fn send_document_mutation(
         }
     }
     Ok(())
+}
+
+/// The claims a mutation's op carries: what each of its changes is, read
+/// from the history entry the executor wrote into it. A change something
+/// other than the executor wrote cannot be claimed; its op then carries no
+/// claims, which a receiver deciding claims refuses.
+#[cfg_attr(
+    debug_assertions,
+    expect(
+        clippy::panic,
+        reason = "a debug build's check that every change this device makes is claimed"
+    )
+)]
+fn origin_claims(
+    app_id: &str,
+    mutation: &collab_types::DocumentMutation,
+) -> Vec<collab_types::ChangeClaim> {
+    let claims = collab_types::mutation_claims(mutation, collab_types::record_unit)
+        .map(|claims| with_footprints(app_id, claims));
+    claims.unwrap_or_else(|error| {
+        #[cfg(debug_assertions)]
+        if let collab_types::DocumentMutation::Incremental(bytes) = mutation
+            && collab_types::parse_changes(bytes).is_ok()
+            && let Err(unnamed) = collab_types::claim::named_changes(bytes)
+        {
+            panic!("a document change this device made names no action: {unnamed}");
+        }
+        tracing::warn!(%error, "collab: a document change carries no claim");
+        Vec::new()
+    })
+}
+
+/// `claims` naming as units what each action may write by the app's own
+/// surface: what a relay that cannot read a sealed change checks it against
+/// (devices that open it check what it really wrote).
+fn with_footprints(
+    app_id: &str,
+    mut claims: Vec<collab_types::ChangeClaim>,
+) -> Vec<collab_types::ChangeClaim> {
+    use collab_types::ReceiptSurface as _;
+    let Some(file) = crate::app_surface::bytes_of(app_id)
+        .and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
+    else {
+        return claims;
+    };
+    for claim in &mut claims {
+        let kind = claim
+            .action
+            .members()
+            .into_iter()
+            .find_map(|action| match action {
+                collab_types::ClaimedAction::Verb { action, .. } => Some(action.kind.clone()),
+                collab_types::ClaimedAction::Edit { kind, .. } if !kind.is_empty() => {
+                    Some(kind.clone())
+                }
+                _ => None,
+            });
+        if let Some(resource) = file.resource(kind.as_deref()) {
+            let surface = collab_types::surface::KindSurface(resource.clone());
+            claim.units = surface.footprint(&claim.action);
+        }
+    }
+    claims
 }
 
 /// Encrypt, sign and send one typed document frame, or hold it on the
@@ -5130,16 +5257,17 @@ async fn send_document_frame(
     route: &SdkRoute,
     signer: &mut LocalSdkDocumentSigner,
     cleartext: Vec<u8>,
+    claims: &[collab_types::ChangeClaim],
     state: &BridgeState,
 ) -> Result<(), DocumentPublicationError> {
-    match try_send_frame(route, signer, cleartext.clone(), state).await {
+    match try_send_frame(route, signer, cleartext.clone(), claims, state).await {
         FrameSend::Sent | FrameSend::Held => Ok(()),
         FrameSend::Failed(error) => Err(error),
         FrameSend::Refused(refusal) => {
             if !refresh_route_keys(route, signer).await {
                 return Err(state.publication_failed("document commit RPC", refusal, true));
             }
-            match try_send_frame(route, signer, cleartext, state).await {
+            match try_send_frame(route, signer, cleartext, claims, state).await {
                 FrameSend::Sent | FrameSend::Held => Ok(()),
                 FrameSend::Failed(error) => Err(error),
                 FrameSend::Refused(refusal) => {
@@ -5159,13 +5287,14 @@ async fn try_send_frame(
     route: &SdkRoute,
     signer: &mut LocalSdkDocumentSigner,
     cleartext: Vec<u8>,
+    claims: &[collab_types::ChangeClaim],
     state: &BridgeState,
 ) -> FrameSend {
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
     let artifact = collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, record_id);
     let (payload, encryption_metadata) =
-        match prepare_document_payload(&route.encryption, artifact, cleartext) {
+        match prepare_document_payload(&route.encryption, artifact, cleartext, claims) {
             PreparedFrame::Ready(payload, metadata) => (payload, metadata),
             PreparedFrame::Held => return FrameSend::Held,
             PreparedFrame::Failed => {
@@ -5196,7 +5325,7 @@ async fn try_send_frame(
             artifact,
             author,
             attestation,
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             now,
             seq,
             metadata,
@@ -5206,11 +5335,17 @@ async fn try_send_frame(
             artifact,
             author,
             attestation,
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             now,
             seq,
         ),
     };
+    // Only a sealed op carries its changes' claims: a relay cannot read the
+    // changes, and a cleartext receiver reads each claim from its change.
+    if op.encryption.is_some() {
+        op = op.with_claims(claims.to_vec());
+    }
+    op = op.with_surface(crate::app_surface::hash_of(&route.spec.app_id));
     let unsigned_op = match postcard::to_stdvec(&op) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -5312,6 +5447,7 @@ fn prepare_document_payload(
     encryption: &SharedRouteKeys,
     artifact: collab_types::ArtifactId,
     cleartext: Vec<u8>,
+    claims: &[collab_types::ChangeClaim],
 ) -> PreparedFrame {
     let Ok(mut keys) = encryption.lock() else {
         tracing::warn!("collab: route key state lock poisoned; dropping mutation");
@@ -5323,7 +5459,7 @@ fn prepare_document_payload(
             PreparedFrame::Ready(payload, metadata)
         }
         super::route_keys::Sealed::Hold => {
-            if keys.hold_outbound(cleartext) {
+            if keys.hold_outbound(cleartext, claims.to_vec()) {
                 PreparedFrame::Held
             } else {
                 tracing::warn!("collab: too many edits waiting for channel access; dropping");
@@ -5482,6 +5618,10 @@ async fn certified_channel_keys(
     .unwrap_or_default()
 }
 
+/// The log target of every round of key questions an endpoint starts: what
+/// tells an idle desktop that keeps asking from one that asks as it backs off.
+const KEY_ROUNDS: &str = "tilo::collab::key_rounds";
+
 /// Start a round of key questions for the routes `round` names. A certified
 /// service is asked off this thread and the round is
 /// returned to be awaited alongside the loop; a host's asynchronous service
@@ -5497,6 +5637,7 @@ async fn refresh_keys(
     round: &KeyRound,
 ) -> Option<KeyFetch> {
     let LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) = signer else {
+        tracing::debug!(target: KEY_ROUNDS, "collab: asking the host for channel keys");
         refresh_all_route_keys(routes, signer, inbound_tx, round).await;
         return None;
     };
@@ -5512,6 +5653,11 @@ async fn refresh_keys(
     if queries.is_empty() {
         return None;
     }
+    tracing::debug!(
+        target: KEY_ROUNDS,
+        routes = queries.len(),
+        "collab: asking the identity service for channel keys"
+    );
     Some(Box::pin(certified_channel_keys(
         std::sync::Arc::clone(identity),
         queries,
@@ -5608,8 +5754,8 @@ async fn deliver_waiting(
     {
         return false;
     }
-    for frame in outbound {
-        if send_document_frame(route, signer, frame, &inbound_tx.state)
+    for (frame, claims) in outbound {
+        if send_document_frame(route, signer, frame, &claims, &inbound_tx.state)
             .await
             .is_err()
         {
@@ -8769,7 +8915,7 @@ mod tests {
             artifact,
             collab_types::Ed25519PublicKey::from_bytes([3; 32]),
             collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             crate::time::SystemTime::UNIX_EPOCH,
             1,
             metadata,
@@ -10921,7 +11067,7 @@ mod tests {
                 collab_types::ArtifactId::new(),
                 collab_types::Ed25519PublicKey::from_bytes([1u8; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 1,
             );
@@ -10958,7 +11104,7 @@ mod tests {
             let heads = document.base_heads();
             let snapshot = document.save();
             document.put(automerge::ROOT, "body", "after").unwrap();
-            document.commit();
+            collab_types::CommitNamed::commit_edit(&mut document, "fixture", "body");
             let delta = document.save_after(&heads);
             // The route refuses documents until it is joined and its document
             // mode is resolved; the first refused attempt starts that join.
@@ -11157,7 +11303,7 @@ mod tests {
                 .sign_op(
                     b"last unique operation".to_vec(),
                     artifact,
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                 )
                 .expect("the final unique sequence remains valid");
             assert_eq!(final_op.seq, u64::MAX);
@@ -11166,7 +11312,7 @@ mod tests {
             let exhausted = identity.sign_op(
                 b"must not reuse zero".to_vec(),
                 artifact,
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
             );
             assert!(matches!(exhausted, Err(SignedSendError::SequenceExhausted)));
             assert_eq!(identity.seq, u64::MAX, "failure is non-mutating");
@@ -11181,7 +11327,7 @@ mod tests {
                 collab_types::ArtifactId::new(),
                 collab_types::Ed25519PublicKey::from_bytes([3_u8; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 43,
             );
@@ -11217,7 +11363,7 @@ mod tests {
                 .unwrap();
             let alice_endpoint = group_route_keys(alice);
             let PreparedFrame::Ready(ciphertext, metadata) =
-                prepare_document_payload(&alice_endpoint, artifact, plaintext.clone())
+                prepare_document_payload(&alice_endpoint, artifact, plaintext.clone(), &[])
             else {
                 panic!("a provisioned endpoint seals at once");
             };
@@ -11233,7 +11379,7 @@ mod tests {
                     artifact,
                     collab_types::Ed25519PublicKey::from_bytes([9; 32]),
                     collab_types::AttestationId::new(),
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                     crate::time::SystemTime::UNIX_EPOCH,
                     1,
                     metadata,
@@ -11254,7 +11400,7 @@ mod tests {
                 artifact,
                 collab_types::Ed25519PublicKey::from_bytes([9; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 2,
             );
@@ -11374,7 +11520,7 @@ mod tests {
                         artifact,
                         collab_types::Ed25519PublicKey::from_bytes([3; 32]),
                         collab_types::AttestationId::new(),
-                        collab_types::OpClass::Splice,
+                        collab_types::OpKind::Change,
                         crate::time::SystemTime::UNIX_EPOCH,
                         seq,
                         metadata,
@@ -11466,7 +11612,7 @@ mod tests {
                 collab_types::ArtifactId::new(),
                 collab_types::Ed25519PublicKey::from_bytes([2u8; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 42,
             );
@@ -11670,7 +11816,7 @@ mod tests {
                 collab_types::ArtifactId::new(),
                 collab_types::Ed25519PublicKey::from_bytes([3u8; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 5,
             );

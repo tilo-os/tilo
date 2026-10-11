@@ -5,11 +5,51 @@ use chrono::Datelike;
 use ui::headless::Framed;
 use ui::widget::Edits;
 
-/// Seed the same document format consumed by the production resource reader.
+/// A document holding `calendar`, written through the calendar's own verbs
+/// and edits.
+pub(crate) fn document_of(calendar: &Calendar) -> AutoCommit {
+    let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
+    for invoke in crate::resource::sample_invocations(calendar) {
+        replica.apply(invoke).expect("the sample applies");
+    }
+    replica.doc().clone()
+}
+
+/// The document of the calendar `app` shows.
 pub(crate) fn demo_document(app: &CalendarApp) -> AutoCommit {
-    let mut doc = AutoCommit::new();
-    CalDoc::seed(&mut doc, &app.model);
-    doc
+    document_of(&app.model)
+}
+
+/// Whether the event `id` waits to be uploaded to the server of its
+/// calendar, as a device holding the sample accounts sees it.
+fn waits_for_upload(doc: &AutoCommit, id: Id) -> bool {
+    crate::outbox::uploads(&crate::resource::read_doc(doc), &AccountStore::sample())
+        .iter()
+        .any(|(item, _)| *item == id)
+}
+
+/// The item a server keeps at `href` of `calendar`, by what `doc` holds.
+fn remote_at(doc: &AutoCommit, calendar: &str, href: &str) -> Option<Id> {
+    crate::resource::read_doc(doc)
+        .remote
+        .iter()
+        .find(|(_, copy)| copy.calendar == calendar && copy.href == href)
+        .and_then(|(id, _)| id.parse().ok())
+}
+
+/// The version of the item `id` its server last reported.
+fn remote_etag(doc: &AutoCommit, id: Id) -> Option<String> {
+    crate::resource::read_doc(doc)
+        .remote
+        .get(&id.to_string())
+        .and_then(|copy| copy.etag.clone())
+}
+
+/// Apply `invoke` to `doc` as a peer's change arrives: built and applied,
+/// not committed.
+fn apply_to(doc: &mut AutoCommit, invoke: impl Into<ui::tilo_resource::Invoke<Calendar>>) {
+    let action = invoke.into().build(0).expect("builds");
+    tilo_actions::Action::apply(&action, doc).expect("applies");
 }
 
 /// Pump the same settle/read passes as the production frame host.
@@ -22,15 +62,19 @@ fn present(app: &mut CalendarApp, doc: &mut AutoCommit, path: &ObjId) {
 
 #[test]
 fn readonly_sync_observes_pending_actions_without_committing_document() {
-    use tilo_actions::Action as _;
-
     let mut app = CalendarApp::new_demo();
     let mut doc = demo_document(&app);
     doc.commit();
     app.sync(&doc, &ROOT);
     let id = app.model.tasks.iter().find(|task| !task.done).unwrap().id;
-    let action = crate::actions::set_task_done_action(id.to_string(), true);
-    action.apply(&mut doc).unwrap();
+    apply_to(
+        &mut doc,
+        Calendar::paths()
+            .tasks
+            .item(&crate::model::key(id))
+            .done
+            .set(true),
+    );
     let before = (doc.base_heads(), doc.pending_ops());
     assert!(before.1 > 0, "the incoming action is still uncommitted");
     assert!(!app.model.task(id).unwrap().done);
@@ -59,10 +103,10 @@ impl CalendarApp {
 
 /// The calendar root as it publishes `doc`.
 fn published_root(doc: &AutoCommit) -> tilo_actions::Resource {
-    ui::tilo_resource::publish::<crate::resource::Calendar>(
+    ui::tilo_resource::publish::<Calendar>(
         "calendar.calendar",
         "Calendar",
-        &CalDoc::read_model(doc),
+        &crate::resource::read_doc(doc),
     )
 }
 
@@ -80,7 +124,7 @@ fn published_resource(
     if let Some(row) = app.collection_rows().into_iter().find(|row| row.id() == id) {
         return Some(row.into_resource());
     }
-    crate::resource::Calendar::child(&CalDoc::read_model(doc), id)
+    Calendar::child(&crate::resource::read_doc(doc), id)
 }
 
 #[test]
@@ -207,7 +251,7 @@ fn startup_is_empty_live_with_onboarding_and_seeded_only_for_demo() {
         assert!(app.seeded);
         // Selected event's notes are bound.
         assert!(app.bound.is_some());
-        assert!(!CalDoc::is_empty(&state));
+        assert!(!crate::resource::read_doc(&state).events.is_empty());
     }
     // Case `new_app_loads_caldav_accounts`.
     {
@@ -293,6 +337,10 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
         assert!(
             app.take_structure_dirty(),
             "a resize that changes the notes column must request an editor rebuild"
+        );
+        assert!(
+            !app.take_structure_dirty(),
+            "the rebuild is asked for once, even before the host lays it out"
         );
 
         // The rebuild adopts the resized width.
@@ -445,7 +493,7 @@ fn user_edits_and_source_identity_persist_across_restart() {
     // Case `source_calendar_id_survives_the_crdt_round_trip`.
     {
         // The tag must persist, or hiding wouldn't stick across a restart.
-        let mut doc = AutoCommit::new();
+        let mut doc = ui::tilo_resource::Replica::<Calendar>::new().doc().clone();
         let start = chrono::NaiveDate::from_ymd_opt(2026, 6, 15)
             .unwrap()
             .and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap());
@@ -454,24 +502,17 @@ fn user_edits_and_source_identity_persist_across_restart() {
             title: "Tagged".into(),
             start,
             end: start + Duration::hours(1),
-            all_day: false,
-            location: String::new(),
             color: Palette::Red,
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: Vec::new(),
-            reminder_min: None,
-            project: None,
             calendar_id: Some("work/oncall".into()),
+            ..Event::default()
         };
-        CalDoc::update_event(&mut doc, &ev);
-        let back = CalDoc::read_model(&doc);
+        apply_to(
+            &mut doc,
+            Calendar::NEW_EVENT.with(crate::resource::calendar::NewEvent {
+                event: crate::actions::EventData::from_event(&ev),
+            }),
+        );
+        let back = crate::resource::read_doc(&doc);
         assert_eq!(back.events[0].calendar_id.as_deref(), Some("work/oncall"));
     }
 }
@@ -485,27 +526,25 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
             "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:{id}@tilo\r\nSUMMARY:Durable imported task\r\nDUE;VALUE=DATE:20260916\r\nPRIORITY:1\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
         );
         let mut app = CalendarApp::new_detached();
-        let mut doc = AutoCommit::new();
+        let mut doc = ui::tilo_resource::Replica::<Calendar>::new().doc().clone();
         present(&mut app, &mut doc, &automerge::ROOT);
 
-        let first =
-            crate::actions::import_action(&payload).expect("the task is new on the first import");
-        let crate::actions::CalendarAction::ImportIcs { tasks, .. } = &first else {
-            panic!("ICS import builds one import action");
-        };
+        let (_, tasks) =
+            crate::actions::import_payload(&payload).expect("the task is new on the first import");
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].id, id.to_string(), "the VTODO UID is retained");
 
-        app.dispatch_action(&mut Edits::lend(&mut doc), &first);
-        app.model = CalDoc::read_model(&doc);
+        let first = crate::resource::import(&payload).expect("an import");
+        app.submit(&mut Edits::lend(&mut doc), first);
+        app.model = crate::resource::read_doc(&doc);
         assert!(
             app.model.task(id).is_some(),
             "the exact UID became the task id"
         );
-        let again = crate::actions::import_action(&payload).expect("the file still holds it");
-        app.dispatch_action(&mut Edits::lend(&mut doc), &again);
+        let again = crate::resource::import(&payload).expect("the file still holds it");
+        app.submit(&mut Edits::lend(&mut doc), again);
         assert_eq!(
-            CalDoc::read_model(&doc).tasks.len(),
+            crate::resource::read_doc(&doc).tasks.len(),
             1,
             "re-importing the same VTODO does not duplicate it"
         );
@@ -516,11 +555,10 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
         for invalid in ["event", "task", "project"] {
             let mut app = CalendarApp::new_detached();
             let mut state = ui::State::new();
+            state.doc = ui::tilo_resource::Replica::<Calendar>::new().doc().clone();
             present(&mut app, &mut state.doc, &state.root);
-            let mut batch = crate::actions::import_action(payload).expect("mixed import fixture");
-            let crate::actions::CalendarAction::ImportIcs { events, tasks } = &mut batch else {
-                panic!("import action");
-            };
+            let (mut events, mut tasks) =
+                crate::actions::import_payload(payload).expect("mixed import fixture");
             assert_eq!(events.len(), 1);
             assert_eq!(tasks.len(), 1);
             match invalid {
@@ -529,28 +567,24 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
                 "project" => tasks[0].project = Uuid::new_v4().to_string(),
                 _ => unreachable!(),
             }
+            let batch = Calendar::IMPORT_ITEMS
+                .with(crate::resource::calendar::ImportItems { events, tasks });
             state.doc.commit();
             let before = state.doc.get_heads();
-            // Serialized callers and deferred widget imports share the real decoder
-            // and executor; rejection cannot leave the preceding valid event behind.
-            let encoded = crate::actions::encode(&batch);
-            let registry = tilo_actions::ActionRegistry::with(crate::actions::register);
-            let decoded = registry.decode(&encoded).unwrap();
-            let mut transport = tilo_actions::LocalTransport::new();
-            assert!(
-                tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut transport)
-                    .is_err()
-            );
-            assert_eq!(state.doc.get_heads(), before);
+            // Every door shares the real decoder and executor; rejection
+            // cannot leave the preceding valid event behind.
+            let mut replica = ui::tilo_resource::Replica::<Calendar>::from_doc(state.doc.clone());
+            assert!(replica.apply(batch.clone()).is_err());
+            assert_eq!(replica.heads(), before);
 
             // The window's own import refuses it the same way.
             assert!(
-                app.try_dispatch_action(&mut Edits::lend(&mut state.doc), &batch)
+                app.try_submit(&mut Edits::lend(&mut state.doc), batch)
                     .is_err()
             );
             assert_eq!(state.doc.get_heads(), before);
-            assert!(CalDoc::read_model(&state.doc).events.is_empty());
-            assert!(CalDoc::read_model(&state.doc).tasks.is_empty());
+            assert!(crate::resource::read_doc(&state.doc).events.is_empty());
+            assert!(crate::resource::read_doc(&state.doc).tasks.is_empty());
         }
     }
 }
@@ -686,13 +720,13 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
 
         assert_eq!(app.model.events.len(), before, "untouched draft is gone");
         assert!(app.model.event(id).is_none());
-        assert!(CalDoc::read_model(&state).event(id).is_none());
+        assert!(crate::resource::read_doc(&state).event(id).is_none());
         let dispatched = app.last_dispatched().expect("discard action dispatched");
-        assert!(matches!(
-            serde_json::from_slice::<crate::actions::CalendarAction>(&dispatched.payload)
-                .expect("calendar delete action"),
-            crate::actions::CalendarAction::DeleteEvent { id: deleted, .. } if deleted == id.to_string()
-        ));
+        assert_eq!(dispatched.id, "delete-event");
+        assert_eq!(
+            dispatched.arguments.get("event"),
+            Some(&serde_json::json!(id.to_string()))
+        );
     }
     // Case `dismissing_an_edited_new_event_keeps_its_autosaved_changes`.
     {
@@ -712,7 +746,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         app.apply_action(Action::CloseDetail, &mut Edits::lend(&mut state));
 
         assert!(app.model.event(id).is_some(), "edited draft remains");
-        assert!(CalDoc::read_model(&state).event(id).is_some());
+        assert!(crate::resource::read_doc(&state).event(id).is_some());
         assert!(
             app.fresh_draft.is_none(),
             "it is now an ordinary autosaved event"
@@ -798,10 +832,10 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
             "the notes editor shows a calendar-specific placeholder hint"
         );
         assert!(
-            CalDoc::notes(h.doc(), true, id).is_some(),
+            crate::resource::notes_path(id).object(h.doc()).is_some(),
             "the new event has notes"
         );
-        let joined = CalDoc::note_text(h.doc(), true, id);
+        let joined = crate::resource::read_doc(h.doc()).notes_text(id);
         assert!(
             joined.trim().is_empty(),
             "notes start empty, not seeded: {joined:?}"
@@ -1100,9 +1134,8 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
         let mut app =
             ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
         let sample = crate::model::seed_demo(chrono::Local::now().date_naive());
-        for action in crate::resource::sample_actions(&sample) {
-            app.invoke(ui::tilo_resource::Invoke::apply(&action).unwrap())
-                .unwrap();
+        for invoke in crate::resource::sample_invocations(&sample) {
+            app.invoke(invoke).unwrap();
         }
         let event = app
             .state()
@@ -1146,7 +1179,7 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
             } if to == attendee_email && calendar_ics.contains("METHOD:REQUEST")
         ));
     }
-    // Case `direct_task_detail_choices_match_their_resource_action_envelopes`.
+    // Case `direct_task_detail_choices_are_the_field_edits_the_task_offers`.
     {
         use ui::widget::Widget;
 
@@ -1190,42 +1223,41 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
 
         let task = published_resource(&app, &state, &crate::actions::task_resource_id(id))
             .expect("selected task resource");
+        assert!(
+            task.actions.iter().any(|action| action.id == "delete-task"),
+            "the task is an item of the calendar: {:?}",
+            task.actions
+                .iter()
+                .map(|action| &action.id)
+                .collect::<Vec<_>>()
+        );
+        let fields = Calendar::paths().tasks.item(&crate::model::key(id));
+        let edit = |edit: ui::tilo_resource::Edit<Calendar>| {
+            ui::tilo_resource::Invoke::from(edit).arguments
+        };
         let due = chrono::NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
-        let due_spec = task
-            .actions
-            .iter()
-            .find(|action| action.id == "set-due")
-            .unwrap();
         app.apply_action(Action::SetTaskDue(Some(due)), &mut Edits::lend(&mut state));
         assert_eq!(
-            app.last_dispatched().unwrap().payload,
-            due_spec.build_text("2026-09-09").unwrap().payload
+            app.last_dispatched().unwrap().arguments,
+            edit(fields.due.set(Some(due)))
         );
 
-        let priority_spec = task
-            .actions
-            .iter()
-            .find(|action| action.id == "set-priority")
-            .unwrap();
         app.set_selected_task_priority(Priority::Medium, &mut Edits::lend(&mut state));
         assert_eq!(
-            app.last_dispatched().unwrap().payload,
-            priority_spec.build_text("p2").unwrap().payload
+            app.last_dispatched().unwrap().arguments,
+            edit(fields.priority.set(Priority::Medium))
         );
 
         let project = app.model.projects[0].id;
-        let project_spec = task
-            .actions
-            .iter()
-            .find(|action| action.id == "move-to-project")
-            .unwrap();
         app.set_selected_task_project(Some(project), &mut Edits::lend(&mut state));
         assert_eq!(
-            app.last_dispatched().unwrap().payload,
-            project_spec
-                .build_text(&crate::actions::project_resource_id(project))
-                .unwrap()
-                .payload
+            app.last_dispatched().unwrap().arguments,
+            edit(fields.project.set(Some(project)))
+        );
+        assert_eq!(
+            crate::resource::read_doc(&state).task(id).unwrap().project,
+            Some(project),
+            "each choice is in the calendar"
         );
     }
 }
@@ -1546,7 +1578,7 @@ fn calendar_and_project_selectors_file_events_and_reach_every_option() {
             color: Palette::Blue,
             order: 98,
         });
-        CalDoc::seed(&mut state, &app.model);
+        state = document_of(&app.model);
         app.select_task(id);
         app.seed_choices();
         // The menu publishes a stable value, so identical labels remain distinct.
@@ -1575,9 +1607,9 @@ fn calendar_and_project_selectors_file_events_and_reach_every_option() {
             h.app.model.event(id).unwrap().calendar_id.as_deref(),
             Some("work/default")
         );
-        assert!(CalDoc::outbox(h.doc()).contains(&id));
+        assert!(waits_for_upload(h.doc(), id));
     }
-    // Case `refiling_on_the_local_calendar_clears_the_upload_queue`.
+    // Case `refiling_on_the_local_calendar_needs_no_upload`.
     {
         let mut h = Harness::new(1280, 800);
         let id = selected_event_id(&h.app);
@@ -1586,11 +1618,11 @@ fn calendar_and_project_selectors_file_events_and_reach_every_option() {
             &CalTarget::Remote("work/default".into()),
             &mut Edits::lend(doc),
         );
-        assert!(CalDoc::outbox(h.doc()).contains(&id));
+        assert!(waits_for_upload(h.doc(), id));
         let (app, doc) = h.parts();
         app.set_event_calendar(&CalTarget::Local, &mut Edits::lend(doc));
         assert!(h.app.model.event(id).unwrap().calendar_id.is_none());
-        assert!(!CalDoc::outbox(h.doc()).contains(&id));
+        assert!(!waits_for_upload(h.doc(), id));
     }
 }
 
@@ -2013,7 +2045,7 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         // pull into the model + CRDT and clears the in-flight flag. Driven with
         // a hand-fed channel so it is deterministic and network-free, but it is
         // the exact production code the live worker feeds.
-        use crate::model::{Event, Palette, Recurrence};
+        use crate::model::{Event, Palette};
         use chrono::NaiveTime;
 
         let mut app = CalendarApp::new_demo();
@@ -2030,21 +2062,9 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
             title: "Pulled from server".into(),
             start,
             end: start + Duration::hours(1),
-            all_day: false,
             location: "Remote".into(),
             color: Palette::Blue,
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: Vec::new(),
-            reminder_min: None,
-            calendar_id: None,
-            project: None,
+            ..Event::default()
         };
         tx.send((
             caldav::SyncResult {
@@ -2073,7 +2093,7 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
             "the pulled event is now in the model"
         );
         // And it mirrored into the CRDT (persistence source of truth).
-        assert!(!CalDoc::is_empty(&state));
+        assert!(!crate::resource::read_doc(&state).events.is_empty());
     }
     // Case `sync_tags_landed_events_with_their_source_calendar`.
     {
@@ -2200,21 +2220,9 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
             title: "Remote sync marker".into(),
             start,
             end: start + Duration::hours(1),
-            all_day: false,
-            location: String::new(),
             color: Palette::Blue,
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: Vec::new(),
-            reminder_min: None,
-            project: None,
             calendar_id: Some("work/default".into()),
+            ..Event::default()
         };
         let eid = ev.id;
         app.model.events.push(ev);
@@ -2713,7 +2721,7 @@ fn detail_chips_cycle_into_the_crdt_and_the_exported_ics_file() {
         assert_eq!(after, Recurrence::Monthly, "the pick sets the rule");
         assert_eq!(app.model.event(id).unwrap().recurrence_interval, 1);
         // Reading the document back yields the new rule — it mirrored into the CRDT.
-        let reread = CalDoc::read_model(&state);
+        let reread = crate::resource::read_doc(&state);
         assert_eq!(
             reread
                 .events
@@ -2750,7 +2758,7 @@ fn detail_chips_cycle_into_the_crdt_and_the_exported_ics_file() {
             "the pick sets the colour"
         );
         assert_eq!(
-            CalDoc::read_model(&state).event(id).unwrap().color,
+            crate::resource::read_doc(&state).event(id).unwrap().color,
             other,
             "and mirrors it into the document"
         );
@@ -2976,7 +2984,10 @@ fn delete_by_action_key_and_button_removes_items_and_queues_remote_deletes() {
         );
         assert!(app.model.event(id).is_none());
         assert!(
-            !CalDoc::read_model(&state).events.iter().any(|e| e.id == id),
+            !crate::resource::read_doc(&state)
+                .events
+                .iter()
+                .any(|e| e.id == id),
             "removed from the CRDT too"
         );
         assert!(
@@ -2985,10 +2996,10 @@ fn delete_by_action_key_and_button_removes_items_and_queues_remote_deletes() {
         );
         assert!(!app.detail_open);
     }
-    // Case `deleting_a_synced_event_queues_a_caldav_delete`.
+    // Case `deleting_a_synced_event_deletes_it_on_its_server`.
     {
-        // A synced event carries a calendar_id; deleting it enqueues a CalDAV
-        // delete for that collection so the server copy is removed on next sync.
+        // A synced event carries what its server holds; deleting it leaves
+        // that copy for the device holding the account to delete.
         let mut app = CalendarApp::new_demo();
         let mut state = demo_document(&app);
         present(&mut app, &mut state, &automerge::ROOT);
@@ -3001,11 +3012,12 @@ fn delete_by_action_key_and_button_removes_items_and_queues_remote_deletes() {
             .cloned()
             .expect("a synced event with a calendar id");
         app.apply_action(Action::DeleteEvent(synced.id), &mut Edits::lend(&mut state));
-        let outbox = CalDoc::delete_outbox(&state);
+        let deletes = crate::outbox::deletes(&crate::resource::read_doc(&state), &app.accounts);
         assert!(
-            outbox.iter().any(|(cal, uid)| *uid == synced.id
-                && Some(cal.as_str()) == synced.calendar_id.as_deref()),
-            "a CalDAV delete was queued for the synced event: {outbox:?}"
+            deletes.iter().any(|(uid, job)| *uid == synced.id
+                && Some(job.calendar.id.as_str()) == synced.calendar_id.as_deref()),
+            "the server of the synced event deletes it next: {:?}",
+            deletes.iter().map(|(uid, _)| uid).collect::<Vec<_>>()
         );
     }
     // Case `delete_task_removes_it_and_its_subtasks`.
@@ -3031,7 +3043,7 @@ fn delete_by_action_key_and_button_removes_items_and_queues_remote_deletes() {
         );
         assert!(app.model.task(parent).is_none());
         assert!(
-            !CalDoc::read_model(&state)
+            !crate::resource::read_doc(&state)
                 .tasks
                 .iter()
                 .any(|t| t.id == parent)
@@ -3071,22 +3083,20 @@ fn delete_by_action_key_and_button_removes_items_and_queues_remote_deletes() {
     // Case `delete_button_dispatches_the_action_the_palette_builds`.
     {
         // Single source of truth, proven on the real button path: clicking the
-        // editor's trash button dispatches the byte-identical EncodedAction the
-        // Ctrl+K "Delete event" spec builds for the same event (including the
-        // resolved CalDAV delete target).
+        // editor's trash button submits the invocation the event's published
+        // "Delete event" builds.
         let mut h = Harness::new(1280, 800);
         let id = selected_event_id(&h.app);
-        let remote = h.app.resolve_remote_delete(id);
-        let expected =
-            crate::actions::encode(&crate::actions::delete_event_action(id.to_string(), remote));
+        let expected = Calendar::DELETE_EVENT.with(crate::model::key(id));
         let p = h
             .hit_center(|a| matches!(a, Action::DeleteEvent(_)))
             .expect("a delete target in the editor");
         h.click(p);
+        let dispatched = h.app.last_dispatched().expect("the trash button submitted");
         assert_eq!(
-            h.app.last_dispatched(),
-            Some(expected),
-            "the trash button and the palette build the identical EncodedAction"
+            (dispatched.id, dispatched.arguments),
+            (expected.id, expected.arguments),
+            "the trash button and the palette build the identical invocation"
         );
         assert!(
             h.app.model.event(id).is_none(),
@@ -3116,21 +3126,9 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
             title: title.into(),
             start,
             end: start + Duration::hours(1),
-            all_day: false,
-            location: String::new(),
             color: Palette::Blue,
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: Vec::new(),
-            reminder_min: None,
-            project: None,
             calendar_id: Some("work/default".into()),
+            ..Event::default()
         };
         app.apply_sync_result(
             caldav::SyncResult {
@@ -3155,8 +3153,8 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
             },
             &mut Edits::lend(&mut doc),
         );
-        let id = CalDoc::remote_id_for_href(&doc, "work/default", "/dav/work/meeting.ics")
-            .expect("binding stored");
+        let id = remote_at(&doc, "work/default", "/dav/work/meeting.ics")
+            .expect("what the server keeps there is known");
         app.apply_sync_result(
             caldav::SyncResult {
                 resources: vec![caldav::RemoteResource {
@@ -3181,10 +3179,7 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
             &mut Edits::lend(&mut doc),
         );
         assert_eq!(app.model.event(id).unwrap().title, "Server-edited title");
-        assert_eq!(
-            CalDoc::remote_binding(&doc, id).unwrap().2.as_deref(),
-            Some("\"two\"")
-        );
+        assert_eq!(remote_etag(&doc, id).as_deref(), Some("\"two\""));
         app.apply_sync_result(
             caldav::SyncResult {
                 deletions: vec![caldav::RemoteDeletion {
@@ -3206,8 +3201,15 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
             &mut Edits::lend(&mut doc),
         );
         assert!(app.model.event(id).is_none());
-        assert!(CalDoc::remote_binding(&doc, id).is_none());
-        assert_eq!(CalDoc::sync_tokens(&doc)[0].1, "token-3");
+        assert!(
+            !crate::resource::read_doc(&doc)
+                .remote
+                .contains_key(&id.to_string())
+        );
+        assert_eq!(
+            crate::resource::read_doc(&doc).sync_tokens["work/default"],
+            "token-3"
+        );
     }
     // Case `caldav_reconciliation_keeps_a_vtodo_at_its_stable_resource_across_pulls`.
     {
@@ -3224,16 +3226,16 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
         // Send the record through the real VTODO parser before reconciliation:
         // a second pull must update the href-bound task, never append one.
         let parsed_task = |done| {
-            let (_, tasks) = ics::parse(&ics::export(&Model {
-                events: Vec::new(),
-                tasks: vec![remote_task(done)],
-                projects: Vec::new(),
-                ..Model::default()
+            let (_, tasks) = ics::parse(&ics::export(&Calendar {
+                events: ui::tilo_resource::Keyed::default(),
+                tasks: vec![remote_task(done)].into(),
+                projects: ui::tilo_resource::Keyed::default(),
+                ..Calendar::default()
             }));
             tasks.into_iter().next().expect("one VTODO parses")
         };
         let mut app = CalendarApp::new_detached();
-        let mut doc = AutoCommit::new();
+        let mut doc = ui::tilo_resource::Replica::<Calendar>::new().doc().clone();
         let apply =
             |app: &mut CalendarApp, doc: &mut AutoCommit, task: crate::model::Task, etag: &str| {
                 app.apply_sync_result(
@@ -3256,9 +3258,8 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
             };
 
         apply(&mut app, &mut doc, parsed_task(false), "\"one\"");
-        let id =
-            CalDoc::remote_id_for_href(&doc, "work/default", "/dav/work/tasks.ics#tilo-task-0")
-                .expect("the VTODO has a href binding");
+        let id = remote_at(&doc, "work/default", "/dav/work/tasks.ics#tilo-task-0")
+            .expect("the VTODO is known at its server address");
         apply(&mut app, &mut doc, parsed_task(true), "\"two\"");
 
         assert_eq!(
@@ -3266,10 +3267,7 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
             1
         );
         assert!(app.model.task(id).is_some_and(|task| task.done));
-        assert_eq!(
-            CalDoc::remote_binding(&doc, id).unwrap().2.as_deref(),
-            Some("\"two\"")
-        );
+        assert_eq!(remote_etag(&doc, id).as_deref(), Some("\"two\""));
     }
 }
 
@@ -3297,21 +3295,21 @@ fn native_event_edits_record_the_actual_resource_title_in_platform_history() {
     for (label, action) in [
         (
             "Update event",
-            crate::actions::patch_event_action(
-                event.id,
-                crate::actions::EventPatch {
-                    location: Some("Meeting room".into()),
-                    ..Default::default()
-                },
+            ui::tilo_resource::Invoke::from(
+                Calendar::paths()
+                    .events
+                    .item(&crate::model::key(event.id))
+                    .location
+                    .set("Meeting room".into()),
             ),
         ),
         (
             "Delete event",
-            crate::actions::delete_event_action(event.id.to_string(), None),
+            Calendar::DELETE_EVENT.with(crate::model::key(event.id)),
         ),
     ] {
         let before = doc.get_changes(&[]).len();
-        app.try_dispatch_action(&mut Edits::lend(&mut doc), &action)
+        app.try_submit(&mut Edits::lend(&mut doc), action)
             .expect("the actual calendar dispatcher admits the edit");
         assert_eq!(doc.get_changes(&[]).len(), before + 1);
         let heads = doc.get_heads();
@@ -3323,36 +3321,50 @@ fn native_event_edits_record_the_actual_resource_title_in_platform_history() {
                     .and_then(tilo_actions::ActionContext::from_change_message)
             })
             .expect("the committed edit carries platform History provenance");
-        assert_eq!(context.action_label, label);
-        let resource = context.resource.expect("the edit names its event resource");
-        assert_eq!(resource.id, crate::actions::event_resource_id(event.id));
-        assert_eq!(resource.kind, "calendar.event");
-        assert_eq!(resource.label, event.title);
+        assert!(
+            matches!(
+                &context.what,
+                Some(tilo_actions::Did::Verb(_) | tilo_actions::Did::Edit(_))
+            ),
+            "{label}: {context:?}"
+        );
+        let resource = context.resource.expect("the edit names the calendar");
+        assert_eq!(resource.id, "calendar.calendar");
+        let item = context.item.expect("and the event it changed");
+        assert_eq!(item.id, event.id.to_string(), "{label}");
+        assert_eq!(item.label, event.title, "{label}");
     }
-    assert!(CalDoc::read_model(&doc).event(event.id).is_none());
+    assert!(crate::resource::read_doc(&doc).event(event.id).is_none());
 }
 
 #[test]
 fn platform_history_restore_returns_the_calendar_to_a_chosen_version() {
     let mut app = CalendarApp::new_detached();
     let mut state = ui::State::new();
+    state.doc = ui::tilo_resource::Replica::<Calendar>::new().doc().clone();
     let mut first = None;
     for title in ["Alpha review", "Beta sync"] {
         present(&mut app, &mut state.doc, &state.root);
         app.apply_action(Action::NewEvent, &mut Edits::lend(&mut state.doc));
         present(&mut app, &mut state.doc, &state.root);
-        let mut event = CalDoc::read_model(&state.doc)
+        let event = crate::resource::read_doc(&state.doc)
             .events
             .into_iter()
             .find(|event| event.title.is_empty())
             .expect("the new event");
-        event.title = title.into();
-        CalDoc::update_event(&mut state.doc, &event);
+        apply_to(
+            &mut state.doc,
+            Calendar::paths()
+                .events
+                .item(&crate::model::key(event.id))
+                .title
+                .set(title.into()),
+        );
         present(&mut app, &mut state.doc, &state.root);
         state.commit_action(None, None);
         first.get_or_insert_with(|| state.doc.get_heads()[0].to_string());
     }
-    assert_eq!(CalDoc::read_model(&state.doc).events.len(), 2);
+    assert_eq!(crate::resource::read_doc(&state.doc).events.len(), 2);
     let mut harness = ui::headless::FrameHarness::new(state, Box::new(app), (1200, 800));
     // The launcher hands History the app's own root factory; a preview is a
     // second, read-only instance of it.
@@ -3392,7 +3404,9 @@ fn platform_history_restore_returns_the_calendar_to_a_chosen_version() {
         "the preview is the past: {shown}"
     );
     assert_eq!(
-        CalDoc::read_model(&harness.state_mut().doc).events.len(),
+        crate::resource::read_doc(&harness.state_mut().doc)
+            .events
+            .len(),
         2,
         "previewing writes nothing"
     );
@@ -3416,7 +3430,7 @@ fn platform_history_restore_returns_the_calendar_to_a_chosen_version() {
 
     let doc = &mut harness.state_mut().doc;
     assert_eq!(
-        CalDoc::read_model(doc).events.len(),
+        crate::resource::read_doc(doc).events.len(),
         1,
         "the calendar is back at the version after its first event"
     );
@@ -3494,29 +3508,29 @@ fn tasks_screen_rows_toggle_like_the_rail_and_open_like_the_agenda() {
     let sub_toggle = toggle_of(&h.app, sub).expect("the subtask's checkbox");
     assert!(sub_toggle.x0 > parent_toggle.x0, "subtasks are indented");
 
+    let done = Calendar::paths()
+        .tasks
+        .item(&crate::model::key(flights.id))
+        .done;
     let published = {
         let doc = h.doc().clone();
-        published_resource(&h.app, &doc, &crate::actions::task_resource_id(flights.id))
-            .expect("the task is published")
-            .actions
-            .into_iter()
-            .find(|action| action.id == "toggle")
-            .expect("toggle")
-            .build_args(std::iter::empty::<(String, tilo_actions::ArgValue)>())
-            .expect("toggle takes no arguments")
+        published_root(&doc)
     };
+    assert!(
+        published
+            .actions
+            .iter()
+            .any(|action| action.id == ui::tilo_resource::FIELD_EDIT),
+        "the calendar publishes its field edits"
+    );
     h.click(parent_toggle.center());
     assert_eq!(h.app.model.task(flights.id).map(|t| t.done), Some(true));
     let dispatched = h.app.last_dispatched().expect("the checkbox dispatched");
-    assert_eq!(dispatched.payload, published.payload);
+    let edit = ui::tilo_resource::Invoke::from(done.set(true));
     assert_eq!(
-        dispatched.payload,
-        crate::actions::encode(&crate::actions::set_task_done_action(
-            flights.id.to_string(),
-            true
-        ))
-        .payload,
-        "the rail's ToggleTask builds the same edit"
+        (dispatched.id, dispatched.arguments),
+        (edit.id, edit.arguments),
+        "the checkbox makes the published field edit the rail's ToggleTask makes"
     );
 
     h.relayout();

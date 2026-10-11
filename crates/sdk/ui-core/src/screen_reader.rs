@@ -382,7 +382,7 @@ impl ScreenReader {
     }
 
     /// Speak at the rate and in the voice the person chose in Settings.
-    pub fn configure(&mut self, settings: &settings_store::accessibility::ScreenReaderSettings) {
+    pub fn configure(&mut self, settings: &settings_store::screen_reader::ScreenReaderSettings) {
         self.set_rate(settings.rate);
         if let Some(voice) = settings.voice.engine_voice() {
             self.set_voice(voice);

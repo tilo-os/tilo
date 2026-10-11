@@ -382,6 +382,15 @@ impl Default for ActionPalette {
 }
 
 impl ActionPalette {
+    /// The action the palette is asking the person to confirm, and the text
+    /// that confirms it, while it asks.
+    #[must_use]
+    pub fn asking(&self) -> Option<(&tilo_actions::ActionAddress, &str)> {
+        self.confirm
+            .as_ref()
+            .map(|confirm| (&confirm.pending.address, confirm.expected.as_str()))
+    }
+
     /// A closed palette. Load resources / providers, then `open`.
     pub fn new() -> Self {
         Self::with_inputs(TextRenderer::new(), SearchField::new)
@@ -1204,7 +1213,7 @@ impl ActionPalette {
                 .borrow()
                 .check(&crate::permissions::PermissionScope::app(
                     &binding.app_id,
-                    collab_types::caps::Verb::Read,
+                    crate::permissions::ActionKind::Read,
                 ));
         };
         // Provider resolution runs through its captured owner. Eager resources
@@ -1379,7 +1388,7 @@ impl ActionPalette {
                         || RowResolution::Address(address.clone()),
                         |binding| {
                             RowResolution::Bound(crate::bound_dispatch::BoundActionTarget {
-                                physical_text: false,
+                                input: crate::bound_dispatch::Input::Discrete,
                                 binding: (*binding).clone(),
                                 address: crate::bound_dispatch::BoundActionAddress {
                                     instance_id: binding.instance_id,
@@ -1527,7 +1536,6 @@ impl ActionPalette {
             return false;
         };
         let mut context = ActionContext::for_resource(
-            &flattened.action.label,
             flattened.resource_id.as_str(),
             &flattened.resource_kind,
             &flattened.resource_label,
@@ -1589,12 +1597,20 @@ impl ActionPalette {
                 }
             }
         }
-        Some(Self::dispatch_encoded(
-            doc,
+        let mut context = pending.context;
+        let kind = context
+            .resource
+            .as_ref()
+            .map(|resource| resource.kind.clone())
+            .unwrap_or_default();
+        if let Some(described) = tilo_actions::Described::of_published(
             &encoded,
-            registry,
-            transport,
-            pending.context,
+            tilo_actions::ActionKey::new("", kind, &pending.address.action),
+        ) {
+            context = context.with_described(described);
+        }
+        Some(Self::dispatch_encoded(
+            doc, &encoded, registry, transport, context,
         ))
     }
 
@@ -1845,7 +1861,6 @@ impl ActionPalette {
             return None;
         }
         let mut context = ActionContext::for_resource(
-            &fa.action.label,
             fa.resource_id.as_str(),
             &fa.resource_kind,
             &fa.resource_label,
@@ -1969,7 +1984,7 @@ impl ActionPalette {
                         fa.resource_label, fa.action.label, snapshot.binding.instance_id
                     );
                     let target = crate::bound_dispatch::BoundActionTarget {
-                        physical_text: false,
+                        input: crate::bound_dispatch::Input::Discrete,
                         binding: snapshot.binding.clone(),
                         address: crate::bound_dispatch::BoundActionAddress {
                             instance_id: snapshot.binding.instance_id,
@@ -3369,7 +3384,13 @@ mod tests {
                 .expect("dispatch ok");
             assert!(matches!(d, Dispatched::AppliedLocal(_)));
             let context = d.envelope().context.as_ref().expect("palette provenance");
-            assert_eq!(context.action_label, "Mark done");
+            let Some(tilo_actions::Did::Verb(verb)) = &context.what else {
+                panic!("the published action is recorded: {context:?}");
+            };
+            assert_eq!(
+                (verb.action.kind.as_str(), verb.action.action.as_str()),
+                ("test.thing", "mark")
+            );
             assert_eq!(
                 context
                     .resource

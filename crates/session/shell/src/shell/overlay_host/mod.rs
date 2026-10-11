@@ -1580,16 +1580,16 @@ fn grounded_intent_fallback(entries: &[ui::widget::history::HistoryEntry]) -> St
             return t_args("host-activity-working-in", &[("app", app.into())]);
         }
     }
-    match entry.op_class {
-        collab_types::OpClass::Splice => t("host-activity-editing"),
-        collab_types::OpClass::Move => t("host-activity-organizing"),
-        collab_types::OpClass::EditMeta => t("host-activity-updating-details"),
-        collab_types::OpClass::Comment => t("host-activity-reviewing-discussion"),
-        collab_types::OpClass::Tombstone => t("host-activity-cleaning-up"),
-        collab_types::OpClass::Restore => t("host-activity-restoring"),
-        collab_types::OpClass::Govern => t("host-activity-managing-access"),
-        collab_types::OpClass::Compaction => t("host-activity-maintaining-history"),
-        collab_types::OpClass::Redact => t("host-activity-reviewing-sensitive"),
+    match entry.entry_kind {
+        ui::widget::EntryKind::Text => t("host-activity-editing"),
+        ui::widget::EntryKind::Move => t("host-activity-organizing"),
+        ui::widget::EntryKind::Details => t("host-activity-updating-details"),
+        ui::widget::EntryKind::Comment => t("host-activity-reviewing-discussion"),
+        ui::widget::EntryKind::Delete => t("host-activity-cleaning-up"),
+        ui::widget::EntryKind::Restore => t("host-activity-restoring"),
+        ui::widget::EntryKind::Access => t("host-activity-managing-access"),
+        ui::widget::EntryKind::Compaction => t("host-activity-maintaining-history"),
+        ui::widget::EntryKind::Redaction => t("host-activity-reviewing-sensitive"),
     }
 }
 
@@ -16342,6 +16342,24 @@ impl ShellOverlayHost {
         *handled = true;
     }
 
+    /// Whether the person here may take the governance action `action` in
+    /// the active workspace, which this device governs: whether a sheet
+    /// offering it is drawn. The action itself decides again.
+    fn may_govern_active(&self, action: &str) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let state = chrome.borrow();
+        if let Some(forced) = state.test_only_owner_override {
+            return forced;
+        }
+        let user = state.active_local_user();
+        let tree = state.tree();
+        tree.desktop.active_workspace().is_some_and(|ws| {
+            tree.governs_room(ws.room) && ws.may_govern_at(&user, action, tilo_clock::unix_now())
+        })
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "typed settings outcomes are intentionally applied in one exhaustive policy boundary"
@@ -16383,7 +16401,7 @@ impl ShellOverlayHost {
                 self.last_search_query = "\0workspace-permission-roles\0".to_string();
             }
             WorkspaceSettingsOutcome::MemberRole(user) => {
-                if is_owner {
+                if self.may_govern_active(tilo_action_policy::roles::governance::SET_ROLE) {
                     let current = self.chrome.as_ref().and_then(|chrome| {
                         chrome
                             .borrow()
@@ -16402,7 +16420,7 @@ impl ShellOverlayHost {
                 }
             }
             WorkspaceSettingsOutcome::RemoveMember(user) => {
-                if is_owner {
+                if self.may_govern_active(tilo_action_policy::roles::governance::REMOVE_MEMBER) {
                     self.workspace_settings_overlay
                         .open_remove_member_sheet(user);
                     if let Some(chrome) = self.chrome.as_ref() {
@@ -16416,7 +16434,7 @@ impl ShellOverlayHost {
                 self.last_search_query = "\0workspace-ownership\0".to_string();
             }
             WorkspaceSettingsOutcome::Revoke(cap_id) => {
-                if is_owner {
+                if self.may_govern_active(tilo_action_policy::roles::governance::REVOKE) {
                     self.workspace_settings_overlay.open_revoke_sheet(cap_id);
                     if let Some(chrome) = self.chrome.as_ref() {
                         chrome.borrow_mut().bump();
@@ -16478,7 +16496,7 @@ impl ShellOverlayHost {
             }
             WorkspaceSettingsOutcome::RemoveAgent(agent) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
-                    let _ = crate::shell::membership::edit_active_workspace_caps(
+                    let _ = crate::shell::membership::edit_active_workspace_policy(
                         &mut chrome.borrow_mut(),
                         move |ws, actor| {
                             tilo_desktop::workspace_settings::remove_agent(ws, actor, &agent)
@@ -16488,7 +16506,7 @@ impl ShellOverlayHost {
             }
             WorkspaceSettingsOutcome::ConfirmRevoke(cap_id) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
-                    let _ = crate::shell::membership::edit_active_workspace_caps(
+                    let _ = crate::shell::membership::edit_active_workspace_policy(
                         &mut chrome.borrow_mut(),
                         move |ws, actor| {
                             tilo_desktop::workspace_settings::apply_revoke(ws, actor, &cap_id)
@@ -20612,7 +20630,7 @@ fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
     match hit {
         ComposerHit::Submit => {
             let draft = chrome.borrow().ws_grant_draft;
-            let _ = crate::shell::membership::edit_active_workspace_caps(
+            let _ = crate::shell::membership::edit_active_workspace_policy(
                 &mut chrome.borrow_mut(),
                 move |ws, actor| {
                     tilo_desktop::workspace_settings::apply_grant_draft(ws, actor, &draft)
@@ -26550,7 +26568,7 @@ impl ShellOverlayHost {
     fn new_wifi_password_input() -> TextInput {
         TextInput::local()
             .with_id("qs-wifi-password")
-            .with_placeholder(&t("portal-network-password"))
+            .with_placeholder(t("portal-network-password"))
             .with_secret(true)
             .with_enter_submits(true)
     }

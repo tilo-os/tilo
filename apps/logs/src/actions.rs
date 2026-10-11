@@ -19,10 +19,10 @@ const ENTRY_LIMIT: usize = 200;
 #[effect(operation = "logs.effects", device_only)]
 pub enum JournalEffect {
     /// Refresh journal.
-    #[effect(job, permission = "read")]
+    #[effect(job, kind = "read")]
     Refresh,
     /// Start live tail.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SetLiveTail {
         #[param("Follow new entries; omit to toggle")]
         enabled: Option<bool>,
@@ -34,7 +34,7 @@ pub enum JournalEffect {
     #[effect(job)]
     ExportFilteredJsonl,
     /// Show entry details.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SelectEntry {
         #[param("Stable logs.entry.* id")]
         entry_id: String,

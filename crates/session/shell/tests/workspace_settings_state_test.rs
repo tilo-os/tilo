@@ -18,7 +18,7 @@
 use shell::shell::state::FreshId as _;
 use shell::shell::state::WorkspaceAuthority as _;
 use shell::shell::state::{
-    CapOverride, CapRole, ResourceRef, Scope, Subject, Verb, Workspace, WorkspaceId,
+    Access, CapOverride, CapRole, ResourceRef, Scope, Subject, Workspace, WorkspaceId,
 };
 
 #[test]
@@ -27,20 +27,20 @@ fn permission_state_round_trips_decides_and_is_admin_only() {
     {
         let mut ws = Workspace::new(WorkspaceId::new(), "Design");
         ws.set_owner("host");
-        let room = ws.id.raw().to_string();
-        ws.grant_as(
-            &"host".to_string(),
-            CapOverride::membership(Subject::person("editor-user"), room, Verb::Write),
+        ws.govern_as_at(
+            "host",
+            tilo_action_policy::Change::AddMember {
+                person: "editor-user".into(),
+                role: tilo_action_policy::Role::Editor,
+            },
+            tilo_clock::unix_now(),
         )
         .expect("the owner may write a membership");
 
+        assert_eq!(ws.role_of("editor-user"), Some(CapRole::Editor));
+        assert_eq!(ws.role_of("host"), Some(CapRole::Owner));
         assert_eq!(
-            ws.role_of(&"editor-user".to_string()),
-            Some(CapRole::Editor)
-        );
-        assert_eq!(ws.role_of(&"host".to_string()), Some(CapRole::Owner));
-        assert_eq!(
-            ws.role_of(&"stranger".to_string()),
+            ws.role_of("stranger"),
             None,
             "not a member is distinct from a member with no rights"
         );
@@ -62,7 +62,7 @@ fn permission_state_round_trips_decides_and_is_admin_only() {
             CapOverride::grant(
                 Subject::app("Files"),
                 Scope::FsPath("/var/workspace/design".into()),
-                Verb::Write,
+                Access::Write,
             ),
         )
         .expect("the owner may grant");
@@ -72,7 +72,7 @@ fn permission_state_round_trips_decides_and_is_admin_only() {
             ws.allows(
                 &actor,
                 &ResourceRef::FsPath("/var/workspace/design/brief.md".into()),
-                Verb::Write
+                Access::Write
             ),
             "a path capability inherits down the tree"
         );
@@ -80,7 +80,7 @@ fn permission_state_round_trips_decides_and_is_admin_only() {
             !ws.allows(
                 &actor,
                 &ResourceRef::FsPath("/etc/shadow".into()),
-                Verb::Write
+                Access::Write
             ),
             "and does not leak outside it"
         );
@@ -95,18 +95,14 @@ fn permission_state_round_trips_decides_and_is_admin_only() {
             CapOverride::grant(
                 Subject::app("Files"),
                 Scope::FsPath("/var/workspace".into()),
-                Verb::Write,
+                Access::Write,
             ),
         );
         assert!(
             refused.is_none(),
             "grant_as must refuse a non-administrator"
         );
-        assert_eq!(
-            ws.capabilities.len(),
-            1,
-            "only the owner's own membership is recorded"
-        );
+        assert!(ws.sandbox.is_empty(), "nothing is recorded");
     }
 }
 

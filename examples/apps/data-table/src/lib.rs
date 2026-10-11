@@ -69,7 +69,7 @@ pub struct Review {
 impl Review {
     /// Open a row.
     #[action]
-    pub fn open(&mut self, #[param("Stable row id")] id: u64) -> Result<(), &'static str> {
+    pub fn open_row(&mut self, #[param("Stable row id")] id: u64) -> Result<(), &'static str> {
         if !usize::try_from(id).is_ok_and(|index| index < ROW_COUNT) {
             return Err("no such row");
         }
@@ -219,7 +219,7 @@ impl ResourceApp for App {
                         actions.bind_invocation(
                             Button::new(&format!("open-{}", row.id), "data-open")
                                 .control_size(ui::widget::ControlSize::Small),
-                            Review::OPEN.with(row.id),
+                            Review::OPEN_ROW.with(row.id),
                         ),
                     )
                 }),

@@ -72,7 +72,7 @@ pub fn seed_research(tree: &mut WorkspaceTree, salt: u16, person: &str) -> RoomI
     let id = WorkspaceId(salted(salt, 1));
     let mut workspace = Workspace::new(id, "Research");
     let room = RoomId::new();
-    workspace.room = room;
+    workspace.set_room(room);
     workspace.set_owner(person.to_string());
     let mut strip = Strip::new(StripId(salted(salt, 2)), "Thesis");
     let draft = salted(salt, 4);

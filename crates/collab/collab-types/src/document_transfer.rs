@@ -580,7 +580,7 @@ impl DocumentReassembler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AttestationId, OpClass};
+    use crate::{AttestationId, OpKind};
     use std::time::SystemTime;
 
     const MIB: usize = 1024 * 1024;
@@ -604,7 +604,7 @@ mod tests {
             artifact,
             Ed25519PublicKey::from_bytes([author; 32]),
             AttestationId::new(),
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::UNIX_EPOCH,
             1,
         )

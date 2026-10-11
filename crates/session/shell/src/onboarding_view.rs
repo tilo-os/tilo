@@ -2373,7 +2373,7 @@ impl OnboardingView {
         let path = TextInput::from_state(&self.connect_path)
             .with_id("onboarding.connect.path.field")
             .with_accessible_name(t("onboarding-connect-file"))
-            .with_placeholder(&t("onboarding-connect-file-placeholder"));
+            .with_placeholder(t("onboarding-connect-file-placeholder"));
         let passphrase = secret_input(
             "onboarding.connect.passphrase.field",
             &self.connect_passphrase,

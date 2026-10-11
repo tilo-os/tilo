@@ -12,7 +12,6 @@
 //! token, long enough to present it as `XOAUTH2`.
 
 use account_custody::{ClientTable, OAuthIssuer, OAuthUse};
-use base64::Engine as _;
 
 /// The OAuth providers we preset for. Both are IMAP/SMTP mail providers that
 /// require OAuth rather than a password.
@@ -71,19 +70,27 @@ impl OAuthProvider {
     }
 }
 
-/// The `XOAUTH2` SASL initial-response string IMAP `AUTHENTICATE` and SMTP
-/// `AUTH` expect (RFC 7628 / Google + Microsoft mail): the base64 of
-/// `user=<email>^Aauth=Bearer <token>^A^A` where `^A` is the `\x01` control
-/// byte.
-pub fn xoauth2_sasl(user: &str, access_token: &str) -> String {
-    let raw = format!("user={user}\x01auth=Bearer {access_token}\x01\x01");
-    base64_standard(raw.as_bytes())
+/// The `XOAUTH2` SASL initial response IMAP `AUTHENTICATE` expects (RFC 7628
+/// / Google + Microsoft mail), before base64: `user=<email>^Aauth=Bearer
+/// <token>^A^A` where `^A` is the `\x01` control byte.
+pub fn xoauth2_response(user: &str, access_token: &str) -> String {
+    format!("user={user}\x01auth=Bearer {access_token}\x01\x01")
 }
 
-/// Standard base64 (RFC 4648 §4, `+`/`/` alphabet, `=` padding) — the encoding
-/// SASL/XOAUTH2 mandates.
-pub fn base64_standard(input: &[u8]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(input)
+/// The async-imap `XOAUTH2` authenticator: it answers with the raw
+/// [`xoauth2_response`], which async-imap base64-encodes before sending.
+#[cfg(feature = "live")]
+pub struct XOAuth2 {
+    pub user: String,
+    pub token: String,
+}
+
+#[cfg(feature = "live")]
+impl async_imap::Authenticator for XOAuth2 {
+    type Response = String;
+    fn process(&mut self, _challenge: &[u8]) -> Self::Response {
+        xoauth2_response(&self.user, &self.token)
+    }
 }
 
 /// What Mail shows for a custody failure. Messages that need a new sign-in
@@ -262,21 +269,13 @@ mod tests {
     }
 
     #[test]
-    fn base64_standard_matches_rfc4648_vectors() {
-        assert_eq!(base64_standard(b""), "");
-        assert_eq!(base64_standard(b"f"), "Zg==");
-        assert_eq!(base64_standard(b"fo"), "Zm8=");
-        assert_eq!(base64_standard(b"foobar"), "Zm9vYmFy");
-        assert_eq!(base64_standard(&[0xfb, 0xff, 0xbf]), "+/+/");
-    }
-
-    #[test]
-    fn xoauth2_sasl_matches_google_documentation_vector() {
+    fn xoauth2_response_matches_google_documentation_vector() {
+        use base64::Engine as _;
         assert_eq!(
-            xoauth2_sasl(
+            base64::engine::general_purpose::STANDARD.encode(xoauth2_response(
                 "someuser@example.com",
                 "ya29.vF9dft4qmTc2Nvb3RlckBhdHRhdmlzdGEuY29tCg"
-            ),
+            )),
             "dXNlcj1zb21ldXNlckBleGFtcGxlLmNvbQFhdXRoPUJlYXJlciB5YTI5LnZGOWRmdDRxbVRjMk52YjNSbGNrQmhkSFJoZG1semRHRXVZMjl0Q2cBAQ=="
         );
     }

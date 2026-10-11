@@ -34,9 +34,8 @@ use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::link_popover::PageEntry;
 use ui::widget::{Button, NavShell, SidebarPlacement, TaffyTreeExt};
 
-use crate::actions::{self, NotesAction};
+use crate::actions;
 use crate::columns::{Columns, HeaderRequests};
-use crate::doc::NotesDoc;
 use crate::effect::NotesEffect;
 use crate::main_panel::{BacklinkChip, MainPanel, TagChip};
 use crate::model::{PageId, TagId, Workspace};
@@ -50,6 +49,14 @@ thread_local! {
     /// Whether the notebook's shell presents the window's History control.
     /// Always so in the app.
     static SHELL_PRESENTS_HISTORY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Test seam: keep the shell out of the tree the window offers its History
+/// control to. The published host History door remains available without
+/// adding a second toolbar; the component host can invoke that door directly.
+#[doc(hidden)]
+pub fn present_history_in_shell_for_test(present: bool) {
+    SHELL_PRESENTS_HISTORY.set(present);
 }
 
 /// The test id of the sidebar header's "New note" button.
@@ -70,6 +77,18 @@ fn canonical_image_store(
 }
 
 type ImportedAssets = Vec<(String, Vec<u8>)>;
+
+/// One block of a note as the window's index keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SearchBlock {
+    pub(crate) id: String,
+    pub(crate) text: String,
+}
+
+/// The notebook `doc` holds.
+fn read_notebook(doc: &AutoCommit) -> Result<crate::Notebook, String> {
+    <crate::Notebook as ui::tilo_resource::Resource>::read(doc).map_err(|error| error.to_string())
+}
 /// Document heads, pending operations, selected page and tag filter.
 type CanonicalProjectionKey = (Vec<ChangeHash>, usize, Option<PageId>, Option<TagId>);
 
@@ -335,7 +354,7 @@ pub struct NotesApp {
     /// Last framework-owned durability projection; querying it never touches the record.
     record_save_status: ui::record::RecordSaveStatus,
     canonical_assets: Arc<std::sync::RwLock<HashMap<String, Vec<u8>>>>,
-    canonical_asset_manifest: Vec<(String, String)>,
+    canonical_asset_manifest: std::collections::BTreeMap<String, ui::tilo_resource::Bytes>,
     /// Some referenced image's bytes are still on their way from a
     /// collaborator's device; retried at most once a second.
     canonical_assets_waiting: Option<ui::time::Instant>,
@@ -372,6 +391,9 @@ pub struct NotesApp {
     canonical_synced: Option<CanonicalProjectionKey>,
     /// Observer-only receipt that a canonical projection reached this surface.
     projection_adopted: bool,
+    /// The framework presents every state of the notebook to this window
+    /// (it is hosted), so it never reads the document itself.
+    presented: bool,
     /// Top-bar taffy node — present only while `built_narrow`.
     /// Rect of the narrow-mode top bar, from `apply_layout`.
     /// Hit rect of the drawer toggle (hamburger) button.
@@ -404,15 +426,13 @@ pub struct NotesApp {
     pending_block_range: Option<(PageId, String, String, usize, usize)>,
     /// Search/resource snapshot keyed by each block's durable Automerge Text
     /// object id, refreshed from the collaborative document on every sync.
-    search_blocks: HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
-    /// Local index of canonical incoming `[[Page]]` marks. It is rebuilt only
-    /// when the document heads advance, alongside the full-text catalogue;
-    /// drawing a selected note therefore never scans a large notebook.
+    search_blocks: HashMap<PageId, Vec<SearchBlock>>,
+    /// Notes whose bodies changed since the index above was built.
+    unindexed: std::collections::HashSet<PageId>,
+    /// Local index of incoming `[[Page]]` marks, rebuilt for the notes whose
+    /// bodies changed, alongside the full-text catalogue; drawing a selected
+    /// note therefore never scans a large notebook.
     backlink_index: HashMap<PageId, Vec<(PageId, u32)>>,
-    /// Durable document heads the block snapshot and backlinks were taken
-    /// at. In the normal no-edit frame this avoids snapshotting every
-    /// page/block just to rediscover nothing changed.
-    search_heads: Option<Vec<ChangeHash>>,
     /// Last theme text scale, captured during layout. Responsive chrome uses
     /// it for width/height reservations so 200% text switches to the drawer
     /// before page labels or the title stack can collide.
@@ -426,6 +446,17 @@ pub struct NotesApp {
     save_status: Option<ui::LocalState<ui::record::RecordSaveStatus>>,
     /// A note to open once the notebook holds it.
     open_when_present: Option<PageId>,
+    /// The notes the notebook holds, and the notes a search hit or an agent's
+    /// `open` asked to show, shared with the framework's opener.
+    opened: Rc<std::cell::RefCell<Opened>>,
+}
+
+/// What the framework's opener and the window share: the notes there are,
+/// and the ones asked to be shown.
+#[derive(Default)]
+struct Opened {
+    known: std::collections::HashSet<PageId>,
+    requests: Vec<PageId>,
 }
 
 impl NotesApp {
@@ -436,12 +467,13 @@ impl NotesApp {
         // Explicit read-only inspection and opt-in input diagnostics observe
         // both canonical text and the editor cache used to draw that frame,
         // without placing a person's note content in the diagnostic log.
+        let _ = doc;
         let body = page
-            .filter(|id| NotesDoc::page_body(doc, *id).is_some())
-            .map(|id| {
-                NotesDoc::page_block_snapshots(doc, id)
-                    .into_iter()
-                    .map(|(_, text)| text)
+            .and_then(|id| self.workspace.bodies.get(&id))
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .map(|block| block.text.as_str())
                     .collect::<Vec<_>>()
                     .join("\n")
             });
@@ -482,7 +514,7 @@ impl NotesApp {
             "bound_page": page,
             "main_page": page,
             "editor_binding_page": self.bound_page,
-            "pending_page_events": self.pending_events.len(),
+            "pending_page_events": self.pending_events.len() + self.opened.borrow().requests.len(),
             "adopted": self.projection_adopted,
             "canonical_sync_key": canonical_sync_key,
             "hash_algorithm": "blake3",
@@ -511,14 +543,17 @@ impl NotesApp {
         sidebar.sync_from_workspace(&workspace);
         let mut main = MainPanel::new();
         main.set_local_author(Some(author.0.clone()));
-        let snapshot = crate::notebook::asset_snapshot(doc)?;
-        let waiting = !crate::notebook::assets_complete(doc, &snapshot)?;
+        let content = crate::notebook::content();
+        let snapshot =
+            crate::notebook::image_snapshot(&workspace.notebook, |digest| content.read(digest));
+        let waiting = snapshot.len() < workspace.notebook.images.len();
+        let manifest = workspace.notebook.images.clone();
         let mut app = Self::build_widget(workspace, sidebar, main);
         if let Ok(mut assets) = app.canonical_assets.write() {
             *assets = snapshot;
         }
         app.canonical_assets_waiting = waiting.then(ui::time::now);
-        app.canonical_asset_manifest = crate::notebook::asset_manifest(doc)?;
+        app.canonical_asset_manifest = manifest;
         app.main = app.main.project_canonical(doc, &app.workspace)?;
         app.bound_page = app.workspace.selected();
         app.projection_adopted = true;
@@ -527,16 +562,11 @@ impl NotesApp {
     }
 
     fn project_workspace(doc: &AutoCommit, selected: Option<PageId>) -> Result<Workspace, String> {
-        let mut workspace = crate::notebook::project(doc, selected)?;
-        if workspace.selected().is_none() {
-            let first = workspace
-                .pages()
-                .iter()
-                .filter(|page| page.parent.is_none())
-                .min_by(|a, b| crate::model::sibling_order(a, b))
-                .map(|page| page.id);
-            workspace.set_selected(first);
-        }
+        let mut workspace = Workspace::of(Rc::new(read_notebook(doc)?), &Workspace::default());
+        let selected = selected
+            .filter(|page| workspace.get(*page).is_some())
+            .or_else(|| workspace.children_of(None).first().map(|page| page.id));
+        workspace.set_selected(selected);
         Ok(workspace)
     }
 
@@ -605,7 +635,7 @@ impl NotesApp {
             theme: Theme::dark(),
             record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
             canonical_assets: Arc::new(std::sync::RwLock::new(HashMap::new())),
-            canonical_asset_manifest: Vec::new(),
+            canonical_asset_manifest: std::collections::BTreeMap::new(),
             canonical_assets_waiting: None,
             pending_events: Vec::new(),
             last_mouse: Point::ZERO,
@@ -619,6 +649,7 @@ impl NotesApp {
             status_over_main: Vec::new(),
             canonical_synced: None,
             projection_adopted: false,
+            presented: false,
             dispatcher: None,
             active_tag_filter: None,
             route_history: ui::NavStack::new(initial_route),
@@ -626,13 +657,16 @@ impl NotesApp {
             pending_block_reveal: None,
             pending_block_range: None,
             search_blocks: HashMap::new(),
+            unindexed: std::collections::HashSet::new(),
             backlink_index: HashMap::new(),
-            search_heads: None,
             prepared_local_focus: None,
             pending_responsive_view: None,
             save_status: None,
             open_when_present: None,
+            opened: Rc::default(),
         };
+        app.opened.borrow_mut().known = app.workspace.pages().iter().map(|page| page.id).collect();
+        app.unindexed = app.workspace.pages().iter().map(|page| page.id).collect();
         // Images are drawn from the notebook's assets, whoever hosts it.
         app.main
             .set_image_store(Some(canonical_image_store(&app.canonical_assets)));
@@ -939,40 +973,23 @@ impl NotesApp {
         chips
     }
 
-    fn refresh_transclusion_previews(&mut self, doc: &AutoCommit) {
+    fn refresh_transclusion_previews(&mut self) {
+        #[cfg(test)]
         let _profile = ui::tilo_resource::profiling::Phase::start("transclusion_previews");
         self.main
-            .set_transclusion_previews(self.transclusion_previews(doc));
+            .set_transclusion_previews(self.transclusion_previews());
     }
 
-    fn transclusion_previews(
-        &self,
-        doc: &AutoCommit,
-    ) -> HashMap<PageId, ui::widget::TransclusionPreview> {
+    fn transclusion_previews(&self) -> HashMap<PageId, ui::widget::TransclusionPreview> {
         const EXCERPT_LIMIT: usize = 180;
-        // Only a committed projection of these exact heads can replace a
-        // document read. Open edits and stale projections still read the
-        // actual body, including rollback followed by another edit.
-        let projected = doc.pending_ops() == 0
-            && self.workspace.canonical_projection_heads.as_ref() == Some(&doc.base_heads());
-        let blocks = |page| -> std::borrow::Cow<'_, [actions::StoredBlock]> {
-            if projected {
-                std::borrow::Cow::Borrowed(
-                    self.workspace
-                        .bodies
-                        .get(&page)
-                        .map(Vec::as_slice)
-                        .unwrap_or_default(),
-                )
-            } else {
-                std::borrow::Cow::Owned(NotesDoc::page_stored_blocks(doc, page))
-            }
-        };
-        let selected = self.workspace.selected().map(&blocks).unwrap_or_default();
-        let targets = selected
-            .iter()
-            .flat_map(|block| &block.marks)
-            .filter_map(|span| match &span.mark {
+        let targets = self
+            .workspace
+            .selected()
+            .into_iter()
+            .filter_map(|page| self.workspace.bodies.get(&page))
+            .flatten()
+            .flat_map(|block| block.marks.clone())
+            .filter_map(|span| match span.mark {
                 actions::InlineMark::Transclusion { page } => page.parse::<PageId>().ok(),
                 _ => None,
             })
@@ -981,12 +998,15 @@ impl NotesApp {
             .into_iter()
             .filter_map(|id| self.workspace.get(id))
             .map(|page| {
-                let body = blocks(page.id);
-                let raw = body
-                    .iter()
-                    .map(|block| block.text.as_str())
+                let raw = self
+                    .workspace
+                    .bodies
+                    .get(&page.id)
+                    .into_iter()
+                    .flatten()
+                    .map(|block| block.text.clone())
                     .find(|text| !text.trim().is_empty())
-                    .unwrap_or("Empty note");
+                    .unwrap_or_else(|| "Empty note".to_string());
                 let mut excerpt = raw.chars().take(EXCERPT_LIMIT).collect::<String>();
                 if raw.chars().nth(EXCERPT_LIMIT).is_some() {
                     excerpt.push('…');
@@ -1022,7 +1042,7 @@ impl NotesApp {
                         format!("![Pasted image]({source})"),
                     )
                     .map_err(|error| error.to_string())?;
-                self.dispatch(edits, &actions::add_image_asset_action(page, bytes, edit))
+                self.submit_now(edits, actions::show_image(page, bytes, edit))
             });
             match result {
                 Ok(()) => {
@@ -1043,7 +1063,7 @@ impl NotesApp {
             return;
         };
         let inserted = fit_image_asset(bytes)
-            .and_then(|bytes| self.dispatch(edits, &self.image_insertion(page, alt, bytes)));
+            .and_then(|bytes| self.submit_now(edits, self.image_insertion(page, alt, bytes)));
         match inserted {
             Ok(()) => {
                 self.bound_page = None;
@@ -1168,7 +1188,7 @@ impl NotesApp {
     /// we deliberately do NOT create it here, so binding can never fork
     /// the `pages` Map ahead of the handshake.
     fn bind_selected_page(&mut self, state: &AutoCommit, sel: PageId) {
-        if NotesDoc::page_body(state, sel).is_none() {
+        if self.workspace.body_state(sel).is_none() {
             return; // page not in the shared doc yet — wait for sync
         }
         let title = self
@@ -1206,21 +1226,36 @@ impl NotesApp {
 
     // --- action dispatch -------------------------------------------------
 
-    /// Apply one [`NotesAction`] through the framework's dispatcher, the one
+    /// Apply one notebook action through the framework's dispatcher, the one
     /// door every affordance, the palette and agents share: checked against
     /// the participant's permissions, applied by the replayable executor,
     /// attributed, one undo step and named in history.
     fn dispatch(
         &self,
         edits: &mut ui::widget::Edits<'_>,
-        action: &NotesAction,
+        action: &actions::Action,
     ) -> Result<(), String> {
         let dispatcher = self
             .dispatcher
             .as_ref()
             .ok_or("this notebook is open to view only")?;
         dispatcher
-            .apply_now_with(edits, action, actions::history_context(action))
+            .apply_now(edits, action)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Submit `invoke` (a group of actions) to `edits` now, as one change.
+    fn submit_now(
+        &self,
+        edits: &mut ui::widget::Edits<'_>,
+        invoke: ui::tilo_resource::Invoke<crate::notebook::Notebook>,
+    ) -> Result<(), String> {
+        let dispatcher = self
+            .dispatcher
+            .as_ref()
+            .ok_or("this notebook is open to view only")?;
+        dispatcher
+            .submit_now(edits, invoke)
             .map_err(|error| error.to_string())
     }
 
@@ -1246,7 +1281,8 @@ impl NotesApp {
 
     /// [`Self::dispatch`] for an affordance that has nothing to show for a
     /// refusal but the unchanged notebook.
-    fn apply_action(&self, edits: &mut ui::widget::Edits<'_>, action: &NotesAction) {
+    #[cfg(test)]
+    fn apply_action(&self, edits: &mut ui::widget::Edits<'_>, action: &actions::Action) {
         if let Err(error) = self.dispatch(edits, action) {
             tracing::warn!(%error, "notes: action refused");
         }
@@ -1340,14 +1376,11 @@ impl NotesApp {
     /// Which note is open is this person's, not the document's: it stays
     /// open, and its editor stays bound, while the note exists. Rebinding on
     /// every edit would put the caret back at the start after each keystroke.
-    pub(crate) fn adopt_resource_state(&mut self, state: &std::rc::Rc<Workspace>) {
+    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<crate::Notebook>) {
         self.projection_adopted = true;
-        let selected = self
-            .workspace
-            .selected()
-            .filter(|page| state.get(*page).is_some());
-        self.workspace = (**state).clone();
-        self.workspace.set_selected(selected);
+        self.presented = true;
+        self.adopt(Workspace::of(Rc::clone(state), &self.workspace));
+        let selected = self.workspace.selected();
         if self.bound_page != selected {
             self.bound_page = None;
         }
@@ -1369,35 +1402,60 @@ impl NotesApp {
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Notebook>,
+        actions: ui::framework::Actions<crate::resource::Notebook>,
     ) {
-        self.main.attach_notebook(dispatcher.clone());
+        self.main.attach_notebook(dispatcher.clone(), actions);
         self.dispatcher = Some(dispatcher);
     }
 
-    fn refresh_search_blocks(&mut self, doc: &AutoCommit) {
+    /// What opens a note the framework names by its item: a search hit, an
+    /// agent's `open`. A note the notebook does not hold is refused.
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&ui::tilo_resource::Id) -> Result<(), ui::tilo_resource::Refusal> + 'static
+    {
+        let opened = Rc::clone(&self.opened);
+        move |id| {
+            let page = crate::notebook::page_of(id)
+                .filter(|page| opened.borrow().known.contains(page))
+                .ok_or_else(|| ui::tilo_resource::Refusal::new("there is no such note"))?;
+            opened.borrow_mut().requests.push(page);
+            Ok(())
+        }
+    }
+
+    /// Show `workspace` from now on; its changed notes are indexed again on
+    /// the next sync, every note when the set of notes changed.
+    fn adopt(&mut self, workspace: Workspace) {
+        let same_notes = workspace.pages().len() == self.workspace.pages().len()
+            && workspace
+                .pages()
+                .iter()
+                .all(|page| self.workspace.get(page.id).is_some());
+        if same_notes {
+            self.unindexed.extend(workspace.changed.iter().copied());
+        } else {
+            // A note that came or went changes which links lead somewhere:
+            // every note is indexed again; what is gone leaves the index now.
+            let known: std::collections::HashSet<PageId> =
+                workspace.pages().iter().map(|page| page.id).collect();
+            self.search_blocks.retain(|page, _| known.contains(page));
+            self.backlink_index.retain(|target, sources| {
+                sources.retain(|(source, _)| known.contains(source));
+                known.contains(target) && !sources.is_empty()
+            });
+            self.unindexed.extend(known);
+        }
+        self.opened.borrow_mut().known = workspace.pages().iter().map(|page| page.id).collect();
+        self.workspace = workspace;
+    }
+
+    fn refresh_search_blocks(&mut self) {
+        #[cfg(test)]
         let _profile = ui::tilo_resource::profiling::Phase::start("search_blocks");
-        let heads = doc.base_heads();
-        let committed = doc.pending_ops() == 0;
-        if committed && self.search_heads.as_ref() == Some(&heads) {
+        if self.unindexed.is_empty() {
             return;
         }
-        let projected =
-            committed && self.workspace.canonical_projection_heads.as_ref() == Some(&heads);
-        let changed = projected
-            .then_some(self.workspace.body_projection_refresh.as_ref())
-            .flatten()
-            .filter(|refresh| {
-                self.search_heads.as_ref() == Some(&refresh.before) && refresh.after == heads
-            })
-            .map(|refresh| refresh.pages.clone());
-        let _delta_profile = changed
-            .as_ref()
-            .map(|_| ui::tilo_resource::profiling::Phase::start("search_delta_adopted"));
-        let pages = changed.unwrap_or_else(|| {
-            self.search_blocks.clear();
-            self.backlink_index.clear();
-            self.workspace.pages().iter().map(|page| page.id).collect()
-        });
         let known_pages = self
             .workspace
             .pages()
@@ -1405,23 +1463,20 @@ impl NotesApp {
             .map(|page| page.id)
             .collect::<std::collections::HashSet<_>>();
         let bodies = self.workspace.bodies.clone();
+        let mut pages = std::mem::take(&mut self.unindexed)
+            .into_iter()
+            .collect::<Vec<_>>();
+        pages.sort_unstable();
         for source in pages {
-            if projected {
-                self.index_search_page(
-                    source,
-                    bodies.get(&source).map(Vec::as_slice).unwrap_or_default(),
-                    &known_pages,
-                );
-            } else {
-                // Standalone surfaces and open transactions do not carry a
-                // validated projection receipt: read their actual document.
-                let _read_profile =
-                    ui::tilo_resource::profiling::Phase::start("search_body_decode");
-                let stored = NotesDoc::page_stored_blocks(doc, source);
-                self.index_search_page(source, &stored, &known_pages);
+            if !known_pages.contains(&source) {
+                continue;
             }
+            self.index_search_page(
+                source,
+                bodies.get(&source).map(Vec::as_slice).unwrap_or_default(),
+                &known_pages,
+            );
         }
-        self.search_heads = committed.then_some(heads);
     }
 
     fn index_search_page(
@@ -1440,7 +1495,7 @@ impl NotesApp {
         }
         let mut blocks = Vec::with_capacity(stored.len());
         for block in stored {
-            blocks.push(crate::actions::NoteBlockResource {
+            blocks.push(SearchBlock {
                 id: block.id.clone(),
                 text: block.text.clone(),
             });
@@ -1468,22 +1523,13 @@ impl NotesApp {
         self.search_blocks.insert(source, blocks);
     }
 
-    /// Snapshot every page's metadata by id, for the pre/post diff that turns an
-    /// applied [`OutEvent`] into the matching [`NotesAction`](crate::actions).
-    fn meta_map(&self) -> HashMap<PageId, crate::model::PageMeta> {
-        self.workspace
-            .pages()
-            .iter()
-            .map(|p| (p.id, p.clone()))
-            .collect()
-    }
-
     /// Canonical synchronization is a projection, never an attempt to replay
     /// local rows that are absent from the document.
     fn reconcile_canonical(&mut self, doc: &AutoCommit) -> Result<(), String> {
+        #[cfg(test)]
         let _profile = ui::tilo_resource::profiling::Phase::start("reconcile_canonical");
-        self.workspace =
-            crate::notebook::project_without_asset_rehash(doc, self.workspace.selected())?;
+        let workspace = Workspace::of(Rc::new(read_notebook(doc)?), &self.workspace);
+        self.adopt(workspace);
         if self
             .active_tag_filter
             .is_some_and(|tag| self.workspace.get_tag(tag).is_none())
@@ -1508,138 +1554,87 @@ impl NotesApp {
         event: OutEvent,
     ) -> Result<(), String> {
         self.reconcile_canonical(edits.doc())?;
-        let before = self.meta_map();
-        let tree_move = matches!(event, OutEvent::Reparent { .. });
+        let gone = |app: &Self, id: PageId| app.workspace.get(id).is_none();
         match event {
             OutEvent::Select(id) => {
-                if self.workspace.get(id).is_none() {
+                if gone(self, id) {
                     return Err("page no longer exists".into());
                 }
                 self.workspace.set_selected(Some(id));
             }
             OutEvent::CreateChild { parent } => {
-                if parent.is_some_and(|id| self.workspace.get(id).is_none()) {
+                if parent.is_some_and(|id| gone(self, id)) {
                     return Err("parent page no longer exists".into());
                 }
-                let id = self.workspace.create_page(parent);
+                let id = PageId::new_v4();
+                self.dispatch(
+                    edits,
+                    &actions::create_page_action(id, parent, crate::notebook::UNTITLED),
+                )?;
+                self.reconcile_canonical(edits.doc())?;
                 self.workspace.set_selected(Some(id));
             }
             OutEvent::Rename { id, new_title } => {
-                if self.workspace.get(id).is_none() {
+                if gone(self, id) {
                     return Err("page no longer exists".into());
                 }
-                self.workspace.rename(id, &new_title);
+                self.dispatch(edits, &actions::rename_page_action(id, &new_title))?;
             }
             OutEvent::Delete(id) => {
-                if self.workspace.get(id).is_none() {
+                if gone(self, id) {
                     return Err("page no longer exists".into());
                 }
-                let action = actions::delete_page_action(id);
-                self.dispatch(edits, &action)?;
-                self.reconcile_canonical(edits.doc())?;
-                self.record_current_route();
-                return Ok(());
+                self.dispatch(edits, &actions::delete_page_action(id))?;
             }
             OutEvent::Reparent {
                 id,
                 new_parent,
                 before,
             } => {
-                if self.workspace.get(id).is_none()
-                    || new_parent.is_some_and(|id| self.workspace.get(id).is_none())
-                {
+                if gone(self, id) || new_parent.is_some_and(|id| gone(self, id)) {
                     return Err("page no longer exists".into());
                 }
-                self.workspace.move_to(id, new_parent, before);
+                self.dispatch(edits, &actions::move_page_action(id, new_parent, before))?;
             }
             OutEvent::Duplicate(source) => {
-                let action = actions::duplicate_subtree_action(edits.doc(), source)?;
-                let NotesAction::DuplicateSubtree { pages, .. } = &action else {
-                    return Err("invalid duplicate action".into());
-                };
-                let destination = pages
+                let parent = self
+                    .workspace
+                    .get(source)
+                    .ok_or("page no longer exists")?
+                    .parent;
+                let before = self
+                    .workspace
+                    .pages()
                     .iter()
-                    .find(|page| page.source == source.to_string())
-                    .ok_or("duplicate root is missing")?
-                    .destination
-                    .parse::<PageId>()
-                    .map_err(|e| e.to_string())?;
-                self.dispatch(edits, &action)?;
-                self.workspace.set_selected(Some(destination));
+                    .map(|page| page.id)
+                    .collect::<std::collections::HashSet<_>>();
+                self.dispatch(edits, &actions::duplicate_action(source))?;
                 self.reconcile_canonical(edits.doc())?;
-                self.record_current_route();
-                return Ok(());
+                // The copy is the one new note beside the original.
+                let copy = self
+                    .workspace
+                    .pages()
+                    .iter()
+                    .find(|page| page.parent == parent && !before.contains(&page.id))
+                    .map(|page| page.id);
+                if let Some(copy) = copy {
+                    self.workspace.set_selected(Some(copy));
+                }
             }
         }
-        let after = self.meta_map();
-        if tree_move && before != after {
-            let mut before = before
-                .values()
-                .map(actions::PageData::from_meta)
-                .collect::<Vec<_>>();
-            let mut after = after
-                .values()
-                .map(actions::PageData::from_meta)
-                .collect::<Vec<_>>();
-            before.sort_by(|a, b| a.id.cmp(&b.id));
-            after.sort_by(|a, b| a.id.cmp(&b.id));
-            let action = NotesAction::UpdatePageTree { before, after };
-            self.dispatch(edits, &action)?;
-        } else {
-            self.dispatch_tree_diff(edits, &before, &after);
-        }
-        // Rejected optimistic metadata is always discarded, including New.
         self.reconcile_canonical(edits.doc())?;
         self.record_current_route();
         self.refresh_status();
         Ok(())
     }
 
-    /// Apply one sidebar [`OutEvent`] to the workspace, then dispatch the
-    /// matching [`NotesAction`](crate::actions) so the change lands in the shared
-    /// document on the same replayable path the Ctrl+K palette uses.
+    /// Apply one sidebar [`OutEvent`]: the notebook's action for it lands in
+    /// the shared document on the same replayable path the palette uses.
     fn apply_and_dispatch(&mut self, edits: &mut ui::widget::Edits<'_>, ev: OutEvent) {
         if let Err(error) = self.apply_canonical_event(edits, ev) {
             tracing::warn!(%error, "notes: rejected page action; reconciling");
             let _ = self.reconcile_canonical(edits.doc());
             self.self_dirty = true;
-        }
-    }
-
-    /// Turn a page-tree change into the matching
-    /// action(s). Deletes are dispatched before upserts.
-    fn dispatch_tree_diff(
-        &self,
-        edits: &mut ui::widget::Edits<'_>,
-        before: &HashMap<PageId, crate::model::PageMeta>,
-        after: &HashMap<PageId, crate::model::PageMeta>,
-    ) {
-        // Deletions: a page present before and gone after. Dispatch one
-        // DeletePage per *deletion root* (a removed page whose parent wasn't
-        // also removed) — `apply` deletes the whole subtree, so descendants need
-        // no separate action.
-        let mut previous = before.iter().collect::<Vec<_>>();
-        previous.sort_by_key(|(id, _)| **id);
-        for (id, meta) in previous {
-            if after.contains_key(id) {
-                continue;
-            }
-            let parent_also_removed = meta
-                .parent
-                .is_some_and(|p| before.contains_key(&p) && !after.contains_key(&p));
-            if !parent_also_removed {
-                self.apply_action(edits, &actions::delete_page_action(*id));
-            }
-        }
-        // Creates + edits: a page new in `after`, or one whose metadata changed
-        // (title / parent / order). Each is a whole-page upsert.
-        let mut next = after.iter().collect::<Vec<_>>();
-        next.sort_by_key(|(id, _)| **id);
-        for (id, meta) in next {
-            match before.get(id) {
-                Some(old) if old == meta => {}
-                _ => self.apply_action(edits, &actions::upsert_page_action(meta)),
-            }
         }
     }
 
@@ -1726,50 +1721,6 @@ impl NotesApp {
         self.pending_events.push(OutEvent::Select(id));
     }
 
-    // Complete lazy resolution semantics are versioned alongside the actual
-    // document/owner witness retained by the SDK. No labels or callback hashes.
-    fn notes_invocation_domain(
-        &self,
-        doc: &AutoCommit,
-    ) -> ui::widget::ActionDirectoryInvocationDomain {
-        let mut parts = vec![
-            ui::clock::local_now()
-                .format("%Y-%m-%d")
-                .to_string()
-                .into_bytes(),
-            crate::continuation::optional_page(self.workspace.selected()),
-            crate::continuation::optional_page(self.active_tag_filter),
-        ];
-        // A different route with the same Back/Forward availability is a
-        // different relative navigation domain. Deleted targets are checked
-        // against the current document by the unchanged navigation handler.
-        for routes in [
-            self.route_history.past(),
-            std::slice::from_ref(self.route_history.current()),
-            self.route_history.future(),
-        ] {
-            parts.push((routes.len() as u64).to_be_bytes().to_vec());
-            parts.extend(
-                routes
-                    .iter()
-                    .copied()
-                    .map(crate::continuation::optional_page),
-            );
-        }
-        let heads = doc.base_heads();
-        parts.push((heads.len() as u64).to_be_bytes().to_vec());
-        parts.extend(heads.iter().map(|head| head.0.to_vec()));
-        parts.push(
-            (automerge::transaction::Transactable::pending_ops(doc) as u64)
-                .to_be_bytes()
-                .to_vec(),
-        );
-        crate::continuation::provider(
-            "notes-canonical-page-block-tag-backlink-local-dispatch/v1",
-            parts,
-        )
-    }
-
     /// Complete a first-note request from the empty-state button. This runs
     /// from both the normal event path and `sync`, because an accessibility
     /// activation reaches the child widget directly and then asks the host for
@@ -1790,20 +1741,19 @@ impl NotesApp {
     /// Keep the image snapshot in step with the notebook's asset references,
     /// and pick up referenced bytes that arrive from a collaborator's device
     /// after the reference did.
-    fn refresh_canonical_assets(&mut self, state: &AutoCommit) {
-        let Ok(manifest) = crate::notebook::asset_manifest(state) else {
-            return;
-        };
+    fn refresh_canonical_assets(&mut self) {
+        let manifest = &self.workspace.notebook.images;
         let retry = self
             .canonical_assets_waiting
             .is_some_and(|since| since.elapsed() >= std::time::Duration::from_secs(1));
-        if manifest == self.canonical_asset_manifest && !retry {
+        if *manifest == self.canonical_asset_manifest && !retry {
             return;
         }
-        let Ok(snapshot) = crate::notebook::asset_snapshot(state) else {
-            return;
-        };
-        let waiting = !crate::notebook::assets_complete(state, &snapshot).unwrap_or(true);
+        let content = crate::notebook::content();
+        let snapshot = crate::notebook::image_snapshot(&self.workspace.notebook, |digest| {
+            content.read(digest)
+        });
+        let waiting = snapshot.len() < manifest.len();
         let arrived = self
             .canonical_assets
             .read()
@@ -1811,7 +1761,7 @@ impl NotesApp {
         if let Ok(mut assets) = self.canonical_assets.write() {
             *assets = snapshot;
         }
-        self.canonical_asset_manifest = manifest;
+        self.canonical_asset_manifest = manifest.clone();
         self.canonical_assets_waiting = waiting.then(ui::time::now);
         if arrived && retry {
             // The image store remembers a failed load; a fresh store draws the
@@ -1886,7 +1836,7 @@ impl NotesApp {
     fn drain_sidebar_events(&mut self, edits: &mut ui::widget::Edits<'_>) {
         if let Some(transfer) = self.sidebar.take_transfer() {
             self.request(&match transfer {
-                SidebarTransfer::ImportMarkdown => NotesEffect::ImportMarkdown,
+                SidebarTransfer::ImportMarkdown => NotesEffect::ImportMarkdownFile,
                 SidebarTransfer::CopyLink(page) => NotesEffect::CopyLink { page },
                 SidebarTransfer::ExportMarkdown(page) => NotesEffect::ExportMarkdown { page },
                 SidebarTransfer::InsertImage(page) => NotesEffect::InsertImage { page },
@@ -2205,9 +2155,12 @@ impl ui::application_view::ApplicationViewState for NotesApp {
         let stored = workspace
             .selected()
             .map(|page| {
-                NotesDoc::page_block_snapshots(doc, page)
+                workspace
+                    .bodies
+                    .get(&page)
                     .into_iter()
-                    .map(|(id, _)| id)
+                    .flatten()
+                    .map(|block| block.id.clone())
                     .collect::<std::collections::HashSet<_>>()
             })
             .unwrap_or_default();
@@ -2386,7 +2339,11 @@ impl Widget for NotesApp {
             self.record_save_status = saved;
             self.refresh_status();
         }
-        self.refresh_canonical_assets(state);
+        self.refresh_canonical_assets();
+        let requested = std::mem::take(&mut self.opened.borrow_mut().requests);
+        for page in requested {
+            self.navigate_to(page);
+        }
         // Moving to another note writes nothing, so it is taken up here, in
         // the frame that asked; edits wait for the settle pass.
         let mut pending = std::mem::take(&mut self.pending_events);
@@ -2421,12 +2378,15 @@ impl Widget for NotesApp {
                 && synced.3 == key.3
         });
         if !unchanged {
-            let adopted =
-                pending == 0 && self.workspace.canonical_projection_heads.as_ref() == Some(&key.0);
-            let _profile = adopted.then(|| {
+            // A hosted notebook is handed every change it shows; one shown
+            // over a bare document reads it.
+            #[cfg(test)]
+            let _profile = self.presented.then(|| {
                 ui::tilo_resource::profiling::Phase::start("canonical_projection_adopted")
             });
-            if !adopted && let Err(error) = self.reconcile_canonical(state) {
+            if !self.presented
+                && let Err(error) = self.reconcile_canonical(state)
+            {
                 tracing::warn!(%error, "notes: canonical projection refused");
                 return;
             }
@@ -2438,11 +2398,11 @@ impl Widget for NotesApp {
         self.drain_tag_open();
         self.drain_backlink_open();
         self.main.set_tags(self.selected_tag_chips());
-        self.refresh_transclusion_previews(state);
+        self.refresh_transclusion_previews();
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
         self.drain_transclusion_opens();
-        self.refresh_search_blocks(state);
+        self.refresh_search_blocks();
         self.main.set_backlinks(self.selected_backlink_chips());
         self.finish_block_reveal();
     }
@@ -2880,12 +2840,6 @@ impl ui::resources::PublishesResources for NotesApp {
     /// nothing beside it.
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         Vec::new()
-    }
-    fn action_directory_invocation_domain(
-        &self,
-        doc: &AutoCommit,
-    ) -> ui::widget::ActionDirectoryInvocationDomain {
-        self.notes_invocation_domain(doc)
     }
 }
 
@@ -3413,11 +3367,48 @@ impl NotesApp {
     }
 }
 
+impl NotesApp {
+    fn open_note_menu_from_button(&mut self) {
+        let Some(page) = self.workspace.selected() else {
+            return;
+        };
+        let Some(anchor) = self.header_button_rect(NOTE_MENU_BUTTON_ID) else {
+            return;
+        };
+        self.note_menu_editor = false;
+        self.note_menu_table = None;
+        self.note_menu_table_source = None;
+        self.note_menu = ContextMenu::new();
+        for item in crate::sidebar::note_context_menu().items() {
+            self.note_menu.push(item.clone());
+        }
+        self.note_menu.set_text_scale(self.theme.text_scale);
+        self.note_menu.set_viewport(Some(self.rect));
+        self.note_menu.open_anchored(anchor, self.rect);
+        self.note_menu_target = Some(page);
+        self.self_dirty = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     mod search_refresh;
     use super::*;
     use tempfile::TempDir;
+
+    /// The notebook `doc` holds, as the window shows it.
+    fn shown(doc: &AutoCommit) -> Workspace {
+        crate::read::project(doc).unwrap()
+    }
+
+    /// The notes of `notebook`, in notebook order.
+    fn page_ids(notebook: &crate::Notebook) -> Vec<PageId> {
+        notebook
+            .pages
+            .ids()
+            .filter_map(crate::notebook::page_of)
+            .collect()
+    }
 
     #[test]
     fn capture_draw_preserves_import_notification_at_expiry_boundary() {
@@ -3447,81 +3438,20 @@ mod tests {
         assert_eq!(node.value.as_deref(), Some("Imported Project brief"));
     }
 
-    fn adopt_notebook_projection(app: &mut NotesApp, doc: &AutoCommit) {
-        use ui::tilo_resource::Resource as _;
-        let workspace = crate::resource::Notebook::read(doc).unwrap();
-        app.adopt_resource_state(&Rc::new(workspace));
-    }
-
-    #[test]
-    fn unchanged_long_note_preview_probe() {
-        let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
-        let source = PageId::new_v4();
-        let create = actions::append_page_action(source, None, "Long note");
-        tilo_actions::apply_local(&mut state.doc, &create, actions::encode(&create)).unwrap();
-        let text = (0..180)
-            .map(|index| {
-                format!(
-                    "Paragraph {index}: {}",
-                    "Ordinary scrolling words. ".repeat(12)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let blocks = MainPanel::seed_blocks(&text, |_| None);
-        let action = actions::write_body_action(source, &blocks);
-        tilo_actions::apply_local(&mut state.doc, &action, actions::encode(&action)).unwrap();
-        state.doc.commit();
-        app.frame(&mut state.doc, &state.root);
-        adopt_notebook_projection(&mut app, &state.doc);
-        app.workspace.set_selected(Some(source));
-        app.frame(&mut state.doc, &state.root);
-        assert_eq!(app.workspace.selected(), Some(source));
-        assert_eq!(app.workspace.bodies[&source].len(), 180);
-        assert_eq!(state.doc.pending_ops(), 0);
-        assert_eq!(
-            app.workspace.canonical_projection_heads,
-            Some(state.doc.base_heads())
-        );
-        let heads = state.doc.base_heads();
-        let scans = tilo_doc::model::ordered_keys_scan_count();
-        let began = std::time::Instant::now();
-        for _ in 0..100 {
-            assert!(app.transclusion_previews(&state.doc).is_empty());
-        }
-        let elapsed = began.elapsed().as_nanos();
-        let scans = tilo_doc::model::ordered_keys_scan_count() - scans;
-        assert_eq!(
-            scans, 0,
-            "unchanged previews must not decode the canonical body again"
-        );
-        assert_eq!(state.doc.base_heads(), heads);
-        assert_eq!(state.doc.pending_ops(), 0);
-        eprintln!(
-            "notes-preview-probe {}",
-            serde_json::json!({
-                "architecture": std::env::consts::ARCH,
-                "paragraphs": 180, "iterations": 100,
-                "elapsed_ns": elapsed, "container_scans": scans,
-                "includes_gpu_or_display": false
-            })
-        );
-    }
-
     #[test]
     fn transclusion_previews_follow_selected_marks_remote_edits_and_deleted_targets() {
         use tilo_automerge::ApplyIncoming as _;
         let (mut app, mut state, _tmp, source) = app_seeded_into_doc();
         assert!(
-            app.transclusion_previews(&state.doc).is_empty(),
+            app.transclusion_previews().is_empty(),
             "ordinary notes must not project every other note as a preview"
         );
         let target = PageId::new_v4();
         let mut peer = state.doc.fork();
         let blocks = MainPanel::seed_blocks("Original preview", |_| None);
-        let source_block = NotesDoc::page_block_snapshots(&peer, source)[0].clone();
+        let source_block = crate::read::page_block_snapshots(&peer, source)[0].clone();
         for action in [
-            actions::append_page_action(target, None, "Target"),
+            actions::create_page_action(target, None, "Target"),
             actions::write_body_action(target, &blocks),
             actions::set_mark_action(
                 source,
@@ -3535,14 +3465,13 @@ mod tests {
         peer.get_heads();
         state.doc.merge_incoming(&mut peer).unwrap();
         app.frame(&mut state.doc, &state.root);
-        adopt_notebook_projection(&mut app, &state.doc);
-        let previews = app.transclusion_previews(&state.doc);
+        let previews = app.transclusion_previews();
         assert_eq!(previews.len(), 1);
         assert_eq!(previews[&target].title, "Target");
         assert_eq!(previews[&target].excerpt, "Original preview");
 
         let mut peer = state.doc.fork();
-        let block = NotesDoc::page_block_snapshots(&peer, target)[0].clone();
+        let block = crate::read::page_block_snapshots(&peer, target)[0].clone();
         let action = actions::edit_body_action(
             target,
             tilo_document::RichTextAction::SpliceText {
@@ -3556,68 +3485,23 @@ mod tests {
         tilo_actions::apply_local(&mut peer, &action, actions::encode(&action)).unwrap();
         peer.get_heads();
         state.doc.merge_incoming(&mut peer).unwrap();
-        assert_eq!(
-            app.transclusion_previews(&state.doc)[&target].excerpt,
-            format!("{}…", "é".repeat(180)),
-            "a stale projection must read the collaborator's current body"
-        );
         app.frame(&mut state.doc, &state.root);
-        adopt_notebook_projection(&mut app, &state.doc);
-        let scans = tilo_doc::model::ordered_keys_scan_count();
         assert_eq!(
-            app.transclusion_previews(&state.doc)[&target].excerpt,
+            app.transclusion_previews()[&target].excerpt,
             format!("{}…", "é".repeat(180))
         );
-        assert_eq!(tilo_doc::model::ordered_keys_scan_count(), scans);
-
-        assert_open_preview_edits_and_rollback(&app, &mut state.doc, target);
 
         app.workspace.set_selected(Some(target));
         app.frame(&mut state.doc, &state.root);
-        assert!(app.transclusion_previews(&state.doc).is_empty());
+        assert!(app.transclusion_previews().is_empty());
         app.workspace.set_selected(Some(source));
         app.frame(&mut state.doc, &state.root);
-        assert_eq!(app.transclusion_previews(&state.doc).len(), 1);
+        assert_eq!(app.transclusion_previews().len(), 1);
         let action = actions::delete_page_action(target);
         tilo_actions::apply_local(&mut state.doc, &action, actions::encode(&action)).unwrap();
         state.doc.get_heads();
         app.frame(&mut state.doc, &state.root);
-        assert!(app.transclusion_previews(&state.doc).is_empty());
-    }
-
-    fn assert_open_preview_edits_and_rollback(
-        app: &NotesApp,
-        doc: &mut AutoCommit,
-        target: PageId,
-    ) {
-        let block = NotesDoc::page_block_snapshots(doc, target)[0].0.clone();
-        let mut pending_counts = Vec::new();
-        for replacement in ["one", "two"] {
-            NotesDoc::edit_page_body(
-                doc,
-                target,
-                &tilo_document::RichTextAction::SpliceText {
-                    region: tilo_document::action::RegionKind::Body,
-                    block: block.clone(),
-                    at: 0,
-                    del: 181,
-                    ins: replacement.into(),
-                },
-            )
-            .unwrap();
-            assert!(doc.pending_ops() > 0);
-            pending_counts.push(doc.pending_ops());
-            assert_eq!(app.transclusion_previews(doc)[&target].excerpt, replacement);
-            doc.rollback();
-            assert_eq!(
-                app.transclusion_previews(doc)[&target].excerpt,
-                format!("{}…", "é".repeat(180))
-            );
-        }
-        assert_eq!(
-            pending_counts[0], pending_counts[1],
-            "replacement transactions share an operation count"
-        );
+        assert!(app.transclusion_previews().is_empty());
     }
 
     #[test]
@@ -3653,37 +3537,35 @@ mod tests {
 
     #[test]
     fn published_block_range_selects_unicode_in_the_real_editor_without_editing() {
-        use tilo_document::{RichText, RichTextAction};
-        use ui::tilo_resource::Invoke;
+        use tilo_document::RichTextAction;
         let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
-        app.call("new-page", serde_json::json!({"value": "Range fixture"}))
+        app.call("new-note", serde_json::json!({"title": "Range fixture"}))
             .unwrap();
-        let page = app.state().pages()[0].id;
-        app.invoke_child::<RichText>(
-            &actions::page_body_id(page),
-            Invoke::apply(&RichTextAction::AppendParagraph {
-                text: "café notes".into(),
-            })
+        let page = page_ids(&app.state())[0];
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&actions::edit_body_action(
+                page,
+                RichTextAction::AppendParagraph {
+                    text: "café notes".into(),
+                },
+            ))
             .unwrap(),
         )
         .unwrap();
         app.settle();
         let block = app.read_document(|doc| {
-            NotesDoc::page_block_snapshots(doc, page)
+            crate::read::page_block_snapshots(doc, page)
                 .into_iter()
                 .find(|(_, text)| text == "café notes")
                 .unwrap()
                 .0
         });
-        let resource = actions::block_resource_id(page, &block);
         let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
         for (start, end, unit) in [(3, 4, "Chars"), (3, 5, "Bytes")] {
             app.call_on(
-                &resource,
+                &crate::actions::page_resource_id(page),
                 "reveal-block-range",
-                serde_json::json!({
-                    "start": start, "end": end, "unit": unit,
-                }),
+                serde_json::json!({ "block": block, "start": start, "end": end, "unit": unit }),
             )
             .unwrap();
             app.settle();
@@ -3708,11 +3590,9 @@ mod tests {
         ] {
             assert!(
                 app.call_on(
-                    &resource,
+                    &crate::actions::page_resource_id(page),
                     "reveal-block-range",
-                    serde_json::json!({
-                        "start": start, "end": end, "unit": unit,
-                    })
+                    serde_json::json!({ "block": block, "start": start, "end": end, "unit": unit })
                 )
                 .is_err()
             );
@@ -3735,8 +3615,7 @@ mod tests {
     fn a_block_edit_before_binding_discards_the_pending_range() {
         let (mut app, mut state, _tmp, page) = app_seeded_into_doc();
         let block = app.search_blocks[&page][0].id.clone();
-        let shown =
-            <crate::resource::Notebook as ui::tilo_resource::Resource>::read(&state.doc).unwrap();
+        let shown = shown(&state.doc);
         app.open_block_range(&shown, page, block.clone(), (0, 1, "Chars"))
             .unwrap();
         let action = actions::edit_body_action(
@@ -3760,12 +3639,19 @@ mod tests {
 
     /// The dispatcher the framework attaches to the notebook surface, for a
     /// test that drives `NotesApp` over a document of its own.
-    fn framework_dispatcher() -> ui::framework::Dispatcher<crate::resource::Notebook> {
+    fn framework_dispatcher() -> (
+        ui::framework::Dispatcher<crate::resource::Notebook>,
+        ui::framework::Actions<crate::resource::Notebook>,
+    ) {
         let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
-        app.surface_mut::<NotesApp>()
-            .dispatcher
-            .clone()
-            .expect("the framework attaches its dispatcher")
+        let notes = app.surface_mut::<NotesApp>();
+        (
+            notes
+                .dispatcher
+                .clone()
+                .expect("the framework attaches its dispatcher"),
+            notes.main.actions().expect("and its actions"),
+        )
     }
 
     /// The notebook surface over `doc`, editing through the framework's
@@ -3776,7 +3662,8 @@ mod tests {
             &ui::permissions::UserId("notes-app-test-author".into()),
         )
         .unwrap();
-        app.attach_framework(framework_dispatcher());
+        let (dispatcher, actions) = framework_dispatcher();
+        app.attach_framework(dispatcher, actions);
         app
     }
 
@@ -3788,7 +3675,7 @@ mod tests {
         if id == "notes.notebook" {
             return ui::tilo_resource::publish::<crate::resource::Notebook>(id, "Notes", &state);
         }
-        crate::actions::notebook_child(&state, id).unwrap()
+        crate::resource::Notebook::child(&state, id).unwrap()
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -3839,14 +3726,8 @@ mod tests {
         let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png")).to_vec();
         let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
         for action in [
-            actions::new_page_action(page, None, "a".into(), "Shots"),
-            actions::add_image_asset_action(
-                page,
-                bytes,
-                tilo_document::RichTextAction::AppendParagraph {
-                    text: format!("![Settings]({source})"),
-                },
-            ),
+            actions::create_page_action(page, None, "Shots"),
+            actions::place_image_action(page, bytes, Some("Settings")),
         ] {
             app.invoke(ui::tilo_resource::Invoke::apply(&action).unwrap())
                 .unwrap();
@@ -3866,7 +3747,7 @@ mod tests {
         eprintln!("phase accessibility_activation_creates_the_first_shared_note_on_sync");
         {
             let mut doc = AutoCommit::new();
-            crate::notebook::initialize_empty(&mut doc).unwrap();
+            crate::read::initialize(&mut doc);
             let mut app = hosted(&doc);
             assert!(
                 app.workspace.pages().is_empty(),
@@ -3908,10 +3789,10 @@ mod tests {
                 OutEvent::CreateChild { parent: Some(root) },
             );
             let child = app.workspace.selected().unwrap();
-            assert!(NotesDoc::page_body(&state.doc, child).is_some());
+            assert!(crate::read::page_body(&state.doc, child).is_some());
             app.dispatch_event_for_test(&mut Edits::lend(&mut state.doc), OutEvent::Delete(child));
             app.frame(&mut state.doc, &state.root);
-            assert!(NotesDoc::page_body(&state.doc, child).is_none());
+            assert!(crate::read::page_body(&state.doc, child).is_none());
             // Selection falls back to a remaining root page.
             assert_eq!(app.workspace.selected(), Some(root));
         }
@@ -3933,22 +3814,14 @@ mod tests {
         {
             let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
 
-            // Palette side: the welcome page resource's delete spec (built before we
-            // delete the page, while it still exists in the tree).
-            let notebook = published(&state.doc, "notes.notebook");
-            let page = notebook
-                .children
-                .iter()
-                .find(|r| r.label == "Welcome")
-                .expect("a Welcome page resource");
+            // Palette side: the welcome note's item offers delete with the
+            // note bound.
+            let page = published(&state.doc, &actions::page_resource_id(welcome));
+            assert_eq!(page.label, "Welcome");
             let delete_spec = page.actions.iter().find(|a| a.id == "delete").unwrap();
-            let from_palette = match &delete_spec.input {
-                tilo_actions::ActionInput::Immediate(enc) => enc.as_ref().clone(),
-                tilo_actions::ActionInput::Prompted { .. }
-                | tilo_actions::ActionInput::Deferred { .. } => {
-                    panic!("delete is an immediate action")
-                }
-            };
+            let from_palette = delete_spec
+                .build_json(&serde_json::Map::new())
+                .expect("the note is bound");
 
             // Affordance side: the sidebar's Delete event through the app path,
             // as the change it recorded names it.
@@ -3957,24 +3830,39 @@ mod tests {
                 &mut Edits::lend(&mut state.doc),
                 OutEvent::Delete(welcome),
             );
+            assert!(
+                state.doc.get_changes(&before).is_empty(),
+                "deleting a note asks the person first"
+            );
+            // The person confirms what the host asked.
+            app.land(&mut state.doc);
             let change = state.doc.get_changes(&before).into_iter().last().unwrap();
             let context =
                 tilo_actions::ActionContext::from_change_message(change.message().unwrap())
                     .unwrap();
             let from_button = crate::actions::encode(&actions::delete_page_action(welcome));
-            assert_eq!(context.action_label, "Delete note");
+            assert!(
+                matches!(&context.what, Some(tilo_actions::Did::Verb(verb)) if verb.action.action == "delete"),
+                "{context:?}"
+            );
 
             assert_eq!(from_palette.type_id, from_button.type_id);
+            let operation = |encoded: &tilo_actions::EncodedAction| {
+                serde_json::from_slice::<actions::Action>(&encoded.payload)
+                    .unwrap()
+                    .operation
+            };
             assert_eq!(
-                from_palette.payload, from_button.payload,
-                "the sidebar affordance and the palette build the same EncodedAction"
+                serde_json::to_value(operation(&from_palette)).unwrap(),
+                serde_json::to_value(operation(&from_button)).unwrap(),
+                "the sidebar affordance and the palette build the same action"
             );
         }
 
         eprintln!("phase creating_a_page_dispatches_an_upsert_into_the_doc");
         {
             let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
-            let before = NotesDoc::list_pages(&state.doc).len();
+            let before = crate::read::list_pages(&state.doc).len();
 
             app.dispatch_event_for_test(
                 &mut Edits::lend(&mut state.doc),
@@ -3982,7 +3870,7 @@ mod tests {
             );
 
             assert_eq!(
-                NotesDoc::list_pages(&state.doc).len(),
+                crate::read::list_pages(&state.doc).len(),
                 before + 1,
                 "the create wrote a new page into the shared document"
             );
@@ -3991,7 +3879,7 @@ mod tests {
                 .selected()
                 .expect("new page becomes the active page");
             assert!(
-                !NotesDoc::page_blocks(&state.doc, new_page).is_empty(),
+                !crate::read::page_blocks(&state.doc, new_page).is_empty(),
                 "the new page body also crossed the typed action executor"
             );
         }
@@ -4021,11 +3909,11 @@ mod tests {
         std::fs::write(&directory, b"deliberate test storage fault").unwrap();
         let page = uuid::Uuid::new_v4();
         host.invoke(
-            ui::tilo_resource::Invoke::apply(&crate::actions::NotesAction::AppendPage {
-                id: page.to_string(),
-                title: "Retry receipt".into(),
-                parent: String::new(),
-            })
+            ui::tilo_resource::Invoke::apply(&crate::actions::create_page_action(
+                page,
+                None,
+                "Retry receipt",
+            ))
             .unwrap(),
         )
         .unwrap();
@@ -4072,7 +3960,7 @@ mod tests {
         let persisted = automerge::AutoCommit::load(&bytes).unwrap();
         let notebook = crate::resource::Notebook::read(&persisted).unwrap();
         assert!(
-            notebook.pages().iter().any(|meta| meta.id == page),
+            notebook.pages.contains(&crate::notebook::page_id(page)),
             "the retry must make the failed edit durable on disk"
         );
     }
@@ -4161,12 +4049,12 @@ mod tests {
             assert_expired_save_feedback_presents(&mut app, &state);
         }
 
-        eprintln!("phase unchanged_document_heads_skip_full_search_snapshot_work");
+        eprintln!("phase an_unchanged_notebook_skips_search_index_work");
         {
-            let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
+            let (mut app, _state, _tmp, _welcome) = app_seeded_into_doc();
             app.search_blocks.clear();
-            app.search_heads = Some(state.doc.get_heads());
-            app.refresh_search_blocks(&state.doc);
+            assert!(app.unindexed.is_empty());
+            app.refresh_search_blocks();
             assert!(app.search_blocks.is_empty());
         }
     }
@@ -4201,14 +4089,14 @@ mod tests {
     fn app_seeded_into_doc() -> (NotesApp, ui::State, TempDir, PageId) {
         let tmp = TempDir::new().unwrap();
         let mut state = ui::State::new();
-        crate::notebook::initialize_empty(&mut state.doc).unwrap();
+        crate::read::initialize(&mut state.doc);
         let welcome = PageId::new_v4();
         let blocks = MainPanel::seed_blocks(
             "Welcome to notes.\n\nA second paragraph to read.\n\nA third one, last.",
             |_| None,
         );
         for action in [
-            actions::new_page_action(welcome, None, "a".into(), "Welcome"),
+            actions::create_page_action(welcome, None, "Welcome"),
             actions::write_body_action(welcome, &blocks),
         ] {
             tilo_actions::apply_local(&mut state.doc, &action, actions::encode(&action)).unwrap();
@@ -4227,15 +4115,14 @@ mod tests {
                 .iter()
                 .map(|block| (block.id.clone(), block.text.clone()))
                 .collect::<Vec<_>>();
-            assert_eq!(actual, NotesDoc::page_block_snapshots(doc, page.id));
+            assert_eq!(actual, crate::read::page_block_snapshots(doc, page.id));
         }
     }
 
     #[test]
     fn canonical_open_refuses_missing_pages_and_blocks_before_projection_adoption() {
-        use ui::tilo_resource::Resource as _;
         let (mut app, mut state, _tmp, page) = app_seeded_into_doc();
-        let current = crate::resource::Notebook::read(&state.doc).unwrap();
+        let current = shown(&state.doc);
         let pending = app.pending_events.len();
         assert_eq!(
             app.open_block(&current, page, Some("missing-block".into())),
@@ -4244,7 +4131,7 @@ mod tests {
         assert_eq!(app.pending_events.len(), pending);
         let delete = actions::delete_page_action(page);
         tilo_actions::apply_local(&mut state.doc, &delete, actions::encode(&delete)).unwrap();
-        let current = crate::resource::Notebook::read(&state.doc).unwrap();
+        let current = shown(&state.doc);
         assert!(current.get(page).is_none());
         assert!(
             app.workspace.get(page).is_some(),
@@ -4268,10 +4155,10 @@ mod tests {
         let target = PageId::new_v4();
         let absent = PageId::new_v4();
         let mut peer = state.doc.fork();
-        let create = actions::new_page_action(target, None, "z".into(), "Destination");
+        let create = actions::create_page_action(target, None, "Destination");
         tilo_actions::apply_local_by(&mut peer, &create, actions::encode(&create), Some(b"peer"))
             .unwrap();
-        let source_blocks = NotesDoc::page_block_snapshots(&peer, source);
+        let source_blocks = crate::read::page_block_snapshots(&peer, source);
         for (block, range, link) in [
             (&source_blocks[0].0, 0..4, target),
             (&source_blocks[0].0, 5..7, target),
@@ -4289,14 +4176,14 @@ mod tests {
             .unwrap();
         }
         state.doc.merge_incoming(&mut peer).unwrap();
-        let rich_before = NotesDoc::page_stored_blocks(&state.doc, source);
+        let rich_before = crate::read::page_stored_blocks(&state.doc, source);
         app.frame(&mut state.doc, &state.root);
         assert_search_snapshot_matches_canonical(&app, &state.doc);
         assert_eq!(app.backlink_index.get(&target), Some(&vec![(source, 2)]));
         assert!(!app.backlink_index.contains_key(&source));
         assert!(!app.backlink_index.contains_key(&absent));
         assert_eq!(
-            NotesDoc::page_stored_blocks(&state.doc, source),
+            crate::read::page_stored_blocks(&state.doc, source),
             rich_before
         );
 
@@ -4310,7 +4197,7 @@ mod tests {
         assert!(!app.search_blocks.contains_key(&target));
         assert!(!app.backlink_index.contains_key(&target));
         assert_eq!(
-            NotesDoc::page_stored_blocks(&state.doc, source),
+            crate::read::page_stored_blocks(&state.doc, source),
             rich_before
         );
     }
@@ -4333,7 +4220,7 @@ mod tests {
                     new_title: "Project index".into(),
                 },
             );
-            let block = NotesDoc::page_block_snapshots(&state.doc, source)[0]
+            let block = crate::read::page_block_snapshots(&state.doc, source)[0]
                 .0
                 .clone();
             app.apply_action(
@@ -4353,11 +4240,8 @@ mod tests {
                 &mut Edits::lend(&mut state.doc),
                 &actions::set_mark_action(source, &block, 0..7, &ui::widget::Mark::Link(target)),
             );
-            let backlinks = actions::canonical_backlinks(
-                &actions::read_bodies(&state.doc, app.workspace.pages()),
-                app.workspace.pages(),
-                target,
-            );
+            let notebook = shown(&state.doc);
+            let backlinks = actions::backlinks(&notebook.bodies, notebook.pages(), target);
             assert_eq!(backlinks.len(), 1);
             assert_eq!(backlinks[0].source, source);
             assert_eq!(backlinks[0].source_title, "Project index");
@@ -4452,9 +4336,7 @@ mod tests {
                 "welcome has several blocks"
             );
             let block_id = app.search_blocks[&welcome][1].id.clone();
-            let shown =
-                <crate::resource::Notebook as ui::tilo_resource::Resource>::read(&state.doc)
-                    .unwrap();
+            let shown = shown(&state.doc);
             assert!(
                 app.open_block(&shown, welcome, Some("no-such-block".into()))
                     .is_err(),
@@ -4571,7 +4453,7 @@ mod tests {
                 "the mark-only edit is an attributed, undoable Notes action"
             );
             assert_eq!(
-                NotesDoc::page_block_marks(&state.doc, welcome)
+                crate::read::page_block_marks(&state.doc, welcome)
                     .into_iter()
                     .find(|(id, _)| id == &block)
                     .map(|(_, marks)| marks),
@@ -4589,7 +4471,6 @@ mod tests {
 
             let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
             let original = app.search_blocks[&welcome][1].clone();
-            let old_address = crate::actions::open_block_address(welcome, &original.id);
             let block = original.id.clone();
 
             // A collaborator inserts an identical-text block before the target.
@@ -4604,7 +4485,7 @@ mod tests {
             )
             .apply(&mut state.doc)
             .unwrap();
-            let inserted = NotesDoc::page_block_snapshots(&state.doc, welcome)
+            let inserted = crate::read::page_block_snapshots(&state.doc, welcome)
                 .into_iter()
                 .skip_while(|(id, _)| *id != last)
                 .nth(1)
@@ -4621,11 +4502,7 @@ mod tests {
             .unwrap();
             app.frame(&mut state.doc, &state.root);
 
-            let resolved = published(&state.doc, &old_address.resource);
-            assert_eq!(resolved.id.0, old_address.resource);
-            let shown =
-                <crate::resource::Notebook as ui::tilo_resource::Resource>::read(&state.doc)
-                    .unwrap();
+            let shown = shown(&state.doc);
             app.open_block(&shown, welcome, Some(block))
                 .expect("durable block identity still resolves");
             app.frame(&mut state.doc, &state.root);
@@ -4635,32 +4512,5 @@ mod tests {
                 "the original block moved to index 2; the identical insertion at 0 is not revealed"
             );
         }
-    }
-}
-
-#[cfg(test)]
-#[path = "app/continuation_tests.rs"]
-mod continuation_tests;
-
-impl NotesApp {
-    fn open_note_menu_from_button(&mut self) {
-        let Some(page) = self.workspace.selected() else {
-            return;
-        };
-        let Some(anchor) = self.header_button_rect(NOTE_MENU_BUTTON_ID) else {
-            return;
-        };
-        self.note_menu_editor = false;
-        self.note_menu_table = None;
-        self.note_menu_table_source = None;
-        self.note_menu = ContextMenu::new();
-        for item in crate::sidebar::note_context_menu().items() {
-            self.note_menu.push(item.clone());
-        }
-        self.note_menu.set_text_scale(self.theme.text_scale);
-        self.note_menu.set_viewport(Some(self.rect));
-        self.note_menu.open_anchored(anchor, self.rect);
-        self.note_menu_target = Some(page);
-        self.self_dirty = true;
     }
 }

@@ -63,9 +63,9 @@ fn two_windows_on_one_record_write_under_distinct_actors() {
     second.merge_peer(&mut shared).unwrap();
     assert_ne!(actor(&first), actor(&second));
 
-    first.invoke(Shopping::ADD.with("milk".into())).unwrap();
-    second.invoke(Shopping::ADD.with("eggs".into())).unwrap();
-    first.invoke(Shopping::ADD.with("bread".into())).unwrap();
+    first.invoke(Shopping::ADD.with("milk")).unwrap();
+    second.invoke(Shopping::ADD.with("eggs")).unwrap();
+    first.invoke(Shopping::ADD.with("bread")).unwrap();
     let mut theirs = second.peer_document();
     first.merge_peer(&mut theirs).unwrap();
     let mut ours = first.peer_document();
@@ -81,7 +81,7 @@ fn two_windows_on_one_record_write_under_distinct_actors() {
 fn a_record_has_one_writer_on_a_device_at_a_time() {
     let profile = tempfile::tempdir().unwrap();
     let mut first = TestApp::<ShoppingApp>::open_data_dir(profile.path()).unwrap();
-    first.invoke(Shopping::ADD.with("milk".into())).unwrap();
+    first.invoke(Shopping::ADD.with("milk")).unwrap();
     first.flush().unwrap();
     let writer = actor(&first);
     assert!(
@@ -91,6 +91,6 @@ fn a_record_has_one_writer_on_a_device_at_a_time() {
     drop(first);
     let mut again = TestApp::<ShoppingApp>::open_data_dir(profile.path()).unwrap();
     assert_eq!(actor(&again), writer, "the device's writer continues");
-    again.invoke(Shopping::ADD.with("eggs".into())).unwrap();
+    again.invoke(Shopping::ADD.with("eggs")).unwrap();
     assert_eq!(texts(&again), ["eggs", "milk"]);
 }

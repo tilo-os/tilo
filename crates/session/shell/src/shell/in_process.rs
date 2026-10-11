@@ -18,7 +18,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::launch::LaunchError;
-use ui::permissions::{Actor, PermissionContext, Role, UserId};
+use ui::permissions::{PermissionContext, Role, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
 mod feedback_native;
@@ -474,9 +474,9 @@ impl InProcessApps {
             views: Rc::clone(&views),
             device_id: self.device_id.clone(),
             instance_id: tab,
-            permissions: Rc::new(RefCell::new(PermissionContext::from_capabilities(
-                Actor::person(Some(Role::Owner), &self.author.0),
-                vec![],
+            permissions: Rc::new(RefCell::new(PermissionContext::member(
+                &self.author.0,
+                Role::Owner,
             ))),
             author: self.author.clone(),
             action_context: tilo_actions::ActionContext::default(),
@@ -876,22 +876,18 @@ mod tests {
             );
         }
         let target = terminal::target::SessionTarget::Legacy { vm: "build".into() };
-        let retarget = serde_json::json!({
-            tilo_resource::APPLY_PARAM: serde_json::to_value(
-                terminal::resource::TerminalAction::SetTarget { target: target.encode() }
-            )
-            .unwrap()
-        });
         harness
             .invoke_bound_action(
                 &ui::bound_dispatch::BoundActionAddress {
                     instance_id: TAB,
                     address: tilo_actions::ActionAddress::new(
                         terminal::Terminal::KIND,
-                        tilo_resource::APPLY,
+                        "record-target",
                     ),
                 },
-                retarget.as_object().unwrap(),
+                serde_json::json!({ "target": target.encode() })
+                    .as_object()
+                    .unwrap(),
             )
             .unwrap();
         harness.relayout();
@@ -907,7 +903,7 @@ mod tests {
             .unwrap();
         let kept = records
             .with(&RecordId::for_tab(TAB), |doc| {
-                terminal::Terminal::read(doc).map(|state| state.target)
+                terminal::Terminal::read(doc).map(|state| state.session_target())
             })
             .expect("the tab's record is open")
             .unwrap();
@@ -967,7 +963,7 @@ mod tests {
                 .unwrap();
             records
                 .with(&RecordId::room_default(), |doc| {
-                    file_explorer::FileExplorer::read(doc).map(|state| state.bookmarks)
+                    file_explorer::FileExplorer::read(doc).map(|state| state.bookmarks())
                 })
                 .expect("the room's record of places is open")
                 .unwrap()
@@ -980,7 +976,7 @@ mod tests {
                     instance_id: 51,
                     address: tilo_actions::ActionAddress::new("files.folder", "add-bookmark"),
                 },
-                serde_json::json!({ "path": place }).as_object().unwrap(),
+                serde_json::json!({ "place": place }).as_object().unwrap(),
             )
             .unwrap();
         harness.relayout();
@@ -1058,7 +1054,7 @@ mod tests {
             .unwrap();
             harness.relayout();
             let import = notes::actions::import_markdown_action(
-                uuid::Uuid::new_v4(),
+                Some(uuid::Uuid::new_v4()),
                 title,
                 &format!("{title} body"),
                 Vec::new(),
@@ -1098,8 +1094,8 @@ mod tests {
                 .with(&RecordId::for_tab(tab), |doc| {
                     notes::Notebook::read(doc).map(|state| {
                         state
-                            .pages()
-                            .iter()
+                            .pages
+                            .values()
                             .map(|page| page.title.clone())
                             .collect::<Vec<_>>()
                     })
@@ -1154,7 +1150,7 @@ mod tests {
             editor
                 .resources()
                 .iter()
-                .any(|resource| resource.kind == code_editor::CodeEditor::KIND),
+                .any(|resource| resource.kind == code_editor::Project::KIND),
             "an Editor tab publishes its project"
         );
         let mut editor = editor;
@@ -1230,8 +1226,8 @@ mod tests {
             .with(&RecordId::for_tab(81), |doc| {
                 notes::Notebook::read(doc).map(|state| {
                     state
-                        .pages()
-                        .iter()
+                        .pages
+                        .values()
                         .map(|page| page.title.clone())
                         .collect::<Vec<_>>()
                 })
@@ -1465,7 +1461,7 @@ mod tests {
                 .rows
                 .iter()
                 .filter_map(|row| row.action.as_ref())
-                .find(|action| action.address.action == "new-page")
+                .find(|action| action.address.action == "new-note")
                 .map(|action| action.address.clone())
                 .expect("the notebook offers a new note");
             let mut started = tilo_actions::remote::ActionHost::invoke(
@@ -1479,7 +1475,7 @@ mod tests {
                         address,
                     },
                     argument: tilo_actions::remote::InvokeArgument::Json(
-                        serde_json::json!({ tilo_actions::PROMPTED_PARAM: "Tide table" })
+                        serde_json::json!({ "title": "Tide table" })
                             .as_object()
                             .unwrap()
                             .clone(),
@@ -1541,19 +1537,24 @@ mod tests {
             }
         }
 
-        // The palette's search finds the note by a word only in its body.
+        // The directory lists the note the launch imported, by its title,
+        // with the verbs that act on it.
         let found = {
             let mut found = false;
             let deadline = tilo_test_env::hang_deadline();
             while !found {
                 let page = wait_page(
                     &mut [&mut notes, &mut terminal],
-                    query(&notes_provider, "quayside"),
+                    query(&notes_provider, "Harbour plan"),
                 );
-                found = !page.rows.is_empty();
+                found = page.rows.iter().any(|row| {
+                    row.action
+                        .as_ref()
+                        .is_some_and(|action| action.address.action == "rename")
+                });
                 assert!(
                     found || std::time::Instant::now() < deadline,
-                    "no row for the note's body"
+                    "no row for the imported note"
                 );
             }
             found

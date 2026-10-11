@@ -27,6 +27,7 @@ use ui::widget::{Button, ButtonRole, Checkbox, Column, Element, Spacer, TextInpu
 
 use crate::commands::{Cmd, RowEdit, Sink, Table};
 use crate::model::KeyValue;
+use crate::record::Row;
 
 /// One row as the table shows it. The states are shared with the cells.
 #[derive(Clone)]
@@ -38,6 +39,9 @@ pub(crate) struct KvRow {
     /// The row is the blank one: nothing typed yet, so no checkbox and no
     /// remove button.
     pending: LocalState<bool>,
+    /// Where the row is in its table: the blank row's first text is
+    /// inserted there.
+    at: usize,
 }
 
 impl KvRow {
@@ -48,17 +52,20 @@ impl KvRow {
             value: LocalState::new(row.value.clone()),
             enabled: LocalState::new(row.enabled),
             pending: LocalState::new(false),
+            at: 0,
         }
     }
 
-    /// The trailing row: empty, and without controls until something is typed.
-    pub(crate) fn blank(id: String) -> Self {
+    /// The trailing row at `at`: empty, and without controls until something
+    /// is typed.
+    pub(crate) fn blank(id: String, at: usize) -> Self {
         Self {
             id,
             key: LocalState::new(String::new()),
             value: LocalState::new(String::new()),
             enabled: LocalState::new(false),
             pending: LocalState::new(true),
+            at,
         }
     }
 }
@@ -140,36 +147,29 @@ fn text_cell(
     name: &str,
     field: &'static str,
 ) -> Element {
-    let id = row.id.clone();
-
-    let section = match table {
-        Table::Params => crate::actions::RowSection::Params,
-        Table::Headers => crate::actions::RowSection::Headers,
-        Table::Form => crate::actions::RowSection::Form,
-    };
+    let id = ui::tilo_resource::Id::from_raw(row.id.clone());
     let input = TextInput::from_state(state)
-        .with_id(&format!("api.kv.{section:?}.{id}.{field}"))
+        .with_id(&format!("api.kv.{table:?}.{id}.{field}"))
         .with_kind(TextInputKind::Code)
         .with_plain_chrome()
         .with_placeholder(name)
         .with_accessible_name(name);
-    let input = match sink.actions.borrow().as_ref() {
-        Some(actions) => actions.bind(
-            input,
-            ui::tilo_resource::ActionRef::<
-                crate::resource::ApiTester,
-                crate::actions::ApiTesterAction,
-            >::new(ui::tilo_resource::APPLY, &[ui::tilo_resource::APPLY_PARAM])
-            .map(
-                move |value: String| crate::actions::ApiTesterAction::EditRowField {
-                    section,
-                    row_id: id.clone(),
-                    field: field.into(),
-                    value,
-                },
-            ),
-        ),
-        None => input.disabled(true),
+    let rows = table.rows();
+    let item = rows.item(&id);
+    let path = if field == "key" { item.key } else { item.value };
+    let input = if row.pending.get() {
+        // The blank row becomes a pair with its first text.
+        let at = row.at;
+        sink.bind_field(input, path, move |_, text| {
+            let row = if field == "key" {
+                Row::new(text, "")
+            } else {
+                Row::new("", text)
+            };
+            rows.insert_as(&id, at, &row)
+        })
+    } else {
+        sink.bind_field(input, path, ui::tilo_resource::Path::replace)
     };
     // The plain field draws its text at its own edge; the inset lines the
     // text up under the column's header.
@@ -220,7 +220,7 @@ pub(crate) fn build(
 ) -> KvTable {
     let queue = KvQueue::default();
     let mut shown: Vec<KvRow> = rows.iter().map(KvRow::of).collect();
-    shown.push(KvRow::blank(blank_id.to_owned()));
+    shown.push(KvRow::blank(blank_id.to_owned(), rows.len()));
 
     let enabled_sink = sink.clone();
     let key_sink = sink.clone();
@@ -232,38 +232,15 @@ pub(crate) fn build(
         ColumnDef::new("enabled", "", ColumnWidth::Fixed(control)).with_widget(
             move |row: &KvRow, _| -> Element {
                 let sink = enabled_sink.clone();
-                let id = row.id.clone();
+                let id = ui::tilo_resource::Id::from_raw(row.id.clone());
                 let state = row.enabled.clone();
                 gated(row, move || -> Element {
-                    let sink = sink.clone();
-                    let id = id.clone();
                     let control = Checkbox::from_state(&state).with_accessible_name("Use this row");
-                    let section = match table {
-                        Table::Params => crate::actions::RowSection::Params,
-                        Table::Headers => crate::actions::RowSection::Headers,
-                        Table::Form => crate::actions::RowSection::Form,
-                    };
-                    let control = match sink.actions.borrow().as_ref() {
-                        Some(actions) => actions.bind(
-                            control,
-                            ui::tilo_resource::ActionRef::<
-                                crate::resource::ApiTester,
-                                crate::actions::ApiTesterAction,
-                            >::new(
-                                ui::tilo_resource::APPLY, &[ui::tilo_resource::APPLY_PARAM]
-                            )
-                            .map(move |enabled: bool| {
-                                crate::actions::ApiTesterAction::EditRowField {
-                                    section,
-                                    row_id: id.clone(),
-                                    field: "enabled".into(),
-                                    value: enabled.to_string(),
-                                }
-                            }),
-                        ),
-                        None => control.with_enabled(false),
-                    };
-                    Box::new(control)
+                    Box::new(sink.bind_field(
+                        control,
+                        table.rows().item(&id).enabled,
+                        ui::tilo_resource::Path::set,
+                    ))
                 })
             },
         ),

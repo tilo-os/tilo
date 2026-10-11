@@ -1,6 +1,7 @@
 use super::*;
 use crate::room::media;
 use automerge::{ObjType, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
@@ -32,7 +33,10 @@ fn fixture() -> (StatePeer, SigningKey, SystemTime) {
     .unwrap();
     let mut chat = AutoCommit::new();
     let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
-    let channel = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+    let channel = {
+        let entry = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+        chat.put_object(&entry, "v", ObjType::Map).unwrap()
+    };
     chat.put(&channel, "kind", "voice").unwrap();
     chat.put(&channel, "workspace", "home").unwrap();
     peer.install_seed(
@@ -123,7 +127,10 @@ fn room_media_retained_rejects_malformed_present_policy() {
 fn policy(peer: &StatePeer) -> media::RoomMediaV1 {
     let chat = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
     let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
-    let object = chat.get(&channels, "voice").unwrap().unwrap().1;
+    let object = {
+        let entry = chat.get(&channels, "voice").unwrap().unwrap().1;
+        chat.get(&entry, "v").unwrap().unwrap().1
+    };
     media::RoomMediaV1 {
         version: 1,
         room: *uuid::Uuid::parse_str(ROOM).unwrap().as_bytes(),
@@ -173,18 +180,24 @@ fn edited_chat(peer: &StatePeer, operation: u8) -> (Vec<u8>, Vec<u8>) {
     let mut chat = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
     let heads = chat.get_heads();
     let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
-    let object = chat.get(&channels, "voice").unwrap().unwrap().1;
+    let object = {
+        let entry = chat.get(&channels, "voice").unwrap().unwrap().1;
+        chat.get(&entry, "v").unwrap().unwrap().1
+    };
     match operation {
         0 => chat.delete(&channels, "voice").unwrap(),
         1 => {
-            chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+            {
+                let entry = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+                chat.put_object(&entry, "v", ObjType::Map).unwrap()
+            };
         }
         2 => chat.put(&object, "kind", "text").unwrap(),
         3 => chat.put(&object, "workspace", "elsewhere").unwrap(),
         4 => chat.put(&object, "archived", true).unwrap(),
         _ => chat.put(&object, "name", "new title").unwrap(),
     }
-    chat.commit();
+    chat.commit_edit("fixture", "name");
     let changes = chat
         .get_changes(&heads)
         .iter()
@@ -305,21 +318,9 @@ fn members() -> (
         &seed_room(ROOM, &original.core.authority, &roster).unwrap(),
     )
     .unwrap();
-    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
-    put_member_capability(
-        &mut room,
-        &caps,
-        members[0].1.user_public_key,
-        crate::join::MemberRole::Editor,
-    )
-    .unwrap();
-    put_member_capability(
-        &mut room,
-        &caps,
-        members[1].1.user_public_key,
-        crate::join::MemberRole::Viewer,
-    )
-    .unwrap();
+    let caps = room.get(ROOT, "members").unwrap().unwrap().1;
+    put_member(&mut room, &caps, members[0].1.user_public_key, Role::Editor).unwrap();
+    put_member(&mut room, &caps, members[1].1.user_public_key, Role::Viewer).unwrap();
     let mut peer = StatePeer::new(
         ROOM,
         original.core.authority.clone(),
@@ -595,8 +596,8 @@ fn room_media_security_basis_excludes_labels_and_normalizes_identity_json() {
     )
     .unwrap();
     assert_eq!(initial, media::security_basis(&room, &[]).unwrap());
-    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
-    put_member_capability(&mut room, &caps, [44; 32], crate::join::MemberRole::Viewer).unwrap();
+    let caps = room.get(ROOT, "members").unwrap().unwrap().1;
+    put_member(&mut room, &caps, [44; 32], Role::Viewer).unwrap();
     assert_ne!(initial, media::security_basis(&room, &[]).unwrap());
 }
 #[test]
@@ -882,12 +883,12 @@ fn room_media_governed_security_change_without_revision_rejected_and_exhaustion_
     );
     assert_eq!(before, peer.durable().unwrap());
     let mut document = peer.admitted_room().unwrap().clone();
-    let caps = document.get(ROOT, "capabilities").unwrap().unwrap().1;
-    put_member_capability(
+    let caps = document.get(ROOT, "members").unwrap().unwrap().1;
+    put_member(
         &mut document,
         &caps,
         members[0].1.user_public_key,
-        crate::join::MemberRole::Viewer,
+        Role::Viewer,
     )
     .unwrap();
     assert!(
@@ -941,30 +942,12 @@ fn room_media_reader_uses_current_room_read_without_room_write() {
     let (mut peer, key, members, now) = members();
     let value = policy(&peer);
     install_policy(&mut peer, &key, now, &value).unwrap();
-    let (role, caps, person) = peer
+    let member = peer
         .permissions(members[1].1.device_public_key, now)
         .unwrap();
-    let actor = Actor::person(Some(role), &person).in_room(ROOM.to_string());
-    assert_eq!(
-        decide_capability(
-            &actor,
-            &ResourceRef::Room(ROOM.into()),
-            Verb::Read,
-            &caps,
-            Some(now_secs(now))
-        ),
-        CapDecision::Allow
-    );
-    assert_ne!(
-        decide_capability(
-            &actor,
-            &ResourceRef::Room(ROOM.into()),
-            Verb::Write,
-            &caps,
-            Some(now_secs(now))
-        ),
-        CapDecision::Allow
-    );
+    let room_node = TreePath::room(ROOM);
+    assert!(member.allows(&room_node, ActionKind::Read, now));
+    assert!(!member.allows(&room_node, ActionKind::Undoable, now));
     peer.remove_member(members[1].1.user_public_key, &key, now)
         .unwrap();
     assert!(
@@ -1022,8 +1005,8 @@ fn room_media_signed_present_policy_schema_matrix_is_rejected_atomically() {
     branch
         .put(ROOT, media::FIELD, "hidden malformed conflict")
         .unwrap();
-    doc.commit();
-    branch.commit();
+    doc.commit_edit("fixture", "fixture");
+    branch.commit_edit("fixture", "fixture");
     doc.reset_diff_cursor();
     branch.reset_diff_cursor();
     doc.merge_incoming(&mut branch).unwrap();

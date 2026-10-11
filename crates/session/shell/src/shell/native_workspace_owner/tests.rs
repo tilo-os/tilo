@@ -2,6 +2,7 @@
 use super::*;
 use crate::shell::{persist, state::WorkspaceTree};
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::{sync::Arc, time::SystemTime};
 use tilo_delivery_protocol::descriptor::GenerationExpectation;
@@ -623,7 +624,7 @@ fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_devi
             let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
             let before = chat.get_heads();
             chat.put(ROOT, "topic", "A real native local edit").unwrap();
-            chat.commit();
+            chat.commit_edit("fixture", "topic");
             let changes = chat
                 .get_changes(&before)
                 .into_iter()
@@ -924,7 +925,7 @@ fn native_reopen_refuses_each_partial_acknowledged_descriptor_pair() {
 #[test]
 #[serial_test::serial(process_env)]
 fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
-    use crate::shell::state::{CapOverride, Effect, Scope, Subject, Verb};
+    use crate::shell::state::{Access, CapOverride, Effect, Scope, Subject};
     use std::os::unix::fs::PermissionsExt;
     use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
     /// Lets background fs-authority publication settle before the wrapped
@@ -973,18 +974,18 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
         native.fs_acl_path = Some(acl.clone());
         let mut old = CapOverride::new(
             Subject::User(collab_types::Ed25519PublicKey::from_bytes([201; 32])),
-            Scope::Workspace,
+            Scope::FsPath("/var/workspace/old".into()),
             Effect::Grant,
-            Verb::Read,
+            Access::Read,
         );
-        old.id = "old-room-only".into();
-        native.desktop.workspaces[0].capabilities.push(old);
+        old.id = "old-sandbox-only".into();
+        native.desktop.workspaces[0].sandbox.push(old);
     }
     let owner = open(tree.clone()).unwrap();
     tree.read().export_fs_capabilities();
     settle_publication("baseline ACL export must publish");
     let baseline_acl = std::fs::read(&acl).unwrap();
-    assert!(String::from_utf8_lossy(&baseline_acl).contains("old-room-only"));
+    assert!(String::from_utf8_lossy(&baseline_acl).contains("old-sandbox-only"));
     let (intent, bootstrap, _, _, now) = raw_fixture();
     let id = owner
         .prepare_enrollment_into(&intent, Some(local), now)
@@ -1013,7 +1014,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     owner.install(&complete, now).unwrap();
     settle_publication("committed install must publish its ACL");
     let committed_acl = std::fs::read(&acl).unwrap();
-    assert!(!String::from_utf8_lossy(&committed_acl).contains("old-room-only"));
+    assert!(!String::from_utf8_lossy(&committed_acl).contains("old-sandbox-only"));
     assert_eq!(std::fs::read(&observed_acl).unwrap(), committed_acl);
     let published_state: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&observed_state).unwrap()).unwrap();
