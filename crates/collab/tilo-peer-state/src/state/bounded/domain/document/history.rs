@@ -30,6 +30,20 @@ impl PeerDocumentCapture {
         }
         let heads = document.get_heads();
         let changes = document.get_changes(&[]);
+        if changes.is_empty() {
+            // An empty graph still needs a canonical header: a zero-byte
+            // stream is not a valid broker capture. This is library-format
+            // data, never cached record state or an authority fallback.
+            static EMPTY_DOCUMENT: std::sync::LazyLock<Vec<u8>> =
+                std::sync::LazyLock::new(|| AutoCommit::new().save());
+            if EMPTY_DOCUMENT.len() > maximum {
+                return Err(PeerDocumentReadError::Capacity);
+            }
+            return Ok(Self {
+                heads,
+                bytes: EMPTY_DOCUMENT.clone(),
+            });
+        }
         // Count borrowed admitted chunks before allocating the output. Raw
         // change chunks preserve every original writer and load as a complete
         // document without allocating an unbounded compressed save first.
