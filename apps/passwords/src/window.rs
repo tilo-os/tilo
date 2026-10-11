@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use ui::num::u32_of_usize;
 
 use accounts::{SecretId, SecretItemKind};
 use ui::icons::Icon;
@@ -59,10 +60,6 @@ fn filter_icon(filter: VaultFilter) -> Icon {
     }
 }
 
-fn count(n: usize) -> u32 {
-    u32::try_from(n).unwrap_or(u32::MAX)
-}
-
 impl Core {
     fn nav_sections(&self) -> Vec<NavSection> {
         let vault = VaultFilter::ALL
@@ -72,7 +69,7 @@ impl Core {
                     .icon(filter_icon(filter));
                 match self.count(filter) {
                     0 => item,
-                    n => item.count(count(n)),
+                    n => item.count(u32_of_usize(n)),
                 }
             })
             .collect();
@@ -82,7 +79,7 @@ impl Core {
             .len()
             .saturating_add(self.app_proposals.len());
         if access_count > 0 {
-            access = access.count(count(access_count));
+            access = access.count(u32_of_usize(access_count));
         }
         vec![
             NavSection::new("vault", "Vault", vault),

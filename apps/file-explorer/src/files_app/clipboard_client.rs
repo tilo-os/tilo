@@ -754,7 +754,10 @@ impl FileExplorerWidget {
                     } else {
                         "files-copied"
                     },
-                    &[crate::i18n::arg("count", super::fluent_count(offer.count))],
+                    &[crate::i18n::arg(
+                        "count",
+                        ui::num::i64_of_usize(offer.count),
+                    )],
                 ));
                 self.answer_effect(Ok(()));
             }
@@ -775,7 +778,7 @@ impl FileExplorerWidget {
                 self.refresh();
                 self.status = Some(crate::i18n::t_args(
                     "files-clipboard-recovered",
-                    &[crate::i18n::arg("count", super::fluent_count(completed))],
+                    &[crate::i18n::arg("count", ui::num::i64_of_usize(completed))],
                 ));
                 if let Some(reply) = self.effect_reply.take() {
                     reply.answer(Ok(ui::tilo_actions::ActionOutput {
