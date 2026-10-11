@@ -869,6 +869,53 @@ impl<T> Grid<T> {
     }
 }
 
+impl<T: Model> Grid<T> {
+    /// Bring the cells read earlier up to date after `delta`, reading only
+    /// the cells it touched.
+    fn refresh_cells(&mut self, doc: &Doc, grid: &ObjId, delta: &Delta) -> Result<(), ModelError> {
+        let Some((Value::Object(ObjType::Map), cells)) = doc.get(grid, CELLS)? else {
+            self.cells.clear();
+            return Ok(());
+        };
+        let touched = delta.under(&cells);
+        if touched.is_all() {
+            self.cells = read_cells(doc, grid)?;
+            return Ok(());
+        }
+        for key in touched.keys() {
+            let Some((row, column)) = key.split_once('/') else {
+                continue;
+            };
+            let Some((value, id)) = doc.get(&cells, key)? else {
+                if let Some(row_cells) = self.cells.get_mut(row) {
+                    row_cells.remove(column);
+                    if row_cells.is_empty() {
+                        self.cells.remove(row);
+                    }
+                }
+                continue;
+            };
+            let existing = self
+                .cells
+                .get_mut(row)
+                .and_then(|row_cells| row_cells.get_mut(column));
+            match existing {
+                Some(cell) if touched.key(key) == crate::delta::Touch::Below => {
+                    cell.refresh(doc, &value, &id, delta).located(key)?;
+                }
+                _ => {
+                    let cell = T::load(doc, &value, &id).located(key)?;
+                    self.cells
+                        .entry(row.to_owned())
+                        .or_default()
+                        .insert(column.to_owned(), cell);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 fn grid_map(doc: &mut Doc, slot: Slot<'_>) -> Result<ObjId, ModelError> {
     slot.object(doc, ObjType::Map)
 }
@@ -1071,8 +1118,16 @@ impl<T: Model> Model for Grid<T> {
         }
         refresh_key(&mut self.rows, doc, id, ROWS, delta)?;
         refresh_key(&mut self.columns, doc, id, COLUMNS, delta)?;
-        self.cells = read_cells(doc, id)?;
-        Ok(())
+        match delta.key(id, CELLS) {
+            crate::delta::Touch::Untouched => Ok(()),
+            crate::delta::Touch::Written => {
+                self.cells = read_cells(doc, id)?;
+                Ok(())
+            }
+            // Only the cells the change touched are read again: a keystroke
+            // in one cell reads that cell, not the sheet.
+            crate::delta::Touch::Below => self.refresh_cells(doc, id, delta),
+        }
     }
     #[allow(
         clippy::too_many_lines,

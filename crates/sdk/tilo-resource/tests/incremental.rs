@@ -18,7 +18,7 @@ use tilo_automerge::ApplyIncoming;
 use tilo_resource::__private::{ObjId, Value};
 use tilo_resource::history;
 use tilo_resource::{
-    ActionCx, Collection, Doc, Id, Model, ModelError, Replica, Resource, Slot, resource,
+    ActionCx, Collection, Doc, Grid, Id, Model, ModelError, Replica, Resource, Slot, resource,
 };
 
 thread_local! {
@@ -415,4 +415,111 @@ fn the_first_page_of_a_long_history_reads_only_that_page() {
             .all(|v| v.context.as_ref().is_some_and(|c| c.what.is_some()))
     );
     assert_eq!(<Notebook as Resource>::KIND, "test.notebook");
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Sheet {
+    pub grid: Grid<Counted>,
+}
+
+#[resource(kind = "test.sheet", label = "Sheet")]
+impl Sheet {
+    /// Add a row.
+    #[action]
+    pub fn add_row(&mut self, cx: &mut ActionCx) {
+        let at = self.grid.rows().len();
+        self.grid.insert_row(at, cx.id());
+    }
+
+    /// Add a column.
+    #[action]
+    pub fn add_column(&mut self, cx: &mut ActionCx) {
+        let at = self.grid.columns().len();
+        self.grid.insert_column(at, cx.id());
+    }
+
+    /// Write a cell, or clear it with no text.
+    #[action]
+    pub fn write(&mut self, cell: (String, String), text: String) {
+        let value = (!text.is_empty()).then_some(Counted(text));
+        self.grid
+            .set_cell(&Id::from_raw(cell.0), &Id::from_raw(cell.1), value);
+    }
+
+    /// Remove a row.
+    #[action]
+    pub fn drop_row(&mut self, line: String) {
+        self.grid.remove_row(&Id::from_raw(line));
+    }
+
+    /// Remove a column.
+    #[action]
+    pub fn drop_column(&mut self, line: String) {
+        self.grid.remove_column(&Id::from_raw(line));
+    }
+}
+
+fn cell(row: &Id, column: &Id) -> (String, String) {
+    (row.as_str().to_owned(), column.as_str().to_owned())
+}
+
+fn random_sheet_action(replica: &mut Replica<Sheet>, rng: &mut Lcg, step: usize) {
+    let state = replica.state().unwrap();
+    let rows: Vec<Id> = state.grid.rows().cloned().collect();
+    let columns: Vec<Id> = state.grid.columns().cloned().collect();
+    let row = rows.get(rng.next(rows.len())).cloned();
+    let column = columns.get(rng.next(columns.len())).cloned();
+    let result = match (rng.next(10), row, column) {
+        (0, ..) => replica.apply(Sheet::ADD_ROW.with(())),
+        (1, ..) => replica.apply(Sheet::ADD_COLUMN.with(())),
+        (2, Some(row), _) => replica.apply(Sheet::DROP_ROW.with(row.as_str().to_owned())),
+        (3, _, Some(column)) => replica.apply(Sheet::DROP_COLUMN.with(column.as_str().to_owned())),
+        (4, Some(row), Some(column)) => {
+            replica.apply(Sheet::WRITE.with((cell(&row, &column), String::new())))
+        }
+        (_, Some(row), Some(column)) => {
+            replica.apply(Sheet::WRITE.with((cell(&row, &column), format!("v{step}"))))
+        }
+        _ => replica.apply(Sheet::ADD_ROW.with(())),
+    };
+    result.unwrap();
+}
+
+#[test]
+fn a_grid_refreshes_only_the_cells_a_change_touched() {
+    // phase: the_refreshed_grid_equals_a_full_read_after_every_action
+    {
+        let mut rng = Lcg(5);
+        let mut replica = Replica::<Sheet>::new();
+        replica.live().unwrap();
+        for step in 0..300 {
+            random_sheet_action(&mut replica, &mut rng, step);
+            let full = replica.state().unwrap();
+            assert_eq!(replica.live().unwrap(), &full, "after step {step}");
+        }
+    }
+    // phase: writing_one_cell_of_many_reads_only_that_cell
+    {
+        let mut replica = Replica::<Sheet>::new();
+        replica.apply(Sheet::ADD_COLUMN.with(())).unwrap();
+        for _ in 0..200 {
+            replica.apply(Sheet::ADD_ROW.with(())).unwrap();
+        }
+        let state = replica.state().unwrap();
+        let rows: Vec<Id> = state.grid.rows().cloned().collect();
+        let column = state.grid.columns().next().cloned().unwrap();
+        for (n, row) in rows.iter().enumerate() {
+            replica
+                .apply(Sheet::WRITE.with((cell(row, &column), format!("cell {n}"))))
+                .unwrap();
+        }
+        replica.live().unwrap();
+        replica
+            .apply(Sheet::WRITE.with((cell(&rows[100], &column), "changed".into())))
+            .unwrap();
+        let before = loads();
+        let live = replica.live().unwrap();
+        assert_eq!(loads() - before, 1, "one cell read again");
+        assert_eq!(live.grid.cell(&rows[100], &column).unwrap().0, "changed");
+    }
 }
