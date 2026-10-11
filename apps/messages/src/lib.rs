@@ -37,7 +37,7 @@ pub enum MessagesEffect {
         sensitive,
         returns,
         cancellable,
-        permission = "read",
+        kind = "read",
         label = "messages-list-groups"
     )]
     ListGroups { service: String, account: String },
@@ -47,7 +47,7 @@ pub enum MessagesEffect {
         sensitive,
         returns,
         cancellable,
-        permission = "read",
+        kind = "read",
         label = "messages-read-group-membership"
     )]
     ReadGroupMembership {
@@ -61,7 +61,7 @@ pub enum MessagesEffect {
         sensitive,
         returns,
         cancellable,
-        permission = "read",
+        kind = "read",
         label = "messages-group-history"
     )]
     ReadGroupHistory {
