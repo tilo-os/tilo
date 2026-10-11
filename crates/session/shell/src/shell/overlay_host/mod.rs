@@ -1298,17 +1298,6 @@ fn isize_to_usize_lossy(n: isize) -> usize {
     n as usize
 }
 
-/// Clamps an alpha/colour-channel value into `u8`'s range before the
-/// (otherwise saturating but silently-wrong-looking) narrowing cast.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "explicitly clamped into u8's range on the line above"
-)]
-fn f32_to_u8_saturating(v: f32) -> u8 {
-    v.clamp(0.0, 255.0) as u8
-}
-
 /// Floors a row-count computation into `usize`. Rust's `f64 as usize`
 /// cast already saturates a negative input to `0` rather than wrapping
 /// or panicking (defined since Rust 1.45), so this is memory-safe for
@@ -20981,18 +20970,6 @@ fn pick_group_at(candidates: &[(StripId, GroupId, Rect)], p: Point) -> Option<(S
         .map(|(s, g, _)| (*s, *g))
 }
 
-/// `a` moved `t` of the way toward `b`, opaque throughout — matters
-/// wherever something (a monogram, an icon) is drawn on the result and
-/// needs a real colour to pick its own contrast from.
-fn mix_toward(a: Color, b: Color, t: f32) -> Color {
-    let t = t.clamp(0.0, 1.0);
-    let (a, b) = (a.to_rgba8(), b.to_rgba8());
-    let m = |x: u8, y: u8| {
-        f32_to_u8_saturating((f32::from(x) + (f32::from(y) - f32::from(x)) * t).round())
-    };
-    Color::from_rgb8(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
-}
-
 /// Pick the [`crate::shell::search::SearchProvider`] that owns the
 /// currently focused tab, if any. Seeds `active_provider_id` for
 /// [`crate::shell::search::SearchRegistry::query`] under
@@ -23460,7 +23437,7 @@ impl ShellOverlayHost {
             let fill = if person.present {
                 fill
             } else {
-                mix_toward(fill, ground, 1.0 - OVERVIEW_FACE_AWAY_ALPHA)
+                ui::tokens::colors::mix8(fill, ground, 1.0 - OVERVIEW_FACE_AWAY_ALPHA)
             };
             let initial = person
                 .name

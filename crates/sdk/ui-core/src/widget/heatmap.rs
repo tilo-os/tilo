@@ -344,7 +344,11 @@ impl Widget for Heatmap {
                 continue;
             };
             let color = if cell.value.is_finite() {
-                crate::tokens::colors::mix8_f64(low, high, (cell.value - min) / (max - min))
+                crate::tokens::colors::mix8(
+                    low,
+                    high,
+                    crate::num::f32_of_f64((cell.value - min) / (max - min)),
+                )
             } else {
                 missing
             };
