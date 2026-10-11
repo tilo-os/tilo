@@ -77,6 +77,7 @@ use crate::widget::{
 };
 
 mod header_parts;
+use crate::widget::toast::{ToastKind, ToastStack};
 use header_parts::{HeaderTitle, MoreActions};
 
 /// Caps the per-frame dt so a stale clock (first frame, or a parked event
@@ -1270,6 +1271,11 @@ pub struct NavShell {
     structure_dirty: bool,
     layout_dirty: bool,
     paint_dirty: bool,
+    /// The window's transient notices, over its bottom trailing corner.
+    toasts: ToastStack,
+    /// Where the notices were last painted, damaged when they change.
+    toasts_painted: Rect,
+    toasts_dirty: bool,
 }
 
 impl Default for NavShell {
@@ -1348,11 +1354,44 @@ impl NavShell {
             structure_dirty: false,
             layout_dirty: true,
             paint_dirty: true,
+            toasts: ToastStack::new().with_max(1),
+            toasts_painted: Rect::ZERO,
+            toasts_dirty: false,
         }
     }
 
     fn shell_button(id: &str, icon: Icon, name: &str, on_press: impl FnMut() + 'static) -> Button {
         Button::icon_only(id, icon, name).on_view(on_press)
+    }
+
+    // --- notices -----------------------------------------------------------
+
+    /// Show a transient notice over the window's bottom trailing corner: an
+    /// operation's result or failure. It replaces the one showing, expires on
+    /// its own (held while the pointer rests on it and under the capture
+    /// clock), and a click dismisses it.
+    pub fn toast(&mut self, text: impl Into<String>, kind: ToastKind) {
+        self.toasts.push(text, kind);
+        self.toasts_dirty = true;
+    }
+
+    /// Take down the notice showing, when its news no longer holds.
+    pub fn dismiss_toast(&mut self) {
+        if !self.toasts.is_empty() {
+            self.toasts.dismiss(0);
+            self.toasts_dirty = true;
+        }
+    }
+
+    /// The notice showing, if any.
+    pub fn toast_text(&self) -> Option<&str> {
+        self.toasts.iter().next().map(|toast| toast.text.as_str())
+    }
+
+    fn toasts_expired(&self) -> bool {
+        self.toasts
+            .next_wake_deadline()
+            .is_some_and(|deadline| deadline <= crate::time::now())
     }
 
     // --- slots -------------------------------------------------------------
@@ -3425,7 +3464,38 @@ impl Widget for NavShell {
         self.tick(theme);
     }
 
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for child in self.children_mut() {
+            child.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        self.toasts.advance(crate::time::now());
+        let window = presence.viewport.get().unwrap_or(self.rect);
+        self.toasts
+            .place_bottom_right(window, f64::from(theme.tokens.spacing.s6));
+        self.toasts
+            .draw(scene, transform, text_renderer, theme, presence);
+        self.toasts_painted = self.toasts.get_rect();
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if !self.toasts.is_empty() {
+            let before = (self.toasts.len(), self.toasts.is_hovered());
+            self.toasts.handle_event(event, ctx);
+            // The dismiss control's hover shows too.
+            self.toasts_dirty |= *ctx.handled
+                || before != (self.toasts.len(), self.toasts.is_hovered())
+                || matches!(event, WindowEvent::CursorMoved { .. });
+            if *ctx.handled {
+                return;
+            }
+        }
         if self.handle_own_event(event, ctx) {
             *ctx.handled = true;
             return;
@@ -3582,7 +3652,7 @@ impl Widget for NavShell {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let mut earliest: Option<Instant> = None;
+        let mut earliest = self.toasts.next_wake_deadline();
         self.for_each_owned(|child| {
             if let Some(deadline) = child.next_wake_deadline() {
                 earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
@@ -3615,6 +3685,8 @@ impl Widget for NavShell {
 
     fn needs_redraw(&self) -> bool {
         self.paint_dirty
+            || self.toasts_dirty
+            || self.toasts_expired()
             || self.animating
             || self.fade < 1.0
             || self
@@ -3625,6 +3697,7 @@ impl Widget for NavShell {
 
     fn mark_drawn(&mut self) {
         self.paint_dirty = false;
+        self.toasts_dirty = false;
         self.for_each_owned_mut(|child| child.mark_drawn());
     }
 
@@ -3636,6 +3709,9 @@ impl Widget for NavShell {
             regions.push(self.rect);
         } else {
             self.for_each_owned(|child| child.collect_damage(regions));
+            if self.toasts_dirty || self.toasts_expired() {
+                regions.push(self.toasts_painted.union(self.toasts.get_rect()));
+            }
         }
     }
 
