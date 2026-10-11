@@ -432,9 +432,53 @@ What was behind it:
   layers: splitting the body's clip layer across two appended scenes rendered
   stray pixels at a row's corner on Metal.
 
-Still open: Enter or Backspace that adds or removes a block rebuilds the tree
-and repaints the window; a native window repaints whole while a blurred
-floating surface (the save bubble) shows.
+Still open: a native window repaints whole while a blurred floating surface
+(the save bubble) shows.
+
+### Enter and Backspace repaint the blocks that moved
+
+The same test presses Enter and Backspace in a note of four paragraphs (and a
+list), each key after the previous edit's save landed and the bubble faded, in
+the three themes, every frame compared with a full render. Largest frame per
+key, of the 1,152,000 px app (each includes the save bubble, ≈ 25,000 px):
+
+| Key | Before | After |
+|---|---:|---:|
+| Enter splitting a paragraph | 1,152,000 (a rebuilt tree) | ≈ 114,400 (the rows from the split down, the drag handle, the bubble) |
+| Enter ending a paragraph | 1,152,000 (a rebuilt tree) | ≈ 92,900 |
+| Enter adding a list item | 1,152,000 (a rebuilt tree) | ≈ 213,700 (the rows from the new item down) |
+| Backspace joining two paragraphs | 1,152,000 (a rebuilt tree) | ≈ 91,800 |
+| Backspace removing an empty paragraph | 1,152,000 (a rebuilt tree) | ≈ 114,400 |
+
+What was behind it:
+
+- A block that came, went or changed its kind set the editor's *structure*
+  dirty, so the window rebuilt its whole tree. The block stack is one measured
+  leaf and blocks are not widgets, so the editor now *restacks*: it prepares
+  its lines again (`BlockEditor::prepare_blocks`, what a rebuild did for them)
+  and asks for a relayout. A block that brings or takes an image's button
+  still rebuilds. A collaborator's block arrives the same way
+  (`present_blocks`).
+- `PaintDamage` matched parts by position and gave up when one came, went or
+  moved. Parts are now matched by key; a part whose damage covers everything
+  it paints (`PaintPart::placed`: a block's row, a cell, the drag handle, a
+  code run's chrome) repaints where it was and where it is. Parts that only
+  certify where their scene changes (`PaintPart::new`) still repaint whole
+  when they come, go or move.
+- The editor's frame geometry was its rect, which a new paragraph grows, and
+  the drag handle beside the caret's block and a code run's chrome were drawn
+  outside its parts. The geometry is now the editor's top edge and width, and
+  the handle and chrome are placed parts.
+- A window repaints where a relaid widget's box was and is; the editor's box
+  grew with every paragraph. A widget can say its own damage covers changes to
+  its box (`Widget::damage_covers_own_box`, after its draw); the editor does
+  whenever it recorded a paint. The note panel keys the editor's part by its
+  top edge and width, and the scrollbar, whose thumb moves with the note's
+  height, is a part of its own.
+
+The rows below the edit still repaint (the region moved): Enter near the top
+of a long note repaints the visible note, not the window. A copy of the moved
+pixels in the renderer would avoid that.
 
 ## Verified shared-list CPU workload
 
