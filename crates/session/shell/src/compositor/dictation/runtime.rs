@@ -55,6 +55,13 @@ pub enum RuntimeEvent {
 enum Control {
     Capture,
     Finish,
+    // Unit tests feed framed PCM into the real actor without opening a
+    // microphone. This variant and its caller do not exist in an image build.
+    #[cfg(test)]
+    FixtureAudio {
+        bytes: Vec<u8>,
+        preview: bool,
+    },
 }
 
 /// One actor owns one worker and at most one capture for its entire lifetime.
@@ -509,6 +516,7 @@ fn run(
                 events,
                 cancel,
                 vocabulary,
+                worker: &worker.0,
             },
         );
         // These pipe owners drop before Process kills/reaps. The capture has
@@ -526,6 +534,23 @@ struct ActorIo<'a> {
     events: &'a EventSender,
     cancel: &'a AtomicBool,
     vocabulary: &'a mut Option<vocabulary::VocabularyLease>,
+    worker: &'a Child,
+}
+fn interrupt_draft(worker: &Child, supported: bool, pipe: &Pipe) -> Result<(), RuntimeError> {
+    if !supported
+        || !matches!(pipe.waiting, Some((RequestKind::Draft, sequence)) if pipe.sequence > sequence)
+    {
+        return Ok(());
+    }
+    let pid = i32::try_from(worker.id()).map_err(|_| RuntimeError::Protocol)?;
+    // SAFETY: this actor exclusively owns the unreaped Child until pump exits,
+    // so its PID cannot be reused. Only that child's advertised handler gets
+    // the hint; legacy/AOT workers never receive a terminating SIGUSR1.
+    if unsafe { libc::kill(pid, libc::SIGUSR1) } == 0 {
+        Ok(())
+    } else {
+        Err(RuntimeError::Worker(SpeechError::WorkerStopped))
+    }
 }
 fn check_vocabulary(io: &mut ActorIo<'_>) -> Result<(), RuntimeError> {
     if let Some(vocabulary) = io.vocabulary.as_mut() {
@@ -547,6 +572,7 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
             .saturating_add(FINISH_WINDOW),
     );
     let mut draft_policy = DraftPolicy::FullContext;
+    let mut finish_interrupts_draft = false;
     let mut next_draft = later(draft_policy.interval());
     let mut next_vocabulary_check = Instant::now();
     loop {
@@ -562,6 +588,7 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
                 audio(pipe, capture)?;
             }
             microphone.take();
+            interrupt_draft(io.worker, finish_interrupts_draft, pipe)?;
             event(io.events, RuntimeEvent::Finishing)?;
             finishing = true;
             deadline = session_end;
@@ -589,6 +616,13 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
                 next_draft = later(draft_policy.initial_delay());
                 event(io.events, RuntimeEvent::Listening)?;
             }
+            #[cfg(test)]
+            Ok(Control::FixtureAudio { bytes, preview }) if ready && !finishing => {
+                pipe.enqueue(RequestKind::Audio, &bytes)?;
+                if preview {
+                    pipe.enqueue(RequestKind::Draft, &[])?;
+                }
+            }
             Ok(Control::Finish) if ready && !finishing => {
                 check_vocabulary(io)?;
                 // Drain the complete final chunk before stopping capture.
@@ -596,6 +630,7 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
                     audio(pipe, capture)?;
                 }
                 microphone.take();
+                interrupt_draft(io.worker, finish_interrupts_draft, pipe)?;
                 event(io.events, RuntimeEvent::Finishing)?;
                 finishing = true;
                 deadline = (later(FINISH_WINDOW)).min(session_end);
@@ -622,13 +657,18 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
             match reply {
                 SpeechReply::Ready {
                     draft_policy: policy,
+                    finish_interrupts_draft: interruptible,
                     ..
                 } => {
                     draft_policy = policy;
+                    finish_interrupts_draft = interruptible;
                     ready = true;
                     event(io.events, RuntimeEvent::Ready)?;
                 }
-                SpeechReply::Draft { text, .. } => event(io.events, RuntimeEvent::Draft(text))?,
+                SpeechReply::Draft { text, .. } if !finishing => {
+                    event(io.events, RuntimeEvent::Draft(text))?;
+                }
+                SpeechReply::Draft { .. } => {}
                 SpeechReply::Done { text, .. } => return Ok(text),
                 SpeechReply::Error { .. } => return Err(RuntimeError::Protocol),
             }
@@ -693,11 +733,124 @@ pub(super) fn repair_test_peer(pid: &std::path::Path, language: &str) -> Runtime
 mod tests {
     use super::*;
 
+    #[test]
+    fn finish_interrupts_stale_worker_draft_without_leaking_preview() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid = directory.path().join("interrupt");
+        let mut runtime = peer("interrupt", &pid);
+        assert!(matches!(next(&runtime), RuntimeEvent::Ready));
+        assert!(
+            runtime
+                .commands
+                .try_send(Control::FixtureAudio {
+                    bytes: vec![0, 1],
+                    preview: true,
+                })
+                .is_ok()
+        );
+        let deadline = later(Duration::from_secs(3));
+        while !pid.with_extension("draft").exists() {
+            assert!(Instant::now() < deadline, "real actor never sent the draft");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            runtime
+                .commands
+                .try_send(Control::FixtureAudio {
+                    bytes: vec![0, 2],
+                    preview: false,
+                })
+                .is_ok()
+        );
+        runtime.finish().unwrap();
+        assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
+        while !pid.with_extension("final").exists() {
+            assert!(
+                Instant::now() < deadline,
+                "Finish never interrupted the owned draft and drained newer PCM"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            runtime.poll().is_none(),
+            "a stale preview escaped while finishing"
+        );
+        std::fs::write(pid.with_extension("release"), b"release final").unwrap();
+        assert!(matches!(next(&runtime), RuntimeEvent::Done(text) if text == "safe final"));
+        reaped(&mut runtime, &pid);
+    }
+
+    #[test]
+    fn finish_interrupt_targets_only_the_owned_supported_draft() {
+        use std::io::Read as _;
+        let mut command = Command::new("python3");
+        command.args([
+            "-c",
+            r"import os, signal, time
+signal.signal(signal.SIGUSR1, lambda *_: os.write(1, b'I'))
+os.write(1, b'R')
+while True: time.sleep(1)",
+        ]);
+        command.stdout(Stdio::piped()).stderr(Stdio::null());
+        bounded_command::own_process_tree(&mut command);
+        let mut worker = Process(command.spawn().unwrap());
+        let mut output = worker.0.stdout.take().unwrap();
+        let mut byte = [0];
+        output.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, [b'R']);
+        nonblocking(output.as_raw_fd()).unwrap();
+        let mut pipe = Pipe::new(false);
+        pipe.enqueue(RequestKind::Draft, &[]).unwrap();
+        pipe.enqueue(RequestKind::Audio, &[0, 1]).unwrap();
+        interrupt_draft(&worker.0, false, &pipe).unwrap();
+        assert_eq!(
+            output.read(&mut byte).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        pipe.accept(&SpeechReply::Draft {
+            sequence: 1,
+            text: String::new(),
+        })
+        .unwrap();
+        interrupt_draft(&worker.0, true, &pipe).unwrap();
+        assert_eq!(
+            output.read(&mut byte).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        pipe.enqueue(RequestKind::Draft, &[]).unwrap();
+        // No newer PCM: the in-flight result can be reused as final, so do
+        // not throw away that work merely because Finish was requested.
+        interrupt_draft(&worker.0, true, &pipe).unwrap();
+        assert_eq!(
+            output.read(&mut byte).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        pipe.enqueue(RequestKind::Audio, &[0, 1]).unwrap();
+        interrupt_draft(&worker.0, true, &pipe).unwrap();
+        let deadline = later(Duration::from_secs(2));
+        loop {
+            match output.read(&mut byte) {
+                Ok(1) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "owned handler never observed Finish"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                result => panic!("owned signal peer failed: {result:?}"),
+            }
+        }
+        assert_eq!(byte, [b'I']);
+        assert!(worker.0.try_wait().unwrap().is_none());
+        // Process owns teardown/reaping even if any assertion above fails.
+    }
+
     // A real private-pipe peer exercises the production actor's ownership,
     // framing and cancellation. Recognition accuracy is qualified separately
     // against the real confined engine and pinned prerecorded speech.
     const PEER: &str = r"
-import json, os, struct, sys, time
+import json, os, signal, struct, sys, time
 open(sys.argv[2], 'w').write(str(os.getpid()))
 def read():
     p = sys.stdin.buffer.read(4)
@@ -714,6 +867,33 @@ k, s, b = read()
 expected_language=sys.argv[1].removeprefix('repair_') if sys.argv[1].startswith('repair_') else 'en'
 assert k == 0 and s == 1 and json.loads(b)['language'] == expected_language
 if sys.argv[1].startswith('dictionary_'): assert json.loads(b)['vocabulary'] == ['TiLo']
+if sys.argv[1] == 'interrupt':
+    interrupted = False
+    def stop_draft(*_):
+        global interrupted
+        interrupted = True
+    signal.signal(signal.SIGUSR1, stop_draft)
+    reply(dict(kind='ready', sequence=s, model='fixture', revision='1', finish_interrupts_draft=True))
+    k, s, b = read()
+    assert k == 1 and s == 2 and b == bytes([0, 1])
+    k, s, b = read()
+    assert k == 2 and s == 3 and not b
+    open(sys.argv[2] + '.draft', 'w').write('in flight')
+    deadline = time.monotonic() + 5
+    while not interrupted:
+        assert time.monotonic() < deadline
+        time.sleep(.005)
+    reply(dict(kind='draft', sequence=s, text='stale preview'))
+    k, s, b = read()
+    assert k == 1 and s == 4 and b == bytes([0, 2])
+    k, s, b = read()
+    assert k == 3 and s == 5 and not b
+    open(sys.argv[2] + '.final', 'w').write('all final PCM received')
+    while not os.path.exists(sys.argv[2] + '.release'):
+        assert time.monotonic() < deadline
+        time.sleep(.005)
+    reply(dict(kind='done', sequence=s, text='safe final'))
+    raise SystemExit(0)
 reply(dict(kind='ready', sequence=2 if sys.argv[1] == 'replay' else s, model='fixture', revision='1'))
 if sys.argv[1] == 'backpressure':
     total = 0
