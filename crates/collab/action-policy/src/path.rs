@@ -244,7 +244,14 @@ impl TreePath {
     /// `self` followed by every segment of `rest`.
     #[must_use]
     pub fn join(&self, rest: &Self) -> Self {
-        let mut path = self.clone();
+        self.clone().joined(rest)
+    }
+
+    /// [`Self::join`], taking `self`.
+    #[must_use]
+    pub fn joined(self, rest: &Self) -> Self {
+        let mut path = self;
+        path.0.reserve(rest.0.len());
         for segment in &rest.0 {
             path = match segment {
                 Segment::Rest => path.rest(),
@@ -298,6 +305,12 @@ impl TreePath {
     #[must_use]
     pub fn specificity(&self) -> Specificity {
         Specificity(self.trimmed().iter().map(Segment::weight).collect())
+    }
+
+    /// `self.specificity().cmp(&other.specificity())`, without building either.
+    pub(crate) fn cmp_specificity(&self, other: &Self) -> std::cmp::Ordering {
+        let theirs = other.trimmed().iter().map(Segment::weight);
+        self.trimmed().iter().map(Segment::weight).cmp(theirs)
     }
 
     fn trimmed(&self) -> &[Segment] {

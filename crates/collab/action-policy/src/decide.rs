@@ -44,7 +44,7 @@ pub fn decide<'g>(
     kind: ActionKind,
     cx: &Context<'_>,
 ) -> Decision<'g> {
-    let mut best: Option<(crate::path::Specificity, &'g Grant)> = None;
+    let mut best: Option<&'g Grant> = None;
     for grant in grants {
         if !grant.kinds.contains(kind)
             || !subjects.contains(&grant.subject)
@@ -53,12 +53,13 @@ pub fn decide<'g>(
         {
             continue;
         }
-        let specificity = grant.node.specificity();
-        let better = best.as_ref().is_none_or(|(held, held_grant)| {
-            specificity > *held || (specificity == *held && grant.answer < held_grant.answer)
+        let better = best.is_none_or(|held| match grant.node.cmp_specificity(&held.node) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Equal => grant.answer < held.answer,
+            std::cmp::Ordering::Less => false,
         });
         if better {
-            best = Some((specificity, grant));
+            best = Some(grant);
         }
     }
     best.map_or(
@@ -66,7 +67,7 @@ pub fn decide<'g>(
             answer: Answer::Deny,
             basis: Basis::NoGrant,
         },
-        |(_, grant)| Decision {
+        |grant| Decision {
             answer: grant.answer,
             basis: Basis::Grant(grant),
         },

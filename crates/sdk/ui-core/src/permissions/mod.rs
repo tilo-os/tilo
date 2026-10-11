@@ -567,45 +567,65 @@ impl PermissionContext {
 
     /// The answer for an action of `kind` at `node` below the room.
     pub fn answer(&self, node: &TreePath, kind: ActionKind) -> Answer {
-        self.verdict(node, kind)
-            .map_or(Answer::Deny, |(answer, _)| answer)
+        self.verdict_for(node, kind, false, false, |verdict| verdict.answer)
+            .unwrap_or(Answer::Deny)
     }
 
-    fn verdict(&self, node: &TreePath, kind: ActionKind) -> Result<(Answer, String), String> {
-        self.verdict_for(node, kind, false, false)
-            .map(|(answer, why, _)| (answer, why))
-    }
-
-    /// [`Self::verdict`], of a privileged action when `privileged`
-    /// ([`policy::Verdict::privileged`]), relying on `Once` grants only when
-    /// `once` (an admission that spends them) and this context can spend
-    /// them; with the ones it relied on.
-    fn verdict_for(
+    /// What `read` takes from the verdict for an action of `kind` at `node`:
+    /// of a privileged action when `privileged` ([`policy::Verdict::privileged`]),
+    /// relying on `Once` grants only when `once` (an admission that spends
+    /// them) and this context can spend them.
+    fn verdict_for<R>(
         &self,
         node: &TreePath,
         kind: ActionKind,
         privileged: bool,
         once: bool,
-    ) -> Result<(Answer, String, Vec<policy::GrantId>), String> {
+        read: impl FnOnce(&policy::Verdict<'_>) -> R,
+    ) -> Result<R, String> {
         let now = self.policy_now()?;
         let cx = policy::Context::at_secs(now.unwrap_or(0));
-        let mut standing = match &self.action_authority {
-            Some(authority) if authority.matches(node) => authority.sample_for(self)?.standing,
-            _ => self.standing.clone(),
+        let sampled;
+        let held = match &self.action_authority {
+            Some(authority) if authority.matches(node) => {
+                sampled = authority.sample_for(self)?.standing;
+                &sampled
+            }
+            _ => &self.standing,
         };
-        let usable = once && self.once_spender.is_some();
-        let keep = |grant: &policy::Grant| {
-            grant.lifetime != policy::Lifetime::Once || (usable && !self.spent.contains(&grant.id))
-        };
-        standing.policy.grants.retain(keep);
-        for bound in &mut standing.bounds {
-            bound.grants.retain(keep);
-        }
+        let standing = self.usable(held, once);
         let mut verdict = standing.verdict(&standing.node(node), kind, &cx);
         if privileged {
             verdict = verdict.privileged();
         }
-        Ok((verdict.answer, verdict.explain(), verdict.spent()))
+        Ok(read(&verdict))
+    }
+
+    /// `held` without the `Once` grants this decision may not rely on: all of
+    /// them unless `once` (an admission that spends them) and this context
+    /// can spend them, and those it already spent. Most standings hold none
+    /// to leave out and are decided against as they are; one is copied only
+    /// to drop some.
+    fn usable<'s>(&self, held: &'s Standing, once: bool) -> std::borrow::Cow<'s, Standing> {
+        let usable = once && self.once_spender.is_some();
+        let keep = |grant: &policy::Grant| {
+            grant.lifetime != policy::Lifetime::Once || (usable && !self.spent.contains(&grant.id))
+        };
+        let all_kept = held
+            .policy
+            .grants
+            .iter()
+            .chain(held.bounds.iter().flat_map(|bound| &bound.grants))
+            .all(keep);
+        if all_kept {
+            return std::borrow::Cow::Borrowed(held);
+        }
+        let mut standing = held.clone();
+        standing.policy.grants.retain(keep);
+        for bound in &mut standing.bounds {
+            bound.grants.retain(keep);
+        }
+        std::borrow::Cow::Owned(standing)
     }
 
     /// Whether the scope is permitted: an action that is allowed or asks
@@ -617,11 +637,16 @@ impl PermissionContext {
     /// [`PermissionContext::check`] with the reason. `None` means permitted.
     pub fn check_with_denied_feedback(&self, scope: &PermissionScope) -> Option<Denial> {
         match scope {
-            PermissionScope::Action { node, kind } => match self.verdict(node, *kind) {
-                Ok((Answer::Deny, why)) => Some(Denial::NotGranted(why)),
-                Ok(_) => None,
-                Err(error) => Some(Denial::Unavailable(error)),
-            },
+            PermissionScope::Action { node, kind } => {
+                // Explained only when refused: an allowed check needs no sentence.
+                match self.verdict_for(node, *kind, false, false, |verdict| {
+                    (verdict.answer == Answer::Deny).then(|| verdict.explain())
+                }) {
+                    Ok(Some(why)) => Some(Denial::NotGranted(why)),
+                    Ok(None) => None,
+                    Err(error) => Some(Denial::Unavailable(error)),
+                }
+            }
             PermissionScope::Sandbox { resource, access } => {
                 let now = match self.policy_now() {
                     Ok(now) => now,
@@ -669,8 +694,10 @@ impl PermissionContext {
             need.field.as_deref(),
             action_id,
         );
-        self.verdict_for(&node, need.kind, need.privileged, false)
-            .map_or(Answer::Deny, |(answer, ..)| answer)
+        self.verdict_for(&node, need.kind, need.privileged, false, |verdict| {
+            verdict.answer
+        })
+        .unwrap_or(Answer::Deny)
     }
 
     /// The answer for admitting one invocation of `action` on `resource`
@@ -693,10 +720,10 @@ impl PermissionContext {
             need.field.as_deref(),
             &action.id,
         );
-        self.verdict_for(&node, need.kind, need.privileged, true)
-            .map_or((Answer::Deny, Vec::new()), |(answer, _, spent)| {
-                (answer, spent)
-            })
+        self.verdict_for(&node, need.kind, need.privileged, true, |verdict| {
+            (verdict.answer, verdict.spent())
+        })
+        .unwrap_or((Answer::Deny, Vec::new()))
     }
 
     /// May the actor take this one invocation of `action` on `resource`,
@@ -753,20 +780,59 @@ impl PermissionContext {
     pub fn permitted_resource(
         &self,
         app_id: &str,
-        mut resource: tilo_actions::Resource,
+        resource: tilo_actions::Resource,
     ) -> Option<tilo_actions::Resource> {
-        let resource_id = resource.id.as_str().to_owned();
-        let kind = resource.kind.clone();
-        resource
-            .actions
-            .retain(|action| self.permits_action(app_id, &kind, &resource_id, action));
-        resource.children = resource
-            .children
-            .into_iter()
-            .filter_map(|child| self.permitted_resource(app_id, child))
-            .collect();
-        (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
+        // A host action authority decides some nodes from a standing it
+        // samples per action: ask action by action.
+        if self.action_authority.is_some() {
+            return keep_permitted(resource, &|kind, id, action| {
+                self.permits_action(app_id, kind, id, action)
+            });
+        }
+        // Otherwise one authority decides every action of the tree. An
+        // unavailable clock refuses them all, as each verdict would.
+        let now = self.policy_now().ok()?;
+        let cx = policy::Context::at_secs(now.unwrap_or(0));
+        let standing = self.usable(&self.standing, false);
+        let authority = standing.authority();
+        let room = standing.policy.node();
+        keep_permitted(resource, &|kind, id, action| {
+            let need = action.contract.need();
+            let node = tilo_actions::action_node(
+                &TreePath::root(),
+                app_id,
+                kind,
+                id,
+                need.field.as_deref(),
+                &action.id,
+            );
+            let mut verdict = authority.decide(&room.clone().joined(&node), need.kind, &cx);
+            if need.privileged {
+                verdict = verdict.privileged();
+            }
+            verdict.answer != Answer::Deny
+        })
     }
+}
+
+/// `resource` with only the actions `permits` keeps (by resource kind, id
+/// and action) and the nested resources that keep any; `None` when nothing
+/// is left.
+fn keep_permitted(
+    mut resource: tilo_actions::Resource,
+    permits: &dyn Fn(&str, &str, &tilo_actions::ActionSpec) -> bool,
+) -> Option<tilo_actions::Resource> {
+    let id = resource.id.as_str().to_owned();
+    let kind = resource.kind.clone();
+    resource
+        .actions
+        .retain(|action| permits(&kind, &id, action));
+    resource.children = resource
+        .children
+        .into_iter()
+        .filter_map(|child| keep_permitted(child, permits))
+        .collect();
+    (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
 }
 
 /// A participant's permissions as they stand *now*, following every change the

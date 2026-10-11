@@ -66,7 +66,7 @@ impl Standing {
     /// `relative` (a path below the room) as a node of this room.
     #[must_use]
     pub fn node(&self, relative: &TreePath) -> TreePath {
-        self.policy.node().join(relative)
+        self.policy.node().joined(relative)
     }
 
     /// The authority this standing confers.
