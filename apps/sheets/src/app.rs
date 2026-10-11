@@ -457,6 +457,11 @@ pub struct SheetsApp {
     dispatch: Option<ui::framework::Dispatcher<Workbook>>,
     /// The search hit or `open` waiting for the next settle to show it.
     opening: Rc<std::cell::RefCell<Option<PendingReveal>>>,
+    /// The edits last bound to the selection, with what they were built
+    /// from: every publication asks for them, and they change only with the
+    /// workbook, the selection or the locale.
+    selection_decls:
+        std::cell::RefCell<Option<(SelectionKey, Vec<ui::tilo_resource::ActionDecl<Workbook>>)>>,
 }
 
 /// A rectangle captured by copy/cut, retaining each cell's raw input and
@@ -567,6 +572,7 @@ impl SheetsApp {
             },
             dispatch: None,
             opening: Rc::default(),
+            selection_decls: std::cell::RefCell::default(),
         }
     }
 
@@ -752,11 +758,30 @@ impl SheetsApp {
     /// the palette, agents and scripts invoke them through the same door as
     /// the rest of the workbook, and each acts on the selection as it is
     /// when they are published.
+    pub(crate) fn selection_declarations(&self) -> Vec<ui::tilo_resource::ActionDecl<Workbook>> {
+        let key = SelectionKey {
+            revision: self.revision,
+            sheet: self.active_sheet,
+            bounds: self.grid.selection_bounds(),
+            active: self.grid.active(),
+            selected: self.grid.selected_cells(),
+            currency: self.default_currency(),
+        };
+        if let Some((built, decls)) = &*self.selection_decls.borrow()
+            && *built == key
+        {
+            return decls.clone();
+        }
+        let decls = self.build_selection_declarations();
+        *self.selection_decls.borrow_mut() = Some((key, decls.clone()));
+        decls
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "every selection-bound edit is declared in one place"
     )]
-    pub(crate) fn selection_declarations(&self) -> Vec<ui::tilo_resource::ActionDecl<Workbook>> {
+    fn build_selection_declarations(&self) -> Vec<ui::tilo_resource::ActionDecl<Workbook>> {
         use crate::resource::CellWrite;
         let Some(sheet) = self.active_sheet_id() else {
             return Vec::new();
@@ -6684,4 +6709,15 @@ pub(crate) mod tests {
             }
         }
     }
+}
+
+/// What the edits bound to the selection are built from.
+#[derive(PartialEq)]
+struct SelectionKey {
+    revision: u64,
+    sheet: usize,
+    bounds: (Addr, Addr),
+    active: Addr,
+    selected: Vec<Addr>,
+    currency: tilo_locale::Currency,
 }

@@ -2214,6 +2214,12 @@ impl FrameHarness {
             self.state.doc.get_heads();
         }
         let mut outer_status = None;
+        // One status per component binding, as the live App's sweep reads it:
+        // each read opens the bound record and describes its history.
+        let mut bound_statuses: Vec<(
+            crate::bound_dispatch::CallbackBinding,
+            crate::undo::UndoStatus,
+        )> = Vec::new();
         let mut visited = HashSet::new();
         for (&node, pointer) in &self.node_map {
             // SAFETY: node_map pointers are valid until the next `relayout`.
@@ -2224,7 +2230,17 @@ impl FrameHarness {
             // Preserve bound history label warming across pending edits.
             let bound_status = binding
                 .as_ref()
-                .map(|binding| binding.undo_status(&mut self.state.doc).unwrap_or_default())
+                .map(|binding| {
+                    if let Some((_, status)) = bound_statuses
+                        .iter()
+                        .find(|(seen, _)| seen.same_component(binding))
+                    {
+                        return status.clone();
+                    }
+                    let status = binding.undo_status(&mut self.state.doc).unwrap_or_default();
+                    bound_statuses.push((binding.clone(), status.clone()));
+                    status
+                })
                 .or_else(|| self.bindings.legacy_status(node, &self.author));
             let mut status = || {
                 bound_status.clone().unwrap_or_else(|| {
