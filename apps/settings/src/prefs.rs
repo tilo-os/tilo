@@ -31,7 +31,7 @@
 //!   "input":   { "natural_scroll": false, "tap_to_click": true,
 //!                "pointer_speed": 0.5, "key_repeat": 0.5,
 //!                "keyboard_layout": "us" },
-//!   "updates": { "auto": true, "channel": "Stable", "last_checked": "Never" },
+//!   "updates": { "auto": true, "last_checked": "Never" },
 //!   "appearance": { "theme": "Dark", "high_contrast": false,
 //!                   "reduce_motion": false, "text_scale": 1.0, "ui_scale": 1.0 },
 //!   "notifications": { "do_not_disturb": false, "show_banners": true,
@@ -473,9 +473,6 @@ impl Default for PowerPrefs {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UpdatePrefs {
     pub auto: bool,
-    /// Legacy serialized field. The actual image reference is managed by
-    /// bootc; Settings never treats this string as an actionable channel.
-    pub channel: String,
     /// Human-readable timestamp of the last successful check, or `"Never"`.
     pub last_checked: String,
 }
@@ -489,7 +486,6 @@ impl Default for UpdatePrefs {
     fn default() -> Self {
         Self {
             auto: true,
-            channel: "Stable".to_string(),
             last_checked: "Never".to_string(),
         }
     }
@@ -1511,7 +1507,6 @@ mod tests {
         assert!(p.power.auto_suspend);
         assert_eq!(p.power.blank_minutes, 10);
         assert_eq!(p.power.lock_minutes, 5);
-        assert_eq!(p.updates.channel, "Stable");
         assert_eq!(p.updates.last_checked, "Never");
 
         let n = NotificationPrefs::default();
@@ -1623,7 +1618,7 @@ mod tests {
         p.power.blank_minutes = 30;
         p.power.lock_minutes = 0;
         p.updates.auto = false;
-        p.updates.channel = "Nightly".into();
+        p.updates.last_checked = "today".into();
         p.appearance.theme = "Nord".into();
         p.appearance.high_contrast = true;
         p.appearance.reduce_motion = true;

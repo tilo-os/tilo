@@ -68,7 +68,7 @@ fn schedule_from_label(label: &str) -> String {
 }
 
 /// The system-derived part of the update state: the current image and any
-/// image staged for the next boot. Preferences (channel, auto, last-checked)
+/// image staged for the next boot. Preferences (auto, last-checked)
 /// live in [`UpdatePrefs`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateStatus {

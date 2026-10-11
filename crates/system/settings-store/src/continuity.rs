@@ -186,7 +186,6 @@ policies! {
         "tilo.power.critical_battery_percent",
         "tilo.power.critical_action",
         "tilo.updates.auto",
-        "tilo.updates.channel",
         "tilo.appearance.wallpaper_path",
         "tilo.appearance.distribution_defaults",
         "tilo.device.name",
