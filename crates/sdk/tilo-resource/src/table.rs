@@ -70,11 +70,38 @@ pub struct ModelOps {
 /// record's fields), and what it holds (a collection's items).
 pub struct ModelTable {
     ops: &'static ModelOps,
-    record: Option<&'static RecordDesc>,
+    desc: Desc,
     /// Its [`Model::CHECKS`].
     pub checks: bool,
     /// Its [`Model::OPS`].
     pub has_ops: bool,
+}
+
+/// What a type's table knows of its shape, beyond its functions.
+#[derive(Clone, Copy)]
+enum Desc {
+    /// Its own functions do everything.
+    Own,
+    /// A record of fields.
+    Record(&'static RecordDesc),
+    /// An `Option` of a value.
+    Option(&'static OptionDesc),
+}
+
+impl ModelTable {
+    const fn record(&self) -> Option<&'static RecordDesc> {
+        match self.desc {
+            Desc::Record(record) => Some(record),
+            _ => None,
+        }
+    }
+
+    const fn option(&self) -> Option<&'static OptionDesc> {
+        match self.desc {
+            Desc::Option(option) => Some(option),
+            _ => None,
+        }
+    }
 }
 
 /// A collection type's [`ItemSource`] functions, its type erased.
@@ -290,7 +317,7 @@ impl<T: Model> TableOf<T> {
     /// `T`'s table.
     pub const TABLE: ModelTable = ModelTable {
         ops: &Self::OPS,
-        record: None,
+        desc: Desc::Own,
         checks: T::CHECKS,
         has_ops: T::OPS,
     };
@@ -567,7 +594,7 @@ fn nested_items_of<C: ItemSource + 'static>(
 /// interleave.
 pub static ATOM_STRING: ModelTable = ModelTable {
     ops: &ATOM_STRING_OPS,
-    record: None,
+    desc: Desc::Own,
     checks: false,
     has_ops: false,
 };
@@ -737,7 +764,7 @@ fn atom_get_at<'a>(_: &ModelTable, value: &'a dyn Any, path: &[Segment]) -> Opti
 
 /// The functions of every record, over its [`RecordDesc`].
 pub static RECORD_OPS: ModelOps = ModelOps {
-    to_json: |table, value| match table.record {
+    to_json: |table, value| match table.record() {
         Some(record) => to_json(record, value),
         None => serde_json::Value::Null,
     },
@@ -748,7 +775,7 @@ pub static RECORD_OPS: ModelOps = ModelOps {
     store: |table, value, doc, slot| store(described(table)?, value, doc, slot),
     stores_as: |table, value, before| {
         table
-            .record
+            .record()
             .is_some_and(|record| stores_as(record, value, before))
     },
     store_changed: |table, value, before, doc, slot, dirty| {
@@ -760,26 +787,26 @@ pub static RECORD_OPS: ModelOps = ModelOps {
     read_whole: |_, _, _| Ok(()),
     edit: |table, doc, slot, path, op, cx| edit(described(table)?, doc, slot, path, op, cx),
     diff: |table, before, after, path, out| {
-        if let Some(record) = table.record {
+        if let Some(record) = table.record() {
             diff(record, before, after, path, out);
         }
     },
     collect_text: |table, value, out| {
-        if let Some(record) = table.record {
+        if let Some(record) = table.record() {
             collect_text(record, value, out);
         }
     },
-    check: |table, value| match table.record {
+    check: |table, value| match table.record() {
         Some(record) => check(record, value),
         None => Ok(()),
     },
-    get_at: |table, value, path| get_at(table.record?, value, path),
-    op_coalesces: |table, path, previous, next| op_coalesces(table.record?, path, previous, next),
-    op_continuable: |table, path, op| op_continuable(table.record?, path, op),
-    op_describe: |table, path, op| op_describe(table.record?, path, op),
-    op_lands: |table, value, path, op| op_lands(table.record?, value, path, op),
+    get_at: |table, value, path| get_at(table.record()?, value, path),
+    op_coalesces: |table, path, previous, next| op_coalesces(table.record()?, path, previous, next),
+    op_continuable: |table, path, op| op_continuable(table.record()?, path, op),
+    op_describe: |table, path, op| op_describe(table.record()?, path, op),
+    op_lands: |table, value, path, op| op_lands(table.record()?, value, path, op),
     op_schemas: |table, prefix, out| {
-        if let Some(record) = table.record {
+        if let Some(record) = table.record() {
             op_schemas(record, prefix, out);
         }
     },
@@ -788,10 +815,10 @@ pub static RECORD_OPS: ModelOps = ModelOps {
 impl ModelTable {
     /// The table of the record `record`.
     #[must_use]
-    pub const fn record(record: &'static RecordDesc) -> Self {
+    pub const fn of_record(record: &'static RecordDesc) -> Self {
         Self {
             ops: &RECORD_OPS,
-            record: Some(record),
+            desc: Desc::Record(record),
             checks: record.checks,
             has_ops: record.has_ops,
         }
@@ -799,7 +826,7 @@ impl ModelTable {
 }
 
 fn described(table: &ModelTable) -> Result<&'static RecordDesc, ModelError> {
-    table.record.ok_or_else(mismatch)
+    table.record().ok_or_else(mismatch)
 }
 
 /// The value of the field at `index` of `record`.
@@ -1519,5 +1546,433 @@ pub fn filled<T>(out: Option<T>) -> Result<T, ModelError> {
     match out {
         Some(value) => Ok(value),
         None => Err(mismatch()),
+    }
+}
+
+// --- Edits of a value as a whole -------------------------------------------
+
+/// The value in a filled `Option` of its type.
+type Unstage = for<'a> fn(&'a dyn Any) -> Option<&'a dyn Any>;
+
+/// [`Model::edit`] of a value edited only as a whole, through its table:
+/// `set` at its own path, checked before it is written. `staged` is an empty
+/// `Option` of the type, which `unstage` reads the value back out of.
+fn edit_whole(
+    table: &ModelTable,
+    (staged, unstage): (Box<dyn Any>, Unstage),
+    nullable: bool,
+    doc: &mut Doc,
+    slot: Slot<'_>,
+    path: &[Segment],
+    op: &EditOp,
+) -> Result<(), ModelError> {
+    if let Some(segment) = path.first() {
+        return Err(ModelError::invalid(format!(
+            "nothing inside this value is called `{segment}`"
+        )));
+    }
+    match op {
+        EditOp::Set { value } if value.is_null() && !nullable => Err(ModelError::invalid(
+            "`null` is no value of this field: set a value of its type",
+        )),
+        EditOp::Set { value } => {
+            let mut staged = staged;
+            (table.ops.from_json)(table, value, staged.as_mut())?;
+            let made = unstage(staged.as_ref()).ok_or_else(mismatch)?;
+            (table.ops.check)(table, made).map_err(ModelError::refused)?;
+            (table.ops.store)(table, made, doc, slot)
+        }
+        other => Err(ModelError::unsupported(other)),
+    }
+}
+
+// --- Option ---------------------------------------------------------------
+
+/// What `Option<T>`'s table reaches into one with.
+#[allow(
+    clippy::type_complexity,
+    reason = "each field reaches into the option one way"
+)]
+pub struct OptionDesc {
+    /// `T`'s table.
+    pub inner: &'static ModelTable,
+    /// The present value of an option.
+    pub get: for<'a> fn(&'a dyn Any) -> Option<&'a dyn Any>,
+    /// The same, mutably.
+    pub get_mut: for<'a> fn(&'a mut dyn Any) -> Option<&'a mut dyn Any>,
+    /// Put an absent option into `out` (an `Option` of the option) and hand
+    /// back that option, for `T`'s table to put a value into.
+    pub slot: for<'a> fn(&'a mut dyn Any) -> Option<&'a mut dyn Any>,
+    /// Make an option absent.
+    pub clear: fn(&mut dyn Any),
+    /// An empty `Option` of the option, and the option in a filled one.
+    pub staged: (
+        fn() -> Box<dyn Any>,
+        for<'a> fn(&'a dyn Any) -> Option<&'a dyn Any>,
+    ),
+}
+
+/// The [`OptionDesc`] of `Option<T>`.
+pub struct OptionOf<T>(PhantomData<T>);
+
+impl<T: Model> OptionOf<T> {
+    pub const DESC: OptionDesc = OptionDesc {
+        inner: T::TABLE,
+        get: option_get::<T>,
+        get_mut: option_get_mut::<T>,
+        slot: option_slot::<T>,
+        clear: option_clear::<T>,
+        staged: (empty_of::<Option<T>>, unwrap_of::<Option<T>>),
+    };
+
+    /// `Option<T>`'s table.
+    pub const TABLE: ModelTable = ModelTable {
+        ops: &OPTION_OPS,
+        desc: Desc::Option(&Self::DESC),
+        checks: T::CHECKS,
+        has_ops: T::OPS,
+    };
+}
+
+fn option_get<T: 'static>(value: &dyn Any) -> Option<&dyn Any> {
+    match value.downcast_ref::<Option<T>>()? {
+        Some(inner) => Some(inner),
+        None => None,
+    }
+}
+
+fn option_get_mut<T: 'static>(value: &mut dyn Any) -> Option<&mut dyn Any> {
+    match value.downcast_mut::<Option<T>>()? {
+        Some(inner) => Some(inner),
+        None => None,
+    }
+}
+
+fn option_slot<T: 'static>(out: &mut dyn Any) -> Option<&mut dyn Any> {
+    let out = out.downcast_mut::<Option<Option<T>>>()?;
+    Some(out.insert(None))
+}
+
+fn option_clear<T: 'static>(value: &mut dyn Any) {
+    if let Some(value) = value.downcast_mut::<Option<T>>() {
+        *value = None;
+    }
+}
+
+fn optional(table: &ModelTable) -> Result<&'static OptionDesc, ModelError> {
+    table.option().ok_or_else(mismatch)
+}
+
+fn is_null(value: &Value<'_>) -> bool {
+    matches!(value, Value::Scalar(scalar) if matches!(scalar.as_ref(), automerge::ScalarValue::Null))
+}
+
+/// The functions of every `Option`: `None` is an absent key (or a null list
+/// element).
+pub static OPTION_OPS: ModelOps = ModelOps {
+    to_json: |table, value| match table.option() {
+        Some(option) => match (option.get)(value) {
+            Some(inner) => (option.inner.ops.to_json)(option.inner, inner),
+            None => serde_json::Value::Null,
+        },
+        None => serde_json::Value::Null,
+    },
+    from_json: |table, value, out| {
+        let option = optional(table)?;
+        let slot = (option.slot)(out).ok_or_else(mismatch)?;
+        if value.is_null() {
+            return Ok(());
+        }
+        (option.inner.ops.from_json)(option.inner, value, slot)
+    },
+    load: |table, doc, value, id, out| {
+        let option = optional(table)?;
+        let slot = (option.slot)(out).ok_or_else(mismatch)?;
+        if is_null(value) {
+            return Ok(());
+        }
+        (option.inner.ops.load)(option.inner, doc, value, id, slot)
+    },
+    missing: |table, out| {
+        let option = optional(table)?;
+        (option.slot)(out).ok_or_else(mismatch)?;
+        Ok(())
+    },
+    reload: |table, target, doc, slot| {
+        let option = optional(table)?;
+        match slot {
+            Some((value, id)) if !is_null(value) => {
+                // The option is itself where `T`'s table puts a value.
+                (option.inner.ops.load)(option.inner, doc, value, id, target)
+            }
+            _ => {
+                (option.clear)(target);
+                Ok(())
+            }
+        }
+    },
+    store: |table, value, doc, slot| {
+        let option = optional(table)?;
+        match (option.get)(value) {
+            Some(inner) => (option.inner.ops.store)(option.inner, inner, doc, slot),
+            None => slot.remove(doc),
+        }
+    },
+    stores_as: |table, value, before| {
+        let Some(option) = table.option() else {
+            return false;
+        };
+        match ((option.get)(value), (option.get)(before)) {
+            (Some(value), Some(before)) => {
+                (option.inner.ops.stores_as)(option.inner, value, before)
+            }
+            (None, None) => true,
+            _ => false,
+        }
+    },
+    store_changed: |table, value, before, doc, slot, dirty| {
+        let option = optional(table)?;
+        match ((option.get)(value), (option.get)(before)) {
+            (Some(value), Some(before)) => {
+                (option.inner.ops.store_changed)(option.inner, value, before, doc, slot, dirty)
+            }
+            _ => (OPTION_OPS.store)(table, value, doc, slot),
+        }
+    },
+    refresh: |table, target, doc, value, id, delta| {
+        let option = optional(table)?;
+        if !is_null(value)
+            && let Some(inner) = (option.get_mut)(target)
+        {
+            return (option.inner.ops.refresh)(option.inner, inner, doc, value, id, delta);
+        }
+        (OPTION_OPS.reload)(table, target, doc, Some((value, id)))
+    },
+    read_whole: |_, _, _| Ok(()),
+    edit: |table, doc, slot, path, op, cx| {
+        let option = optional(table)?;
+        if path.is_empty() && matches!(op, EditOp::Set { .. }) {
+            let staged = ((option.staged.0)(), option.staged.1);
+            return edit_whole(table, staged, true, doc, slot, path, op);
+        }
+        match slot.current(doc)? {
+            Some((value, _)) if !is_null(&value) => {
+                (option.inner.ops.edit)(option.inner, doc, slot, path, op, cx)
+            }
+            _ => Err(ModelError::invalid("the value is absent")),
+        }
+    },
+    diff: |table, before, after, path, out| {
+        let Some(option) = table.option() else {
+            return;
+        };
+        match ((option.get)(before), (option.get)(after)) {
+            (Some(before), Some(after)) => {
+                (option.inner.ops.diff)(option.inner, before, after, path, out);
+            }
+            (None, None) => {}
+            _ => out.push(Edit::new(
+                path.to_vec(),
+                EditOp::Set {
+                    value: (OPTION_OPS.to_json)(table, after),
+                },
+            )),
+        }
+    },
+    collect_text: |table, value, out| {
+        if let Some(option) = table.option()
+            && let Some(inner) = (option.get)(value)
+        {
+            (option.inner.ops.collect_text)(option.inner, inner, out);
+        }
+    },
+    check: |table, value| match table.option() {
+        Some(option) => match (option.get)(value) {
+            Some(inner) => (option.inner.ops.check)(option.inner, inner),
+            None => Ok(()),
+        },
+        None => Ok(()),
+    },
+    get_at: |table, value, path| {
+        if path.is_empty() {
+            return Some(value);
+        }
+        let option = table.option()?;
+        (option.inner.ops.get_at)(option.inner, (option.get)(value)?, path)
+    },
+    op_coalesces: |table, path, previous, next| {
+        let option = table.option()?;
+        (option.inner.ops.op_coalesces)(option.inner, path, previous, next)
+    },
+    op_continuable: |table, path, op| {
+        let option = table.option()?;
+        (option.inner.ops.op_continuable)(option.inner, path, op)
+    },
+    op_describe: |table, path, op| {
+        let option = table.option()?;
+        (option.inner.ops.op_describe)(option.inner, path, op)
+    },
+    op_lands: |table, value, path, op| {
+        let option = table.option()?;
+        (option.inner.ops.op_lands)(option.inner, (option.get)(value)?, path, op)
+    },
+    op_schemas: |table, prefix, out| {
+        if let Some(option) = table.option() {
+            (option.inner.ops.op_schemas)(option.inner, prefix, out);
+        }
+    },
+};
+
+/// A value of a type whose table does the work ([`Model::to_json`] of an
+/// `Option`, a `Collection`): the type's functions as the table runs them.
+pub struct Run<'t>(pub &'t ModelTable);
+
+impl Run<'_> {
+    #[must_use]
+    pub fn to_json(&self, value: &dyn Any) -> serde_json::Value {
+        (self.0.ops.to_json)(self.0, value)
+    }
+
+    /// # Errors
+    /// Why `value` is no JSON form of the type.
+    pub fn from_json<T: 'static>(&self, value: &serde_json::Value) -> Result<T, ModelError> {
+        let mut out: Option<T> = None;
+        (self.0.ops.from_json)(self.0, value, &mut out)?;
+        filled(out)
+    }
+
+    /// # Errors
+    /// Why the stored value is not the type.
+    pub fn load<T: 'static>(
+        &self,
+        doc: &Doc,
+        value: &Value<'_>,
+        id: &ObjId,
+    ) -> Result<T, ModelError> {
+        let mut out: Option<T> = None;
+        (self.0.ops.load)(self.0, doc, value, id, &mut out)?;
+        filled(out)
+    }
+
+    /// # Errors
+    /// Why the type has no value without one stored.
+    pub fn missing<T: 'static>(&self) -> Result<T, ModelError> {
+        let mut out: Option<T> = None;
+        (self.0.ops.missing)(self.0, &mut out)?;
+        filled(out)
+    }
+
+    /// # Errors
+    /// The document's write error.
+    pub fn store(&self, value: &dyn Any, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        (self.0.ops.store)(self.0, value, doc, slot)
+    }
+
+    #[must_use]
+    pub fn stores_as(&self, value: &dyn Any, before: &dyn Any) -> bool {
+        (self.0.ops.stores_as)(self.0, value, before)
+    }
+
+    /// # Errors
+    /// The document's write error.
+    pub fn store_changed(
+        &self,
+        value: &dyn Any,
+        before: &dyn Any,
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        (self.0.ops.store_changed)(self.0, value, before, doc, slot, dirty)
+    }
+
+    /// # Errors
+    /// Why the stored value is not the type.
+    pub fn refresh(
+        &self,
+        target: &mut dyn Any,
+        doc: &Doc,
+        value: &Value<'_>,
+        id: &ObjId,
+        delta: &Delta,
+    ) -> Result<(), ModelError> {
+        (self.0.ops.refresh)(self.0, target, doc, value, id, delta)
+    }
+
+    /// # Errors
+    /// Why the path or operation does not fit, or a refusal.
+    pub fn edit(
+        &self,
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        path: &[Segment],
+        op: &EditOp,
+        cx: &mut ActionCx,
+    ) -> Result<(), ModelError> {
+        (self.0.ops.edit)(self.0, doc, slot, path, op, cx)
+    }
+
+    pub fn diff<E>(
+        &self,
+        before: &dyn Any,
+        after: &dyn Any,
+        path: &[Segment],
+        out: &mut Vec<Edit<E>>,
+    ) {
+        let mut found = Vec::new();
+        (self.0.ops.diff)(self.0, before, after, path, &mut found);
+        out.reserve(found.len());
+        for edit in found {
+            out.push(edit.retyped());
+        }
+    }
+
+    pub fn collect_text(&self, value: &dyn Any, out: &mut Vec<String>) {
+        (self.0.ops.collect_text)(self.0, value, out);
+    }
+
+    /// # Errors
+    /// The first refusal.
+    pub fn check(&self, value: &dyn Any) -> Result<(), Refusal> {
+        (self.0.ops.check)(self.0, value)
+    }
+
+    #[must_use]
+    pub fn get_at<'a>(&self, value: &'a dyn Any, path: &[Segment]) -> Option<&'a dyn Any> {
+        (self.0.ops.get_at)(self.0, value, path)
+    }
+
+    #[must_use]
+    pub fn op_coalesces(
+        &self,
+        path: &[Segment],
+        previous: &serde_json::Value,
+        next: &serde_json::Value,
+    ) -> Option<bool> {
+        (self.0.ops.op_coalesces)(self.0, path, previous, next)
+    }
+
+    #[must_use]
+    pub fn op_continuable(&self, path: &[Segment], op: &serde_json::Value) -> Option<bool> {
+        (self.0.ops.op_continuable)(self.0, path, op)
+    }
+
+    #[must_use]
+    pub fn op_describe(&self, path: &[Segment], op: &serde_json::Value) -> Option<OpDescription> {
+        (self.0.ops.op_describe)(self.0, path, op)
+    }
+
+    #[must_use]
+    pub fn op_lands(
+        &self,
+        value: &dyn Any,
+        path: &[Segment],
+        op: &serde_json::Value,
+    ) -> Option<Place> {
+        (self.0.ops.op_lands)(self.0, value, path, op)
+    }
+
+    pub fn op_schemas(&self, prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
+        (self.0.ops.op_schemas)(self.0, prefix, out);
     }
 }

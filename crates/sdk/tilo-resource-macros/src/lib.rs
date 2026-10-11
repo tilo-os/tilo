@@ -772,7 +772,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             const SHAPE: #krate::Shape = #krate::Shape::Record(&[#(#shapes),*]);
             const CHECKS: bool = #(#checks_const)||*;
             const OPS: bool = #(#ops_const)||*;
-            const TABLE: &'static #table::ModelTable = &#table::ModelTable::record(&Self::__RECORD);
+            const TABLE: &'static #table::ModelTable = &#table::ModelTable::of_record(&Self::__RECORD);
             type Paths<__R> = #paths_name<__R, #(#generic_args),*>;
 
             fn paths_at<__R>(path: #krate::Path<__R, Self>) -> Self::Paths<__R> {

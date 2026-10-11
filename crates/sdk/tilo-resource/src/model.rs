@@ -20,6 +20,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use crate::action::{ActionCx, Refusal};
 use crate::delta::{Delta, Touch};
 use crate::path::{EditOp, Path, Segment, Settable};
+use crate::table::Run;
 
 /// The document every resource lives in.
 pub type Doc = AutoCommit;
@@ -1312,57 +1313,42 @@ impl<T: Model> Model for Option<T> {
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
     const NULLABLE: bool = true;
+    // Run by one set of functions for every option, over `T`'s table.
+    const TABLE: &'static crate::table::ModelTable = &crate::table::OptionOf::<T>::TABLE;
     leaf_paths!();
+    #[inline]
     fn op_coalesces(
         path: &[Segment],
         previous: &serde_json::Value,
         next: &serde_json::Value,
     ) -> Option<bool> {
-        if T::OPS {
-            T::op_coalesces(path, previous, next)
-        } else {
-            None
-        }
+        Run(Self::TABLE).op_coalesces(path, previous, next)
     }
+    #[inline]
     fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
-        if T::OPS {
-            T::op_continuable(path, op)
-        } else {
-            None
-        }
+        Run(Self::TABLE).op_continuable(path, op)
     }
+    #[inline]
     fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
-        if T::OPS {
-            T::op_describe(path, op)
-        } else {
-            None
-        }
+        Run(Self::TABLE).op_describe(path, op)
     }
+    #[inline]
     fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
-        if T::OPS {
-            self.as_ref()?.op_lands(path, op)
-        } else {
-            None
-        }
+        Run(Self::TABLE).op_lands(self, path, op)
     }
+    #[inline]
     fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
-        if T::OPS {
-            T::op_schemas(prefix, out);
-        }
+        Run(Self::TABLE).op_schemas(prefix, out);
     }
-    #[inline(never)]
+    #[inline]
     fn to_json(&self) -> serde_json::Value {
-        self.as_ref()
-            .map_or(serde_json::Value::Null, Model::to_json)
+        Run(Self::TABLE).to_json(self)
     }
-    #[inline(never)]
+    #[inline]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
-        match value {
-            serde_json::Value::Null => Ok(None),
-            value => T::from_json(value).map(Some),
-        }
+        Run(Self::TABLE).from_json(value)
     }
-    #[inline(never)]
+    #[inline]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -1370,71 +1356,39 @@ impl<T: Model> Model for Option<T> {
         op: &EditOp,
         cx: &mut ActionCx,
     ) -> Result<(), ModelError> {
-        if path.is_empty() && matches!(op, EditOp::Set { .. }) {
-            return edit_whole::<Self>(doc, slot, path, op);
-        }
-        match slot.current(doc)? {
-            Some((value, _)) if !matches!(scalar(&value), Some(ScalarValue::Null)) => {
-                T::edit(doc, slot, path, op, cx)
-            }
-            _ => Err(ModelError::invalid("the value is absent")),
-        }
+        Run(Self::TABLE).edit(doc, slot, path, op, cx)
     }
+    #[inline]
     fn check(&self) -> Result<(), Refusal> {
-        self.as_ref().map_or(Ok(()), Model::check)
+        Run(Self::TABLE).check(self)
     }
-    #[inline(never)]
+    #[inline]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
-        match (self, after) {
-            (Some(before), Some(next)) => before.diff(next, path, out),
-            (None, None) => {}
-            _ => out.push(crate::Edit::new(
-                path.to_vec(),
-                EditOp::Set {
-                    value: after.to_json(),
-                },
-            )),
-        }
+        Run(Self::TABLE).diff(self, after, path, out);
     }
     fn label(&self) -> Option<String> {
         self.as_ref().and_then(Model::label)
     }
-    fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any>
-    where
-        Self: 'static,
-    {
-        if path.is_empty() {
-            return Some(self);
-        }
-        self.as_ref().and_then(|value| value.get_at(path))
+    #[inline]
+    fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any> {
+        Run(Self::TABLE).get_at(self, path)
     }
-
-    #[inline(never)]
+    #[inline]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
-        if matches!(scalar(value), Some(ScalarValue::Null)) {
-            return Ok(None);
-        }
-        T::load(doc, value, id).map(Some)
+        Run(Self::TABLE).load(doc, value, id)
     }
     fn missing() -> Result<Self, ModelError> {
         Ok(None)
     }
-    #[inline(never)]
+    #[inline]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        match self {
-            Some(value) => value.store(doc, slot),
-            None => slot.remove(doc),
-        }
+        Run(Self::TABLE).store(self, doc, slot)
     }
-    #[inline(never)]
+    #[inline]
     fn stores_as(&self, before: &Self) -> bool {
-        match (self, before) {
-            (Some(value), Some(before)) => value.stores_as(before),
-            (None, None) => true,
-            _ => false,
-        }
+        Run(Self::TABLE).stores_as(self, before)
     }
-    #[inline(never)]
+    #[inline]
     fn store_changed(
         &self,
         before: &Self,
@@ -1442,12 +1396,9 @@ impl<T: Model> Model for Option<T> {
         slot: Slot<'_>,
         dirty: &Delta,
     ) -> Result<(), ModelError> {
-        match (self, before) {
-            (Some(value), Some(before)) => value.store_changed(before, doc, slot, dirty),
-            _ => self.store(doc, slot),
-        }
+        Run(Self::TABLE).store_changed(self, before, doc, slot, dirty)
     }
-    #[inline(never)]
+    #[inline]
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -1455,20 +1406,11 @@ impl<T: Model> Model for Option<T> {
         id: &ObjId,
         delta: &Delta,
     ) -> Result<(), ModelError> {
-        match self {
-            Some(inner) if !matches!(scalar(value), Some(ScalarValue::Null)) => {
-                inner.refresh(doc, value, id, delta)
-            }
-            _ => {
-                *self = Self::load(doc, value, id)?;
-                Ok(())
-            }
-        }
+        Run(Self::TABLE).refresh(self, doc, value, id, delta)
     }
+    #[inline]
     fn collect_text(&self, out: &mut Vec<String>) {
-        if let Some(value) = self {
-            value.collect_text(out);
-        }
+        Run(Self::TABLE).collect_text(self, out);
     }
 }
 
