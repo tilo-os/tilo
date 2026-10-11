@@ -2922,9 +2922,8 @@ impl Widget for ActivityTimeline {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
-        self.rect = crate::widget::placed(&layout, origin);
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if prev != self.rect {
             self.dirty = true;
         }

@@ -1,81 +1,15 @@
 //! Test-only observations around the actual Notes projection functions.
 //! No timing budgets: the canonical mutation assertions establish the subject.
 
-use std::cell::RefCell;
-use std::time::Instant;
+use ui::tilo_resource::profiling::Sample;
 
-thread_local! {
-    static RECORDS: RefCell<Option<Capture>> = const { RefCell::new(None) };
-}
-
-const MAX_PHASES: usize = 32;
-
-#[derive(Default)]
-struct Capture {
-    rows: Vec<Sample>,
-    overflow: bool,
-}
-
-/// Repeated scopes aggregate by name, with exact counts and bounded memory.
-/// These nested durations must not be added to their enclosing scope.
-#[derive(serde::Serialize)]
-struct Sample {
-    phase: &'static str,
-    elapsed_ns: u128,
-    calls: usize,
-}
-
-pub(crate) struct Phase(Option<(&'static str, Instant)>);
-
-impl Phase {
-    pub(crate) fn start(name: &'static str) -> Self {
-        Self(RECORDS.with(|records| records.borrow().as_ref().map(|_| (name, ui::time::now()))))
-    }
-}
-
-impl Drop for Phase {
-    fn drop(&mut self) {
-        if let Some((name, start)) = self.0 {
-            RECORDS.with(|records| {
-                if let Some(capture) = records.borrow_mut().as_mut() {
-                    let elapsed_ns = start.elapsed().as_nanos();
-                    if let Some(row) = capture.rows.iter_mut().find(|row| row.phase == name) {
-                        match (
-                            row.elapsed_ns.checked_add(elapsed_ns),
-                            row.calls.checked_add(1),
-                        ) {
-                            (Some(elapsed), Some(calls)) => {
-                                row.elapsed_ns = elapsed;
-                                row.calls = calls;
-                            }
-                            _ => capture.overflow = true,
-                        }
-                    } else if capture.rows.len() < MAX_PHASES {
-                        capture.rows.push(Sample {
-                            phase: name,
-                            elapsed_ns,
-                            calls: 1,
-                        });
-                    } else {
-                        capture.overflow = true;
-                    }
-                }
-            });
-        }
-    }
-}
-
+/// Run `operation` and return its wall time with every scope it ran.
 fn observe(operation: impl FnOnce()) -> (u128, Vec<Sample>) {
-    RECORDS.with(|records| assert!(records.replace(Some(Capture::default())).is_none()));
-    let start = ui::time::now();
-    operation();
-    let elapsed = start.elapsed().as_nanos();
-    let capture = RECORDS.with(|records| records.take().unwrap());
-    assert!(
-        !capture.overflow,
-        "Notes phase observation exceeded its bound"
-    );
-    (elapsed, capture.rows)
+    ui::tilo_resource::profiling::observe(|| {
+        let start = ui::time::now();
+        operation();
+        start.elapsed().as_nanos()
+    })
 }
 
 fn fixture(
@@ -132,12 +66,9 @@ fn mounted_typing_observes_canonical_projection_scaling() {
         let setup_ns = setup.elapsed().as_nanos();
         app.harness().begin_profiling();
         for sample in 0..22 {
-            let (((elapsed, rows), framework_rows), resource_rows) =
-                ui::tilo_resource::profiling::observe(|| {
-                    ui::framework::testing::phases::observe(|| {
-                        observe(|| app.harness().type_text("a"))
-                    })
-                });
+            // One recorder sees the Notes, framework and resource scopes.
+            let (elapsed, rows) = observe(|| app.harness().type_text("a"));
+            let (framework_rows, resource_rows) = (&rows, &rows);
             // This maintained observer pumps pending wakes. Measure its work
             // separately; captured passes belong to the combined interval.
             let mut frames = Vec::new();
@@ -256,17 +187,15 @@ fn mounted_wheel_observes_long_note_main_thread_phases() {
             "presence agrees with complete action inventory"
         );
         let has_action_controls = answers[0];
-        let ((elapsed, notes_rows), framework_rows) =
-            ui::framework::testing::phases::observe(|| {
-                observe(|| {
-                    assert!(
-                        app.harness()
-                            .dispatch_to_root_with(&event, &winit::event::Modifiers::default()),
-                        "real notebook wheel handled"
-                    );
-                    app.harness().relayout();
-                })
-            });
+        let (elapsed, notes_rows) = observe(|| {
+            assert!(
+                app.harness()
+                    .dispatch_to_root_with(&event, &winit::event::Modifiers::default()),
+                "real notebook wheel handled"
+            );
+            app.harness().relayout();
+        });
+        let framework_rows = &notes_rows;
         let frames = app.harness().take_profile_samples();
         assert!(!frames.is_empty(), "real CPU frame observed");
         eprintln!(
@@ -328,7 +257,7 @@ fn unchanged_publication_reuses_tree_and_remote_and_locale_changes_refresh_it() 
     let original = app.harness().resources();
     assert!(contains(&original, "notes.notebook"));
     let before = app.read_document(Transactable::base_heads);
-    let ((), rows) = ui::framework::testing::phases::observe(|| {
+    let ((), rows) = ui::tilo_resource::profiling::observe(|| {
         for _ in 0..10 {
             let resources = app.harness().resources();
             assert!(contains(&resources, "notes.notebook"));
@@ -345,7 +274,7 @@ fn unchanged_publication_reuses_tree_and_remote_and_locale_changes_refresh_it() 
 
     let locale = ui::i18n::I18nManager::pseudo_locale();
     ui::i18n::I18nManager::set_pseudo_locale(ui::i18n::PseudoLocale::Expanded);
-    let ((), rows) = ui::framework::testing::phases::observe(|| {
+    let ((), rows) = ui::tilo_resource::profiling::observe(|| {
         assert!(contains(&app.harness().resources(), "notes.notebook"));
     });
     ui::i18n::I18nManager::set_pseudo_locale(locale);

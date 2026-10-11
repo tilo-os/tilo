@@ -2598,10 +2598,7 @@ impl Widget for SheetsApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.relayout();
     }
 

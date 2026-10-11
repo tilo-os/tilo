@@ -2053,10 +2053,7 @@ impl Widget for RemoteApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let origin = Point::new(self.rect.x0, self.rect.y0);
         if let Some(child) = child_node(taffy, node) {
             self.body_mut().apply_layout(taffy, child, origin);
@@ -2819,10 +2816,7 @@ impl Widget for SessionPane {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

@@ -13,6 +13,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use ui::time::Instant;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::AutoCommit;
@@ -6455,10 +6456,6 @@ impl Widget for VideoEditorApp {
             || self.mix_meter_is_live()
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "a complete local root style is infallible; Widget::build_layout cannot return Result"
-    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -6466,19 +6463,17 @@ impl Widget for VideoEditorApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
-        let node = taffy
-            .new_leaf(Style {
+        taffy.widget_leaf(
+            Style {
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),
                 },
                 ..Default::default()
-            })
-            // A leaf made from this complete local style cannot violate a
-            // Taffy tree invariant; the host API cannot surface the error.
-            .expect("a complete video-editor root leaf is valid");
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            },
+            node_map,
+            self,
+        )
     }
 
     #[allow(

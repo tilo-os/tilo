@@ -639,9 +639,8 @@ impl Widget for CollaborationLaunchpad {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
         let old_rect = self.rect;
-        self.rect = ui::widget::placed(&layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if self.rect != old_rect {
             self.targets.cancel_pointer_press();
         }

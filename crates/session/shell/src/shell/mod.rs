@@ -1472,3 +1472,5 @@ pub fn install_approved_checks_from_args(
 ) -> Result<(), String> {
     broker_services::approved_checks::install_from_args(arguments)
 }
+
+pub(crate) mod morning_sources;

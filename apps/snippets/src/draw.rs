@@ -8,7 +8,7 @@ use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::Widget;
+use ui::widget::{TaffyTreeExt, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -16,26 +16,22 @@ use crate::highlight::{self, Span};
 use crate::model::{Language, Snippet};
 
 /// A leaf node that fills what its parent gives it, registered for `widget`.
-#[allow(
-    clippy::expect_used,
-    reason = "TaffyTree::new_leaf only fails on allocation, which aborts anyway"
-)]
 pub(crate) fn fill_leaf<W: Widget + 'static>(
     taffy: &mut TaffyTree<()>,
     node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     widget: &mut W,
 ) -> NodeId {
-    let node = taffy
-        .new_leaf(Style {
+    taffy.widget_leaf(
+        Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
                 height: taffy::Dimension::percent(1.0),
             },
             ..Default::default()
-        })
-        .expect("a leaf node");
-    node_map.insert(node, std::ptr::from_mut::<dyn Widget>(widget));
-    node
+        },
+        node_map,
+        widget,
+    )
 }
 
 /// One painted row of wrapped code: the source line it starts (counted from

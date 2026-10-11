@@ -2537,7 +2537,20 @@ device-fabric-error-input-cleanup-pending = Previous input is still being releas
 activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source
 activity-morning-empty = Morning sources: choose a resource in Explore → Details. Up to eight sources; no sources connected automatically.
-activity-morning-description = Chosen morning sources · links to existing workspace resources. No external refresh is performed.
+activity-morning-description = Chosen morning sources · provider previews from authorized workspace resources. Refresh or draft a schedule explicitly.
 activity-morning-unavailable = Source unavailable in this workspace · no current evidence
 activity-morning-source = { $source } · last recorded workspace activity: { $time } · external freshness unknown
 activity-morning-open = Open morning source
+
+activity-morning-payload-unavailable = Provider summary unavailable. Open the source to inspect or refresh it.
+
+activity-morning-refresh = Refresh source
+activity-morning-draft = Draft scheduled refresh…
+activity-morning-draft-description = Opens a draft in Shortcuts. Choose a schedule and review its permissions before saving; nothing is armed yet.
+activity-morning-command-unavailable = Source command unavailable
+activity-morning-command-pending = Request pending
+activity-morning-command-accepted = Request accepted; inspect its result in Actions
+activity-morning-command-refused = Request refused
+activity-morning-recorded = { $source } · last recorded workspace activity: { $time }
+
+activity-morning-next = Next chosen source

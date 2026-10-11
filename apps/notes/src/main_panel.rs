@@ -1740,8 +1740,7 @@ impl Widget for MainPanel {
             }
         }
         if let Some(n) = self.editor_node {
-            #[cfg(test)]
-            let _profile = crate::cpu_profile::Phase::start("rich_text_input");
+            let _profile = ui::tilo_resource::profiling::Phase::start("rich_text_input");
             self.editor
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             if self.editor.is_focused()

@@ -28,7 +28,7 @@ use ui::tokens::Spacing;
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::{
     AppModel, ChipStyle, Dropdown, Element, EmptyState, FilterCount, Filterable, ModelPath,
-    TaffyTreeExt, Widget,
+    TaffyTreeExt, Widget, layout_rect,
 };
 use ui::{LocalState, TextRole};
 
@@ -528,21 +528,14 @@ impl Widget for JournalPane {
         reason = "viewport heights are small logical-pixel values"
     )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        let x0 = origin.x + f64::from(l.location.x);
-        let y0 = origin.y + f64::from(l.location.y);
-        let width_changed = (f64::from(l.size.width) - self.rect.width()).abs() > 0.5;
-        self.rect = Rect::new(
-            x0,
-            y0,
-            x0 + f64::from(l.size.width),
-            y0 + f64::from(l.size.height),
-        );
-        let inner = Point::new(x0, y0);
+        let rect = layout_rect(taffy, node, origin);
+        let width_changed = (rect.width() - self.rect.width()).abs() > 0.5;
+        self.rect = rect;
+        let inner = rect.origin();
         let band_of = |child: Option<NodeId>| {
-            child.and_then(|c| taffy.parent(c)).map_or(inner, |band| {
-                ui::widget::layout_rect(taffy, band, inner).origin()
-            })
+            child
+                .and_then(|c| taffy.parent(c))
+                .map_or(inner, |band| layout_rect(taffy, band, inner).origin())
         };
         if let Some(unit) = self.nodes.unit {
             self.unit.apply_layout(taffy, unit, band_of(Some(unit)));
@@ -555,7 +548,7 @@ impl Widget for JournalPane {
                 .apply_layout(taffy, severity, band_of(Some(severity)));
         }
         if let (Some(body), Some(child)) = (self.nodes.body, self.nodes.body_child) {
-            let body_origin = ui::widget::layout_rect(taffy, body, inner).origin();
+            let body_origin = layout_rect(taffy, body, inner).origin();
             // The table fills the body and scrolls its own rows; a selection
             // the app moved (a search result, a restored view) is brought
             // into sight by the nearest edge once the table has its height.

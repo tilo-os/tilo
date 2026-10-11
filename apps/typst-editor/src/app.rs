@@ -1107,10 +1107,7 @@ impl Widget for TypstApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        let rect = ui::widget::placed(layout, origin);
+        let rect = ui::widget::layout_rect(taffy, node, origin);
         self.layout_in(rect);
     }
 

@@ -1043,14 +1043,10 @@ impl<T: Widget + 'static> Widget for TileEditor<T> {
         node: taffy::NodeId,
         origin: vello::kurbo::Point,
     ) {
-        let layout = tree.layout(node).unwrap();
         self.0.apply_layout(
             tree,
             tree.children(node).unwrap()[0],
-            vello::kurbo::Point::new(
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
+            crate::widget::layout_rect(tree, node, origin).origin(),
         );
     }
     fn handle_event(

@@ -2103,8 +2103,7 @@ impl Widget for TubeApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = crate::widgets::node_layout(taffy, node);
-        let rect = ui::widget::placed(layout, origin);
+        let rect = ui::widget::layout_rect(taffy, node, origin);
         // A new window size re-sizes the width-driven watch page.
         if rect.size() != self.rect.size() {
             self.shell_stale = true;

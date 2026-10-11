@@ -832,6 +832,5 @@ pub mod __private {
     }
 }
 
-/// Explicit bounded observations of real resource publication on this thread.
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+/// Bounded observations of named scopes on this thread.
 pub mod profiling;

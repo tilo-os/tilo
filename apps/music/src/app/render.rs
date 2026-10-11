@@ -964,19 +964,7 @@ impl Widget for MusicApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `node` is the id this same widget inserted into this exact tree in
-        // `build_layout` earlier in the same frame (the five-pass contract
-        // guarantees layout was computed for it by now), so `layout` cannot
-        // fail here in practice; `apply_layout`'s `()` return leaves no error
-        // path, and that signature is shared framework-wide.
-        #[allow(
-            clippy::expect_used,
-            reason = "node was inserted into this tree by this widget's own build_layout earlier in the same frame; Widget::apply_layout's Result-free signature is shared by every implementor and out of this crate's scope to change"
-        )]
-        let layout = taffy
-            .layout(node)
-            .expect("apply_layout runs against the same tree + node build_layout returned");
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

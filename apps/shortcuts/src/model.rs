@@ -409,6 +409,31 @@ impl Workbench {
         self.drafts.push(id, draft);
     }
 
+    /// Import a shortcut as an unsaved draft for review. Never arms a trigger.
+    #[action]
+    pub fn draft_shortcut(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The shortcut program, as JSON")] shortcut: serde_json::Value,
+    ) -> Result<(), Refusal> {
+        if shortcut.to_string().len() > 16 * 1024 {
+            return Err(Refusal::new("Shortcut draft is too large"));
+        }
+        let mut shortcut: Shortcut = serde_json::from_value(shortcut)
+            .map_err(|error| Refusal::new(format!("not a shortcut: {error}")))?;
+        let id = cx.id();
+        shortcut.id = format!("s{}", id.as_str().get(..16).unwrap_or(id.as_str()));
+        let program = Program {
+            inputs: shortcut.inputs,
+            steps: shortcut.steps,
+            output: shortcut.output,
+            triggers: Vec::new(),
+        };
+        let draft = Draft::new(shortcut.name, shortcut.id, &program, false, &mut || cx.id());
+        self.drafts.push(id, draft);
+        Ok(())
+    }
+
     /// Open a saved shortcut as a draft to change it.
     #[action]
     pub fn open_shortcut(
@@ -428,6 +453,41 @@ impl Workbench {
         let draft = Draft::new(shortcut.name, shortcut.id, &program, true, &mut || cx.id());
         self.drafts.push(id, draft);
         Ok(())
+    }
+
+    /// Choose or disable a local morning refresh schedule in this unsaved draft.
+    #[action]
+    pub fn set_schedule(
+        &mut self,
+        cx: &mut ActionCx,
+        draft: Id,
+        #[param("Enable the daily local-time schedule")] enabled: bool,
+        #[param("Local hour, 0 to 23")] hour: i64,
+        #[param("Local minute, 0 to 59")] minute: i64,
+    ) -> Result<(), Refusal> {
+        let hour = u8::try_from(hour)
+            .ok()
+            .filter(|hour| *hour < 24)
+            .ok_or_else(|| Refusal::new("Hour must be 0 to 23"))?;
+        let minute = u8::try_from(minute)
+            .ok()
+            .filter(|minute| *minute < 60)
+            .ok_or_else(|| Refusal::new("Minute must be 0 to 59"))?;
+        edit_program(self, cx, &draft, |program| {
+            program.triggers.retain(|trigger| !matches!(trigger,
+                TriggerSpec::Schedule { schedule: tilo_automation::Schedule::Calendar { weekdays, .. }, .. } if weekdays.is_empty()
+            ));
+            if enabled {
+                program.triggers.push(TriggerSpec::Schedule {
+                    schedule: tilo_automation::Schedule::Calendar {
+                        at: tilo_automation::TimeOfDay { hour, minute },
+                        weekdays: Vec::new(),
+                    },
+                    catch_up: tilo_automation::CatchUp::RunOnce,
+                });
+            }
+            Ok(())
+        })
     }
 
     /// Discard a draft. A saved shortcut it was editing stays as it was.

@@ -12488,15 +12488,7 @@ mod undo_driver_tests {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let l = taffy.layout(node).unwrap();
-            let x = origin.x + f64::from(l.location.x);
-            let y = origin.y + f64::from(l.location.y);
-            self.rect = vello::kurbo::Rect::new(
-                x,
-                y,
-                x + f64::from(l.size.width),
-                y + f64::from(l.size.height),
-            );
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(
@@ -12764,15 +12756,7 @@ mod dispatched_action_driver_tests {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let l = taffy.layout(node).unwrap();
-            let x = origin.x + f64::from(l.location.x);
-            let y = origin.y + f64::from(l.location.y);
-            self.rect = vello::kurbo::Rect::new(
-                x,
-                y,
-                x + f64::from(l.size.width),
-                y + f64::from(l.size.height),
-            );
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(
@@ -13876,8 +13860,7 @@ mod framed_tests {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let layout = taffy.layout(node).unwrap();
-            self.rect = crate::widget::placed(layout, origin);
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(
@@ -14000,8 +13983,7 @@ mod framed_tests {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let layout = taffy.layout(node).unwrap();
-            self.rect = crate::widget::placed(layout, origin);
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(

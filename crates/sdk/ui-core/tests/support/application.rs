@@ -628,15 +628,7 @@ impl Widget for ProbeRoot {
         node: taffy::NodeId,
         origin: vello::kurbo::Point,
     ) {
-        let layout = tree.layout(node).unwrap();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = vello::kurbo::Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
+        self.rect = tilo_ui::widget::layout_rect(tree, node, origin);
     }
     fn draw(
         &mut self,

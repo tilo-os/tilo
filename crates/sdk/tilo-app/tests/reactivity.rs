@@ -9,8 +9,8 @@
 //! A large view bound by paths follows a one-field edit by running only the
 //! readers of that field, and the framework's work per edit stays bounded.
 
-use tilo_app::framework::testing::phases;
 use tilo_app::prelude::*;
+use tilo_app::tilo_resource::profiling as phases;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Shelf {
@@ -105,7 +105,8 @@ fn readers(samples: &[phases::Sample]) -> usize {
     samples
         .iter()
         .filter(|sample| sample.phase == "framework.reader")
-        .count()
+        .map(|sample| sample.calls)
+        .sum()
 }
 
 #[test]

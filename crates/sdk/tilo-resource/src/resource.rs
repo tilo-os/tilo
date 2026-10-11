@@ -1990,7 +1990,6 @@ fn cached_schema(
     let epoch = {
         let store = cache.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(found) = store.entries.get(&key) {
-            #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
             let _phase = crate::profiling::Phase::start("schema.cached_clone");
             return found.clone();
         }
@@ -2397,7 +2396,6 @@ fn publish_own(
     // Describe the declared domain ID before any host dispatch alias projection.
     resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(vocabulary.kind, id);
     for decl in (vocabulary.declarations)() {
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
         let _phase = crate::profiling::Phase::start("resource.declaration_spec");
         let mut spec = spec_of_declaration(&decl);
         if let Some(availability) = own.availability {

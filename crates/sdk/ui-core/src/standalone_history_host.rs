@@ -989,8 +989,7 @@ impl StandaloneHistoryHost {
         taffy: &TaffyTree<()>,
         origin: Point,
     ) -> Point {
-        let outer = taffy.layout(layout.root).copied().unwrap_or_default();
-        let origin = origin + (f64::from(outer.location.x), f64::from(outer.location.y));
+        let origin = crate::widget::layout_rect(taffy, layout.root, origin).origin();
         let bar = layout
             .bar
             .and_then(|node| taffy.layout(node).ok())
@@ -1007,16 +1006,8 @@ impl StandaloneHistoryHost {
         if let (Some(search), Some(node)) = (&mut self.search, layout.search) {
             search.apply_layout(taffy, node, toolbar_origin);
         }
-        let content = taffy.layout(layout.content).copied().unwrap_or_default();
-        let content_origin =
-            origin + (f64::from(content.location.x), f64::from(content.location.y));
-        self.content_rect = Rect::from_origin_size(
-            content_origin,
-            (
-                f64::from(content.size.width),
-                f64::from(content.size.height),
-            ),
-        );
+        self.content_rect = crate::widget::layout_rect(taffy, layout.content, origin);
+        let content_origin = self.content_rect.origin();
         if let Some(pane) = layout.pane {
             self.pane.apply_layout(taffy, pane, content_origin);
         }

@@ -893,7 +893,7 @@ impl NotesApp {
 
     fn refresh_transclusion_previews(&mut self) {
         #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("transclusion_previews");
+        let _profile = ui::tilo_resource::profiling::Phase::start("transclusion_previews");
         self.main
             .set_transclusion_previews(self.transclusion_previews());
     }
@@ -1370,7 +1370,7 @@ impl NotesApp {
 
     fn refresh_search_blocks(&mut self) {
         #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("search_blocks");
+        let _profile = ui::tilo_resource::profiling::Phase::start("search_blocks");
         if self.unindexed.is_empty() {
             return;
         }
@@ -1445,7 +1445,7 @@ impl NotesApp {
     /// local rows that are absent from the document.
     fn reconcile_canonical(&mut self, doc: &AutoCommit) -> Result<(), String> {
         #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("reconcile_canonical");
+        let _profile = ui::tilo_resource::profiling::Phase::start("reconcile_canonical");
         let workspace = Workspace::of(Rc::new(read_notebook(doc)?), &self.workspace);
         self.adopt(workspace);
         if self
@@ -2259,8 +2259,7 @@ impl Widget for NotesApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("surface_sync");
+        let _profile = ui::tilo_resource::profiling::Phase::start("surface_sync");
         self.shell.sync(state, path);
         self.drain_header_requests();
         let (state, path) = ui::doc::document_ref(state, path);
@@ -2312,9 +2311,9 @@ impl Widget for NotesApp {
             // A hosted notebook is handed every change it shows; one shown
             // over a bare document reads it.
             #[cfg(test)]
-            let _profile = self
-                .presented
-                .then(|| crate::cpu_profile::Phase::start("canonical_projection_adopted"));
+            let _profile = self.presented.then(|| {
+                ui::tilo_resource::profiling::Phase::start("canonical_projection_adopted")
+            });
             if !self.presented
                 && let Err(error) = self.reconcile_canonical(state)
             {
@@ -2387,17 +2386,8 @@ impl Widget for NotesApp {
         taffy.widget_node(style, &[shell_node], node_map, self)
     }
 
-    // `taffy.layout(...)` only errors for a `NodeId` from a different tree,
-    // which never happens here — every id it's called with is one this
-    // widget (or a child it just laid out) received from its own
-    // `build_layout`. `Widget::apply_layout` returns `()` across every
-    // implementor, so surfacing a theoretical error here would mean
-    // threading a `Result` through the whole toolkit for a branch that
-    // can't be taken (see `ui::widget::TaffyTreeExt`).
-    #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         // The shell lays its columns, header row and toggle out first; the
         // page tree and the note panel are children of the columns' slots,
         // whose own origin is the column's.

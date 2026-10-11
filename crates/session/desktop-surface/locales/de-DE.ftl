@@ -1081,8 +1081,21 @@ topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, Temperatur { $temperature }
 activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen
 activity-morning-empty = Morgenquellen: Ressource unter Erkunden → Details auswählen. Bis zu acht Quellen; keine automatische Verbindung.
-activity-morning-description = Ausgewählte Morgenquellen · bestehende Ressourcen dieses Arbeitsbereichs. Keine externe Aktualisierung.
+activity-morning-description = Ausgewählte Morgenquellen · Anbieter-Vorschauen aus autorisierten Ressourcen. Aktualisierung oder Zeitplan ausdrücklich wählen.
 activity-morning-unavailable = Quelle in diesem Arbeitsbereich nicht verfügbar · keine aktuellen Nachweise
 activity-morning-source = { $source } · letzte aufgezeichnete Aktivität: { $time } · externe Aktualität unbekannt
 
 activity-morning-open = Morgenquelle öffnen
+
+activity-morning-payload-unavailable = Anbieter-Zusammenfassung nicht verfügbar. Quelle öffnen, um sie zu prüfen oder zu aktualisieren.
+
+activity-morning-refresh = Quelle aktualisieren
+activity-morning-draft = Geplante Aktualisierung entwerfen…
+activity-morning-draft-description = Öffnet einen Entwurf in Shortcuts. Zeitplan wählen und Berechtigungen vor dem Speichern prüfen; noch ist nichts aktiviert.
+activity-morning-command-unavailable = Quellenaktion nicht verfügbar
+activity-morning-command-pending = Anfrage läuft
+activity-morning-command-accepted = Anfrage angenommen; Ergebnis in Aktionen prüfen
+activity-morning-command-refused = Anfrage abgelehnt
+activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichsaktivität: { $time }
+
+activity-morning-next = Nächste ausgewählte Quelle

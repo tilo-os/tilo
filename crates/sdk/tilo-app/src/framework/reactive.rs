@@ -336,8 +336,7 @@ fn run(cell: &RefCell<Index>, state: &dyn std::any::Any, change: &Change<'_>) {
         if let Some(gate) = entry.gate.as_ref().filter(|gate| !gate.runs()) {
             gate.stale.borrow_mut().insert(id);
         } else {
-            #[cfg(feature = "test-support")]
-            let _profile = super::profiling::Scope::start("framework.reader");
+            let _profile = tilo_resource::profiling::Phase::start("framework.reader");
             (entry.update)(state);
         }
         cell.borrow_mut().entries.insert(id, entry);

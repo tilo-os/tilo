@@ -84,8 +84,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// The document-owned tree of `state`; `live` when it is the live
     /// state, whose items the next version shares.
     fn build_document_tree(&self, state: &R::State, live: bool) -> SharedResource {
-        #[cfg(feature = "test-support")]
-        let _profile = super::super::profiling::Scope::start("framework.resource_tree");
+        let _profile = tilo_resource::profiling::Phase::start("framework.resource_tree");
         let parts = R::children_parts(state);
         let items = self.item_children(parts.items, &parts.item_actions, live);
         let children = if parts.others.is_empty() {
@@ -195,8 +194,7 @@ impl<R: Resource> ResourceRoot<R> {
         let state = current.as_ref().unwrap_or(&*live);
         let opens = self.stages.opens();
         let root = {
-            #[cfg(feature = "test-support")]
-            let _profile = super::super::profiling::Scope::start("framework.publication");
+            let _profile = tilo_resource::profiling::Phase::start("framework.publication");
             let tree = self.shared_document_tree(state);
             if current.is_some() {
                 // As `current_publication`: nested views follow this state

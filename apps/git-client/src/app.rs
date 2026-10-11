@@ -15,6 +15,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 #[cfg(test)]
@@ -2677,25 +2678,17 @@ impl Widget for GitClientApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // The app draws itself; a single full-size leaf node carries it.
-        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
-        // cannot actually return `Err` for a fresh leaf (see the
-        // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
-        // `Widget::build_layout` returns a bare `NodeId` across every
-        // implementor, so there is nowhere to surface a theoretical error.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
-        )]
-        let node = taffy
-            .new_leaf(Style {
+        let node = taffy.widget_leaf(
+            Style {
                 size: taffy::Size {
                     width: taffy::Dimension::percent(1.0),
                     height: taffy::Dimension::percent(1.0),
                 },
                 ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            },
+            node_map,
+            self,
+        );
         // The list column's breakpoint and widths grow with the text scale.
         self.drawer.scale_for(theme);
         node

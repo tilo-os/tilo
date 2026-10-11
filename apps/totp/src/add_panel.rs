@@ -420,15 +420,8 @@ impl Widget for AddForm {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let at = Point::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-        );
-        self.rect = Rect::from_origin_size(
-            at,
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        let at = self.rect.origin();
         let child = Self::child_node(taffy, node);
         self.tree.apply_layout(taffy, child, at);
         // A scroll bar takes room from the fields, so it shows only when the

@@ -3453,10 +3453,25 @@ impl ActionsProvider {
             for (id, label) in actions {
                 let subtitle = t("activity-morning-description");
                 candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), &id);
+                let command = id.starts_with(tilo_desktop::activity::morning::MORNING_REFRESH)
+                    || id.starts_with(tilo_desktop::activity::morning::MORNING_DRAFT);
+                let kind = if command {
+                    tilo_actions::OperationKind::Effect
+                } else {
+                    tilo_actions::OperationKind::View
+                };
+                let contract = if command {
+                    tilo_actions::ActionContract {
+                        kind: tilo_actions::ActionKind::Read,
+                        ..Default::default()
+                    }
+                } else {
+                    tilo_actions::ActionContract::view()
+                };
                 let request = id.clone();
                 out.push(SearchResult {
                     kind: ResourceKind::Action,
-                    operation_kind: tilo_actions::OperationKind::View,
+                    operation_kind: kind,
                     provider_id: self.id().into(),
                     id,
                     title: label,
@@ -3464,7 +3479,7 @@ impl ActionsProvider {
                     badge: None,
                     score: 0,
                     params: vec![],
-                    contract: Some(tilo_actions::ActionContract::view()),
+                    contract: Some(contract),
                     on_open: Rc::new(move |_, _, chrome, _| {
                         let mut state = chrome.borrow_mut();
                         if !state

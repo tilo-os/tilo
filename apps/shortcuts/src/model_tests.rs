@@ -288,3 +288,106 @@ fn the_name_and_output_are_field_edits_and_history_names_the_draft() {
         ]
     );
 }
+
+#[test]
+fn morning_refresh_draft_is_inert_until_person_chooses_schedule_and_saves() {
+    let mut replica = Replica::<Workbench>::new();
+    replica.apply(Workbench::DRAFT_SHORTCUT.with(json!({
+        "id": "injected", "name": "Refresh chosen source", "steps": [{"id": "refresh", "step": "invoke", "action": {"app": "so.tilo.weather", "kind": "weather.location", "action": "refresh"}, "resource": {"fixed": "weather.location:fixture"}}],
+        "triggers": [{"trigger": "schedule", "schedule": {"every": "interval", "seconds": 60}}], "saved_by": "someone-else"
+    }))).unwrap();
+    let id = draft_id(&replica);
+    assert!(program(&replica).triggers.is_empty());
+    assert!(
+        !replica
+            .state()
+            .unwrap()
+            .drafts
+            .values()
+            .next()
+            .unwrap()
+            .replaces_saved
+    );
+    assert_ne!(
+        replica
+            .state()
+            .unwrap()
+            .drafts
+            .values()
+            .next()
+            .unwrap()
+            .shortcut_id,
+        "injected"
+    );
+    replica
+        .apply(Workbench::SET_SCHEDULE.with((id.clone(), true, 9, 15)))
+        .unwrap();
+    assert_eq!(
+        program(&replica).triggers,
+        vec![tilo_automation::TriggerSpec::Schedule {
+            schedule: tilo_automation::Schedule::Calendar {
+                at: tilo_automation::TimeOfDay {
+                    hour: 9,
+                    minute: 15
+                },
+                weekdays: Vec::new()
+            },
+            catch_up: tilo_automation::CatchUp::RunOnce
+        }]
+    );
+    assert!(
+        replica
+            .apply(Workbench::SET_SCHEDULE.with((id.clone(), true, 24, 0)))
+            .is_err()
+    );
+    replica
+        .apply(Workbench::SET_SCHEDULE.with((id, false, 9, 15)))
+        .unwrap();
+    assert!(program(&replica).triggers.is_empty());
+}
+
+#[test]
+fn morning_refresh_schedule_edits_preserve_other_saved_triggers() {
+    use tilo_automation::{CatchUp, Schedule, TimeOfDay, TriggerSpec, Weekday};
+    let (replica, id) = with_draft();
+    let mut saved = replica
+        .state()
+        .unwrap()
+        .drafts
+        .get(&id)
+        .unwrap()
+        .shortcut(Vec::new());
+    let existing = vec![
+        TriggerSpec::Schedule {
+            schedule: Schedule::Interval { seconds: 3600 },
+            catch_up: CatchUp::RunOnce,
+        },
+        TriggerSpec::Schedule {
+            schedule: Schedule::Calendar {
+                at: TimeOfDay {
+                    hour: 10,
+                    minute: 30,
+                },
+                weekdays: vec![Weekday::Monday],
+            },
+            catch_up: CatchUp::RunOnce,
+        },
+        TriggerSpec::Keyboard {
+            chord: "Super+R".into(),
+        },
+    ];
+    saved.triggers = existing.clone();
+    let mut reopened = Replica::<Workbench>::new();
+    reopened
+        .apply(Workbench::OPEN_SHORTCUT.with(serde_json::to_value(saved).unwrap()))
+        .unwrap();
+    let id = draft_id(&reopened);
+    reopened
+        .apply(Workbench::SET_SCHEDULE.with((id.clone(), true, 9, 15)))
+        .unwrap();
+    assert_eq!(program(&reopened).triggers[..existing.len()], existing);
+    reopened
+        .apply(Workbench::SET_SCHEDULE.with((id, false, 9, 15)))
+        .unwrap();
+    assert_eq!(program(&reopened).triggers, existing);
+}

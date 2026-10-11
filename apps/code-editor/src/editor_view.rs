@@ -2666,12 +2666,7 @@ impl Widget for EditorView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        #[allow(
-            clippy::unwrap_used,
-            reason = "node was just created by this widget's own build_layout in the same tree; a lookup failure means the taffy tree is already corrupted and there is no meaningful layout to fall back to"
-        )]
-        let layout = taffy.layout(node).unwrap();
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(

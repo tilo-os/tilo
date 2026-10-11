@@ -320,8 +320,6 @@ mod live;
 mod people;
 mod person;
 mod preview;
-#[cfg(feature = "test-support")]
-pub mod profiling;
 mod reactive;
 mod record;
 mod root;

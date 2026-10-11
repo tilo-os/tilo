@@ -201,12 +201,24 @@ impl WeatherApp {
 
     /// Each saved place, offering to open and refresh its forecast.
     pub(crate) fn location_rows(&self) -> Vec<LiveRow> {
-        self.core
-            .borrow()
-            .model
+        let core = self.core.borrow();
+        core.model
             .locations
             .iter()
-            .map(crate::actions::location_row)
+            .map(|location| {
+                let row = crate::actions::location_row(location);
+                core.model.snapshot_for(location.id).map_or_else(
+                    || row.clone(),
+                    |snapshot| {
+                        row.clone()
+                            .presentation(crate::presentation::morning_preview(
+                                snapshot,
+                                core.units,
+                                core.notice(),
+                            ))
+                    },
+                )
+            })
             .collect()
     }
 
@@ -2139,5 +2151,24 @@ mod framework_tests {
             })
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod morning_preview_regression {
+    use super::*;
+    #[test]
+    fn morning_preview_is_published_from_the_real_cached_forecast() {
+        let app = WeatherApp::sample();
+        let rows = app.location_rows();
+        assert!(!rows.is_empty());
+        let row = rows[0].clone().into_resource();
+        let presentation = row
+            .presentation
+            .expect("cached forecast publishes a bounded morning preview");
+        assert!(presentation.is_valid());
+        assert!(presentation.preview.unwrap().contains("observation"));
+        assert!(presentation.detail.unwrap().contains("Open-Meteo"));
+        assert_eq!(presentation.badge.as_deref(), Some("Capture fixture"));
     }
 }

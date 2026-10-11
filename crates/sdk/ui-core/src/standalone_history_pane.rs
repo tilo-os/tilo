@@ -299,12 +299,8 @@ impl Widget for StandaloneHistoryPane {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let origin = origin + (f64::from(layout.location.x), f64::from(layout.location.y));
-        self.rect = Rect::from_origin_size(
-            origin,
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        let origin = self.rect.origin();
         let nodes = self.child_nodes.clone();
         for (child, node) in self.children_mut().into_iter().zip(nodes) {
             child.apply_layout(taffy, node, origin);

@@ -798,10 +798,7 @@ impl Widget for DiffMergeApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         // Drive both views to the content rect directly so mode switches
         // don't require a taffy rebuild to position correctly, and so the
         // views end at the window bottom rather than a toolbar's height below

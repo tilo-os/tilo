@@ -3564,10 +3564,7 @@ impl Widget for BrowserWidget {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let compact = is_compact_chrome(self.chrome_width(), self.compact_breakpoint);
         if compact != self.compact_chrome {
             self.compact_chrome = compact;

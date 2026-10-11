@@ -6,9 +6,6 @@
 //! invoke actions, that undo reverts them, that a viewer is refused, that
 //! state survives a reopen.
 
-#[cfg(feature = "test-support")]
-pub use super::profiling as phases;
-
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;

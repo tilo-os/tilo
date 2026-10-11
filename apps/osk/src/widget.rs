@@ -80,6 +80,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -2757,33 +2758,26 @@ impl Widget for OskWidget {
         } else {
             0.0
         };
-        let node = match taffy.new_leaf(Style {
-            flex_shrink: 0.0,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: if self.visible && self.fill_surface {
-                    Dimension::percent(1.0)
-                } else {
-                    Dimension::length(total_h)
+        taffy.widget_leaf(
+            Style {
+                flex_shrink: 0.0,
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: if self.visible && self.fill_surface {
+                        Dimension::percent(1.0)
+                    } else {
+                        Dimension::length(total_h)
+                    },
                 },
+                ..Default::default()
             },
-            ..Default::default()
-        }) {
-            Ok(node) => node,
-            // `TaffyTree::new_leaf` only ever returns `Err` when the tree is
-            // at capacity; this arm exists so a future upstream change
-            // degrades the app instead of aborting the whole session.
-            Err(_) => NodeId::from(0u64),
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.layout_bands();
         if let Some(pose) = self.pose.take() {
             self.take_pose(pose);
