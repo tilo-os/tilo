@@ -210,10 +210,6 @@ impl ResourceApp for PdfViewerShell {
         crate::scenarios::SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     fn fixture(fixture: &mut Fixture<PdfViewer>) {
         crate::scenarios::fixture(fixture);
     }

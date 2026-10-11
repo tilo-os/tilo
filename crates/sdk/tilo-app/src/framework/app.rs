@@ -203,7 +203,7 @@ pub trait ResourceApp: 'static {
     /// phone-sized window.
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         let _ = scenario;
-        (1024, 720)
+        (1280, 800)
     }
 
     /// Prepare what a capture of `fixture.scenario()` shows that its actions
