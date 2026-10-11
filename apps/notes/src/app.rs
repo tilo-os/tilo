@@ -2875,9 +2875,22 @@ impl ui::resources::PublishesResources for NotesApp {
         address: &tilo_actions::ActionAddress,
         changes: &[automerge::Patch],
     ) -> Option<serde_json::Value> {
-        matches!(address.action.as_str(), "new-page" | "new-child")
-            .then(|| actions::created_page_result(doc, changes))
-            .flatten()
+        // A body edit answers the blocks it touched, in the ids the read shows.
+        if let Some(page) = actions::body_page(&address.resource) {
+            let body = crate::notebook::validated_page_body(doc, page).ok()?;
+            return tilo_document::block_actions::action_result_under(
+                doc,
+                &body,
+                &address.action,
+                changes,
+            );
+        }
+        matches!(
+            address.action.as_str(),
+            "new-page" | "new-child" | "create-page"
+        )
+        .then(|| actions::created_page_result(doc, changes))
+        .flatten()
     }
 }
 

@@ -52,19 +52,17 @@ fn a_note_written_through_actions_reads_back_through_actions() {
     let note = read(&mut app, json!({ "item": item }));
     assert_eq!(note["kind"], "notes.page");
     assert_eq!(note["title"], "Groceries");
+    let markdown = note["markdown"].as_str().expect("the body as Markdown");
+    let line = markdown
+        .lines()
+        .find(|line| line.starts_with("oat milk ^"))
+        .unwrap_or_else(|| panic!("{note}"));
     assert!(
-        note["text"]
-            .as_str()
-            .is_some_and(|text| text.contains("oat milk")),
-        "{note}"
+        line.len() > "oat milk ^".len(),
+        "the line ends in its block's id: {line}"
     );
-    assert!(
-        note["blocks"].as_array().is_some_and(|blocks| blocks
-            .iter()
-            .any(|block| block["text"] == "oat milk"
-                && block["id"].as_str().is_some_and(|id| !id.is_empty()))),
-        "{note}"
-    );
+    assert_eq!(note["blocks"], 1, "{note}");
+    assert_eq!(note["body"], notes::actions::page_body_id(id));
 
     let missing = app.call("read", json!({ "item": "notes.page:not-a-page" }));
     assert!(missing.is_err(), "an unknown note is refused: {missing:?}");

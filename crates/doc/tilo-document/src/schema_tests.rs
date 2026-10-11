@@ -11,8 +11,23 @@ use super::*;
 /// What the host's directory accepts for one action's parameters.
 const DIRECTORY_PARAMS_LIMIT: usize = 32 * 1024;
 
+/// The schema `apply` publishes: every edit but the block variants, which
+/// are published once, as the declared actions that build them.
 fn schema() -> Value {
-    RichTextAction::json_schema()
+    crate::block_actions::without_declared_variants(&RichTextAction::json_schema())
+}
+
+#[test]
+fn the_block_variants_are_published_as_their_declared_actions_only() {
+    let names: Vec<String> = variants(&schema())
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert!(names.contains(&"SpliceText".to_owned()));
+    for hidden in ["InsertBlocks", "SyncBody", "MoveBlock"] {
+        assert!(!names.contains(&hidden.to_owned()), "{hidden}");
+    }
+    assert!(!schema().to_string().contains("NewBlock"));
 }
 
 fn variants(schema: &Value) -> Vec<(String, Value)> {

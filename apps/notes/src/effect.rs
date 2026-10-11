@@ -16,6 +16,25 @@ pub enum NotesEffect {
     /// editor focus and caret without selecting a note or changing its body.
     #[effect(view, returns, permission = "read")]
     InspectEditor,
+    /// Find note
+    ///
+    /// Find the notes whose title holds some text, exact matches first.
+    #[effect(view, returns, permission = "read")]
+    FindPage {
+        #[param("Text of the title, ignoring case")]
+        title: String,
+    },
+    /// Find text
+    ///
+    /// Find the blocks whose text holds some text, in one note or in every
+    /// note, and answer the block ids to edit them by.
+    #[effect(view, returns, permission = "read")]
+    FindText {
+        #[param("The text to find, ignoring case")]
+        text: String,
+        #[param("The note to search (default every note)")]
+        page: Option<Uuid>,
+    },
     /// Back
     ///
     /// Return to the note shown before this one.

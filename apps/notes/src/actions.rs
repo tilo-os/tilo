@@ -1763,6 +1763,68 @@ pub fn page_body_id(page: PageId) -> String {
     ui::tilo_resource::child_resource_id::<crate::resource::Notebook>(&format!("page/{page}/body"))
 }
 
+/// The notes of `pages` whose title holds `title`, ignoring case, titles that
+/// are exactly it first: `{pages: [{page, title, resource}]}`.
+pub(crate) fn find_pages(pages: &[PageMeta], title: &str) -> serde_json::Value {
+    let needle = title.trim().to_lowercase();
+    let mut found: Vec<&PageMeta> = pages
+        .iter()
+        .filter(|page| !needle.is_empty() && page.title.to_lowercase().contains(&needle))
+        .collect();
+    found.sort_by_key(|page| page.title.trim().to_lowercase() != needle);
+    serde_json::json!({
+        "pages": found
+            .iter()
+            .map(|page| serde_json::json!({
+                "page": page.id.to_string(),
+                "title": page.title,
+                "resource": page_resource_id(page.id),
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// The blocks whose text holds `text`, ignoring case, in `page` or every
+/// note: `{matches: [{page, title, block, text}]}`, with each block's id as
+/// the note's read shows it.
+pub(crate) fn find_text(
+    doc: &AutoCommit,
+    text: &str,
+    page: Option<PageId>,
+) -> Result<serde_json::Value, String> {
+    let pages = NotesDoc::list_pages(doc);
+    let mut matches = Vec::new();
+    for meta in pages
+        .iter()
+        .filter(|meta| page.is_none_or(|page| page == meta.id))
+    {
+        let body = crate::notebook::validated_page_body(doc, meta.id)?;
+        let found = tilo_document::block_actions::find_under(doc, &body, text, false)?;
+        for hit in found["matches"].as_array().into_iter().flatten() {
+            matches.push(serde_json::json!({
+                "page": meta.id.to_string(),
+                "title": meta.title,
+                "block": hit["block"],
+                "text": hit["text"],
+            }));
+        }
+    }
+    if matches.is_empty() && page.is_some_and(|page| !pages.iter().any(|meta| meta.id == page)) {
+        return Err("no such note".into());
+    }
+    Ok(serde_json::json!({ "matches": matches }))
+}
+
+/// The page whose body the resource `id` is, when it is one: the inverse of
+/// [`page_body_id`].
+pub(crate) fn body_page(id: &str) -> Option<PageId> {
+    let prefix = ui::tilo_resource::child_resource_id::<crate::resource::Notebook>("page/");
+    id.strip_prefix(prefix.as_str())?
+        .strip_suffix("/body")?
+        .parse()
+        .ok()
+}
+
 /// A rich-text edit of `page`'s body as the notebook's action.
 fn page_body_edit(page: PageId) -> impl Fn(RichTextAction) -> NotesAction + Send + Sync + 'static {
     move |edit| edit_body_action(page, edit)
@@ -2255,6 +2317,33 @@ pub(crate) fn notebook_bound_declarations(
             },
         )
         .describe("Create a new root note.")
+        .returns(created_page_result_spec()),
+        ui::tilo_resource::ActionDecl::new(
+            "create-page",
+            "Create note from Markdown",
+            vec![
+                ActionParam::required_owned("title", ParamType::Text, "The note's title"),
+                ActionParam::optional_owned(
+                    "markdown",
+                    ParamType::Text,
+                    "The note's body as Markdown: headings, bullets, `- [ ]` checklists, quotes, code, tables, [[Note title]] links (a leading `# title` equal to the title is dropped)",
+                ),
+            ],
+            |args, _| {
+                let title = args
+                    .text("title")
+                    .map(str::trim)
+                    .filter(|title| !title.is_empty())
+                    .ok_or("give the note a title")?;
+                let markdown = crate::markdown::strip_matching_title_heading(
+                    args.text("markdown").unwrap_or_default(),
+                    title,
+                );
+                check_markdown_import(&markdown)?;
+                Ok(import_markdown_action(Uuid::new_v4(), title, &markdown, Vec::new()))
+            },
+        )
+        .describe("Create a root note with a title and a Markdown body. Answers the note's id and resource.")
         .returns(created_page_result_spec()),
     ];
     let title = today_title();
