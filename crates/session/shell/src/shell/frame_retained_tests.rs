@@ -2142,22 +2142,16 @@ fn warm_at_rest(
     (pixels, layers)
 }
 
-/// Pan the strip a step and back and let it come to rest, as a session's
-/// desktop has once it panned. Before its first pan this fixture's strip
-/// draws a window otherwise in the pan's first frame than at rest (one
-/// transform of the strip's encoding moves), whatever the layers hold;
-/// after a pan and a rest it does not.
+/// Let the desktop rest as long as the session waits before it warms the
+/// layers (a second), then draw until it is at rest: two frames in a row
+/// that change nothing, with nothing animating. A window off screen asks
+/// for no frames while it animates (its spawn animation runs on the clock),
+/// so frames drawn back to back after the fixture starts can find it still
+/// moving: a draw of the strips in canvas coordinates, which draws it,
+/// would then differ from the next.
 #[cfg(target_os = "linux")]
-fn settle_by_panning_once(frame: &mut FrameBuilder) {
-    frame.host_mut().update_active_strip_pan(0.0, true);
-    for travel in [23.7, 0.0] {
-        frame.host_mut().update_active_strip_pan(travel, false);
-        frame.relayout();
-        let _ = frame.paint_with_damage();
-    }
-    frame.host_mut().end_active_strip_pan(Instant::now());
-    // The pan's end animates; rest is two frames in a row that change
-    // nothing, with nothing animating.
+fn rest_as_the_session_does(frame: &mut FrameBuilder) {
+    std::thread::sleep(std::time::Duration::from_millis(1100));
     let mut quiet = 0;
     for _ in 0..400 {
         frame.relayout();
@@ -2173,7 +2167,7 @@ fn settle_by_panning_once(frame: &mut FrameBuilder) {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    panic!("the desktop did not come to rest after a pan");
+    panic!("the desktop did not come to rest");
 }
 
 /// The first frame of a pan from a rest whose layers were warmed (as
@@ -2302,7 +2296,7 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
             let mut frame = pan_fixture(desktop, theme.clone());
             frame.set_strip_pan_presenter(false, true);
             let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
-            settle_by_panning_once(&mut frame);
+            rest_as_the_session_does(&mut frame);
             let mut layered = gpu_target(size);
             let mut dense = gpu_target(size);
             for _ in 0..4 {
