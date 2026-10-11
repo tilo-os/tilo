@@ -699,6 +699,10 @@ impl PresentPipe {
             .spawn(move || {
                 // Flag completion however this thread leaves (normal return or unwind), so `shutdown` never waits on a thread that's already gone.
                 let _done = FinishedOnDrop(thread_finished);
+                // Presentation has a deadline every refresh; input and the app
+                // under the person's hands share the machine with anything.
+                #[cfg(target_os = "linux")]
+                ::launcher::priority::request_realtime(::launcher::priority::PRESENT_RT_PRIORITY);
                 RenderThread {
                     presenter,
                     board,

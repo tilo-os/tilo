@@ -132,6 +132,13 @@ pub fn request_args(unit: &str, pid: u32, description: &str) -> Vec<String> {
             SESSION_TARGET.into(),
         ],
     ];
+    // The person just asked for this app: it starts in the foreground tier,
+    // and the compositor demotes it when focus moves on (see `priority`).
+    let tier = crate::priority::tier_properties(
+        crate::priority::Tier::Foreground,
+        crate::priority::mem_total_bytes(),
+    );
+    properties.extend(tier.iter().map(|p| crate::priority::dbus_property_args(p).to_vec()));
     let description: String = description.chars().filter(|c| !c.is_control()).collect();
     if !description.trim().is_empty() {
         properties.push(vec!["Description".into(), "s".into(), description]);
@@ -170,8 +177,24 @@ mod tests {
 
     #[test]
     fn a_scope_request_names_its_unit_slice_session_and_process() {
+        let request = request_args("app-tilo-com.spotify.Client-42.scope", 42, "Spo\ntify");
+        // The foreground tier rides between the session link and the description.
+        let tier = crate::priority::tier_properties(
+            crate::priority::Tier::Foreground,
+            crate::priority::mem_total_bytes(),
+        );
+        let mut request = request;
+        let at = request.iter().position(|a| a == "Description").expect("description");
+        let tier_args: Vec<String> = tier
+            .iter()
+            .flat_map(crate::priority::dbus_property_args)
+            .collect();
+        assert_eq!(request[at - tier_args.len()..at], tier_args[..]);
+        request.drain(at - tier_args.len()..at);
+        assert_eq!(request[10], (5 + tier.len()).to_string());
+        request[10] = "5".into();
         assert_eq!(
-            request_args("app-tilo-com.spotify.Client-42.scope", 42, "Spo\ntify"),
+            request,
             [
                 "--user",
                 "--timeout=2",

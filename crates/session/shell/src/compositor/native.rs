@@ -11282,6 +11282,8 @@ pub fn run() {
         } else {
             client_input::sync_keyboard_focus(&mut state, &frame_builder);
         }
+        // Focus is decided for this tick: a launch whose window did not get it yields its boost.
+        ::launcher::priority::settle_windows();
         // A picked emoji goes to the field that just got the keyboard back,
         // through the seat's input method; what arrived feeds the recents.
         let _ = crate::compositor::text_commit::relay(

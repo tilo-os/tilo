@@ -5990,6 +5990,14 @@ impl XdgShellHandler for State {
             surface.send_close();
             return;
         };
+        // The window's app is a launch resolving; the tick's focus decision settles its tier.
+        if let Some(pid) = surface
+            .wl_surface()
+            .client()
+            .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.pid))
+        {
+            ::launcher::priority::notify_window(pid);
+        }
         // Register the toplevel with the input router for local key/pointer delivery once focused; the chrome-side tab splices in next tick.
         self.client_input.register_toplevel(
             surface_id,
