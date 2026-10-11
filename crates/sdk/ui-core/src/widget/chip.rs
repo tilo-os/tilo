@@ -1022,18 +1022,20 @@ impl Widget for Chip {
                         *ctx.handled = true;
                     }
                     ElementState::Pressed if self.activation.is_enabled() && over_body => {
-                        self.activation.state.pressed = true;
+                        self.activation.press(self.hit_rect());
                         *ctx.focus_target = Some(ctx.node_id);
                         *ctx.handled = true;
                     }
-                    ElementState::Released if self.activation.state.pressed => {
-                        self.activation.state.pressed = false;
-                        *ctx.handled = true;
-                        if over_body && !over_x {
+                    ElementState::Released => {
+                        let release = self
+                            .activation
+                            .release(self.hit_rect(), over_body && !over_x);
+                        *ctx.handled |= release.ended();
+                        if release == crate::pointer_replay::Release::Click(()) {
                             self.activation.activate();
                         }
                     }
-                    _ => {}
+                    ElementState::Pressed => {}
                 }
             }
             _ => {}
