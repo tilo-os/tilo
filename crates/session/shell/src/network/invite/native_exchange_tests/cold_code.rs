@@ -107,28 +107,30 @@ fn capture(
     owner: &NativeWorkspaceOwner,
     certificate: &DeviceCert,
 ) -> tilo_joined_room::CommittedDocument {
-    try_capture(owner, certificate).unwrap()
+    try_capture(owner, certificate)
+        .unwrap()
+        .expect("a settled cold native room holds no partial checkpoint")
 }
 
+/// `None` is the production read's answer while a checkpoint is still
+/// arriving; every refusal stays an error.
 fn try_capture(
     owner: &NativeWorkspaceOwner,
     certificate: &DeviceCert,
-) -> Result<tilo_joined_room::CommittedDocument, String> {
+) -> Result<Option<tilo_joined_room::CommittedDocument>, String> {
     owner.with_current(
         RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(),
-        |view| {
-            let DocumentRead::Captured(capture) = view.read_document(
-                certificate.device_public_key,
-                APP,
-                RECORD,
-                None,
-                64 * 1024,
-                SystemTime::now(),
-            )?
-            else {
-                return Err("cold native record was not captured".into());
-            };
-            Ok(capture)
+        |view| match view.read_document(
+            certificate.device_public_key,
+            APP,
+            RECORD,
+            None,
+            64 * 1024,
+            SystemTime::now(),
+        )? {
+            DocumentRead::Captured(capture) => Ok(Some(capture)),
+            DocumentRead::CheckpointPending => Ok(None),
+            DocumentRead::Unchanged(_) => Err("cold native record was not captured".into()),
         },
     )
 }
@@ -632,13 +634,12 @@ pub(super) async fn restart_after_offline_edits(
                     .admit(live.identity)
                     .expect("reconnected signed frame must cross native custody");
                 // A canonical cut arrives in multiple signed frames. Until
-                // its covered body arrives, the production read must refuse.
-                let capture = match try_capture(&owner, &live.identity.device_cert) {
-                    Ok(capture) => capture,
-                    Err(error) => {
-                        assert_eq!(error, "bounded peer refusal: Invalid(Coverage)");
-                        continue;
-                    }
+                // its covered body arrives, the production read must report
+                // the pending checkpoint and hand out nothing.
+                let Some(capture) = try_capture(&owner, &live.identity.device_cert)
+                    .expect("a reconnecting read is pending or captured, never refused")
+                else {
+                    continue;
                 };
                 let document = AutoCommit::load(&capture.bytes).unwrap();
                 if body(&document) == format!("// source offline\n{BODY}// receiving offline\n") {
