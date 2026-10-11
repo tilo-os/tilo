@@ -33,6 +33,13 @@ The example's production-path tests show what to assert:
 - `history_is_attributed`: inspect `Replica::versions()` and check the author
   and action summary. Use host-provided identity in the running app.
 
+For agent execution, run the SDK's
+[`resource-journey`](../../../crates/sdk/tilo-app/examples/resource-journey.rs)
+test `agent_execution_merges_with_person_edits_and_survives_undo_and_reconnect`.
+It invokes the discovered action, merges a concurrent person edit, exercises
+semantic undo/redo, restores a saved participant replica and reopens the app.
+Its permission grant is an in-memory fixture, not sign-in or persistent access.
+
 The resource runtime supplies storage, history, per-author undo and merge
 semantics. On Tilo, workspace collaborators and roles govern access; agents
 use the same permission-filtered resource/action door as other collaborators.

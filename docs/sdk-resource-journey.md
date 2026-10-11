@@ -47,6 +47,16 @@ not certify a live compositor connection, transport between devices, device
 identity authentication or a screenshot in each theme. `for_person` supplies a
 test participant id; it does not sign someone into the real OS.
 
+The `agent_execution_merges_with_person_edits_and_survives_undo_and_reconnect`
+journey executes a task's discovered action through `Participant`, rather than
+stopping at discovery. A concurrent person edit survives delivery of the agent's
+edit; the history keeps the agent's attribution, and the person's semantic undo
+and redo retain the agent's work. The agent restores its saved replica, receives
+the newer snapshot and checks convergence. Revoking its in-memory fixture grant
+refuses the remembered address without writing history. Reopening the app retains
+the same tasks and attributed versions. This is a resource/runtime fixture, not a
+device sign-in or a persistent grant.
+
 ## Permission-aware views
 
 Bound controls already follow the permissions of their actions. For an entire

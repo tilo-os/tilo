@@ -433,6 +433,9 @@ pub(crate) fn build_root<A: ResourceApp>(
         cx.effects = effects;
     }
     let content = A::view(&mut cx);
+    // Generated apps install their locale registry while building the view.
+    // Name the hosted resource after that, before its first publication.
+    let label = cx.live.with(A::label);
     let live = permissions.is_some();
     let root = ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
         .following(permissions, scope)

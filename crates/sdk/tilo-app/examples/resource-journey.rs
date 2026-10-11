@@ -191,6 +191,143 @@ mod tests {
     }
 
     #[test]
+    fn agent_execution_merges_with_person_edits_and_survives_undo_and_reconnect() {
+        use tilo_app::framework::{Participant, resource_kind};
+        use tilo_app::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+
+        let mut app = TestApp::<ChecklistApp>::for_person("ada").expect("open");
+        app.call("draft", json!({"title": "Pack lunch"}))
+            .expect("draft");
+        app.call("add", json!({})).expect("add");
+        let snapshot = app.read_document(|doc| doc.clone().save());
+        let permissions = PermissionContext::from_capabilities(
+            Actor::agent("scribe"),
+            vec![CapOverride::grant(
+                Subject::agent("scribe"),
+                Scope::App(ChecklistApp::ID.into()),
+                Verb::Write,
+            )],
+        );
+        // This is an in-memory host fixture, not sign-in or a persistent grant.
+        let mut agent = Participant::from_snapshot(
+            resource_kind::<ChecklistApp>(),
+            &snapshot,
+            "scribe",
+            permissions.clone(),
+        )
+        .expect("join the existing record");
+        let complete = agent
+            .operations()
+            .into_iter()
+            .find(|operation| {
+                operation.address.action == "set-done" && operation.resource_label == "Pack lunch"
+            })
+            .expect("discover the task action");
+        let changes = agent
+            .invoke(
+                &complete.address,
+                json!({"done": true}).as_object().expect("arguments"),
+            )
+            .expect("execute through the agent door")
+            .expect("an edit produces changes");
+        assert!(!changes.is_empty());
+
+        // Ada edits while the agent is disconnected. Neither overwrites the other.
+        app.call("draft", json!({"title": "Make tea"}))
+            .expect("local draft");
+        app.call("add", json!({})).expect("local add");
+        let mut peer = agent.doc().clone();
+        app.merge_peer(&mut peer).expect("deliver the agent edit");
+        let lunch = app
+            .state()
+            .tasks
+            .ids()
+            .find(|id| {
+                app.state()
+                    .tasks
+                    .get(id)
+                    .is_some_and(|task| task.title == "Pack lunch")
+            })
+            .cloned()
+            .expect("stable lunch identity");
+        assert_eq!(app.state().tasks.len(), 2);
+        assert!(app.state().tasks.get(&lunch).expect("lunch").done);
+        assert!(
+            app.versions().iter().any(|version| {
+                version
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.invoker.as_ref())
+                    .is_some_and(|invoker| invoker.actor == "scribe")
+            }),
+            "the delivered action retains agent attribution in production history"
+        );
+
+        app.call("undo", json!({})).expect("undo Ada's last step");
+        assert_eq!(app.state().tasks.len(), 1, "undo retains the peer's edit");
+        assert!(
+            app.state()
+                .tasks
+                .get(&lunch)
+                .expect("lunch after undo")
+                .done
+        );
+        app.call("redo", json!({})).expect("redo Ada's step");
+        assert_eq!(app.state().tasks.len(), 2);
+        assert!(
+            app.harness()
+                .inspection_json()
+                .expect("inspect the live view")
+                .contains("Pack lunch"),
+            "the live view follows the merge"
+        );
+
+        // Reconnect from the agent's saved replica, then receive Ada's newer history.
+        let saved = agent.save();
+        let mut resumed = Participant::from_snapshot(
+            resource_kind::<ChecklistApp>(),
+            &saved,
+            "scribe",
+            permissions,
+        )
+        .expect("reconnect");
+        let latest = app.read_document(|doc| doc.clone().save());
+        assert!(resumed.merge_snapshot(&latest));
+        assert_eq!(
+            resumed.state::<Checklist>().expect("agent state"),
+            app.state()
+        );
+        resumed.set_permissions(PermissionContext::from_capabilities(
+            Actor::agent("scribe"),
+            vec![],
+        ));
+        let before = resumed.heads();
+        assert!(
+            resumed
+                .invoke(
+                    &complete.address,
+                    json!({"done": false}).as_object().expect("arguments"),
+                )
+                .is_err(),
+            "a remembered address does not survive revoked authority"
+        );
+        assert_eq!(resumed.heads(), before, "refusal changes no history");
+
+        let expected = app.state();
+        let versions = app.versions();
+        let mut reopened = app.reopen().expect("reopen the canonical record");
+        assert_eq!(reopened.state(), expected);
+        assert_eq!(reopened.versions(), versions);
+        assert!(
+            reopened
+                .harness()
+                .inspection_json()
+                .expect("inspect the restored view")
+                .contains("Pack lunch")
+        );
+    }
+
+    #[test]
     fn a_semantic_caller_discovers_edits_confirms_undoes_and_reopens() {
         let mut app = TestApp::<ChecklistApp>::for_person("ada").expect("open");
         assert!(app.state().tasks.is_empty(), "the live app starts empty");
