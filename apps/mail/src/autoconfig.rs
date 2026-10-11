@@ -346,6 +346,73 @@ pub fn parse_doh_mx(json: &str) -> Vec<(u16, String)> {
         .collect()
 }
 
+/// One DNS `SRV` answer (RFC 2782).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Srv {
+    pub priority: u16,
+    pub weight: u16,
+    pub port: u16,
+    pub host: String,
+}
+
+/// Parse a DNS-over-HTTPS JSON answer into its `SRV` records. A target of `.`
+/// means the service is explicitly unavailable (RFC 2782) and is dropped.
+pub fn parse_doh_srv(json: &str) -> Vec<Srv> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let Some(answers) = v.get("Answer").and_then(|a| a.as_array()) else {
+        return Vec::new();
+    };
+    answers
+        .iter()
+        // SRV record type is 33.
+        .filter(|a| a.get("type").and_then(serde_json::Value::as_u64) == Some(33))
+        .filter_map(|a| {
+            let mut fields = a.get("data")?.as_str()?.split_whitespace();
+            let priority = fields.next()?.parse().ok()?;
+            let weight = fields.next()?.parse().ok()?;
+            let port = fields.next()?.parse().ok()?;
+            let host = fields.next()?.trim_end_matches('.').to_string();
+            (!host.is_empty()).then_some(Srv {
+                priority,
+                weight,
+                port,
+                host,
+            })
+        })
+        .collect()
+}
+
+/// The server to use among `records`: the lowest priority, then the heaviest.
+fn best_srv(records: &[Srv]) -> Option<&Srv> {
+    records
+        .iter()
+        .min_by_key(|r| (r.priority, std::cmp::Reverse(r.weight)))
+}
+
+/// A configuration from RFC 6186 service records: `_imaps` for incoming and
+/// `_submissions` (implicit TLS) or else `_submission` for outgoing. Both
+/// servers must be published.
+pub fn autoconfig_from_srv(
+    imaps: &[Srv],
+    submissions: &[Srv],
+    submission: &[Srv],
+) -> Option<Autoconfig> {
+    let imap = best_srv(imaps)?;
+    let smtp = best_srv(submissions).or_else(|| best_srv(submission))?;
+    Some(Autoconfig {
+        display_name: None,
+        imap_host: imap.host.clone(),
+        imap_port: imap.port,
+        imap_tls: true,
+        smtp_host: smtp.host.clone(),
+        smtp_port: smtp.port,
+        smtp_tls: true,
+        oauth: false,
+    })
+}
+
 /// The autoconfig URLs to try, in priority order, for a domain + email.
 /// Public so the (network) `discover` and its test can share the list.
 pub fn discovery_urls(domain: &str, email: &str) -> Vec<String> {
@@ -376,7 +443,7 @@ pub fn discover_cancellable(
     cancellation: &std::sync::atomic::AtomicBool,
 ) -> Option<Autoconfig> {
     let (_, domain) = email.split_once('@')?;
-    discover_with_urls(email, cancellation, discovery_urls(domain, email))
+    discover_with_urls(email, cancellation, discovery_urls(domain, email), true)
 }
 
 #[cfg(feature = "live")]
@@ -384,6 +451,7 @@ fn discover_with_urls(
     email: &str,
     cancellation: &std::sync::atomic::AtomicBool,
     urls: Vec<String>,
+    dns: bool,
 ) -> Option<Autoconfig> {
     let discovered = ui::rt::app().block_on(async {
         tokio::select! {
@@ -394,7 +462,7 @@ fn discover_with_urls(
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
             } => None,
-            result = tokio::time::timeout(std::time::Duration::from_secs(30), discover_candidates(email, urls)) => result.ok().flatten(),
+            result = tokio::time::timeout(DISCOVERY_TIMEOUT, discover_candidates(email, urls, dns)) => result.ok().flatten(),
         }
     });
     discovered
@@ -403,56 +471,88 @@ fn discover_with_urls(
         .flatten()
 }
 
+/// How long one lookup may take, and the whole discovery. Lookups run side by
+/// side, so the slowest hit decides the wait, not their sum.
 #[cfg(feature = "live")]
-async fn discover_candidates(email: &str, urls: Vec<String>) -> Option<Autoconfig> {
+const LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(feature = "live")]
+const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Where a candidate configuration comes from, in priority order.
+#[cfg(feature = "live")]
+enum Source {
+    /// A provider's autoconfig XML or the Thunderbird ISPDB.
+    Url(String),
+    /// RFC 6186 `_imaps` / `_submission(s)` SRV records.
+    Srv,
+    /// An MX host that names a known provider.
+    Mx,
+}
+
+#[cfg(feature = "live")]
+async fn discover_candidates(email: &str, urls: Vec<String>, dns: bool) -> Option<Autoconfig> {
+    use futures_util::StreamExt as _;
+
     let (_, domain) = email.split_once('@')?;
-    let client = tilo_net::http::client()
-        .timeout(std::time::Duration::from_secs(8))
-        .user_agent("Tilo Mail")
-        .build()
-        .ok()?;
-
-    // 1. Thunderbird ISPDB + provider `.well-known` autoconfig XML.
-    for url in urls {
-        let Ok(resp) = client.get(&url).send().await else {
-            continue;
-        };
-        if !resp.status().is_success() {
-            continue;
-        }
-        let Ok(body) = resp.text().await else {
-            continue;
-        };
-        if let Some(cfg) = parse_autoconfig(&body) {
-            return Some(cfg);
-        }
-    }
-
-    // 2. Curated consumer-domain table (covers Microsoft/Google/etc. across
-    //    every TLD, so @outlook.de resolves even when the ISPDB misses it, plus
-    //    the large free webmail hosts — GMX, web.de, Zoho, …).
+    // The curated table answers without a socket.
     if let Some(cfg) = builtin_autoconfig(domain) {
         return Some(cfg);
     }
-
-    // 3. MX-based provider guess for hosted domains (a company on Google
-    //    Workspace / Microsoft 365 keeps its own domain but points MX at the
-    //    provider). Resolved via DNS-over-HTTPS so no resolver dependency is
-    //    pulled in.
-    if let Some(p) = discover_via_mx(&client, domain).await {
-        return Some(p.autoconfig());
+    let client = tilo_net::http::client()
+        .timeout(LOOKUP_TIMEOUT)
+        .user_agent("Tilo Mail")
+        .build()
+        .ok()?;
+    // Every lookup starts at once; the answers are read in priority order, so
+    // the first that has a configuration wins without waiting for the rest.
+    // Dropping the stream (cancellation, a win) closes the other requests.
+    let sources = urls.into_iter().map(Source::Url).chain(
+        dns.then_some([Source::Srv, Source::Mx])
+            .into_iter()
+            .flatten(),
+    );
+    let mut lookups: futures_util::stream::FuturesOrdered<_> = sources
+        .map(|source| resolve(&client, domain, source))
+        .collect();
+    while let Some(found) = lookups.next().await {
+        if found.is_some() {
+            return found;
+        }
     }
-
     None
 }
 
-/// Resolve `domain`'s MX records via DNS-over-HTTPS and map them to a known
-/// provider. Tries Google and Cloudflare `DoH` endpoints. Network — `live` only.
 #[cfg(feature = "live")]
-async fn discover_via_mx(client: &reqwest::Client, domain: &str) -> Option<KnownProvider> {
+async fn resolve(client: &reqwest::Client, domain: &str, source: Source) -> Option<Autoconfig> {
+    match source {
+        Source::Url(url) => {
+            let resp = client.get(&url).send().await.ok()?;
+            if !resp.status().is_success() {
+                return None;
+            }
+            parse_autoconfig(&resp.text().await.ok()?)
+        }
+        Source::Srv => {
+            let (imaps, submissions, submission) = tokio::join!(
+                srv_records(client, "_imaps", domain),
+                srv_records(client, "_submissions", domain),
+                srv_records(client, "_submission", domain),
+            );
+            autoconfig_from_srv(&imaps, &submissions, &submission)
+        }
+        Source::Mx => discover_via_mx(client, domain)
+            .await
+            .map(KnownProvider::autoconfig),
+    }
+}
+
+/// Ask Google's and then Cloudflare's DNS-over-HTTPS resolver for `name`'s
+/// records of `record_type`; the first usable answer body.
+#[cfg(feature = "live")]
+async fn doh_query(client: &reqwest::Client, name: &str, record_type: &str) -> Option<String> {
     let endpoints = [
-        format!("https://dns.google/resolve?name={domain}&type=MX"),
-        format!("https://cloudflare-dns.com/dns-query?name={domain}&type=MX"),
+        format!("https://dns.google/resolve?name={name}&type={record_type}"),
+        format!("https://cloudflare-dns.com/dns-query?name={name}&type={record_type}"),
     ];
     for url in endpoints {
         let Ok(resp) = client
@@ -466,15 +566,27 @@ async fn discover_via_mx(client: &reqwest::Client, domain: &str) -> Option<Known
         if !resp.status().is_success() {
             continue;
         }
-        let Ok(body) = resp.text().await else {
-            continue;
-        };
-        let records = parse_doh_mx(&body);
-        if let Some(p) = provider_from_mx_records(records) {
-            return Some(p);
+        if let Ok(body) = resp.text().await {
+            return Some(body);
         }
     }
     None
+}
+
+#[cfg(feature = "live")]
+async fn srv_records(client: &reqwest::Client, service: &str, domain: &str) -> Vec<Srv> {
+    match doh_query(client, &format!("{service}._tcp.{domain}"), "SRV").await {
+        Some(body) => parse_doh_srv(&body),
+        None => Vec::new(),
+    }
+}
+
+/// Resolve `domain`'s MX records via DNS-over-HTTPS and map them to a known
+/// provider. Network — `live` only.
+#[cfg(feature = "live")]
+async fn discover_via_mx(client: &reqwest::Client, domain: &str) -> Option<KnownProvider> {
+    let body = doh_query(client, domain, "MX").await?;
+    provider_from_mx_records(parse_doh_mx(&body))
 }
 
 #[cfg(test)]
@@ -569,6 +681,7 @@ mod tests {
                         "fixture@custom.invalid",
                         &worker_cancellation,
                         vec![url],
+                        false,
                     ))
                     .unwrap();
             });
@@ -602,6 +715,39 @@ mod tests {
                 .expect("cancellation closes the request socket");
             worker.join().unwrap();
         }
+    }
+
+    #[test]
+    fn srv_records_make_an_account_when_both_servers_are_published() {
+        let json = r#"{"Answer":[
+            {"type":33,"data":"20 5 993 backup.example.com."},
+            {"type":33,"data":"10 1 993 imap.example.com."},
+            {"type":5,"data":"alias.example.com."}]}"#;
+        let imaps = parse_doh_srv(json);
+        assert_eq!(imaps.len(), 2, "only SRV (type 33) records are kept");
+        let submission =
+            parse_doh_srv(r#"{"Answer":[{"type":33,"data":"0 1 587 smtp.example.com."}]}"#);
+        let cfg = autoconfig_from_srv(&imaps, &[], &submission).expect("both published");
+        assert_eq!(
+            (
+                cfg.imap_host.as_str(),
+                cfg.imap_port,
+                cfg.smtp_host.as_str(),
+                cfg.smtp_port
+            ),
+            ("imap.example.com", 993, "smtp.example.com", 587),
+            "the lowest priority wins and the trailing dot is dropped"
+        );
+        assert!(
+            autoconfig_from_srv(&imaps, &[], &[]).is_none(),
+            "no outgoing server"
+        );
+        let off = parse_doh_srv(r#"{"Answer":[{"type":33,"data":"0 0 0 ."}]}"#);
+        assert!(
+            off.is_empty(),
+            "a `.` target means the service is unavailable"
+        );
+        assert!(parse_doh_srv("not json").is_empty());
     }
 
     const SAMPLE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
