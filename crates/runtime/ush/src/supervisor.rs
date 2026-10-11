@@ -713,13 +713,7 @@ pub fn serve(socket: &Path, store: &Store, host_root: &Path) -> anyhow::Result<(
         if let Some(parent) = socket.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::remove_file(socket);
-        let listener = UnixListener::bind(socket)?;
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
-        }
-        listener
+        tilo_files::native::private::bind_socket(socket)?
     };
     tracing::info!(socket = %socket.display(), "ush: serving guests");
 

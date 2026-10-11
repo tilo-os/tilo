@@ -8,7 +8,6 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -966,7 +965,7 @@ fn serve_client(mut stream: UnixStream) {
     serve_requests(&mut stream, |action| run_local(cli_for_rpc(action)));
 }
 
-fn serve(socket: &PathBuf) -> Result<Option<String>, String> {
+fn serve(socket: &Path) -> Result<Option<String>, String> {
     let listener = if let Some(listener) = systemd_listener(socket)? {
         listener
     } else {
@@ -981,21 +980,11 @@ fn serve(socket: &PathBuf) -> Result<Option<String>, String> {
     Ok(None)
 }
 
-fn bind_listener(socket: &PathBuf) -> Result<UnixListener, String> {
+fn bind_listener(socket: &Path) -> Result<UnixListener, String> {
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    if socket.exists() {
-        let metadata = std::fs::symlink_metadata(socket).map_err(|error| error.to_string())?;
-        if !metadata.file_type().is_socket() {
-            return Err("refusing to replace a non-socket model service path".into());
-        }
-        std::fs::remove_file(socket).map_err(|error| error.to_string())?;
-    }
-    let listener = UnixListener::bind(socket).map_err(|error| error.to_string())?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
-        .map_err(|error| error.to_string())?;
-    Ok(listener)
+    tilo_files::native::private::bind_socket(socket).map_err(|error| error.to_string())
 }
 
 #[allow(

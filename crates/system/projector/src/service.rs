@@ -7,12 +7,10 @@
 //! the session is stopped too, so nothing keeps streaming the desktop
 //! unsupervised.
 
-use std::fs;
 use std::io;
 use std::os::fd::FromRawFd;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread::JoinHandle;
@@ -312,24 +310,8 @@ pub(crate) fn listen(
             socket.display()
         )));
     }
-    match fs::remove_file(&socket) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(ProjectorError::io("cannot replace the control socket")(
-                error,
-            ));
-        }
-    }
-    let listener = UnixListener::bind(&socket)
-        .map_err(ProjectorError::io("cannot bind the control socket"))?;
-    secure_socket(&socket)?;
-    Ok(listener)
-}
-
-fn secure_socket(socket: &Path) -> Result<(), ProjectorError> {
-    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))
-        .map_err(ProjectorError::io("cannot secure the control socket"))
+    tilo_files::native::private::bind_socket(&socket)
+        .map_err(ProjectorError::io("cannot bind the control socket"))
 }
 
 /// The control socket systemd's `tilo-projector.socket` passed in, if this
@@ -382,6 +364,9 @@ fn systemd_listener() -> Result<Option<UnixListener>, ProjectorError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
     use std::time::Instant;
 
     use tilo_projector::{ProjectionMode, ProjectionProtocol};

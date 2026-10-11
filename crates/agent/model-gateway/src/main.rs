@@ -10,7 +10,6 @@ use std::fs;
 #[cfg(test)]
 use std::io::Read;
 use std::os::fd::FromRawFd;
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 #[cfg(test)]
 use std::os::unix::net::UnixStream;
@@ -127,7 +126,7 @@ fn control(request: Request) -> Result<(), String> {
     Ok(())
 }
 
-fn serve(socket: &PathBuf) -> Result<(), String> {
+fn serve(socket: &Path) -> Result<(), String> {
     // Activation is taken over before the runtime starts any thread.
     let listener = if let Some(listener) = systemd_listener(socket)? {
         listener
@@ -205,21 +204,11 @@ async fn serve_on(
     }
 }
 
-fn bind_listener(socket: &PathBuf) -> Result<UnixListener, String> {
+fn bind_listener(socket: &Path) -> Result<UnixListener, String> {
     if let Some(parent) = socket.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    if socket.exists() {
-        let metadata = fs::symlink_metadata(socket).map_err(|error| error.to_string())?;
-        if !metadata.file_type().is_socket() {
-            return Err("refusing to replace a non-socket gateway path".into());
-        }
-        fs::remove_file(socket).map_err(|error| error.to_string())?;
-    }
-    let listener = UnixListener::bind(socket).map_err(|error| error.to_string())?;
-    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))
-        .map_err(|error| error.to_string())?;
-    Ok(listener)
+    tilo_files::native::private::bind_socket(socket).map_err(|error| error.to_string())
 }
 
 #[allow(
