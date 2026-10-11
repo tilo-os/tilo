@@ -1045,7 +1045,8 @@ impl RetainedGpuTarget {
         let shown = self.strip_layers.as_ref().and_then(|layers| {
             layers.shown.as_ref().map(|shown| {
                 let current = self.retained_target_valid
-                    && self.last_successful_revision == Some(shown.revision);
+                    && shown.revision.is_some()
+                    && self.last_successful_revision == shown.revision;
                 (shown, current)
             })
         });
@@ -1087,6 +1088,236 @@ impl RetainedGpuTarget {
             framebuffer_copy_bytes: 0,
             framebuffer_staging_bytes: 0,
         })
+    }
+
+    /// Bring the layer textures up to `cache` without compositing it: the
+    /// desktop at rest drawn as layers
+    /// ([`crate::shell::frame::FrameBuilder::layers_at_rest`]), so that the
+    /// first frame of the next strip pan copies and composites instead of
+    /// rasterising every layer. Rasterises only the layers that differ from
+    /// what the textures hold, a whole one in bands
+    /// ([`super::strip_layers::warm_bands`]), and stops between two renders
+    /// as soon as `keep_going` says a frame waits, keeping what it finished.
+    /// The output target is left alone. Returns the pixels rasterised, or
+    /// `None` when the layers cannot present `cache`.
+    ///
+    /// # Errors
+    /// As [`Self::render_layers_until`]; a failure forgets the layers.
+    pub fn warm_layers(
+        &mut self,
+        cache: &crate::shell::frame::FrameCache,
+        deadline: Instant,
+        keep_going: &dyn Fn() -> bool,
+    ) -> Result<Option<u64>, BridgeError> {
+        if self.poisoned || !self.layers_eligible(cache) {
+            return Ok(None);
+        }
+        let policy = CompletionPolicy::Absolute(deadline);
+        crate::shell::gpu_frames::apply(
+            &mut self.renderer,
+            self.present_generation,
+            &mut self.client_frames,
+        );
+        self.reset_attempts();
+        self.check_live(policy)?;
+        if self
+            .strip_layers
+            .as_ref()
+            .is_none_or(|layers| layers.size != self.size)
+        {
+            self.strip_layers = Some(super::strip_layers::StripLayers::new(
+                &self.device,
+                self.size,
+            ));
+        }
+        let shown = self
+            .strip_layers
+            .as_ref()
+            .and_then(|layers| layers.shown.as_ref());
+        let work = super::strip_layers::plan(shown, cache, self.size, false);
+        if work.rasterises_nothing() {
+            return Ok(Some(0));
+        }
+        let mut shown = self
+            .strip_layers
+            .as_mut()
+            .and_then(|layers| layers.shown.take())
+            .unwrap_or_else(super::strip_layers::Shown::unknown);
+        // The output keeps the frame it shows, which these textures no
+        // longer composite to.
+        shown.revision = None;
+        let warmed = self.warm_into(&mut shown, cache, &work, policy, keep_going);
+        // The pan's first frame renders the scenes the warm just rendered:
+        // the scratch they left pooled is the scratch it needs, so it must
+        // not be trimmed as a full frame's would be. What no render takes
+        // again ages out of the pool (`Renderer::set_shrink_scratch`).
+        self.last_frame_full = false;
+        if let Some(layers) = self.strip_layers.as_mut() {
+            layers.shown = warmed.is_ok().then_some(shown);
+        }
+        match warmed {
+            Ok(pixels) => Ok(Some(pixels)),
+            Err(error) => {
+                if !matches!(error, BridgeError::RecoveryExhausted { .. }) {
+                    self.poisoned = true;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// [`Self::warm_layers`]' renders, noting in `shown` each layer as it
+    /// is done. Returns the pixels rasterised.
+    fn warm_into(
+        &mut self,
+        shown: &mut super::strip_layers::Shown,
+        cache: &crate::shell::frame::FrameCache,
+        work: &super::strip_layers::LayerWork,
+        policy: CompletionPolicy,
+        keep_going: &dyn Fn() -> bool,
+    ) -> Result<u64, BridgeError> {
+        use super::strip_layers::{Layer, WorkspaceWork};
+        let bands = super::strip_layers::warm_bands(self.size)
+            .filter(|_| self.renderer.sparse_fine_supported());
+        let whole = u64::from(self.size.0).saturating_mul(u64::from(self.size.1));
+        let mut pixels = 0_u64;
+        for (layer, wanted) in [
+            (Layer::Backdrop, work.backdrop),
+            (Layer::Chrome, work.chrome),
+        ] {
+            if !wanted {
+                continue;
+            }
+            if !keep_going() {
+                return Ok(pixels);
+            }
+            shown.forget(layer);
+            let (scene, base) = if layer == Layer::Backdrop {
+                (&cache.layers.backdrop, self.base_color)
+            } else {
+                (&cache.layers.chrome, Color::TRANSPARENT)
+            };
+            let done =
+                self.warm_whole(layer, (scene, base), bands.as_deref(), policy, keep_going)?;
+            if !done {
+                return Ok(pixels);
+            }
+            shown.record(layer, cache);
+            pixels = pixels.saturating_add(whole);
+        }
+        match (work.wheel, cache.layers.wheel.as_ref()) {
+            (Some(area), Some(wheel)) => {
+                if !keep_going() {
+                    return Ok(pixels);
+                }
+                shown.forget(Layer::Wheel);
+                if let Some(layers) = self.strip_layers.as_mut() {
+                    layers.size_wheel(&self.device, (wheel.width, wheel.height));
+                }
+                self.render_layer(Layer::Wheel, &wheel.scene, None, Color::TRANSPARENT, policy)?;
+                shown.record(Layer::Wheel, cache);
+                pixels = pixels.saturating_add(area);
+            }
+            // The wheel's texture holds what it shows, or no wheel shows.
+            _ => shown.record(Layer::Wheel, cache),
+        }
+        if work.workspace == WorkspaceWork::Unchanged || !keep_going() {
+            return Ok(pixels);
+        }
+        shown.forget(Layer::Workspace);
+        let strips =
+            self.warm_strips(cache, &work.workspace, bands.as_deref(), policy, keep_going)?;
+        if let Some(strips) = strips {
+            shown.record(Layer::Workspace, cache);
+            pixels = pixels.saturating_add(strips);
+        }
+        Ok(pixels)
+    }
+
+    /// [`Self::warm_layers`]' work on the strips texture: the pixels it
+    /// rasterised, or `None` when it stopped for a frame before the texture
+    /// held `cache`'s strips.
+    fn warm_strips(
+        &mut self,
+        cache: &crate::shell::frame::FrameCache,
+        work: &super::strip_layers::WorkspaceWork,
+        bands: Option<&[vello::FineDamageRect]>,
+        policy: CompletionPolicy,
+        keep_going: &dyn Fn() -> bool,
+    ) -> Result<Option<u64>, BridgeError> {
+        use super::strip_layers::{Layer, WorkspaceWork};
+        let mut scene = Scene::new();
+        super::strip_layers::append_panned(&mut scene, &cache.layers, &cache.strips);
+        match work {
+            WorkspaceWork::Unchanged => Ok(Some(0)),
+            WorkspaceWork::Whole => {
+                let whole = u64::from(self.size.0).saturating_mul(u64::from(self.size.1));
+                let done = self.warm_whole(
+                    Layer::Workspace,
+                    (&scene, Color::TRANSPARENT),
+                    bands,
+                    policy,
+                    keep_going,
+                )?;
+                Ok(done.then_some(whole))
+            }
+            WorkspaceWork::Pan { copies, uncovered } => {
+                if !copies.is_empty() {
+                    let mut encoder =
+                        self.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("tilo-strip-layer-warm-pan"),
+                            });
+                    if let Some(layers) = self.strip_layers.as_mut() {
+                        layers.encode_copies(&self.device, &mut encoder, copies);
+                    }
+                    self.queue.submit([encoder.finish()]);
+                }
+                if !uncovered.is_empty() {
+                    let regions = self
+                        .renderer
+                        .sparse_fine_supported()
+                        .then(|| uncovered.clone());
+                    self.render_layer(
+                        Layer::Workspace,
+                        &scene,
+                        regions,
+                        Color::TRANSPARENT,
+                        policy,
+                    )?;
+                }
+                Ok(Some(
+                    uncovered
+                        .iter()
+                        .map(|rect| u64::from(rect.width).saturating_mul(u64::from(rect.height)))
+                        .fold(0, u64::saturating_add),
+                ))
+            }
+        }
+    }
+
+    /// Rasterise `scene` over `base` into all of `layer`, band by band when
+    /// `bands` cuts it, asking `keep_going` between two bands. Whether the
+    /// whole layer got drawn.
+    fn warm_whole(
+        &mut self,
+        layer: super::strip_layers::Layer,
+        (scene, base): (&Scene, Color),
+        bands: Option<&[vello::FineDamageRect]>,
+        policy: CompletionPolicy,
+        keep_going: &dyn Fn() -> bool,
+    ) -> Result<bool, BridgeError> {
+        let Some(bands) = bands else {
+            self.render_layer(layer, scene, None, base, policy)?;
+            return Ok(true);
+        };
+        for (index, band) in bands.iter().enumerate() {
+            if index > 0 && !keep_going() {
+                return Ok(false);
+            }
+            self.render_layer(layer, scene, Some(vec![*band]), base, policy)?;
+        }
+        Ok(true)
     }
 
     /// The target's pixels, RGBA, row by row: what the final pass reads.
@@ -1168,8 +1399,25 @@ impl RetainedGpuTarget {
         {
             return false;
         }
+        if let Some(previous) = damage.previous_revision {
+            self.layers_kept(previous, damage.revision);
+        }
         self.last_successful_revision = Some(damage.revision);
         true
+    }
+
+    /// The target went from `previous` to `revision` without a pixel
+    /// changing: layers it was composited from as `previous` are still what
+    /// it shows, so the next pan composites only what moves.
+    pub(super) fn layers_kept(&mut self, previous: u64, revision: u64) {
+        if let Some(shown) = self
+            .strip_layers
+            .as_mut()
+            .and_then(|layers| layers.shown.as_mut())
+            && shown.revision == Some(previous)
+        {
+            shown.revision = Some(revision);
+        }
     }
 
     /// The work the latest [`Self::render_layers_until`] did, for counters.
@@ -4886,6 +5134,27 @@ impl VelloDrmBridge {
             crate::shell::heap_trim::request();
         }
         self.log_memory_changes();
+    }
+
+    /// Warm the layers the target composites a lone output's strip pans
+    /// from, at rest ([`RetainedGpuTarget::warm_layers`]): the pixels
+    /// rasterised, `None` when the target cannot present these layers.
+    ///
+    /// # Errors
+    /// As [`RetainedGpuTarget::warm_layers`], or a device error it left.
+    pub fn warm_layers(
+        &mut self,
+        cache: &crate::shell::frame::FrameCache,
+        deadline: Instant,
+        keep_going: &dyn Fn() -> bool,
+    ) -> Result<Option<u64>, BridgeError> {
+        if let Some(error) = self.take_device_error() {
+            return Err(error);
+        }
+        let warmed = self.target.warm_layers(cache, deadline, keep_going);
+        let warmed = warmed.and_then(|pixels| self.take_device_error().map_or(Ok(pixels), Err));
+        self.log_memory_changes();
+        warmed
     }
 
     /// Log one `RENDERER-MEMORY` line when the image atlas changes size or

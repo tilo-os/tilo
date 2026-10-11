@@ -89,30 +89,89 @@ pub fn compose(cache: &FrameCache) -> Scene {
 }
 
 /// What a set of layer textures shows: the layers of the frame last
-/// composited from them.
+/// composited from them, or warmed into them at rest
+/// ([`crate::shell::render::paint::RetainedGpuTarget::warm_layers`]). A
+/// layer is `None` while its texture holds nothing known: a warm stopped
+/// while drawing it.
 pub(crate) struct Shown {
-    backdrop: Scene,
+    backdrop: Option<Scene>,
+    chrome: Option<Scene>,
+    wheel: Option<Option<WheelSprite>>,
+    strips: Option<ShownStrips>,
+    /// The frame whose composite the output target was last given; `None`
+    /// when the output was not composited from what the textures hold.
+    pub(crate) revision: Option<u64>,
+}
+
+/// What the strips texture shows.
+struct ShownStrips {
     workspace: Scene,
-    strips_drawn: Vec<Scene>,
-    wheel: Option<WheelSprite>,
-    chrome: Scene,
+    drawn: Vec<Scene>,
     width: u32,
     strips: Vec<StripBlit>,
-    /// The frame whose composite the output target was last given.
-    pub(crate) revision: u64,
+}
+
+impl ShownStrips {
+    fn of(cache: &FrameCache) -> Self {
+        Self {
+            workspace: cache.layers.workspace.clone(),
+            drawn: cache.layers.strips.clone(),
+            width: cache.width,
+            strips: cache.strips.clone(),
+        }
+    }
 }
 
 impl Shown {
+    /// Textures holding every layer of `cache`, composited into the output
+    /// as `revision`.
     pub(crate) fn of(cache: &FrameCache, revision: u64) -> Self {
         Self {
-            backdrop: cache.layers.backdrop.clone(),
-            workspace: cache.layers.workspace.clone(),
-            strips_drawn: cache.layers.strips.clone(),
-            wheel: cache.layers.wheel.clone(),
-            chrome: cache.layers.chrome.clone(),
-            width: cache.width,
-            strips: cache.strips.clone(),
-            revision,
+            backdrop: Some(cache.layers.backdrop.clone()),
+            chrome: Some(cache.layers.chrome.clone()),
+            wheel: Some(cache.layers.wheel.clone()),
+            strips: Some(ShownStrips::of(cache)),
+            revision: Some(revision),
+        }
+    }
+
+    /// Textures holding nothing known.
+    pub(crate) fn unknown() -> Self {
+        Self {
+            backdrop: None,
+            chrome: None,
+            wheel: None,
+            strips: None,
+            revision: None,
+        }
+    }
+
+    /// Every texture holds a known layer.
+    fn complete(&self) -> bool {
+        self.backdrop.is_some()
+            && self.chrome.is_some()
+            && self.wheel.is_some()
+            && self.strips.is_some()
+    }
+
+    /// `layer`'s texture is about to be drawn: until it is done it holds
+    /// nothing known.
+    pub(crate) fn forget(&mut self, layer: Layer) {
+        match layer {
+            Layer::Backdrop => self.backdrop = None,
+            Layer::Workspace => self.strips = None,
+            Layer::Wheel => self.wheel = None,
+            Layer::Chrome => self.chrome = None,
+        }
+    }
+
+    /// `layer`'s texture now holds `cache`'s.
+    pub(crate) fn record(&mut self, layer: Layer, cache: &FrameCache) {
+        match layer {
+            Layer::Backdrop => self.backdrop = Some(cache.layers.backdrop.clone()),
+            Layer::Workspace => self.strips = Some(ShownStrips::of(cache)),
+            Layer::Wheel => self.wheel = Some(cache.layers.wheel.clone()),
+            Layer::Chrome => self.chrome = Some(cache.layers.chrome.clone()),
         }
     }
 }
@@ -192,6 +251,14 @@ impl LayerWork {
     pub(crate) fn composite_pixels(&self) -> u64 {
         self.composite.map_or(0, area)
     }
+
+    /// The layer textures already hold the frame: nothing to rasterise.
+    pub(crate) fn rasterises_nothing(&self) -> bool {
+        !self.backdrop
+            && !self.chrome
+            && self.wheel.is_none()
+            && self.workspace == WorkspaceWork::Unchanged
+    }
 }
 
 fn full_rect(size: (u32, u32)) -> FineDamageRect {
@@ -205,6 +272,43 @@ fn full_rect(size: (u32, u32)) -> FineDamageRect {
 
 fn area(rect: FineDamageRect) -> u64 {
     u64::from(rect.width).saturating_mul(u64::from(rect.height))
+}
+
+/// Most pixels a warm at rest rasterises in one render: a frame that comes
+/// while the layers warm waits for one band, not for a whole layer.
+const WARM_BAND_PIXELS: u64 = 4 << 20;
+
+/// Rows of a warm band are a multiple of vello's tile height, so no tile is
+/// drawn by two bands.
+const WARM_BAND_ROWS: u32 = 16;
+
+/// The bands a warm rasterises a whole layer of an output of `size` in, top
+/// to bottom; `None` when one render takes the whole layer.
+pub(crate) fn warm_bands(size: (u32, u32)) -> Option<Vec<FineDamageRect>> {
+    let count = area(full_rect(size)).div_ceil(WARM_BAND_PIXELS);
+    if count <= 1 {
+        return None;
+    }
+    let count = u32::try_from(count).ok()?;
+    let rows = size
+        .1
+        .div_ceil(count)
+        .div_ceil(WARM_BAND_ROWS)
+        .saturating_mul(WARM_BAND_ROWS)
+        .max(WARM_BAND_ROWS);
+    let mut bands = Vec::new();
+    let mut y = 0_u32;
+    while y < size.1 {
+        let height = rows.min(size.1.saturating_sub(y));
+        bands.push(FineDamageRect {
+            x: 0,
+            y,
+            width: size.0,
+            height,
+        });
+        y = y.saturating_add(height);
+    }
+    Some(bands)
 }
 
 fn wheel_area(wheel: &WheelSprite) -> u64 {
@@ -268,10 +372,23 @@ pub(crate) fn plan(
     let Some(shown) = shown else {
         return LayerWork::whole(cache, size);
     };
-    let backdrop = !shown.backdrop.encoding_eq(&cache.layers.backdrop);
-    let chrome = !shown.chrome.encoding_eq(&cache.layers.chrome);
-    let workspace = workspace_work(shown, cache, size);
-    let (wheel, wheel_rects) = wheel_work(shown.wheel.as_ref(), cache.layers.wheel.as_ref(), size);
+    let differs =
+        |layer: Option<&Scene>, scene: &Scene| layer.is_none_or(|layer| !layer.encoding_eq(scene));
+    let backdrop = differs(shown.backdrop.as_ref(), &cache.layers.backdrop);
+    let chrome = differs(shown.chrome.as_ref(), &cache.layers.chrome);
+    let workspace = shown
+        .strips
+        .as_ref()
+        .map_or(WorkspaceWork::Whole, |strips| {
+            workspace_work(strips, cache, size)
+        });
+    let (wheel, wheel_rects) = match shown.wheel.as_ref() {
+        Some(old) => wheel_work(old.as_ref(), cache.layers.wheel.as_ref(), size),
+        None => (cache.layers.wheel.as_ref().map(wheel_area), Vec::new()),
+    };
+    // A texture that holds nothing known was never composited into the
+    // output.
+    let output_current = output_current && shown.complete();
     let mut composite = None;
     if backdrop || chrome || workspace == WorkspaceWork::Whole || !output_current {
         composite = Some(full_rect(size));
@@ -341,9 +458,9 @@ struct Piece {
     changed: bool,
 }
 
-fn workspace_work(shown: &Shown, cache: &FrameCache, size: (u32, u32)) -> WorkspaceWork {
+fn workspace_work(shown: &ShownStrips, cache: &FrameCache, size: (u32, u32)) -> WorkspaceWork {
     let same_strips = shown.strips.len() == cache.strips.len()
-        && shown.strips_drawn.len() == cache.layers.strips.len()
+        && shown.drawn.len() == cache.layers.strips.len()
         && cache.strips.len() == cache.layers.strips.len()
         && shown.strips.iter().zip(&cache.strips).all(|(old, new)| {
             (old.dest_x, old.dest_y, old.dest_w, old.dest_h)
@@ -359,7 +476,7 @@ fn workspace_work(shown: &Shown, cache: &FrameCache, size: (u32, u32)) -> Worksp
         .strips
         .iter()
         .zip(&cache.strips)
-        .zip(shown.strips_drawn.iter().zip(&cache.layers.strips))
+        .zip(shown.drawn.iter().zip(&cache.layers.strips))
         .map(|((old, new), (old_drawn, new_drawn))| Piece {
             band: band(new, size),
             delta: i64::from(new.scroll_x).saturating_sub(i64::from(old.scroll_x)),
@@ -1204,6 +1321,67 @@ mod tests {
         assert!(work.chrome && !work.backdrop);
         assert_eq!(work.composite, Some(full_rect(SIZE)));
         assert!(matches!(work.workspace, WorkspaceWork::Pan { .. }));
+    }
+
+    /// A warm that stopped while drawing a layer leaves that texture holding
+    /// nothing known: the next frame rasterises it and composites the whole
+    /// output, and what the warm finished stays as it is.
+    #[test]
+    fn a_layer_a_warm_left_unknown_is_rasterised_and_the_output_composited_whole() {
+        let frame = cache(Color::BLACK, vec![strip(40)]);
+        let mut shown = Shown::of(&frame, 3);
+        shown.forget(Layer::Chrome);
+        let work = plan(Some(&shown), &frame, SIZE, true);
+        assert!(work.chrome && !work.backdrop);
+        assert_eq!(work.workspace, WorkspaceWork::Unchanged);
+        assert_eq!(work.composite, Some(full_rect(SIZE)));
+        shown.record(Layer::Chrome, &frame);
+        let warm = plan(Some(&shown), &frame, SIZE, true);
+        assert!(warm.rasterises_nothing());
+        assert_eq!(warm.composite, None);
+
+        let mut nothing = Shown::unknown();
+        let work = plan(Some(&nothing), &frame, SIZE, true);
+        assert_eq!(work, LayerWork::whole(&frame, SIZE));
+        for layer in [
+            Layer::Backdrop,
+            Layer::Chrome,
+            Layer::Wheel,
+            Layer::Workspace,
+        ] {
+            nothing.record(layer, &frame);
+        }
+        let warmed = plan(Some(&nothing), &frame, SIZE, false);
+        assert!(warmed.rasterises_nothing());
+        assert_eq!(
+            warmed.composite,
+            Some(full_rect(SIZE)),
+            "layers warmed at rest were never composited into the output"
+        );
+    }
+
+    /// A whole layer is warmed in bands of at most about four million
+    /// pixels, a whole number of tile rows each, that cover the output once.
+    #[test]
+    fn warm_bands_cover_the_output_once_in_tile_rows() {
+        assert_eq!(warm_bands((1920, 1080)), None);
+        for size in [(3840, 2160), (5120, 2880), (7680, 4320)] {
+            let bands = warm_bands(size).expect("a large output is warmed in bands");
+            let mut y = 0_u32;
+            for band in &bands {
+                let end = band.y.saturating_add(band.height);
+                assert_eq!((band.x, band.y, band.width), (0, y, size.0));
+                assert!(band.height.is_multiple_of(WARM_BAND_ROWS) || end == size.1);
+                assert!(
+                    area(*band)
+                        <= WARM_BAND_PIXELS.saturating_add(
+                            u64::from(size.0).saturating_mul(u64::from(WARM_BAND_ROWS))
+                        )
+                );
+                y = end;
+            }
+            assert_eq!(y, size.1, "{size:?}: the bands cover the output");
+        }
     }
 
     #[test]
