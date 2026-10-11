@@ -292,3 +292,52 @@ fn mark_adopted(doc: &mut AutoCommit, record: &str) -> Result<(), String> {
     doc.put(&map, record, ScalarValue::Boolean(true))
         .map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn notebook(record: usize, pages: usize) -> AdoptedNotebook {
+        AdoptedNotebook {
+            record: format!("derived:default@tab:{record}"),
+            pages: (0..pages)
+                .map(|page| AdoptedPage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    title: format!("Page {record}-{page}"),
+                    parent: String::new(),
+                    order: String::new(),
+                    blocks: (0..20)
+                        .map(|block| PageBlock {
+                            kind: "paragraph".into(),
+                            text: format!("block {block} of page {page}"),
+                            marks: Vec::new(),
+                            nesting: 0,
+                            code_group: None,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            tags: Vec::new(),
+            assignments: Vec::new(),
+            assets: Vec::new(),
+        }
+    }
+
+    /// The startup merge of every earlier window notebook is one batched
+    /// document change however many pages it carries, so the room's first
+    /// publication is one mutation and not a burst of per-page ones.
+    #[test]
+    fn merging_dozens_of_pages_at_startup_is_one_document_change() {
+        let notebooks = (0..3)
+            .map(|record| notebook(record, 15))
+            .collect::<Vec<_>>();
+        let mut doc = AutoCommit::new();
+        adopt(&mut doc, &notebooks).unwrap();
+        assert_eq!(NotesDoc::list_pages(&doc).len(), 45);
+        assert_eq!(
+            doc.get_changes(&[]).len(),
+            1,
+            "the whole merge must be one change"
+        );
+    }
+}

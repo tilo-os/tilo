@@ -1945,7 +1945,11 @@ impl RecordSet {
             let read = bridge
                 .record(&self.package_id, &self.home, want)
                 .map_err(RecordOpenError::Initialization)?;
-            let store = app_state::DocStore::exclusive(backend, key)?;
+            let store = if want.id.is_package_primary() {
+                app_state::DocStore::shared(backend, key)?
+            } else {
+                app_state::DocStore::exclusive(backend, key)?
+            };
             let creation = read.clone();
             let creation_heads = creation_capture_heads(&read)?;
             let (mut doc, autosave) = crate::persist::finish_canonical_created(
@@ -1977,7 +1981,16 @@ impl RecordSet {
             );
             return Ok(RecordOpenOutcome::Loaded);
         }
-        let owner = app_state::DocOwner::acquire(Rc::clone(&backend), key)?;
+        // The room's own document is the one every window of a room-record
+        // app opens, each in its own process, and a relaunch overlaps the
+        // instance still exiting: it joins the document's shared writers
+        // (appends interleave and every load merges them) instead of
+        // refusing the second opener. Other records have one owner.
+        let owner = if want.id.is_package_primary() {
+            app_state::DocOwner::acquire_shared(Rc::clone(&backend), key)?
+        } else {
+            app_state::DocOwner::acquire(Rc::clone(&backend), key)?
+        };
         let loaded = if recover_partial {
             owner.load()?
         } else {
@@ -2985,7 +2998,13 @@ impl RecordStore {
         if set.pending.contains_key(&want.id) || set.open.contains_key(&want.id) {
             return Err(RecordOpenError::Busy);
         }
-        let owner = app_state::DocOwner::acquire(backend, key)?;
+        // The reservation becomes the live writer, so the room's own document
+        // is joined as a shared writer here too; see `try_open_record`.
+        let owner = if want.id.is_package_primary() {
+            app_state::DocOwner::acquire_shared(backend, key)?
+        } else {
+            app_state::DocOwner::acquire(backend, key)?
+        };
         if owner.load()?.is_some() {
             return Err(RecordOpenError::Busy);
         }
@@ -4844,6 +4863,63 @@ mod tests {
             Some("primary-room")
         ));
         assert!(!admission.matches(&foreign, &primary));
+    }
+
+    /// Every window of a room-record app is its own process on the room's
+    /// one notebook, and a relaunch overlaps the instance still exiting: the
+    /// room's own document opens for all of them at once, and again after
+    /// the first closes, instead of failing on the writer's gate.
+    #[test]
+    fn the_room_primary_opens_in_a_second_window_and_across_a_quick_relaunch() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("state");
+        let primary = RecordCheckout::package_primary(RecordKind::new("primary"));
+
+        let mut first_owners = RecordOwners::new(root.clone());
+        let first = first_owners
+            .open("so.tilo.shared-test", "shared-room")
+            .unwrap();
+        first
+            .reserve_record(&primary)
+            .unwrap()
+            .initialize(|_| Ok(()))
+            .unwrap();
+        first.try_open_record(&primary).unwrap();
+
+        // A second window: its own process, so its own owners and store.
+        let mut second_owners = RecordOwners::new(root.clone());
+        let second = second_owners
+            .open("so.tilo.shared-test", "shared-room")
+            .unwrap();
+        // The first window's creation is on disk after its debounce window;
+        // until then there is nothing to open, which is not a lock failure.
+        tilo_test_env::wait_until(
+            "the second window opens the shared notebook",
+            || match second.try_open_record(&primary) {
+                Ok(_) => true,
+                Err(RecordOpenError::MissingRecord) => false,
+                Err(other) => panic!("a second window must share the notebook: {other}"),
+            },
+        );
+
+        // Close both and reopen at once, with the previous holders still
+        // being torn down.
+        let mut relaunch_owners = RecordOwners::new(root.clone());
+        let relaunched = relaunch_owners
+            .open("so.tilo.shared-test", "shared-room")
+            .unwrap();
+        drop(first);
+        relaunched
+            .try_open_record(&primary)
+            .expect("a relaunch overlapping the exiting window opens");
+        drop(second);
+        drop(relaunched);
+        let mut again = RecordOwners::new(root);
+        again
+            .open("so.tilo.shared-test", "shared-room")
+            .unwrap()
+            .try_open_record(&primary)
+            .expect("a reopen after everything closed opens");
     }
 
     #[test]
