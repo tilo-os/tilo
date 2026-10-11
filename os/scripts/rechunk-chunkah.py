@@ -11,7 +11,7 @@ its layer shares.
 
 So each tree in TREES is chunked by a run of its own, over the same root with
 everything outside the tree pruned, into at most TREE_LAYERS layers, and the
-main run prunes the tree's contents. A tree is a list of glob patterns
+main run prunes the tree, its top directories included. A tree is a list of glob patterns
 (absolute image paths); a tree whose path lies inside another tree's is
 pruned from that one. Each set of files in FILE_SETS gets one layer the same
 way, and every other run prunes those files.
@@ -117,25 +117,13 @@ def matches(rootfs: Path, patterns: list[str]) -> list[str]:
 def roots(rootfs: Path, patterns: list[str]) -> list[str]:
     """The paths of `rootfs` that a tree's `patterns` name, as absolute image paths.
 
-    Directories (not links to one) are trees; files and links are single
-    entries. A path below a directory of the same tree is that directory's.
+    A path below another path of the same tree is that path's.
     """
     found = set()
     for pattern in patterns:
         for match in glob.glob(str(rootfs / pattern.lstrip("/"))):
             found.add("/" + Path(match).relative_to(rootfs).as_posix())
     return sorted(path for path in found if not within(path, found))
-
-
-def is_tree(rootfs: Path, path: str) -> bool:
-    """Whether the image path `path` is a directory in `rootfs`, not a link to one."""
-    full = rootfs / path.lstrip("/")
-    return full.is_dir() and not full.is_symlink()
-
-
-def pruned(rootfs: Path, path: str) -> str:
-    """How a run leaves `path` to another: a directory keeps itself, so a trailing slash; anything else goes."""
-    return path + "/" if is_tree(rootfs, path) else path
 
 
 def within(path: str, trees: Iterable[str]) -> bool:
@@ -178,8 +166,11 @@ def main(argv: list[str]) -> int:
     file_sets = {name: files for name, patterns in FILE_SETS.items() if (files := matches(rootfs, patterns))}
     set_files = [path for files in file_sets.values() for path in files]
     # /sysroot/: the base's ostree repository, which bootc's composefs backend
-    # never deploys. A trailing slash keeps the directory itself.
-    main_prune = ["/sysroot/", *(pruned(rootfs, path) for path in every_root if not within(path, every_root)),
+    # never deploys. A trailing slash keeps the directory itself. A tree's
+    # paths go whole, directory included: its own run writes them, and a
+    # directory named by a digest (the native runtime's) in another run would
+    # renew that run's layer at every rename.
+    main_prune = ["/sysroot/", *(path for path in every_root if not within(path, every_root)),
                   *(path for path in set_files if not within(path, every_root))]
     out.mkdir(parents=True, exist_ok=True)
     chunkah(rootfs, out / "main", max_layers, main_prune)
@@ -189,7 +180,7 @@ def main(argv: list[str]) -> int:
     for name, paths in trees.items():
         # Another tree inside this one is that tree's; a file set's files are the set's.
         nested = [path for path in every_root if path not in paths and within(path, paths)]
-        prune = (outside(rootfs, paths) + [pruned(rootfs, path) for path in nested]
+        prune = (outside(rootfs, paths) + nested
                  + [file for file in set_files if within(file, paths) and not within(file, nested)])
         chunkah(rootfs, out / "trees" / name, TREE_LAYERS[name], prune)
     for name, files in file_sets.items():

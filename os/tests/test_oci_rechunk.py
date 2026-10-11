@@ -370,12 +370,12 @@ class Rechunk(unittest.TestCase):
         main, tree, tilo, signatures = calls.read_text().splitlines()
         self.assertIn("--max-layers 128", main)
         # /usr/lib/tilo is the tilo tree's, Proton inside it the windows-runners tree's.
-        self.assertIn("--prune /sysroot/ --prune /usr/lib/tilo/"
+        self.assertIn("--prune /sysroot/ --prune /usr/lib/tilo"
                       " --prune /etc/tilo/runtime-bundle-trusted-publishers.txt", main)
         self.assertIn("--max-layers 16", tree)
         self.assertIn("--prune /etc", tree)
         self.assertIn("--max-layers 56", tilo)
-        self.assertIn("--prune /usr/lib/tilo/windows-runners/", tilo)
+        self.assertIn("--prune /usr/lib/tilo/windows-runners ", tilo + " ")
         self.assertIn("--max-layers 1 ", signatures)
         self.assertIn("--prune /usr", signatures)
         self.assertNotIn("--prune /etc/tilo", signatures)
@@ -413,7 +413,7 @@ class Rechunk(unittest.TestCase):
                         "128"], check=True, env=environment)
         main, store_run, index = calls.read_text().splitlines()
         # The main run leaves the whole store to the tree's run and the set's.
-        self.assertIn("--prune /usr/share/tilo-apps/ ", main + " ")
+        self.assertIn("--prune /usr/share/tilo-apps ", main + " ")
         self.assertNotIn("registry.toml", main)
         self.assertIn("--max-layers 32", store_run)
         self.assertIn("--prune /usr/bin", store_run)
@@ -476,9 +476,13 @@ class Rechunk(unittest.TestCase):
         main, windows, runtime, browser, tilo, signatures = map(run, lines)
         # The main run keeps the RPMs' files and leaves every tree to its own run.
         self.assertEqual(main, (96, {
-            "/sysroot/", f"/{native}/", "/usr/share/fonts/tilo/", "/usr/lib/tilo-runtime/2026.10.9-chromium/",
-            "/boot/EFI/Linux/", "/usr/bin/shell", "/usr/bin/tilo", "/usr/bin/tilo-control", "/usr/bin/tilo-greeter",
-            "/usr/libexec/tilo/", "/usr/libexec/tilo-ush", "/usr/lib/tilo/", "/usr/share/tilo/"}))
+            "/sysroot/", f"/{native}", "/usr/share/fonts/tilo", "/usr/lib/tilo-runtime/2026.10.9-chromium",
+            "/boot/EFI/Linux", "/usr/bin/shell", "/usr/bin/tilo", "/usr/bin/tilo-control", "/usr/bin/tilo-greeter",
+            "/usr/libexec/tilo", "/usr/libexec/tilo-ush", "/usr/lib/tilo", "/usr/share/tilo"}))
+        # Whole, directory included: the runtime's directory is named by a
+        # digest, and its entry in the main run renewed one of its layers at
+        # every rename.
+        self.assertNotIn(f"/{native}/", main[1])
         # Proton, inside the tilo tree's /usr/lib/tilo, is its own.
         self.assertEqual(windows[0], 16)
         self.assertIn("/usr/lib/tilo/helper", windows[1])
@@ -498,8 +502,8 @@ class Rechunk(unittest.TestCase):
         # Tilo's programs: more layers than components, so nothing is packed;
         # the trees inside it and the per-build keys are not its own.
         self.assertEqual(tilo[0], 56)
-        self.assertTrue({"/usr/bin/bash", "/usr/bin/fsck", "/usr/libexec/sssd", "/usr/lib/tilo/windows-runners/",
-                         "/usr/share/tilo/font-catalogs/", "/usr/share/tilo/app-publisher.hex",
+        self.assertTrue({"/usr/bin/bash", "/usr/bin/fsck", "/usr/libexec/sssd", "/usr/lib/tilo/windows-runners",
+                         "/usr/share/tilo/font-catalogs", "/usr/share/tilo/app-publisher.hex",
                          "/usr/lib/tilo-runtime", "/usr/share/fonts", "/etc", "/sysroot"} <= tilo[1])
         self.assertFalse({"/usr/bin/shell", "/usr/bin/tilo-greeter", "/usr/bin/tilo-control", "/usr/libexec/tilo",
                           "/usr/libexec/tilo-ush", "/usr/lib/tilo", "/usr/lib/tilo/helper", "/usr/share/tilo",
