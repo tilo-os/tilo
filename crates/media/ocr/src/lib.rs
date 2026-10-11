@@ -404,16 +404,7 @@ fn recognize_path_with_program_args_timeout(
         _ => Error::Engine("OCR engine process failed".into()),
     })?;
     if !output.status.success() {
-        return Err(Error::Engine(
-            String::from_utf8_lossy(&output.stderr)
-                .trim()
-                .chars()
-                .filter(|character| {
-                    !character.is_control() || matches!(character, ' ' | '\n' | '\t')
-                })
-                .take(500)
-                .collect(),
-        ));
+        return Err(Error::Engine(output.stderr_diagnostic()));
     }
     parse_tsv(&String::from_utf8_lossy(&output.stdout), language)
 }
