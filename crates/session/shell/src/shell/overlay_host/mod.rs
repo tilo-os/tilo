@@ -7860,8 +7860,8 @@ impl ShellOverlayHost {
     /// Invoke the typed action a launchpad card names in its app, as the
     /// person this device acts for in the active workspace. The action host
     /// delivers it to the running app or launches the app into the workspace
-    /// first, so the card itself does what it names (starts the call, say)
-    /// rather than leaving the person to find it in the app. A session without
+    /// first, so the card opens Calendar on its tasks or starts the call
+    /// itself rather than leaving the person to find it. A session without
     /// an action host still opens the app.
     fn invoke_launchpad_app_action(
         &mut self,
