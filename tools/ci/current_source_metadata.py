@@ -95,7 +95,7 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result) + "\n")
     print(json.dumps({"mode": args.mode, "source_sha": git(root, "rev-parse", "HEAD").decode().strip(),
-                      "workspace_packages": len(result.get("metadata", result)["packages"])}))
+                      "workspace_packages": len((result["metadata"] if args.mode == "seal" else result)["packages"])}))
 
 
 if __name__ == "__main__":
