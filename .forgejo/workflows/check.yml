@@ -829,6 +829,9 @@ jobs:
     container:
       image: ${{ needs.builder.outputs.image }}
     env:
+      # As Release / apps: sccache must not download an unused +stable
+      # toolchain while identifying the image's pinned rustup proxy.
+      RUSTUP_AUTO_INSTALL: "0"
       CARGO_PROFILE_RELEASE_LTO: thin
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
       # Release / apps' compiler-cache namespace (its TILO_SCCACHE_KEY_PREFIX,
