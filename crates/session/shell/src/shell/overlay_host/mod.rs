@@ -20235,6 +20235,9 @@ impl Widget for ShellOverlayHost {
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        if self.layers.emoji_picker.is_open() {
+            return self.layers.emoji_picker.primary_vertical_scroll();
+        }
         let st = self.chrome.as_ref()?.borrow();
         if st.overlays.ws_settings {
             return self
@@ -20270,7 +20273,11 @@ impl Widget for ShellOverlayHost {
                 .ws_settings
                 .then_some(chrome.ws_settings_tab)
         });
-        let result = if let Some(tab) = tab {
+        let result = if self.layers.emoji_picker.is_open() {
+            self.layers
+                .emoji_picker
+                .apply_primary_vertical_scroll(action)
+        } else if let Some(tab) = tab {
             self.profile_control_focus = None;
             self.workspace_settings_overlay
                 .apply_profile_primary_scroll(tab, action)
