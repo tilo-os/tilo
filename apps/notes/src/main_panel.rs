@@ -1178,8 +1178,18 @@ impl MainPanel {
     /// against the body's viewport, and what holds the input instead.
     #[doc(hidden)]
     pub fn scroll_state_for_test(&self) -> String {
+        let blocks = self.editor.editor().blocks();
         format!(
-            "scroll_y={} max={} pointer={:?} viewport={:?} popup={} title_editing={} rect={:?}",
+            "blocks={} measured={} content_bottom={} editor={:?} content_h={} \
+             scroll_y={} max={} pointer={:?} viewport={:?} popup={} title_editing={} rect={:?}",
+            blocks.len(),
+            blocks
+                .iter()
+                .filter(|block| block.line.get_rect().height() > 0.0)
+                .count(),
+            self.editor.editor().content_bottom(),
+            self.editor.get_rect(),
+            self.scroll_content_height,
             self.scroll_y,
             self.scroll_metrics().max_scroll(),
             self.last_pointer,
