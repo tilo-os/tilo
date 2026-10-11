@@ -213,6 +213,9 @@ pub(crate) struct SectionDoor {
     kept: Kept,
     /// Increases whenever what the record holds may have changed.
     revision: Cell<u64>,
+    /// The last publication, at the door's and the locale's revision it was
+    /// built at: published again only when either moved.
+    published: RefCell<Option<((u64, u64), tilo_actions::Resource)>>,
 }
 
 impl SectionDoor {
@@ -233,6 +236,7 @@ impl SectionDoor {
             },
             kind,
             revision: Cell::new(0),
+            published: RefCell::new(None),
         })
     }
 
@@ -267,6 +271,7 @@ impl SectionDoor {
             },
             kind,
             revision: Cell::new(0),
+            published: RefCell::new(None),
         })
     }
 
@@ -518,6 +523,12 @@ impl RecordDoor for SectionDoor {
 
     fn publish(&self) -> tilo_actions::Resource {
         self.follow();
+        let revision = (self.revision.get(), ui_core::i18n::I18nManager::revision());
+        if let Some((at, published)) = self.published.borrow().as_ref()
+            && *at == revision
+        {
+            return published.clone();
+        }
         let published = self
             .read(|doc| self.kind.publish(doc, &self.id))
             .unwrap_or_else(|| Err("the section's record is unavailable".into()))
@@ -525,7 +536,9 @@ impl RecordDoor for SectionDoor {
                 tracing::warn!(kind = self.kind.kind, %error, "settings section unreadable");
                 tilo_actions::Resource::new(self.id.as_str(), self.kind.kind, self.kind.label)
             });
-        super::record::route(published, &self.id, self.editable)
+        let published = super::record::route(published, &self.id, self.editable);
+        *self.published.borrow_mut() = Some((revision, published.clone()));
+        published
     }
 
     fn apply_encoded(&self, action: &EncodedAction, invoker: &ActionInvoker) -> Result<(), String> {
