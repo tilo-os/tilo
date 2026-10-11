@@ -822,6 +822,12 @@ pub fn rename_tab_for_title(tree: &mut WorkspaceTree, surface_id: u64, title: &s
                         TileContent::Foreign { surface_id: id, .. } if *id == surface_id
                     )
                 }) {
+                    // Terminals re-send their title continuously; an identical
+                    // one is not a change, and must not bump the tree revision
+                    // (a chrome rebuild and repaint per event).
+                    if tab.title == title {
+                        return true;
+                    }
                     title.clone_into(&mut tab.title);
                     true
                 } else {
@@ -2682,6 +2688,15 @@ mod tests {
                 assert!(rename_tab_for_title(&mut tree, 99, ""));
                 assert!(tab_of(&tree, 99).title.is_empty());
                 assert!(!rename_tab_for_title(&mut tree, 12345, "gone"));
+
+                // A title re-sent unchanged finds its tab but is no change:
+                // the tree revision (a chrome rebuild) stays where it was.
+                assert!(rename_tab_for_title(&mut tree, 99, "same"));
+                let revision = tree.desktop.external_revision;
+                assert!(rename_tab_for_title(&mut tree, 99, "same"));
+                assert_eq!(tree.desktop.external_revision, revision);
+                assert!(rename_tab_for_title(&mut tree, 99, "other"));
+                assert_ne!(tree.desktop.external_revision, revision);
             }
         }
 
