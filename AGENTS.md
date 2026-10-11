@@ -90,6 +90,7 @@ cargo test --locked -p shell --test it interaction_test::   # headless Wayland s
 Shell integration files are modules of the single `it` target, not individual
 Cargo targets. Use `--test it MODULE::` to select a module, or its full
 `MODULE::TEST` path with `-- --exact` for one case. For remote native execution,
+and CI's exact Clippy gate on crates your host cannot build (operation `clippy`),
 see [focused native tests](DEVELOPMENT.md#fast-checks-before-assembly).
 
 Run `cargo check -p shell --tests` before finishing. A `--lib` run never compiles integration

@@ -125,7 +125,7 @@ impl NativeMorningSources {
                 };
                 let reply = session.query(CatalogueQuery {
                     provider: Some(provider.provider.clone()),
-                    needle: source.resource.clone(),
+                    parent_resource: Some(source.resource.clone()),
                     max_results: 32,
                     limits: Some(tilo_actions::remote::CatalogueLimits {
                         max_bytes: Some(32_768),

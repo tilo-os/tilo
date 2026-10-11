@@ -63,10 +63,10 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # (Release / apps 94959 against 94951); x86_64 205836952 -> 170549744 bytes,
 # 6897664 -> 5955584 (same runs). Linking the runtime with section garbage
 # collection and without the proc-macro crates' exports then took aarch64 to
-# 152438520 bytes and 5697536 bytes dirtied per process (Release / apps
-# 97422).
+# 152438520 bytes and 5697536 bytes dirtied per process, and x86_64 to
+# 167700968 bytes (Release / apps 97422).
 [runtime.x86_64]
-bytes = 172294144
+bytes = 169410560
 relocation_bytes = 327680
 relocated_bytes = 6029312
 symbol_relocations = 9344

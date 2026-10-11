@@ -674,6 +674,23 @@ expand `-F` files and parses `-f` values as CSV, which breaks JSON arrays.
 Do not reserve runners or ask another agent to allocate a slot. Each case's
 result and the exact source/workflow/builder identities appear in the run summary.
 
+Use operation `clippy` to meet CI's lint gate before pushing, including for
+crates that do not build on macOS (`shell`, `tilo-relay`, `launcher`). It runs
+the source's own `tools/ci/clippy-check.sh -p <pkg>…` (all targets,
+`-D warnings`, the workspace lint table), on the runner label, builder image,
+environment and checkout path of CI's `clippy` job, so the two share compiler
+cache entries and a warm package takes minutes. Name one `package`, or up to 64
+in `packages`; leave the test fields empty. A failure prints the rendered
+Clippy diagnostics; the run summary lists the compiler-cache statistics.
+
+```sh
+jq -n --arg source "$(git rev-parse HEAD)" \
+  '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"clippy"}}' \
+  | fgj api -X POST repos/tilo/tilo/actions/workflows/dev-focused-test.yml/dispatches --hostname code.tilo.so
+```
+
+The source commit must be pushed (any branch) so the runner can fetch it.
+
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 
 ```sh

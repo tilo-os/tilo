@@ -52,6 +52,7 @@ pub fn required_action(
 ) -> Option<(TreePath, ActionKind)> {
     if resource.provider == super::providers::permission_prompts::PROVIDER_ID
         || resource.provider == super::providers::terminal_device_shell::PROVIDER_ID
+        || resource.provider == "onboarding"
     {
         return Some((chrome_node(&resource.id), ActionKind::Outside));
     }
@@ -199,6 +200,16 @@ impl<'a> PolicyVisibility<'a> {
 
 impl ActionVisibility for PolicyVisibility<'_> {
     fn can_see(&self, resource: &ResourceRef, kind: &ResourceKind) -> bool {
+        // First-use identity belongs to the local owner alone: never a person
+        // the owner admitted, an app or an agent, whatever they were granted.
+        if resource.provider == "onboarding" {
+            return is_person_alone(&self.actor)
+                && self.workspace.owner().is_some_and(|owner| {
+                    self.actor.principals.iter().any(
+                        |principal| matches!(principal, Principal::Person(user) if user == owner),
+                    )
+                });
+        }
         // Personal portal consent and a device shell are decided only by a
         // person allowed them outright, never by an app or an agent, whatever
         // they were granted.
@@ -326,6 +337,48 @@ mod tests {
         actor.principals.push(Principal::Agent("helper".into()));
         assert!(
             !PolicyVisibility::new(&workspace, actor).can_see(&resource, &ResourceKind::Action)
+        );
+    }
+
+    #[test]
+    fn onboarding_identity_actions_are_the_owners_alone() {
+        let owner = "owner".to_string();
+        let mut ws = owned("identity setup", &owner);
+        let selected = resource("onboarding", "onboarding.create");
+        assert!(
+            PolicyVisibility::new(&ws, ws.actor_for_person(&owner))
+                .can_see(&selected, &ResourceKind::Action)
+        );
+        for principal in [
+            Principal::Agent("helper".into()),
+            Principal::App("so.tilo.store".into()),
+        ] {
+            let subject = match &principal {
+                Principal::Agent(agent) => Subject::agent(agent.clone()),
+                _ => Subject::app("so.tilo.store"),
+            };
+            grant_room(&mut ws, subject, KindSet::ALL);
+            let mut mixed = ws.actor_for_person(&owner);
+            mixed.principals.push(principal.clone());
+            assert!(!PolicyVisibility::new(&ws, mixed).can_see(&selected, &ResourceKind::Action));
+            assert!(
+                !PolicyVisibility::new(
+                    &ws,
+                    Actor {
+                        principals: vec![principal],
+                        ..Actor::default()
+                    }
+                )
+                .can_see(&selected, &ResourceKind::Action)
+            );
+        }
+        let admin = "admin".to_string();
+        ws.admit(admin.clone(), Role::Editor);
+        grant_room(&mut ws, Subject::person(admin.clone()), KindSet::ALL);
+        assert!(
+            !PolicyVisibility::new(&ws, ws.actor_for_person(&admin))
+                .can_see(&selected, &ResourceKind::Action),
+            "a person the owner granted everything does not set up the owner's identity"
         );
     }
 
