@@ -2724,6 +2724,7 @@ pub(crate) fn queue_terminal_command(argv: &[String], room: RoomId) -> Result<()
                     managed_workspace_id: None,
                     kind: LaunchEventKind::SpawnFailed {
                         detail: error.user_message(),
+                        reason: error.failure(),
                     },
                 });
             }
