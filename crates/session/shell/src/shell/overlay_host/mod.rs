@@ -11938,8 +11938,11 @@ impl ShellOverlayHost {
             HistoryTargetAddress::Uri(uri) => (None, Some(uri)),
             HistoryTargetAddress::App => (None, None),
         };
+        // A refusal arrives later as a launch event, which settles its
+        // placement and posts its notice under this target's label.
         let result = crate::shell::launcher::queue_package_open(
             app_id.to_owned(),
+            Some(target.label.clone()),
             &workspace,
             document,
             uri,

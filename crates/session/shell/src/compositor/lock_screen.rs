@@ -1554,23 +1554,29 @@ mod tests {
 
     #[test]
     fn media_key_readout_paints_over_the_lock_scene_and_schedules_its_fade() {
-        use crate::shell::osd::{OSD_FADE, OSD_HOLD, Osd};
+        use crate::shell::osd::{OSD_FADE, OSD_FADE_IN, OSD_HOLD, Osd};
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let outputs = single(1600.0, 900.0);
         let mut scene = draw_lock_scene(&outputs, &theme, &mut text, &view());
         let before = scene.encoding().n_paths;
         let osd = Osd::volume(0.4, false);
-        draw_lock_osd(&mut scene, &outputs, &theme, &mut text, osd, osd.raised_at);
+        let raised = osd.raised_at;
+        // Past the fade-in, the readout is fully opaque.
+        let held = raised + OSD_FADE_IN;
+        draw_lock_osd(&mut scene, &outputs, &theme, &mut text, osd, held);
         assert!(
             scene.encoding().n_paths > before,
             "a live readout must add paint on top of the lock scene"
         );
 
-        let raised = osd.raised_at;
         assert!(!lock_osd_frame_due(None, raised));
         assert!(
-            !lock_osd_frame_due(Some(osd), raised),
+            lock_osd_frame_due(Some(osd), raised),
+            "the fade-in needs frames"
+        );
+        assert!(
+            !lock_osd_frame_due(Some(osd), held),
             "the opaque hold needs no frames"
         );
         assert!(lock_osd_frame_due(
