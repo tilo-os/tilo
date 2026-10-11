@@ -269,29 +269,41 @@ fn diff_marks(old: &[MarkSpan], new: &[MarkSpan]) -> (Vec<MarkSpan>, Vec<MarkSpa
 }
 
 fn diff_attrs(old: &BTreeMap<String, AttrVal>, new: &BTreeMap<String, AttrVal>) -> Vec<AttrChange> {
-    diff_maps(old, new, |key, old, new| AttrChange { key, old, new })
-}
-
-fn diff_props(old: &BTreeMap<String, String>, new: &BTreeMap<String, String>) -> Vec<PropChange> {
-    diff_maps(old, new, |name, old, new| PropChange { name, old, new })
-}
-
-/// One `change(key, old, new)` per key whose value differs between `old` and `new`, in key order.
-fn diff_maps<V: Clone + PartialEq, C>(
-    old: &BTreeMap<String, V>,
-    new: &BTreeMap<String, V>,
-    change: impl Fn(String, Option<V>, Option<V>) -> C,
-) -> Vec<C> {
+    let mut out = Vec::new();
     let mut keys: Vec<&String> = old.keys().chain(new.keys()).collect();
     keys.sort();
     keys.dedup();
-    keys.into_iter()
-        .filter_map(|k| {
-            let ov = old.get(k);
-            let nv = new.get(k);
-            (ov != nv).then(|| change(k.clone(), ov.cloned(), nv.cloned()))
-        })
-        .collect()
+    for k in keys {
+        let ov = old.get(k);
+        let nv = new.get(k);
+        if ov != nv {
+            out.push(AttrChange {
+                key: k.clone(),
+                old: ov.cloned(),
+                new: nv.cloned(),
+            });
+        }
+    }
+    out
+}
+
+fn diff_props(old: &BTreeMap<String, String>, new: &BTreeMap<String, String>) -> Vec<PropChange> {
+    let mut out = Vec::new();
+    let mut keys: Vec<&String> = old.keys().chain(new.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    for k in keys {
+        let ov = old.get(k);
+        let nv = new.get(k);
+        if ov != nv {
+            out.push(PropChange {
+                name: k.clone(),
+                old: ov.cloned(),
+                new: nv.cloned(),
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]

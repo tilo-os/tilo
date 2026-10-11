@@ -7,8 +7,6 @@
 
 use crate::format::{CodecError, Confidence};
 use crate::safety::{ZipLimits, read_zip_parts};
-use quick_xml::events::Event;
-use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
 use std::io::{Cursor, Write};
 use tilo_doc::sheet::{CellInput, Workbook};
@@ -163,49 +161,4 @@ pub(crate) fn attr_local(e: &quick_xml::events::BytesStart, local: &[u8]) -> Opt
         }
     }
     None
-}
-
-/// Read document properties (title, author, dates) from an ODF `meta.xml` or
-/// OPC `docProps/core.xml`: each element whose local name appears in `keys`
-/// stores its text under the paired property key.
-pub(crate) fn parse_doc_props(
-    xml: &[u8],
-    keys: &[(&[u8], &'static str)],
-) -> BTreeMap<String, String> {
-    let mut props = BTreeMap::new();
-    let Ok(s) = std::str::from_utf8(xml) else {
-        return props;
-    };
-    let mut reader = Reader::from_str(s);
-    let mut cur: Option<&'static str> = None;
-    let mut buf = String::new();
-    while let Ok(ev) = reader.read_event() {
-        match ev {
-            Event::Start(e) => {
-                let name = local_name(&e);
-                cur = keys.iter().find(|(el, _)| *el == name).map(|(_, key)| *key);
-                buf.clear();
-            }
-            Event::Text(t) => {
-                if cur.is_some()
-                    && let Ok(txt) = t.xml10_content()
-                {
-                    buf.push_str(&txt);
-                }
-            }
-            Event::GeneralRef(r) if cur.is_some() => {
-                buf.extend(crate::resolve_general_ref(&r));
-            }
-            Event::End(_) => {
-                if let Some(key) = cur.take()
-                    && !buf.is_empty()
-                {
-                    props.insert(key.to_string(), buf.clone());
-                }
-            }
-            Event::Eof => break,
-            _ => {}
-        }
-    }
-    props
 }
