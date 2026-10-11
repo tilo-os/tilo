@@ -25,6 +25,18 @@ Both directories contain `PROVENANCE.md`, licences and focused regression
 tests. No insecure verifier, alternative trust loader or policy exception is
 introduced.
 
+## iroh idle timers
+
+`iroh` 1.0.3, `netwatch` 0.19.1 and `iroh-gossip` 0.101.0 are the
+checksum-verified registry releases in the lock, each with one small patch
+so an idle endpoint wakes for nothing: no re-STUN tick and no home relay
+while the relay map is empty, no 15 s wall-clock poll on Linux (a timerfd the
+kernel cancels on resume or a clock step replaces it), and no gossip cache
+sweep once a topic's caches are empty. Network changes still arrive through
+netlink at once. Each directory's `TILO-PATCH.md` has the details and an
+upstream-ready description; `crates/system/fs/tests/iroh_idle.rs` pins them.
+Remove a copy once its upstream release carries the change.
+
 ## Exportable histories
 
 The fork changes also live in two standalone histories, disconnected from the

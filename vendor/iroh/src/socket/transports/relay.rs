@@ -229,6 +229,11 @@ impl RelayNetworkChangeSender {
         });
     }
 
+    /// TILO PATCH: gives up the home relay (see [`RelayActorMessage::ReleaseHomeRelay`]).
+    pub(super) fn release_home_relay(&self) {
+        self.send_relay_actor(RelayActorMessage::ReleaseHomeRelay);
+    }
+
     /// Triggers an immediate health check on relay connections after a network change.
     pub(super) fn check_connection_after_network_change(&self) {
         self.send_relay_actor(RelayActorMessage::CheckConnectionAfterNetworkChange);
