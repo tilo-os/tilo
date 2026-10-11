@@ -45,7 +45,7 @@ pub const MAX_COORDINATE: i32 = 1_000_000;
 /// One display's place in the person's shared layout.
 #[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct ArrangedDisplay {
     /// Fabric device id of the device that drives the display.
     pub device: String,
@@ -67,6 +67,8 @@ pub struct ArrangedDisplay {
     pub rev: u64,
 }
 
+crate::read_through_json_value!(ArrangedDisplay);
+
 impl ArrangedDisplay {
     /// The same entry ignoring its revision.
     fn same_as(&self, other: &Self) -> bool {
@@ -86,10 +88,12 @@ const ORDER_GAP: i64 = 1024;
 /// The person's display arrangement.
 #[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct Arrangement {
     pub displays: Vec<ArrangedDisplay>,
 }
+
+crate::read_through_json_value!(Arrangement);
 
 #[cfg(feature = "model")]
 tilo_resource::json_model!(Arrangement);

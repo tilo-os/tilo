@@ -47,6 +47,37 @@
     )
 )]
 
+/// `Serialize`/`Deserialize` of a type deriving them with
+/// `#[serde(remote = "Self")]`: writing runs the derived code, reading goes
+/// through one `serde_json::Value` and one function compiled here, rather
+/// than a derived decoder per deserializer in every crate reading the type.
+macro_rules! read_through_json_value {
+    ($ty:ty) => {
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                Self::serialize(self, serializer)
+            }
+        }
+        read_through_json_value!($ty, deserialize);
+    };
+    ($ty:ty, deserialize) => {
+        impl<'de> serde::Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+                Self::from_json_value(value).map_err(serde::de::Error::custom)
+            }
+        }
+
+        impl $ty {
+            #[inline(never)]
+            fn from_json_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+                Self::deserialize(value)
+            }
+        }
+    };
+}
+pub(crate) use read_through_json_value;
+
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 #[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct AppNotificationRule {
     /// `None` follows the global preference.
     #[serde(default)]
@@ -41,8 +42,11 @@ pub struct AppNotificationRule {
     pub muted_until: Option<i64>,
 }
 
+crate::read_through_json_value!(AppNotificationRule);
+
 #[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct FocusSchedule {
     #[serde(default)]
     pub enabled: bool,
@@ -58,6 +62,8 @@ pub struct FocusSchedule {
     #[serde(default = "default_true")]
     pub allow_priority: bool,
 }
+
+crate::read_through_json_value!(FocusSchedule);
 
 const fn default_focus_start() -> u16 {
     22 * 60

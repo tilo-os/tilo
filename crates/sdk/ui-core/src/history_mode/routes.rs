@@ -36,29 +36,14 @@ pub(crate) fn merge_committed(
     doc: &mut AutoCommit,
     mutation: &DocumentMutation,
 ) -> Result<bool, RemoteApplyError> {
-    if doc.pending_ops() != 0 {
-        return Err(RemoteApplyError::Unavailable(
-            crate::i18n::I18nManager::lookup_plain("history-sync-finish-edit"),
-        ));
-    }
+    ready(doc)?;
     // Decode into a clone first so malformed incremental data cannot partly
     // mutate the real owner. Merge preserves actor, causal history and identity.
     let mut incoming = match mutation {
-        DocumentMutation::Snapshot(bytes) => AutoCommit::load(bytes)
-            .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?,
+        DocumentMutation::Snapshot(bytes) => load(bytes)?,
         DocumentMutation::Incremental(bytes) => {
-            // Automerge's incremental loader accepts a valid prefix on partial
-            // parse errors, so the whole stream is first loaded strictly on its
-            // own. MissingDeps comes only after a complete parse and is
-            // expected for deltas that need the receiver's history.
-            match AutoCommit::load(bytes) {
-                Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
-                Err(error) => return Err(RemoteApplyError::InvalidMutation(error.to_string())),
-            }
             let mut incoming = doc.clone();
-            incoming
-                .load_incoming(bytes)
-                .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
+            load_incremental(&mut incoming, bytes)?;
             incoming
         }
     };
@@ -66,6 +51,54 @@ pub(crate) fn merge_committed(
     doc.merge_incoming(&mut incoming)
         .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
     Ok(before != super::sorted_heads(doc.base_heads()))
+}
+
+/// [`merge_committed`] into `candidate`, a copy its caller keeps only when
+/// the mutation applied and validated: the changes load straight into it,
+/// with no second copy of the document and no merge of a whole one.
+pub(crate) fn merge_committed_into_copy(
+    candidate: &mut AutoCommit,
+    mutation: &DocumentMutation,
+) -> Result<bool, RemoteApplyError> {
+    ready(candidate)?;
+    let before = super::sorted_heads(candidate.base_heads());
+    match mutation {
+        DocumentMutation::Snapshot(bytes) => {
+            candidate
+                .merge_incoming(&mut load(bytes)?)
+                .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
+        }
+        DocumentMutation::Incremental(bytes) => load_incremental(candidate, bytes)?,
+    }
+    Ok(before != super::sorted_heads(candidate.base_heads()))
+}
+
+fn ready(doc: &AutoCommit) -> Result<(), RemoteApplyError> {
+    if doc.pending_ops() == 0 {
+        Ok(())
+    } else {
+        Err(RemoteApplyError::Unavailable(
+            crate::i18n::I18nManager::lookup_plain("history-sync-finish-edit"),
+        ))
+    }
+}
+
+fn load(bytes: &[u8]) -> Result<AutoCommit, RemoteApplyError> {
+    AutoCommit::load(bytes).map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))
+}
+
+/// Load an incremental stream into `doc`. Automerge's incremental loader
+/// accepts a valid prefix on partial parse errors, so the whole stream is
+/// first loaded strictly on its own. MissingDeps comes only after a complete
+/// parse and is expected for deltas that need the receiver's history.
+fn load_incremental(doc: &mut AutoCommit, bytes: &[u8]) -> Result<(), RemoteApplyError> {
+    match AutoCommit::load(bytes) {
+        Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
+        Err(error) => return Err(RemoteApplyError::InvalidMutation(error.to_string())),
+    }
+    doc.load_incoming(bytes)
+        .map(|_| ())
+        .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))
 }
 fn mutation_bytes(mutation: &DocumentMutation) -> usize {
     match mutation {
