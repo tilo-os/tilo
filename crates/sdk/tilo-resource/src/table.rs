@@ -2234,12 +2234,12 @@ pub fn set_variant<T: 'static>(variant: Option<T>, target: &mut dyn Any) -> Resu
 pub struct JsonDesc {
     /// The value's JSON form.
     pub to_value: fn(&dyn Any) -> serde_json::Value,
-    /// The value as the JSON text it is stored as.
-    pub to_text: fn(&dyn Any) -> Result<String, ModelError>,
-    /// Put the value of a JSON form into `out`, an `Option` of the type.
+    /// The value's JSON form, or why it has none: what its stored text is
+    /// written from ([`json_text`]).
+    pub try_value: fn(&dyn Any) -> Result<serde_json::Value, ModelError>,
+    /// Put the value of a JSON form into `out`, an `Option` of the type. The
+    /// stored text is read through it too ([`json_text`]).
     pub from_value: fn(&serde_json::Value, &mut dyn Any) -> Result<(), ModelError>,
-    /// Put the value of stored JSON text into `out`.
-    pub from_text: fn(&str, &mut dyn Any) -> Result<(), ModelError>,
     /// Put the type's default into `out`.
     pub default: fn(&mut dyn Any) -> Result<(), ModelError>,
     /// `null` reads as the default rather than through serde.
@@ -2280,6 +2280,18 @@ fn serde_invalid(error: serde_json::Error) -> ModelError {
     ModelError::invalid(error.to_string())
 }
 
+/// Put the value the stored JSON `text` holds into `out`: parsed once as
+/// JSON, then read as the type through its one JSON reader.
+fn json_from_text(json: &JsonDesc, text: &str, out: &mut dyn Any) -> Result<(), ModelError> {
+    let value: serde_json::Value = serde_json::from_str(text).map_err(serde_invalid)?;
+    (json.from_value)(&value, out)
+}
+
+/// The JSON text a value of a type stored as JSON text is stored as.
+fn json_text(json: &JsonDesc, value: &dyn Any) -> Result<String, ModelError> {
+    (json.try_value)(value).map(|value| value.to_string())
+}
+
 /// The serde functions of a type stored as JSON text, `json(value)` being
 /// how the type wraps its serde value (`Json(inner)`, or the value itself).
 pub struct JsonOf<T>(PhantomData<T>);
@@ -2293,8 +2305,8 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> Json
                 .and_then(|value| serde_json::to_value(value).ok())
                 .unwrap_or(serde_json::Value::Null)
         },
-        to_text: |value| {
-            serde_json::to_string(value.downcast_ref::<T>().ok_or_else(mismatch)?)
+        try_value: |value| {
+            serde_json::to_value(value.downcast_ref::<T>().ok_or_else(mismatch)?)
                 .map_err(serde_invalid)
         },
         from_value: |value, out| {
@@ -2303,7 +2315,6 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> Json
                 serde_json::from_value(value.clone()).map_err(serde_invalid)?,
             )
         },
-        from_text: |text, out| put::<T>(out, serde_json::from_str(text).map_err(serde_invalid)?),
         default: |out| put(out, T::default()),
         null_default: true,
         staged: (empty_of::<T>, unwrap_of::<T>),
@@ -2318,8 +2329,8 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> Json
                 .and_then(|value| serde_json::to_value(&value.0).ok())
                 .unwrap_or(serde_json::Value::Null)
         },
-        to_text: |value| {
-            serde_json::to_string(
+        try_value: |value| {
+            serde_json::to_value(
                 &value
                     .downcast_ref::<crate::Json<T>>()
                     .ok_or_else(mismatch)?
@@ -2331,12 +2342,6 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> Json
             put(
                 out,
                 crate::Json::<T>(serde_json::from_value(value.clone()).map_err(serde_invalid)?),
-            )
-        },
-        from_text: |text, out| {
-            put(
-                out,
-                crate::Json::<T>(serde_json::from_str(text).map_err(serde_invalid)?),
             )
         },
         default: |out| put(out, crate::Json(T::default())),
@@ -2363,7 +2368,7 @@ pub static JSON_OPS: ModelOps = ModelOps {
         let json = jsons(table)?;
         match value {
             Value::Scalar(scalar) => match scalar.as_ref() {
-                automerge::ScalarValue::Str(text) => (json.from_text)(text, out),
+                automerge::ScalarValue::Str(text) => json_from_text(json, text, out),
                 automerge::ScalarValue::Null => (json.default)(out),
                 _ => Err(ModelError::shape("a JSON string")),
             },
@@ -2381,7 +2386,7 @@ pub static JSON_OPS: ModelOps = ModelOps {
         (json.replace)(target, staged.as_mut())
     },
     store: |table, value, doc, slot| {
-        let text = (jsons(table)?.to_text)(value)?;
+        let text = json_text(jsons(table)?, value)?;
         slot.put_scalar(doc, automerge::ScalarValue::Str(text.into()))
     },
     stores_as: |_, _, _| false,

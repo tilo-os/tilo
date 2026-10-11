@@ -252,7 +252,6 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         .any(|variant| !matches!(variant.fields, Fields::Unit));
 
     let mut decls = Vec::new();
-    let mut decl_ids: Vec<String> = Vec::new();
     let mut ids = Vec::new();
     let mut encodes = Vec::new();
     let mut decodes = Vec::new();
@@ -443,18 +442,23 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         } else {
             quote!(Effect)
         };
-        decl_ids.push(id.clone());
+        let params: Vec<Tokens> = params.collect();
+        let params_fn = if params.is_empty() {
+            quote!(#krate::effect::no_params)
+        } else {
+            quote!(|| {
+                let mut params: ::std::vec::Vec<#krate::__private::ActionParam> =
+                    ::std::vec::Vec::new();
+                #(params.extend(#params);)*
+                params
+            })
+        };
         decls.push(quote! {
-            #krate::effect::EffectDecl {
+            #krate::effect::EffectRow {
                 id: #id,
                 label: #label,
                 description: #description,
-                params: {
-                    let mut params: ::std::vec::Vec<#krate::__private::ActionParam> =
-                        ::std::vec::Vec::new();
-                    #(params.extend(#params);)*
-                    params
-                },
+                params: #params_fn,
                 kind: #krate::__private::OperationKind::#kind,
                 row: #row,
                 answers: #answers,
@@ -541,14 +545,11 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             const OPERATION: &'static str = #operation;
 
             fn declarations() -> ::std::vec::Vec<#krate::effect::EffectDecl> {
-                ::std::vec![#(#decls),*]
+                #krate::effect::EffectDecl::of_rows(Self::__EFFECT_ROWS)
             }
 
             fn declaration(id: &str) -> ::core::option::Option<#krate::effect::EffectDecl> {
-                match id {
-                    #(#decl_ids => ::core::option::Option::Some(#decls),)*
-                    _ => ::core::option::Option::None,
-                }
+                #krate::effect::EffectDecl::find_row(Self::__EFFECT_ROWS, id)
             }
 
             fn id(&self) -> &'static str {
@@ -580,6 +581,11 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         #[allow(dead_code, reason = "a control binds the effects it offers, not necessarily all")]
         impl #name {
             #(#consts)*
+
+            /// Every effect's declaration as a constant, read by one
+            /// function for every vocabulary.
+            #[doc(hidden)]
+            pub const __EFFECT_ROWS: &'static [#krate::effect::EffectRow] = &[#(#decls),*];
         }
     })
 }
