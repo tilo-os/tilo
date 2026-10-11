@@ -518,7 +518,48 @@ source = "strip_pan_bench, pixels a 4K six-window pan frame rasterises"
 
 # The same pan on a 4K panel at 150 % and 200 %, and on a desktop of two
 # strips (the docked wheel riding the top strip over the second) at 100 % and
-# 200 %. Frame time is reported like the 100 % pan's.
+# 200 %. Frame time is reported like the 100 % pan's. Raster pixels are
+# enforced about 40 % above the medians measured (Perf / scheduled 115087:
+# 55,566 at 150 %, 68,816 at 200 %, 94,548 on two strips, 187,872 on two
+# strips at 200 %: the uncovered columns, plus on two strips the band where
+# the panning strip's shadows meet the still one's); a pan that falls back to
+# repainting the output (8,294,400 px) fails at once.
+
+[kpi."render.shell.pan_pixels.4k_s150"]
+unit = "pixels"
+p50 = 80000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window pan frame at 150 % rasterises"
+
+[kpi."render.shell.pan_pixels.4k_s200"]
+unit = "pixels"
+p50 = 100000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window pan frame at 200 % rasterises"
+
+[kpi."render.shell.pan_pixels.4k_strips2"]
+unit = "pixels"
+p50 = 135000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K pan frame of two strips rasterises"
+
+[kpi."render.shell.pan_pixels.4k_s200_strips2"]
+unit = "pixels"
+p50 = 265000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K pan frame of two strips at 200 % rasterises"
 
 [kpi."render.shell.pan_us.4k_s150"]
 unit = "us"
