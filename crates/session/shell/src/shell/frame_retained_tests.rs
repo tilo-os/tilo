@@ -1251,6 +1251,11 @@ fn assert_layer_cpu_pixels_match(composed: &Scene, dense: &Scene, size: (u32, u3
 
 #[cfg(target_os = "linux")]
 fn wide_retained_fixture(size: (u32, u32)) -> PopulatedShellFixture {
+    wide_retained_fixture_in(size, Theme::dark())
+}
+
+#[cfg(target_os = "linux")]
+fn wide_retained_fixture_in(size: (u32, u32), theme: Theme) -> PopulatedShellFixture {
     // The demo's window, twice more beside it: wider than the screen.
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
     if let Some(strip) = tree
@@ -1270,7 +1275,7 @@ fn wide_retained_fixture(size: (u32, u32)) -> PopulatedShellFixture {
         }
     }
     tree.seed_doc_from_cache();
-    PopulatedShellFixture::with_tree(size, Theme::dark().with_reduce_motion(true), tree)
+    PopulatedShellFixture::with_tree(size, theme.with_reduce_motion(true), tree)
 }
 
 #[cfg(target_os = "linux")]
@@ -1546,6 +1551,353 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
         frame.paint_with_damage().cache.is_none(),
         "oversized outputs retain the dense path"
     );
+}
+
+/// A GPU target of `size` on its own device, as the DRM presenter renders.
+#[cfg(target_os = "linux")]
+fn gpu_target(size: (u32, u32)) -> crate::shell::render::paint::RetainedGpuTarget {
+    let _env = tilo_test_env::lock();
+    let mut context = ui::gpu::RenderContext::new();
+    let index = pollster::FutureExt::block_on(context.device(None))
+        .expect("strip layer tests require a real adapter");
+    crate::shell::render::paint::RetainedGpuTarget::new(&context.devices[index], size.0, size.1)
+        .expect("GPU target")
+}
+
+/// The pixels (x, y, largest channel step) where `a` and `b`, RGBA rows
+/// `width` wide, are more than one step apart.
+#[cfg(target_os = "linux")]
+fn pixels_apart(a: &[u8], b: &[u8], width: u32) -> Vec<(usize, usize, u8)> {
+    assert_eq!(a.len(), b.len(), "both targets have one size");
+    a.chunks_exact(4)
+        .zip(b.chunks_exact(4))
+        .enumerate()
+        .filter_map(|(index, (a, b))| {
+            let step = a
+                .iter()
+                .zip(b)
+                .map(|(x, y)| x.abs_diff(*y))
+                .max()
+                .unwrap_or(0);
+            (step > 1).then_some((index % width as usize, index / width as usize, step))
+        })
+        .collect()
+}
+
+/// Pixels of the band copies of `work` that differ by more than one step
+/// between `before`, moved as the copies move it, and `after`: what moving
+/// a full render of one frame gives against a full render of the next.
+#[cfg(target_os = "linux")]
+fn moved_render_apart(
+    work: &crate::shell::render::strip_layers::LayerWork,
+    before: &[u8],
+    after: &[u8],
+    width: u32,
+) -> (usize, u8) {
+    let crate::shell::render::strip_layers::WorkspaceWork::Pan { copies, .. } = &work.workspace
+    else {
+        return (0, 0);
+    };
+    let pixel = |pixels: &[u8], x: u32, y: u32| {
+        let at = (y as usize * width as usize + x as usize) * 4;
+        pixels[at..at + 4].to_vec()
+    };
+    let mut apart = (0, 0_u8);
+    for copy in copies {
+        for y in copy.y..copy.y + copy.height {
+            for dx in 0..copy.width {
+                let moved = pixel(before, copy.src_x + dx, y);
+                let fresh = pixel(after, copy.dst_x + dx, y);
+                let step = moved
+                    .iter()
+                    .zip(&fresh)
+                    .map(|(x, y)| x.abs_diff(*y))
+                    .max()
+                    .unwrap_or(0);
+                if step > 1 {
+                    apart = (apart.0 + 1, apart.1.max(step));
+                }
+            }
+        }
+    }
+    apart
+}
+
+/// Vello does not rasterise a shape identically at every offset: two whole
+/// renders of the strips at adjacent pans, one moved onto the other, differ
+/// at a few edge pixels by up to ~6 % coverage (measured at most 25
+/// such pixels per step and 15 channel steps at 1280x720, in all three
+/// themes). A pixel a pan copies keeps the value it was rasterised with, so
+/// against a whole render at the new pan it can show that same difference;
+/// the copied pixels accumulate up to ~80 of them on screen. Anything
+/// structural (a band copied to the wrong place, a stale or missing band, a
+/// wrong composite) is thousands of pixels.
+#[cfg(target_os = "linux")]
+const OFFSET_PIXELS: usize = 128;
+
+/// Present `painted` as the DRM direct path does: from its layers when it
+/// came as layers, else from its scene with its damage. The pixels the
+/// layers rasterised, for a layered frame.
+#[cfg(target_os = "linux")]
+fn present(
+    target: &mut crate::shell::render::paint::RetainedGpuTarget,
+    painted: &FramePaint,
+    label: &str,
+) -> Option<u64> {
+    let deadline = Instant::now() + tilo_test_env::hang_bound();
+    match painted.cache.as_ref() {
+        Some(cache) if target.layers_eligible(cache) => {
+            target
+                .render_layers_until(cache, painted.revision, deadline, |_, _, _| {})
+                .unwrap_or_else(|error| panic!("{label}: layers: {error}"));
+            Some(
+                target
+                    .last_layer_raster_pixels()
+                    .expect("a layered frame records its work")
+                    .0,
+            )
+        }
+        _ => {
+            target
+                .render_until(
+                    &painted.scene,
+                    SceneDamage {
+                        revision: painted.revision,
+                        previous_revision: painted.previous_revision,
+                        regions: painted.damage_regions.as_deref(),
+                    },
+                    deadline,
+                )
+                .unwrap_or_else(|error| panic!("{label}: scene: {error}"));
+            None
+        }
+    }
+}
+
+/// `scene` rendered whole into `target`, read back.
+#[cfg(target_os = "linux")]
+fn render_whole(
+    target: &mut crate::shell::render::paint::RetainedGpuTarget,
+    scene: &Scene,
+    revision: u64,
+    label: &str,
+) -> Vec<u8> {
+    target
+        .render_until(
+            scene,
+            SceneDamage {
+                revision,
+                previous_revision: None,
+                regions: None,
+            },
+            Instant::now() + tilo_test_env::hang_bound(),
+        )
+        .unwrap_or_else(|error| panic!("{label}: whole render: {error}"));
+    target.read_rgba_for_test()
+}
+
+/// A strip pan presented from retained layers, frame by frame, shows what a
+/// full render of each frame shows, in every theme; and once the layers are
+/// up, a pan frame rasterises only the columns it uncovered.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_strip_pan_composited_from_layers_matches_a_full_render_in_every_theme() {
+    const SIZE: (u32, u32) = (1280, 720);
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    let _ambient = DenyAmbientStarts::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let output = u64::from(SIZE.0) * u64::from(SIZE.1);
+    for (name, theme) in [
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("high contrast", Theme::high_contrast()),
+    ] {
+        let mut frame = wide_retained_fixture_in(SIZE, theme);
+        frame.set_strip_pan_presenter(false, true);
+        let _ = acknowledged_notes_canvas(&mut frame);
+        let mut layered = gpu_target(SIZE);
+        let mut dense = gpu_target(SIZE);
+        // The strips alone, rendered whole at each frame's pan: what a pan's
+        // band copies move, and what vello draws at the new offset instead.
+        let mut strips_only = gpu_target(SIZE);
+        let mut composited = 0;
+        let mut thin = 0;
+        let mut worst = 0;
+        let mut worst_step = 0_u8;
+        let mut control_step = 0_u8;
+        let mut previous_strips: Option<Vec<u8>> = None;
+        frame.host_mut().update_active_strip_pan(0.0, true);
+        // Fractional travel, as a touchpad reports it: the pans land on
+        // whole pixels, so the layers move without resampling.
+        let mut travel = 0.0;
+        for step in 0..24 {
+            travel += if step < 16 { 23.7 } else { -31.3 };
+            frame.host_mut().update_active_strip_pan(travel, false);
+            frame.relayout();
+            let painted = frame.paint_with_damage();
+            let label = format!("{name}, pan step {step}");
+            if let Some(raster) = present(&mut layered, &painted, &label) {
+                composited += 1;
+                thin += usize::from(raster < output / 4);
+            }
+            let full = render_whole(&mut dense, &painted.scene, painted.revision, &label);
+            let apart = pixels_apart(&layered.read_rgba_for_test(), &full, SIZE.0);
+            let max = apart.iter().map(|&(_, _, step)| step).max().unwrap_or(0);
+            let strips = painted.cache.as_ref().map(|cache| {
+                let mut scene = Scene::new();
+                crate::shell::render::strip_layers::append_panned(
+                    &mut scene,
+                    &cache.layers.workspace,
+                    &cache.strips,
+                    (f64::from(SIZE.0), f64::from(SIZE.1)),
+                );
+                render_whole(&mut strips_only, &scene, painted.revision, &label)
+            });
+            let control = match (
+                layered.last_layer_work_for_test(),
+                previous_strips.as_deref(),
+                strips.as_deref(),
+            ) {
+                (Some(work), Some(before), Some(after)) => {
+                    moved_render_apart(work, before, after, SIZE.0)
+                }
+                _ => (0, 0),
+            };
+            previous_strips = strips;
+            eprintln!(
+                "strip layers {label}: {} pixels more than one step from a full render (max {max}); \
+                 whole strip renders at the previous pan, moved: {control:?}",
+                apart.len()
+            );
+            worst = worst.max(apart.len());
+            worst_step = worst_step.max(max);
+            control_step = control_step.max(control.1);
+            assert!(
+                apart.len() <= OFFSET_PIXELS,
+                "{label}: {} pixels differ from a full render by more than one step (max {max}, \
+                 first {:?})",
+                apart.len(),
+                &apart[..apart.len().min(16)]
+            );
+        }
+        eprintln!(
+            "strip layers {name}: at most {worst} pixels per frame more than one step from a whole \
+             render, at most {worst_step} steps; whole renders at adjacent pans differ by up to \
+             {control_step} steps"
+        );
+        assert!(
+            worst_step <= control_step.saturating_add(1),
+            "{name}: the composited pan differs from a whole render by {worst_step} steps, more \
+             than vello's own whole renders at adjacent pans ({control_step})"
+        );
+        assert!(
+            composited >= 20 && thin >= 16,
+            "{name}: the pan comes as layers ({composited} of 24 frames), and once they are up a \
+             pan frame rasterises only what it uncovered ({thin} frames)"
+        );
+        assert_rests_in_screen_space(&mut frame, name);
+    }
+}
+
+/// Once the pan ends and its linger passes, the producer draws the strip in
+/// screen space again, with screen-space damage.
+#[cfg(target_os = "linux")]
+fn assert_rests_in_screen_space(frame: &mut FrameBuilder, name: &str) {
+    frame.host_mut().end_active_strip_pan(Instant::now());
+    for _ in 0..8 {
+        frame.relayout();
+        let _ = frame.paint_with_damage();
+    }
+    frame.relayout();
+    assert!(
+        frame.paint_with_damage().cache.is_none(),
+        "{name}: a strip at rest is drawn in screen space"
+    );
+}
+
+/// Two strips stacked, the docked wheel riding the upper one: the wheel's
+/// rect, which the upper strip's pan carries, reaches into the lower strip's
+/// row. A pixel there would need both strips' pans at once, and a canvas read
+/// at one pan draws the other strip's windows displaced, so these pans stay
+/// in the scene: no strip is drawn in canvas coordinates, and the presenter
+/// renders the frame's scene.
+#[cfg(target_os = "linux")]
+#[test]
+fn strips_whose_pans_would_meet_keep_their_pans_in_the_scene() {
+    use crate::shell::state::{StripId, WindowWidth};
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    let _ambient = DenyAmbientStarts::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+    if let Some(workspace) = tree.desktop.active_workspace_mut()
+        && let Some(first) = workspace.strips.first_mut()
+        && let Some(template) = first.window_groups.first().cloned()
+    {
+        let mut groups = Vec::new();
+        for index in 0..3 {
+            let mut copy = template.clone();
+            copy.id = crate::shell::state::next_id();
+            for tab in &mut copy.tabs {
+                tab.id = crate::shell::state::next_id();
+            }
+            copy.active_tab = copy.tabs[index % copy.tabs.len()].id;
+            copy.width = if index % 2 == 0 {
+                WindowWidth::Wide
+            } else {
+                WindowWidth::Normal
+            };
+            groups.push(copy);
+        }
+        first.window_groups = groups;
+        let mut second = first.clone();
+        second.id = StripId(0x5ea1_ffff);
+        second.name = "Second".into();
+        for group in &mut second.window_groups {
+            group.id = crate::shell::state::next_id();
+            for tab in &mut group.tabs {
+                tab.id = crate::shell::state::next_id();
+            }
+            group.active_tab = group.tabs[0].id;
+        }
+        workspace.strips.push(second);
+    }
+    tree.seed_doc_from_cache();
+    let mut frame = PopulatedShellFixture::with_tree(
+        (1920, 1080),
+        Theme::dark().with_reduce_motion(true),
+        tree,
+    );
+    frame.set_strip_pan_presenter(false, true);
+    for _ in 0..8 {
+        frame.relayout();
+        let _ = frame.paint_with_damage();
+    }
+    let rows: Vec<Rect> = frame
+        .host()
+        .strip_scroll_offsets()
+        .iter()
+        .filter_map(|&(id, _, _)| frame.host().strip_pan_rect(StripId(id)))
+        .collect();
+    assert_eq!(rows.len(), 2, "two strips on screen: {rows:?}");
+    assert!(
+        rows[0].intersect(rows[1]).area() > 0.0,
+        "the fixture's pan rects meet: {rows:?}"
+    );
+    frame.host_mut().update_active_strip_pan(0.0, true);
+    let mut travel = 0.0;
+    for step in 0..6 {
+        travel += 17.3;
+        frame.host_mut().update_active_strip_pan(travel, false);
+        frame.relayout();
+        let painted = frame.paint_with_damage();
+        assert!(
+            painted
+                .cache
+                .as_ref()
+                .is_none_or(|cache| cache.strips.is_empty()),
+            "pan step {step}: strips whose destinations meet are drawn in screen space"
+        );
+    }
 }
 
 /// Prove `damage` repaints some, but under 1%, of the 4K output, and log
