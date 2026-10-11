@@ -1198,17 +1198,9 @@ fn history_entries_render_as_the_apps_sentences() {
     )
     .unwrap();
 
-    let english = LOCALES
-        .iter()
-        .find(|(locale, _)| *locale == "en-US")
-        .map(|(_, source)| *source)
-        .unwrap();
-    let catalogue = tilo_history::Catalogue::new("en-US", &[english]);
-    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
     let entries: Vec<_> = app
-        .versions()
+        .history()
         .into_iter()
-        .filter_map(|version| version.context)
         .filter(|entry| {
             entry
                 .invoker
@@ -1216,7 +1208,7 @@ fn history_entries_render_as_the_apps_sentences() {
                 .is_some_and(|invoker| invoker.actor == "agent:claude")
         })
         .collect();
-    let sentences: Vec<String> = entries.iter().map(|entry| reader.sentence(entry)).collect();
+    let sentences = app.sentences(&entries);
     assert_eq!(
         sentences,
         [

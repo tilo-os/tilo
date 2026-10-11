@@ -182,9 +182,8 @@ fn an_agent_sets_a_retention_class_in_one_call_and_history_says_so() {
     let catalogue = tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
     let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
     let sentences: Vec<String> = app
-        .versions()
+        .history()
         .into_iter()
-        .filter_map(|version| version.context)
         .filter(|entry| entry.what.is_some())
         .map(|entry| reader.sentence(&entry))
         .collect();

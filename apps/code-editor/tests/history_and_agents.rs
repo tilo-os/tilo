@@ -109,13 +109,9 @@ fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
         Some("fn main() { run() }\n")
     );
 
-    let english = include_str!("../locales/en-US.ftl");
-    let catalogue = tilo_history::Catalogue::new("en-US", &[english]);
-    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
     let entries: Vec<_> = app
-        .versions()
+        .history()
         .into_iter()
-        .filter_map(|version| version.context)
         .filter(|entry| {
             entry
                 .invoker
@@ -123,7 +119,7 @@ fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
                 .is_some_and(|invoker| invoker.actor == "agent:claude")
         })
         .collect();
-    let sentences: Vec<String> = entries.iter().map(|entry| reader.sentence(entry)).collect();
+    let sentences = app.sentences(&entries);
     assert_eq!(
         sentences,
         [
