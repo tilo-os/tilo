@@ -78,11 +78,6 @@ const STRIP_MOVES: usize = 8;
 const MAX_MOVE_FRAMES: usize = 120;
 /// Most frames the desktop may take to come to rest before a motion.
 const SETTLE_FRAMES: usize = 60;
-/// How long the session's desktop rests before the presenter warms its
-/// layers (the compositor loop's `LAYER_WARM_SETTLE`). Every motion starts
-/// after it: a window off screen asks for no frames while it animates, so
-/// a desktop that only just stopped drawing can still have one moving.
-const REST: Duration = Duration::from_secs(1);
 /// Frames in a row that change nothing, with nothing animating, that make
 /// the desktop at rest.
 const QUIET_FRAMES: usize = 2;
@@ -541,18 +536,16 @@ fn warm(
 }
 
 /// Draw frames until the desktop is at rest: [`QUIET_FRAMES`] frames in a
-/// row that change nothing, with nothing animating, then the same again
-/// after resting [`REST`]. Nothing animating alone is not rest: the
-/// in-process apps paint their first content a frame or two after the
-/// desktop's first, so the next frame would repaint the whole output
-/// whatever the motion measured after it.
+/// row that change nothing, with nothing animating. Nothing animating alone
+/// is not rest: the in-process apps paint their first content a frame or two
+/// after the desktop's first, so the next frame would repaint the whole
+/// output whatever the motion measured after it.
 fn settle(
     fixture: &mut Fixture,
     target: &mut RetainedGpuTarget,
     size: (u32, u32),
 ) -> Result<(), String> {
     let mut quiet = 0_usize;
-    let mut rested = false;
     for _ in 0..SETTLE_FRAMES {
         let unchanged = frame(fixture, target, size, None)?;
         quiet = if unchanged && !fixture.frame.needs_animation_frame() {
@@ -561,12 +554,7 @@ fn settle(
             0
         };
         if quiet >= QUIET_FRAMES {
-            if rested {
-                return Ok(());
-            }
-            std::thread::sleep(REST);
-            rested = true;
-            quiet = 0;
+            return Ok(());
         }
     }
     Err(format!(
