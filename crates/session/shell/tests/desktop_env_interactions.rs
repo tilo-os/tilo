@@ -869,19 +869,13 @@ fn drops_and_the_tab_search_chip_open_the_right_app() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn expand_restore_and_workspace_switch_change_what_is_rendered() {
-    // Phase `expand_maximizes_into_the_work_area_beside_the_wheel`.
+    // Phase `expand_maximizes_into_the_work_area_and_tucks_the_wheel_away`.
     // Clicking a tab's Expand chip maximizes it inside the desktop work area:
-    // the top bar and the workspace wheel stay, because they say where you are.
+    // the top bar stays, and the workspace wheel is tucked away.
     {
         let (tree, strip_id, _ids) = single_strip_tree(&[100, 200]);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let layout = lay_out_host(&mut host);
-        let tiled_left = host
-            .group_at_for_tests(strip_id, 0)
-            .expect("group after layout")
-            .get_rect()
-            .x0;
-
         assert!(
             !chrome.borrow().is_fullscreen(),
             "nothing holds the output at boot",
@@ -920,8 +914,8 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             .sidebar_rect_for_tests()
             .expect("the desktop has a wheel");
         assert!(
-            sidebar.area() > 0.0,
-            "the radial workspace switcher must stay while a window is maximized; \
+            sidebar.area() == 0.0,
+            "the radial workspace switcher is tucked away while a window is expanded; \
              got {sidebar:?}",
         );
         let topbar_height = laid_out_topbar_height(chrome);
@@ -943,13 +937,8 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         );
         assert_approx_eq!(
             maximized.x0,
-            tiled_left,
-            "a maximized group starts where the strip's first window does, beside the wheel"
-        );
-        assert!(
-            maximized.x0 >= sidebar.x1,
-            "the maximized group must not lie under the wheel; group={maximized:?} \
-             wheel={sidebar:?}"
+            0.0,
+            "an expanded group owns the left edge: no gutter is left where the wheel was"
         );
         assert_approx_eq!(
             maximized.x1,
@@ -1001,9 +990,10 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         let _ = &layout2;
     }
 
-    // Phase `the_workspace_switcher_stays_through_maximize_and_restore`.
-    // Maximizing and restoring an expanded group keeps the sidebar laid out
-    // on every frame, rather than leaving its taffy node at `display:none`.
+    // Phase `the_workspace_switcher_is_tucked_while_expanded_and_returns_on_restore`.
+    // An expanded group tucks the sidebar away; restoring it lays the sidebar
+    // out again on the first frame, rather than leaving its taffy node at
+    // `display:none`.
     {
         let (tree, strip_id, _ids) = single_strip_tree(&[100]);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
@@ -1023,8 +1013,8 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         let maximized_layout = lay_out_host(&mut host);
         assert!(chrome.borrow().is_fullscreen());
         assert!(
-            host.sidebar_rect_for_tests().unwrap().area() > 0.0,
-            "the switcher stays while the group is maximized",
+            host.sidebar_rect_for_tests().unwrap().area() == 0.0,
+            "the switcher is tucked away while the group is expanded",
         );
 
         // Queue the same one-shot toggle the Restore button publishes, then
