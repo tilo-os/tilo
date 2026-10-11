@@ -118,7 +118,7 @@ async fn status(page: &mut Browser) -> AgentsStatus {
     .unwrap()
 }
 
-fn json(value: serde_json::Value) -> InvokeArgument {
+fn json(value: &serde_json::Value) -> InvokeArgument {
     InvokeArgument::Json(value.as_object().unwrap().clone())
 }
 
@@ -268,7 +268,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
         &mut page,
         SUPERVISOR_RESOURCE,
         REQUEST_GRANT_ACTION,
-        json(serde_json::json!({
+        json(&serde_json::json!({
             "label": "Scribe",
             "rooms": [room.room],
             "apps": [SHEETS],
@@ -308,7 +308,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
         &mut page,
         SUPERVISOR_RESOURCE,
         SPAWN_ACTION,
-        json(serde_json::json!({
+        json(&serde_json::json!({
             "grant": grant,
             "task": "Add a new sheet named \"Ledger\"",
             "room": room.room,
