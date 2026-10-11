@@ -209,10 +209,6 @@ impl ResourceApp for MonitorShell {
         SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     /// A capture shows the sample machine instead of this one.
     fn fixture(fixture: &mut Fixture<Monitor>) {
         fixture.provide(MonitorModel::scenario(fixture.scenario()));

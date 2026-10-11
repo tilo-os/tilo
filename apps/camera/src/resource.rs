@@ -159,10 +159,6 @@ impl ResourceApp for CameraShell {
         SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     /// The video scenario films; the timer scenario counts down from a
     /// three-second self-timer the person chose.
     fn fixture(fixture: &mut Fixture<Camera>) {
