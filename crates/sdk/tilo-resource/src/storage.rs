@@ -716,8 +716,8 @@ fn cell_key(row: &str, column: &str) -> String {
 fn read_cells<T: Model>(
     doc: &Doc,
     grid: &ObjId,
-) -> Result<BTreeMap<String, BTreeMap<String, T>>, ModelError> {
-    let mut out: BTreeMap<String, BTreeMap<String, T>> = BTreeMap::new();
+) -> Result<BTreeMap<String, RowCells<T>>, ModelError> {
+    let mut out: BTreeMap<String, RowCells<T>> = BTreeMap::new();
     let Some((Value::Object(ObjType::Map), cells)) = doc.get(grid, CELLS)? else {
         return Ok(out);
     };
@@ -746,7 +746,79 @@ fn read_cells<T: Model>(
 pub struct Grid<T> {
     rows: Collection<()>,
     columns: Collection<()>,
-    cells: BTreeMap<String, BTreeMap<String, T>>,
+    cells: BTreeMap<String, RowCells<T>>,
+}
+
+/// The cells of one row, by column, sorted: a row holds a few cells, and a
+/// map per row would take a whole tree node for each.
+#[derive(Clone, Debug, PartialEq)]
+struct RowCells<T>(Vec<(String, T)>);
+
+impl<T> Default for RowCells<T> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl<T> RowCells<T> {
+    fn find(&self, column: &str) -> Result<usize, usize> {
+        self.0
+            .binary_search_by(|(held, _)| held.as_str().cmp(column))
+    }
+
+    fn get(&self, column: &str) -> Option<&T> {
+        let at = self.find(column).ok()?;
+        self.0.get(at).map(|(_, value)| value)
+    }
+
+    fn get_mut(&mut self, column: &str) -> Option<&mut T> {
+        let at = self.find(column).ok()?;
+        self.0.get_mut(at).map(|(_, value)| value)
+    }
+
+    fn contains_key(&self, column: &str) -> bool {
+        self.find(column).is_ok()
+    }
+
+    fn insert(&mut self, column: String, value: T) {
+        match self.find(&column) {
+            Ok(at) => {
+                if let Some(held) = self.0.get_mut(at) {
+                    held.1 = value;
+                }
+            }
+            Err(at) => {
+                // Most rows hold one cell: the first takes no room for
+                // more; a row that grows past it grows as a list does.
+                if self.0.capacity() == 0 {
+                    self.0.reserve_exact(1);
+                }
+                self.0.insert(at, (column, value));
+            }
+        }
+    }
+
+    fn remove(&mut self, column: &str) {
+        if let Ok(at) = self.find(column) {
+            self.0.remove(at);
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&String, &T)> {
+        self.0.iter().map(|(column, value)| (column, value))
+    }
+
+    fn values(&self) -> impl Iterator<Item = &T> {
+        self.0.iter().map(|(_, value)| value)
+    }
 }
 
 impl<T> Default for Grid<T> {
