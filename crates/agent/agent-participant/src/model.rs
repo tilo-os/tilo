@@ -952,11 +952,16 @@ fn record_words(app: &str) -> &'static [&'static str] {
     }
 }
 
-/// Whether a clause's words name `app`: every word of its name is there,
-/// or a word for its records.
-fn names_app(clause: &[String], app: &str) -> bool {
+/// Whether a clause's words name `app` itself: every word of its name.
+fn names_app_itself(clause: &[String], app: &str) -> bool {
     let name = app_name(app);
-    (!name.is_empty() && name.iter().all(|word| clause.contains(word)))
+    !name.is_empty() && name.iter().all(|word| clause.contains(word))
+}
+
+/// Whether a clause's words name `app`: its name, or a word for its
+/// records.
+fn names_app(clause: &[String], app: &str) -> bool {
+    names_app_itself(clause, app)
         || record_words(app)
             .iter()
             .any(|word| clause.iter().any(|said| said == word))
@@ -965,6 +970,13 @@ fn names_app(clause: &[String], app: &str) -> bool {
 /// Whether `task` names `app` (Word Processor, Sheets…) by its short name.
 pub(crate) fn task_names_app(task: &str, app: &str) -> bool {
     names_app(&words(task), app)
+}
+
+/// Whether `task` names `app` itself (Sheets, Word Processor), not only its
+/// records: what a new record is made ahead of the plan for. "From the
+/// campaign spreadsheet" reads a workbook; it does not ask for one.
+pub(crate) fn task_names_app_itself(task: &str, app: &str) -> bool {
+    names_app_itself(&words(task), app)
 }
 
 /// A deterministic [`PlanModel`] for tests and local development: no
@@ -2331,6 +2343,14 @@ mod tests {
             "so.tilo.canvas"
         ));
         assert!(!task_names_app("Proofread the document", "so.tilo.sheets"));
+        assert!(!task_names_app_itself(
+            "Use the winning headline from the campaign spreadsheet",
+            "so.tilo.sheets"
+        ));
+        assert!(task_names_app_itself(
+            "In Sheets, create the plan",
+            "so.tilo.sheets"
+        ));
     }
 
     use super::*;

@@ -159,6 +159,23 @@ impl AnthropicModel {
     }
 }
 
+/// Drop the cache breakpoints earlier turns' results carried; the first
+/// message (the reference) keeps its own.
+fn forget_turn_breakpoints(messages: &mut [serde_json::Value]) {
+    for message in messages.iter_mut().skip(1) {
+        if let Some(blocks) = message
+            .get_mut("content")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for block in blocks {
+                if let Some(block) = block.as_object_mut() {
+                    block.remove("cache_control");
+                }
+            }
+        }
+    }
+}
+
 /// The planning tools as Claude takes them, the last ending a cache
 /// breakpoint so the instructions and tools are cached together.
 fn claude_tools(definitions: &serde_json::Value) -> serde_json::Value {
@@ -325,7 +342,10 @@ impl PlanModel for AnthropicModel {
                 }));
             }
             // The answer as given (its thinking included), then the results,
-            // the latest turn ending a cache breakpoint for the next.
+            // the latest turn ending a cache breakpoint for the next. A
+            // request takes four breakpoints: the tools and the reference
+            // keep theirs, and only the latest turn has one.
+            forget_turn_breakpoints(&mut messages);
             messages.push(serde_json::json!({
                 "role": "assistant",
                 "content": answer.get("content").cloned().unwrap_or_default(),
@@ -382,6 +402,28 @@ mod tests {
         thinking.forced = false;
         let body = thinking.body(&tools, &[first_message(("reference", "the task"))]);
         assert_eq!(body["tool_choice"]["type"], "auto");
+    }
+
+    #[test]
+    fn only_the_latest_turn_keeps_a_cache_breakpoint() {
+        let result = |id: &str| {
+            serde_json::json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": id, "content": "ok",
+                 "cache_control": {"type": "ephemeral"}}
+            ]})
+        };
+        let mut messages = vec![
+            first_message(("reference", "the task")),
+            result("a"),
+            result("b"),
+        ];
+        forget_turn_breakpoints(&mut messages);
+        assert_eq!(
+            messages[0]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+        assert!(messages[1]["content"][0].get("cache_control").is_none());
+        assert!(messages[2]["content"][0].get("cache_control").is_none());
     }
 
     #[test]

@@ -581,6 +581,8 @@ struct Scenario {
 struct Role {
     name: String,
     apps: Vec<String>,
+    /// The grant lets it confirm destructive actions (deleting rows).
+    may_confirm: bool,
 }
 
 /// A step: tasks issued together once the steps it comes after have ended.
@@ -639,6 +641,7 @@ impl Scenario {
                     .iter()
                     .map(|app| app_id(app))
                     .collect(),
+                may_confirm: agent["may_confirm"].as_bool().unwrap_or(false),
             })
             .collect();
         let content = value["content"]
@@ -721,7 +724,7 @@ async fn grant_for(browser: &mut Browser, role: &Role) -> String {
             SUPERVISOR_RESOURCE,
             REQUEST_GRANT_ACTION,
             InvokeArgument::Json(
-                serde_json::json!({"label": role.name, "rooms": [ROOM], "apps": role.apps, "expiresInSecs": 86_400})
+                serde_json::json!({"label": role.name, "rooms": [ROOM], "apps": role.apps, "expiresInSecs": 86_400, "mayConfirm": role.may_confirm})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -1023,13 +1026,23 @@ async fn campaign_bench() {
             })
             .last()
     };
+    let mut missing = Vec::new();
     for (step, agent, file) in &scenario.outputs {
         if let Some(bytes) =
             produced(step, agent).and_then(|address| hosted.agents.content(ROOM, &address))
         {
             std::fs::write(out.join(file), bytes).unwrap();
+        } else {
+            missing.push(file.clone());
         }
     }
+    // `TILO_BENCH_REQUIRE_DONE`: the run fails unless every task completed
+    // and every output was produced (the nightly smoke run).
+    let unfinished: Vec<String> = log
+        .iter()
+        .filter(|row| row["state"] != "Completed")
+        .map(|row| format!("{} ({}): {}", row["step"], row["agent"], row["error"]))
+        .collect();
     let unix = |t: std::time::SystemTime| {
         t.duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1046,6 +1059,12 @@ async fn campaign_bench() {
     drop(hosted.web);
     hosted.agents.shutdown();
     hosted.relay.shutdown().await;
+    if std::env::var_os("TILO_BENCH_REQUIRE_DONE").is_some() {
+        assert!(
+            unfinished.is_empty() && missing.is_empty(),
+            "tasks not completed: {unfinished:?}; outputs missing: {missing:?}"
+        );
+    }
 }
 
 /// Stop the agent of `grant`, spawn it again on the same grant and give it

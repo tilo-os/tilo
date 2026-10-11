@@ -883,3 +883,56 @@ fn a_placed_panel_keeps_its_place_through_fit_to() {
         .contains("fit_to alone")
     );
 }
+
+/// A small model's way of writing a placed panel: the kind beside `place`
+/// and no shape, and `fit_to` with the same width and height again.
+#[test]
+fn a_placed_mark_needs_no_shape_and_fit_to_takes_its_own_size_again() {
+    let mut art = Replica::<ArtworkResource>::new();
+    apply(
+        &mut art,
+        CanvasAction::SetArtwork(canvas::actions::SetArtwork {
+            width: Some(800.0),
+            height: Some(600.0),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    let marks: Vec<NewMark> = serde_json::from_value(json!([
+        {"id": "panel", "kind": "rect", "place": [0.62, 0, 0.38, 1], "fill": "#0f4c5c"},
+        {"id": "dot", "kind": "ellipse", "place": [0.1, 0.1, 0.2, 0.2], "fill": "#ffcc33"}
+    ]))
+    .unwrap();
+    apply(&mut art, CanvasAction::Draw(Draw { layer: None, marks })).unwrap();
+    let state = art.state().unwrap();
+    assert!(
+        matches!(state.mark("panel").unwrap().shape, Shape::Rect { x, .. } if (x - 496.0).abs() < 1e-6)
+    );
+    assert!(
+        matches!(state.mark("dot").unwrap().shape, Shape::Ellipse { rx, .. } if (rx - 80.0).abs() < 1e-6)
+    );
+    let unplaced: Vec<NewMark> =
+        serde_json::from_value(json!([{"id": "x", "fill": "#000000"}])).unwrap();
+    assert!(
+        apply(
+            &mut art,
+            CanvasAction::Draw(Draw {
+                layer: None,
+                marks: unplaced
+            })
+        )
+        .unwrap_err()
+        .contains("needs a shape")
+    );
+    apply(
+        &mut art,
+        CanvasAction::SetArtwork(canvas::actions::SetArtwork {
+            fit_to: Some([1520.0, 855.0]),
+            width: Some(1520.0),
+            height: Some(855.0),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    assert_eq!(art.state().unwrap().width, 1520.0);
+}

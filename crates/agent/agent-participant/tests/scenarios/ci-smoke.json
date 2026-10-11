@@ -1,0 +1,136 @@
+{
+ "id": "ci-smoke",
+ "grader": "none",
+ "agents": [
+  {
+   "name": "Eli",
+   "apps": [
+    "sheets"
+   ]
+  },
+  {
+   "name": "Kai",
+   "apps": [
+    "sheets"
+   ]
+  },
+  {
+   "name": "Noor",
+   "apps": [
+    "sheets"
+   ]
+  },
+  {
+   "name": "Jules",
+   "apps": [
+    "sheets",
+    "word-processor"
+   ]
+  },
+  {
+   "name": "Ren",
+   "apps": [
+    "notes",
+    "sheets"
+   ]
+  }
+ ],
+ "content": {},
+ "steps": [
+  {
+   "id": "workbook",
+   "after": [],
+   "tasks": [
+    {
+     "agent": "Eli",
+     "text": "In Sheets, create the campaign plan spreadsheet. On a sheet named \"Headline tests\" enter columns Headline, Visits, Signups, Conversion with these rows: \"Small desk. Clear head.\" 240 18; \"Light that stays out of the way.\" 240 12; \"Your desk, finally calm.\" 240 9. Make Conversion a formula Signups/Visits formatted as a percentage, and add a row \"Winner\" naming \"Small desk. Clear head.\" at 7.5%. These are synthetic planning figures."
+    }
+   ]
+  },
+  {
+   "id": "note",
+   "after": [],
+   "tasks": [
+    {
+     "agent": "Ren",
+     "text": "In Notes, create a note titled \"Launch headline\" whose text is the winning headline from the campaign spreadsheet: Small desk. Clear head."
+    }
+   ]
+  },
+  {
+   "id": "page",
+   "after": [],
+   "tasks": [
+    {
+     "agent": "Jules",
+     "text": "In the Word Processor, create the launch page: a new document whose first heading is \"Small desk. Clear head.\" (documents are named by their first heading), right under it the line \"Caption: The chalk-white desk light beside the campaign's deep-teal panel.\", then a short introduction paragraph for the chalk-white desk light, a \"Specifications\" section, an \"Availability\" section and an \"FAQ\" section with three questions and answers, using only these facts: available October 22; $129; chalk-white finish; 14 cm base; three brightness levels. Check every product claim against those facts, keep the introduction tight, and end with a paragraph starting \"Review:\" listing what you checked."
+    }
+   ]
+  },
+  {
+   "id": "sheets",
+   "after": [
+    "workbook"
+   ],
+   "tasks": [
+    {
+     "agent": "Kai",
+     "text": "In the Sheets spreadsheet \"Campaign plan\", add a sheet \"Channel allocation\" splitting a synthetic $4,000 launch budget across Email, Social, Partners and Search."
+    },
+    {
+     "agent": "Noor",
+     "text": "In the Sheets spreadsheet \"Campaign plan\", add a sheet \"Email funnel\" with Sent, Opened, Clicked and Signed up stages (synthetic figures)."
+    },
+    {
+     "agent": "Ren",
+     "text": "In the Sheets spreadsheet \"Campaign plan\", add a sheet \"Partner dates\" with three fictional partners and dates in October."
+    },
+    {
+     "agent": "Jules",
+     "text": "In the Sheets spreadsheet \"Campaign plan\", add a sheet \"Budget check\" comparing planned and allocated spend against the $4,000 budget (synthetic figures)."
+    },
+    {
+     "agent": "Eli",
+     "text": "In the Sheets spreadsheet \"Campaign plan\", add a sheet \"Deliverables\" tracking: campaign image, launch page, email, partner kit, each with an owner and status."
+    }
+   ]
+  },
+  {
+   "id": "xlsx",
+   "after": [
+    "sheets"
+   ],
+   "tasks": [
+    {
+     "agent": "Eli",
+     "text": "Export the Sheets spreadsheet \"Campaign plan\" with all its sheets as an Excel workbook, kept as content."
+    }
+   ]
+  },
+  {
+   "id": "md",
+   "after": [
+    "note"
+   ],
+   "tasks": [
+    {
+     "agent": "Ren",
+     "text": "Export the note \"Launch headline\" as Markdown, kept as content."
+    }
+   ]
+  }
+ ],
+ "outputs": [
+  {
+   "step": "xlsx",
+   "agent": "Eli",
+   "file": "campaign.xlsx"
+  },
+  {
+   "step": "md",
+   "agent": "Ren",
+   "file": "notes.md"
+  }
+ ],
+ "faults": []
+}

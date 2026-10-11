@@ -112,6 +112,11 @@ const COMMIT_WAIT: Duration = Duration::from_secs(20);
 /// agent forever: the task is planned with what the room shows.
 const KEYS_WAIT: Duration = Duration::from_secs(10);
 
+/// How long an export waits after the last edit others' changes merged into
+/// an open record: what others finished a moment ago is still arriving, and
+/// an export takes the record as it is (at most [`KEYS_WAIT`]).
+const EXPORT_QUIET: Duration = Duration::from_millis(500);
+
 /// When the agent's loop should pump again, unless woken sooner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Next {
@@ -294,6 +299,13 @@ pub struct AgentParticipant {
     starting: Option<(String, String)>,
     /// Since when a plan waits for a record's keys ([`KEYS_WAIT`]).
     keys_wait: Option<Instant>,
+    /// The records the current task's steps acted on, and the previous
+    /// task's: a task that follows on ("the same suppliers", "the end
+    /// dates") is planned with what the one before it made in view.
+    task_touched: Vec<DocumentRoute>,
+    previous_touched: Vec<DocumentRoute>,
+    /// When others' changes last merged into an open record.
+    last_merge: Option<Instant>,
     left: bool,
     /// Bumped whenever what the open records publish may have changed; the
     /// revision remote catalogues are issued at.
@@ -317,6 +329,32 @@ impl AgentParticipant {
         catalogue: AppCatalogue,
         planner: Box<dyn Planner>,
     ) -> Result<Self, String> {
+        Self::start_with_store(
+            config,
+            identity,
+            control,
+            catalogue,
+            planner,
+            Arc::new(MemoryPeerStore::default()),
+        )
+    }
+
+    /// [`Self::start`] with the session's state in `store`: an agent the
+    /// host starts again on the same grant gets back its channel
+    /// memberships and keys, as a device keeps them across a restart, and
+    /// opens what the room sealed while it was away.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the room is not one the delegation covers.
+    pub fn start_with_store(
+        config: ParticipantConfig,
+        identity: AgentIdentity,
+        control: Arc<AgentControl>,
+        catalogue: AppCatalogue,
+        planner: Box<dyn Planner>,
+        store: Arc<dyn tilo_browser_peer::PeerStore>,
+    ) -> Result<Self, String> {
         let workspace_id = tilo_relay_protocol::room_workspace_id(&config.room)
             .map_err(|_| "the room is not a uuid".to_string())?;
         if !identity.delegation.permits_workspace(workspace_id) {
@@ -331,7 +369,7 @@ impl AgentParticipant {
                 revocations: RevocationList::new(),
             },
             Arc::new(identity.key.clone()),
-            Arc::new(MemoryPeerStore::default()),
+            store,
         );
         let events = peer.events();
         let woken = Arc::clone(&control);
@@ -371,6 +409,9 @@ impl AgentParticipant {
             finishing: None,
             starting: None,
             keys_wait: None,
+            task_touched: Vec::new(),
+            previous_touched: Vec::new(),
+            last_merge: None,
             left: false,
             generation: 0,
             remote: Vec::new(),
@@ -515,6 +556,7 @@ impl AgentParticipant {
                 let route = document.route.clone();
                 if let Some(app) = self.apps.get_mut(&route) {
                     self.generation = self.generation.wrapping_add(1);
+                    self.last_merge = Some(Instant::now());
                     if let Err(error) = app.apply(&mutation) {
                         tracing::warn!(%error, "agent: a durable change did not merge");
                     }
@@ -615,11 +657,16 @@ impl AgentParticipant {
         };
         let id = running.id.clone();
         let (request, previous) = (running.request.clone(), running.last.clone());
-        if matches!(step.action, StepAction::Continue(_))
-            && self.touched_keys_pending()
-            && self.may_wait_for_keys()
-        {
-            // A record the task just opened is planned with once it opens.
+        let waits = if matches!(step.action, StepAction::Continue(_)) {
+            self.touched_keys_pending()
+        } else {
+            self.step_record_pending(&step) || self.edits_arriving(&step)
+        };
+        if waits && self.may_wait_for_keys() {
+            // A record the task just opened is planned with once it opens,
+            // and a step acts on a record once the edits others sealed for
+            // it are open: an export or an edit taken from half the record
+            // would drop or overwrite what is still held back.
             if let Some(running) = self.running.as_mut() {
                 running.steps.push_front(step);
             }
@@ -698,6 +745,7 @@ impl AgentParticipant {
             return;
         }
         self.keys_wait = None;
+        self.previous_touched = std::mem::take(&mut self.task_touched);
         self.plan(id, &text, None);
     }
 
@@ -876,12 +924,44 @@ impl AgentParticipant {
         false
     }
 
-    /// The records the running task's steps opened or acted on.
+    /// The records the running task's steps opened or acted on, and those
+    /// the task before it acted on.
     fn touched(&self) -> Vec<DocumentRoute> {
-        self.running
+        let mut touched = self
+            .running
             .as_ref()
             .map(|running| running.touched.clone())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        for route in &self.previous_touched {
+            if !touched.contains(route) {
+                touched.push(route.clone());
+            }
+        }
+        touched
+    }
+
+    /// Whether `step` exports while others' changes are still arriving.
+    fn edits_arriving(&self, step: &Step) -> bool {
+        matches!(&step.action, StepAction::Invoke { address, .. } if address.action.starts_with("export"))
+            && self
+                .last_merge
+                .is_some_and(|merged| merged.elapsed() < EXPORT_QUIET)
+    }
+
+    /// Whether an open record of the app `step` acts in holds edits still
+    /// waiting for their keys.
+    fn step_record_pending(&self, step: &Step) -> bool {
+        let status = self.peer.status();
+        let held = |route: &DocumentRoute| {
+            status
+                .routes
+                .get(route)
+                .is_some_and(|route| route.awaiting_keys > 0)
+        };
+        // By app: the record a step names may not be open yet.
+        self.apps
+            .keys()
+            .any(|route| route.app_id == step.app && held(route))
     }
 
     /// Whether a record the running task opened still waits for its keys.
@@ -939,6 +1019,9 @@ impl AgentParticipant {
             && !running.touched.contains(&route)
         {
             running.touched.push(route.clone());
+        }
+        if !self.task_touched.contains(&route) {
+            self.task_touched.push(route.clone());
         }
         match (&step.action, arguments) {
             (StepAction::Invoke { address, .. }, Some(arguments)) => {
@@ -1093,7 +1176,7 @@ impl AgentParticipant {
     ) -> Vec<DocumentRoute> {
         let mut made = Vec::new();
         for app in apps {
-            if !crate::model::task_names_app(task, app)
+            if !crate::model::task_names_app_itself(task, app)
                 || self.apps.keys().any(|route| route.app_id == *app)
                 || known.iter().any(|(route, _)| route.app_id == *app)
             {

@@ -92,6 +92,9 @@ struct Shared {
     threads: Mutex<Vec<(JoinHandle<()>, Arc<AgentControl>)>>,
     /// Each room's content store, by the room's uuid.
     content: Mutex<BTreeMap<String, ContentStore>>,
+    /// Each agent's session state, by its agent id: kept while the host
+    /// runs, so an agent stopped and started again keeps its channel keys.
+    sessions: Mutex<BTreeMap<String, Arc<tilo_browser_peer::MemoryPeerStore>>>,
 }
 
 impl Shared {
@@ -144,6 +147,7 @@ impl AgentHost {
             stopping: AtomicBool::new(false),
             threads: Mutex::new(Vec::new()),
             content: Mutex::new(BTreeMap::new()),
+            sessions: Mutex::new(BTreeMap::new()),
         });
         let spawning = shared.clone();
         let supervisor = AgentSupervisor::new(
@@ -376,7 +380,15 @@ fn run_agent(
             return;
         }
     };
-    let mut participant = match AgentParticipant::start(
+    let session = Arc::clone(
+        shared
+            .sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(agent_id.clone())
+            .or_default(),
+    );
+    let mut participant = match AgentParticipant::start_with_store(
         ParticipantConfig {
             host: endpoint.host,
             host_cert: endpoint.host_cert,
@@ -387,6 +399,7 @@ fn run_agent(
         control.clone(),
         catalogue,
         planner,
+        session,
     ) {
         Ok(participant) => participant,
         Err(error) => {

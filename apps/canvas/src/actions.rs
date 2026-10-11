@@ -171,7 +171,11 @@ pub struct NewMark {
     /// The geometry: `{"kind": "rect", "x": 0, "y": 0, "width": 10, "height": 10}`,
     /// `ellipse` (cx, cy, rx, ry), `polygon`/`line` (points), `path` (d: SVG
     /// path data), `text` (x, y, text, size) or `stroke` (points, size).
+    /// Left out when `place` gives the box.
+    #[serde(default = "unshaped")]
     pub shape: Shape,
+    /// With `place` and no `shape`: `rect` (the default) or `ellipse`.
+    pub kind: Option<String>,
     /// `#rrggbb[aa]` or `pigment:<name>`.
     pub fill: Option<String>,
     /// Instead of `fill`; on an oil layer the brush is remixed along it.
@@ -253,6 +257,7 @@ impl NewMark {
             clip: None,
             transform: None,
             place: None,
+            kind: None,
         }
     }
 }
@@ -937,9 +942,25 @@ pub(crate) fn clip_named(
 /// The clip that keeps a new mark inside the selection.
 pub const SELECTION_CLIP: &str = "selection";
 
+/// The shape of a mark given only `place`: none yet.
+fn unshaped() -> Shape {
+    Shape::Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 0.0,
+        height: 0.0,
+        radius: 0.0,
+    }
+}
+
 /// `mark`'s shape, its box set from `place` (fractions of `art`) when given.
 fn placed_shape(art: &Artwork, mark: &NewMark) -> Result<Shape, ActionError> {
     let Some([fx, fy, fw, fh]) = mark.place else {
+        if mark.shape == unshaped() {
+            return Err(refuse(
+                "a mark needs a shape, or place (with kind rect or ellipse)",
+            ));
+        }
         return Ok(mark.shape.clone());
     };
     if ![fx, fy, fw, fh]
@@ -954,6 +975,24 @@ fn placed_shape(art: &Artwork, mark: &NewMark) -> Result<Shape, ActionError> {
     }
     let (x, y) = (fx * art.width, fy * art.height);
     let (width, height) = (fw * art.width, fh * art.height);
+    let ellipse = match mark.kind.as_deref() {
+        Some("ellipse") => true,
+        Some("rect") => false,
+        Some(kind) => {
+            return Err(refuse(format!(
+                "kind {kind:?} with place must be rect or ellipse"
+            )));
+        }
+        None => matches!(mark.shape, Shape::Ellipse { .. }),
+    };
+    if ellipse {
+        return Ok(Shape::Ellipse {
+            cx: x + width / 2.0,
+            cy: y + height / 2.0,
+            rx: width / 2.0,
+            ry: height / 2.0,
+        });
+    }
     match &mark.shape {
         Shape::Rect { radius, .. } => Ok(Shape::Rect {
             x,
@@ -962,11 +1001,13 @@ fn placed_shape(art: &Artwork, mark: &NewMark) -> Result<Shape, ActionError> {
             height,
             radius: *radius,
         }),
-        Shape::Ellipse { .. } => Ok(Shape::Ellipse {
-            cx: x + width / 2.0,
-            cy: y + height / 2.0,
-            rx: width / 2.0,
-            ry: height / 2.0,
+        // `kind: rect` over an ellipse's shape: the box is a rectangle.
+        Shape::Ellipse { .. } => Ok(Shape::Rect {
+            x,
+            y,
+            width,
+            height,
+            radius: 0.0,
         }),
         _ => Err(refuse("place sets the box of a rect or an ellipse")),
     }
@@ -1783,9 +1824,16 @@ fn set_artwork(doc: &mut Doc, art: &Artwork, set: &SetArtwork) -> Result<(), Act
     use ui::automerge::ROOT;
     use ui::automerge::transaction::Transactable as _;
     if let Some(size) = set.fit_to {
-        if set.crop.is_some() || set.fit.is_some() || set.width.is_some() || set.height.is_some() {
+        // The same size again beside it says nothing more.
+        let other_size = set
+            .width
+            .is_some_and(|width| (width - size[0]).abs() >= 0.5)
+            || set
+                .height
+                .is_some_and(|height| (height - size[1]).abs() >= 0.5);
+        if set.crop.is_some() || set.fit.is_some() || other_size {
             return Err(refuse(
-                "give fit_to alone, not with crop, fit, width or height",
+                "give fit_to alone, not with crop, fit or another width or height",
             ));
         }
         fit_artwork(doc, art, size)?;

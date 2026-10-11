@@ -1,0 +1,63 @@
+name: Agent campaign / nightly
+
+# Agents in a room run the campaign smoke scenario (a workbook, a note, a
+# launch page, a sheet per agent, the exports) against a real model three
+# times. The run fails when any task does not complete or an output is
+# missing (TILO_BENCH_REQUIRE_DONE), and when the median time or cost
+# regresses past tools/agent-bench/baseline.json. GPT-6 Luna at the fastest
+# preset costs well under a cent a run.
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: agent-campaign-nightly
+  cancel-in-progress: false
+
+jobs:
+  builder:
+    uses: ./.forgejo/workflows/resolve-builder.yml
+    secrets: inherit
+
+  campaign:
+    needs: builder
+    runs-on: runner
+    timeout-minutes: 60
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUST_BACKTRACE: "1"
+      TILO_BENCH_MODEL: gpt-6-luna
+      TILO_AGENT_PRESET: fastest
+      TILO_BENCH_REQUIRE_DONE: "1"
+      TILO_BENCH_TASK_SECS: "120"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+      - name: Build the campaign benchmark
+        run: cargo test --locked --release -p tilo-agent-participant --test campaign_bench --no-run
+      - name: Run the smoke scenario three times
+        env:
+          TILO_BENCH_OPENAI_KEY: ${{ secrets.TILO_BENCH_OPENAI_KEY }}
+        run: |
+          key="$RUNNER_TEMP/openai.key"
+          umask 077
+          printf '%s' "$TILO_BENCH_OPENAI_KEY" > "$key"
+          scenario="$PWD/crates/agent/agent-participant/tests/scenarios/ci-smoke.json"
+          for run in 1 2 3; do
+            out="$RUNNER_TEMP/agent-campaign/run-$run"
+            mkdir -p "$out"
+            TILO_AGENT_API_KEY_FILE="$key" TILO_BENCH_SCENARIO="$scenario" \
+              TILO_BENCH_OUT="$out" TILO_AGENT_USAGE_LOG="$out/usage.jsonl" \
+              cargo test --locked --release -p tilo-agent-participant --test campaign_bench \
+                -- --ignored --nocapture
+          done
+          rm -f "$key"
+      - name: Compare time and cost with the baseline
+        run: |
+          python3 tools/agent-bench/check.py --model "$TILO_BENCH_MODEL" \
+            "$RUNNER_TEMP"/agent-campaign/run-*
