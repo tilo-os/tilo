@@ -2570,17 +2570,16 @@ fn typing_in_notes_repaints_what_changed_not_the_tile() {
         );
         type_text(&mut frame, "Plan");
         settle(&mut frame, 3);
-        // The title grows with every letter. Notes' page reports its whole
-        // panel for a relayout (its paint proof refuses moved geometry), so
-        // the frame repaints about the tile either way; it must stay exact.
-        let _ = assert_change_repaints_under(&mut frame, &label, 100, |frame| {
+        // The title is a part of the page of its own: a letter
+        // repaints the title's band, not the page panel or the tile.
+        let _ = assert_change_repaints_under(&mut frame, &label, 5, |frame| {
             type_text(frame, "s");
             frame.relayout();
         });
 
-        // Typing into the note's text rebuilds Notes' widget tree with every
-        // key, so it still repaints the tile (as it repaints a window of its
-        // own); its frame must stay exact.
+        // A key repaints its line, its caret and the save bubble whose state
+        // it flips. The flip used to rebuild Notes' widget tree, so
+        // every key repainted the tile (7,022,592 of 8,294,400 px).
         let label = format!("typing in a note, {name}");
         let body = with_notes_on_screen(&frame, |rect, notes| {
             let panel = notes.main_panel_mut();
@@ -2594,14 +2593,16 @@ fn typing_in_notes_repaints_what_changed_not_the_tile() {
         type_text(&mut frame, "The quick brown fox ");
         settle(&mut frame, 3);
         let before = with_notes_on_screen(&frame, |_, notes| notes.editor_text_for_test());
-        let _ = assert_change_repaints_under(&mut frame, &label, 100, |frame| {
-            type_text(frame, "j");
-            frame.relayout();
-        });
+        for letter in ["j", "u", "m", "p", "s"] {
+            let _ = assert_change_repaints_under(&mut frame, &label, 5, |frame| {
+                type_text(frame, letter);
+                frame.relayout();
+            });
+        }
         let after = with_notes_on_screen(&frame, |_, notes| notes.editor_text_for_test());
         assert!(
-            after.len() > before.len() && after.contains("fox j"),
-            "{label}: the key reached the note's text: {before:?} -> {after:?}"
+            after.len() > before.len() && after.contains("fox jumps"),
+            "{label}: the keys reached the note's text: {before:?} -> {after:?}"
         );
     }
 }

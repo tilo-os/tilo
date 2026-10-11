@@ -99,13 +99,19 @@ impl LaunchpadAction {
     /// the card does what it names in one step.
     pub const fn app_action(self) -> Option<LaunchpadAppAction> {
         match self {
+            Self::Tasks => Some(LaunchpadAppAction {
+                app_id: "so.tilo.calendar",
+                display_name: "Calendar",
+                resource: "calendar.calendar",
+                action: "show-tasks",
+            }),
             Self::Meet => Some(LaunchpadAppAction {
                 app_id: "so.tilo.chat",
                 display_name: "Chat",
                 resource: "chat.workspace",
                 action: "start-call",
             }),
-            Self::Chat | Self::Notes | Self::Tasks | Self::Invite | Self::Activity => None,
+            Self::Chat | Self::Notes | Self::Invite | Self::Activity => None,
         }
     }
 
@@ -1372,7 +1378,12 @@ mod tests {
             );
         }
 
-        fn call_card_names_the_action_it_performs() {
+        fn tasks_and_call_cards_name_the_action_they_perform() {
+            let tasks = LaunchpadAction::Tasks.app_action().expect("tasks action");
+            assert_eq!(
+                (tasks.app_id, tasks.resource, tasks.action),
+                ("so.tilo.calendar", "calendar.calendar", "show-tasks")
+            );
             let call = LaunchpadAction::Meet.app_action().expect("call action");
             assert_eq!(
                 (call.app_id, call.resource, call.action),
@@ -1410,7 +1421,7 @@ mod tests {
         desktop_launchpad_exposes_an_app_opener();
         every_card_has_a_unique_semantic_route();
         collaboration_cards_target_the_apps_that_own_those_features();
-        call_card_names_the_action_it_performs();
+        tasks_and_call_cards_name_the_action_they_perform();
         assistive_activation_publishes_the_same_action_as_a_card_click();
     }
 

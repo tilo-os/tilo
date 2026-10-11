@@ -582,7 +582,6 @@ pub struct PowerPane {
     applied_seen: u64,
     notices_state: LocalState<Notices>,
     notices: Notices,
-    structure_dirty: bool,
     composed: ui::widget::Composed,
 }
 
@@ -599,7 +598,6 @@ impl PowerPane {
             applied: area.applied.clone(),
             notices: area.notices.get(),
             notices_state: area.notices.clone(),
-            structure_dirty: false,
             composed: ui::widget::Composed::default(),
         }
     }
@@ -925,18 +923,18 @@ impl Widget for PowerPane {
     fn sync(&mut self, shared: &AppModel, root: &ModelPath) {
         // The controls are built from the values: a change rebuilds them.
         if self.prefs.refresh() {
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         let applied = self.applied.get();
         if applied != self.applied_seen {
             self.applied_seen = applied;
             self.state = self.hardware.get();
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         let notices = self.notices_state.get();
         if notices != self.notices {
             self.notices = notices;
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         self.composed.sync(shared, root);
     }
@@ -1050,6 +1048,15 @@ mod tests {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+
+            cx.settings::<PowerPrefs>()
+                .update(|prefs| prefs.auto_suspend = !prefs.auto_suspend)
+                .unwrap();
+            pane.sync(&ui::automerge::AutoCommit::new(), &ui::automerge::ROOT);
+            assert!(
+                pane.take_structure_dirty(),
+                "a preference change rebuilds the controls"
+            );
         }
     }
 

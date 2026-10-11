@@ -181,7 +181,6 @@ pub struct ImportApp {
     status: String,
     status_is_error: bool,
     composed: ui::widget::Composed,
-    structure_dirty: bool,
     expanded_details: HashSet<usize>,
     shot_temp: Option<tempfile::TempDir>,
     /// The caller of the running job, answered when it settles.
@@ -251,7 +250,6 @@ impl ImportApp {
             status: format!("Folder imports are unavailable: {error}"),
             status_is_error: true,
             composed: ui::widget::Composed::default(),
-            structure_dirty: true,
             expanded_details: HashSet::new(),
             shot_temp: None,
             reply: None,
@@ -360,7 +358,7 @@ impl ImportApp {
                 app.wait_for_shot_terminal(ui::time::now() + SHOT_WAIT_BOUND)?;
             }
         }
-        app.structure_dirty = true;
+        app.composed.invalidate();
         Ok(app)
     }
 
@@ -602,7 +600,6 @@ impl ImportApp {
             status,
             status_is_error: false,
             composed: ui::widget::Composed::default(),
-            structure_dirty: true,
             expanded_details: HashSet::new(),
             shot_temp: None,
             reply: None,
@@ -907,7 +904,7 @@ impl ImportApp {
     fn refuse_semantic<T>(&mut self, message: String) -> Result<T, String> {
         self.status.clone_from(&message);
         self.status_is_error = true;
-        self.structure_dirty = true;
+        self.composed.invalidate();
         Err(message)
     }
 
@@ -943,7 +940,7 @@ impl ImportApp {
                 self.navigation.request(uri)?;
                 self.status = super::strings::t("imager-journey-navigation-pending");
                 self.status_is_error = false;
-                self.structure_dirty = true;
+                self.composed.invalidate();
                 return Ok(tilo_actions::ActionOutput {
                     value: Some(serde_json::json!({"requested": true})),
                     resources: Vec::new(),
@@ -1298,7 +1295,7 @@ impl ImportApp {
         self.destination_parent = None;
         self.status = "Review the source, destination, and one-time copy.".into();
         self.status_is_error = false;
-        self.structure_dirty = true;
+        self.composed.invalidate();
         Ok(())
     }
 
@@ -1420,7 +1417,7 @@ impl ImportApp {
             pending.cancelled = true;
             pending.finished = true;
             self.status = "Folder review stopped before it was saved.".into();
-            self.structure_dirty = true;
+            self.composed.invalidate();
             return true;
         }
         let previous_save_count = self.pending_saves.len();
@@ -1453,7 +1450,7 @@ impl ImportApp {
                 self.status_is_error = true;
             }
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
         true
     }
 
@@ -1555,7 +1552,7 @@ impl ImportApp {
                 self.worker = Some((index, worker));
                 self.status = "Copying and checking files…".into();
                 self.status_is_error = false;
-                self.structure_dirty = true;
+                self.composed.invalidate();
                 Ok(())
             }
             Err(error) => {
@@ -1620,7 +1617,7 @@ impl ImportApp {
                 self.worker = Some((index, worker));
                 self.status = "Continuing after checking saved progress…".into();
                 self.status_is_error = false;
-                self.structure_dirty = true;
+                self.composed.invalidate();
                 Ok(())
             }
             Err(error) => {
@@ -1643,12 +1640,12 @@ impl ImportApp {
             self.batch.clear();
             self.status = "Stopping at the next safe copy boundary…".into();
             self.status_is_error = false;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             true
         } else {
             self.status = "File checks are finished; waiting for the final result.".into();
             self.status_is_error = false;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             false
         }
     }
@@ -1813,7 +1810,7 @@ impl ImportApp {
                                 }
                                 self.status = e;
                                 self.status_is_error = true;
-                                self.structure_dirty = true;
+                                self.composed.invalidate();
                                 return true;
                             }
                         }
@@ -1853,7 +1850,7 @@ impl ImportApp {
             self.status = outcome
                 .err()
                 .unwrap_or_else(|| super::strings::t("imager-journey-navigation-opened"));
-            self.structure_dirty = true;
+            self.composed.invalidate();
             changed = true;
         }
         self.poll_identity_gate(&mut changed);
@@ -1935,7 +1932,7 @@ impl ImportApp {
 
         changed |= self.poll_folder_picker();
         if changed {
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         changed
     }
@@ -1956,7 +1953,7 @@ impl ImportApp {
                 self.status = e;
                 self.status_is_error = true;
             }
-            self.structure_dirty = true;
+            self.composed.invalidate();
             return;
         }
         self.apply_authorized_command(command);
@@ -2094,7 +2091,7 @@ impl ImportApp {
             self.status = error;
             self.status_is_error = true;
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     fn drain_commands(&mut self) -> bool {
@@ -2771,10 +2768,6 @@ impl Widget for ImportApp {
             || !self.pending_saves.is_empty()
             || self.detail_request.is_some()
     }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty) || self.composed.take_structure_dirty()
-    }
 }
 
 impl ImportApp {
@@ -2815,7 +2808,7 @@ impl ImportApp {
                         .get_or_insert(pending.destination_parent);
                     self.status = format!("Folder review could not be saved: {message}");
                     self.status_is_error = true;
-                    self.structure_dirty = true;
+                    self.composed.invalidate();
                     JobOutcome::Failed {
                         error: tilo_actions::ActionFailure {
                             code: "imager.review_save_failed".into(),
@@ -2891,7 +2884,7 @@ impl ImportApp {
             if let Some(Err(message)) = &save_result {
                 self.status = format!("Folder review could not be saved: {message}");
                 self.status_is_error = true;
-                self.structure_dirty = true;
+                self.composed.invalidate();
             }
             let update = if pending.cancelled {
                 JobOutcome::Cancelled {

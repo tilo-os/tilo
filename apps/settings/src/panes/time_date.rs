@@ -834,9 +834,7 @@ pub struct TimeDatePane {
     /// Why the automatic-time switch's position is unknown.
     auto_error: Option<String>,
     h24: bool,
-    structure_dirty: bool,
     composed: ui::widget::Composed,
-    rect: Rect,
 }
 
 impl TimeDatePane {
@@ -868,9 +866,7 @@ impl TimeDatePane {
             timezones_error,
             timezone_unknown: false,
             auto_error: None,
-            structure_dirty: false,
             composed: ui::widget::Composed::default(),
-            rect: Rect::ZERO,
         };
         pane.read_clock();
         if !pane.timezone_unknown && !timezones.contains(&pane.timezone) {
@@ -1048,16 +1044,16 @@ impl Widget for TimeDatePane {
         if applied != self.applied_seen {
             self.applied_seen = applied;
             self.read_clock();
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         let notice = self.notice.get();
         if notice != self.notice_shown {
             self.notice_shown = notice;
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         if self.locale.refresh() {
             self.h24 = matches!(self.locale.get().time_format, TimeStyle::H24);
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         self.composed.sync(state, root);
     }
@@ -1075,58 +1071,10 @@ impl Widget for TimeDatePane {
         crate::panes::pane_node(taffy, child, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-        if let Some(c) = self.composed.element_mut()
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = self.composed.element_mut() {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = self.composed.element_mut()
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.children()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed.children_mut()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "TimeDatePane"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self.composed.take_structure_dirty();
-        own || child
     }
 }
 

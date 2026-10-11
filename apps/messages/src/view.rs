@@ -202,10 +202,12 @@ fn answer(
             {
                 return Err(CATALOG.t("messages-contact-missing"));
             }
-            state.set(Selection {
-                person,
-                choice: String::new(),
-            });
+            if state.get().person != person {
+                state.set(Selection {
+                    person,
+                    choice: String::new(),
+                });
+            }
         }
         MessagesEffect::SelectRoute { choice } => {
             let selected = state.get();
@@ -358,6 +360,7 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
     let watched_history = history.clone();
     let watched_sources = sources.clone();
     let watched_selection = selection.clone();
+    let watched_sending = sending.clone();
     let watched_jobs = cx.jobs();
     let last_change = std::cell::Cell::new(history.revision());
     let projected = sources.clone();
@@ -376,13 +379,20 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
                 )
             },
             move |(_, selected, change, _)| {
+                if discard_invalid_route(
+                    &watched_sources,
+                    &watched_selection,
+                    &watched_sending,
+                    &watched_history,
+                ) {
+                    watched_jobs.cancel("messages.history");
+                }
                 if last_change.replace(*change) != *change && watched_history.available() {
                     let choice = watched_selection.get().choice;
                     watched_jobs.start::<()>("messages.history", |cx| {
                         watched_history.read(&watched_sources, &watched_selection, &choice, cx)
                     });
                 }
-                let overview = overview(&sources, &actions, &selected.person);
                 let detail_sources = sources.clone();
                 let detail_actions = actions.clone();
                 let detail_history = history.clone();
@@ -407,30 +417,66 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
                         .filling()
                         .with_child(detail),
                 );
-                let pane = LocalState::new(if selected.person.is_empty() && !setup.visible() {
-                    NavPane::Overview
-                } else {
-                    NavPane::Content
-                });
-                Box::new(
-                    NavShell::new()
-                        .overview(overview)
-                        .overview_header(
-                            CATALOG.t("messages-people"),
-                            vec![account_setup_action(&actions)],
-                        )
-                        .content(detail)
-                        .content_header_leading(if setup.visible() {
-                            Box::new(Text::new(&CATALOG.t("messages-setup-accounts")))
-                        } else {
-                            route_header(&sources, &actions, selected)
-                        })
-                        .with_pane_state(&pane),
-                )
+                navigation(detail, &sources, &actions, selected, &setup)
             },
         )
         .with_wake_deadline(move || scheduled_setup.next_wake_deadline()),
     )
+}
+
+fn navigation(
+    detail: Element,
+    sources: &Sources,
+    actions: &Actions<Messages>,
+    selected: &Selection,
+    setup: &crate::setup::SetupView,
+) -> Element {
+    let overview = overview(sources, actions, &selected.person);
+    let pane = LocalState::new(if selected.person.is_empty() && !setup.visible() {
+        NavPane::Overview
+    } else {
+        NavPane::Content
+    });
+    Box::new(
+        NavShell::new()
+            .overview(overview)
+            .overview_header(
+                CATALOG.t("messages-people"),
+                vec![account_setup_action(actions)],
+            )
+            .content(detail)
+            .content_header_leading(if setup.visible() {
+                Box::new(Text::new(&CATALOG.t("messages-setup-accounts")))
+            } else {
+                route_header(sources, actions, selected)
+            })
+            .with_pane_state(&pane),
+    )
+}
+
+fn discard_invalid_route(
+    sources: &Sources,
+    selection: &LocalState<Selection>,
+    sending: &crate::sending::Sending,
+    history: &crate::history::HistoryView,
+) -> bool {
+    // Shared account/contact edits can invalidate a selection without
+    // going through this app's navigation effects.
+    let selected = selection.get();
+    if selected.choice.is_empty()
+        || choices(sources, &selected.person)
+            .iter()
+            .any(|choice| choice.value() == selected.choice)
+    {
+        return false;
+    }
+    sending.clear();
+    history.clear();
+    selection.set(Selection {
+        person: selected.person,
+        choice: String::new(),
+    });
+    true
 }
 
 fn account_setup_action(actions: &Actions<Messages>) -> Element {
@@ -492,20 +538,17 @@ fn register_effects(
         if let MessagesEffect::ReadHistory { choice } = effect {
             return effect_history.read(&effect_sources, &state, &choice, cx);
         }
-        let refresh = matches!(effect, MessagesEffect::SelectRoute { .. });
-        let clear = refresh
-            || matches!(
-                effect,
-                MessagesEffect::OpenPerson { .. } | MessagesEffect::Back
-            );
+        let before = state.get();
         let result = answer(&effect_sources, &state, effect)?;
-        if clear {
+        let selected = state.get();
+        let changed = selected != before;
+        if changed {
             effect_sending.clear();
             effect_history.clear();
             jobs.cancel("messages.history");
         }
-        if refresh && effect_history.available() {
-            let choice = state.get().choice;
+        if changed && !selected.choice.is_empty() && effect_history.available() {
+            let choice = selected.choice;
             jobs.start::<()>("messages.history", |cx| {
                 effect_history.read(&effect_sources, &state, &choice, cx)
             });

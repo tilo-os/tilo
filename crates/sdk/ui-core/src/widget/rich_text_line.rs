@@ -565,6 +565,13 @@ impl RichTextLine {
         &self.inner
     }
 
+    /// What the last draw painted outside the line's rect
+    /// ([`TextInput::overhang`]).
+    #[must_use]
+    pub fn overhang(&self) -> Option<Rect> {
+        self.inner.overhang()
+    }
+
     fn refresh_attributes(&mut self) {
         let text = self.inner.value();
         // Ignore malformed mark endpoints while still retaining every UTF-8
