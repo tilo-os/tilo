@@ -13,6 +13,14 @@ use crate::widget::{ActionDirectoryInvocationDomain, ActionDirectoryResourcePage
 
 /// A widget that publishes resources.
 pub trait PublishesResources: Widget {
+    /// Inert pure projectors for exact newly encoded actions in this owner.
+    /// Registration supplies no authority, outcome or presentation receipt.
+    fn invocation_anchor_projectors(
+        &self,
+    ) -> &'static [crate::invocation_anchor::RegisteredInvocationAnchor] {
+        &[]
+    }
+
     /// The tree of resources this widget currently has open, each with the
     /// actions it exports, e.g. a playing video plus its comments. `doc` lets
     /// a provider enumerate resources living in the document.

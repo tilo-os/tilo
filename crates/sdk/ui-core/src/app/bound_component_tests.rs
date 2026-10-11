@@ -118,6 +118,15 @@ struct Probe {
 struct FollowUp;
 impl tilo_actions::Action for FollowUp {
     fn apply(&self, doc: &mut automerge::AutoCommit) -> Result<(), tilo_actions::ActionError> {
+        match APPLIED_PROBE_MODE.get() {
+            1 => return Ok(()),
+            2 => {
+                return Err(tilo_actions::ActionError::Refused(
+                    "applied-anchor fixture refusal".into(),
+                ));
+            }
+            _ => {}
+        }
         doc.put(ROOT, "follow-up", true)?;
         Ok(())
     }
@@ -434,6 +443,16 @@ impl crate::search::capability::SearchSource for Probe {
 }
 
 impl crate::resources::PublishesResources for Probe {
+    fn invocation_anchor_projectors(
+        &self,
+    ) -> &'static [crate::invocation_anchor::RegisteredInvocationAnchor] {
+        if PROBE_ANCHOR_ENABLED.get() {
+            &PROBE_INVOCATION_ANCHORS
+        } else {
+            &[]
+        }
+    }
+
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
         DISCOVERY_COUNT.set(DISCOVERY_COUNT.get().saturating_add(1));
         let mut action = tilo_actions::ActionSpec::operation(
@@ -990,6 +1009,7 @@ impl ActionFixture {
 include!("directory_permission_tests.rs");
 
 include!("invocation_locus_tests.rs");
+include!("invocation_anchor_tests.rs");
 
 include!("owner_publication_tests.rs");
 

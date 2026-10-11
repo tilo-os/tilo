@@ -514,6 +514,7 @@ pub mod application;
 pub mod application_view;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod host_worker;
+pub mod invocation_anchor;
 pub mod invocation_scope;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_scenario;

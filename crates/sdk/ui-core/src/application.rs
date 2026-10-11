@@ -700,6 +700,16 @@ impl HostContext {
     pub fn record(&self) -> &RecordCheckout {
         &self.record
     }
+    /// Read the route from this context's existing checked record custody.
+    /// Does not reserve a new record, join a channel or authorize an operation.
+    ///
+    /// # Errors
+    /// Refuses missing, busy or mismatched record identity.
+    pub fn existing_record_route(
+        &self,
+    ) -> Result<crate::collaboration::RouteSpec, crate::record::RecordOpenError> {
+        self.records.route(&self.record)
+    }
     /// The application this context was prepared for.
     pub fn app_id(&self) -> &str {
         &self.app_id

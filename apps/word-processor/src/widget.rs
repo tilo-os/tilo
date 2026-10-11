@@ -10786,6 +10786,12 @@ impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
 }
 
 impl ui::resources::PublishesResources for WordProcessorWidget {
+    fn invocation_anchor_projectors(
+        &self,
+    ) -> &'static [ui::invocation_anchor::RegisteredInvocationAnchor] {
+        &crate::invocation_anchor::PROJECTORS
+    }
+
     // The document is the framework's publication; the editor adds only
     // what an edit answers its caller with.
     fn document_action_result(

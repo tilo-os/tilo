@@ -2427,6 +2427,9 @@ pub(crate) fn execute_resource_operation(
             .as_ref()
             .map(|envelope| envelope.base_change_hashes());
         if let Some(envelope) = applied.as_ref() {
+            if let Some(scope) = scope {
+                scope.prepare_applied_anchor(widget, doc, envelope);
+            }
             // Reuse the executor's actual admission frontier: this adds no
             // document loan, commit, replay behavior, or cross-owner traversal.
             crate::history_mode::capability::document_action_applied(
@@ -2689,6 +2692,11 @@ pub(crate) fn invoke_resource_action(
                         arguments.as_ref(),
                         argument,
                     )?;
+                    if spec.kind == tilo_actions::OperationKind::Document
+                        && let Some(scope) = scope
+                    {
+                        scope.capture_pre_operation_anchor(widget, doc, &encoded);
+                    }
                     let execute = |widget: &mut dyn Widget, doc: &mut AutoCommit, path: &ObjId| {
                         with_native_text(target.physical_text && actor == binding.author.0 && crate::history_source::authors::agent_principal_name(actor).is_none(), || execute_resource_operation(
                             widget,
@@ -2734,11 +2742,17 @@ pub(crate) fn invoke_resource_action(
                     }
                     started.map_err(BoundActionError::Door)
                     };
-                    match scope {
+                    let result = match scope {
                         Some(scope) => scope.with_document_mutation(doc, |doc| Ok(run(doc)))
-                            .map_err(|error| BoundActionError::Door(tilo_actions::DoorError::Failed(error)))?,
+                            .map_err(|error| BoundActionError::Door(tilo_actions::DoorError::Failed(error)))
+                            .and_then(std::convert::identity),
                         None => run(doc),
+                    };
+                    if let Some(scope) = scope {
+                        scope.finish_applied_anchor(doc, matches!(&result,
+                            Ok(crate::widget::ResourceOperationStart::Completed(_))));
                     }
+                    result
                 })
                 .map_err(BoundActionError::Dispatch)
                 .and_then(std::convert::identity),

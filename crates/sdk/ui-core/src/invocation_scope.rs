@@ -413,6 +413,70 @@ impl InvocationLocusBasis {
     }
 }
 
+/// Exact pre-operation semantic target, locally qualified by original custody.
+/// It is neither the applied caret nor evidence of activity in a presented frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvocationPreOperationAnchor {
+    basis: InvocationLocusBasis,
+    anchor: tilo_actions::InteractionAnchor,
+}
+impl InvocationPreOperationAnchor {
+    pub fn basis(&self) -> &InvocationLocusBasis {
+        &self.basis
+    }
+    pub fn anchor(&self) -> &tilo_actions::InteractionAnchor {
+        &self.anchor
+    }
+}
+
+/// Historical local application evidence. This cannot authorize work, assert
+/// broker success, or prove a presented caret. Construction is SDK-private.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppliedInvocationAnchor {
+    basis: InvocationLocusBasis,
+    action: tilo_actions::ActionId,
+    heads: Vec<automerge::ChangeHash>,
+    anchor: tilo_actions::InteractionAnchor,
+    terminal_handed_off: bool,
+}
+impl AppliedInvocationAnchor {
+    pub fn basis(&self) -> &InvocationLocusBasis {
+        &self.basis
+    }
+    pub fn action(&self) -> tilo_actions::ActionId {
+        self.action
+    }
+    pub fn heads(&self) -> &[automerge::ChangeHash] {
+        &self.heads
+    }
+    pub fn anchor(&self) -> &tilo_actions::InteractionAnchor {
+        &self.anchor
+    }
+    /// The SDK queued its original Succeeded update after document commands.
+    /// This is not acknowledgement that the broker observed Succeeded.
+    pub fn terminal_handed_off(&self) -> bool {
+        self.terminal_handed_off
+    }
+}
+
+#[derive(Default)]
+enum AppliedAnchorState {
+    #[default]
+    Unobserved,
+    Unavailable,
+    Prepared(Box<AppliedInvocationAnchor>, crate::time::Instant),
+    Completed(Box<AppliedInvocationAnchor>, crate::time::Instant),
+}
+const APPLIED_ANCHOR_RETENTION: crate::time::Duration = crate::time::Duration::from_secs(5);
+
+#[derive(Default)]
+enum InvocationAnchorState {
+    #[default]
+    Unobserved,
+    Unavailable,
+    Captured(Box<tilo_actions::InteractionAnchor>),
+}
+
 #[derive(Default)]
 enum InvocationLocusState {
     #[default]
@@ -436,6 +500,8 @@ pub struct ResourceInvocationScope {
     retired: Arc<AtomicBool>,
     locus_target: Option<crate::bound_dispatch::BoundActionAddress>,
     locus_basis: Rc<RefCell<InvocationLocusState>>,
+    locus_anchor: Rc<RefCell<InvocationAnchorState>>,
+    applied_anchor: Rc<RefCell<AppliedAnchorState>>,
 }
 
 impl ResourceInvocationScope {
@@ -471,6 +537,8 @@ impl ResourceInvocationScope {
             retired: Arc::new(AtomicBool::new(false)),
             locus_target: None,
             locus_basis: Rc::new(RefCell::new(InvocationLocusState::Unobserved)),
+            locus_anchor: Rc::new(RefCell::new(InvocationAnchorState::Unobserved)),
+            applied_anchor: Rc::new(RefCell::new(AppliedAnchorState::Unobserved)),
         })
     }
 
@@ -503,6 +571,172 @@ impl ResourceInvocationScope {
             InvocationLocusState::Captured(basis) => Some(basis.as_ref().clone()),
             _ => None,
         })
+    }
+
+    /// Read a bounded pre-operation target while the original scope remains
+    /// live. Unsupported targets or failed qualification produce no observation.
+    pub fn pre_operation_anchor(&self) -> Result<Option<InvocationPreOperationAnchor>, String> {
+        let Some(basis) = self.locus_basis()? else {
+            return Ok(None);
+        };
+        Ok(match &*self.locus_anchor.borrow() {
+            InvocationAnchorState::Captured(anchor) => Some(InvocationPreOperationAnchor {
+                basis,
+                anchor: anchor.as_ref().clone(),
+            }),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn capture_pre_operation_anchor(
+        &self,
+        widget: &dyn crate::widget::Widget,
+        document: &AutoCommit,
+        encoded: &tilo_actions::EncodedAction,
+    ) {
+        if !matches!(
+            *self.locus_anchor.borrow(),
+            InvocationAnchorState::Unobserved
+        ) {
+            return;
+        }
+        // One attempt only; absence is never repaired using later participant
+        // state or a later frontier under the same invocation.
+        *self.locus_anchor.borrow_mut() = InvocationAnchorState::Unavailable;
+        let Ok(Some(basis)) = self.locus_basis() else {
+            return;
+        };
+        let mut heads = document.base_heads();
+        heads.sort_unstable();
+        if document.pending_ops() != 0
+            || heads != basis.heads()
+            || self.check_read_loan(document).is_err()
+            || current_invoker().as_ref() != Some(&self.lease.request.invoker())
+        {
+            return;
+        }
+        let Some(anchor) =
+            crate::invocation_anchor::project(widget, document, basis.target(), encoded)
+        else {
+            return;
+        };
+        if self.check_read_loan(document).is_err() || self.check().is_err() {
+            return;
+        }
+        *self.locus_anchor.borrow_mut() = InvocationAnchorState::Captured(Box::new(anchor));
+    }
+
+    /// Read the single bounded local-applied receipt while original custody is
+    /// live. No scope is retained beyond existing invocation ownership. Expiry
+    /// is checked monotonically on access, without a timer or renewed lease.
+    pub fn applied_anchor(&self) -> Result<Option<AppliedInvocationAnchor>, String> {
+        self.applied_anchor_at(crate::time::now())
+    }
+
+    pub(crate) fn applied_anchor_at(
+        &self,
+        now: crate::time::Instant,
+    ) -> Result<Option<AppliedInvocationAnchor>, String> {
+        self.check()?;
+        let mut state = self.applied_anchor.borrow_mut();
+        let expired = match &*state {
+            AppliedAnchorState::Prepared(_, at) | AppliedAnchorState::Completed(_, at) => {
+                now.saturating_duration_since(*at) >= APPLIED_ANCHOR_RETENTION
+            }
+            _ => false,
+        };
+        if expired {
+            *state = AppliedAnchorState::Unavailable;
+        }
+        Ok(match &*state {
+            AppliedAnchorState::Completed(receipt, _) => Some(receipt.as_ref().clone()),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn prepare_applied_anchor(
+        &self,
+        widget: &dyn crate::widget::Widget,
+        document: &AutoCommit,
+        envelope: &tilo_actions::ActionEnvelope,
+    ) {
+        if !matches!(
+            *self.applied_anchor.borrow(),
+            AppliedAnchorState::Unobserved
+        ) {
+            return;
+        }
+        *self.applied_anchor.borrow_mut() = AppliedAnchorState::Unavailable;
+        let Ok(Some(basis)) = self.locus_basis() else {
+            return;
+        };
+        let mut before = envelope.base_change_hashes();
+        before.sort_unstable();
+        let mut heads = document.base_heads();
+        heads.sort_unstable();
+        if document.pending_ops() != 0
+            || heads.len() > MAX_LOCUS_HEADS
+            || before != basis.heads()
+            || heads == before
+            || current_invoker().as_ref() != Some(&self.lease.request.invoker())
+            || self.check_read_loan(document).is_err()
+        {
+            return;
+        }
+        let Some(anchor) = crate::invocation_anchor::project_applied(
+            widget,
+            document,
+            basis.target(),
+            &envelope.action,
+        ) else {
+            return;
+        };
+        if self.check_read_loan(document).is_err() {
+            return;
+        }
+        *self.applied_anchor.borrow_mut() = AppliedAnchorState::Prepared(
+            Box::new(AppliedInvocationAnchor {
+                basis,
+                action: envelope.id,
+                heads,
+                anchor,
+                terminal_handed_off: false,
+            }),
+            crate::time::now(),
+        );
+    }
+
+    pub(crate) fn finish_applied_anchor(&self, document: &AutoCommit, completed: bool) {
+        let previous = std::mem::replace(
+            &mut *self.applied_anchor.borrow_mut(),
+            AppliedAnchorState::Unavailable,
+        );
+        let AppliedAnchorState::Prepared(receipt, at) = previous else {
+            return;
+        };
+        let mut heads = document.base_heads();
+        heads.sort_unstable();
+        if completed
+            && document.pending_ops() == 0
+            && heads == receipt.heads
+            && self.check_read_loan(document).is_ok()
+            && current_invoker().as_ref() == Some(&self.lease.request.invoker())
+            && crate::time::now().saturating_duration_since(at) < APPLIED_ANCHOR_RETENTION
+        {
+            *self.applied_anchor.borrow_mut() = AppliedAnchorState::Completed(receipt, at);
+        }
+    }
+
+    pub(crate) fn note_terminal_handoff(&self, succeeded: bool) {
+        if !succeeded || self.check().is_err() {
+            *self.applied_anchor.borrow_mut() = AppliedAnchorState::Unavailable;
+            return;
+        }
+        if let AppliedAnchorState::Completed(receipt, at) = &mut *self.applied_anchor.borrow_mut()
+            && crate::time::now().saturating_duration_since(*at) < APPLIED_ANCHOR_RETENTION
+        {
+            receipt.terminal_handed_off = true;
+        }
     }
 
     /// Best-effort metadata at actual bound dispatch; failure never changes the
@@ -670,6 +904,7 @@ impl ResourceInvocationScope {
     /// Irreversibly retire this job and all derived worker-effect custody.
     /// Cancellation grants no authority and cannot affect another job.
     pub fn cancel(&self) {
+        *self.applied_anchor.borrow_mut() = AppliedAnchorState::Unavailable;
         self.retired.store(true, Ordering::Release);
     }
 
@@ -683,6 +918,7 @@ impl ResourceInvocationScope {
             .check_invocation_lifetime()
             .and_then(|()| self.lease.check());
         if result.is_err() {
+            *self.applied_anchor.borrow_mut() = AppliedAnchorState::Unavailable;
             self.retired.store(true, Ordering::Release);
         }
         result?;

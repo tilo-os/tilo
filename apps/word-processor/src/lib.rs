@@ -37,6 +37,7 @@ pub mod effects;
 mod find_bar;
 pub mod framework;
 pub mod i18n;
+mod invocation_anchor;
 mod outline_pane;
 mod paint_context;
 mod review_overlay;
