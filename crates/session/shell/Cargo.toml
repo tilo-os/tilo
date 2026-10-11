@@ -136,7 +136,7 @@ percent-encoding.workspace = true
 # XML escaping for the recent-files bookmarks.
 quick-xml.workspace = true
 
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import", "ux-bench"] }
 tilo-identity-ceremony = { version = "0.1.0", path = "../../collab/tilo-identity-ceremony" }
 
 tilo-actions = { path = "../../collab/actions" }
