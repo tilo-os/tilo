@@ -182,9 +182,10 @@ impl<R: Resource> ResourceRoot<R> {
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
     ) -> Option<Vec<SharedResource>> {
-        if participant.is_some() || self.has_surface() || self.live.unreadable().is_some() {
+        if participant.is_some() || self.live.unreadable().is_some() {
             return None;
         }
+        let surface = self.has_surface();
         let current = if self.live.follows(doc) {
             None
         } else {
@@ -196,6 +197,11 @@ impl<R: Resource> ResourceRoot<R> {
         let root = {
             let _profile = tilo_resource::profiling::Phase::start("framework.publication");
             let tree = self.shared_document_tree(state);
+            // A surface that adds rows, or edits bound to rows, changes the
+            // children: that publication is built whole.
+            if surface && !self.surfaces_publish_on_head_only(tree.children()) {
+                return None;
+            }
             if current.is_some() {
                 // As `current_publication`: nested views follow this state
                 // until the view syncs to it.
@@ -231,7 +237,13 @@ impl<R: Resource> ResourceRoot<R> {
             if extra.id.as_str() == root.0.id.as_str() {
                 return None;
             }
-            extras.push(SharedResource::from_resource(outside_document(extra)));
+            // A hosted surface has already admitted what it adds.
+            let extra = if surface {
+                extra
+            } else {
+                outside_document(extra)
+            };
+            extras.push(SharedResource::from_resource(extra));
         }
         let mut resources = vec![SharedResource::new(root.0, root.1)];
         resources.append(&mut extras);
@@ -298,6 +310,28 @@ impl<R: Resource> ResourceRoot<R> {
         let mut found = false;
         self.surfaces(&mut |_| found = true);
         found
+    }
+
+    /// Whether every surface of the view publishes on the resource itself
+    /// only, as its head's bound edits and availability: no live rows, and
+    /// no edit bound to one of `children` or their children. Then the
+    /// publication is the shared document tree under the decorated head.
+    fn surfaces_publish_on_head_only(&self, children: &SharedChildren) -> bool {
+        fn ids<'a>(children: &'a SharedChildren, out: &mut Vec<&'a str>) {
+            for child in children {
+                out.push(child.id());
+                ids(child.children(), out);
+            }
+        }
+        let mut all = Vec::new();
+        ids(children, &mut all);
+        let mut head_only = true;
+        self.surfaces(&mut |surface| {
+            head_only = head_only
+                && surface.live_rows().is_empty()
+                && all.iter().all(|id| surface.row_declarations(id).is_empty());
+        });
+        head_only
     }
 }
 
