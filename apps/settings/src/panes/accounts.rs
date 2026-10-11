@@ -2812,15 +2812,15 @@ mod tests {
     /// The warm-up opens the vault off the UI thread once; the model holds
     /// what it opened, so a saved credential is there.
     #[test]
-    fn the_area_builds_its_model_from_the_read_it_started() -> Result<(), String> {
+    fn the_area_builds_its_model_from_the_read_it_started() {
         let (dir, root) = scratch_root();
         let id = accounts::AccountId::from("warm@example.test");
         let mut store = accounts::AccountStore::new();
         store.upsert(accounts::Account::new(id.clone(), "email"));
-        root.save_store(&store).map_err(|error| error.to_string())?;
+        root.save_store(&store).expect("the store is saved");
         let mut vault = root.vault();
         vault.put(&id, &accounts::Secret::password("test-only-password"));
-        vault.try_save()?;
+        vault.try_save().expect("the vault is saved");
         let cx = PaneCx::in_file(dir.path().join("settings.json"));
         let area = AccountsArea::new(&cx).with_account_root(root);
         assert!(area.start_read(), "the first read starts");
@@ -2844,21 +2844,18 @@ mod tests {
         );
         drop(model);
         assert!(!area.start_read(), "a built model is not read again");
-        Ok(())
     }
 
     /// A mutation whose intent is on disk is recovered before the vault is
     /// opened, so a vault read before it is not used.
     #[test]
-    fn a_pending_mutation_is_seen() -> Result<(), String> {
+    fn a_pending_mutation_is_seen() {
         let (_dir, root) = scratch_root();
         assert!(!root.mutation_pending());
-        let journal =
-            accounts::accounts_dir_in(&root.path().ok_or("a root")?).join("mutation-journal.json");
-        std::fs::create_dir_all(journal.parent().ok_or("a parent")?)
-            .map_err(|error| error.to_string())?;
-        std::fs::write(&journal, b"{}").map_err(|error| error.to_string())?;
+        let config = root.path().expect("an explicit root");
+        let accounts_dir = accounts::accounts_dir_in(&config);
+        std::fs::create_dir_all(&accounts_dir).expect("the accounts directory");
+        std::fs::write(accounts_dir.join("mutation-journal.json"), b"{}").expect("an intent");
         assert!(root.mutation_pending());
-        Ok(())
     }
 }
