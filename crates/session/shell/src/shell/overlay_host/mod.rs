@@ -17946,10 +17946,12 @@ impl Widget for ShellOverlayHost {
             if fullscreen {
                 work_area.set_vertical_padding(0.0);
                 work_area.set_extra_top_padding(0.0);
+                work_area.set_extra_bottom_padding(0.0);
                 work_area.set_gap(0.0);
             } else {
                 work_area.set_vertical_padding(0.0);
                 work_area.set_extra_top_padding(12.0);
+                work_area.set_extra_bottom_padding(12.0);
                 work_area.set_gap(theme.gap_standard);
             }
         }
