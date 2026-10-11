@@ -1359,9 +1359,10 @@ pub trait Widget {
         None
     }
 
-    /// Lets a screenshot harness hold an animation at a chosen millisecond
-    /// and render the real `draw` at that instant. Default `None`; a widget
-    /// opts in with `Some(self)`.
+    /// Downcast to the concrete widget, for hosts and tests that reach a
+    /// known widget through `dyn Widget`. Default `None` (a widget may borrow
+    /// and so not be `'static`); a widget opts in with `Some(self)`, and a
+    /// [`Decorator`] answers itself.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
     }
