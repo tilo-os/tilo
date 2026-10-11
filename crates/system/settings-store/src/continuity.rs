@@ -71,7 +71,6 @@ policies! {
         "tilo.accessibility.switch_scan_ms",
         "tilo.accessibility.screen_reader_rate",
         "tilo.accessibility.screen_reader_voice",
-        "tilo.appearance.theme",
         "tilo.appearance.mode",
         "tilo.appearance.dark_theme",
         "tilo.appearance.light_theme",

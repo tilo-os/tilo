@@ -370,9 +370,6 @@ impl Default for UpdatePrefs {
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppearancePrefs {
-    /// Legacy preset selector retained for imported settings and the published `SetTheme` action.
-    #[serde(default = "default_legacy_theme")]
-    pub theme: String,
     /// `"light"`, `"dark"` or `"automatic"` (light by day, dark by night).
     #[serde(default = "default_mode")]
     pub mode: String,
@@ -491,13 +488,9 @@ fn default_ui_scale() -> f64 {
     1.0
 }
 
-fn default_legacy_theme() -> String {
-    "Light".into()
-}
 impl Default for AppearancePrefs {
     fn default() -> Self {
         Self {
-            theme: default_legacy_theme(),
             mode: default_mode(),
             dark_theme: default_dark_theme(),
             light_theme: default_light_theme(),
@@ -607,14 +600,7 @@ impl AppearancePrefs {
 
     /// The theme document the current mode shows, with the density over it.
     pub fn user_document(&self) -> Option<ui::theme::ThemeDocument> {
-        // Import the former preset field without discarding new paired-theme data.
-        // Typed SetTheme keeps both forms in agreement; older settings have only
-        // the preset and therefore still need this conversion when read.
-        let mut imported = self.clone();
-        if self.theme != default_legacy_theme() {
-            imported.choose_legacy_theme(self.theme.clone());
-        }
-        ui::theme::user_document(&imported.settings_value(), ui::theme::local_moment())
+        ui::theme::user_document(&self.settings_value(), ui::theme::local_moment())
     }
 
     fn layers(&self, accessibility: ui::theme::AccessibilityLayer) -> ui::theme::ThemeLayerStack {
@@ -681,10 +667,12 @@ impl AppearancePrefs {
         "Dark cool",
         "Dark soft",
     ];
-    pub fn choose_legacy_theme(&mut self, name: String) {
+    /// Show `name` from [`Self::THEMES`]: Automatic, or a preset that becomes
+    /// the theme of its own mode.
+    pub fn choose_theme(&mut self, name: &str) {
         if settings_store::day_schedule::is_automatic(&name.to_ascii_lowercase()) {
             self.mode = "automatic".into();
-        } else if let Some(preset) = ui::theme::Preset::find(&name) {
+        } else if let Some(preset) = ui::theme::Preset::find(name) {
             let doc = preset.document();
             self.mode = if doc.palette.dark { "dark" } else { "light" }.into();
             if doc.palette.dark {
@@ -693,7 +681,19 @@ impl AppearancePrefs {
                 self.light_theme = preset.id().into();
             }
         }
-        self.theme = name;
+    }
+
+    /// The [`Self::THEMES`] entry the stored mode and themes amount to; a
+    /// custom theme reads as its id.
+    pub fn theme_choice(&self) -> String {
+        let id = match self.mode.as_str() {
+            mode if settings_store::day_schedule::is_automatic(mode) => {
+                return "Automatic".into();
+            }
+            "light" => &self.light_theme,
+            _ => &self.dark_theme,
+        };
+        ui::theme::Preset::find(id).map_or_else(|| id.clone(), |preset| preset.name().into())
     }
 }
 /// Overwrite `known`'s fields in the `section` object, keeping any other key
@@ -1414,7 +1414,7 @@ mod tests {
         p.power.lock_minutes = 0;
         p.updates.auto = false;
         p.updates.channel = "Nightly".into();
-        p.appearance.theme = "Nord".into();
+        p.appearance.choose_theme("Dark soft");
         p.appearance.high_contrast = true;
         p.appearance.reduce_motion = true;
         p.appearance.text_scale = 1.25;
@@ -1475,9 +1475,8 @@ mod tests {
         // A settings file written before ui_scale existed must load with the
         // field defaulted to 1.0 rather than failing the appearance section.
         let p = SystemPrefs::from_json(
-            r#"{"appearance":{"theme":"Nord","high_contrast":false,"reduce_motion":false,"text_scale":1.15}}"#,
+            r#"{"appearance":{"mode":"dark","high_contrast":false,"reduce_motion":false,"text_scale":1.15}}"#,
         );
-        assert_eq!(p.appearance.theme, "Nord", "the section still parses");
         assert_eq!(
             p.appearance.ui_scale, 1.0,
             "missing ui_scale defaults to neutral"
@@ -1509,19 +1508,21 @@ mod tests {
     #[test]
     fn appearance_prefs_resolve_to_real_themes() {
         let p = AppearancePrefs::default();
-        assert_eq!(p.theme, "Light");
+        assert_eq!(p.theme_choice(), "Light");
         assert!(!p.high_contrast);
         assert_eq!(p.text_scale, 1.0);
 
-        let prefs =
-            |theme: &str, high_contrast, reduce_motion, text_scale, ui_scale| AppearancePrefs {
-                theme: theme.into(),
+        let prefs = |theme: &str, high_contrast, reduce_motion, text_scale, ui_scale| {
+            let mut prefs = AppearancePrefs {
                 high_contrast,
                 reduce_motion,
                 text_scale,
                 ui_scale,
                 ..AppearancePrefs::default()
             };
+            prefs.choose_theme(theme);
+            prefs
+        };
         // (case, prefs, resolved name, text scale, reduced motion)
         let cases = [
             (
@@ -1626,8 +1627,8 @@ mod tests {
             (
                 "appearance keeps the locale",
                 format!(r#"{{"version":1,{locale}}}"#),
-                |p| p.appearance.theme = "Gruvbox".into(),
-                &["\"theme\": \"Gruvbox\"", "\"currency\": \"EUR\""],
+                |p| p.appearance.choose_theme("Dark cool"),
+                &["\"dark_theme\": \"dark-cool\"", "\"currency\": \"EUR\""],
             ),
             (
                 "display keeps locale and foreign keys",

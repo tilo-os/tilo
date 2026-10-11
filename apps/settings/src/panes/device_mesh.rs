@@ -2216,7 +2216,7 @@ mod tests {
                 schema_version: SCHEMA_VERSION,
                 generated_unix_ms: 1,
                 settings: vec![SettingResolution {
-                    key: "tilo.appearance.theme".into(),
+                    key: "tilo.appearance.mode".into(),
                     winner: origin("b", "Laptop", 8),
                     alternatives: vec![origin("a", "Desktop", 7)],
                 }],
@@ -2233,7 +2233,7 @@ mod tests {
                 summaries,
                 vec![
                     (
-                        "tilo.appearance.theme".into(),
+                        "tilo.appearance.mode".into(),
                         "Resolved to Laptop at revision 8; differs from Desktop".into()
                     ),
                     (
