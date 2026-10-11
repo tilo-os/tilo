@@ -359,7 +359,10 @@ enforces the budgets in four places:
   closest to a budget in the registry first, so a toolkit change measures the
   apps it pushes over first without packaging the whole collection. It
   packages as Release / apps does, from the same compiler cache. A change
-  that affects no app runs no such job.
+  that affects no app runs no such job. A pull request runs its own
+  branch's `check.yml`, so a branch older than this job affecting an app
+  fails `select` and asks for main to be merged in, rather than landing
+  unmeasured.
 - **Release / apps** (`Shipped tapps within their size budget`) measures each
   tapp it has just packaged and signed, which is the affected apps only. It
   fails when an app is over its budget or has none, so nothing is published.
