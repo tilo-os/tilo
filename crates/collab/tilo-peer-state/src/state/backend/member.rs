@@ -1,7 +1,7 @@
 //! One current-member algorithm over actual admitted room data.
 use super::{
     BoundedNative, CapOverride, CertificateLookupError, GovernedIdentity, LegacyNative, PeerCore,
-    Principal, Role, Scope, Storage, Subject, SystemTime, now_secs, room,
+    Principal, Role, Scope, Storage, Subject, SystemTime, now_ns, now_secs, room,
 };
 use crate::room::key_hex::KeyHex;
 use crate::state::bounded::{BoundedPeerError, BoundedPeerInvalid, PeerLimits};
@@ -18,6 +18,7 @@ pub(in crate::state) enum Error {
     RevocationRoot,
     Revocation(tilo_user_identity::RevocationError),
     RoomRevoked,
+    AgentInactive(crate::state::agent_members::AgentInactive),
     NoMembership,
     Read,
     Capacity,
@@ -33,6 +34,7 @@ impl std::fmt::Display for Error {
             Self::CertificateMismatch => f.write_str("governed certificate mismatch"),
             Self::RevocationRoot => f.write_str("revocation root mismatch"),
             Self::RoomRevoked => f.write_str("device revoked by room"),
+            Self::AgentInactive(reason) => reason.fmt(f),
             Self::NoMembership => f.write_str("person has no room membership"),
             Self::Read => f.write_str("governed membership read failed"),
             Self::Decode(e) => write!(f, "governed membership decode refusal: {e:?}"),
@@ -80,6 +82,9 @@ fn current<'peer, S: Storage, P: Policy>(
     if revoked {
         return Err(Error::RoomRevoked);
     }
+    identity
+        .agent_acting(&peer.room, now_ns(now))
+        .map_err(Error::AgentInactive)?;
     let person = key_text(&cert.user_public_key);
     let mut role = policy
         .role(person.as_str(), now_secs(now))
@@ -87,6 +92,9 @@ fn current<'peer, S: Storage, P: Policy>(
     if capped(cert, &peer.authority) {
         role =
             collab_types::foreign_device::foreign_device_role(role, policy.caps(), now_secs(now));
+    }
+    if identity.agent.is_some() {
+        role = crate::state::agent_members::agent_role(role);
     }
     Ok((role, person, policy))
 }
