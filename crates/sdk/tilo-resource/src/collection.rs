@@ -386,6 +386,20 @@ fn stored_entries(doc: &Doc, map: &ObjId) -> Result<Vec<Stored>, ModelError> {
     Ok(entries)
 }
 
+/// The destination of each entry in stable `(order key, id)` order.
+/// Sorting key references once in the shared runtime avoids one sort per `T`.
+#[inline(never)]
+fn refresh_destinations(mut order: Vec<(usize, Option<&str>, &str)>) -> Vec<usize> {
+    order.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.cmp(b.2)));
+    let mut destinations = vec![0; order.len()];
+    for (destination, (source, _, _)) in order.into_iter().enumerate() {
+        if let Some(slot) = destinations.get_mut(source) {
+            *slot = destination;
+        }
+    }
+    destinations
+}
+
 /// Indices (into `keys`) of one longest strictly increasing subsequence.
 fn longest_increasing(keys: &[Option<&str>]) -> Vec<usize> {
     // Patience sorting over the present keys, O(n log n).
@@ -496,8 +510,19 @@ impl<T: Model> Model for Collection<T> {
         // A moved order key or a new entry: sorting may move items.
         if reorder {
             self.moved();
-            self.items
-                .sort_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
+            let mut destinations = refresh_destinations(
+                self.items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, entry)| (index, entry.key.as_deref(), entry.id.as_str()))
+                    .collect(),
+            );
+            for from in 0..destinations.len() {
+                while let Some(to) = destinations.get(from).copied().filter(|to| *to != from) {
+                    self.items.swap(from, to);
+                    destinations.swap(from, to);
+                }
+            }
         }
         Ok(())
     }
