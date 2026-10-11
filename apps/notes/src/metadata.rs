@@ -7,17 +7,9 @@ use automerge::{AutoCommit, ChangeHash};
 use std::collections::{HashMap, HashSet};
 use ui::history_source::{SchemaObjectId, schema_operations_since};
 
-/// Notes' messages. Every host loads them before the app's view is built;
-/// a widget built on its own loads them as it is made.
-pub static CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
-    "en-US",
-    &[
-        ("en-US", include_str!("../locales/en-US.ftl")),
-        ("de", include_str!("../locales/de.ftl")),
-    ],
-    "notes-view-editor",
-)
-.with_system_locale();
+// Notes' messages. Every host loads them before the app's view is built;
+// a widget built on its own loads them as it is made.
+ui::embedded_catalog!(pub static CATALOG, "notes-view-editor", ["en-US", "de"]);
 
 /// Load the toolkit's widget messages and [`CATALOG`] on this thread.
 pub fn register_messages() {

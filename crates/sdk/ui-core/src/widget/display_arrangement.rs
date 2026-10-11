@@ -29,30 +29,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use placement::Placement;
 
-use crate::i18n::{ArgValue, EmbeddedCatalog};
-
-static CATALOG: EmbeddedCatalog = catalogue();
-
-const fn catalogue() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new(
-        "en-US",
-        &[
-            ("en-US", include_str!("../../locales/en-US.ftl")),
-            ("de-DE", include_str!("../../locales/de-DE.ftl")),
-        ],
-        "display-arrangement-name",
-    )
-    .with_system_locale();
-    #[cfg(test)]
-    let catalog = catalog.with_pinned_locale("en-US");
-    catalog
-}
+use crate::i18n::widget_format;
 
 fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
+    widget_format(key, &[])
 }
 
 /// One display as the canvas draws it.
@@ -500,7 +480,7 @@ impl DisplayArrangement {
         let caption = display.status().map_or_else(
             || display.label.clone(),
             |status| {
-                t_args(
+                widget_format(
                     "display-arrangement-caption-status",
                     &[
                         ("status", status.into()),
@@ -682,7 +662,7 @@ impl Widget for DisplayArrangement {
                 "display-arrangement-item"
             };
             let node = AccessNode::new(Role::Image)
-                .with_name(t_args(
+                .with_name(widget_format(
                     key,
                     &[
                         (
@@ -692,7 +672,7 @@ impl Widget for DisplayArrangement {
                         ("name", ui::i18n::ArgValue::Text(display.label.clone())),
                     ],
                 ))
-                .with_description(t_args(
+                .with_description(widget_format(
                     "display-arrangement-item-position",
                     &[
                         (
@@ -716,7 +696,7 @@ impl Widget for DisplayArrangement {
                 .with_bounds(mapping.to_canvas(display.placement));
             let mut node = if let Some(status) = display.status() {
                 let position = node.description.clone().unwrap_or_default();
-                node.with_description(t_args(
+                node.with_description(widget_format(
                     "display-arrangement-item-status",
                     &[("position", position.into()), ("status", status.into())],
                 ))
