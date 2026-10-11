@@ -280,7 +280,10 @@ The frame builder (`crates/session/shell/src/compositor/frame.rs`) produces one 
 
 `FrameBuilder::paint_with_damage` records the shell in ordered sections and
 proves which pixels changed since the previous frame; `None` means "redraw
-everything". The top bar and Quick Settings are bounded sections. The
+everything". The top bar and Quick Settings are bounded sections; Quick
+Settings also has parts (its panel, the strip ribbon and the strip rail), so
+moving focus to another strip repaints the ribbon and the rail rather than
+everything between them. The
 workspace, its overlays and everything above Quick Settings are split into
 keyed **damage parts** (`ui::scene_parts`): a draw site marks a stretch of
 commands with a key and the bounds those commands can paint, and every
@@ -330,17 +333,20 @@ band where a moving strip's shadows meet a strip that stayed, and composites
 from the textures; the wheel, which rides the top strip over the strips below,
 is only composited at its new place, and a layer is rasterised again only when
 its scene changes (a strip whose drawing changed, only inside its own row).
-On a scaled display pans land on whole device pixels that are also whole
-layout pixels: the drawn pan is the gesture's rounded to the fewest layout
-pixels that make whole device pixels (one at 100 % and 200 %, two — three
-device pixels — at 150 %, four at 125 %; scales needing more than eight keep
-exact pans and the scene path). A pan then moves strip pixels by whole pixels
-without resampling them, and the panned frame is exactly what the desktop
-drawn without layers shows: chrome that snaps to layout pixels (the docked
-wheel's cached drawing, app icons) would land a fraction of a pixel apart at
-a finer step and twitch when the pan ends. Layout and input use the same
-drawn pan. Frames at rest keep the screen-space damage above, and a rotated,
-calibrated, HDR, blurred or multi-display output renders the scene as before.
+On a scaled display pans step by one device pixel: the drawn pan is the
+gesture's rounded to a device pixel (a layout pixel at 100 %, half of one at
+200 %, two thirds at 150 %, four fifths at 125 %). A pan then moves strip
+pixels by whole pixels without resampling them, as finely as the panel shows,
+and the panned frame is what the desktop drawn without layers shows: what
+rides the strip moves by exactly the pan (the docked wheel replays its cached
+drawing under the exact change of its place, not a rounded one), so nothing
+lands a fraction of a pixel apart and twitches when the pan ends. Layout and
+input use the same drawn pan. A rotated, calibrated or HDR output composites
+the layers the same way and then turns, calibrates or PQ-encodes the result
+in its final pass, as it would a render of the scene. Frames at rest keep the
+screen-space damage above, and a blurred surface, an HDR surface or several
+displays (each draws its own view of the desktop, and a strip spanning two
+pans per display) render the scene as before.
 Night light and the
 colour filters are per-pixel tints drawn into the same scene, so frames under
 them stay sparse while the tint is unchanged; the magnifier and the
