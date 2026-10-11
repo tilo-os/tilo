@@ -5,11 +5,10 @@
 //! signature, but private shares stay in the host session. `TILO_USER_IDENTITY`
 //! remains a compatibility path for non-sandboxed development only.
 //!
-//! The on-disk file is the JSON emitted by the identity-flow's
-//! `IdentityRecord::to_json_bytes` (see `crates/sdk/ui-core/src/widget/identity_flow`). This
-//! crate keeps a minimal local copy of the schema (`ondisk::IdentityRecord`)
-//! rather than depending on `ui`, which is heavy and depends on this SDK
-//! layer transitively — a dep the other way would form a cycle. Both sides
+//! The on-disk file is the JSON emitted by
+//! `tilo_identity_ceremony::IdentityRecord::to_json_bytes`. This crate keeps
+//! a minimal local copy of the schema (`ondisk::IdentityRecord`) rather than
+//! depending on the ceremony crate. Both sides
 //! bump the version tag together on a breaking schema change.
 //!
 //! In 1-of-1 (single-device) mode this crate signs locally via
