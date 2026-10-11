@@ -689,6 +689,8 @@ pub(crate) struct StripLayers {
     /// Where a moving band is staged: a texture cannot be copied onto itself.
     scratch: Option<(LayerTexture, (u32, u32))>,
     composite: CompositePass,
+    /// The composite has run once ([`Self::prime_composite`]).
+    primed: bool,
     pub(crate) shown: Option<Shown>,
 }
 
@@ -702,6 +704,7 @@ impl StripLayers {
             chrome: LayerTexture::new(device, size, "tilo-strip-layer-chrome"),
             scratch: None,
             composite: CompositePass::new(device),
+            primed: false,
             shown: None,
         }
     }
@@ -713,6 +716,35 @@ impl StripLayers {
             Layer::Wheel => &mut self.wheel,
             Layer::Chrome => &mut self.chrome,
         }
+    }
+
+    /// Run the composite once, over one pixel of a throwaway target: a
+    /// driver that compiles a pipeline on its first dispatch (lavapipe)
+    /// then does so while the desktop rests, not in a pan's first frame.
+    pub(crate) fn prime_composite(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if std::mem::replace(&mut self.primed, true) {
+            return;
+        }
+        let target = LayerTexture::new(device, (1, 1), "tilo-strip-layer-prime");
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("tilo-strip-layer-prime"),
+        });
+        self.encode_composite(
+            CompositeTarget {
+                device,
+                queue,
+                encoder: &mut encoder,
+                output: &target.view,
+            },
+            None,
+            FineDamageRect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
     }
 
     /// Give the wheel's texture `size`, keeping it when it already has it.

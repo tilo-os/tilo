@@ -1130,6 +1130,9 @@ impl RetainedGpuTarget {
                 self.size,
             ));
         }
+        if let Some(layers) = self.strip_layers.as_mut() {
+            layers.prime_composite(&self.device, &self.queue);
+        }
         let shown = self
             .strip_layers
             .as_ref()
