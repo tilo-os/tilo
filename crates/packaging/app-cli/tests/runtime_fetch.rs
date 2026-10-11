@@ -390,6 +390,15 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     );
     assert!(package_store::list_installed().unwrap().is_empty());
     assert!(!app_cli::runtime_installed(&needed));
+    let absent = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+        .args(["runtime", "install", &needed, "--repo", "local"])
+        .output()
+        .unwrap();
+    assert!(
+        !absent.status.success(),
+        "unoffered runtime cannot be installed"
+    );
+    assert!(package_store::list_installed().unwrap().is_empty());
 
     // Phase `with_its_runtime_on_offer_the_runtime_is_fetched_first`.
     let runtime_full = runtime_tapp(&registry_bundle, &needed);
@@ -420,6 +429,23 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     );
     let second = snapshot(vec![app_entry, runtime_entry], &owner, Some(&first));
     served.put("/entries", serde_json::to_vec(&second).unwrap());
+
+    let explicit = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+        .args(["runtime", "install", &needed, "--repo", "local"])
+        .output()
+        .unwrap();
+    assert!(
+        explicit.status.success(),
+        "explicit runtime install: {}",
+        String::from_utf8_lossy(&explicit.stderr)
+    );
+    assert!(
+        package_store::list_installed()
+            .unwrap()
+            .iter()
+            .all(|row| row.id != APP_ID),
+        "installing the engine must not replace or install its app"
+    );
 
     let listing = app_cli::available();
     assert!(
