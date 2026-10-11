@@ -5348,21 +5348,11 @@ mod tests {
     }
 
     fn retained_value(root: &dyn Widget, id: &str) -> Option<String> {
-        if root.test_id() == Some(id) {
-            return root.accessibility().and_then(|node| node.value);
-        }
-        root.children()
-            .into_iter()
-            .find_map(|child| retained_value(child, id))
+        ui::widget::find_test_id(root, id)?.accessibility()?.value
     }
 
     fn retained_name(root: &dyn Widget, id: &str) -> Option<String> {
-        if root.test_id() == Some(id) {
-            return root.accessibility().and_then(|node| node.name);
-        }
-        root.children()
-            .into_iter()
-            .find_map(|child| retained_name(child, id))
+        ui::widget::find_test_id(root, id)?.accessibility()?.name
     }
 
     fn internal_action(app: &SetupApp, id: &str) -> tilo_actions::ActionSpec {

@@ -19,16 +19,9 @@ use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 use vello::kurbo::Point;
 
 fn target(app: &ContactsApp, id: &str) -> Rect {
-    fn find(widget: &dyn Widget, id: &str) -> Option<Rect> {
-        if widget.test_id() == Some(id) {
-            return Some(widget.get_rect());
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| find(child, id))
-    }
-    find(app, id).unwrap_or_else(|| panic!("production target {id} is absent"))
+    ui::widget::find_test_id(app, id)
+        .unwrap_or_else(|| panic!("production target {id} is absent"))
+        .get_rect()
 }
 fn named_widget<'a>(widget: &'a dyn Widget, name: &str, role: Role) -> Option<&'a dyn Widget> {
     if widget

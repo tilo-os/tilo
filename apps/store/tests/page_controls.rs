@@ -13,7 +13,7 @@
 use store::StoreApp;
 use ui::headless::Framed;
 use ui::tilo_resource::Resource as _;
-use ui::widget::Widget;
+use ui::widget::{Widget, find_test_id};
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -34,17 +34,13 @@ fn staged(scenario: &str) -> StoreApp {
 }
 
 fn rect_of(root: &dyn Widget, id: &str) -> Rect {
-    fn find(w: &dyn Widget, id: &str) -> Option<Rect> {
-        if w.test_id() == Some(id) {
-            return Some(w.get_rect());
-        }
-        w.children().into_iter().find_map(|child| find(child, id))
-    }
-    find(root, id).unwrap_or_else(|| panic!("no widget with test id {id:?}"))
+    find_test_id(root, id)
+        .unwrap_or_else(|| panic!("no widget with test id {id:?}"))
+        .get_rect()
 }
 
 fn has_test_id(w: &dyn Widget, id: &str) -> bool {
-    w.test_id() == Some(id) || w.children().into_iter().any(|child| has_test_id(child, id))
+    find_test_id(w, id).is_some()
 }
 
 fn cursor(app: &mut Framed<StoreApp>, at: Point) {

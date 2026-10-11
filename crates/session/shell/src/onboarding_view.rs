@@ -4184,13 +4184,7 @@ mod tests {
     }
 
     fn accessibility_for_id(widget: &dyn Widget, id: &str) -> Option<ui::a11y::AccessNode> {
-        if widget.test_id() == Some(id) {
-            return widget.accessibility();
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| accessibility_for_id(child, id))
+        ui::widget::find_test_id(widget, id)?.accessibility()
     }
 
     fn write_fixture_identity(directory: &std::path::Path) {

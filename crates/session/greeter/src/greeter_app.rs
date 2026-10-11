@@ -2332,6 +2332,7 @@ mod tests {
     use automerge::{AutoCommit, ReadDoc};
     use std::collections::HashMap;
     use taffy::AvailableSpace;
+    use ui::widget::find_test_id;
 
     /// The shipped Tilo session plus a second, separately installed one, so
     /// there is a real choice and the picker is in the footer. Human names,
@@ -2505,21 +2506,14 @@ mod tests {
         }
     }
 
-    fn find<'a>(w: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-        if w.test_id() == Some(id) {
-            return Some(w);
-        }
-        w.children().into_iter().find_map(|child| find(child, id))
-    }
-
     fn accessible_name_for(w: &dyn Widget, id: &str) -> Option<String> {
-        find(w, id)
+        find_test_id(w, id)
             .and_then(Widget::accessibility)
             .and_then(|n| n.name)
     }
 
     fn rect_for(w: &dyn Widget, id: &str) -> Option<Rect> {
-        find(w, id).map(Widget::get_rect)
+        find_test_id(w, id).map(Widget::get_rect)
     }
 
     /// The panel's focusable widgets, identified by stable id, in tab order.
@@ -2744,7 +2738,7 @@ mod tests {
                 "a single session must not render a picker: {:?}",
                 focusables(&app)
             );
-            assert!(find(card_of(&app).as_ref(), "greeter.session").is_none());
+            assert!(find_test_id(card_of(&app).as_ref(), "greeter.session").is_none());
             assert_eq!(app.console_state()["session_choice"], false);
             assert_eq!(app.console_state()["sessions"], serde_json::json!(["Tilo"]));
             // Signing in starts that session; there is nothing left to pick.
@@ -3065,7 +3059,7 @@ mod tests {
             let mut app = GreeterApp::with_sessions(test_sessions());
             let base = focus_shape(&app);
             let card = card_of(&app);
-            let reveal = find(card.as_ref(), "greeter.password_reveal")
+            let reveal = find_test_id(card.as_ref(), "greeter.password_reveal")
                 .expect("the shared field retains an addressable reveal control");
             let accessible = reveal.accessibility().expect("reveal is accessible");
             assert_eq!(accessible.role, ui::a11y::Role::Button);
@@ -3562,7 +3556,7 @@ mod tests {
             paint(&mut app, &theme, &mut laid.text);
             Widget::mark_drawn(&mut app);
             let card = app.composed.element().expect("composed");
-            let row = find(card, "greeter.password")
+            let row = find_test_id(card, "greeter.password")
                 .map(Widget::get_rect)
                 .expect("passcode field")
                 .union(rect_for(card, "greeter.login").expect("sign-in action"));
