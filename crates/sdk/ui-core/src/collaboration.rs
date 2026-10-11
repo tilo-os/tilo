@@ -1250,6 +1250,10 @@ impl CollaborationManager {
         self.primary_route.required_document_custody = true;
     }
 
+    pub(crate) fn requires_document_authorization(&self) -> bool {
+        self.primary_route.required_document_custody
+    }
+
     fn missing_required_document_custody(&self, request: &CollabRequest) -> bool {
         self.primary_route.required_document_custody
             && matches!(

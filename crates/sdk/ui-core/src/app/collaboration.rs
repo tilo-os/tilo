@@ -27,6 +27,7 @@ impl App {
     ) -> Result<Self, crate::launch::LaunchError> {
         use crate::collaboration::native_initial::{self, NativeConstruction};
         use crate::launch::{LaunchError, LaunchRecovery};
+        let required_provenance = collaboration.requires_document_authorization();
         let scope = crate::wake::WakeScope::new();
         let _entry = scope.enter();
         let construction = NativeConstruction::enter_component(collaboration, scope)
@@ -52,7 +53,24 @@ impl App {
                 recovery: LaunchRecovery::records(binding.records),
             });
         }
-        let component = instantiate(prepared.context, prepared.target, prepared.restore)?;
+        // Establish the admitted baseline before factory defaults or migrations.
+        // Requiring custody does not grant permission to contribute document edits.
+        if required_provenance && let Err(error) = prepared.context.require_invocation_provenance()
+        {
+            return Err(LaunchError::ComponentSetup {
+                source: Box::new(error),
+                record: Box::new(binding.checkout),
+                recovery: LaunchRecovery::records(binding.records),
+            });
+        }
+        let mut component = instantiate(prepared.context, prepared.target, prepared.restore)?;
+        if required_provenance
+            && let Err(error) = binding
+                .records
+                .require_invocation_provenance(&binding.checkout)
+        {
+            return Err(component.setup_error(LaunchError::Operation(error)));
+        }
         let mut app = native_initial::transfer_to_app(|| {
             Self::from_component_using(component, prepared.runner_inputs, |inputs, binding| {
                 let mut inputs = AppConstructionInputs::component(inputs, binding);
@@ -64,7 +82,16 @@ impl App {
             })
         })
         .map_err(LaunchError::Operation)??;
-        if let Err(error) = native_initial::check_current() {
+        let current = native_initial::check_current().and_then(|()| {
+            if required_provenance {
+                binding
+                    .records
+                    .require_invocation_provenance(&binding.checkout)
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(error) = current {
             app.close_components();
             return Err(LaunchError::ComponentSetup {
                 source: Box::new(LaunchError::Operation(error)),
