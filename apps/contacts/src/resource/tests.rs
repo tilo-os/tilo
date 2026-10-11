@@ -547,15 +547,7 @@ fn history_says_what_each_change_did() {
         .unwrap();
     app.invoke_confirmed(Contacts::delete(ada.id)).unwrap();
 
-    let source = include_str!("../../locales/en-US.ftl");
-    let catalogue = tilo_history::Catalogue::new("en-US", &[source]);
-    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
-    let sentences: Vec<String> = app
-        .versions()
-        .into_iter()
-        .filter_map(|version| version.context)
-        .map(|entry| reader.sentence(&entry))
-        .collect();
+    let sentences = app.sentences(app.history().iter());
     assert_eq!(
         sentences,
         [
