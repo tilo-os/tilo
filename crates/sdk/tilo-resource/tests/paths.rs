@@ -280,7 +280,7 @@ pub struct Book {
 
 impl Shelf {
     fn valid(&self) -> Result<(), Refusal> {
-        SHELF_CHECKS.with(|checks| checks.set(checks.get() + 1));
+        SHELF_CHECKS.with(|checks| checks.set(checks.get().saturating_add(1)));
         if self.name == "bad" {
             return Err(Refusal::new("no shelf is called bad"));
         }
