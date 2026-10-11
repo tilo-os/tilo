@@ -812,6 +812,16 @@ impl Worker {
     pub fn poll(&self) -> Vec<Update> {
         self.rx.try_iter().take(MAX_UPDATES_PER_POLL).collect()
     }
+
+    /// A worker that fetches nothing: its results are what the returned
+    /// sender sends. For a test that lands a result at a moment it chooses.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn scripted() -> (Self, SyncSender<Update>) {
+        let (tx, _requests) = std::sync::mpsc::sync_channel::<Request>(REQUEST_QUEUE_CAPACITY);
+        let (results, rx) = std::sync::mpsc::sync_channel::<Update>(UPDATE_QUEUE_CAPACITY);
+        (Self { tx, rx }, results)
+    }
 }
 
 /// Short `host…` label for a resolved URL, for the status log.
