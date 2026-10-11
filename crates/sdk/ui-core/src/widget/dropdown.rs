@@ -3440,7 +3440,8 @@ mod tests {
                 )])),
             ],
         );
-        let app = crate::headless::Driver::new(crate::State::new(), Box::new(section), (900, 400));
+        let app =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(section), (900, 400));
         let targets = app.targets();
         let target = |id: &str| *targets.get(id).expect(id);
         let (zone, size) = (target("zone"), target("size"));
@@ -3466,7 +3467,8 @@ mod tests {
                     .with_id("device"),
             ),
         ]);
-        let app = crate::headless::Driver::new(crate::State::new(), Box::new(section), (900, 400));
+        let app =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(section), (900, 400));
         let targets = app.targets();
         let target = |id: &str| *targets.get(id).expect(id);
         for id in ["size", "device"] {
@@ -3487,7 +3489,8 @@ mod tests {
                 .push(Box::new(
                     Dropdown::new(vec!["A".into(), "B".into()], "ab").with_id("tiny"),
                 ));
-            let app = crate::headless::Driver::new(crate::State::new(), Box::new(row), (900, 200));
+            let app =
+                crate::headless::FrameHarness::new(crate::State::new(), Box::new(row), (900, 200));
             let targets = app.targets();
             let hug = targets.get("hug").expect("hugging dropdown");
             let tiny = targets.get("tiny").expect("short dropdown");
@@ -3508,8 +3511,11 @@ mod tests {
 
             let filled = crate::widget::Row::new()
                 .push(Box::new(Dropdown::new(opts(), "tz").with_id("fill").fill()));
-            let app =
-                crate::headless::Driver::new(crate::State::new(), Box::new(filled), (900, 200));
+            let app = crate::headless::FrameHarness::new(
+                crate::State::new(),
+                Box::new(filled),
+                (900, 200),
+            );
             let fill = *app.targets().get("fill").expect("filling dropdown");
             assert!(fill.width() > 600.0, "fill spans the row: {fill:?}");
         }

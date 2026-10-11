@@ -2733,7 +2733,7 @@ mod tests {{
     #[test]
     fn component_exposes_typed_props_and_stable_semantics() {{
         let props = {type_name}Props::new("Example title", "Example detail");
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new({module_name}("example", &props)),
             (480, 240),
@@ -2765,7 +2765,7 @@ mod tests {{
             &context,
         )
         .expect("registered component");
-        let mut app = ui::headless::Driver::new(ui::State::new(), widget, (480, 240));
+        let mut app = ui::headless::FrameHarness::new(ui::State::new(), widget, (480, 240));
         app.expect(
             &SemanticExpectation::named("example-title")
                 .role(Role::Heading {{ level: 2 }})
@@ -2904,7 +2904,7 @@ mod tests {{
     #[test]
     fn component_binds_typed_state_and_stable_semantics() {{
         let state = {type_name}State::default();
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new({module_name}("example", &state)),
             (480, 240),
@@ -3156,7 +3156,7 @@ mod tests {{
                 ])
             }})
             .reorderable();
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(tree),
             (560, 360),
@@ -3304,7 +3304,7 @@ mod tests {{
             }},
             u64::to_string,
         );
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(list),
             (560, 360),
@@ -3473,7 +3473,7 @@ mod tests {{
             }},
             &config,
         );
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(table),
             (720, 420),
@@ -3615,7 +3615,7 @@ mod tests {{
             &props,
             RecordingLayout(Rc::clone(&measures)),
         );
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(text),
             (480, 240),
@@ -3645,7 +3645,7 @@ mod tests {{
         ])
         .expect("valid concave region");
         let text = {module_name}_in_region("polygon-text", &props, region);
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(text),
             (400, 220),

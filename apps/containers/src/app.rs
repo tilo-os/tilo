@@ -2045,11 +2045,11 @@ mod tests {
         app
     }
 
-    fn driver(app: ContainersApp) -> ui::headless::Driver {
-        ui::headless::Driver::for_root(ui::State::new(), app, (1280, 800), ui::Theme::dark())
+    fn driver(app: ContainersApp) -> ui::headless::FrameHarness {
+        ui::headless::FrameHarness::for_root(ui::State::new(), app, (1280, 800), ui::Theme::dark())
     }
 
-    fn app_of(driver: &mut ui::headless::Driver) -> &mut ContainersApp {
+    fn app_of(driver: &mut ui::headless::FrameHarness) -> &mut ContainersApp {
         driver.root_mut::<ContainersApp>()
     }
 
@@ -2123,7 +2123,7 @@ mod tests {
 
     #[test]
     fn escape_closes_the_detail_in_a_narrow_window_too() {
-        let mut d = ui::headless::Driver::for_root(
+        let mut d = ui::headless::FrameHarness::for_root(
             ui::State::new(),
             staged(),
             (390, 844),

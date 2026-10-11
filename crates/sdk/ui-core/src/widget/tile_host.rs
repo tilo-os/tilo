@@ -4133,7 +4133,7 @@ mod tests {
                 "the app is never handed a record of another kind"
             );
             let driver =
-                crate::headless::Driver::new(crate::State::new(), Box::new(host), (400, 240));
+                crate::headless::FrameHarness::new(crate::State::new(), Box::new(host), (400, 240));
             let inspection = driver.inspection();
             assert!(inspection_has_semantic(
                 &inspection.root,
@@ -5045,7 +5045,7 @@ mod tests {
     }
 
     /// Native Shell dispatches directly into TileHost: unlike App and the
-    /// headless Driver, it does not pre-observe embedded History pointers.
+    /// headless `FrameHarness`, it does not pre-observe embedded History pointers.
     #[test]
     fn live_body_pointer_edges_follow_motion_out_of_history_toolbar() {
         use taffy::prelude::TaffyMaxContent;

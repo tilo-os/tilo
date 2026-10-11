@@ -1079,7 +1079,7 @@ mod tests {
         let narrow = picker.intrinsic_height(168.0);
         let wide = picker.intrinsic_height(224.0);
         assert!(narrow < wide, "cells follow the column's width");
-        let app = crate::headless::Driver::new(
+        let app = crate::headless::FrameHarness::new(
             crate::State::new(),
             Box::new(crate::column![picker.with_accessible_name("Month")]),
             (200, 600),

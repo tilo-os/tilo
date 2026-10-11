@@ -104,7 +104,7 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
     {
         let (mut app, clicks) = fixture(2);
         let root = std::mem::replace(&mut app.root_widget, Box::new(Column::new()));
-        let mut driver = crate::headless::Driver::new_with_controlled_inputs(
+        let mut driver = crate::headless::FrameHarness::new_with_controlled_inputs(
             State::new(),
             root,
             (200, 600),

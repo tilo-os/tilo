@@ -7,7 +7,7 @@ use tilo_document::action::RegionKind;
 
 type Rows = Vec<(String, String, String, String, u64)>;
 
-fn move_selection(live: &mut ui::headless::Driver, up: bool, semantic: bool) {
+fn move_selection(live: &mut ui::headless::FrameHarness, up: bool, semantic: bool) {
     if semantic {
         live.perform_semantic_named(
             "block_editor",
@@ -350,7 +350,7 @@ fn selected_sibling_subtrees_move_atomically_and_keep_the_batch_selected() {
     }
 }
 
-fn assert_visible_order(driver: &ui::headless::Driver, rows: &Rows) {
+fn assert_visible_order(driver: &ui::headless::FrameHarness, rows: &Rows) {
     fn editor(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
         if node.test_id.as_deref() == Some("block_editor") {
             return Some(node);

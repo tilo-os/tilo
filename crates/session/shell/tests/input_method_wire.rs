@@ -1026,7 +1026,7 @@ fn assert_native_field_selection_and_undo(transcript: &str) {
 }
 
 struct NativeNotes {
-    driver: ui::headless::Driver,
+    driver: ui::headless::FrameHarness,
     records: ui::record::RecordStore,
     checkout: ui::record::RecordCheckout,
     _owners: ui::record::RecordOwners,
@@ -1074,7 +1074,7 @@ impl NativeNotes {
             ui::font_catalog::checkout_root(),
             "en-US",
         );
-        let mut driver = ui::headless::Driver::from_component(
+        let mut driver = ui::headless::FrameHarness::from_component(
             component,
             (1000, 700),
             ui::application::ComponentRunnerInputs {

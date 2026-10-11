@@ -1160,7 +1160,7 @@ fn legacy_route_headless_two_real_owners_capture_and_model_ticks_do_not_duplicat
     let mut state = crate::State::new();
     state.doc.put(ROOT, "outer-only", 17).unwrap();
     state.commit_action(None, None);
-    let mut driver = crate::headless::Driver::new(state, Box::new(root), (700, 400));
+    let mut driver = crate::headless::FrameHarness::new(state, Box::new(root), (700, 400));
     driver
         .action_registry_mut()
         .register::<SetValue>("controlled.legacy");

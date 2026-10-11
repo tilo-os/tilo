@@ -2,7 +2,7 @@ use super::{
     Axis, Check, Counts, ImageRegion, Scenario, Step, WheelPhase, WheelUnit, gap, overlap_area,
     pixel_contrast,
 };
-use crate::headless::{Driver, InspectionNode};
+use crate::headless::{FrameHarness, InspectionNode};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path};
@@ -101,7 +101,7 @@ fn semantic_exists(node: &crate::a11y::AccessNode, name: &str) -> bool {
                 .iter()
                 .any(|child| semantic_exists(child, name)))
 }
-fn semantic_node(driver: &Driver, target: &str) -> Result<crate::a11y::AccessNode, String> {
+fn semantic_node(driver: &FrameHarness, target: &str) -> Result<crate::a11y::AccessNode, String> {
     fn access(
         node: &crate::a11y::AccessNode,
         target: &str,
@@ -166,7 +166,7 @@ fn target_exists(node: &InspectionNode, name: &str) -> bool {
     node.children.iter().any(|child| target_exists(child, name))
 }
 
-fn targets(driver: &Driver) -> BTreeMap<String, [f64; 4]> {
+fn targets(driver: &FrameHarness) -> BTreeMap<String, [f64; 4]> {
     let mut all = BTreeMap::new();
     let inspection = driver.inspection();
     collect(&inspection.root, &mut all);
@@ -198,7 +198,7 @@ fn intersect(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
     ]
 }
 
-fn visible_targets(driver: &Driver) -> BTreeMap<String, [f64; 4]> {
+fn visible_targets(driver: &FrameHarness) -> BTreeMap<String, [f64; 4]> {
     fn semantics(
         node: &crate::a11y::AccessNode,
         fallback: Option<[f64; 4]>,
@@ -321,7 +321,7 @@ fn image_region(
 )]
 fn measure(
     check: &Check,
-    driver: &mut Driver,
+    driver: &mut FrameHarness,
     current: &BTreeMap<String, [f64; 4]>,
     frames: &[Frame],
     png: &Path,
@@ -523,7 +523,7 @@ fn measure(
 /// Execute a scenario, retaining failure evidence and never treating input dispatch as completion.
 /// # Errors
 /// Reports file IO, invalid input scale, and evidence serialization errors.
-pub fn run(driver: &mut Driver, scenario: &Scenario, out: &Path) -> Result<Report, String> {
+pub fn run(driver: &mut FrameHarness, scenario: &Scenario, out: &Path) -> Result<Report, String> {
     run_with_state(driver, scenario, out, || Value::Null)
 }
 
@@ -536,7 +536,7 @@ pub fn run(driver: &mut Driver, scenario: &Scenario, out: &Path) -> Result<Repor
     reason = "ordered scenario lifecycle; validated finite wheel line values convert to winit f32 units"
 )]
 pub fn run_with_state(
-    driver: &mut Driver,
+    driver: &mut FrameHarness,
     scenario: &Scenario,
     out: &Path,
     mut state: impl FnMut() -> Value,
@@ -682,7 +682,7 @@ pub fn run_with_state(
     .map_err(|e| e.to_string())?;
     Ok(report)
 }
-fn perform_input(driver: &mut Driver, action: &Value) -> Result<(), String> {
+fn perform_input(driver: &mut FrameHarness, action: &Value) -> Result<(), String> {
     // Semantic identities locate the real hit target; pointer dispatch remains a click.
     if let Some(name) = action.get("click_named").and_then(Value::as_str) {
         let all = targets(driver);
@@ -723,7 +723,7 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 fn capture(
-    driver: &mut Driver,
+    driver: &mut FrameHarness,
     name: &str,
     checks: &[Check],
     scenario: &Scenario,

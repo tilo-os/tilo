@@ -893,7 +893,8 @@ mod tests {
                 .with_label("Remember me")
                 .intrinsic_width(),
         ));
-        let app = crate::headless::Driver::new(crate::State::new(), Box::new(row), (900, 200));
+        let app =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(row), (900, 200));
         let rect = *app.targets().get("hug").expect("checkbox");
         assert!(
             rect.width() < 300.0,
