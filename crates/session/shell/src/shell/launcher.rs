@@ -881,6 +881,97 @@ impl LaunchError {
     }
 }
 
+/// Why a launch failed before the app's process existed, as a closed set the
+/// notification can name. `detail` on the event stays in the log; this is
+/// what the person reads, so a refusal is never reported as "the launcher is
+/// unavailable" unless the launcher really is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchFailure {
+    /// `tilo-launcher` is missing or its process could not be created.
+    LauncherUnavailable,
+    ProviderUnavailable,
+    NotInstalled,
+    NotAGuiApp,
+    NotAManagedService,
+    NotAuthorized,
+    NoDisplay,
+    NoWorkspace,
+    ShellOwnedIntent,
+    IdentityUnavailable,
+    RegistryUnreadable,
+    HostAppRefused,
+    /// The room's file permissions changed between choosing to open the app
+    /// and starting it, so the grants it was given no longer hold.
+    AuthorityChanged,
+    /// The room's file permissions were not published in time.
+    AuthorityTimedOut,
+    /// The sandbox's file permissions could not be supervised.
+    SandboxSupervision,
+    /// The previous copy of the app is still shutting down.
+    PreviousInstanceBusy,
+    /// Held launches released by a failed prerequisite and other causes with
+    /// no more specific copy.
+    Other,
+}
+
+impl LaunchFailure {
+    /// Classify the error that stopped `register_sandbox` or the sandbox
+    /// supervision around it.
+    #[cfg(any(test, target_os = "linux"))]
+    pub(crate) fn of_authority_error(error: &std::io::Error) -> Self {
+        match error.kind() {
+            std::io::ErrorKind::PermissionDenied => Self::AuthorityChanged,
+            std::io::ErrorKind::TimedOut => Self::AuthorityTimedOut,
+            _ => Self::SandboxSupervision,
+        }
+    }
+
+    pub(crate) const fn message_key(self) -> &'static str {
+        match self {
+            Self::LauncherUnavailable | Self::Other => "launch-failed-launcher-unavailable",
+            Self::ProviderUnavailable => "launch-error-provider-unavailable",
+            Self::NotInstalled => "launch-error-not-installed",
+            Self::NotAGuiApp => "launch-error-not-gui-app",
+            Self::NotAManagedService => "launch-error-not-managed-service",
+            Self::NotAuthorized => "launch-error-not-authorized",
+            Self::NoDisplay => "launch-error-no-display",
+            Self::NoWorkspace => "launch-error-no-workspace",
+            Self::ShellOwnedIntent => "launch-error-shell-owned-intent",
+            Self::IdentityUnavailable => "launch-error-identity-unavailable",
+            Self::RegistryUnreadable => "launch-error-registry-unreadable",
+            Self::HostAppRefused => "launch-error-host-app-refused",
+            Self::AuthorityChanged => "launch-failed-authority-changed",
+            Self::AuthorityTimedOut => "launch-failed-authority-timeout",
+            Self::SandboxSupervision => "launch-error-sandbox-supervision",
+            Self::PreviousInstanceBusy => "launch-failed-previous-instance",
+        }
+    }
+}
+
+impl LaunchError {
+    /// The typed reason this error is reported under.
+    pub(crate) const fn failure(&self) -> LaunchFailure {
+        match self {
+            Self::ProviderUnavailable { .. } => LaunchFailure::ProviderUnavailable,
+            Self::NotInstalled { .. } | Self::HostAppNotFound { .. } => LaunchFailure::NotInstalled,
+            Self::NotAGuiApp { .. } => LaunchFailure::NotAGuiApp,
+            Self::NotAManagedService { .. } => LaunchFailure::NotAManagedService,
+            Self::AgentNotAdmitted { .. } | Self::AgentLaunchNotAuthorized => {
+                LaunchFailure::NotAuthorized
+            }
+            Self::AgentLaunchWorkerUnavailable { .. } | Self::LauncherBinaryMissing { .. } => {
+                LaunchFailure::LauncherUnavailable
+            }
+            Self::NoDisplay => LaunchFailure::NoDisplay,
+            Self::NoWorkspace => LaunchFailure::NoWorkspace,
+            Self::ShellOwnedIntent => LaunchFailure::ShellOwnedIntent,
+            Self::IdentityUnavailable { .. } => LaunchFailure::IdentityUnavailable,
+            Self::RegistryUnreadable { .. } => LaunchFailure::RegistryUnreadable,
+            Self::HostAppRefused { .. } => LaunchFailure::HostAppRefused,
+        }
+    }
+}
+
 impl std::fmt::Display for LaunchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.user_message())
@@ -906,7 +997,11 @@ pub enum LaunchEventKind {
     /// `tilo-launcher` is running with this host pid.
     Started { pid: u32 },
     /// The child could not be spawned at all.
-    SpawnFailed { detail: String },
+    SpawnFailed {
+        /// Why, as the person is told. `detail` is the log's account of it.
+        reason: LaunchFailure,
+        detail: String,
+    },
     /// The launch chain exited non-zero. `stderr_tail` is the last few
     /// lines it printed — usually the actual reason.
     Failed {
@@ -945,8 +1040,8 @@ impl LaunchEvent {
     /// copied into notification chrome.
     pub(crate) fn failure_notice(&self) -> Option<LaunchFailureNotice> {
         let body = match &self.kind {
-            LaunchEventKind::SpawnFailed { .. } => {
-                crate::shell::i18n::t("launch-failed-launcher-unavailable")
+            LaunchEventKind::SpawnFailed { reason, .. } => {
+                crate::shell::i18n::t(reason.message_key())
             }
             LaunchEventKind::Failed { code, stderr_tail } => {
                 crate::shell::i18n::t(stopped_reason_key(*code, stderr_tail))
@@ -979,7 +1074,7 @@ impl LaunchEvent {
     /// terminal escapes cannot alter the surrounding log record.
     pub(crate) fn log_failure(&self) {
         match &self.kind {
-            LaunchEventKind::SpawnFailed { detail } => {
+            LaunchEventKind::SpawnFailed { detail, .. } => {
                 tracing::error!(
                     target: "tilo::app_launch",
                     package_id = %self.package_id,
@@ -3030,6 +3125,7 @@ pub(crate) fn queue_package_open(
                     managed_agent_id: None,
                     managed_workspace_id: None,
                     kind: LaunchEventKind::SpawnFailed {
+                        reason: error.failure(),
                         detail: error.user_message(),
                     },
                 });
@@ -3360,6 +3456,7 @@ fn queue_prepared_capabilities(
                     managed_agent_id: None,
                     managed_workspace_id: None,
                     kind: LaunchEventKind::SpawnFailed {
+                        reason: error.failure(),
                         detail: error.user_message(),
                     },
                 });
@@ -3639,6 +3736,7 @@ fn held_launch_failure(launch: HeldLaunch, detail: &str) -> LaunchEvent {
             .service_identity
             .map(|identity| identity.workspace_id),
         kind: LaunchEventKind::SpawnFailed {
+            reason: LaunchFailure::Other,
             detail: detail.to_string(),
         },
     }
@@ -3784,7 +3882,10 @@ fn start_launch(
                 display_name: app.display_name.clone(),
                 managed_agent_id: app.managed_agent_id.clone(),
                 managed_workspace_id: app.managed_workspace_id.clone(),
-                kind: LaunchEventKind::SpawnFailed { detail },
+                kind: LaunchEventKind::SpawnFailed {
+                    reason: LaunchFailure::PreviousInstanceBusy,
+                    detail,
+                },
             });
             return;
         }
@@ -3813,6 +3914,7 @@ fn start_launch(
                     managed_agent_id: app.managed_agent_id.clone(),
                     managed_workspace_id: app.managed_workspace_id.clone(),
                     kind: LaunchEventKind::SpawnFailed {
+                        reason: LaunchFailure::LauncherUnavailable,
                         detail: error.to_string(),
                     },
                 });
@@ -3830,6 +3932,7 @@ fn start_launch(
                     managed_agent_id: app.managed_agent_id.clone(),
                     managed_workspace_id: app.managed_workspace_id.clone(),
                     kind: LaunchEventKind::SpawnFailed {
+                        reason: LaunchFailure::LauncherUnavailable,
                         detail: e.to_string(),
                     },
                 });
@@ -3873,6 +3976,7 @@ fn start_launch(
                 managed_agent_id: app.managed_agent_id.clone(),
                 managed_workspace_id: app.managed_workspace_id.clone(),
                 kind: LaunchEventKind::SpawnFailed {
+                    reason: LaunchFailure::of_authority_error(&error),
                     detail: error.to_string(),
                 },
             });
@@ -3960,6 +4064,7 @@ fn start_launch(
                 stderr_tail: tail.iter().cloned().collect::<Vec<_>>().join("\n"),
             },
             Err(e) => LaunchEventKind::SpawnFailed {
+                reason: LaunchFailure::LauncherUnavailable,
                 detail: e.to_string(),
             },
         };
@@ -3968,7 +4073,7 @@ fn start_launch(
                 startup_token,
                 format!("the application launcher exited ({code:?}): {stderr_tail}"),
             ),
-            LaunchEventKind::SpawnFailed { detail } => {
+            LaunchEventKind::SpawnFailed { detail, .. } => {
                 events.startup.fail(startup_token, detail.clone());
             }
             LaunchEventKind::Started { .. }
@@ -3993,6 +4098,7 @@ fn start_launch(
                 managed_agent_id: identity.2,
                 managed_workspace_id: identity.3,
                 kind: LaunchEventKind::SpawnFailed {
+                    reason: LaunchFailure::LauncherUnavailable,
                     detail: detail.clone(),
                 },
             });
@@ -4941,6 +5047,7 @@ mod tests {
             assert_eq!(
                 reported[0].kind,
                 LaunchEventKind::SpawnFailed {
+                    reason: LaunchFailure::Other,
                     detail: "peer sync could not start".into()
                 }
             );
@@ -5005,8 +5112,63 @@ mod tests {
             assert_eq!(LAUNCH_FAILURE_NOTICE_LIFETIME, Duration::from_secs(8));
         }
 
+        fn spawn_failure_notice_names_the_typed_reason_not_a_missing_launcher() {
+            let unavailable = crate::shell::i18n::t("launch-failed-launcher-unavailable");
+            let cases = [
+                (
+                    LaunchFailure::AuthorityChanged,
+                    "launch-failed-authority-changed",
+                ),
+                (
+                    LaunchFailure::AuthorityTimedOut,
+                    "launch-failed-authority-timeout",
+                ),
+                (
+                    LaunchFailure::SandboxSupervision,
+                    "launch-error-sandbox-supervision",
+                ),
+                (LaunchFailure::NotInstalled, "launch-error-not-installed"),
+                (LaunchFailure::NoWorkspace, "launch-error-no-workspace"),
+                (
+                    LaunchFailure::PreviousInstanceBusy,
+                    "launch-failed-previous-instance",
+                ),
+            ];
+            for (reason, key) in cases {
+                let notice = launch_event(LaunchEventKind::SpawnFailed {
+                    reason,
+                    detail: "raw detail stays in the log".into(),
+                })
+                .failure_notice()
+                .unwrap();
+                assert_eq!(notice.body, crate::shell::i18n::t(key));
+                assert_ne!(notice.body, unavailable);
+                assert!(!notice.body.contains("raw detail"));
+            }
+            let missing = launch_event(LaunchEventKind::SpawnFailed {
+                reason: LaunchError::LauncherBinaryMissing { searched: vec![] }.failure(),
+                detail: String::new(),
+            })
+            .failure_notice()
+            .unwrap();
+            assert_eq!(missing.body, unavailable);
+            let refused = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "x");
+            assert_eq!(
+                LaunchFailure::of_authority_error(&refused),
+                LaunchFailure::AuthorityChanged
+            );
+            assert_eq!(
+                LaunchError::NotInstalled {
+                    package_id: "p".into()
+                }
+                .failure(),
+                LaunchFailure::NotInstalled
+            );
+        }
+
         fn spawn_failure_and_non_failure_events_have_sensible_banner_copy() {
             let event = launch_event(LaunchEventKind::SpawnFailed {
+                reason: LaunchFailure::LauncherUnavailable,
                 detail: "No such file or directory (os error 2)".into(),
             });
             let notice = event.failure_notice().expect("failure has a notice");
@@ -5082,6 +5244,7 @@ mod tests {
 
         failed_launch_banner_never_contains_raw_stderr();
         spawn_failure_and_non_failure_events_have_sensible_banner_copy();
+        spawn_failure_notice_names_the_typed_reason_not_a_missing_launcher();
         launch_failure_title_normalises_and_bounds_untrusted_app_names();
         preflight_notification_copy_excludes_paths_and_backend_detail();
         untrusted_app_log_lines_are_memory_bounded_and_stream_label_safe();

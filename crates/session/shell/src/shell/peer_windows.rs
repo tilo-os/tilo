@@ -1866,6 +1866,7 @@ mod tests {
             managed_agent_id: None,
             managed_workspace_id: None,
             kind: launcher::LaunchEventKind::SpawnFailed {
+                reason: launcher::LaunchFailure::LauncherUnavailable,
                 detail: "worker refused".into(),
             },
         }
