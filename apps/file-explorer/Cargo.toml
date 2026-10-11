@@ -83,11 +83,6 @@ winit.workspace = true
 taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
-# `statfs`, to tell a local directory, whose every change a watch reports,
-# from a FUSE or network mount that can change underneath it.
-[target.'cfg(target_os = "linux")'.dependencies]
-rustix = { workspace = true, features = ["fs"] }
-
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
