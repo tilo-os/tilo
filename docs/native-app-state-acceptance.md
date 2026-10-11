@@ -150,3 +150,28 @@ all final continuity qualification fields false. It never opens the second app
 manually to rescue the automatic-opening case or treats a pending action as
 completed recovery. Screen arrangement, cross-device input and physical-device
 continuity are not qualified by either fixture mode.
+
+### Bounded failure diagnostics
+
+Add `--routing-diagnostics` to the same isolated journey to enable the existing
+relay phase tracing and native session logs. The throwaway governor installs a
+tracing subscriber only in that opt-in mode, after dispatching its confined
+worker modes. No production tracing configuration changes.
+
+When an ordinary semantic action times out, `failed-<operation>.json` retains
+its public route, original broker job and invocation UUID, and one read-only
+status observation of that same job. It exports neither action arguments nor
+results. The original failure is rethrown: there is no re-invocation, longer
+wait, alternative record, or qualification based on `Accepted`.
+
+The reconnect diagnostic reproduced job 14 remaining `Accepted` through the
+terminal timeout. Chat's subsequent SDK log identified the owner barrier:
+`record_receipt_elsewhere` received the governor administration answer, then
+failed waiting for that exact signed effect receipt in the device's admitted
+room. The SDK reported `signed effect receipt did not reach the native owner
+in time; outcome unknown` and disabled collaboration. This narrows the failure
+to signed receipt publication/admission after reconnect; it does not establish
+which transport or admission step lost progress. Keep the fail-closed owner
+barrier while repairing that path. Retrieve only the named public failure JSON,
+`journey.json`, and synthetic `alice.log`, `bob.log`, and `host.log`; private
+profiles, bootstrap invitations and package signing material remain excluded.
