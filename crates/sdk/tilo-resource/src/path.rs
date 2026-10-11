@@ -646,7 +646,9 @@ impl<R, T: Model> Path<R, crate::Grid<T>> {
     }
 }
 
-impl<R, T: Model, O: Serialize + serde::de::DeserializeOwned> Path<R, crate::Outbox<T, O>> {
+impl<R, T: Model, O: Serialize + serde::de::DeserializeOwned + 'static>
+    Path<R, crate::Outbox<T, O>>
+{
     /// Record how the owning device settled the entry `id`: content from
     /// outside, nobody's undo step.
     #[must_use]

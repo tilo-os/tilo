@@ -78,6 +78,7 @@ impl std::str::FromStr for Id {
 
 impl Settable for Id {}
 impl Model for Id {
+    crate::__own_table!(Id);
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "string"})
     }

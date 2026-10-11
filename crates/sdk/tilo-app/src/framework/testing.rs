@@ -425,99 +425,42 @@ impl<A: ResourceApp> HeadlessApp<A> {
         capture: Option<(Capture, (u32, u32))>,
         configure: impl FnOnce(&mut HostContext),
     ) -> Result<Self, LaunchError> {
-        strict_bindings();
-        let (profile, private, private_arguments) = private_launch::<A>(profile, arguments)?;
-        let (arguments, options) = split_command_line(&private_arguments, A::OPTIONS, A::FLAGS);
-        let arguments = arguments.as_slice();
-        let person = author.to_owned();
-        let author = UserId(person.clone());
-        let permissions = role_permissions(&person, role);
-        let (mut host, instance) = match &profile {
-            Profile::Temporary(directory, room, device) => (
-                ApplicationHost::new_with_profile_lifetime(
-                    directory.path().join("state"),
-                    device.clone(),
-                    room,
-                    author,
-                    Rc::clone(&permissions),
-                    tilo_actions::ActionContext::default(),
-                    directory.clone(),
-                )?,
-                INSTANCE,
-            ),
-            Profile::DataDir(directory) => (
-                data_dir_host(directory, &author, Rc::clone(&permissions))?,
-                DATA_DIR_INSTANCE,
-            ),
-        };
-        let definition = definition::<A>();
-        let records = host.records_for(definition)?;
-        let named = A::launch_record(&LaunchInput::new(arguments, None).with_options(&options));
-        let mut prepared = prepare_on(
-            &mut host,
-            definition,
-            instance,
-            named,
-            ComponentRunnerInputs::from_native_process(),
+        let mut configure = Some(configure);
+        let opened = open_app(
+            &Opening {
+                definition: definition::<A>(),
+                id: A::ID,
+                options: A::OPTIONS,
+                flags: A::FLAGS,
+                private_windows: A::PRIVATE_WINDOWS,
+                launch_record: A::launch_record,
+                shot_viewport: A::shot_viewport,
+            },
+            Launch {
+                profile,
+                role,
+                author,
+                arguments,
+                file,
+                handoff,
+                capture,
+            },
+            &mut |context| {
+                if let Some(configure) = configure.take() {
+                    configure(context);
+                }
+            },
         )?;
-        let checkout = prepared.context.record().clone();
-        hand_launch(definition, arguments, &mut prepared)?;
-        prepared.context.provide_launch_options(options);
-        if private {
-            prepared.context.provide_private();
-        }
-        if let Some(file) = file {
-            prepared.context.provide_open_file(file);
-        }
-        if let Some(handoff) = handoff {
-            prepared.context.provide_handoff(handoff);
-        }
-        let captured = capture.is_some();
-        let viewport = match capture {
-            Some((capture, viewport)) => {
-                prepared.context.provide_capture(capture);
-                viewport
-            }
-            None => A::shot_viewport(None),
-        };
-        prepared.context.provide_content(profile.content());
-        let mut prepared = in_profile(prepared, &profile.root(), A::ID);
-        configure(&mut prepared.context);
-        let component =
-            definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
-        let mut harness =
-            FrameHarness::from_component(component, viewport, prepared.runner_inputs)?;
-        settle_launch(&mut harness);
-        // The live host withdraws a component's whole action surface (the
-        // palette's, agents', scripts') when any of its actions breaks its
-        // contract. Every test that opens the app proves it would not.
-        // A capture stages fixtures, not the app someone uses.
-        let violations = if captured {
-            Vec::new()
-        } else {
-            harness.component_contract_violations()
-        };
-        if !violations.is_empty() {
-            return Err(LaunchError::Operation(format!(
-                "{} publishes an action surface the host would refuse: {}",
-                definition.app_id,
-                violations
-                    .iter()
-                    .map(|violation| format!("{}: {}", violation.address, violation.reason))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )));
-        }
         Ok(Self {
-            harness: Some(harness),
-            records,
-            checkout,
-            instance,
-            profile,
+            harness: Some(opened.harness),
+            records: opened.records,
+            checkout: opened.checkout,
+            instance: opened.instance,
+            profile: opened.profile,
             role,
-            author: person,
+            author: author.to_owned(),
             last_effect: None,
-            permissions,
+            permissions: opened.permissions,
             marker: std::marker::PhantomData,
         })
     }
@@ -1576,11 +1519,145 @@ fn find_mut<T: 'static>(widget: &mut dyn ui_core::widget::Widget) -> Option<&mut
 }
 
 /// Match the native runner's disposable private profile and built-in flag.
-fn private_launch<A: ResourceApp>(
+/// What opening a headless app needs of its type: everything else about
+/// opening it is the same for every app ([`open_app`]).
+struct Opening {
+    definition: &'static ui_core::application::ApplicationDefinition,
+    id: &'static str,
+    options: &'static [&'static str],
+    flags: &'static [&'static str],
+    private_windows: bool,
+    launch_record: fn(&LaunchInput<'_>) -> Option<RecordId>,
+    shot_viewport: fn(Option<&str>) -> (u32, u32),
+}
+
+/// How one headless app is opened: on which profile, as whom, with what.
+struct Launch<'a> {
+    profile: Profile,
+    role: Role,
+    author: &'a str,
+    arguments: &'a [String],
+    file: Option<OpenFile>,
+    handoff: Option<PlaybackHandoff>,
+    capture: Option<(Capture, (u32, u32))>,
+}
+
+/// A headless app [`open_app`] opened.
+struct Opened {
+    harness: FrameHarness,
+    records: RecordStore,
+    checkout: RecordCheckout,
+    instance: u64,
+    profile: Profile,
+    permissions: Rc<RefCell<PermissionContext>>,
+}
+
+/// Open the app `opening` describes as `launch` says, `configure` given its
+/// host context before it is instantiated.
+fn open_app(
+    opening: &Opening,
+    launch: Launch<'_>,
+    configure: &mut dyn FnMut(&mut HostContext),
+) -> Result<Opened, LaunchError> {
+    strict_bindings();
+    let (profile, private, private_arguments) =
+        private_launch(opening.private_windows, launch.profile, launch.arguments)?;
+    let (arguments, options) =
+        split_command_line(&private_arguments, opening.options, opening.flags);
+    let arguments = arguments.as_slice();
+    let person = launch.author.to_owned();
+    let author = UserId(person.clone());
+    let permissions = role_permissions(&person, launch.role);
+    let (mut host, instance) = match &profile {
+        Profile::Temporary(directory, room, device) => (
+            ApplicationHost::new_with_profile_lifetime(
+                directory.path().join("state"),
+                device.clone(),
+                room,
+                author,
+                Rc::clone(&permissions),
+                tilo_actions::ActionContext::default(),
+                directory.clone(),
+            )?,
+            INSTANCE,
+        ),
+        Profile::DataDir(directory) => (
+            data_dir_host(directory, &author, Rc::clone(&permissions))?,
+            DATA_DIR_INSTANCE,
+        ),
+    };
+    let definition = opening.definition;
+    let records = host.records_for(definition)?;
+    let named = (opening.launch_record)(&LaunchInput::new(arguments, None).with_options(&options));
+    let mut prepared = prepare_on(
+        &mut host,
+        definition,
+        instance,
+        named,
+        ComponentRunnerInputs::from_native_process(),
+    )?;
+    let checkout = prepared.context.record().clone();
+    hand_launch(definition, arguments, &mut prepared)?;
+    prepared.context.provide_launch_options(options);
+    if private {
+        prepared.context.provide_private();
+    }
+    if let Some(file) = launch.file {
+        prepared.context.provide_open_file(file);
+    }
+    if let Some(handoff) = launch.handoff {
+        prepared.context.provide_handoff(handoff);
+    }
+    let captured = launch.capture.is_some();
+    let viewport = match launch.capture {
+        Some((capture, viewport)) => {
+            prepared.context.provide_capture(capture);
+            viewport
+        }
+        None => (opening.shot_viewport)(None),
+    };
+    prepared.context.provide_content(profile.content());
+    let mut prepared = in_profile(prepared, &profile.root(), opening.id);
+    configure(&mut prepared.context);
+    let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
+    let mut harness = FrameHarness::from_component(component, viewport, prepared.runner_inputs)?;
+    settle_launch(&mut harness);
+    // The live host withdraws a component's whole action surface (the
+    // palette's, agents', scripts') when any of its actions breaks its
+    // contract. Every test that opens the app proves it would not.
+    // A capture stages fixtures, not the app someone uses.
+    let violations = if captured {
+        Vec::new()
+    } else {
+        harness.component_contract_violations()
+    };
+    if !violations.is_empty() {
+        return Err(LaunchError::Operation(format!(
+            "{} publishes an action surface the host would refuse: {}",
+            definition.app_id,
+            violations
+                .iter()
+                .map(|violation| format!("{}: {}", violation.address, violation.reason))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )));
+    }
+    Ok(Opened {
+        harness,
+        records,
+        checkout,
+        instance,
+        profile,
+        permissions,
+    })
+}
+
+fn private_launch(
+    private_windows: bool,
     profile: Profile,
     arguments: &[String],
 ) -> Result<(Profile, bool, Vec<String>), LaunchError> {
-    let private = A::PRIVATE_WINDOWS && arguments.iter().any(|word| word == "--private");
+    let private = private_windows && arguments.iter().any(|word| word == "--private");
     let arguments = arguments
         .iter()
         .filter(|word| !private || word.as_str() != "--private")

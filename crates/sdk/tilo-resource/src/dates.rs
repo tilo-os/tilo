@@ -11,6 +11,7 @@ macro_rules! date_model {
     ($($ty:ty => $format:literal, $schema:literal, $what:literal;)*) => {$(
         impl Settable for $ty {}
         impl Model for $ty {
+            crate::__own_table!($ty);
             crate::model::leaf_paths!();
             fn to_json(&self) -> serde_json::Value {
                 serde_json::Value::String(self.format($format).to_string())
