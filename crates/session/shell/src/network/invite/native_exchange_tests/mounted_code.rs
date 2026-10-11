@@ -9,6 +9,8 @@ use sha2::{Digest as _, Sha256};
 mod acknowledgement_recovery;
 #[path = "mounted_code/blocked_read.rs"]
 mod blocked_read;
+#[path = "mounted_code/idle_reads.rs"]
+mod idle_reads;
 #[path = "mounted_code/read_recovery.rs"]
 mod read_recovery;
 
@@ -66,6 +68,7 @@ pub(super) enum Journey {
     ReadRecovery,
     Run,
     AcknowledgementRecovery,
+    IdleReads,
 }
 
 pub(super) struct Context<'a> {
@@ -161,16 +164,22 @@ struct Mounted {
     network: Arc<ShellNetwork>,
     actor: tokio::task::JoinHandle<()>,
     acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
+    idle_reads: Option<Arc<idle_reads::Counter>>,
 }
 
 impl Mounted {
-    async fn new(device: &Device, profile: &std::path::Path) -> Self {
-        Self::new_with_acknowledgement_gate(device, profile, None).await
-    }
     async fn new_with_acknowledgement_gate(
         device: &Device,
         profile: &std::path::Path,
         acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
+    ) -> Self {
+        Self::new_observed(device, profile, acknowledgement_gate, None).await
+    }
+    async fn new_observed(
+        device: &Device,
+        profile: &std::path::Path,
+        acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
+        idle_reads: Option<Arc<idle_reads::Counter>>,
     ) -> Self {
         let (commands, actor) = Actor::spawn_reporting_addrs(
             device.endpoint.clone(),
@@ -213,13 +222,15 @@ impl Mounted {
             &network,
             acknowledgement_gate
                 .as_ref()
-                .map(acknowledgement_recovery::Gate::wrapper),
+                .map(acknowledgement_recovery::Gate::wrapper)
+                .or_else(|| idle_reads.as_ref().map(idle_reads::Counter::wrapper)),
         );
         Self {
             code,
             network,
             actor,
             acknowledgement_gate,
+            idle_reads,
         }
     }
 
@@ -274,6 +285,7 @@ impl Mounted {
             network,
             actor,
             acknowledgement_gate: _,
+            idle_reads: _,
         } = self;
         drop(code);
         async move {
@@ -313,6 +325,8 @@ async fn finish_journey(
         read_recovery::run(first, &mut mounted[0]).await;
     } else if matches!(context.journey, Journey::Run) {
         run_and_settle(&mut mounted[0]).await;
+    } else if matches!(context.journey, Journey::IdleReads) {
+        idle_reads::run(&mounted[0]).await;
     } else {
         edit_and_converge(context, authority, owner, refreshes, mounted).await;
     }
@@ -344,9 +358,11 @@ pub(super) async fn run(
     };
     eprintln!("mounted journey: mounting both original Code roots");
     let mut mounted = vec![
-        Mounted::new(
+        Mounted::new_observed(
             &first,
             &context.directory.path().join("mounted-first-profile"),
+            None,
+            matches!(context.journey, Journey::IdleReads).then(idle_reads::Counter::new),
         )
         .await,
         Mounted::new_with_acknowledgement_gate(
