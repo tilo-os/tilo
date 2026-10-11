@@ -1967,7 +1967,7 @@ impl DisplayModel {
     /// Observation alone never makes a screen movable or grants input access.
     fn build_device_arrangement_card(&self) -> Option<El> {
         use super::display_arrangement::{
-            ArrangedDisplay, DisplayArrangement, placement::Placement,
+            ArrangedDisplay, DisplayArrangement, SharedDisplayState, placement::Placement,
         };
         if !self.device_displays.iter().any(|display| !display.local) {
             return None;
@@ -1983,9 +1983,20 @@ impl DisplayModel {
             .iter()
             .enumerate()
             .filter_map(|(index, display)| {
+                let resolved = display.output_id.as_deref().and_then(|output| {
+                    layout
+                        .listed()
+                        .find(|resolved| resolved.is(&display.device, output))
+                });
                 Some(ArrangedDisplay {
                     connector: display.key(),
                     movement_group: Some(display.device.clone()),
+                    shared: resolved.map(|resolved| SharedDisplayState {
+                        device: resolved.device.clone(),
+                        output: resolved.output.clone(),
+                        online: resolved.online,
+                        included: resolved.enabled,
+                    }),
                     label: t_args(
                         "display-device-screen",
                         &[
@@ -2002,23 +2013,13 @@ impl DisplayModel {
                             ),
                         ],
                     ),
-                    number: display
-                        .output_id
-                        .as_deref()
-                        .and_then(|output| {
-                            layout
-                                .displays
-                                .iter()
-                                .chain(&layout.inactive)
-                                .find(|resolved| resolved.is(&display.device, output))
-                        })
-                        .map_or_else(
-                            || {
-                                unknown_number = unknown_number.saturating_add(1);
-                                unknown_number
-                            },
-                            |resolved| resolved.order.saturating_add(1),
-                        ),
+                    number: resolved.map_or_else(
+                        || {
+                            unknown_number = unknown_number.saturating_add(1);
+                            unknown_number
+                        },
+                        |resolved| resolved.order.saturating_add(1),
+                    ),
                     placement: Placement::new(
                         display.x,
                         display.y,
@@ -2156,6 +2157,7 @@ impl DisplayModel {
             next_free_x = next_free_x.max(x.saturating_add(width));
             placed.push(ArrangedDisplay {
                 movement_group: None,
+                shared: None,
                 connector: output.connector.clone(),
                 label: output_title(output),
                 number: numbers.get(index).copied().unwrap_or(index + 1),

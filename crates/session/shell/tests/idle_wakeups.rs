@@ -581,7 +581,7 @@ pub(crate) fn wait_until_gone(desktop: &Desktop, name: &str) {
 /// hosted tabs while it builds the desktop, before it binds the
 /// collaboration broker and identity service they connect to; the tab found
 /// no socket, stayed offline and published nothing until it was reopened
-/// (TIL-759).
+/// (fixed by the session-services handshake).
 #[test]
 fn the_restored_notes_notebook_publishes_its_actions() {
     let desktop = Desktop::start();

@@ -431,6 +431,97 @@ mod tests {
     }
 
     #[test]
+    fn shared_canvas_keeps_offline_tiles_and_marks_exclusion_after_the_resource_edit() {
+        fn tiles(widget: &dyn ui::widget::Widget, found: &mut Vec<ui::a11y::AccessNode>) {
+            if widget.name() == "DisplayArrangement" {
+                found.extend(widget.accessibility().unwrap().children);
+            }
+            for child in widget.children() {
+                tiles(child, found);
+            }
+        }
+        let profile = tempfile::tempdir().unwrap();
+        let mut model =
+            DisplayModel::detached(PaneCx::in_file(profile.path().join("settings.json")));
+        let offline = devices().remove(0);
+        let mut local = offline.clone();
+        local.device = "local-peer".into();
+        local.label = "Local computer".into();
+        local.local = true;
+        local.online = true;
+        model.person_devices = vec![offline.clone(), local.clone()];
+        model.device_displays = [&offline, &local]
+            .into_iter()
+            .map(|device| settings_store::device_displays::DeviceDisplay {
+                device: device.device.clone(),
+                device_label: device.label.clone(),
+                connector: "DP-1".into(),
+                output_id: Some("edid:panel-1".into()),
+                label: "Desk panel".into(),
+                online: device.online,
+                local: device.local,
+                x: if device.local { 0 } else { 1920 },
+                y: 120,
+                width: 960,
+                height: 540,
+                scale_milli: 2000,
+                revision: 1,
+            })
+            .collect();
+        let mut before = Vec::new();
+        tiles(
+            model.build_device_arrangement_card().unwrap().as_ref(),
+            &mut before,
+        );
+        assert_eq!(before.len(), 2);
+        let peer = before
+            .iter()
+            .find(|tile| tile.name.as_ref().unwrap().contains("Desk computer"))
+            .unwrap();
+        assert!(peer.description.as_ref().unwrap().contains("Offline"));
+        assert!(!peer.description.as_ref().unwrap().contains("Not in layout"));
+        let identity = peer.semantic_key.clone();
+        let position = peer
+            .description
+            .as_ref()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        model
+            .apply(&DisplayEffect::IncludeSharedDisplay {
+                revision: model.shared_revision(&offline.device, "edid:panel-1"),
+                device: offline.device,
+                output: "edid:panel-1".into(),
+                on: false,
+            })
+            .unwrap();
+        let mut after = Vec::new();
+        tiles(
+            model.build_device_arrangement_card().unwrap().as_ref(),
+            &mut after,
+        );
+        assert_eq!(
+            after.len(),
+            2,
+            "exclusion keeps the remembered offline tile"
+        );
+        let peer = after
+            .iter()
+            .find(|tile| tile.semantic_key == identity)
+            .unwrap();
+        let description = peer.description.as_ref().unwrap();
+        assert!(description.contains("Offline") && description.contains("Not in layout"));
+        assert_eq!(
+            description.split(';').next().unwrap(),
+            position,
+            "inclusion does not rewrite native placement"
+        );
+        assert!(!model.automatic_display_prefs.get().automatic_display_input);
+    }
+
+    #[test]
     fn shared_canvas_numbers_follow_resolved_device_output_identity_and_order() {
         let profile = tempfile::tempdir().unwrap();
         let mut model =

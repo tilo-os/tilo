@@ -481,3 +481,8 @@ app-activate-window-description = Ask the platform to reveal the existing window
 
 # Shown instead of an app's view while its record does not read as the app expects.
 framework-unreadable = This cannot be opened
+display-arrangement-offline = Offline
+display-arrangement-excluded = Not in layout
+display-arrangement-offline-excluded = Offline · Not in layout
+display-arrangement-item-status = { $position }; { $status }
+display-arrangement-caption-status = { $status } · { $name }

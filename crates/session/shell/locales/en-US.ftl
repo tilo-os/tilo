@@ -2534,6 +2534,22 @@ device-fabric-error-input-sequence-exhausted = Input sequencing is exhausted. Re
 
 device-fabric-error-input-cleanup-pending = Previous input is still being released. Try again.
 
+display-remote-heading = Your other screens
+display-remote-title = { $number } · { $name } · { $device }
+display-remote-row = { $status } · { $title }
+display-remote-row-description = Include this screen in your shared display layout
+display-remote-offline = Offline
+display-remote-offline-excluded = Offline · Not in layout
+display-remote-switched-off = Switched off on its device
+display-remote-in-layout = In layout
+display-remote-out-of-layout = Not in layout
+display-remote-unavailable = This shared display is no longer available.
+display-remote-permission = Your workspace role does not allow changing the shared display layout.
+display-remote-stale = This display arrangement changed. Refresh before editing.
+search-action-shared-display-inspect = Inspect shared displays
+search-action-shared-display-inspect-subtitle = Certified outputs, display numbers, inclusion and current arrangement revisions
+search-action-shared-display-include = Set shared display inclusion
+search-action-shared-display-include-subtitle = Include or exclude one certified output without granting input access
 activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source
 activity-morning-empty = Morning sources: choose a resource in Explore → Details. Up to eight sources; no sources connected automatically.
