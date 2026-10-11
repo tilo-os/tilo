@@ -1104,10 +1104,7 @@ impl Widget for StoreApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node))
             && let Some(&child_node) = children.first()
         {

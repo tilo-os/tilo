@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{AlignItems, Dimension, NodeId, Size, Style, TaffyTree};
@@ -965,31 +966,20 @@ impl Widget for SidebarWheelDisc {
         // Leaf reserves the visible-arc width and takes 100% of the
         // parent slot's height — the disc's centre sits off-screen-left,
         // concept-faithful "huge wheel" feel.
-        // `TaffyTree::new_leaf` only ever inserts into its own slotmaps
-        // and returns `Ok` unconditionally (taffy 0.10's implementation
-        // has no failure path for a leaf with no child/parent refs) —
-        // so this is a `let...else` rather than a real fallible call.
-        #[allow(
-            clippy::unreachable,
-            reason = "verified against taffy 0.10.1's own source \
-                      (tree/taffy_tree.rs): new_leaf unconditionally inserts \
-                      into its own slotmaps and returns Ok — there is no Err \
-                      path for a plain leaf, so this cannot fire"
-        )]
-        let Ok(node) = taffy.new_leaf(Style {
-            size: Size {
-                width: Dimension::length(f64_to_f32_lossy(self.visible_width_px())),
-                height: Dimension::percent(1.0),
+        taffy.widget_leaf(
+            Style {
+                size: Size {
+                    width: Dimension::length(f64_to_f32_lossy(self.visible_width_px())),
+                    height: Dimension::percent(1.0),
+                },
+                flex_grow: 0.0,
+                flex_shrink: 0.0,
+                align_self: Some(AlignItems::Stretch),
+                ..Default::default()
             },
-            flex_grow: 0.0,
-            flex_shrink: 0.0,
-            align_self: Some(AlignItems::Stretch),
-            ..Default::default()
-        }) else {
-            unreachable!("TaffyTree::new_leaf has no failure path for a plain leaf node")
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

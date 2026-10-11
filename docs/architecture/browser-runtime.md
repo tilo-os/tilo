@@ -129,7 +129,7 @@ time, so they are not compile blockers; they are listed under run-time gaps.
 | 3 | tokio `net` | `runtime-portal` | Moved to `[target.'cfg(unix)']`; only the Unix socket path used it, non-Unix already returned `NotAvailable` | fixed |
 | 4 | tokio `rt-multi-thread` | `tilo-rt` | `daemon()` runtimes are not built on wasm; `app()`, `cpu()` and `io` remain. Positioned I/O gains an `Unsupported` arm | fixed |
 | 5 | OpenMLS refuses wasm without `js` | `channel-crypto` | wasm target dep `openmls/js`; required `getrandom` 0.4.1 → 0.4.3 in `Cargo.lock` | fixed |
-| 6 | `ring`/`rustls` (pairing TLS in `identity_flow`) | `tilo-ui` | As in PR 541: `rustls` and `private-fs` are native-only dependencies; `remote_call` answers `None` in the browser. The bundle no longer contains `ring` or C code | fixed |
+| 6 | `ring`/`rustls` (pairing TLS in `tilo-identity-ceremony`) | `tilo-ui` | As in PR 541: `rustls` and `private-fs` are native-only dependencies; `remote_call` answers `None` in the browser. The bundle no longer contains `ring` or C code | fixed |
 | 7 | No private-file platform | `private-fs` | Third `platform` arm refusing with `Unsupported` | fixed |
 | 8 | `libc::clock_gettime`; `Url::from_file_path` | `media` | Non-Unix `monotonic_now_ns` reports unreadable (0), as a failed `clock_gettime` did; `path_to_file_uri` returns `Unsupported` | fixed |
 | 9 | `Url::to_file_path` | `tilo-host::portal::to_local_path` | Non-Unix/Windows hosts have no local paths: `None` | fixed |
@@ -162,7 +162,7 @@ With these, `tilo-ui --no-default-features` and `tilo-relay-client` (iroh
 | Fonts | cosmic-text `fontconfig` finds nothing | Verified product fonts from the manifest loaded as bytes before first frame. |
 | Speech, spellcheck | `tts`, `spellcheck` | *Done.* `NullSpeaker`. The English dictionary is compiled in, so spell checking works in-process; the warm-up thread is skipped on wasm. Other languages would need dictionaries fetched as assets. |
 | Clipboard, pickers, URI, notifications | `HostServices` | *Done* (`src/host_services.rs`, `web/host-services.mjs`). Clipboard: trusted clipboard events plus `execCommand('copy')` for clicked Copy (the async Clipboard API cannot give Cut the synchronous answer it needs). Files: `FilePicker::pick_contents`/`save_contents` (new, with path-reading defaults for native hosts) answered by `<input type=file>` and a download; path pickers refuse. URIs: `window.open` for http/https/mailto/tel only, without an opener. Notifications API with permission requested on first use. |
-| TCP pairing | `identity_flow` | Replaced by relay-mediated certification. |
+| TCP pairing | `tilo-identity-ceremony` | Replaced by relay-mediated certification. |
 
 ### Seams the page installs
 

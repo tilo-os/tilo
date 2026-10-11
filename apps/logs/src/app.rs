@@ -758,10 +758,7 @@ impl Widget for LogsApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if let Some(shell) = shell_node(taffy, node) {
             self.shell
                 .apply_layout(taffy, shell, Point::new(self.rect.x0, self.rect.y0));

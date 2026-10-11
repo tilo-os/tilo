@@ -729,12 +729,7 @@ impl Widget for Card {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `layout` only errors for a `NodeId` from a different tree, which
-        // never happens here since `node` is always the id this same widget
-        // received from its own `build_layout` call.
-        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
-        let layout = taffy.layout(node).unwrap();
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let card_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
             for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
@@ -3731,12 +3726,7 @@ impl Widget for InstallerApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `layout` only errors for a `NodeId` from a different tree, which
-        // never happens here since `node` is always the id this same widget
-        // received from its own `build_layout` call.
-        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
-        let layout = taffy.layout(node).unwrap();
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if let Some(c) = self.composed.element_mut()
             && let Ok(children) = taffy.children(node)
             && let Some(&card_node) = children.first()

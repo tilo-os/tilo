@@ -478,7 +478,6 @@ impl Core {
     }
 
     /// The lasting problem the forecast shows above itself, if any.
-    #[cfg(test)]
     pub(crate) fn notice(&self) -> Option<ForecastNotice> {
         self.notice
     }

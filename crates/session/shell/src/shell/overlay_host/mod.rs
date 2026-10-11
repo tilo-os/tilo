@@ -3874,6 +3874,8 @@ impl ShellOverlayHost {
                 snapshot
             },
         );
+        // Best-effort: without a running network there is nothing to start.
+        let _ = self.peer_sync_call(PeerSyncRequest::PrepareInvitation);
         self.peer_sync_overlay.set_invite_context(context);
         self.peer_sync_overlay
             .merge_remembered_invitees(room_invitees);
@@ -18357,6 +18359,9 @@ impl Widget for ShellOverlayHost {
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        if self.layers.emoji_picker.is_open() {
+            return self.layers.emoji_picker.primary_vertical_scroll();
+        }
         let st = self.chrome.as_ref()?.borrow();
         if st.overlays.collaborators {
             return self.collaborators_overlay.primary_vertical_scroll();
@@ -18380,7 +18385,11 @@ impl Widget for ShellOverlayHost {
         if self.primary_vertical_scroll().is_none() {
             return ui::widget::PrimaryScrollResult::Unsupported;
         }
-        let result = if self.overlay_flags().collaborators {
+        let result = if self.layers.emoji_picker.is_open() {
+            self.layers
+                .emoji_picker
+                .apply_primary_vertical_scroll(action)
+        } else if self.overlay_flags().collaborators {
             self.collaborators_overlay
                 .apply_primary_vertical_scroll(action)
         } else {
