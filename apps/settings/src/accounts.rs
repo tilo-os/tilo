@@ -472,6 +472,15 @@ impl AccountRoot {
         self.finish_mutation()
     }
 
+    /// Whether a mutation's intent is on disk, so loading the stores
+    /// recovers it first. An intent that cannot be ruled out counts.
+    pub(crate) fn mutation_pending(&self) -> bool {
+        self.path().is_some()
+            && self
+                .mutation_journal_path()
+                .is_ok_and(|path| path.try_exists().unwrap_or(true))
+    }
+
     /// Recover an interrupted mutation, logging rather than failing: the
     /// inventory is still worth presenting.
     pub(crate) fn recover_mutation_or_warn(&self) {
