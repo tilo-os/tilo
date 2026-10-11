@@ -131,6 +131,9 @@ pub struct OutputSignal<'a> {
     /// The output's ICC profile, sampled. An SDR target is written through it; an HDR one
     /// ignores it, as the readback does (the profile describes the panel's SDR response).
     pub color_lut: Option<&'a IccLut>,
+    /// The frame as layers, when it came as layers: an output that is the
+    /// whole scene composites a strip pan from them instead of rendering it.
+    pub layers: Option<&'a crate::shell::frame::FrameCache>,
 }
 
 /// The texture the final pass writes: an imported scanout buffer, or any render target of
@@ -368,6 +371,8 @@ impl VelloDrmBridge {
                 sdr_white_nits: signal.sdr_white_nits,
                 hdr_layers: &layers,
                 color_lut: signal.color_lut,
+                // The layers are drawn for the whole scene, not this view.
+                layers: None,
             },
         );
         surface.swap(&mut self.target);
