@@ -904,7 +904,7 @@ impl EmbeddedCatalog {
 ///
 /// `embedded_catalog!(pub(crate) static STORE_CATALOG, ["en-US", "de-DE"])`
 /// defines just the static; `embedded_catalog!(pub fn, ["en-US"])`
-/// defines `static CATALOG` and the `t` / `t_args` lookups the crate's copy
+/// defines `CATALOG` and the `t` / `t_args` lookups the crate's copy
 /// goes through.
 #[macro_export]
 macro_rules! embedded_catalog {
@@ -924,7 +924,7 @@ macro_rules! embedded_catalog {
         };
     };
     ($vis:vis fn, [$($locale:literal),+ $(,)?]) => {
-        $crate::embedded_catalog!(static CATALOG, [$($locale),+]);
+        $crate::embedded_catalog!($vis static CATALOG, [$($locale),+]);
 
         #[allow(dead_code, reason = "a crate may resolve only plain or only interpolated copy")]
         $vis fn t(key: &str) -> String {
