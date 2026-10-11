@@ -453,6 +453,24 @@ fn edit_bound_record(app: &mut App, binding: &crate::bound_dispatch::CallbackBin
 }
 
 #[test]
+fn native_idle_model_persists_a_bound_edit_before_any_close() {
+    let host = ProbeHost::new();
+    let component = editable_component(&host, 11);
+    let binding = component.callback_binding();
+    let mut app = App::from_component(component, runner_inputs()).unwrap();
+    assert_saved_body(&host, &binding, "initialized");
+
+    edit_bound_record(&mut app, &binding);
+    app.service_native_idle_model();
+
+    // Read the original writer's complete on-disk graph before close can flush it.
+    assert_saved_body(&host, &binding, "edited");
+    assert!(binding.lifetime.is_active());
+    assert!(app.component_close_reports().is_empty());
+    app.close_components();
+}
+
+#[test]
 fn prepared_autosave_and_close_retain_original_owners_for_retry() {
     // Case `prepared_native_autosave_tick_acknowledges_original_writer_before_close`.
     {
