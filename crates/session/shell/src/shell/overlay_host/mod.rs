@@ -4124,6 +4124,13 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            if let Some(surface) = self.desktop_surface_mut() {
+                surface.retire_departed_requested_groups(&tree.desktop);
+            }
+        }
         let closing_visual = self
             .desktop_surface_mut()
             .is_some_and(|surface| surface.close_animation_in_flight());

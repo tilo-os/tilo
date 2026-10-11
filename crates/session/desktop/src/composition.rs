@@ -541,6 +541,29 @@ impl DesktopSurface {
         clippy::too_many_lines,
         reason = "one retained-tree reconciliation: moves, removals and inserts must see each other's state"
     )]
+    /// A client that exits after refusing or deferring a close request
+    /// retires its still-visible window here, once. This must precede every
+    /// rebuild decision, which would otherwise drop the window unanimated.
+    pub fn retire_departed_requested_groups(&mut self, tree: &DesktopTree) {
+        for id in self.order.clone() {
+            let Some(row) = self.row_mut(id) else {
+                continue;
+            };
+            for group in &mut row.groups {
+                if group.close_was_requested()
+                    && !group.is_closing()
+                    && !tree.workspaces.iter().any(|w| {
+                        w.strips
+                            .iter()
+                            .any(|s| s.window_groups.iter().any(|g| g.id == group.id))
+                    })
+                {
+                    group.start_closing();
+                }
+            }
+        }
+    }
+
     pub fn reconcile(
         &mut self,
         tree: &DesktopTree,
@@ -556,6 +579,7 @@ impl DesktopSurface {
         if workspace.strips.iter().map(|s| s.id).collect::<Vec<_>>() != self.order {
             return ReconcileOutcome::RebuildRequired;
         }
+        self.retire_departed_requested_groups(tree);
         let empty = workspace
             .strips
             .iter()

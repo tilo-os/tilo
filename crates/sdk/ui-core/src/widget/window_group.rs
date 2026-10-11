@@ -269,6 +269,9 @@ pub struct WindowGroup {
     /// Its existing hosts fade within the group transition. `GroupRow` prunes the group
     /// once `close_complete()` is true.
     closing_at: Option<Instant>,
+    /// A close was asked of the owning client and not yet honoured: if the
+    /// group vanishes from the canonical tree, that exit is its one retirement.
+    close_requested: bool,
     close_duration: Duration,
     /// Last motion policy observed from the active theme. Widget scheduling
     /// has no `Theme` parameter, so draw latches it here and the next
@@ -431,6 +434,7 @@ impl WindowGroup {
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
+            close_requested: false,
             close_duration: crate::tokens::motion::Durations::default().base(),
             reduce_motion: false,
             style_dirty: false,
@@ -619,6 +623,12 @@ impl WindowGroup {
         let from = self.layout_width_px();
         self.closing_at = Some(crate::time::now());
         self.retarget_width(from, 0.0);
+    }
+
+    /// Whether a close was requested of the client and abandoned visually
+    /// because the client has not exited.
+    pub fn close_was_requested(&self) -> bool {
+        self.close_requested
     }
 
     pub fn is_closing(&self) -> bool {
@@ -1063,6 +1073,7 @@ impl WindowGroup {
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
+            close_requested: false,
             close_duration: crate::tokens::motion::Durations::default().base(),
             reduce_motion: false,
             style_dirty: false,
@@ -1276,7 +1287,38 @@ impl WindowGroup {
         let restored = self.bar.cancel_close(tab_id);
         self.closing_hosts.remove(&tab_id);
         self.pending_close_commit.retain(|id| *id != tab_id);
+        if restored && self.closing_at.is_some() && !self.bar.tabs().is_empty() {
+            // The last tab started the group's own retirement. The client has
+            // not exited (it may be saving or asking), so the window stays and
+            // the retirement is abandoned. Leaving it running would fade and
+            // prune the group while its live tab remains canonical; resync then
+            // rebuilds it and the real destroy animates a second time.
+            self.closing_at = None;
+            self.close_requested = true;
+            self.width_spring = None;
+            self.last_width_step = None;
+            self.style_dirty = true;
+        }
         restored
+    }
+
+    /// Test-only: the state a click on a tab's `✕` leaves before the shell
+    /// harvests it.
+    pub fn click_close_for_tests(&mut self, tab_id: u64) -> bool {
+        if !self.bar.start_closing(tab_id) {
+            return false;
+        }
+        let _ = self.bar.take_close();
+        self.closing_hosts
+            .entry(tab_id)
+            .or_insert_with(crate::time::now);
+        if !self.pending_close_commit.contains(&tab_id) {
+            self.pending_close_commit.push(tab_id);
+        }
+        if self.bar.tabs().is_empty() {
+            self.start_closing();
+        }
+        true
     }
 
     pub fn drag_in_flight(&self) -> bool {
