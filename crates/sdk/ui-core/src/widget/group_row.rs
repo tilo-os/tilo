@@ -9,8 +9,8 @@ use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{
-    Dimension, Display, FlexDirection, LengthPercentageAuto, NodeId, Position, Size, Style,
-    TaffyTree,
+    Dimension, Display, FlexDirection, LengthPercentageAuto, NodeId, Overflow, Position, Size,
+    Style, TaffyTree,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -3381,6 +3381,16 @@ impl Widget for GroupRow {
         let run_style = |display: Display| Style {
             display,
             flex_direction: FlexDirection::Row,
+            // Groups past the viewport are the strip's to pan and clip, not
+            // extent of what holds it: without this, taffy carries their
+            // width up as every ancestor's content size and the desktop
+            // column reports itself as wide as the whole strip, reaching
+            // across and past every display. `Clip`, not `Hidden`: the
+            // automatic minimum size, and so the layout, stays as it was.
+            overflow: taffy::Point {
+                x: Overflow::Clip,
+                y: Overflow::Visible,
+            },
             // Zero here: the inter-group `ResizeHandle` widgets supply the
             // visible 8-px footprint per gap, so a non-zero gap on top of
             // that would double the inter-group distance.
@@ -6684,6 +6694,100 @@ mod tests {
             .expect("taffy compute_layout");
         row.apply_layout(&taffy, root, Point::ORIGIN);
         (row, taffy, root)
+    }
+
+    /// Lay a column holding one strip of `count` groups out `viewport_w`
+    /// wide, twice so lanes set before the first pass are in its build, and
+    /// return the column's rect with the strip's pan bound.
+    fn column_around_strip(count: usize, viewport_w: f64, lanes: &[StripLane]) -> (Rect, f64) {
+        use crate::widget::Column;
+        use std::collections::HashMap;
+        use taffy::{AvailableSpace, Size as TSize};
+
+        let groups: Vec<WindowGroup> = (0..count)
+            .map(|i| {
+                let id = (i as u64).saturating_mul(100).saturating_add(100);
+                make_group(id, &[(i as u64).saturating_add(1)])
+            })
+            .collect();
+        let mut row = GroupRow::new(groups);
+        let assignment: HashMap<u64, u32> = row
+            .groups
+            .iter()
+            .map(|g| (g.id, lanes.first().map_or(0, |lane| lane.output)))
+            .collect();
+        row.set_lanes(lanes, &assignment);
+        let mut column = Column::new().with_no_padding().push(Box::new(row));
+        let theme = Theme::dark();
+        let mut rect = Rect::ZERO;
+        for _ in 0..2 {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
+            let node = column.build_layout(&mut taffy, &theme, &mut node_map);
+            let viewport = taffy.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::length(px32(viewport_w)),
+                        height: Dimension::length(600.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            );
+            taffy
+                .compute_layout_with_measure(
+                    viewport,
+                    TSize {
+                        width: AvailableSpace::Definite(px32(viewport_w)),
+                        height: AvailableSpace::Definite(600.0),
+                    },
+                    |_, _, _, _, _| taffy::Size::ZERO,
+                )
+                .expect("taffy compute_layout");
+            column.apply_layout(&taffy, node, Point::ORIGIN);
+            rect = column.get_rect();
+        }
+        let max_scroll = column
+            .children_mut()
+            .into_iter()
+            .next()
+            .and_then(|row| row.as_any_mut())
+            .and_then(|row| row.downcast_mut::<GroupRow>())
+            .map_or(0.0, |row| row.max_scroll_x());
+        (rect, max_scroll)
+    }
+
+    /// Windows past a strip's viewport are the strip's to pan and clip: the
+    /// container holding it stays the width it was given, on one display
+    /// and on a strip split across two.
+    #[test]
+    fn a_strip_past_its_viewport_never_widens_its_container() {
+        let viewport_w = 2000.0;
+        let lanes = [
+            StripLane {
+                output: 0,
+                area: Rect::new(0.0, 0.0, 1200.0, 600.0),
+                usable: 1200.0,
+                leading: false,
+            },
+            StripLane {
+                output: 1,
+                area: Rect::new(1200.0, 0.0, viewport_w, 600.0),
+                usable: 800.0,
+                leading: false,
+            },
+        ];
+        for (what, lanes) in [("one run", &[][..]), ("a lane per display", &lanes[..])] {
+            let (rect, max_scroll) = column_around_strip(8, viewport_w, lanes);
+            assert!(
+                max_scroll > 0.0,
+                "{what}: eight groups overflow, so the strip pans ({max_scroll})"
+            );
+            assert!(
+                (rect.width() - viewport_w).abs() < 0.5,
+                "{what}: the column is {rect:?}, not the {viewport_w} it was given"
+            );
+        }
     }
 
     #[test]

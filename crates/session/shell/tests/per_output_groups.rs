@@ -1348,3 +1348,85 @@ fn reordering_past_a_displays_edge_carries_the_group_across() {
     assert_eq!(desk.display_of(moving), Some(1), "and back");
     assert_eq!(on(&desk, 1)[0], moving, "first again beside the seam");
 }
+
+/// One strip of four default-width windows, all on the primary display:
+/// more than its display shows, the shape a session reaches after opening a
+/// few apps.
+fn primary_heavy_tree() -> WorkspaceTree {
+    let ids = [id(3001), id(3002), id(3003), id(3004)];
+    let mut tree = tree();
+    tree.desktop.workspaces[0].strips[0].window_groups = ids
+        .iter()
+        .map(|&id| WindowGroup {
+            width: WindowWidth::Normal,
+            ..group(id)
+        })
+        .collect();
+    tree.desktop.active_group.insert(STRIP, ids[0]);
+    tree.desktop.outputs.home.clear();
+    for id in ids {
+        tree.desktop.outputs.home.insert(id, PANEL_KEY.into());
+    }
+    tree
+}
+
+/// The containers around a strip keep the width they were given, however
+/// far its windows run past their display: those windows are the strip's to
+/// pan and clip. Every rect comes from the registry `list_targets` serves,
+/// which is what the acceptance layout check reads; a desktop column
+/// reported as wide as the strip's content reaches past every display.
+/// Checked on the acceptance VM's pair of displays and on one display.
+#[test]
+fn a_strip_running_past_its_display_never_widens_the_desktop_around_it() {
+    for spec in ["1920x1080@1,1280x800@1.25", "1920x1080@1"] {
+        let outputs = with_monitors(parse_output_spec(spec).expect("spec"));
+        let desktop = outputs
+            .iter()
+            .map(Output::logical_rect)
+            .reduce(|a, b| a.union(b))
+            .expect("a display");
+        let mut desk = Desk::with_tree(primary_heavy_tree(), outputs);
+        let max_scroll = desk
+            .fb
+            .host_mut()
+            .group_row_mut_for_tests(STRIP)
+            .expect("the strip has a row")
+            .max_scroll_x();
+        assert!(
+            max_scroll > 0.0,
+            "{spec}: the windows run past their display, so the strip pans ({max_scroll})"
+        );
+        let registry = desk.fb.widget_registry();
+        let rows: Vec<&String> = registry.keys().filter(|n| n.contains("GroupRow")).collect();
+        assert!(!rows.is_empty(), "{spec}: the strip is a target");
+        // Every target the rows sit inside: an indexed name is a path
+        // segment of theirs, an unindexed one names its last segment bare.
+        let around: Vec<(&String, &Rect)> = registry
+            .iter()
+            .filter(|(name, _)| !name.contains("GroupRow"))
+            .filter(|(name, _)| {
+                let probe = if name.ends_with(']') {
+                    format!("{name}/")
+                } else {
+                    format!("{name}[")
+                };
+                rows.iter().any(|row| row.starts_with(&probe))
+            })
+            .collect();
+        assert!(
+            around
+                .iter()
+                .any(|(name, _)| name.contains("DesktopSurface")),
+            "{spec}: the desktop surface holds the strip: {around:?}"
+        );
+        for (name, rect) in around {
+            assert!(
+                rect.x0 >= desktop.x0 - 0.5
+                    && rect.x1 <= desktop.x1 + 0.5
+                    && rect.y0 >= desktop.y0 - 0.5
+                    && rect.y1 <= desktop.y1 + 0.5,
+                "{spec}: {name} is laid out at {rect:?}, past the displays {desktop:?}"
+            );
+        }
+    }
+}
