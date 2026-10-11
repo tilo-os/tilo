@@ -3,7 +3,8 @@
 crates.io `iroh` 1.0.3, verbatim (archive SHA-256
 `460de6bc52163b41b1646931f2897e5ab986f0966ade444467fec25024751a72`, upstream
 commit `f2eb930dda3779c6d852b72f3712aacd6e573ab1`) but for the three changes
-below, each marked `TILO PATCH` in the source. iroh 1.3.0, the newest release
+below, each marked `TILO PATCH` in the source, and its `[lib]` building an
+`rlib` only (last section). iroh 1.3.0, the newest release
 when this was written, has the same code in every place patched. Pinned by
 `crates/system/fs/tests/iroh_idle.rs`.
 
@@ -39,6 +40,16 @@ and still named in `Endpoint::addr`. `handle_relay_map_change` now sends the
 relay actor `ReleaseHomeRelay` when the map is empty, which clears the home
 relay and tells every active relay it is no longer home; each then closes on
 the existing rule, a minute after it last carried data.
+
+## Built as an rlib only (`Cargo.toml`)
+
+Upstream also builds a `cdylib` (for wasm), and Cargo leaves the hash out of
+a path package's library filenames when it builds a dylib or cdylib. Once
+the crate is a path dependency, two builds of it in one Cargo run (two
+feature sets or profiles, as a full-workspace `cargo nextest run` makes)
+write the same `target/debug/deps/libiroh.rlib` and `.so` ("output filename
+collision"), and dependents then fail with E0460/E0463. Nothing in Tilo loads
+the cdylib, so the `[lib]` builds `rlib` only.
 
 ## Upstream
 

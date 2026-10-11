@@ -35,6 +35,9 @@ kernel cancels on resume or a clock step replaces it), and no gossip cache
 sweep once a topic's caches are empty. Network changes still arrive through
 netlink at once. Each directory's `TILO-PATCH.md` has the details and an
 upstream-ready description; `crates/system/fs/tests/iroh_idle.rs` pins them.
+`iroh` and `iroh-gossip` build an `rlib` only: as path packages their
+upstream `cdylib` dropped the hash from the library filenames, so two builds
+in one Cargo run overwrote each other's outputs (E0460/E0463).
 Remove a copy once its upstream release carries the change.
 
 ## Exportable histories
