@@ -2503,11 +2503,32 @@ impl App {
             && self.history.is_none()
             && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
         {
-            if focus_reset {
+            // A rebuilt tree can already hold focus: a form that re-creates
+            // its controls puts the keyboard back on the field the person was
+            // in, by identity. That field is where focus belongs; the old
+            // ordinal would move it to whatever now sits in the same slot and
+            // leave both fields drawn as focused.
+            // SAFETY: the maps describe the tree built above, exclusively owned.
+            let retained = if focus_reset {
+                None
+            } else {
+                unsafe {
+                    crate::widget::layout::CompositionFocus::current(
+                        &self.layout.node_map,
+                        &self.bindings,
+                        Some(&self.focusable_order),
+                    )
+                }
+            };
+            if let Some(node) = retained {
+                self.focused_node = Some(node);
+            } else if focus_reset {
+                clear_stray_focus(self.root_widget.as_mut());
                 if let Some(target) = self.reset_focus_target() {
                     self.set_focused_node(Some(target));
                 }
             } else if let Some(idx) = prev_focus_idx {
+                clear_stray_focus(self.root_widget.as_mut());
                 let exact = self.focusable_order.get(idx).copied();
                 let target = exact.or_else(|| self.focusable_order.last().copied());
                 if let Some(id) = target {
@@ -2583,6 +2604,17 @@ impl Drop for App {
             Box::new(crate::widget::Container::new()),
         );
         drop(root);
+    }
+}
+
+/// Take the keyboard from every focusable control in `widget`'s tree, so the
+/// one the app then focuses is the only one that draws as focused.
+fn clear_stray_focus(widget: &mut dyn crate::widget::Widget) {
+    if widget.is_focusable() && widget.is_focused() {
+        widget.set_focus(false);
+    }
+    for child in widget.children_mut() {
+        clear_stray_focus(child);
     }
 }
 

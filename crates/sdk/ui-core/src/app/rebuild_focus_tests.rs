@@ -12,6 +12,8 @@ struct RebuildHarness {
     show_status: bool,
     show_offer: bool,
     request_reset: bool,
+    /// Keep the children across layouts instead of recreating them.
+    keep_children: bool,
     children: Vec<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -22,12 +24,27 @@ impl RebuildHarness {
             show_status: false,
             show_offer: false,
             request_reset: false,
+            keep_children: false,
             children: Vec::new(),
             rect: Rect::ZERO,
         }
     }
 
+    /// Two named fields that survive layouts.
+    fn two_fields() -> Self {
+        let mut this = Self::new();
+        this.keep_children = true;
+        this.children = vec![
+            Box::new(TextInput::local().with_id("first")),
+            Box::new(TextInput::local().with_id("second")),
+        ];
+        this
+    }
+
     fn rebuild_children(&mut self) {
+        if self.keep_children {
+            return;
+        }
         let mut kids: Vec<Box<dyn Widget>> = Vec::new();
         // `with_initial_value` parks the caret at the END ("hello" -> 5),
         // so a restored caret of 3 is distinguishable from both the
@@ -97,6 +114,14 @@ impl Widget for RebuildHarness {
         match payload {
             "show_status" => self.show_status = true,
             "reset" => self.request_reset = true,
+            // Like a form that re-creates its controls: the fields change
+            // places and the one that had the keyboard takes it back by name.
+            "swap" => {
+                self.children.reverse();
+                for child in &mut self.children {
+                    child.set_focus(child.test_id() == Some("first"));
+                }
+            }
             "offer" => {
                 self.show_offer = true;
                 self.request_reset = true;
@@ -216,4 +241,41 @@ fn a_focus_reset_lands_on_the_default_control() {
         app.inspect_node(focused, |widget| widget.is_default_keyboard_focus())
             .unwrap_or(false)
     );
+}
+
+#[test]
+fn a_rebuild_that_restores_focus_by_identity_leaves_one_focused_field() {
+    let mut app =
+        App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::two_fields()));
+    app.autofocus_first = true;
+    app.autofocus_on_structure_change = true;
+    app.init_layout();
+    let focused_id = |app: &App| {
+        let node = app.focused_node.expect("a field has the keyboard");
+        app.inspect_node(node, |widget| widget.test_id().map(str::to_owned))
+            .unwrap()
+    };
+    assert_eq!(focused_id(&app).as_deref(), Some("first"));
+
+    let mut tmp = AutoCommit::new();
+    app.root_widget.on_external_event(
+        "swap",
+        &mut crate::widget::Edits::lend(&mut tmp),
+        &automerge::ROOT,
+    );
+    app.rebuild_structure();
+
+    assert_eq!(
+        focused_id(&app).as_deref(),
+        Some("first"),
+        "the field that restored its own focus keeps it, not the one in the old slot"
+    );
+    let flagged: Vec<_> = app
+        .root_widget
+        .children()
+        .into_iter()
+        .filter(|child| child.is_focused())
+        .filter_map(|child| child.test_id().map(str::to_owned))
+        .collect();
+    assert_eq!(flagged, ["first"], "exactly one field is drawn as focused");
 }
