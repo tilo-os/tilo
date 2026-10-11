@@ -28,7 +28,8 @@ Subcommands:
   `render.ui.frame_us.4k` and `render.shell.redraw_us.4k` records
   (`tools/perf/record.py`); the pan harness adds `render.shell.pan_us.*` and
   `render.shell.pan_pixels.*` (4K at 100 %, 150 % and 200 %, and on two
-  strips at 100 % and 200 %) and `render.shell.strip_move_us.4k`.
+  strips at 100 % and 200 %), and `render.shell.strip_move_us.*` and
+  `render.shell.strip_move_pixels.*` (4K at 100 %, 150 % and 200 %).
 
 Both start with the damage-verification preflight: every retained frame must
 match a full render of the same scene, or no number of the run counts.
@@ -87,11 +88,17 @@ PAN_CASES = (("4k", "pan.4k.w6", "4k, 6 windows, layered presenter"),
              ("4k_strips2", "pan.4k.strips2.w6", "4k, two strips, 6 windows, layered presenter"),
              ("4k_s200_strips2", "pan.4k.s200.strips2.w6",
               "4k at 200 %, two strips, 6 windows, layered presenter"))
+# Strip-to-strip moves (focus to the other strip, every frame until the
+# desktop settles) on the same panel at 100 %, 150 % and 200 %.
+STRIP_MOVE_CASES = (("4k", "strip-move.4k.w6", "4k, 6 windows, layered presenter"),
+                    ("4k_s150", "strip-move.4k.s150.w6", "4k at 150 %, 6 windows, layered presenter"),
+                    ("4k_s200", "strip-move.4k.s200.w6", "4k at 200 %, 6 windows, layered presenter"))
 PAN_RECORDS = tuple(record for suffix, stem, case in PAN_CASES
                     for record in ((f"render.shell.pan_us.{suffix}", "us", f"{stem}.layered.frame-us", case),
-                                   (f"render.shell.pan_pixels.{suffix}", "pixels", f"{stem}.layered.pixels", case))) + (
-    ("render.shell.strip_move_us.4k", "us", "strip-move.4k.w6.layered.frame-us",
-     "4k, 6 windows, layered presenter"),)
+                                   (f"render.shell.pan_pixels.{suffix}", "pixels", f"{stem}.layered.pixels", case))) + tuple(
+    record for suffix, stem, case in STRIP_MOVE_CASES
+    for record in ((f"render.shell.strip_move_us.{suffix}", "us", f"{stem}.layered.frame-us", case),
+                   (f"render.shell.strip_move_pixels.{suffix}", "pixels", f"{stem}.layered.pixels", case)))
 PAN_ADAPTER = re.compile(r"^adapter: name=\"([^\"]*)\"", re.M)
 
 # A run measures the harness's defaults: no inherited benchmark switch or

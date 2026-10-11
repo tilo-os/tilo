@@ -7,7 +7,6 @@
 
 use std::{
     io,
-    os::unix::fs::{FileTypeExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -71,19 +70,7 @@ pub fn serve_workspace(
     backend: Arc<dyn WorkspaceBackend>,
     runtime: tokio::runtime::Handle,
 ) -> io::Result<WorkspaceServer> {
-    match std::fs::symlink_metadata(socket) {
-        Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(socket)?,
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("{} is not a socket", socket.display()),
-            ));
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let listener = std::os::unix::net::UnixListener::bind(socket)?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+    let listener = tilo_files::native::private::bind_socket(socket)?;
     listener.set_nonblocking(true)?;
     let (stop, stopped) = oneshot::channel();
     let thread = std::thread::Builder::new()

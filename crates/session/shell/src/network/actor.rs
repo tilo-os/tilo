@@ -767,10 +767,9 @@ impl TopicRuntime {
     /// comes later is never offered an older message: the shell syncs it
     /// when it joins (`NetEvent::PeerJoined`). All a broadcast into an
     /// empty topic would do is start the topic's cache sweep
-    /// ([`GOSSIP_CACHE_SWEEP`]), which iroh-gossip arms on the first message
-    /// and never stops, so a desktop alone with its rooms would wake to
-    /// sweep empty caches for the rest of the session. The first neighbour
-    /// arms it instead.
+    /// ([`GOSSIP_CACHE_SWEEP`]), which then runs until the message expires
+    /// (`gossip_caches_drain_within`), so a desktop alone with its rooms
+    /// would wake for every local change. Only a linked topic broadcasts.
     async fn broadcast(&self, bytes: Bytes) -> Result<(), iroh_gossip::api::ApiError> {
         if !self.linked {
             return Ok(());
@@ -3155,6 +3154,7 @@ impl ActorState {
             HostEvent::Voice(_) => "HostVoice",
             HostEvent::Closed => "HostClosed",
         });
+        let event = self.admit_native_governance(ws, event).await;
         let mapped = match event {
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => {
@@ -4066,12 +4066,13 @@ async fn sleep_until_lapse(at: Option<Instant>) {
 }
 
 /// How often gossip sweeps a topic's message caches. iroh-gossip's 1 s
-/// sweep is a timer per topic that never stops, the one thing that woke an
-/// idle, converged session several times a second; swept every
-/// [`GOSSIP_CACHE_SWEEP`] instead, an idle topic wakes its runtime a tenth
-/// as often. iroh-gossip arms it on a topic's first message or neighbour,
-/// so a topic that never had a neighbour is never swept
-/// ([`TopicRuntime::broadcast`]).
+/// sweep was a timer per topic that never stopped, the one thing that woke
+/// an idle, converged session several times a second; swept every
+/// [`GOSSIP_CACHE_SWEEP`] instead, a topic with messages wakes its runtime
+/// a tenth as often. The vendored iroh-gossip (`vendor/iroh-gossip/
+/// TILO-PATCH.md`) arms it on a topic's first cached message and stops it
+/// once the caches are empty (`gossip_caches_drain_within`); a topic that
+/// never had a neighbour caches nothing ([`TopicRuntime::broadcast`]).
 const GOSSIP_CACHE_SWEEP: Duration = Duration::from_secs(10);
 /// How long gossip keeps a message to answer a neighbour's graft for it.
 /// iroh-gossip's 30 s less the longer sweep, so a message is still gone
@@ -4079,6 +4080,18 @@ const GOSSIP_CACHE_SWEEP: Duration = Duration::from_secs(10);
 /// and this cache holds whole messages of up to
 /// [`MAX_GOSSIP_MESSAGE_BYTES`].
 const GOSSIP_MESSAGE_RETENTION: Duration = Duration::from_secs(20);
+
+/// How long after its last message a topic stops sweeping: the message id
+/// outlives the message itself (iroh-gossip's 90 s, to refuse a late
+/// duplicate), and the sweep that finds both gone is the last.
+#[cfg(test)]
+pub(crate) fn gossip_caches_drain_within() -> Duration {
+    let config = broadcast_config();
+    config
+        .message_id_retention
+        .max(config.message_cache_retention)
+        .saturating_add(config.cache_evict_interval)
+}
 
 /// Plumtree broadcast settings: iroh-gossip's, with the cache swept every
 /// [`GOSSIP_CACHE_SWEEP`] instead of every second.

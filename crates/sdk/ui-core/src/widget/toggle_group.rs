@@ -1910,6 +1910,26 @@ fn tab_label_span(
 }
 
 impl ToggleGroup {
+    /// Pin the node to the measured strip width. True when the style changed.
+    fn pin_measured_width(&self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Some(width) = self
+            .measured_width
+            .filter(|_| !self.fill && self.chosen.is_none())
+        else {
+            return false;
+        };
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let width = Dimension::length(width);
+        if style.size.width == width {
+            return false;
+        }
+        let mut style = style.clone();
+        style.size.width = width;
+        taffy.set_style(node, style).is_ok()
+    }
+
     /// Apply a `tilo.ui.segmented.select` addressed to this control.
     /// `Ok(false)` when the operation is not this control's.
     fn select_segment_operation(
@@ -2080,26 +2100,7 @@ impl Widget for ToggleGroup {
         }
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        let Some(width) = self
-            .measured_width
-            .filter(|_| !self.fill && self.chosen.is_none())
-        else {
-            return false;
-        };
-        let Ok(style) = taffy.style(node) else {
-            return false;
-        };
-        let width = Dimension::length(width);
-        if style.size.width == width {
-            return false;
-        }
-        let mut style = style.clone();
-        style.size.width = width;
-        taffy.set_style(node, style).is_ok()
-    }
-
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -2119,7 +2120,7 @@ impl Widget for ToggleGroup {
                 text,
             )));
         }
-        self.adjust_layout_style(taffy, node)
+        self.pin_measured_width(taffy, node)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

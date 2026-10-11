@@ -315,6 +315,9 @@ pub(crate) fn answer(
 pub struct DeviceMeshArea {
     cx: PaneCx,
     model: std::cell::OnceCell<Shared<DeviceMeshModel>>,
+    /// The relay's configuration and state and the device fleet, read off
+    /// the UI thread after the window's first frame ([`Self::start_read`]).
+    read: crate::device_read::DeviceRead<MeshRead>,
 }
 
 impl DeviceMeshArea {
@@ -322,24 +325,50 @@ impl DeviceMeshArea {
         Self {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
+            read: crate::device_read::DeviceRead::default(),
+        }
+    }
+
+    /// Where the relay configuration is read from, and whether what is
+    /// paired or discovered is: this device's, or, for a screenshot, an
+    /// unconfigured one with nothing paired.
+    fn source(&self) -> (PathBuf, bool) {
+        if self.cx.reaches_devices() {
+            (PathBuf::from(DEFAULT_CONFIG), true)
+        } else {
+            (PathBuf::from("/nonexistent/tilo/relay.toml"), false)
         }
     }
 
     /// The model, over this device's relay configuration, or, for a
-    /// screenshot, over an unconfigured one with nothing paired.
+    /// screenshot, over an unconfigured one with nothing paired: from the
+    /// read [`Self::start_read`] started, waiting for it if it still runs,
+    /// else read here.
     pub fn model(&self) -> &Shared<DeviceMeshModel> {
         self.model.get_or_init(|| {
-            let model = if self.cx.reaches_devices() {
-                DeviceMeshModel::from_path(self.cx.clone(), PathBuf::from(DEFAULT_CONFIG), true)
-            } else {
-                DeviceMeshModel::from_path(
-                    self.cx.clone(),
-                    PathBuf::from("/nonexistent/tilo/relay.toml"),
-                    false,
-                )
-            };
+            let read = self.read.take().unwrap_or_else(|| {
+                let (path, devices) = self.source();
+                MeshRead::of(path, devices, ui::time::wall())
+            });
+            let model = DeviceMeshModel::from_read(self.cx.clone(), read);
             Rc::new(std::cell::RefCell::new(model))
         })
+    }
+
+    /// Read the relay and the device fleet off the UI thread; `false` when
+    /// they have been read or are being read.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let (path, devices) = self.source();
+        let now = ui::time::wall();
+        self.read.start(move || MeshRead::of(path, devices, now))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
     }
 
     /// Take in finished background commands, if the model exists.
@@ -606,13 +635,17 @@ fn provenance_summaries(provenance: &RoamingProvenance) -> Vec<(String, String)>
         .collect()
 }
 
-fn load_roaming_provenance(
-    path: Option<&std::path::Path>,
-) -> (
+/// The roaming provenance at `path` as read: the projection or why it
+/// could not be read, and when the file was last written.
+type ProvenanceRead = (
     Option<RoamingProvenance>,
     Option<String>,
     Option<SystemTime>,
-) {
+);
+
+/// Read the roaming provenance at `path`; an error is left untranslated
+/// ([`shown_roaming_provenance`]), so this may run off the UI thread.
+fn read_roaming_provenance(path: Option<&std::path::Path>) -> ProvenanceRead {
     let Some(path) = path else {
         return (None, None, None);
     };
@@ -624,15 +657,20 @@ fn load_roaming_provenance(
     }
     match RoamingProvenance::load_at(path) {
         Ok(provenance) => (Some(provenance), None, stamp),
-        Err(error) => (
-            None,
-            Some(t_args(
-                "mesh-provenance-err",
-                &[("error", error.to_string().into())],
-            )),
-            stamp,
-        ),
+        Err(error) => (None, Some(error.to_string()), stamp),
     }
+}
+
+/// `read` as the pane shows it: the projection, the status saying why it
+/// could not be read, and its stamp.
+fn shown_roaming_provenance(read: ProvenanceRead) -> ProvenanceRead {
+    let (provenance, error, stamp) = read;
+    let status = error.map(|error| t_args("mesh-provenance-err", &[("error", error.into())]));
+    (provenance, status, stamp)
+}
+
+fn load_roaming_provenance(path: Option<&std::path::Path>) -> ProvenanceRead {
+    shown_roaming_provenance(read_roaming_provenance(path))
 }
 
 fn revocation_reason(label: &str) -> RevocationReason {
@@ -727,11 +765,31 @@ fn command_error(stderr: &[u8], fallback: &str) -> String {
     }
 }
 
-impl DeviceMeshModel {
-    /// Load the relay configuration at `config_path`. Missing configuration
-    /// is a normal first-run state and starts from the daemon's defaults.
-    /// Without `devices`, nothing paired or discovered is read.
-    fn from_path(cx: PaneCx, config_path: PathBuf, devices: bool) -> Self {
+/// What the Devices & Sync area reads of the device: the relay's
+/// configuration and state, the workspaces and home servers it knows, and
+/// the device fleet, every certificate of which is verified. Read off the
+/// UI thread after the window's first frame; the model is built from it on
+/// the UI thread ([`DeviceMeshModel::from_read`]).
+pub(crate) struct MeshRead {
+    config_path: PathBuf,
+    config: RelayConfig,
+    load_status: String,
+    runtime_status: RelayRuntimeStatus,
+    discovered_workspaces: Vec<DiscoveredWorkspace>,
+    home_peers: Vec<tilo_relay_protocol::HomePeerRegistration>,
+    home_peer_last_seen: HashMap<String, u64>,
+    personal_devices: Vec<crate::device_fleet::DeviceView>,
+    personal_device_error: Option<String>,
+    roaming_provenance_path: Option<PathBuf>,
+    roaming_provenance: ProvenanceRead,
+}
+
+impl MeshRead {
+    /// Load the relay configuration at `config_path`, the relay's state as
+    /// of `now`, and, with `devices`, what is paired or discovered. Missing
+    /// configuration is a normal first-run state and starts from the
+    /// daemon's defaults.
+    fn of(config_path: PathBuf, devices: bool, now: SystemTime) -> Self {
         let (config, load_status) = match RelayConfig::load(&config_path) {
             Ok(config) => (config, "Configuration loaded".to_string()),
             Err(tilo_relay_protocol::config::ConfigError::Io(error))
@@ -773,7 +831,7 @@ impl DeviceMeshModel {
                 format!("Configuration could not be read: {error}"),
             ),
         };
-        let runtime_status = RelayRuntimeStatus::read(&config, ui::time::wall());
+        let runtime_status = RelayRuntimeStatus::read(&config, now);
         let discovered_workspaces = if devices {
             discover_workspaces(&config)
         } else {
@@ -793,24 +851,17 @@ impl DeviceMeshModel {
         } else {
             (Vec::new(), None)
         };
-        let continuity_settings = cx.follow::<ContinuityPrivacy>();
-        let continuity = continuity_settings.get().clone();
         let roaming_provenance_path = devices
             .then(settings_store::roaming_provenance::path)
             .flatten();
-        let (roaming_provenance, roaming_provenance_status, roaming_provenance_stamp) =
-            load_roaming_provenance(roaming_provenance_path.as_deref());
+        let roaming_provenance = read_roaming_provenance(roaming_provenance_path.as_deref());
         Self {
             config_path,
             config,
             load_status,
-            cx,
-            changed: false,
             runtime_status,
             discovered_workspaces,
-            registered_home_peers: home_peers.len(),
             home_peers,
-            home_peer_health: HashMap::new(),
             home_peer_last_seen: if devices {
                 load_home_peer_last_seen()
             } else {
@@ -818,10 +869,45 @@ impl DeviceMeshModel {
             },
             personal_devices,
             personal_device_error,
+            roaming_provenance_path,
+            roaming_provenance,
+        }
+    }
+}
+
+impl DeviceMeshModel {
+    /// Load the relay configuration at `config_path` here
+    /// ([`MeshRead::of`]). Without `devices`, nothing paired or discovered
+    /// is read.
+    #[cfg(test)]
+    fn from_path(cx: PaneCx, config_path: PathBuf, devices: bool) -> Self {
+        Self::from_read(cx, MeshRead::of(config_path, devices, ui::time::wall()))
+    }
+
+    /// The model over what `read` read of the device.
+    fn from_read(cx: PaneCx, read: MeshRead) -> Self {
+        let continuity_settings = cx.follow::<ContinuityPrivacy>();
+        let continuity = continuity_settings.get().clone();
+        let (roaming_provenance, roaming_provenance_status, roaming_provenance_stamp) =
+            shown_roaming_provenance(read.roaming_provenance);
+        Self {
+            config_path: read.config_path,
+            config: read.config,
+            load_status: read.load_status,
+            cx,
+            changed: false,
+            runtime_status: read.runtime_status,
+            discovered_workspaces: read.discovered_workspaces,
+            registered_home_peers: read.home_peers.len(),
+            home_peers: read.home_peers,
+            home_peer_health: HashMap::new(),
+            home_peer_last_seen: read.home_peer_last_seen,
+            personal_devices: read.personal_devices,
+            personal_device_error: read.personal_device_error,
             continuity,
             continuity_settings,
             peer_names: HashMap::new(),
-            roaming_provenance_path,
+            roaming_provenance_path: read.roaming_provenance_path,
             roaming_provenance_stamp,
             roaming_provenance,
             roaming_provenance_status,
@@ -2541,5 +2627,54 @@ mod tests {
             assert!(pane.pairing_child.is_some());
             pane.pairing_child = None;
         }
+    }
+
+    /// Wait for a background read to end, as the warm-up's wake would.
+    fn until_finished(finished: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !finished() {
+            assert!(std::time::Instant::now() < deadline, "the read ends");
+            std::thread::yield_now();
+        }
+    }
+
+    /// The warm-up reads the relay and the fleet off the UI thread once;
+    /// the model is built from that read, and nothing is read again.
+    #[test]
+    fn the_area_builds_its_model_from_the_read_it_started() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = DeviceMeshArea::new(&cx);
+        assert!(area.start_read(), "the first read starts");
+        assert!(!area.start_read(), "one read at a time");
+        assert!(!area.is_open(), "a running read publishes nothing yet");
+        until_finished(|| area.read_finished());
+        let model = area.model().borrow();
+        assert!(area.is_open());
+        assert_eq!(
+            model.config_path,
+            PathBuf::from("/nonexistent/tilo/relay.toml"),
+            "a test reads the stand-in configuration"
+        );
+        assert!(model.personal_devices.is_empty() && model.home_peers.is_empty());
+        drop(model);
+        assert!(!area.start_read(), "a built model is not read again");
+    }
+
+    /// A model built from a read shows what reading in place shows.
+    #[test]
+    fn a_read_builds_the_model_reading_in_place_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay.toml");
+        std::fs::write(&path, "device_role = \"interactive\"\n").unwrap();
+        let cx = PaneCx::in_file(dir.path().join("settings.json"));
+        let here = DeviceMeshModel::from_path(cx.clone(), path.clone(), false);
+        let read = MeshRead::of(path, false, ui::time::wall());
+        let there = DeviceMeshModel::from_read(cx, read);
+        assert_eq!(here.config_path, there.config_path);
+        assert_eq!(here.load_status, there.load_status);
+        assert_eq!(here.config.device_role, there.config.device_role);
+        assert_eq!(here.runtime_status, there.runtime_status);
+        assert_eq!(here.discovered_workspaces, there.discovered_workspaces);
     }
 }

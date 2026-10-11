@@ -123,6 +123,177 @@ fn refining_through_the_job_door_is_one_undo_step() {
 }
 
 #[test]
+fn legacy_subject_and_refine_calls_explain_the_job_door_without_editing() {
+    let mut app = TestApp::<App>::new().unwrap();
+    open_disc(&mut app);
+    call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
+    let before = app.state();
+    let versions = app.versions();
+    for args in [json!({"subject": true}), json!({"refine": 8})] {
+        let error = app.call("select", args).unwrap_err().to_string();
+        assert!(error.contains("find-area"), "{error}");
+        assert!(error.contains("job"), "{error}");
+        assert_eq!(app.state(), before);
+        assert_eq!(app.versions(), versions);
+    }
+    // The guidance names a real published operation, rather than a local
+    // button callback that an agent cannot invoke.
+    let resources = app.harness().resources();
+    let artwork = resources
+        .iter()
+        .find(|resource| resource.kind == "canvas.artwork")
+        .unwrap();
+    let find = artwork
+        .actions
+        .iter()
+        .find(|action| action.id == "find-area")
+        .unwrap();
+    assert_eq!(find.contract.kind, ui::tilo_actions::ActionKind::Undoable);
+    assert_eq!(
+        find.contract.execution,
+        ui::tilo_actions::ExecutionMode::Background { cancellable: false }
+    );
+}
+
+#[test]
+fn a_named_edge_job_commits_one_step_as_its_original_agent() {
+    let mut app = TestApp::<App>::new().unwrap();
+    open_disc(&mut app);
+    call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
+    let before = app.state();
+    let versions = app.versions().len();
+    let output = app
+        .call_by(
+            ui::tilo_actions::ActionInvoker::actor("agent:canvas-finder"),
+            "canvas.artwork",
+            "find-area",
+            json!({"refine": 8}),
+        )
+        .unwrap();
+    assert!(output.value.unwrap()["selection"]["bounds"].is_array());
+    let after = app.state();
+    assert_ne!(after.selection, before.selection);
+    let history = app.versions();
+    assert_eq!(history.len(), versions.saturating_add(1));
+    assert_eq!(
+        history
+            .last()
+            .unwrap()
+            .context
+            .as_ref()
+            .unwrap()
+            .invoker
+            .as_ref()
+            .unwrap()
+            .actor,
+        "agent:canvas-finder"
+    );
+    let undo = app
+        .call_by(
+            ui::tilo_actions::ActionInvoker::actor("agent:canvas-finder"),
+            "canvas.artwork",
+            "undo",
+            json!({}),
+        )
+        .unwrap();
+    assert_eq!(undo.value.unwrap()["undone"].as_array().unwrap().len(), 1);
+    assert_eq!(app.state(), before);
+    let redo = app
+        .call_by(
+            ui::tilo_actions::ActionInvoker::actor("agent:canvas-finder"),
+            "canvas.artwork",
+            "redo",
+            json!({}),
+        )
+        .unwrap();
+    assert_eq!(redo.value.unwrap()["redone"].as_array().unwrap().len(), 1);
+    assert_eq!(app.state(), after);
+}
+
+#[test]
+fn an_accepted_edge_job_allows_its_participants_published_inspect() {
+    let mut app = TestApp::<App>::new().unwrap();
+    open_disc(&mut app);
+    call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
+    let effect = canvas::resource::ViewOp::FindArea {
+        area: canvas::resource::FindArea {
+            refine: Some(8.0),
+            ..Default::default()
+        },
+    };
+    let invocation = app.start_effect(&effect).unwrap();
+    assert!(
+        !app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+    );
+    let another_participant = app.call_by(
+        ui::tilo_actions::ActionInvoker::actor("agent:canvas-reader"),
+        "canvas.artwork",
+        "inspect",
+        json!({}),
+    );
+    assert!(matches!(
+        another_participant,
+        Err(ui::tilo_actions::DoorError::Unavailable { code, .. }) if code == "private_view"
+    ));
+    let output = app
+        .effect(&canvas::resource::ViewOp::Inspect {
+            inspect: canvas::resource::Inspect::default(),
+        })
+        .unwrap();
+    let inspected = output.value.unwrap();
+    let marks = inspected["marks_bottom_first"]
+        .as_array()
+        .unwrap_or_else(|| panic!("inspect did not publish its marks: {inspected}"));
+    assert!(marks.iter().any(|mark| mark["id"] == "photo"));
+    app.harness()
+        .wait_until(ui::time::Duration::from_secs(10), |harness| {
+            harness
+                .job_updates(invocation)
+                .iter()
+                .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+        });
+    assert!(
+        app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
+    // A subsequent invocation reuses the same window without staying busy.
+    app.effect(&effect).unwrap();
+}
+
+#[test]
+fn a_host_cancelled_edge_job_does_not_leave_the_finder_busy() {
+    let mut app = TestApp::<App>::new().unwrap();
+    open_disc(&mut app);
+    call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
+    let before = app.state();
+    let versions = app.versions();
+    let effect = canvas::resource::ViewOp::FindArea {
+        area: canvas::resource::FindArea {
+            refine: Some(8.0),
+            ..Default::default()
+        },
+    };
+    let invocation = app.start_effect(&effect).unwrap();
+    // Host retirement can cancel a job even when its public contract does
+    // not offer a user Cancel command. No cancellation is a success receipt.
+    assert!(matches!(
+        app.cancel_effect(invocation),
+        Some(ui::tilo_actions::InvocationUpdate::Cancelled { .. })
+    ));
+    app.settle();
+    assert_eq!(app.state(), before);
+    assert_eq!(app.versions(), versions);
+    app.effect(&effect)
+        .expect("a cancelled worker must release its busy state");
+    assert_ne!(app.state().selection, before.selection);
+}
+
+#[test]
 fn an_edge_job_refuses_to_overwrite_an_edit_made_while_it_runs() {
     let mut app = TestApp::<App>::new().unwrap();
     open_disc(&mut app);

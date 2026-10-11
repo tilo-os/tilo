@@ -29,10 +29,10 @@
 //!
 //! When nothing needs them any more, the relays rest again, [`REST_AFTER`]
 //! after the last thing that did, through [`Endpoint::remove_relay`]: with
-//! the map empty, net report, QAD and port mapping stop. iroh's public API
-//! has no way to close the home relay connection itself, so the one it
-//! chose stays open, with its keep-alive, until the endpoint closes; it is
-//! what makes the next wake instant.
+//! the map empty, net report, QAD and port mapping stop, and the vendored
+//! iroh gives up its home relay (`vendor/iroh/TILO-PATCH.md`): the address
+//! stops naming it, and the connection and its keep-alive close once it has
+//! been idle a minute. The next wake picks a home relay afresh.
 
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -542,8 +542,8 @@ mod tests {
     }
 
     /// Woken by an invite, an endpoint names the relay it chose as home in
-    /// its address, which the invite carries; resting keeps that address
-    /// (iroh keeps the home relay connection) but empties the map.
+    /// its address, which the invite carries; resting empties the map and
+    /// gives the home relay up, so the address stops naming it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_woken_endpoint_names_its_home_relay_within_the_wait() {
         let (_server, own) = super::test_support::local_relay().await;
@@ -585,11 +585,16 @@ mod tests {
 
         until_relays(&relays, 0).await;
         assert!(reachability.is_dormant());
-        assert_eq!(
-            endpoint.addr().relay_urls().count(),
-            1,
-            "the home relay connection outlives the map"
-        );
+        let deadline = Instant::now()
+            .checked_add(tilo_test_env::hang_bound())
+            .unwrap();
+        while endpoint.addr().relay_urls().count() != 0 {
+            assert!(
+                Instant::now() < deadline,
+                "a rested endpoint still names the home relay it gave up"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         endpoint.close().await;
     }
 }

@@ -106,7 +106,7 @@ impl ExportDialog {
         let _ = tree.compute_layout(node, size);
         if self
             .dialog
-            .adjust_layout_with_measure(&mut tree, node, text_renderer)
+            .adjust_layout_style(&mut tree, node, text_renderer)
         {
             let _ = tree.compute_layout(node, size);
         }

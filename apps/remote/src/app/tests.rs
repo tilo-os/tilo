@@ -785,6 +785,8 @@ fn keys_map_to_the_remote_machine() {
         vnc_keysym(&Key::Character("a".into()), Some("a")),
         Some(0x61)
     );
-    assert_eq!(tilo_keycode(KeyCode::KeyA), Some(30));
-    assert_eq!(tilo_keycode(KeyCode::F13), None);
+    assert_eq!(
+        ui::evdev::from_key_code(winit::keyboard::KeyCode::KeyA),
+        Some(30)
+    );
 }

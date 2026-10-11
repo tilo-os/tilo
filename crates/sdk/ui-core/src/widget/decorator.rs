@@ -34,8 +34,8 @@
 //! and visits every node exactly once. The only methods that describe the
 //! decorator rather than the inner widget are the identity ones:
 //! `concrete_type_name` names the decorator's type and
-//! [`as_any`](Widget::as_any) and [`as_any_mut`](Widget::as_any_mut) are
-//! `None` unless overridden.
+//! [`as_any`](Widget::as_any) and [`as_any_mut`](Widget::as_any_mut)
+//! downcast to the decorator itself unless overridden.
 //!
 //! A boxed [`Element`](super::Element) is wrapped with `type Inner = dyn
 //! Widget;` and accessors returning `&(dyn Widget + 'static)`.
@@ -50,8 +50,7 @@
 //! * **Override the host's entry point.** Some [`Widget`] defaults are
 //!   derived from another method (`draw_with_presence` calls `draw`,
 //!   `perform_action_at` calls `perform_action`, `tooltip_target_at` calls
-//!   `tooltip`, `adjust_layout_with_measure` calls `adjust_layout_style`,
-//!   `collect_damage` calls `needs_redraw`). Here each forwards to the inner
+//!   `tooltip`, `collect_damage` calls `needs_redraw`). Here each forwards to the inner
 //!   widget's own method, so an override of the derived-from method alone is
 //!   not what the host calls: override the entry point the host uses
 //!   (`draw_with_presence` for painting in a live frame, and `draw` for
@@ -128,7 +127,7 @@ fn stand_in(
 
 /// A widget that extends another by overriding a few [`Widget`] methods and
 /// forwarding the rest. See the [module docs](self).
-pub trait Decorator {
+pub trait Decorator: Sized + 'static {
     /// The widget this one extends.
     type Inner: Widget + ?Sized;
 
@@ -251,8 +250,13 @@ pub trait Decorator {
         self.inner_mut().measure(known, available, text_renderer)
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        self.inner_mut().adjust_layout_style(taffy, node)
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        self.inner_mut().adjust_layout_style(taffy, node, text)
     }
 
     #[doc(hidden)]
@@ -262,16 +266,6 @@ pub trait Decorator {
 
     fn layout_info(&self) -> Option<LayoutInfo> {
         self.inner().layout_info()
-    }
-
-    fn adjust_layout_with_measure(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        text: &mut TextRenderer,
-    ) -> bool {
-        self.inner_mut()
-            .adjust_layout_with_measure(taffy, node, text)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point) {
@@ -327,11 +321,11 @@ pub trait Decorator {
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
-        None
+        Some(self)
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        None
+        Some(self)
     }
 
     fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
@@ -777,7 +771,7 @@ pub trait Decorator {
 
 /// Every decorator is a widget: each method is the decorator's own, which
 /// forwards to the inner widget unless the decorator overrides it.
-impl<T: Decorator + 'static> Widget for T {
+impl<T: Decorator> Widget for T {
     #[doc(hidden)]
     fn concrete_type_name(&self) -> &'static str {
         Decorator::concrete_type_name(self)
@@ -897,8 +891,13 @@ impl<T: Decorator + 'static> Widget for T {
         Decorator::measure(self, known, available, text_renderer)
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        Decorator::adjust_layout_style(self, taffy, node)
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        Decorator::adjust_layout_style(self, taffy, node, text)
     }
 
     #[doc(hidden)]
@@ -908,15 +907,6 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn layout_info(&self) -> Option<LayoutInfo> {
         Decorator::layout_info(self)
-    }
-
-    fn adjust_layout_with_measure(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        text: &mut TextRenderer,
-    ) -> bool {
-        Decorator::adjust_layout_with_measure(self, taffy, node, text)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point) {

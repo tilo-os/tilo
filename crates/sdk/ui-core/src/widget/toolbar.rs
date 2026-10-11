@@ -1589,7 +1589,7 @@ impl Widget for Toolbar {
         let node = if self.has_elements() {
             // Hosted controls are laid out by the host, out of flow; the
             // toolbar sizes itself from its measured row in
-            // `adjust_layout_with_measure`.
+            // `adjust_layout_style`.
             let children: Vec<NodeId> = self
                 .items
                 .iter_mut()
@@ -1623,7 +1623,7 @@ impl Widget for Toolbar {
             height: known.height.unwrap_or(self.intrinsic.height),
         }
     }
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
@@ -2946,7 +2946,7 @@ mod tests {
             let mut text = TextRenderer::new();
             let mut tree = TaffyTree::new();
             let node = tb.build_layout(&mut tree, &theme, &mut HashMap::new());
-            tb.adjust_layout_with_measure(&mut tree, node, &mut text);
+            tb.adjust_layout_style(&mut tree, node, &mut text);
             tree.set_style(
                 node,
                 Style {

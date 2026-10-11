@@ -79,13 +79,50 @@ apply also no longer copies the index of every object in the document to
 record the few objects a batch creates.
 
 The marked spots are `TILO(map-apply-skip)` in `batch.rs` and the lookups
-it adds to `src/op_set2/op_set.rs`. Lists and text still walk the whole
-sequence. Pinned by `crates/doc/tilo-automerge/tests/map_apply.rs`, which
+it adds to `src/op_set2/op_set.rs`. Lists and text are the next section.
+Pinned by `crates/doc/tilo-automerge/tests/map_apply.rs`, which
 compares documents, heads and patches with crates.io `automerge` 0.12.0
 over randomised histories (including changes that overwrite an op under
 another key) and checks the cost does not grow with history. Upstream
 `main` walks the same way; the patch applies there unchanged in substance
 and is upstreamable.
+
+# Tilo patch: a change to a list or text does not walk the whole sequence
+
+The same apply merges a change into a list or a text by walking every op
+the sequence ever held, deleted characters included (`walk_list` and its
+`Untangler`): a remote keystroke cost about 0.09 µs per op of the text,
+1.8 ms once 20,000 keystrokes had been typed into it and 9 ms at 100,000.
+Every collaborator's replica paid that per keystroke.
+
+`walk_list` now seeks over runs of elements the batch cannot affect: no op
+of the element is overwritten by the batch, no incoming op inserts after it
+or updates it, no incoming insert is still waiting for its place, and (in a
+text) the marks before and after the batch are the same. Walking such an
+element only advances the walk's visible index by the element's width and
+feeds its mark ops to the mark state; it logs no patch and changes no
+conflict. The seek adds the run's width from the op set's `top` (list) or
+`text` (text) index column, and replays the run's mark ops, found through
+the action column, into the mark state. The walk therefore visits the same
+elements with the same state and leaves the document, its patches and its
+errors byte for byte as before. A change that names an element the object
+does not hold (or one by an op that is not an insert) walks op by op, as
+always. A remote keystroke now costs 6–8 µs at 1,000, 20,000 or 100,000
+keystrokes of history alike, as do a list insert and delete. The
+`MapSkip` guard applies here too: the object must hold at least 32 ops per
+incoming op, so large batches walk as before (a 100,000-change load is
+unchanged at about 260 ms).
+
+The marked spots are `TILO(seq-apply-skip)` in `batch.rs` and the lookups
+it adds to `src/op_set2/op_set.rs`. Pinned by
+`crates/doc/tilo-automerge/tests/sequence_apply.rs`, which compares
+documents, heads and patches with crates.io `automerge` 0.12.0 over
+randomised three-actor histories of text and list edits (multi-unit
+characters in every text encoding, marks and unmarks, block markers,
+counters, nested maps, racing inserts, changes that overwrite an op of
+another element or object), shares its harness with `map_apply.rs`, and
+checks the cost does not grow with history. Upstream `main` walks the same
+way; the patch is upstreamable.
 
 # Tilo patch: load with the change hashes the saver listed
 

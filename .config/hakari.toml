@@ -60,7 +60,7 @@ third-party = [
     { name = "smithay-client-toolkit" },
     # The peer transport belongs to the hosts: tilo-desktop is managed and
     # must never reach iroh (tools/policy/check_desktop_model_dependencies.py).
-    { name = "iroh" },
+    { name = "iroh", path = "vendor/iroh" },
     { name = "iroh-base" },
     { name = "iroh-dns" },
     { name = "iroh-metrics" },

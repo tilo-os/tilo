@@ -330,6 +330,16 @@ impl Input {
     pub fn retained(&self) -> bool {
         self.retained
     }
+    /// Observe the actual committed owner generation, without granting admission.
+    ///
+    /// # Errors
+    /// The enrolled room is unavailable or fenced.
+    pub fn generation(&self) -> Result<u64, String> {
+        self.scope
+            .connect
+            .owner
+            .with_current(self.room(), |view| Ok(view.generation()))
+    }
     /// Admit the delta into the owner while the session is still live and
     /// pinned to the owner's current material.
     ///

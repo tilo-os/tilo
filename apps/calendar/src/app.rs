@@ -46,7 +46,6 @@ use winit::keyboard::{Key, NamedKey};
 use ui::Widget;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -4278,18 +4277,6 @@ impl Widget for CalendarApp {
         } else {
             None
         }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, text_renderer, theme, presence);
     }
 }
 

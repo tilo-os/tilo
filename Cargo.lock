@@ -557,6 +557,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-app-package",
+ "tilo-files",
  "tilo-paths",
  "tokio",
  "tracing",
@@ -2504,6 +2505,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-advisory-lock",
  "tilo-clock",
+ "tilo-files",
  "tilo-test-env",
  "windows-vm",
  "wire-frame",
@@ -4648,6 +4650,7 @@ dependencies = [
  "runtime-portal",
  "serde",
  "tempfile",
+ "tilo-files",
  "tilo-paths",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
@@ -7213,8 +7216,6 @@ dependencies = [
 [[package]]
 name = "iroh"
 version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "460de6bc52163b41b1646931f2897e5ab986f0966ade444467fec25024751a72"
 dependencies = [
  "backon",
  "blake3",
@@ -7347,8 +7348,6 @@ dependencies = [
 [[package]]
 name = "iroh-gossip"
 version = "0.101.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e1dc4b05f73e7a1b9e83b531eb63c3fd671b0af3aeb13b59c546dd7ca747515"
 dependencies = [
  "blake3",
  "bytes",
@@ -9516,8 +9515,6 @@ dependencies = [
 [[package]]
 name = "netwatch"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d9cbe01741347ef750d743d6690603f5eed8341e679fb51c8e629337aa11976"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -16954,6 +16951,7 @@ dependencies = [
  "iroh-base",
  "iroh-blobs",
  "iroh-gossip",
+ "iroh-relay",
  "irpc",
  "libc",
  "moka",
@@ -17363,6 +17361,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-clock",
+ "tilo-files",
  "tilo-net",
  "tilo-rt",
  "tilo-segment",
@@ -17709,7 +17708,6 @@ dependencies = [
  "getrandom 0.4.3",
  "google-cast-protocol",
  "hex",
- "libc",
  "mdns-sd",
  "postcard",
  "prost",
@@ -17724,6 +17722,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "tilo-callstream",
+ "tilo-files",
  "tilo-paths",
  "tilo-rt",
  "tilo-test-env",
@@ -17881,6 +17880,7 @@ name = "tilo-relay-session"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "collab-types",
  "ed25519-dalek 3.0.0",
  "getrandom 0.3.4",
  "getrandom 0.4.3",

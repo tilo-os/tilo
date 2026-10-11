@@ -21,6 +21,12 @@
 //! (TIL-776), so a `tilo-relay/7` member receives a keystroke in one write
 //! where it took two or three. It prints one `KEYSTROKE_WRITES key=value …`
 //! line and gates the median keystroke.
+//!
+//! A third drags a pointer at 100 Hz from the production client: the
+//! session writer paces it to the rate the relay forwards it, so the relay
+//! receives about one datagram per 50 ms rather than one per move, and the
+//! resting position still reaches a member with nothing sent after it. It
+//! prints one `POINTER_PACING key=value …` line.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -494,5 +500,128 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
     assert_eq!(
         median, 1,
         "a keystroke's delta, position, typing and caret go to a member in one write: {writes:?}"
+    );
+}
+
+impl Member {
+    /// Every pointer move until `last` arrives, with nothing sent after it.
+    async fn pointer_until(&mut self, last: &NeighbourMsg) -> Vec<NeighbourMsg> {
+        tilo_test_env::within("the pointer's resting position", async {
+            let mut moves = Vec::new();
+            loop {
+                let Some(EnvelopeV2::State(Envelope::Presence { payload, .. })) =
+                    self.reader.read_next().await.unwrap()
+                else {
+                    continue;
+                };
+                let attributed = AttributedPresence::decode(&payload).unwrap();
+                let message: NeighbourMsg = postcard::from_bytes(&attributed.body).unwrap();
+                if matches!(message, NeighbourMsg::PresenceMoved { .. }) {
+                    let rested = message == *last;
+                    moves.push(message);
+                    if rested {
+                        return moves;
+                    }
+                }
+            }
+        })
+        .await
+    }
+}
+
+/// QUIC datagrams the relay's endpoint has received so far.
+fn relay_datagrams_received(relay: &TestRelay) -> u64 {
+    relay.relay.endpoint.metrics().socket.recv_datagrams.get()
+}
+
+/// A client paces its own pointer to the rate the relay forwards it: a drag
+/// published at 100 Hz reaches the relay in about one packet per 50 ms, and
+/// its resting position still arrives with nothing sent after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_sends_its_pointer_at_the_rate_the_relay_forwards_it() {
+    let user = TestUser::fresh("Pointer pacing");
+    let author = user.enrol("laptop", DeviceCapabilities::primary());
+    let reader = user.enrol("tilo-relay/7 peer", DeviceCapabilities::member());
+    let members = [author.device_pubkey(), reader.device_pubkey()];
+    let relay = Box::pin(spawn_relay(
+        &user,
+        user.enrol("relay", DeviceCapabilities::host()),
+        &[WORKSPACE],
+        &members,
+    ))
+    .await;
+    let publisher = RelayCoeditSession::join(
+        RelayClient::connect_v2_to_enrolled_home_peer(
+            client_endpoint().await,
+            relay.relay.node_addr(),
+            user.user_pk,
+            relay.relay.handle().mesh_profile().device,
+            author.cert.clone(),
+            author.sk.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .unwrap(),
+        WORKSPACE,
+        author.device_pubkey(),
+    )
+    .unwrap();
+    tilo_test_env::within("the publisher's subscription", async {
+        while !matches!(publisher.recv().await, Some(Inbound::Ready { .. })) {}
+    })
+    .await;
+    let user_hex = hex::encode(user.user_pk);
+
+    // A fresh connection still settles its path (MTU probes, address
+    // observations, their acknowledgements); let it, then measure what the
+    // relay receives from the publisher while it is quiet, and while it
+    // drags. Alone in the room, every datagram the relay receives is the
+    // publisher's: unpaced, the drag alone would add one per move.
+    for step in 0..MOVES {
+        publish(&publisher, &pointer(step, &user_hex));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let window = Duration::from_millis(10) * MOVES + Duration::from_millis(200);
+    let quiet_from = relay_datagrams_received(&relay);
+    tokio::time::sleep(window).await;
+    let quiet = relay_datagrams_received(&relay) - quiet_from;
+    let drag_from = relay_datagrams_received(&relay);
+    for step in 0..MOVES {
+        publish(&publisher, &pointer(step, &user_hex));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let drag = relay_datagrams_received(&relay) - drag_from;
+    println!(
+        "POINTER_PACING moves={MOVES} window_ms={} relay_datagrams_quiet={quiet} \
+         relay_datagrams_drag={drag}",
+        window.as_millis()
+    );
+    assert!(
+        drag.saturating_sub(quiet) <= u64::from(MOVES) / 3,
+        "{MOVES} moves published over 600 ms reached the relay in {drag} datagrams \
+         ({quiet} in as long a quiet window); paced to one per 50 ms they take about 13"
+    );
+
+    // With a member in the room, the last move arrives on its own: it is
+    // written when its gap ends, not when something else is sent.
+    let mut member = Member::open(
+        &relay,
+        &reader,
+        ALPN_CODED_DELTA_V1,
+        StateFraming::CodedDelta,
+    )
+    .await;
+    let last = pointer(2 * MOVES - 1, &user_hex);
+    for step in MOVES..2 * MOVES {
+        publish(&publisher, &pointer(step, &user_hex));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let moves = member.pointer_until(&last).await;
+    assert!(
+        moves.len() < 30,
+        "{} pointer moves of {MOVES} published at 100 Hz for 600 ms; a pointer goes at 20 Hz",
+        moves.len()
     );
 }

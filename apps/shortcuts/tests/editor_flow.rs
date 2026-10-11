@@ -708,6 +708,47 @@ fn render_morning_matrix(app: &mut TestApp<App>, output: &std::path::Path, page:
             app.harness().resize((width, height)).unwrap();
             app.harness()
                 .render_png(&output.join(format!("{name}-{size}-{page}.png")));
+            if page == "review" {
+                let snapshot = app.harness().inspection();
+                let paragraph = inspection_node(&snapshot.root, "shortcuts-grant-explain")
+                    .or_else(|| {
+                        snapshot
+                            .presentation
+                            .as_ref()
+                            .and_then(|root| inspection_node(root, "shortcuts-grant-explain"))
+                    })
+                    .expect("the painted save review must expose its full explanation");
+                let body_width = ui::widget::modal_dialog::body_width(
+                    ui::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+                    560.0,
+                    &theme,
+                );
+                assert!(
+                    paragraph.rect[2] <= body_width + 1.0,
+                    "{name}/{size}: explanation paints beyond the review body: {:?}, body width {body_width}",
+                    paragraph.rect,
+                );
+                assert_eq!(
+                    paragraph
+                        .semantics
+                        .as_ref()
+                        .and_then(|node| node.name.as_deref()),
+                    Some(ui::i18n!("shortcuts-grant-explain").as_str()),
+                    "wrapping must retain the complete accessible explanation",
+                );
+            }
         }
     }
+}
+
+fn inspection_node<'a>(
+    node: &'a ui::headless::InspectionNode,
+    id: &str,
+) -> Option<&'a ui::headless::InspectionNode> {
+    if node.test_id.as_deref() == Some(id) {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| inspection_node(child, id))
 }

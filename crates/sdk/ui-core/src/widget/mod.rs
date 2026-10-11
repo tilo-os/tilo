@@ -235,24 +235,6 @@ pub(crate) fn draw_gate_and_peer_focus(
     }
 }
 
-/// The whole `draw_with_presence` of a gated, presence-publishing leaf:
-/// culled off-viewport, drawn, then overlaid by [`draw_gate_and_peer_focus`].
-pub(crate) fn draw_gated_leaf(
-    widget: &mut (impl Widget + ?Sized),
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
-    permissions: &crate::permissions::PermissionContext,
-) {
-    if presence.should_cull(widget.get_rect()) {
-        return;
-    }
-    widget.draw(scene, transform, text_renderer, theme, presence);
-    draw_gate_and_peer_focus(widget, scene, transform, theme, presence, permissions);
-}
-
 /// Hand `event` to the widgets a virtualizing container has mounted: the
 /// first one holding pointer capture gets it alone, otherwise each laid-out
 /// widget sees it, topmost first, until one handles it.
@@ -1282,15 +1264,6 @@ pub trait Widget {
     ) -> taffy::Size<f32> {
         taffy::Size::ZERO
     }
-    /// Adjust this node's style using its allocated size, before final geometry
-    /// is applied. Return true only when the style changed. Do not replace
-    /// children or mutate widget structure here. The shared host solver repeats
-    /// layout at most eight times and skips a frame that does not settle.
-    /// Overrides affect only this node; the host visits every registered widget.
-    fn adjust_layout_style(&mut self, _taffy: &mut TaffyTree<()>, _node: NodeId) -> bool {
-        false
-    }
-
     /// Owned manual policy descriptor; the host invokes it outside widget borrows.
     #[doc(hidden)]
     fn manual_layout_policy(&self) -> Option<ManualPolicy> {
@@ -1304,20 +1277,21 @@ pub trait Widget {
         None
     }
 
-    /// Renderer-aware prepaint policy adjustment. The default preserves the
-    /// existing self-node-only `adjust_layout_style` contract. An override may
-    /// measure its owned children through ordinary references, entering their
-    /// callback binding when present. Never reenter descendants through the raw
-    /// node map while borrowing their parent, change topology, or build another
-    /// layout tree. Change only this node's style; inherited decisions may be
-    /// retained for child hooks. Return true if styles or those decisions change.
-    fn adjust_layout_with_measure(
+    /// Adjust this node's style using its allocated size, before final
+    /// geometry is applied. Return true only when the style changed (or an
+    /// inherited decision child hooks read). An override may measure its owned
+    /// children through ordinary references, entering their callback binding
+    /// when present. Never reenter descendants through the raw node map while
+    /// borrowing their parent, change topology, or build another layout tree.
+    /// The shared host solver visits every registered widget, repeats layout
+    /// at most eight times and skips a frame that does not settle.
+    fn adjust_layout_style(
         &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
+        _taffy: &mut TaffyTree<()>,
+        _node: NodeId,
         _text: &mut TextRenderer,
     ) -> bool {
-        self.adjust_layout_style(taffy, node)
+        false
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
@@ -1389,9 +1363,10 @@ pub trait Widget {
         None
     }
 
-    /// Lets a screenshot harness hold an animation at a chosen millisecond
-    /// and render the real `draw` at that instant. Default `None`; a widget
-    /// opts in with `Some(self)`.
+    /// Downcast to the concrete widget, for hosts and tests that reach a
+    /// known widget through `dyn Widget`. Default `None` (a widget may borrow
+    /// and so not be `'static`); a widget opts in with `Some(self)`, and a
+    /// [`Decorator`] answers itself.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
     }
@@ -2303,10 +2278,12 @@ pub trait Widget {
         }
     }
 
-    /// Default forwards to `draw`. **Spatial culling**: short-circuits via
-    /// [`PresenceCtx::should_cull`] when the rect misses
-    /// `presence.viewport` — overrides MUST call it first. Off-viewport
-    /// widgets stay dirty so they re-emit when scrolled back in.
+    /// Default forwards to `draw`, then overlays the denied-permission scrim and
+    /// the first peer's focus ring (for gated or presence-publishing widgets).
+    /// **Spatial culling**: short-circuits via [`PresenceCtx::should_cull`]
+    /// when the rect misses `presence.viewport` — overrides MUST call it
+    /// first. Off-viewport widgets stay dirty so they re-emit when scrolled
+    /// back in.
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -2314,12 +2291,13 @@ pub trait Widget {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-        _permissions: &crate::permissions::PermissionContext,
+        permissions: &crate::permissions::PermissionContext,
     ) {
         if presence.should_cull(self.get_rect()) {
             return;
         }
         self.draw(scene, transform, text_renderer, theme, presence);
+        draw_gate_and_peer_focus(self, scene, transform, theme, presence, permissions);
     }
 
     /// **Top-layer pass**, run once after the whole `draw_with_presence`

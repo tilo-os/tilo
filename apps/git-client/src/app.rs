@@ -30,7 +30,6 @@ use winit::keyboard::{Key, NamedKey};
 use crate::actions::GitClientEffect;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, RunMode};
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -2993,18 +2992,6 @@ impl Widget for GitClientApp {
         // The bars start to fade once a scroll has rested a moment.
         self.bar_fade
             .fade_deadline_at(ui::time::now(), self.bars_held())
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, tr, theme, presence);
     }
 }
 

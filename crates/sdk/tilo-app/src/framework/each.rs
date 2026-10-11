@@ -607,7 +607,7 @@ impl<R: Resource> Widget for Each<R> {
 
     // Measured rows move the rows after them: read what Taffy measured and
     // place the mounted rows (and the list's height) to match.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -686,6 +686,22 @@ impl<R: Resource> Widget for Each<R> {
             if !presence.should_cull(row.widget.get_rect()) {
                 row.widget.draw(scene, transform, text, theme, presence);
             }
+        });
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        permissions: &ui_core::permissions::PermissionContext,
+    ) {
+        self.remounts = 0;
+        self.for_each_mounted(|view| {
+            view.widget
+                .draw_with_presence(scene, transform, text, theme, presence, permissions);
         });
     }
 

@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
-use launcher::registration_gate::LAUNCH_REGISTRATION_FD_ENV;
+use launcher::registration_gate::{LAUNCH_REGISTRATION_FD_ENV, LAUNCH_REGISTRATION_STDIN_ENV};
 use launcher::run::{IdentitySource, LaunchMode, RunOptions, launch_manifest, run_manifest};
 
 fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
@@ -36,12 +36,22 @@ fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
     reason = "runs first in main before any thread is spawned, and the internal handoff variable must be removed so launched apps never inherit it"
 )]
 fn wait_for_shell_registration() -> Result<(), String> {
-    let Ok(raw_fd) = std::env::var(LAUNCH_REGISTRATION_FD_ENV) else {
-        return Ok(());
-    };
+    let on_stdin = std::env::var_os(LAUNCH_REGISTRATION_STDIN_ENV).is_some();
+    let raw_fd = std::env::var(LAUNCH_REGISTRATION_FD_ENV);
     // SAFETY: process startup is single-threaded; remove the internal handoff
     // before any launched app environment can inherit it.
-    unsafe { std::env::remove_var(LAUNCH_REGISTRATION_FD_ENV) };
+    unsafe {
+        std::env::remove_var(LAUNCH_REGISTRATION_STDIN_ENV);
+        std::env::remove_var(LAUNCH_REGISTRATION_FD_ENV);
+    }
+    if on_stdin {
+        return launcher::registration_gate::wait_on_stdin()
+            .map_err(|error| format!("launch-registration handoff failed: {error}"));
+    }
+    // A host from before the stdin handoff names an inherited descriptor.
+    let Ok(raw_fd) = raw_fd else {
+        return Ok(());
+    };
     let fd = raw_fd
         .parse::<RawFd>()
         .map_err(|_| "invalid launch-registration descriptor".to_string())?;

@@ -48,6 +48,7 @@ dev-overrides = ["service", "package-store/dev-overrides"]
 
 [dependencies]
 tilo-paths.workspace = true
+tilo-files = { path = "../../platform/tilo-files" }
 bounded-command = { path = "../../system/bounded-command", optional = true }
 tilo-app-package = { path = "../tilo-app-package" }
 # The one package registry; the daemon (`service`) also writes its store and

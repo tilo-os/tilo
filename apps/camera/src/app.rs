@@ -3393,18 +3393,6 @@ impl Widget for CameraApp {
             child.mark_drawn();
         }
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.draw(scene, t, tr, theme, presence);
-    }
 }
 
 impl ui::widget::controls::ActionControls for CameraApp {

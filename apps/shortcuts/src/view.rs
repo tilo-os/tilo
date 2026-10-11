@@ -1970,7 +1970,9 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
     let mut body = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
-        .push(Box::new(Text::new("shortcuts-grant-explain")));
+        .push(Box::new(
+            Text::new("shortcuts-grant-explain").with_id("shortcuts-grant-explain"),
+        ));
     for (index, trigger) in draft.program().triggers.iter().enumerate() {
         if let tilo_automation::TriggerSpec::Schedule {
             schedule: tilo_automation::Schedule::Calendar { at, .. },

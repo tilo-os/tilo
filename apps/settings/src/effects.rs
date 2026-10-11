@@ -235,14 +235,20 @@ pub(crate) const LIVE_AREAS: &[LiveArea] = &[
         pane: Category::AgentModels,
         is_open: |app| app.agent_models().is_open(),
         rows: |app| app.agent_models().rows(),
-        background: None,
+        background: Some(BackgroundRead {
+            start: |app| app.agent_models().start_read(),
+            finished: |app| app.agent_models().read_finished(),
+        }),
     },
     LiveArea {
         name: "settings.rows.device_mesh",
         pane: Category::DeviceMesh,
         is_open: |app| app.device_mesh().is_open(),
         rows: |app| app.device_mesh().rows(),
-        background: None,
+        background: Some(BackgroundRead {
+            start: |app| app.device_mesh().start_read(),
+            finished: |app| app.device_mesh().read_finished(),
+        }),
     },
     LiveArea {
         name: "settings.rows.audio",
@@ -259,7 +265,10 @@ pub(crate) const LIVE_AREAS: &[LiveArea] = &[
         pane: Category::ExternalAccounts,
         is_open: |app| app.accounts().is_open(),
         rows: |app| app.accounts().rows(),
-        background: None,
+        background: Some(BackgroundRead {
+            start: |app| app.accounts().start_read(),
+            finished: |app| app.accounts().read_finished(),
+        }),
     },
     // Displays probe brightness on threads of their own; the rest is a few
     // small files.

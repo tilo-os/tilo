@@ -336,26 +336,6 @@ macro_rules! bool_control_widget_methods {
         ) -> bool {
             self.control.perform_action(action)
         }
-
-        fn draw_with_presence(
-            &mut self,
-            scene: &mut vello::Scene,
-            transform: vello::kurbo::Affine,
-            text_renderer: &mut crate::text_render::TextRenderer,
-            theme: &crate::theme::Theme,
-            presence: &crate::presence::PresenceCtx,
-            permissions: &crate::permissions::PermissionContext,
-        ) {
-            crate::widget::draw_gated_leaf(
-                self,
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
-        }
     };
 }
 pub(super) use bool_control_widget_methods;

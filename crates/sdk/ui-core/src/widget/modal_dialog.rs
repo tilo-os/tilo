@@ -2018,7 +2018,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // The content is laid out in the host's tree, so its nodes are the
         // window's: a field's focus request and the focus order name the
         // same nodes. The dialog's node covers its parent out of flow;
-        // `adjust_layout_with_measure` narrows its content box to the body.
+        // `adjust_layout_style` narrows its content box to the body.
         let content_node = self.content.build_layout(taffy, theme, node_map);
         self.host_content = Some(content_node);
         let dialog = self.test_id.clone();
@@ -2062,7 +2062,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         node
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -2075,12 +2075,16 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // Compact presentation depends on both viewport axes. A synthetic
         // one-pixel height would classify every desktop sheet as a page and
         // measure its body at the wrong width, leaving it perpetually dirty.
-        let window = if self.presented {
-            self.window
-        } else {
-            tree_window(taffy, node)
-                .unwrap_or_else(|| Rect::new(0.0, 0.0, node_w, f64::from(l.size.height)))
-        };
+        // A presented dialog's last painted viewport can precede a resize.
+        // Measure against the current host tree before the next paint, so
+        // its body and wrapped text use the width they will actually occupy.
+        let window = tree_window(taffy, node).unwrap_or_else(|| {
+            if self.presented {
+                self.window
+            } else {
+                Rect::new(0.0, 0.0, node_w, f64::from(l.size.height))
+            }
+        });
         let body_w = body_width(window, self.max_width, &self.layout_theme);
         let pad = crate::num::f32_of_f64((node_w - body_w).max(0.0));
         let Ok(mut style) = taffy.style(node).cloned() else {
