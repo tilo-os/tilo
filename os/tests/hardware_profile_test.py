@@ -83,6 +83,64 @@ class HardwareProfileTest(unittest.TestCase):
         self.assertNotIn("wifi_wake_on_wlan", json.loads((self.root / prepare.DEFINITION_PATH).read_text()))
         self.assertFalse((self.root / "usr/lib/NetworkManager/conf.d/30-tilo-lenovo-wifi.conf").exists())
 
+    def test_lenovo_keyboard_is_internal_to_libinput_for_disable_while_typing(self):
+        # libinput tags only PS/2 keyboards internal, and pairs a touchpad's
+        # disable-while-typing only with an internal keyboard. The 83ED's
+        # built-in keyboard is I2C HID, so without this quirk the touchpad
+        # keeps tapping and moving while the owner types.
+        self.run_preparer()
+        quirks = self.root / "usr/share/libinput/50-tilo-lenovo-83ed.quirks"
+        self.assertTrue(quirks.is_file(), "Lenovo image must ship its internal-keyboard libinput quirk")
+        self.assertEqual(stat.S_IMODE(quirks.stat().st_mode), 0o644)
+        sections = {}
+        for line in quirks.read_text(encoding="utf-8").splitlines():
+            if line.startswith("[") and line.endswith("]"):
+                current = sections.setdefault(line[1:-1], {})
+            elif line and not line.startswith("#"):
+                key, _, value = line.partition("=")
+                self.assertNotIn(key, current, "a quirk section names each match once")
+                current[key] = value
+        self.assertEqual(sections, {"Tilo lenovo-83ed internal keyboard 048D:8987": {
+            "MatchUdevType": "keyboard",
+            "MatchBus": "i2c",
+            "MatchVendor": "0x048D",
+            "MatchProduct": "0x8987",
+            "MatchName": "hid-over-i2c 048D:8987",
+            "MatchDeviceTree": "lenovo,yoga-slim7x",
+            "AttrKeyboardIntegration": "internal",
+        }})
+        for value in sections["Tilo lenovo-83ed internal keyboard 048D:8987"].values():
+            self.assertFalse(set(value) & set("*?[]"), "every match is literal, never a glob")
+        # The installed copy is the one libinput reads; the image never puts
+        # it in /etc, where the administrator's local overrides live.
+        self.assertFalse((self.root / "etc/libinput").exists())
+
+    def test_internal_keyboard_quirks_are_literal_and_board_bound(self):
+        keyboard = LENOVO["internal_keyboards"][0]
+        mutations = (
+            {"bus": "usb"}, {"bus": "ps2"}, {"vendor": "048d"}, {"vendor": "0x048D"}, {"product": "898"},
+            {"name": "hid-over-i2c *"}, {"name": "kbd\nAttrKeyboardIntegration=external"}, {"name": ""},
+            {"devicetree_compatible": "*yoga*"}, {"devicetree_compatible": "yoga-slim7x"},
+            {"extra": "x"}, {"vendor": 0x048D},
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                with self.assertRaisesRegex(ValueError, "internal keyboard"):
+                    hardware_profile.validate_definition(LENOVO | {"internal_keyboards": [keyboard | mutation]})
+        with self.assertRaisesRegex(ValueError, "internal keyboards must be unique"):
+            hardware_profile.validate_definition(LENOVO | {"internal_keyboards": [keyboard, keyboard]})
+        with self.assertRaisesRegex(ValueError, "internal keyboards must be a bounded list"):
+            hardware_profile.validate_definition(LENOVO | {"internal_keyboards": keyboard})
+        # Without a device tree there is no board match to confine it to.
+        definitions, data = self.definition()
+        data = data | {"schema_version": 2, "system_firmware": []}
+        with self.assertRaisesRegex(ValueError, "require a device-tree board"):
+            hardware_profile.validate_definition(data | {"internal_keyboards": [keyboard]})
+        # A board that names no keyboard ships no quirk.
+        prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent",
+                                definitions, target_update_ref=TARGET_REF)
+        self.assertFalse((self.root / "usr/share/libinput").exists())
+
     def test_current_dev_origin_requires_target_flavour_and_policy(self):
         from hardware_profile import install_update_origin, validate_target_imgref
         ref = "registry.tilo.so/tilo/tilo-vm:fixture-lenovo-83ed-ci"
@@ -241,6 +299,7 @@ class HardwareProfileTest(unittest.TestCase):
             self.assertEqual(tomllib.loads(kargs.read_text())["kargs"], ["systemd.tpm2_wait=0"])
             outputs = [profile_path, self.root / prepare.DEFINITION_PATH, parser, dracut, kargs,
                        self.root / "usr/lib/NetworkManager/conf.d/30-tilo-lenovo-wifi.conf",
+                       self.root / "usr/share/libinput/50-tilo-lenovo-83ed.quirks",
                        *(installed / name for name in NAMES)]
             self.assertEqual(self.ownership.call_count, len(outputs))
             for output in outputs:
