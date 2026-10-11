@@ -631,6 +631,10 @@ pub struct BlockEditor {
     /// Reordering begins only from the quiet six-dot handle, preserving normal
     /// text selection drags everywhere else in a block.
     block_drag: Option<BlockDrag>,
+    /// Edge-scroll timing of the handle drag, shared with every other
+    /// reorder gesture ([`crate::reorder`]): the pointer near the editor's
+    /// top or bottom edge asks the host to scroll.
+    block_drag_scroll: crate::reorder::ReorderController<usize>,
     /// Host clip in window coordinates, including the visible editor gutter.
     /// Tooltip discovery runs independently of paint clipping.
     tooltip_viewport: Option<Rect>,
@@ -803,6 +807,7 @@ impl BlockEditor {
             copied_code_feedback: None,
             opening_code_fence: None,
             block_drag: None,
+            block_drag_scroll: crate::reorder::ReorderController::new(),
             tooltip_viewport: None,
             blocks_list: None,
             local_author: None,
@@ -1172,7 +1177,7 @@ impl BlockEditor {
                 table.blur_projection();
             }
         }
-        if !focused && self.block_drag.take().is_some() {
+        if !focused && self.take_block_drag().is_some() {
             self.dirty = true;
         }
         if focused == self.is_focused {
@@ -3407,6 +3412,51 @@ impl BlockEditor {
         true
     }
 
+    /// End the handle drag, whatever ends it.
+    fn take_block_drag(&mut self) -> Option<BlockDrag> {
+        self.block_drag_scroll.cancel();
+        self.block_drag.take()
+    }
+
+    /// Whether a block is being dragged by its handle (past the click
+    /// threshold). Such a drag near the edge of the editor's visible area
+    /// needs [`Self::tick_block_drag`] every frame.
+    pub fn block_drag_active(&self) -> bool {
+        self.block_drag.is_some_and(|drag| drag.active)
+    }
+
+    /// How far the host should scroll its document, in logical pixels
+    /// (positive is down), for the `elapsed` since the last tick: nonzero
+    /// while the pointer of an active block drag is in the edge band of
+    /// `viewport`, faster the closer to the edge. The editor does not own
+    /// its scrolling; the host scrolls, lays the editor out again and the
+    /// drop target follows the pointer ([`Self::retarget_block_drag`] runs
+    /// with that layout).
+    pub fn tick_block_drag(&mut self, viewport: Rect, elapsed: crate::time::Duration) -> f64 {
+        if !self.block_drag_active() {
+            return 0.0;
+        }
+        self.block_drag_scroll
+            .tick(viewport, elapsed, crate::time::now())
+            .scroll_delta
+    }
+
+    /// Point the active drag's drop target at the block under the pointer,
+    /// now that the blocks have moved under it (the host scrolled).
+    pub fn retarget_block_drag(&mut self) {
+        let y = self.last_mouse_pos.y;
+        let Some(mut drag) = self.block_drag.filter(|drag| drag.active) else {
+            return;
+        };
+        if let Some(target) = self.block_at_y(y)
+            && target != drag.target
+        {
+            drag.target = target;
+            self.block_drag = Some(drag);
+            self.dirty = true;
+        }
+    }
+
     /// Complete or cancel a handle drag before normal text routing sees its
     /// terminal event. A cancelled drag never changed the projection; a drop
     /// is immediately captured by the semantic action bridge.
@@ -3423,7 +3473,7 @@ impl BlockEditor {
             }
         );
         if (escape || matches!(event, WindowEvent::Focused(false)))
-            && self.block_drag.take().is_some()
+            && self.take_block_drag().is_some()
         {
             *ctx.handled = true;
             self.dirty = true;
@@ -3437,7 +3487,7 @@ impl BlockEditor {
                 ..
             }
         );
-        let Some(drag) = released.then(|| self.block_drag.take()).flatten() else {
+        let Some(drag) = released.then(|| self.take_block_drag()).flatten() else {
             return false;
         };
         if drag.active {
@@ -9979,6 +10029,7 @@ impl BlockEditor {
             start: self.last_mouse_pos,
             active: false,
         });
+        self.block_drag_scroll.begin(source, self.last_mouse_pos);
         *ctx.focus_target = Some(ctx.node_id);
         *ctx.handled = true;
         self.dirty = true;
@@ -10120,6 +10171,8 @@ impl BlockEditor {
                 self.dirty = true;
             }
             self.block_drag = Some(drag);
+            self.block_drag_scroll
+                .update(logical, None, crate::time::now(), |_, _| true);
             return;
         }
 
@@ -10235,6 +10288,17 @@ impl BlockEditor {
                 .selection_range()
                 .map_or(block.line.cursor_pos(), |(start, _)| start)
         });
+        // A `/` inside a word ("and/or", "src/lib") is text. The menu opens
+        // only at the start of a block or after whitespace.
+        let after_boundary = self.blocks.get(focused_idx).is_none_or(|block| {
+            let text = block.line.value();
+            text.get(..trigger_byte.min(text.len()))
+                .and_then(|before| before.chars().next_back())
+                .is_none_or(char::is_whitespace)
+        });
+        if !after_boundary {
+            return;
+        }
         self.slash_menu
             .set_anchor(self.fallback_popover_anchor(focused_idx));
         self.slash_menu.set_filter("");
@@ -10288,17 +10352,6 @@ impl BlockEditor {
                 .update_pointer_position(self.last_mouse_pos);
         }
         *ctx.focus_target = Some(ctx.node_id);
-        // A `/` inside a word ("and/or", "src/lib") is text. The menu opens
-        // only at the start of a block or after whitespace.
-        let after_boundary = self.blocks.get(focused_idx).is_none_or(|block| {
-            let text = block.line.value();
-            text.get(..trigger_byte.min(text.len()))
-                .and_then(|before| before.chars().next_back())
-                .is_none_or(char::is_whitespace)
-        });
-        if !after_boundary {
-            return;
-        }
     }
 
     /// Routes the event into the focused block's own `TextInput`, drains

@@ -315,6 +315,8 @@ pub struct MainPanel {
     /// as boxed Elements — wrapping in Scrollable would require
     /// significant ownership churn for what amounts to "clip + shift".
     scroll_y: f64,
+    /// When the block drag last scrolled the page, for its speed.
+    drag_scroll_tick: Option<ui::time::Instant>,
     scroll_content_height: f64,
     bottom_inset: f64,
     scroll_track: Rect,
@@ -375,6 +377,7 @@ impl MainPanel {
             dirty: true,
             paint_damage: ui::widget::paint_damage::PaintDamage::default(),
             scroll_y: 0.0,
+            drag_scroll_tick: None,
             scroll_content_height: 0.0,
             bottom_inset: 0.0,
             scroll_track: Rect::ZERO,
@@ -891,6 +894,36 @@ impl MainPanel {
     /// The document starts under the pinned title.
     fn scroll_top_inset(&self) -> f64 {
         self.metrics.gutter + self.title_height()
+    }
+
+    /// Whether a block drag is in flight and needs a frame to keep scrolling.
+    pub fn block_drag_scrolling(&self) -> bool {
+        self.editor.editor().block_drag_active()
+    }
+
+    /// Scroll the page while a dragged block's pointer rests near the edge
+    /// of what is visible, so a target below the fold can be reached.
+    /// Returns whether the page moved.
+    pub fn autoscroll_block_drag(&mut self) -> bool {
+        let now = ui::time::now();
+        if !self.editor.editor().block_drag_active() {
+            self.drag_scroll_tick = None;
+            return false;
+        }
+        let elapsed = self
+            .drag_scroll_tick
+            .replace(now)
+            .map_or(std::time::Duration::ZERO, |last| {
+                now.saturating_duration_since(last)
+            });
+        let viewport = self.scroll_viewport();
+        let delta = self.editor.editor_mut().tick_block_drag(viewport, elapsed);
+        if delta == 0.0 {
+            return false;
+        }
+        let before = self.scroll_y;
+        self.set_scroll_offset(before + delta);
+        (self.scroll_y - before).abs() > f64::EPSILON
     }
 
     fn scroll_viewport(&self) -> Rect {
@@ -1432,6 +1465,8 @@ impl Widget for MainPanel {
             // for a scrolled view.
             let shifted_origin = Point::new(self.rect.x0, self.rect.y0 - self.scroll_y);
             self.editor.apply_layout(taffy, n, shifted_origin);
+            // A drag at the edge scrolled the blocks under the pointer.
+            self.editor.editor_mut().retarget_block_drag();
             let viewport = self.scroll_viewport();
             self.editor
                 .editor_mut()
