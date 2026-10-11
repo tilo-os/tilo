@@ -2239,7 +2239,10 @@ mod tests {
         // the snapshot.
         let mut clean = after.clone();
         assert!(executor.hold_desktop_while_choosing(false, &mut clean));
-        assert!(same_scene(&clean, &before), "the capture is the frozen frame");
+        assert!(
+            same_scene(&clean, &before),
+            "the capture is the frozen frame"
+        );
         executor.frozen_desktop = None;
 
         // Released: the live desktop is untouched again.

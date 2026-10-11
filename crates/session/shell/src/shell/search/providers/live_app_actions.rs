@@ -1195,7 +1195,10 @@ impl LiveAppActionsProvider {
                         cursor: Vec::new(),
                     });
                 } else if row.has_children && depth < MAX_NESTED_DEPTH {
-                    queue.push_back((row.resource.id.as_str().to_string(), depth.saturating_add(1)));
+                    queue.push_back((
+                        row.resource.id.as_str().to_string(),
+                        depth.saturating_add(1),
+                    ));
                 }
             }
         }

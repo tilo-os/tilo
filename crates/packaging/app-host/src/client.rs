@@ -306,11 +306,7 @@ impl BlockingClient {
     ///
     /// # Errors
     /// Returns a repository proof, transport or response error.
-    pub fn runtime_offer(
-        &self,
-        registry: &str,
-        runtime: &str,
-    ) -> Result<String, String> {
+    pub fn runtime_offer(&self, registry: &str, runtime: &str) -> Result<String, String> {
         let mut request = self.client.runtime_offer_request();
         request.get().set_registry(registry);
         request.get().set_runtime(runtime);

@@ -6374,14 +6374,8 @@ mod tests {
     fn a_retitled_pill_keeps_its_measured_width_until_the_new_title_is_measured() {
         let theme = crate::theme::Theme::dark();
         let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
-        b.title_advance.insert(
-            1,
-            (
-                "Notes".into(),
-                theme.text(TextRole::Label),
-                60.0,
-            ),
-        );
+        b.title_advance
+            .insert(1, ("Notes".into(), theme.text(TextRole::Label), 60.0));
         lay_out_at_width(&mut b, 900.0);
         let measured = b.tab_rects[0].width();
         // A client retitles the window: the character-count guess for the
@@ -6658,7 +6652,10 @@ mod tests {
         let mut handled = false;
         dispatch_cursor(&mut b, Point::new(r.x0 + 12.0, r.center().y), &mut handled);
         lay_out_at_width_with(&mut b, width, &theme);
-        assert!(b.tab_rects()[1].width() > idle + 1.0, "no dwell before it opens");
+        assert!(
+            b.tab_rects()[1].width() > idle + 1.0,
+            "no dwell before it opens"
+        );
         assert!(b.max_rects()[1].area() > 0.0 && b.search_rects()[1].area() > 0.0);
 
         // A fast jump onto the maximize chip keeps the pill open.

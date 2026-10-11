@@ -1497,8 +1497,8 @@ fn clipboard_gestures_route_through_confirmed_actions() {
 fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
     use crate::resource::TerminalEffect;
     use vello::kurbo::Point;
-    let mut app = ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new()
-        .expect("terminal");
+    let mut app =
+        ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new().expect("terminal");
     let writes = app
         .with_surface(|terminal: &mut TerminalWidget| {
             terminal.accept_input_for_test();
@@ -1534,7 +1534,13 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
             true,
         );
         // Case `shift_insert_pastes_without_confirmation`.
-        send_key(terminal, &mut doc, Key::Named(NamedKey::Insert), false, true);
+        send_key(
+            terminal,
+            &mut doc,
+            Key::Named(NamedKey::Insert),
+            false,
+            true,
+        );
     })
     .expect("hosted terminal");
     app.settle();

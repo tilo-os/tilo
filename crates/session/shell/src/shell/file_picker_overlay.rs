@@ -319,7 +319,11 @@ mod tests {
             let viewport = Rect::new(10.0, 20.0, 2010.0, 1220.0);
             let picker = file_picker_rect(viewport);
             let sheet = f64::from(ui::tokens::Metrics::BASE.panel_width_sheet);
-            assert_eq!(picker.width(), sheet * 1.6, "wide enough for sidebar + list, no wider");
+            assert_eq!(
+                picker.width(),
+                sheet * 1.6,
+                "wide enough for sidebar + list, no wider"
+            );
             assert_eq!(picker.height(), sheet * 1.15);
             assert_eq!(picker.center(), viewport.center());
         }

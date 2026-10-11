@@ -8560,7 +8560,10 @@ mod tests {
         }
         let barrier = manager.begin_document_publication_barrier().unwrap();
         assert_eq!(barrier.wait(Some(tilo_test_env::hang_deadline())), Ok(()));
-        assert!(manager.is_connected(), "a burst must not disable collaboration (busy {busy}x)");
+        assert!(
+            manager.is_connected(),
+            "a burst must not disable collaboration (busy {busy}x)"
+        );
         assert_eq!(captures.lock().unwrap().signed_ops.len(), total);
         assert!(manager.send(CollabRequest::document_incremental(b"after".to_vec())));
         drop(manager);
