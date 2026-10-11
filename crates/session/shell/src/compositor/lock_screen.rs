@@ -767,8 +767,8 @@ pub fn draw_lock_scene_with_wallpaper(
 }
 
 /// Paint the hardware-key readout (volume, brightness, playback) over the
-/// lock scene, centred on the primary output where the credential widget
-/// lives. Media keys stay live while locked; without this their only
+/// lock scene, bottom-centred on the primary output clear of the credential
+/// widget. Media keys stay live while locked; without this their only
 /// feedback would be hidden behind the lock surface.
 pub fn draw_lock_osd(
     scene: &mut Scene,
@@ -793,7 +793,7 @@ pub fn draw_lock_osd(
         text,
         theme,
         viewport,
-        osd.alpha_at(now),
+        osd.alpha_in(theme, now),
     );
 }
 
