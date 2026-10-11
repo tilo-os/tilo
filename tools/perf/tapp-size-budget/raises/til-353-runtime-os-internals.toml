@@ -7,4 +7,3 @@ aarch64 = 786432
 
 [apps."so.tilo.agent"]
 x86_64 = 327680
-aarch64 = 262144
