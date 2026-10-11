@@ -1,0 +1,107 @@
+# Native app-state acceptance
+
+The native app-state composition is qualified only by a successful
+`native-app-state-proof` receipt with `app_state_qualified: true`, no error and
+successful cleanup, plus inspection of both `*-shared-state.png` captures.
+Transport-only and isolated SDK tests do not qualify this composition.
+
+## Disposable two-process journey
+
+The governed fixture dispatches the existing isolated app-worker mode before
+starting its runtime, as the production relay does. App code still runs under
+the worker confinement and untrusted-result admission boundary.
+
+This uses the existing `native_pair_host` governed fixture and ordinary signed
+thin Chat package. Two headless compositors, separate certified people, separate
+native app processes and their device-local stores share the same admitted Chat
+record. Alice creates a channel and commits a message before Bob opens Chat.
+Both processes then submit edits concurrently. The ordinary semantic actions
+must return each expected message exactly once, from the correct channel, on
+both devices, attributed to each exact certified invoker. The receipt retains
+the bounded semantic message results from each device. A shared resource reference must preserve its target and access.
+Each compositor must present a new local app frame after navigating to that
+channel. Screenshots supplement the semantic assertions; frame activity alone
+cannot establish readable pixels.
+
+No audio server is needed. Context following, media capture and remote input
+are not invoked. The existing OS font catalog is installed read-only in a
+fixture-owned mount namespace, matching the packaged-native proof. The source
+receipt hashes the fixture, compositor, governor, launcher, native Chat binary
+and signed package. Synthetic identities and invitation material remain inside
+the private temporary profile and are removed, with owned processes, on exit.
+
+Run only in an owned disposable remote builder; keep the ordinary packager and
+process lifetime under the selected cargo drop-in’s session lock. Set `CARGO`
+to any cargo drop-in that supports the remote execution and receipt retrieval
+options below:
+
+```sh
+"$CARGO" --no-fallback --no-fetch build --locked \
+  -p shell --bin shell --example native_pair_host \
+  -p tilo-control --bin tilo-control -p launcher --bin tilo-launcher \
+  -p tilo-app-package-cli --bin tilo-app-package -p tilo-app-cli --bin tilo-app \
+  -p install --bin tilo-install -p runtime-bundle --bin tilo-runtime-bundle
+"$CARGO" --no-fallback --on-builder \
+  --fetch native-app-state-proof/journey.json \
+  --fetch native-app-state-proof/alice-shared-state.png \
+  --fetch native-app-state-proof/bob-shared-state.png \
+  run --locked -p shell --example native_pair_host -- \
+  --journey --state-proof --out target/native-app-state-proof
+```
+
+The output directory must be new. Retrieve only the bounded receipt and
+screenshots, including on failure; never retrieve `bootstrap.json`, identity
+roots or publisher keys. A failed step keeps `app_state_qualified: false`.
+The combined voice/follow journey retains its separate `qualified` field.
+Neither field qualifies same-person automatic app opening, offline recovery,
+physical display/input behavior or installed package delivery.
+
+## Installed-device handoff to the Pi owner
+
+Use one exact source revision for each architecture's signed shell, launcher,
+SDK/runtime and Chat package; record the installed hashes and signed manifests.
+Keep actual device repair, packaging and session changes with their existing
+owners. Do not copy raw identity roots or replace a running session to execute
+this recipe.
+
+1. Identify an existing explicitly approved governed workspace, both currently
+   admitted certified device identities, the exact canonical Chat record and
+   the current grants. Same identity alone supplies no workspace or input grant.
+   If the required room or app authority is absent, stop for exact user approval
+   naming the devices, room, resources, role and persistence. The outstanding
+   live Files workspace grant is independent and must remain held.
+2. Query each owner's normal semantic endpoint with
+   `tilo-control --socket <approved-owner-socket> actions list Chat --json --programmatic`.
+   Resolve operations by application, room, record, operation and logical
+   resource identity. Bound component handles differ between devices and must
+   be discovered independently; never send one device's alias to the other.
+3. Open Chat normally on device A. In the approved acceptance conversation,
+   invoke `new-channel`, then `post` with a unique non-sensitive marker; wait
+   for terminal success. Only then open Chat on B, against the same approved
+   record. `read-messages` must return that exact channel and marker once on B.
+4. Invoke `post` from each device concurrently with distinct markers. Both
+   `read-messages` results must contain all three complete messages exactly
+   once, with correct channel and history attribution. Invoke `open-channel`
+   through each device's own current handle and inspect each local native view.
+   An Open receipt, transported payload or tab placeholder is insufficient.
+5. With the Pi owner coordinating only their owned app lifetime, close/reopen
+   the receiving app and check the same canonical record and retained history.
+   For a separately approved temporary offline interval, make distinct edits,
+   reconnect normally and require both edits without duplication or reset.
+   These outcomes remain pending until observed; this synthetic mode does not
+   claim to exercise them.
+
+Use `actions invoke <provider> <id> --args-stdin --wait` with the arguments
+returned by that operation's schema, then inspect its terminal result.
+Do not use pointer injection, grant changes, durable-file eviction or media
+streaming as part of this app-state recipe. Physical screenshots of a user's
+actual desktop are outside this source fixture's authorization.
+
+## State boundary
+
+The admitted Chat resource's document, channel/message identifiers, content,
+resource references and attributed history are semantic shared state. Package
+installation, credentials, runtime endpoints, caches, rendering, focus and
+component publication handles are device-local. The fixture navigates each
+view independently and does not claim that every app's selection or cursor
+state automatically roams, or that an app lacking replication is complete.
