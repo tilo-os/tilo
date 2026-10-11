@@ -12261,16 +12261,9 @@ async fn read_launcher_handoff(
     reason = "Cap'n Proto RPC is Rc-backed and runs only on the broker LocalSet"
 )]
 async fn answer_refused_launch(stream: tokio::net::UnixStream, error: capnp::Error) {
-    let (reader, writer) = stream.into_split();
-    let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(reader.compat()),
-        futures::io::BufWriter::new(writer.compat_write()),
-        rpc_twoparty_capnp::Side::Server,
-        capnp::message::ReaderOptions::default(),
-    ));
     let refused: collab_service::Client =
         capnp_rpc::new_future_client(std::future::ready(Err(error)));
-    let rpc = RpcSystem::new(network, Some(refused.client));
+    let rpc = runtime_portal::serve_connected_io(stream, refused.client);
     let _ = tokio::time::timeout(REFUSED_LAUNCH_ANSWER_WINDOW, rpc).await;
 }
 
@@ -12316,15 +12309,6 @@ async fn drive_connection(
         None
     };
     let _media_monitor = native_media::ProcessMonitor::start(local_media.clone(), &state, peer_id);
-    let (reader, writer) = stream.into_split();
-    let reader = reader.compat();
-    let writer = writer.compat_write();
-    let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(reader),
-        futures::io::BufWriter::new(writer),
-        rpc_twoparty_capnp::Side::Server,
-        capnp::message::ReaderOptions::default(),
-    ));
     let client: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
         worker,
         lease: Rc::new(ConnectionLease {
@@ -12337,7 +12321,7 @@ async fn drive_connection(
         directories,
         peer_id,
     });
-    let rpc = RpcSystem::new(network, Some(client.client));
+    let rpc = runtime_portal::serve_connected_io(stream, client.client);
     let _disconnect = DisconnectOnDrop(Some(rpc.get_disconnector()));
     rpc.await
 }

@@ -15,9 +15,7 @@ use std::{
 };
 
 use capnp::capability::Promise;
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use tokio::sync::oneshot;
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::fs_capnp::{self, file_handle, workspace_fs};
 use crate::{DirEntry, EntryKind, MAX_READ_CHUNK, Metadata};
@@ -159,14 +157,7 @@ async fn accept(
 )]
 async fn serve_connection(stream: tokio::net::UnixStream, server: Rc<Server>) -> io::Result<()> {
     let client: workspace_fs::Client = capnp_rpc::new_client_from_rc(server);
-    let (read_half, write_half) = stream.into_split();
-    let network = twoparty::VatNetwork::new(
-        read_half.compat(),
-        write_half.compat_write(),
-        rpc_twoparty_capnp::Side::Server,
-        capnp::message::ReaderOptions::default(),
-    );
-    RpcSystem::new(Box::new(network), Some(client.client))
+    runtime_portal::serve_connected_io(stream, client.client)
         .await
         .map_err(|error| io::Error::other(error.to_string()))
 }
