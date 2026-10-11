@@ -3,9 +3,12 @@
 //! Drives the two signature desktop motions through the production frame
 //! producer and GPU target, one frame at a time:
 //!
-//! - `pan`: a continuous three-finger pan of the strip of a one-strip desktop
+//! - `pan`: a continuous three-finger pan of the top strip
 //!   (`update_active_strip_pan`, total travel growing by a fractional step
-//!   per frame, as a touchpad delivers it), back and forth over the strip;
+//!   per frame, as a touchpad delivers it), back and forth over the strip,
+//!   on a one-strip desktop or with a second strip below it (the docked
+//!   wheel, which rides the top strip, then reaches over the second), on a
+//!   display at 100 %, 150 % or 200 % scale;
 //! - `strip-move`: on a two-strip desktop, focus moving to the next strip and
 //!   back (`ChromeState::switch_strip`), every frame until the motion settles.
 //!
@@ -21,8 +24,16 @@
 //!
 //! ```text
 //! cargo run -p shell --example strip_pan_bench --release -- \
-//!     [--out DIR] [--frames N] [--size 1080p|4k] [--windows N] [--mode dense|layered]
+//!     [--out DIR] [--frames N] [--size 1080p|4k] [--windows N] [--mode dense|layered] \
+//!     [--scale 1|1.5|2] [--strips 1|2]
 //! ```
+//!
+//! Without a selection the cases are 1080p and 4K, three and six windows, at
+//! 100 % on one strip (pans and strip moves), then 4K with six windows at
+//! 150 % and 200 % on one strip and at 100 % and 200 % on two strips (pans).
+//! A selection flag runs every combination of the values it names with the
+//! defaults of the others. `--size` names the panel in device pixels; at a
+//! scale the desktop is laid out at the panel's size divided by it.
 //!
 //! Two presenters are measured on the same scenes:
 //!
@@ -41,7 +52,9 @@ use std::time::{Duration, Instant};
 use pollster::FutureExt as _;
 use shell::compositor::backend::drm::paint::{RetainedGpuTarget, SceneDamage};
 use shell::compositor::frame::{FrameBuilder, FramePaint};
+use shell::shell::output_scene::OutputGeometry;
 use shell::shell::state::{StripId, WindowGroup, WindowWidth, WorkspaceTree};
+use vello::kurbo::Rect;
 
 /// Frames a pan measures, after the warm-up.
 const PAN_FRAMES: usize = 240;
@@ -59,54 +72,168 @@ const RENDER_DEADLINE: Duration = Duration::from_secs(10);
 struct Args {
     out: Option<PathBuf>,
     frames: usize,
-    sizes: Vec<(&'static str, (u32, u32))>,
-    windows: Vec<usize>,
+    cases: Vec<Case>,
     modes: Vec<&'static str>,
 }
 
+/// One desktop pans are measured on.
+#[derive(Clone, Copy)]
+struct Case {
+    size_name: &'static str,
+    /// The panel, in device pixels.
+    size: (u32, u32),
+    windows: usize,
+    /// Device pixels per layout pixel.
+    scale: f64,
+    /// Strips on the desktop; the top one pans.
+    strips: usize,
+    /// Also measure strip-to-strip moves.
+    strip_moves: bool,
+}
+
+impl Case {
+    /// `pan.4k.w6.layered` at 100 % on one strip, the label these records
+    /// had before scales and strips were measured;
+    /// `pan.4k.s200.strips2.w6.layered` otherwise.
+    fn label(&self, motion: &str, mode: &str) -> String {
+        let mut parts = vec![motion.to_owned(), self.size_name.to_owned()];
+        if (self.scale - 1.0).abs() > f64::EPSILON {
+            parts.push(format!("s{}", (self.scale * 100.0).round()));
+        }
+        if self.strips > 1 {
+            parts.push(format!("strips{}", self.strips));
+        }
+        parts.push(format!("w{}", self.windows));
+        parts.push(mode.to_owned());
+        parts.join(".")
+    }
+}
+
+const FOUR_K: (&str, (u32, u32)) = ("4k", (3840, 2160));
+const SIZES: [(&str, (u32, u32)); 2] = [("1080p", (1920, 1080)), FOUR_K];
+
+/// Every combination of the selected values, the defaults standing in for
+/// what was not selected.
+fn selected_cases(
+    sizes: Option<&[(&'static str, (u32, u32))]>,
+    windows: Option<&[usize]>,
+    scales: Option<&[f64]>,
+    strips: Option<&[usize]>,
+) -> Vec<Case> {
+    let mut cases = Vec::new();
+    for &(size_name, size) in sizes.unwrap_or(&SIZES) {
+        for &windows in windows.unwrap_or(&[3, 6]) {
+            for &scale in scales.unwrap_or(&[1.0]) {
+                for &strips in strips.unwrap_or(&[1]) {
+                    cases.push(Case {
+                        size_name,
+                        size,
+                        windows,
+                        scale,
+                        strips,
+                        strip_moves: strips == 1,
+                    });
+                }
+            }
+        }
+    }
+    cases
+}
+
+/// 1080p and 4K with three and six windows at 100 % on one strip (pans and
+/// strip moves), then 4K with six windows at 150 % and 200 % on one strip
+/// and at 100 % and 200 % on two strips (pans).
+fn default_cases() -> Vec<Case> {
+    let mut cases = selected_cases(None, None, None, None);
+    let (size_name, size) = FOUR_K;
+    for (scale, strips) in [(1.5, 1), (2.0, 1), (1.0, 2), (2.0, 2)] {
+        cases.push(Case {
+            size_name,
+            size,
+            windows: 6,
+            scale,
+            strips,
+            strip_moves: false,
+        });
+    }
+    cases
+}
+
 fn parse_args() -> Result<Args, String> {
-    let mut args = Args {
-        out: None,
-        frames: PAN_FRAMES,
-        sizes: vec![("1080p", (1920, 1080)), ("4k", (3840, 2160))],
-        windows: vec![3, 6],
-        modes: vec!["dense", "layered"],
-    };
+    let mut out = None;
+    let mut frames = PAN_FRAMES;
+    let mut sizes: Option<Vec<(&'static str, (u32, u32))>> = None;
+    let mut windows: Option<Vec<usize>> = None;
+    let mut scales: Option<Vec<f64>> = None;
+    let mut strips: Option<Vec<usize>> = None;
+    let mut modes = vec!["dense", "layered"];
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--out" => args.out = Some(it.next().ok_or("--out needs a directory")?.into()),
+            "--out" => out = Some(it.next().ok_or("--out needs a directory")?.into()),
             "--frames" => {
-                args.frames = it
+                frames = it
                     .next()
                     .and_then(|value| value.parse().ok())
                     .ok_or("--frames needs a count")?;
             }
             "--size" => {
                 let size = it.next().ok_or("--size needs 1080p or 4k")?;
-                args.sizes.retain(|(name, _)| *name == size);
+                let found = SIZES
+                    .into_iter()
+                    .find(|(name, _)| *name == size)
+                    .ok_or("--size must be 1080p or 4k")?;
+                sizes.get_or_insert_with(Vec::new).push(found);
             }
             "--windows" => {
                 let count: usize = it
                     .next()
                     .and_then(|value| value.parse().ok())
                     .ok_or("--windows needs a count")?;
-                args.windows = vec![count];
+                windows.get_or_insert_with(Vec::new).push(count);
+            }
+            "--scale" => {
+                let scale: f64 = it
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .filter(|scale: &f64| (1.0..=3.0).contains(scale))
+                    .ok_or("--scale needs a factor from 1 to 3")?;
+                scales.get_or_insert_with(Vec::new).push(scale);
+            }
+            "--strips" => {
+                let count: usize = it
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .filter(|count| (1..=2).contains(count))
+                    .ok_or("--strips needs 1 or 2")?;
+                strips.get_or_insert_with(Vec::new).push(count);
             }
             "--mode" => {
                 let mode = it.next().ok_or("--mode needs dense or layered")?;
-                args.modes.retain(|name| *name == mode);
+                modes.retain(|name| *name == mode);
             }
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
-    if args.sizes.is_empty() {
-        return Err("--size must be 1080p or 4k".into());
-    }
-    if args.modes.is_empty() {
+    if modes.is_empty() {
         return Err("--mode must be dense or layered".into());
     }
-    Ok(args)
+    let cases = if sizes.is_some() || windows.is_some() || scales.is_some() || strips.is_some() {
+        selected_cases(
+            sizes.as_deref(),
+            windows.as_deref(),
+            scales.as_deref(),
+            strips.as_deref(),
+        )
+    } else {
+        default_cases()
+    };
+    Ok(Args {
+        out,
+        frames,
+        cases,
+        modes,
+    })
 }
 
 /// The demo desktop with `windows` window groups on its first strip, each
@@ -161,12 +288,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(
-        size: (u32, u32),
-        windows: usize,
-        layered: bool,
-        second_strip: bool,
-    ) -> Result<Self, String> {
+    fn new(case: &Case, layered: bool, second_strip: bool) -> Result<Self, String> {
         let parent = tempfile::tempdir().map_err(|error| format!("fixture parent: {error}"))?;
         let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
             ui::font_catalog::checkout_root(),
@@ -181,8 +303,23 @@ impl Fixture {
         )
         .map_err(|error| format!("fixture files: {error}"))?;
         let mut frame =
-            FrameBuilder::with_fixture_inputs(tree(windows, second_strip), size, inputs)
+            FrameBuilder::with_fixture_inputs(tree(case.windows, second_strip), case.size, inputs)
                 .map_err(|error| format!("fixture: {error}"))?;
+        if (case.scale - 1.0).abs() > f64::EPSILON {
+            // One panel at `scale`: the desktop is laid out at the panel's
+            // size divided by it and magnified into the panel's pixels.
+            let (width, height) = (f64::from(case.size.0), f64::from(case.size.1));
+            frame.set_output_geometry(vec![OutputGeometry {
+                id: 0,
+                monitor: String::new(),
+                x: 0.0,
+                y: 0.0,
+                width: (width / case.scale).round(),
+                height: (height / case.scale).round(),
+                scale: case.scale,
+                scene: Rect::new(0.0, 0.0, width, height),
+            }]);
+        }
         frame.set_strip_pan_presenter(false, layered);
         Ok(Self {
             frame,
@@ -456,25 +593,26 @@ fn write_samples(dir: &Path, label: &str, samples: &Samples) -> Result<(), Strin
 
 fn run_case(
     gpu: &ui::gpu::DeviceHandle,
-    (size_name, size): (&str, (u32, u32)),
-    (windows, mode): (usize, &str),
+    case: &Case,
+    mode: &str,
     args: &Args,
 ) -> Result<(), String> {
-    // One strip pans; a second strip below it would put the docked wheel,
-    // which rides the active strip, over the other strip's row, and those
-    // pans stay in the scene.
-    let mut fixture = Fixture::new(size, windows, mode == "layered", false)?;
+    let size = case.size;
+    let mut fixture = Fixture::new(case, mode == "layered", case.strips > 1)?;
     let mut target =
         RetainedGpuTarget::new(gpu, size.0, size.1).map_err(|error| format!("target: {error}"))?;
-    let label = format!("pan.{size_name}.w{windows}.{mode}");
+    let label = case.label("pan", mode);
     let samples = pan(&mut fixture, &mut target, size, args.frames)?;
     drop(fixture);
     report(&label, size, &samples);
     if let Some(dir) = &args.out {
         write_samples(dir, &label, &samples)?;
     }
-    let label = format!("strip-move.{size_name}.w{windows}.{mode}");
-    let mut fixture = Fixture::new(size, windows, mode == "layered", true)?;
+    if !case.strip_moves {
+        return Ok(());
+    }
+    let label = case.label("strip-move", mode);
+    let mut fixture = Fixture::new(case, mode == "layered", true)?;
     let samples = strip_move(&mut fixture, &mut target, size)?;
     drop(fixture);
     report(&label, size, &samples);
@@ -503,11 +641,9 @@ fn main() -> Result<(), String> {
         "adapter: name={:?} backend={:?} driver={:?}",
         adapter.name, adapter.backend, adapter.driver
     );
-    for &size in &args.sizes {
-        for &windows in &args.windows {
-            for &mode in &args.modes {
-                run_case(gpu, size, (windows, mode), &args)?;
-            }
+    for case in &args.cases {
+        for &mode in &args.modes {
+            run_case(gpu, case, mode, &args)?;
         }
     }
     Ok(())

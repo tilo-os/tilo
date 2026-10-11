@@ -516,6 +516,42 @@ p99_tolerance = 2.0
 min_delta = 10000.0
 source = "strip_pan_bench, pixels a 4K six-window pan frame rasterises"
 
+# The same pan on a 4K panel at 150 % and 200 %, and on a desktop of two
+# strips (the docked wheel riding the top strip over the second) at 100 % and
+# 200 %. Frame time is reported like the 100 % pan's.
+
+[kpi."render.shell.pan_us.4k_s150"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.pan_us.4k_s200"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.pan_us.4k_strips2"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.pan_us.4k_s200_strips2"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
 [kpi."render.shell.strip_move_us.4k"]
 unit = "us"
 p99 = 16700.0
