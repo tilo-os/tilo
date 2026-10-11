@@ -13,6 +13,7 @@ pub struct Network {
     pub http: Arc<dyn HttpClient>,
     pub transport: Arc<dyn TransportFactory>,
 }
+pub(super) mod groups;
 mod linking;
 #[cfg(target_os = "linux")]
 mod native_network;
@@ -42,6 +43,7 @@ impl TransportFactory for TransportProvider {
 pub struct WhatsappBootstrap {
     pub(super) source: Arc<Client>,
     pub(super) hook: Arc<crate::external_broker::WhatsappInboxHook>,
+    pub(super) backend: crate::whatsapp_store::EncryptedBackend,
 }
 struct StateGrant(Arc<dyn super::AccountAuthority>);
 impl crate::whatsapp_store::StateAuthority for StateGrant {
@@ -110,9 +112,11 @@ impl WhatsappBootstrap {
             backend.owner().clone(),
         )?);
         let manager = Arc::new(
-            whatsapp_rust::store::persistence_manager::PersistenceManager::new(Arc::new(backend))
-                .await
-                .map_err(|_| SendError::Unavailable)?,
+            whatsapp_rust::store::persistence_manager::PersistenceManager::new(Arc::new(
+                backend.clone(),
+            ))
+            .await
+            .map_err(|_| SendError::Unavailable)?,
         );
         let source = Client::builder()
             .with_runtime(whatsapp_rust::TokioRuntime)
@@ -124,7 +128,11 @@ impl WhatsappBootstrap {
             .await
             .map_err(|_| SendError::Unavailable)?
             .into_client();
-        Ok(Self { source, hook })
+        Ok(Self {
+            source,
+            hook,
+            backend,
+        })
     }
     pub fn client(&self) -> Arc<Client> {
         self.source.clone()
