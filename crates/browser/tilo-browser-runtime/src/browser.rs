@@ -1292,13 +1292,19 @@ async fn shared_gpu(
         .devices
         .get(surface.dev_id)
         .ok_or("WebGPU device missing")?;
-    let mut renderer = vello::Renderer::new(
+    // Asynchronous pipeline creation: the browser compiles vello's pipelines
+    // in parallel off its GPU process's main thread. Created synchronously
+    // they hold that thread for the whole compile (seconds each under a
+    // software rasteriser), and a page waiting on the GPU process (one tearing
+    // down its previous WebGPU context, a frame, a screenshot) waits with it.
+    let mut renderer = vello::Renderer::new_async(
         &handle.device,
         vello::RendererOptions {
             antialiasing_support: vello::AaSupport::area_only(),
             ..Default::default()
         },
     )
+    .await
     .map_err(|e| e.to_string())?;
     if caps == SurfaceCaps::CONSERVATIVE {
         renderer.set_bump_budget_limit(CONSERVATIVE_BUMP_BUDGET_BYTES);

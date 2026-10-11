@@ -1736,6 +1736,37 @@ impl Renderer {
         let shaders = shaders::full_shaders(device, &mut engine, &options)?;
         #[cfg(not(target_arch = "wasm32"))]
         engine.build_shaders_if_needed(device, options.num_init_threads);
+        Self::with_engine(device, options, engine, shaders)
+    }
+
+    /// Creates a new renderer for the specified device, compiling its
+    /// pipelines with [`Device::create_compute_pipeline_async`] (Tilo patch).
+    ///
+    /// On WebGPU the browser then compiles them in parallel on worker
+    /// threads, instead of one after another on its GPU process's main
+    /// thread. That thread also serves the page's frames and every other
+    /// page using the GPU process: a software rasteriser (SwiftShader)
+    /// spends seconds per vello pipeline there, and in Chromium a page whose
+    /// earlier WebGPU context is torn down meanwhile blocks its own main
+    /// thread until the GPU process gets to it. Other backends create the
+    /// pipelines synchronously, one after another.
+    pub async fn new_async(device: &Device, options: RendererOptions) -> Result<Self> {
+        let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
+        engine.initialize_gpu_timestamps(device);
+        engine.defer_shader_initialisation();
+        let shaders = shaders::full_shaders(device, &mut engine, &options)?;
+        engine.build_shaders_async(device).await;
+        Self::with_engine(device, options, engine, shaders)
+    }
+
+    fn with_engine(
+        device: &Device,
+        options: RendererOptions,
+        engine: WgpuEngine,
+        shaders: FullShaders,
+    ) -> Result<Self> {
+        #[cfg(feature = "debug_layers")]
+        let mut engine = engine;
         #[cfg(feature = "debug_layers")]
         let debug = debug::DebugRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm, &mut engine);
         let mut budget = bump_budget::BudgetTracker::new();
@@ -3996,6 +4027,44 @@ mod tests {
             height: 16,
             antialiasing_method: AaConfig::Area,
         }
+    }
+
+    #[test]
+    fn asynchronous_pipeline_creation_renders_what_synchronous_creation_renders() {
+        let (device, queue) = checked_bump_device();
+        let render = |renderer: &mut Renderer| {
+            let (texture, target) = damage_target_with_size(&device, &queue, 16, 16);
+            renderer
+                .render_to_texture(
+                    &device,
+                    &queue,
+                    &solid_scene(),
+                    &target,
+                    &checked_bump_params(),
+                )
+                .unwrap();
+            let (rows, stride) = readback_texture_rows(&device, &queue, &texture, 16, 16);
+            rows.chunks(stride)
+                .flat_map(|row| row[..16 * 4].to_vec())
+                .collect::<Vec<u8>>()
+        };
+        let mut synchronous = Renderer::new(
+            &device,
+            RendererOptions {
+                num_init_threads: NonZeroUsize::new(1),
+                ..RendererOptions::default()
+            },
+        )
+        .unwrap();
+        let mut asynchronous =
+            block_on(Renderer::new_async(&device, RendererOptions::default())).unwrap();
+        let expected = render(&mut synchronous);
+        assert_eq!(
+            expected,
+            vec![255; 16 * 16 * 4],
+            "the solid white scene must cover the target"
+        );
+        assert_eq!(render(&mut asynchronous), expected);
     }
 
     #[test]
