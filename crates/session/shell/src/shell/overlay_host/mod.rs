@@ -23260,31 +23260,11 @@ impl ShellOverlayHost {
         // carries. Until 2026-09-17 the selected row wore a 16 % accent
         // fill and an accent stroke (§9.4 reserves accent for live state)
         // and the idle row a `neutral[1]` ramp slot (§9.2; S1-27).
-        let tier = ui::chrome::selection_tier(
+        ui::chrome::selection_tier(
             theme,
             ui::chrome::SelectionState::new(selected, hover, false),
-        );
-        if tier.fill.components[3] > 0.0 {
-            scene.fill(Fill::NonZero, transform, tier.fill, None, &rr);
-        }
-        if let Some(border) = tier.border {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                border,
-                None,
-                &rr,
-            );
-        }
-        if let Some(glow) = tier.inner_glow {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                glow,
-                None,
-                &RoundedRect::from_rect(rect.inset(1.0), (m.row_radius - 1.0).max(0.0)),
-            );
-        }
+        )
+        .paint(scene, transform, rect, m.row_radius);
         if !selected && !hover {
             // A destination occupies the whole row, not only its label and
             // avatar: a derived hairline keeps the click target legible on
