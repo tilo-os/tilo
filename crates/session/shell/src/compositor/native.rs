@@ -79,7 +79,7 @@ use taffy::NodeId;
 use vello::kurbo::Rect;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::accessibility::{NativeAccessibility, Request as AccessibilityRequest};
 use crate::compositor::backend::drm::runtime::{DirectTouchDown, DirectTouchOwnership};
@@ -5707,112 +5707,13 @@ fn portal_capture_event(
             };
             Some(CapturedInput::Scroll { dx, dy })
         }
-        WindowEvent::KeyboardInput { event, .. } => {
-            keycode_for_eis(event.physical_key).map(|keycode| CapturedInput::Keyboard {
+        WindowEvent::KeyboardInput { event, .. } => ui::evdev::from_physical(event.physical_key)
+            .map(|keycode| CapturedInput::Keyboard {
                 keycode,
                 pressed: event.state == ElementState::Pressed,
-            })
-        }
+            }),
         _ => None,
     }
-}
-
-/// USB HID / evdev keycodes for keys whose physical positions winit exposes.
-/// This deliberately maps physical keys, never characters, so a non-US layout
-/// still sees the correct key event over EIS.
-fn keycode_for_eis(key: PhysicalKey) -> Option<u32> {
-    let PhysicalKey::Code(code) = key else {
-        return None;
-    };
-    Some(match code {
-        KeyCode::Escape => 1,
-        KeyCode::Digit1 => 2,
-        KeyCode::Digit2 => 3,
-        KeyCode::Digit3 => 4,
-        KeyCode::Digit4 => 5,
-        KeyCode::Digit5 => 6,
-        KeyCode::Digit6 => 7,
-        KeyCode::Digit7 => 8,
-        KeyCode::Digit8 => 9,
-        KeyCode::Digit9 => 10,
-        KeyCode::Digit0 => 11,
-        KeyCode::Minus => 12,
-        KeyCode::Equal => 13,
-        KeyCode::Backspace => 14,
-        KeyCode::Tab => 15,
-        KeyCode::KeyQ => 16,
-        KeyCode::KeyW => 17,
-        KeyCode::KeyE => 18,
-        KeyCode::KeyR => 19,
-        KeyCode::KeyT => 20,
-        KeyCode::KeyY => 21,
-        KeyCode::KeyU => 22,
-        KeyCode::KeyI => 23,
-        KeyCode::KeyO => 24,
-        KeyCode::KeyP => 25,
-        KeyCode::BracketLeft => 26,
-        KeyCode::BracketRight => 27,
-        KeyCode::Enter => 28,
-        KeyCode::ControlLeft => 29,
-        KeyCode::KeyA => 30,
-        KeyCode::KeyS => 31,
-        KeyCode::KeyD => 32,
-        KeyCode::KeyF => 33,
-        KeyCode::KeyG => 34,
-        KeyCode::KeyH => 35,
-        KeyCode::KeyJ => 36,
-        KeyCode::KeyK => 37,
-        KeyCode::KeyL => 38,
-        KeyCode::Semicolon => 39,
-        KeyCode::Quote => 40,
-        KeyCode::Backquote => 41,
-        KeyCode::ShiftLeft => 42,
-        KeyCode::Backslash => 43,
-        KeyCode::KeyZ => 44,
-        KeyCode::KeyX => 45,
-        KeyCode::KeyC => 46,
-        KeyCode::KeyV => 47,
-        KeyCode::KeyB => 48,
-        KeyCode::KeyN => 49,
-        KeyCode::KeyM => 50,
-        KeyCode::Comma => 51,
-        KeyCode::Period => 52,
-        KeyCode::Slash => 53,
-        KeyCode::ShiftRight => 54,
-        KeyCode::AltLeft => 56,
-        KeyCode::Space => 57,
-        KeyCode::CapsLock => 58,
-        KeyCode::F1 => 59,
-        KeyCode::F2 => 60,
-        KeyCode::F3 => 61,
-        KeyCode::F4 => 62,
-        KeyCode::F5 => 63,
-        KeyCode::F6 => 64,
-        KeyCode::F7 => 65,
-        KeyCode::F8 => 66,
-        KeyCode::F9 => 67,
-        KeyCode::F10 => 68,
-        KeyCode::NumLock => 69,
-        KeyCode::ScrollLock => 70,
-        KeyCode::F11 => 87,
-        KeyCode::F12 => 88,
-        KeyCode::ControlRight => 97,
-        KeyCode::AltRight => 100,
-        KeyCode::Home => 102,
-        KeyCode::ArrowUp => 103,
-        KeyCode::PageUp => 104,
-        KeyCode::ArrowLeft => 105,
-        KeyCode::ArrowRight => 106,
-        KeyCode::End => 107,
-        KeyCode::ArrowDown => 108,
-        KeyCode::PageDown => 109,
-        KeyCode::Insert => 110,
-        KeyCode::Delete => 111,
-        KeyCode::SuperLeft => 125,
-        KeyCode::SuperRight => 126,
-        KeyCode::ContextMenu => 127,
-        _ => return None,
-    })
 }
 
 #[derive(Clone, Debug)]
@@ -6498,7 +6399,7 @@ fn forward_spatial_window_event(
             }
         }
         WindowEvent::KeyboardInput { event, .. } => {
-            let Some(keycode) = keycode_for_eis(event.physical_key) else {
+            let Some(keycode) = ui::evdev::from_physical(event.physical_key) else {
                 return true;
             };
             crate::shell::device_fabric::FabricInputEvent::Key {
