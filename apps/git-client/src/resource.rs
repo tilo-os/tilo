@@ -60,16 +60,7 @@ pub struct SampleRepository {
     pub diffs: DiffMap,
 }
 
-/// The client's messages, in every host that mounts it.
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[
-        ("en-US", include_str!("../locales/en-US.ftl")),
-        ("de-DE", include_str!("../locales/de-DE.ftl")),
-    ],
-    "git-remote-running",
-)
-.with_system_locale();
+ui::embedded_catalog!(static CATALOG, "git-remote-running", ["en-US", "de-DE"]);
 
 /// Every `--scenario` the screenshot renderer stages.
 pub const SCENARIOS: &[&str] = &[

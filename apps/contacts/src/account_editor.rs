@@ -6,7 +6,6 @@ use std::rc::Rc;
 use tilo_contact_directory::ContactDirectory;
 use ui::LocalState;
 use ui::framework::{Actions, Dispatcher, Effected, LiveRow, PersonRecord, ViewCx};
-use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Effect, Id};
 use ui::widget::{
     Button, Column, Dropdown, Element, ModelView, Property, PropertyList, Row, Scrollable, Text,
@@ -16,11 +15,7 @@ use uuid::Uuid;
 
 use crate::resource::Contacts;
 
-pub(crate) static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "contacts-accounts",
-);
+ui::embedded_catalog!(pub(crate) static CATALOG, "contacts-accounts", ["en-US"]);
 
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "contacts.accounts")]
