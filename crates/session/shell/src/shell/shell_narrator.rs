@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use settings_store::screen_reader::ScreenReaderSettings;
+use settings_store::accessibility::AccessibilitySettings;
 use ui::a11y::{AccessNode, Politeness};
 use ui::screen_reader::{ScreenReader, describe, describe_state};
 
@@ -66,7 +66,7 @@ impl ShellNarrator {
                 // Rate and voice follow the same `accessibility` settings the
                 // apps read, so the desktop speaks with one voice.
                 let mut reader = ScreenReader::new();
-                reader.configure(&ScreenReaderSettings::load());
+                reader.configure(&AccessibilitySettings::load().screen_reader());
                 self.reader = Some(reader);
             }
             (false, true) => {

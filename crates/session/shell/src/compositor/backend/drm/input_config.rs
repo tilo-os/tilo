@@ -18,9 +18,6 @@ use settings_store::hardware::{InputDeviceKind, TouchpadClickMethod, TouchpadScr
 /// Settings section these values live in.
 pub const SECTION: &str = "input";
 
-/// Settings section of [`AccessibilityInputSettings`].
-pub const ACCESSIBILITY_SECTION: &str = "accessibility";
-
 /// Fully validated per-user XKB keymap request. The strings are ready for
 /// libxkbcommon's rules API: one comma-separated variant slot per layout,
 /// including empty slots for base layouts.
@@ -129,102 +126,6 @@ impl KeyboardSettings {
             fallback()
         } else {
             name.to_string()
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "accessibility toggles: each is an independent, named setting from a settings pane, not a state machine"
-)]
-pub struct AccessibilityInputSettings {
-    pub sticky_keys: bool,
-    pub slow_keys: bool,
-    /// Ignore a second press of the same key shortly after its release.
-    pub bounce_keys: bool,
-    /// The bounce-keys window in milliseconds.
-    pub bounce_keys_delay_ms: u32,
-    /// Flash the visual alert whenever bounce keys swallows a press.
-    pub bounce_keys_alert: bool,
-    /// The numeric keypad drives the pointer.
-    pub mouse_keys: bool,
-    pub large_cursor: bool,
-    pub cursor_size: u32,
-}
-
-impl Default for AccessibilityInputSettings {
-    fn default() -> Self {
-        Self {
-            sticky_keys: false,
-            slow_keys: false,
-            bounce_keys: false,
-            bounce_keys_delay_ms: settings_store::hardware::BOUNCE_KEYS_DEFAULT_DELAY_MS,
-            bounce_keys_alert: false,
-            mouse_keys: false,
-            large_cursor: false,
-            cursor_size: 24,
-        }
-    }
-}
-
-/// `accessibility` key the Shift+Alt+Num Lock chord flips.
-pub const MOUSE_KEYS_KEY: &str = settings_store::hardware::MOUSE_KEYS.name();
-
-impl AccessibilityInputSettings {
-    pub fn load() -> Self {
-        Self::from_section(&settings_store::load_section(ACCESSIBILITY_SECTION))
-    }
-
-    /// Parse the `accessibility` section; every field falls back to its
-    /// default on its own.
-    pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
-        let d = Self::default();
-        let bool_at = |key: &str, fallback: bool| {
-            section
-                .get(key)
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(fallback)
-        };
-        Self {
-            sticky_keys: bool_at("sticky_keys", d.sticky_keys),
-            slow_keys: bool_at("slow_keys", d.slow_keys),
-            bounce_keys: bool_at("bounce_keys", d.bounce_keys),
-            bounce_keys_delay_ms: section
-                .get("bounce_keys_delay_ms")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|v| u32::try_from(v).ok())
-                .unwrap_or(d.bounce_keys_delay_ms)
-                .clamp(
-                    settings_store::hardware::BOUNCE_KEYS_MIN_DELAY_MS,
-                    settings_store::hardware::BOUNCE_KEYS_MAX_DELAY_MS,
-                ),
-            bounce_keys_alert: bool_at("bounce_keys_alert", d.bounce_keys_alert),
-            mouse_keys: bool_at(MOUSE_KEYS_KEY, d.mouse_keys),
-            large_cursor: bool_at("large_cursor", d.large_cursor),
-            cursor_size: section
-                .get("cursor_size")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|v| u32::try_from(v).ok())
-                .unwrap_or(d.cursor_size)
-                .clamp(24, 64),
-        }
-    }
-
-    /// The bounce-keys window, or zero when bounce keys is off.
-    pub fn bounce_window(self) -> Duration {
-        if self.bounce_keys {
-            Duration::from_millis(u64::from(self.bounce_keys_delay_ms))
-        } else {
-            Duration::ZERO
-        }
-    }
-
-    pub fn effective_cursor_size(self) -> u32 {
-        if self.large_cursor {
-            self.cursor_size.clamp(24, 64)
-        } else {
-            24
         }
     }
 }
@@ -449,13 +350,13 @@ impl SettingsChange {
     /// (`input`), accessibility filters and cursor size (`accessibility`),
     /// and the shortcut chords tablet buttons press (`shortcuts`).
     pub fn input_devices(&self) -> bool {
-        self.touches(&[SECTION, ACCESSIBILITY_SECTION, "shortcuts"])
+        self.touches(&[SECTION, settings_store::accessibility::SECTION, "shortcuts"])
     }
 
     /// The seat and Xwayland keymaps and the input-method owner: keyboard
     /// sources (`input`) and the on-screen keyboard (`accessibility`).
     pub fn keyboard(&self) -> bool {
-        self.touches(&[SECTION, ACCESSIBILITY_SECTION])
+        self.touches(&[SECTION, settings_store::accessibility::SECTION])
     }
 
     /// The display arrangement, scale, modes and the pending display
@@ -482,7 +383,10 @@ impl SettingsChange {
     /// The theme: `appearance`, and the contrast and text-size layers in
     /// `accessibility`. The only change that wakes every window to repaint.
     pub fn appearance(&self) -> bool {
-        self.touches(&[settings_store::day_schedule::SECTION, ACCESSIBILITY_SECTION])
+        self.touches(&[
+            settings_store::day_schedule::SECTION,
+            settings_store::accessibility::SECTION,
+        ])
     }
 
     /// Idle blank, lock and suspend timeouts.
@@ -725,17 +629,6 @@ mod tests {
 
     #[test]
     fn input_settings_defaults_persistence_and_fallbacks() {
-        // Phase `accessibility_cursor_size_is_capability_safe`.
-        {
-            let normal = AccessibilityInputSettings::default();
-            assert_eq!(normal.effective_cursor_size(), 24);
-            let large = AccessibilityInputSettings {
-                large_cursor: true,
-                cursor_size: 48,
-                ..normal
-            };
-            assert_eq!(large.effective_cursor_size(), 48);
-        }
         // Phase `tap_to_click_defaults_on_for_a_laptop`.
         // The headline default: libinput says off, but that's the wrong answer on a laptop, and an empty settings file is exactly the state a fresh install is in.
         assert!(InputSettings::default().tap_to_click);
@@ -1330,25 +1223,6 @@ mod tests {
         assert_eq!(devices[1].applied, [plan_for(&s, &mouse())]);
     }
 
-    // accessibility keyboard filters
-
-    #[test]
-    fn bounce_keys_window_defaults_to_300ms_and_is_off_until_enabled() {
-        let d = AccessibilityInputSettings::default();
-        assert_eq!(d.bounce_window(), Duration::ZERO);
-        let on = AccessibilityInputSettings::from_section(&section(json!({
-            "bounce_keys": true,
-        })));
-        assert_eq!(on.bounce_window(), Duration::from_millis(300));
-        let clamped = AccessibilityInputSettings::from_section(&section(json!({
-            "bounce_keys": true,
-            "bounce_keys_delay_ms": 60_000,
-            "mouse_keys": true,
-        })));
-        assert_eq!(clamped.bounce_window(), Duration::from_millis(1_000));
-        assert!(clamped.mouse_keys);
-        assert!(!clamped.sticky_keys);
-    }
     // settings follower
 
     fn scratch(name: &str) -> PathBuf {

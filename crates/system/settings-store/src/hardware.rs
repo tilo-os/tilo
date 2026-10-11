@@ -1257,14 +1257,6 @@ pub fn scroll_speed_to_slider(speed: f64) -> f64 {
     f64::midpoint(clamp_scroll_speed(speed).log2() / span, 1.0).clamp(0.0, 1.0)
 }
 
-/// Default bounce-keys window: a second press of the same key this soon
-/// after its release is treated as a bounce, not a keystroke.
-pub const BOUNCE_KEYS_DEFAULT_DELAY_MS: u32 = 300;
-/// Shortest bounce-keys window Settings offers.
-pub const BOUNCE_KEYS_MIN_DELAY_MS: u32 = 50;
-/// Longest bounce-keys window Settings offers.
-pub const BOUNCE_KEYS_MAX_DELAY_MS: u32 = 1_000;
-
 fn default_scroll_speed() -> f64 {
     1.0
 }
