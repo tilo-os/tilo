@@ -9,6 +9,11 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "The cryptographic identifiers and wire types of Tilo Spaces."
+
+[package.metadata.cargo-machete]
+# Used only as `#[serde(with = "serde_bytes")]`, a string machete does not read.
+ignored = ["serde_bytes"]
+
 [lib]
 name = "collab_types"
 path = "src/lib.rs"

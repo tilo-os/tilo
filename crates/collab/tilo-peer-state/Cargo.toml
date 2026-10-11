@@ -5,6 +5,10 @@ edition = "2024"
 license.workspace = true
 publish.workspace = true
 
+[package.metadata.cargo-machete]
+# Used only as `#[serde(with = "serde_bytes")]`, a string machete does not read.
+ignored = ["serde_bytes"]
+
 [dependencies]
 tilo-actions = { path = "../actions" }
 # The shell retention authority a relay binding pins.
