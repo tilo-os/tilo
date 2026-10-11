@@ -485,6 +485,11 @@ const QUIET_TRIM_AFTER_TICKS: u32 = 30;
 
 /// A park at least this long (or one only an fd ends) is the loop going quiet.
 const QUIET_PARK: Duration = Duration::from_secs(1);
+
+/// How long the desktop rests after a frame that changed it before the
+/// layers its strip pans are composited from are drawn again
+/// (`FrameBuilder::layers_at_rest`): a pause in typing, not every key.
+const LAYER_WARM_SETTLE: Duration = Duration::from_secs(1);
 const WAYLAND_CLIENT_SERVICE_FALLBACK: Duration = Duration::from_millis(4);
 const WAYLAND_REQUESTS_PER_CLIENT_PER_TICK: usize = 64;
 const WAYLAND_PENDING_RETRY_FLOOR: Duration = Duration::from_millis(1);
@@ -8588,6 +8593,9 @@ pub fn run() {
     let mut spatial_pointer_parked = false;
     // Loop iterations since the last quiet trim was asked for.
     let mut ticks_since_trim: u32 = 0;
+    // When the presenter's strip layers are drawn again, once the desktop
+    // rests after a frame that changed it ([`LAYER_WARM_SETTLE`]).
+    let mut layer_warm_at: Option<Instant> = None;
     // The session's CRDT fan-out broker, bound before the wayland socket is
     // published (before any app launches) — an app resolves its collab
     // descriptor once at spawn, so a broker arriving later is one it never gets.
@@ -12744,6 +12752,12 @@ pub fn run() {
                 output_presentation_repaint_pending = false;
             }
             let submit_done = Instant::now();
+            // Once the desktop rests after a frame that changed it, the
+            // layers the presenter composites strip pans from catch up.
+            layer_warm_at = frame_builder
+                .layers_stale()
+                .then(|| submit_done.checked_add(LAYER_WARM_SETTLE))
+                .flatten();
             // Capture lateness against the deadline that admitted this frame.
             // `note_presented` advances the clock immediately below, so doing
             // this afterwards would compare against the *next* interval and
@@ -13116,6 +13130,21 @@ pub fn run() {
         // left to wake the loop; its frame is due on the next cadence.
         let cadence_needed =
             cadence_needed || cadence_wait_needed(pipe_ready, injected_redraw_pending);
+        // The desktop rested since a frame changed it: draw it as layers for
+        // the presenter to warm while nothing else is drawn, so the next
+        // strip pan starts by copying. Never under a frame on its way, and
+        // only once per change.
+        if layer_warm_at.is_some_and(|at| park_now >= at) {
+            layer_warm_at = None;
+            if !cadence_needed
+                && !session.is_locked()
+                && let Some(pipe) = present_pipe.as_ref()
+                && pipe.inflight() == 0
+                && let Some(layers) = frame_builder.layers_at_rest()
+            {
+                let _ = pipe.warm(FramePaint::layers_at_rest(layers));
+            }
+        }
         let (park, park_deadline) = native_loop_park_named(
             park_now,
             backend_event_wake,
@@ -13164,6 +13193,7 @@ pub fn run() {
                 ),
                 ("touch-hold", test_control_ctx.touch_pointer.deadline()),
                 ("legacy-stream", state.legacy_stream_deadline()),
+                ("layer-warm", layer_warm_at),
                 (
                     "client-followup",
                     client_followup_deadline(client_pump_needed, park_now),

@@ -2100,6 +2100,459 @@ fn a_pan_over_two_strips_at_200_percent_composited_from_layers_matches_a_full_re
     });
 }
 
+/// [`present`], except that a frame proven unchanged is kept rather than
+/// rendered, as the DRM presenter keeps it.
+#[cfg(target_os = "linux")]
+fn present_or_keep(
+    target: &mut crate::shell::render::paint::RetainedGpuTarget,
+    painted: &FramePaint,
+    label: &str,
+) -> Option<u64> {
+    let unchanged = SceneDamage {
+        revision: painted.revision,
+        previous_revision: painted.previous_revision,
+        regions: painted.damage_regions.as_deref(),
+    };
+    if painted.cache.is_none() && target.keep_unchanged(unchanged) {
+        return None;
+    }
+    present(target, painted, label)
+}
+
+/// Warm `target`'s layers from the desktop `frame` draws at rest, as the
+/// session does once the desktop rests: the pixels it rasterised.
+#[cfg(target_os = "linux")]
+fn warm_at_rest(
+    frame: &mut FrameBuilder,
+    target: &mut crate::shell::render::paint::RetainedGpuTarget,
+    keep_going: &dyn Fn() -> bool,
+    label: &str,
+) -> (u64, FrameCache) {
+    let layers = frame
+        .layers_at_rest()
+        .unwrap_or_else(|| panic!("{label}: the desktop at rest is drawn as layers"));
+    let pixels = target
+        .warm_layers(
+            &layers,
+            Instant::now() + tilo_test_env::hang_bound(),
+            keep_going,
+        )
+        .unwrap_or_else(|error| panic!("{label}: warm: {error}"))
+        .unwrap_or_else(|| panic!("{label}: the target presents these layers"));
+    (pixels, layers)
+}
+
+/// Pan the strip a step and back, as a desktop has once it panned. Before
+/// its first pan this fixture draws something of each strip at another
+/// place in the pan's first frame than at rest (one transform of each
+/// strip's encoding moves, the still strip's too), whatever the layers
+/// hold; once a pan ended, a pan's first frame draws the strips as the
+/// rest before it.
+#[cfg(target_os = "linux")]
+fn settle_by_panning_once(frame: &mut FrameBuilder) {
+    frame.host_mut().update_active_strip_pan(0.0, true);
+    for travel in [23.7, 0.0] {
+        frame.host_mut().update_active_strip_pan(travel, false);
+        frame.relayout();
+        let _ = frame.paint_with_damage();
+    }
+    frame.host_mut().end_active_strip_pan(Instant::now());
+}
+
+/// Let the desktop rest as long as the session waits before it warms the
+/// layers (a second), then draw until it is at rest: two frames in a row
+/// that change nothing, with nothing animating. A window off screen asks
+/// for no frames while it animates (its spawn animation runs on the clock),
+/// so frames drawn back to back after the fixture starts can find it still
+/// moving: a draw of the strips in canvas coordinates, which draws it,
+/// would then differ from the next.
+#[cfg(target_os = "linux")]
+fn rest_as_the_session_does(frame: &mut FrameBuilder) {
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let mut quiet = 0;
+    for _ in 0..400 {
+        frame.relayout();
+        let painted = frame.paint_with_damage();
+        let unchanged = painted.damage_regions.as_ref().is_some_and(Vec::is_empty);
+        quiet = if unchanged && !frame.needs_animation_frame() {
+            quiet + 1
+        } else {
+            0
+        };
+        if quiet >= 2 {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("the desktop did not come to rest");
+}
+
+/// The first frame of a pan from a rest whose layers were warmed (as
+/// `warmed`) rasterises neither the backdrop nor the chrome, and the strips
+/// only where their drawing changed since the warm: when it did not, only
+/// what the pan uncovered.
+#[cfg(target_os = "linux")]
+fn assert_first_frame_from_warmed_rest(
+    layered: &crate::shell::render::paint::RetainedGpuTarget,
+    (warmed, painted): (&FrameCache, &FramePaint),
+    output: u64,
+    label: &str,
+) {
+    let cache = painted
+        .cache
+        .as_ref()
+        .unwrap_or_else(|| panic!("{label}: a pan comes as layers"));
+    let work = layered
+        .last_layer_work_for_test()
+        .unwrap_or_else(|| panic!("{label}: a layered frame records its work"));
+    let raster = work.raster_pixels(layered.size());
+    let apart = layers_apart(warmed, cache);
+    assert!(
+        !work.backdrop
+            && !work.chrome
+            && work.workspace != crate::shell::render::strip_layers::WorkspaceWork::Whole,
+        "{label}: the first frame from a warmed rest rasterises neither the backdrop nor the \
+         chrome nor the strips' layer whole ({work:?}); the layers warmed and the pan's differ \
+         in\n{apart}"
+    );
+    assert!(
+        strips_drawn_alike(cache, warmed) && raster < output / 4,
+        "{label}: the strips are drawn as they were warmed, so the first frame rasterises only \
+         what the pan uncovered ({raster} px of {output}); the layers warmed and the pan's \
+         differ in\n{apart}"
+    );
+}
+
+/// Where two drawings of the desktop as layers differ, for a failure
+/// message: each layer, and per strip where its blit is and the first
+/// place each encoded stream differs.
+#[cfg(target_os = "linux")]
+fn layers_apart(old: &FrameCache, new: &FrameCache) -> String {
+    use std::fmt::Write as _;
+    fn first_apart<T: PartialEq>(a: &[T], b: &[T]) -> Option<usize> {
+        a.iter()
+            .zip(b)
+            .position(|(a, b)| a != b)
+            .or_else(|| (a.len() != b.len()).then(|| a.len().min(b.len())))
+    }
+    fn streams(a: &Scene, b: &Scene) -> String {
+        let (a, b) = (a.encoding(), b.encoding());
+        format!(
+            "path_tags {:?}/{}/{} path_data {:?} draw_tags {:?} draw_data {:?} transforms {:?} \
+             ({:?} vs {:?}) styles {}/{} n_paths {}/{} patches {}/{}",
+            first_apart(&a.path_tags, &b.path_tags),
+            a.path_tags.len(),
+            b.path_tags.len(),
+            first_apart(&a.path_data, &b.path_data),
+            first_apart(&a.draw_tags, &b.draw_tags),
+            first_apart(&a.draw_data, &b.draw_data),
+            first_apart(&a.transforms, &b.transforms),
+            first_apart(&a.transforms, &b.transforms).and_then(|at| a.transforms.get(at)),
+            first_apart(&a.transforms, &b.transforms).and_then(|at| b.transforms.get(at)),
+            a.styles.len(),
+            b.styles.len(),
+            a.n_paths,
+            b.n_paths,
+            a.resources.patches.len(),
+            b.resources.patches.len(),
+        )
+    }
+    let mut text = format!(
+        "width {}/{} backdrop same {} chrome same {} workspace same {} wheel {:?}/{:?}\n",
+        old.width,
+        new.width,
+        old.layers.backdrop.encoding_eq(&new.layers.backdrop),
+        old.layers.chrome.encoding_eq(&new.layers.chrome),
+        old.layers.workspace.encoding_eq(&new.layers.workspace),
+        old.layers
+            .wheel
+            .as_ref()
+            .map(|wheel| (wheel.x, wheel.y, wheel.width, wheel.height)),
+        new.layers
+            .wheel
+            .as_ref()
+            .map(|wheel| (wheel.x, wheel.y, wheel.width, wheel.height)),
+    );
+    for (index, (a, b)) in old.layers.strips.iter().zip(&new.layers.strips).enumerate() {
+        let _ = writeln!(
+            text,
+            "strip {index}: {:?} -> {:?} same {}: {}",
+            old.strips.get(index),
+            new.strips.get(index),
+            a.encoding_eq(b),
+            streams(a, b)
+        );
+    }
+    text
+}
+
+/// A strip pan from a desktop at rest whose layers the presenter warmed
+/// while it rested composites its first frame from them: that frame
+/// rasterises only what the pan uncovered, not every layer, and each frame
+/// shows what a full render of it shows, and what the desktop drawn without
+/// layers shows, in every theme. Warming draws no frame: the damage between
+/// the frames around it stays sparse, and layers already warm are left
+/// alone. A warm that stops for a frame keeps what it finished and the pan
+/// is still right.
+#[cfg(target_os = "linux")]
+fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
+    let size = desktop.panel;
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    let _ambient = DenyAmbientStarts::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let output = u64::from(size.0) * u64::from(size.1);
+    for (theme_name, theme) in [
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("high contrast", Theme::high_contrast()),
+    ] {
+        for stopped in [false, true] {
+            let name = format!(
+                "{}, {theme_name}{}",
+                desktop.name,
+                if stopped { ", warm stopped" } else { "" }
+            );
+            let mut frame = pan_fixture(desktop, theme.clone());
+            frame.set_strip_pan_presenter(false, true);
+            let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
+            settle_by_panning_once(&mut frame);
+            rest_as_the_session_does(&mut frame);
+            let mut layered = gpu_target(size);
+            let mut dense = gpu_target(size);
+            for _ in 0..4 {
+                frame.relayout();
+                let painted = frame.paint_with_damage();
+                assert!(
+                    painted.cache.is_none(),
+                    "{name}: a desktop at rest is drawn in screen space"
+                );
+                let _ = present_or_keep(&mut layered, &painted, &name);
+            }
+            let budget = std::cell::Cell::new(if stopped { 1_u32 } else { u32::MAX });
+            let keep_going = || {
+                let left = budget.get();
+                budget.set(left.saturating_sub(1));
+                left > 0
+            };
+            let (warmed, warm_layers) = warm_at_rest(&mut frame, &mut layered, &keep_going, &name);
+            assert!(!frame.layers_stale(), "{name}: the layers caught up");
+            if stopped {
+                assert!(
+                    warmed < 3 * output,
+                    "{name}: a warm stopped for a frame leaves the rest ({warmed} px)"
+                );
+            } else {
+                assert!(
+                    warmed >= 3 * output,
+                    "{name}: a first warm rasterises every layer ({warmed} px)"
+                );
+                assert_eq!(
+                    warm_at_rest(&mut frame, &mut layered, &|| true, &name).0,
+                    0,
+                    "{name}: layers already warm are left alone"
+                );
+            }
+            frame.relayout();
+            let rest = frame.paint_with_damage();
+            assert!(
+                rest.damage_regions.as_ref().is_some_and(Vec::is_empty),
+                "{name}: drawing the layers made no frame: the next frame at rest is unchanged"
+            );
+            let _ = present_or_keep(&mut layered, &rest, &name);
+            frame.host_mut().update_active_strip_pan(0.0, true);
+            let mut travel = 0.0;
+            for step in 0..6 {
+                travel += 23.7;
+                frame.host_mut().update_active_strip_pan(travel, false);
+                frame.relayout();
+                let painted = frame.paint_with_damage();
+                let label = format!("{name}, pan step {step}");
+                let raster = present(&mut layered, &painted, &label)
+                    .unwrap_or_else(|| panic!("{label}: a pan comes as layers"));
+                eprintln!(
+                    "strip layers {label}: raster {raster} px, composited {:?}",
+                    layered.last_layer_raster_pixels()
+                );
+                if step == 0 && !stopped {
+                    assert_first_frame_from_warmed_rest(
+                        &layered,
+                        (&warm_layers, &painted),
+                        output,
+                        &label,
+                    );
+                }
+                assert_shows_a_full_render(&layered, &mut dense, &painted, &label);
+                if step == 0 {
+                    let shown = layered.read_rgba_for_test();
+                    assert_nothing_lost(&mut frame, &mut dense, (&shown, &painted), size, &label);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pan_from_a_warmed_rest_copies_its_first_frame_in_every_theme() {
+    assert_pan_from_warmed_rest(PanDesktop {
+        name: "100 %",
+        panel: (1280, 720),
+        scale: 1.0,
+        strips: 1,
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pan_from_a_warmed_rest_at_150_percent_copies_its_first_frame() {
+    assert_pan_from_warmed_rest(PanDesktop {
+        name: "150 %",
+        panel: (1920, 1080),
+        scale: 1.5,
+        strips: 1,
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pan_from_a_warmed_rest_at_200_percent_copies_its_first_frame() {
+    assert_pan_from_warmed_rest(PanDesktop {
+        name: "200 %",
+        panel: (1920, 1080),
+        scale: 2.0,
+        strips: 1,
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pan_over_two_strips_from_a_warmed_rest_copies_its_first_frame() {
+    assert_pan_from_warmed_rest(PanDesktop {
+        name: "two strips",
+        panel: (1280, 720),
+        scale: 1.0,
+        strips: 2,
+    });
+}
+
+/// When a pan ends, no frame at rest is rendered whole: the first one drawn
+/// in screen space again also comes as layers and is composited from those
+/// the presenter holds (nothing changed, so nothing is rasterised), the
+/// frames after it are sparse, and the presenter's layers stay what the
+/// screen shows. A second pan from that rest composites only what moves. In
+/// every theme, every frame shows what a full render of it shows.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_desktop_comes_to_rest_after_a_pan_without_a_dense_frame() {
+    const SIZE: (u32, u32) = (1280, 720);
+    let desktop = PanDesktop {
+        name: "100 %",
+        panel: SIZE,
+        scale: 1.0,
+        strips: 1,
+    };
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    let _ambient = DenyAmbientStarts::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let output = u64::from(SIZE.0) * u64::from(SIZE.1);
+    for (theme_name, theme) in [
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("high contrast", Theme::high_contrast()),
+    ] {
+        let mut frame = pan_fixture(desktop, theme);
+        frame.set_strip_pan_presenter(false, true);
+        let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
+        let mut layered = gpu_target(SIZE);
+        let mut dense = gpu_target(SIZE);
+        frame.relayout();
+        let rest = frame.paint_with_damage();
+        let _ = present_or_keep(&mut layered, &rest, theme_name);
+        frame.host_mut().update_active_strip_pan(0.0, true);
+        let mut travel = 0.0;
+        for step in 0..6 {
+            travel += 23.7;
+            frame.host_mut().update_active_strip_pan(travel, false);
+            frame.relayout();
+            let painted = frame.paint_with_damage();
+            let label = format!("{theme_name}, pan step {step}");
+            let _ = present(&mut layered, &painted, &label);
+            assert_shows_a_full_render(&layered, &mut dense, &painted, &label);
+        }
+        frame.host_mut().end_active_strip_pan(Instant::now());
+        // What the last frame that came as layers rasterised.
+        let mut last_layered = None;
+        for step in 0..10 {
+            frame.relayout();
+            let painted = frame.paint_with_damage();
+            let label = format!("{theme_name}, at rest {step}");
+            assert!(
+                painted.cache.is_some() || painted.damage_regions.is_some(),
+                "{label}: a frame at rest after a pan is not rendered whole"
+            );
+            if painted.cache.is_some() {
+                last_layered = present(&mut layered, &painted, &label);
+            } else {
+                let _ = present_or_keep(&mut layered, &painted, &label);
+            }
+            assert_shows_a_full_render(&layered, &mut dense, &painted, &label);
+        }
+        assert_eq!(
+            last_layered,
+            Some(0),
+            "{theme_name}: the first frame drawn in screen space after the pan is composited \
+             from layers that already show it"
+        );
+        frame.relayout();
+        assert!(
+            frame.paint_with_damage().cache.is_none(),
+            "{theme_name}: a strip at rest is drawn in screen space"
+        );
+        if frame.layers_stale() {
+            // The desktop changed at rest: the session warms the layers.
+            let _ = warm_at_rest(&mut frame, &mut layered, &|| true, theme_name);
+        }
+        frame.host_mut().update_active_strip_pan(0.0, true);
+        frame.host_mut().update_active_strip_pan(23.7, false);
+        frame.relayout();
+        let painted = frame.paint_with_damage();
+        let label = format!("{theme_name}, second pan");
+        let raster = present(&mut layered, &painted, &label)
+            .unwrap_or_else(|| panic!("{label}: a pan comes as layers"));
+        eprintln!(
+            "strip layers {label}: raster {raster} px, composited {:?}",
+            layered.last_layer_raster_pixels()
+        );
+        assert!(
+            raster < output / 4,
+            "{label}: a second pan from rest rasterises what it uncovered ({raster} px)"
+        );
+        assert_shows_a_full_render(&layered, &mut dense, &painted, &label);
+    }
+}
+
+/// `target` shows what a full render of `painted` shows, within vello's
+/// offset variance ([`OFFSET_PIXELS`], [`OFFSET_STEPS`]).
+#[cfg(target_os = "linux")]
+fn assert_shows_a_full_render(
+    target: &crate::shell::render::paint::RetainedGpuTarget,
+    dense: &mut crate::shell::render::paint::RetainedGpuTarget,
+    painted: &FramePaint,
+    label: &str,
+) {
+    let shown = target.read_rgba_for_test();
+    let full = render_whole(dense, &painted.scene, painted.revision, label);
+    let apart = pixels_apart(&shown, &full, target.size().0);
+    let max = apart.iter().map(|&(_, _, step)| step).max().unwrap_or(0);
+    assert!(
+        apart.len() <= OFFSET_PIXELS && max <= OFFSET_STEPS,
+        "{label}: {} pixels differ from a full render by more than one step (max {max}, first \
+         {:?})",
+        apart.len(),
+        &apart[..apart.len().min(16)]
+    );
+}
+
 /// Once the pan ends and its linger passes, the producer draws the strip in
 /// screen space again, with screen-space damage.
 #[cfg(target_os = "linux")]
