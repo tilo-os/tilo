@@ -246,7 +246,7 @@ fn present_and_compare(
                 let _ = retained.render(scene, background);
                 repainted.total += app_area();
                 repainted.largest = app_area();
-                repainted.largest_within = within.map_or(app_area(), |region| region.area());
+                repainted.largest_within = within.map_or_else(app_area, |region| region.area());
                 repainted.whole = true;
                 continue;
             }
