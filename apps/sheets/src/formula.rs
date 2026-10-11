@@ -27,6 +27,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::hash::BuildHasher;
+use ui::num::f64_of_usize;
 
 use crate::model::{Addr, CellFormat, CellValue, FormulaError, GridEdit, a1_to_addr, addr_to_a1};
 
@@ -125,13 +126,6 @@ fn number_to_int(n: f64) -> i64 {
 /// NaN and oversized arguments collapse to the nearest valid position.
 fn number_to_index(n: f64, len: usize) -> usize {
     usize::try_from(number_to_int(n)).unwrap_or(0).min(len)
-}
-
-/// A count or length as a spreadsheet number. Counts come from materialised
-/// ranges, so `u32` is far above any reachable value and the conversion stays
-/// exact.
-fn count_number(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 /// An integer as a spreadsheet number. Values outside `i32` clamp, which keeps
@@ -1026,7 +1020,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             },
             "AVERAGE" => match self.numeric_args(args) {
                 Ok(ns) if !ns.is_empty() => {
-                    CellValue::Number(ns.iter().sum::<f64>() / count_number(ns.len()))
+                    CellValue::Number(ns.iter().sum::<f64>() / f64_of_usize(ns.len()))
                 }
                 Ok(_) => CellValue::Error(FormulaError::Div0),
                 Err(e) => e,
@@ -1049,21 +1043,21 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 Err(e) => e,
             },
             // Count of numeric cells.
-            "COUNT" => CellValue::Number(count_number(
+            "COUNT" => CellValue::Number(f64_of_usize(
                 self.count_matching(args, |v| matches!(v, CellValue::Number(_))),
             )),
             // Count of non-empty cells.
             "COUNTA" => {
-                CellValue::Number(count_number(self.count_matching(args, |v| !v.is_empty())))
+                CellValue::Number(f64_of_usize(self.count_matching(args, |v| !v.is_empty())))
             }
             "COUNTBLANK" => {
-                CellValue::Number(count_number(self.count_matching(args, CellValue::is_empty)))
+                CellValue::Number(f64_of_usize(self.count_matching(args, CellValue::is_empty)))
             }
             "SUMIF" => self.sumif(args),
             "COUNTIF" => self.countif(args),
             "AVERAGEIF" => self.averageif(args),
             "COUNTIFS" => match self.criteria_mask(args) {
-                Ok(mask) => CellValue::Number(count_number(mask.iter().filter(|b| **b).count())),
+                Ok(mask) => CellValue::Number(f64_of_usize(mask.iter().filter(|b| **b).count())),
                 Err(e) => e,
             },
             "SUMIFS" => {
@@ -1102,7 +1096,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                         if cnt == 0 {
                             CellValue::Error(FormulaError::Div0)
                         } else {
-                            CellValue::Number(sum / count_number(cnt))
+                            CellValue::Number(sum / f64_of_usize(cnt))
                         }
                     }
                     Err(e) => e,
@@ -1283,7 +1277,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 let text = self
                     .eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
                     .to_plain_string();
-                CellValue::Number(count_number(text.chars().count()))
+                CellValue::Number(f64_of_usize(text.chars().count()))
             }
             "UPPER" => self.unary_text(args, str::to_uppercase),
             "LOWER" => self.unary_text(args, str::to_lowercase),
@@ -1655,7 +1649,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         let probe = self.collect_values(range_expr);
         let crit = self.eval_expr(crit_expr);
         let n = probe.iter().filter(|v| criterion_matches(v, &crit)).count();
-        CellValue::Number(count_number(n))
+        CellValue::Number(f64_of_usize(n))
     }
 
     /// AVERAGEIF(range, criterion, [`average_range`]).
@@ -1682,7 +1676,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         if cnt == 0 {
             CellValue::Error(FormulaError::Div0)
         } else {
-            CellValue::Number(sum / count_number(cnt))
+            CellValue::Number(sum / f64_of_usize(cnt))
         }
     }
 
@@ -1823,7 +1817,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         match tail.find(&pattern) {
             Some(byte_pos) => {
                 let char_off = tail.get(..byte_pos).map_or(0, |p| p.chars().count());
-                CellValue::Number(count_number(
+                CellValue::Number(f64_of_usize(
                     start.saturating_add(char_off).saturating_add(1),
                 ))
             }
@@ -1984,7 +1978,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             match match_type {
                 0 => {
                     if values_equal(&v, &key) {
-                        return CellValue::Number(count_number(i.saturating_add(1)));
+                        return CellValue::Number(f64_of_usize(i.saturating_add(1)));
                     }
                 }
                 t if t > 0 => {
@@ -2004,7 +1998,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             }
         }
         match best {
-            Some(i) => CellValue::Number(count_number(i.saturating_add(1))),
+            Some(i) => CellValue::Number(f64_of_usize(i.saturating_add(1))),
             None => CellValue::Error(FormulaError::Na),
         }
     }

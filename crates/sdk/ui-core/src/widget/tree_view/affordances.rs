@@ -6,7 +6,6 @@
 
 use super::{
     Affine, Icon, NodeId, Point, Rect, Scene, TextRenderer, Theme, TreeModel, TreeRowKey, TreeView,
-    idx_to_f64,
 };
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::num::f32_of_f64;
@@ -312,7 +311,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             return nav;
         }
         let (_, depth) = self.index.row_at(&self.model, index)?;
-        let x0 = row.x0 + self.row_inset + idx_to_f64(depth) * self.indent_px;
+        let x0 = row.x0 + self.row_inset + crate::num::f64_of_usize(depth) * self.indent_px;
         Some(Rect::new(x0, row.y0, x0 + self.disclosure_w, row.y1))
     }
 
@@ -342,7 +341,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let top = row.y0 + (row.height() - side) / 2.0;
         (0..count)
             .map(|i| {
-                let from_end = idx_to_f64(count - 1 - i);
+                let from_end = crate::num::f64_of_usize(count - 1 - i);
                 let x1 = right - from_end * (side + gap);
                 Rect::new(x1 - side, top, x1, top + side)
             })
@@ -491,7 +490,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         for level in 0..depth {
             let x = row.x0
                 + self.row_inset
-                + idx_to_f64(level) * self.indent_px
+                + crate::num::f64_of_usize(level) * self.indent_px
                 + self.disclosure_w / 2.0;
             scene.fill(
                 vello::peniko::Fill::NonZero,

@@ -13,6 +13,7 @@
 //! degenerate case — every change is a tick, nothing snaps — not a separate
 //! mode.
 
+use crate::num::f64_of_usize;
 use crate::time::SystemTime;
 use std::collections::HashMap;
 
@@ -81,15 +82,6 @@ fn wash(surface: Color, alpha: u8) -> Color {
     crate::tokens::colors::Colors::hairline_on(surface, alpha)
 }
 
-/// A tick index or entry count, widened for pixel-space layout math.
-/// Lossless in practice — a history never approaches `u32::MAX` entries —
-/// but `usize -> f64` cannot express that to the compiler, so this goes
-/// through `u32` (exactly representable in `f64`) with a saturating
-/// fallback rather than an `as` cast.
-fn px(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
 /// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
 /// pure `f64` matrix multiply-add with no overflow trap, so it cannot panic
 /// regardless of operand magnitude, but going through `pre_translate`
@@ -108,7 +100,7 @@ fn translated(transform: Affine, offset: (f64, f64)) -> Affine {
     reason = "ratio is clamped to [0,1] and max is a bounded entry count, so the rounded product always fits usize"
 )]
 fn tick_from_ratio(ratio: f64, max: usize) -> usize {
-    (ratio.clamp(0.0, 1.0) * px(max)).round() as usize
+    (ratio.clamp(0.0, 1.0) * f64_of_usize(max)).round() as usize
 }
 
 /// `FnMut` so the host can mutate captured state (e.g. flip a
@@ -426,7 +418,7 @@ impl HistoryScrubber {
         if n <= 1 {
             return track.x1;
         }
-        let t = px(i) / px(n.saturating_sub(1));
+        let t = f64_of_usize(i) / f64_of_usize(n.saturating_sub(1));
         track.x0 + t * track.width()
     }
 
@@ -764,7 +756,7 @@ impl HistoryScrubber {
         let spacing = if n <= 1 {
             track.width()
         } else {
-            track.width() / px(n.saturating_sub(1))
+            track.width() / f64_of_usize(n.saturating_sub(1))
         };
         if spacing < MIN_TICK_SPACING {
             return;

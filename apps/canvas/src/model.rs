@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 use ui::num::f32_of_f64;
+use ui::num::f64_of_usize;
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, JsonSchema};
@@ -1256,10 +1257,6 @@ pub fn path_data(path: &BezPath) -> String {
     parts.join(" ")
 }
 
-fn count(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
 impl Shape {
     /// The box a text's lines take, estimated from its characters: what
     /// selection, hit-testing and `inspect` use without shaping it.
@@ -1293,7 +1290,7 @@ impl Shape {
             } + tracking.unwrap_or(0.0) / 1000.0);
         let lines: Vec<f64> = text
             .split('\n')
-            .map(|line| advance * count(line.chars().count()))
+            .map(|line| advance * f64_of_usize(line.chars().count()))
             .collect();
         let natural = lines.iter().copied().fold(0.0, f64::max);
         let (rows, wide) = match width {
@@ -1304,7 +1301,7 @@ impl Shape {
                     .sum::<f64>(),
                 *width,
             ),
-            None => (count(lines.len()), natural),
+            None => (f64_of_usize(lines.len()), natural),
         };
         let left = match (width, align.as_deref()) {
             (None, Some("center")) => x - wide / 2.0,

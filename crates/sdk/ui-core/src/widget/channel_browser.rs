@@ -9,6 +9,7 @@
 //! narrows the list.
 
 use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
 use crate::search::ListIndex;
 use crate::time::SystemTime;
 use std::collections::HashMap;
@@ -999,13 +1000,6 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
-/// Widens a row/entry count to `f64` for layout math. Goes through `u32`
-/// (exactly representable in `f64`) with a saturating fallback rather than
-/// an `as` cast, so it's lossless for any realistic list length.
-fn rows_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
 impl Widget for ChannelBrowser {
     fn build_layout(
         &mut self,
@@ -1016,7 +1010,7 @@ impl Widget for ChannelBrowser {
         // The host typically positions the sheet inside an overlay
         // container that hands it a final rect via apply_layout; this
         // returns a sensible standalone default.
-        let rows = rows_to_f64(self.visible.len().max(1));
+        let rows = f64_of_usize(self.visible.len().max(1));
         let height = PADDING * 4.0
             + INPUT_HEIGHT
             + FILTER_STRIP_HEIGHT
