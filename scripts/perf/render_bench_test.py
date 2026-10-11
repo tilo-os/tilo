@@ -43,7 +43,7 @@ class FakeHarness:
         if label == "strip-pan":
             out = Path(argv[argv.index("--out") + 1])
             out.mkdir(parents=True, exist_ok=True)
-            for _, _, stem in render_bench.PAN_RECORDS:
+            for _, _, stem, _ in render_bench.PAN_RECORDS:
                 (out / f"{stem}.txt").write_text("3000\n5000\n4000\n")
             return 0, 'adapter: name="llvmpipe (LLVM 19.1.7, 256 bits)" backend=Vulkan driver="Mesa"\n'
         raise AssertionError(label)
@@ -77,7 +77,7 @@ class Timing(unittest.TestCase):
         status, records = self.timing(FakeHarness(), strip_pan_bench="strip_pan_bench")
         self.assertEqual(status, 0)
         pan = {item.kpi: item for item in records[2:]}
-        self.assertEqual(sorted(pan), sorted(kpi for kpi, _, _ in render_bench.PAN_RECORDS))
+        self.assertEqual(sorted(pan), sorted(kpi for kpi, _, _, _ in render_bench.PAN_RECORDS))
         self.assertEqual((pan["render.shell.pan_pixels.4k"].unit, pan["render.shell.pan_pixels.4k"].n),
                          ("pixels", 3))
         self.assertEqual(pan["render.shell.pan_us.4k"].p50, 4000)
@@ -143,7 +143,13 @@ class HarnessContract(unittest.TestCase):
         self.assertIn(f"const SAMPLE_COUNT: usize = {render_bench.REDRAW_SAMPLE_COUNT:_}", shell)
         pan = (REPO / "crates/session/shell/examples/strip_pan_bench.rs").read_text()
         self.assertIn('"adapter: name=', pan)
-        for stem in ('"pan.{size_name}.w{windows}.{mode}"', '"strip-move.{size_name}.w{windows}.{mode}"',
+        # Labels are `pan.<size>[.s<percent>][.strips<n>].w<windows>.<mode>`,
+        # joined from these parts; the default cases include every scale and
+        # strip count PAN_CASES reads.
+        for stem in ('case.label("pan", mode)', 'case.label("strip-move", mode)',
+                     'format!("s{}", (self.scale * 100.0).round())', 'format!("strips{}", self.strips)',
+                     'format!("w{}", self.windows)', 'parts.join(".")',
+                     '[(1.5, 1), (2.0, 1), (1.0, 2), (2.0, 2)]',
                      '("frame-us", ', '("pixels", ', '("4k", (3840, 2160))', '"layered"'):
             self.assertIn(stem, pan)
 
