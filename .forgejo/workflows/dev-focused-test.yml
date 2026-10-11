@@ -87,6 +87,14 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          fetch-depth: 1
+          fetch-tags: false
+          filter: blob:none
+          sparse-checkout: |
+            tools/ci/focused_test.py
+            tools/ci/resolve_builder.py
+            tools/ci/images.toml
+          sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Validate focused request before native admission
         id: validate
