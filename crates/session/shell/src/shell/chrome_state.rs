@@ -1589,6 +1589,9 @@ impl ChromeState {
             _ if [
                 tilo_desktop::activity::morning::MORNING_OPEN,
                 tilo_desktop::activity::morning::MORNING_REMOVE,
+                tilo_desktop::activity::morning::MORNING_REFRESH,
+                tilo_desktop::activity::morning::MORNING_DRAFT,
+                tilo_desktop::activity::morning::MORNING_NEXT,
             ]
             .iter()
             .any(|prefix| tilo_desktop::activity::morning::decode_action(id, prefix).is_some()) => {
