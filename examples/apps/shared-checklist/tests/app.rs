@@ -6,6 +6,19 @@ use ui::a11y::Action;
 use ui::headless::SemanticExpectation;
 use ui::prelude::{Id, Replica, TestApp};
 
+#[test]
+fn the_empty_first_frame_publishes_the_translated_resource_label() {
+    let mut app = TestApp::<App>::new().expect("open the actual example");
+    assert!(app.state().items.is_empty());
+    let rename = app
+        .actions()
+        .expect("observe the production action catalogue")
+        .into_iter()
+        .find(|action| action.address.action == "rename")
+        .expect("the checklist publishes rename");
+    assert_eq!(rename.resource_label, "Untitled checklist");
+}
+
 #[expect(clippy::expect_used, reason = "a test helper fails the test loudly")]
 fn add(list: &mut Replica<Checklist>, title: &str) -> Id {
     list.apply(Checklist::SET_DRAFT.with(title.into()))
