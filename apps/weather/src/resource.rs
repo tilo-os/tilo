@@ -165,10 +165,14 @@ impl ResourceApp for WeatherShell {
     type Resource = Weather;
     const ID: &'static str = "so.tilo.weather";
     const TITLE: &'static str = "Weather";
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     const ICON: Option<&'static str> = Some("weather");
 
     fn view(cx: &mut ViewCx<Weather>) -> Element {
-        crate::locales::install();
         cx.surface(WeatherApp::new())
     }
 

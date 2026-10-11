@@ -277,6 +277,11 @@ impl ResourceApp for PrintCentreShell {
     type Resource = PrintDefaults;
     const ID: &'static str = "so.tilo.print-centre";
     const TITLE: &'static str = "Print Centre";
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     const ICON: Option<&'static str> = Some("print-centre");
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
@@ -288,7 +293,6 @@ impl ResourceApp for PrintCentreShell {
     }
 
     fn view(cx: &mut ViewCx<PrintDefaults>) -> Element {
-        crate::locales::install();
         cx.surface(PrintCentre::new())
     }
 

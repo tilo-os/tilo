@@ -103,6 +103,11 @@ impl ResourceApp for SpeedTestShell {
     type Resource = SpeedTest;
     const ID: &'static str = "so.tilo.speed-test";
     const TITLE: &'static str = "Speed Test";
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     const ICON: Option<&'static str> = Some("speed-test");
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
@@ -117,7 +122,6 @@ impl ResourceApp for SpeedTestShell {
     const DOCUMENT_HISTORY: bool = false;
 
     fn view(cx: &mut ViewCx<SpeedTest>) -> Element {
-        crate::locales::install();
         cx.surface(SpeedTestApp::new())
     }
 
