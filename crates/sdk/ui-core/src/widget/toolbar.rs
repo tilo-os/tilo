@@ -1909,14 +1909,8 @@ impl Widget for Toolbar {
                 element.handle_event(
                     event,
                     &mut crate::widget::EventCtx {
-                        scale_factor: ctx.scale_factor,
-                        modifiers: ctx.modifiers,
-                        state: ctx.state.reborrow(),
-                        path: ctx.path,
-                        handled: &mut *ctx.handled,
-                        focus_target: &mut *ctx.focus_target,
-                        node_id: content.node,
                         taffy: &content.taffy,
+                        ..ctx.reborrow(ctx.path, content.node)
                     },
                 );
                 if *ctx.handled {
