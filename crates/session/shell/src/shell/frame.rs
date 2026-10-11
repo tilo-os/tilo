@@ -1701,6 +1701,15 @@ impl FrameBuilder {
                 update_ms = update_done.duration_since(sync_done).as_secs_f64() * 1_000.0,
                 "widget app pump stalled compositor input"
             );
+            // The session log carries stderr lines; the tracing target above
+            // is filtered out of it by default.
+            eprintln!(
+                "SLOW-APP-PUMP total={total:?} (records={:?} rooms={:?} sync={:?} update={:?})",
+                records_done.duration_since(started),
+                rooms_done.duration_since(records_done),
+                sync_done.duration_since(rooms_done),
+                update_done.duration_since(sync_done),
+            );
         }
         changed || settled
     }
@@ -2024,6 +2033,9 @@ impl FrameBuilder {
         self.refresh_configured_theme();
         self.refresh_workspace_temperature();
         self.refresh_magnifier();
+        // Theme, locale and workspace temperature can rebuild the whole layout
+        // tree here; named apart so a slow scene says whether it was this.
+        phases.mark("refresh");
         let global_filter = self.global_filter();
         let layered = self.retained_layer_width.is_some();
         // A presenter that composites layers cannot composite HDR layers, and

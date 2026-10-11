@@ -10,8 +10,44 @@
 //! nothing was written in between.
 
 use super::WorkspaceTree;
+use std::panic::Location;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
+
+/// A wait for the tree longer than this is reported. The compositor thread
+/// reads the tree several times a tick, so one wait this long is a stalled
+/// frame, and it is the waiter that has to say who held the lock.
+pub const SLOW_TREE_WAIT: Duration = Duration::from_millis(20);
+
+/// Who holds the tree for writing, and since when.
+#[derive(Clone, Copy)]
+struct Holder {
+    at: &'static Location<'static>,
+    since: Instant,
+}
+
+/// The `SLOW-TREE-LOCK` line for a wait of `waited` by `waiter`, when it is
+/// long enough to report. `holder` is the writer that held the lock when the
+/// wait began, with how long it had held it; without one the waiter was
+/// queued behind readers.
+fn slow_wait_report(
+    kind: &str,
+    waiter: &Location<'_>,
+    waited: Duration,
+    holder: Option<(&Location<'_>, Duration)>,
+) -> Option<String> {
+    if waited < SLOW_TREE_WAIT {
+        return None;
+    }
+    let held_by = holder.map_or_else(
+        || "readers".to_owned(),
+        |(at, held)| format!("writer {at} (held {held:?} at the start of the wait)"),
+    );
+    Some(format!(
+        "SLOW-TREE-LOCK {kind} at {waiter} waited={waited:?} held_by={held_by}"
+    ))
+}
 
 /// The newest policy revision handed out, across every tree of the process.
 static POLICY_REVISION: AtomicU64 = AtomicU64::new(0);
@@ -44,6 +80,8 @@ struct TreeCell {
     /// What authorization last read from the tree; a released write that
     /// changes it announces a policy change.
     policy: parking_lot::Mutex<PolicySnapshot>,
+    /// The writer holding `lock` now, for a waiter that has to name it.
+    holder: parking_lot::Mutex<Option<Holder>>,
 }
 
 /// The parts of the tree an authorization decision reads (TIL-707): each
@@ -136,6 +174,7 @@ pub struct WorkspaceTreeWriteGuard<'a> {
     guard: parking_lot::RwLockWriteGuard<'a, WorkspaceTree>,
     generation: &'a AtomicU64,
     policy: &'a parking_lot::Mutex<PolicySnapshot>,
+    holder: &'a parking_lot::Mutex<Option<Holder>>,
 }
 
 impl WorkspaceTreeHandle {
@@ -146,12 +185,23 @@ impl WorkspaceTreeHandle {
             lock: parking_lot::RwLock::new(tree),
             generation: AtomicU64::new(0),
             policy,
+            holder: parking_lot::Mutex::new(None),
         }))
     }
 
-    /// Shared read access.
+    /// Shared read access. A wait of [`SLOW_TREE_WAIT`] or more is reported
+    /// with the writer that held the tree.
+    #[track_caller]
     pub fn read(&self) -> parking_lot::RwLockReadGuard<'_, WorkspaceTree> {
-        self.0.lock.read()
+        if let Some(guard) = self.0.lock.try_read() {
+            return guard;
+        }
+        let waiter = Location::caller();
+        let holder = self.holder_now();
+        let started = Instant::now();
+        let guard = self.0.lock.read();
+        Self::report_wait("read", waiter, started.elapsed(), holder);
+        guard
     }
 
     /// Shared read access, if no writer holds the tree.
@@ -162,21 +212,59 @@ impl WorkspaceTreeHandle {
     /// Exclusive access. The generation advances when the guard is dropped,
     /// whether or not anything was changed: a spurious bump costs a reader
     /// one re-derivation, a missed one would leave it stale.
+    #[track_caller]
     pub fn write(&self) -> WorkspaceTreeWriteGuard<'_> {
-        WorkspaceTreeWriteGuard {
-            guard: self.0.lock.write(),
-            generation: &self.0.generation,
-            policy: &self.0.policy,
-        }
+        let waiter = Location::caller();
+        let guard = if let Some(guard) = self.0.lock.try_write() {
+            guard
+        } else {
+            let holder = self.holder_now();
+            let started = Instant::now();
+            let guard = self.0.lock.write();
+            Self::report_wait("write", waiter, started.elapsed(), holder);
+            guard
+        };
+        self.held(guard, waiter)
     }
 
     /// Exclusive access, if nobody holds the tree.
+    #[track_caller]
     pub fn try_write(&self) -> Option<WorkspaceTreeWriteGuard<'_>> {
-        Some(WorkspaceTreeWriteGuard {
-            guard: self.0.lock.try_write()?,
+        let guard = self.0.lock.try_write()?;
+        Some(self.held(guard, Location::caller()))
+    }
+
+    fn held<'a>(
+        &'a self,
+        guard: parking_lot::RwLockWriteGuard<'a, WorkspaceTree>,
+        at: &'static Location<'static>,
+    ) -> WorkspaceTreeWriteGuard<'a> {
+        *self.0.holder.lock() = Some(Holder {
+            at,
+            since: Instant::now(),
+        });
+        WorkspaceTreeWriteGuard {
+            guard,
             generation: &self.0.generation,
             policy: &self.0.policy,
-        })
+            holder: &self.0.holder,
+        }
+    }
+
+    fn holder_now(&self) -> Option<Holder> {
+        *self.0.holder.lock()
+    }
+
+    fn report_wait(kind: &str, waiter: &Location<'_>, waited: Duration, holder: Option<Holder>) {
+        let holder = holder.map(|holder| (holder.at, holder.since.elapsed()));
+        if let Some(line) = slow_wait_report(kind, waiter, waited, holder) {
+            eprintln!("{line}");
+        }
+    }
+
+    /// Where the writer holding the tree took it, if one does.
+    pub fn writer_location(&self) -> Option<&'static Location<'static>> {
+        self.holder_now().map(|holder| holder.at)
     }
 
     /// How many write guards have been released. Equal values read at two
@@ -256,6 +344,7 @@ impl Drop for WorkspaceTreeWriteGuard<'_> {
     fn drop(&mut self) {
         // Runs before `guard` releases the lock.
         self.generation.fetch_add(1, Ordering::Release);
+        *self.holder.lock() = None;
         // Rosters, roles, grants and the devices a room admitted live here:
         // the collaboration broker re-checks what it admitted on this
         // announcement rather than on a clock (TIL-707). Only a write that
@@ -287,6 +376,42 @@ impl Drop for WorkspaceTreeWriteGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_wait_for_the_tree_names_the_writer_that_held_it() {
+        let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
+        assert!(handle.writer_location().is_none());
+        let held_at = {
+            let guard = handle.write();
+            let at = handle.writer_location().expect("a writer holds the tree");
+            assert_eq!(at.file(), file!(), "the holder is where write() was called");
+            assert!(handle.try_read().is_none());
+            drop(guard);
+            at
+        };
+        assert!(
+            handle.writer_location().is_none(),
+            "releasing the tree clears its holder"
+        );
+        let waiter = Location::caller();
+        let held = Duration::from_millis(30);
+        assert!(
+            slow_wait_report(
+                "read",
+                waiter,
+                SLOW_TREE_WAIT - Duration::from_millis(1),
+                None
+            )
+            .is_none(),
+            "a short wait is not a stall"
+        );
+        let line = slow_wait_report("read", waiter, SLOW_TREE_WAIT, Some((held_at, held)))
+            .expect("a wait of the threshold is reported");
+        assert!(line.starts_with("SLOW-TREE-LOCK read at "), "{line}");
+        assert!(line.contains(&format!("writer {held_at}")), "{line}");
+        let queued = slow_wait_report("write", waiter, SLOW_TREE_WAIT, None).unwrap();
+        assert!(queued.ends_with("held_by=readers"), "{queued}");
+    }
 
     #[test]
     fn only_a_released_write_advances_the_generation() {
