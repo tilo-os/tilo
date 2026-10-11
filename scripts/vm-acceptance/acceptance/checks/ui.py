@@ -100,6 +100,19 @@ def _surface_pass(ctx, res, label):
     return findings
 
 
+def theme_contrast_problems(lum: dict) -> list[str]:
+    """Light Quick Settings must read clearly lighter than dark ones. A pass that
+    measured neither cannot say whether the theme reached the chrome."""
+    missing = [t for t in ("light", "dark") if lum.get(t) is None]
+    if missing:
+        return [f"quick settings luminance not measured in {' and '.join(missing)}: "
+                "cannot tell whether the theme change reached the chrome"]
+    if lum["light"] <= lum["dark"] + 0.15:
+        return [f"light and dark quick settings look alike (luminance {lum['light']} vs {lum['dark']}): "
+                "the theme change did not reach the chrome"]
+    return []
+
+
 def _matrix(ctx, res, locale):
     ctx.reset()
     try:
@@ -125,9 +138,7 @@ def _matrix(ctx, res, locale):
     lum = {t: per_theme[t]["quick-settings"].get("centre_pixels", {}).get("mean")
            for t in THEMES if "centre_pixels" in per_theme[t].get("quick-settings", {})}
     res.metrics["quick_settings_centre_luminance"] = lum
-    if lum.get("light") is not None and lum.get("dark") is not None and lum["light"] <= lum["dark"] + 0.15:
-        problems.append(f"light and dark quick settings look alike (luminance {lum['light']} vs {lum['dark']}): "
-                        "the theme change did not reach the chrome")
+    problems += theme_contrast_problems(lum)
     ctx.write(f"U-{locale}-layout.json", json.dumps(per_theme, indent=1, default=str))
     res.metrics["surfaces"] = {t: {s: {k: (len(v) if isinstance(v, list) else v)
                                        for k, v in lp.items() if k != "centre_pixels"}
