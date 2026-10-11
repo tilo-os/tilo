@@ -144,6 +144,12 @@ impl RoomAdminProtocol {
                 .map(|done| RoomReply::Governance {
                     generation: done.generation,
                 }),
+            RoomCommand::ClaimTopologyNamespace { room, salt } => rooms
+                .claim_topology_namespace(&room, device, salt)
+                .await
+                .map(|done| RoomReply::Governance {
+                    generation: done.generation,
+                }),
             RoomCommand::RecordEffectReceipt {
                 room,
                 invocation,

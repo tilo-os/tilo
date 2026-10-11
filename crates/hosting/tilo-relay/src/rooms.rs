@@ -26,6 +26,7 @@ mod steward_endpoint;
 mod stewardship;
 #[cfg(test)]
 mod tests;
+mod topology_namespace;
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
