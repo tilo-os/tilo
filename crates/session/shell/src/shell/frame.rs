@@ -2016,6 +2016,7 @@ impl FrameBuilder {
     pub fn paint_with_damage(&mut self) -> FramePaint {
         // This producer owns the policy even when invoked during another draw.
         let _dense_scope = ui::retained_present::RetainedScene::begin(false);
+        let mut phases = ScenePhases::start();
         self.refresh_configured_theme();
         self.refresh_workspace_temperature();
         self.refresh_magnifier();
@@ -2125,6 +2126,7 @@ impl FrameBuilder {
             )?])
         });
         drop(retained_scope);
+        phases.mark("draw-sections");
 
         let parts = OpaqueParts::of(&parts_recording.finish(), &sections);
         let backdrop_surfaces = backdrop_recording.finish();
@@ -2175,6 +2177,7 @@ impl FrameBuilder {
         let damage_regions = self
             .with_backdrop_damage(damage_regions, &backdrop_surfaces)
             .map(|regions| without_contained_regions(&regions));
+        phases.mark("damage");
         // A backdrop-dependent section is never independently composited.
         let separable = backdrop_surfaces.is_empty()
             && hdr_layers.is_empty()
@@ -2203,8 +2206,10 @@ impl FrameBuilder {
                 },
             }
         });
+        phases.mark("frame-cache");
         let backdrop =
             self.backdrop_to_scene(backdrop_surfaces, |layer| sections.below_layer(layer));
+        phases.mark("backdrop");
 
         let mut scene = Scene::new();
         scene.append(&sections.backdrop, None);
@@ -2256,7 +2261,10 @@ impl FrameBuilder {
         let fullscreen_on_top = fullscreen_on_top
             .filter(|_| !global_filter && scene.encoding().draw_tags.len() == draws_below_filters);
         let scene = self.to_scene(scene);
+        phases.mark("compose");
         let scanout = fullscreen_on_top.and_then(|drawn| self.scanout_candidate(drawn, &scene));
+        phases.mark("scanout");
+        phases.report();
 
         self.last_produced_sections = Some(ProducedSections {
             foreign_images,
@@ -8184,5 +8192,50 @@ fn scene_px(value: f64) -> u32 {
     )]
     {
         value as u32
+    }
+}
+
+/// Phase timings of one retained scene build, reported only when the build
+/// is slow. A typical build is under a millisecond; the main-thread freezes
+/// seen when a window opens or closes (`SLOW-ITER post_pump_paint` of
+/// 240-490 ms) were not attributable to a phase, and this names it in the
+/// session log (`SLOW-SCENE`).
+struct ScenePhases {
+    started: std::time::Instant,
+    last: std::time::Instant,
+    spans: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl ScenePhases {
+    /// A scene build slower than this is reported.
+    const REPORT_AFTER: std::time::Duration = std::time::Duration::from_millis(50);
+
+    fn start() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            started: now,
+            last: now,
+            spans: Vec::with_capacity(8),
+        }
+    }
+
+    fn mark(&mut self, phase: &'static str) {
+        let now = std::time::Instant::now();
+        self.spans.push((phase, now.duration_since(self.last)));
+        self.last = now;
+    }
+
+    fn report(&self) {
+        let total = self.started.elapsed();
+        if total < Self::REPORT_AFTER {
+            return;
+        }
+        let split = self
+            .spans
+            .iter()
+            .map(|(phase, took)| format!("{phase}={took:?}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!("SLOW-SCENE total={total:?} {split}");
     }
 }
