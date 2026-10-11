@@ -3845,12 +3845,18 @@ async fn drive_shovel(
                 // The startup file splits the owner's wait for `PrimaryReady`.
                 tilo_startup_metrics::startup_mark("collab-route-joined");
                 if let Some(route) = primary.as_ref().and_then(|key| routes.get(key)) {
-                    settings_link = link_settings(&route.channel, &inbound_tx).await;
+                    // Both capabilities are independent: asking for them
+                    // together costs the owner's wait one broker round trip.
+                    let (settings, live_activity) = tokio::join!(
+                        link_settings(&route.channel, &inbound_tx),
+                        link_live_activity(&route.channel, &inbound_tx),
+                    );
+                    settings_link = settings;
                     if let Some(link) = settings_link.as_ref() {
                         link.flush(&inbound_tx).await;
                     }
                     tilo_startup_metrics::startup_mark("collab-settings-linked");
-                    live_activity_link = link_live_activity(&route.channel, &inbound_tx).await;
+                    live_activity_link = live_activity;
                     if let Some(link) = live_activity_link.as_ref() {
                         link.flush(true).await;
                     }
@@ -4236,7 +4242,7 @@ async fn ensure_sdk_route(
     }
     // The streams are independent: subscribing to them together costs the
     // join one broker round trip instead of one per stream.
-    let ((), (), (), (), (), (), presence) = tokio::join!(
+    let ((), (), (), (), (), (), (), presence) = tokio::join!(
         async {
             if !committed {
                 spawn_op_stream(
@@ -4260,9 +4266,9 @@ async fn ensure_sdk_route(
                 spawn_task_run_stream(&channel, inbound_tx).await;
             }
         },
+        spawn_content_stream(&channel, spec.clone(), inbound_tx),
         spawn_presence_stream(&channel, inbound_tx),
     );
-    spawn_content_stream(&channel, spec.clone(), inbound_tx).await;
     // Subscriptions are installed first so an existing holder's response
     // cannot race ahead of our document stream.
     if !committed && let Err(error) = channel.request_document_snapshot().await {
