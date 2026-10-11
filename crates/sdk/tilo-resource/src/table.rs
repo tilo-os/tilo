@@ -95,6 +95,8 @@ enum Desc {
     Unit(&'static UnitDesc),
     /// A value stored whole as JSON text.
     Json(&'static JsonDesc),
+    /// A list of values.
+    Vec(&'static VecDesc),
 }
 
 impl ModelTable {
@@ -2406,6 +2408,245 @@ pub static JSON_OPS: ModelOps = ModelOps {
     },
     collect_text: |_, _, _| {},
     check: |_, _| Ok(()),
+    get_at: |_, value, path| path.is_empty().then_some(value),
+    op_coalesces: no_coalesces,
+    op_continuable: no_continuable,
+    op_describe: no_describe,
+    op_lands: no_lands,
+    op_schemas: no_schemas,
+};
+
+// --- Vec ------------------------------------------------------------------
+
+/// A list's items, whatever their type.
+pub trait ListItems {
+    fn count(&self) -> usize;
+    fn item_at(&self, at: usize) -> Option<&dyn Any>;
+    /// Append an item, put by `fill` into an `Option` of the item type.
+    ///
+    /// # Errors
+    /// What `fill` refused.
+    fn push_filled(
+        &mut self,
+        fill: &mut dyn FnMut(&mut dyn Any) -> Result<(), ModelError>,
+    ) -> Result<(), ModelError>;
+}
+
+impl<T: 'static> ListItems for Vec<T> {
+    fn count(&self) -> usize {
+        self.len()
+    }
+
+    fn item_at(&self, at: usize) -> Option<&dyn Any> {
+        self.get(at).map(|item| item as &dyn Any)
+    }
+
+    fn push_filled(
+        &mut self,
+        fill: &mut dyn FnMut(&mut dyn Any) -> Result<(), ModelError>,
+    ) -> Result<(), ModelError> {
+        let mut slot: Option<T> = None;
+        fill(&mut slot)?;
+        self.push(filled(slot)?);
+        Ok(())
+    }
+}
+
+/// What `Vec<T>`'s table reaches into one with.
+#[allow(
+    clippy::type_complexity,
+    reason = "each field reaches into the list one way"
+)]
+pub struct VecDesc {
+    item: &'static ModelTable,
+    items: for<'a> fn(&'a dyn Any) -> Option<&'a dyn ListItems>,
+    /// Put an empty list into `out` (an `Option` of it), and hand it back.
+    fresh: for<'a> fn(&'a mut dyn Any) -> Option<&'a mut dyn ListItems>,
+    staged: (fn() -> Box<dyn Any>, Unstage),
+    replace: fn(&mut dyn Any, &mut dyn Any) -> Result<(), ModelError>,
+}
+
+/// The [`VecDesc`] of `Vec<T>`.
+pub struct VecOf<T>(PhantomData<T>);
+
+impl<T: Model> VecOf<T> {
+    pub const DESC: VecDesc = VecDesc {
+        item: T::TABLE,
+        items: |value| Some(value.downcast_ref::<Vec<T>>()? as &dyn ListItems),
+        fresh: |out| {
+            let out = out.downcast_mut::<Option<Vec<T>>>()?;
+            Some(out.insert(Vec::new()) as &mut dyn ListItems)
+        },
+        staged: (empty_of::<Vec<T>>, unwrap_of::<Vec<T>>),
+        replace: replace_of::<Vec<T>>,
+    };
+
+    pub const TABLE: ModelTable = ModelTable {
+        ops: &VEC_OPS,
+        desc: Desc::Vec(&Self::DESC),
+        checks: T::CHECKS,
+        has_ops: T::OPS,
+    };
+}
+
+impl ModelTable {
+    const fn list(&self) -> Option<&'static VecDesc> {
+        match self.desc {
+            Desc::Vec(list) => Some(list),
+            _ => None,
+        }
+    }
+}
+
+fn lists(table: &ModelTable) -> Result<&'static VecDesc, ModelError> {
+    table.list().ok_or_else(mismatch)
+}
+
+/// The functions of every `Vec`: a list of values.
+pub static VEC_OPS: ModelOps = ModelOps {
+    to_json: |table, value| {
+        let (Some(list), Some(items)) = (
+            table.list(),
+            table.list().and_then(|list| (list.items)(value)),
+        ) else {
+            return serde_json::Value::Null;
+        };
+        let mut out = Vec::with_capacity(items.count());
+        for at in 0..items.count() {
+            if let Some(item) = items.item_at(at) {
+                out.push((list.item.ops.to_json)(list.item, item));
+            }
+        }
+        serde_json::Value::Array(out)
+    },
+    from_json: |table, value, out| {
+        let list = lists(table)?;
+        let fresh = (list.fresh)(out).ok_or_else(mismatch)?;
+        match value {
+            serde_json::Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    fresh.push_filled(&mut |into| {
+                        (list.item.ops.from_json)(list.item, item, into).located(&index.to_string())
+                    })?;
+                }
+                Ok(())
+            }
+            serde_json::Value::Null => Ok(()),
+            _ => Err(ModelError::shape("a list")),
+        }
+    },
+    load: |table, doc, value, id, out| {
+        let list = lists(table)?;
+        if !matches!(value, Value::Object(ObjType::List)) {
+            return Err(ModelError::shape("a list"));
+        }
+        let fresh = (list.fresh)(out).ok_or_else(mismatch)?;
+        for index in 0..automerge::ReadDoc::length(doc, id) {
+            let slot = crate::model::get_item(doc, id, index)?;
+            fresh.push_filled(&mut |into| {
+                load_slot(list.item, doc, slot.as_ref().map(|(v, i)| (v, i)), into)
+                    .located(&index.to_string())
+            })?;
+        }
+        Ok(())
+    },
+    missing: |table, out| {
+        (lists(table)?.fresh)(out).ok_or_else(mismatch)?;
+        Ok(())
+    },
+    reload: |table, target, doc, slot| {
+        let list = lists(table)?;
+        let mut staged = (list.staged.0)();
+        match slot {
+            Some((value, id)) => (VEC_OPS.load)(table, doc, value, id, staged.as_mut())?,
+            None => (VEC_OPS.missing)(table, staged.as_mut())?,
+        }
+        (list.replace)(target, staged.as_mut())
+    },
+    store: |table, value, doc, slot| {
+        let list = lists(table)?;
+        let items = (list.items)(value).ok_or_else(mismatch)?;
+        let obj = slot.object(doc, ObjType::List)?;
+        let existing = automerge::ReadDoc::length(doc, &obj);
+        for index in 0..items.count() {
+            let Some(item) = items.item_at(index) else {
+                continue;
+            };
+            let slot = if index < existing {
+                Slot::Index(&obj, index)
+            } else {
+                Slot::Insert(&obj, index)
+            };
+            (list.item.ops.store)(list.item, item, doc, slot).located(&index.to_string())?;
+        }
+        for index in (items.count()..existing).rev() {
+            automerge::transaction::Transactable::delete(doc, &obj, index)?;
+        }
+        Ok(())
+    },
+    stores_as: |table, value, before| {
+        let Some(list) = table.list() else {
+            return false;
+        };
+        let (Some(now), Some(was)) = ((list.items)(value), (list.items)(before)) else {
+            return false;
+        };
+        now.count() == was.count()
+            && (0..now.count()).all(|at| match (now.item_at(at), was.item_at(at)) {
+                (Some(now), Some(was)) => (list.item.ops.stores_as)(list.item, now, was),
+                _ => false,
+            })
+    },
+    store_changed: |table, value, _, doc, slot, _| (VEC_OPS.store)(table, value, doc, slot),
+    refresh: |table, target, doc, value, id, _| {
+        (VEC_OPS.reload)(table, target, doc, Some((value, id)))
+    },
+    read_whole: |_, _, _| Ok(()),
+    edit: |table, doc, slot, path, op, _| {
+        let list = lists(table)?;
+        edit_whole(
+            table,
+            ((list.staged.0)(), list.staged.1),
+            false,
+            doc,
+            slot,
+            path,
+            op,
+        )
+    },
+    diff: |table, before, after, path, out| {
+        let value = (VEC_OPS.to_json)(table, after);
+        if (VEC_OPS.to_json)(table, before) != value {
+            out.push(Edit::new(path.to_vec(), EditOp::Set { value }));
+        }
+    },
+    collect_text: |table, value, out| {
+        if let Some(list) = table.list()
+            && let Some(items) = (list.items)(value)
+        {
+            for at in 0..items.count() {
+                if let Some(item) = items.item_at(at) {
+                    (list.item.ops.collect_text)(list.item, item, out);
+                }
+            }
+        }
+    },
+    check: |table, value| {
+        let Some(list) = table.list() else {
+            return Ok(());
+        };
+        if !list.item.checks {
+            return Ok(());
+        }
+        if let Some(items) = (list.items)(value) {
+            for at in 0..items.count() {
+                if let Some(item) = items.item_at(at) {
+                    (list.item.ops.check)(list.item, item)?;
+                }
+            }
+        }
+        Ok(())
+    },
     get_at: |_, value, path| path.is_empty().then_some(value),
     op_coalesces: no_coalesces,
     op_continuable: no_continuable,
