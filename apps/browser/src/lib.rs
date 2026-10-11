@@ -52,6 +52,7 @@ pub mod history;
 pub mod library;
 mod native_blocker;
 mod notice;
+pub mod omnibox;
 mod page_menu;
 pub mod private_window;
 pub mod resource;
