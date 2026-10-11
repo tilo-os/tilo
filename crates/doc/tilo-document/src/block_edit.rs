@@ -497,10 +497,10 @@ fn longest_increasing(values: &[usize]) -> HashSet<usize> {
     let mut previous: Vec<Option<usize>> = vec![None; values.len()];
     for (at, value) in values.iter().enumerate() {
         let place = tails.partition_point(|tail| values.get(*tail).is_some_and(|v| v < value));
-        if let Some(before) = place.checked_sub(1).and_then(|index| tails.get(index)) {
-            if let Some(slot) = previous.get_mut(at) {
-                *slot = Some(*before);
-            }
+        if let Some(before) = place.checked_sub(1).and_then(|index| tails.get(index))
+            && let Some(slot) = previous.get_mut(at)
+        {
+            *slot = Some(*before);
         }
         match tails.get_mut(place) {
             Some(slot) => *slot = at,
@@ -588,9 +588,7 @@ fn common<A, B>(a: &[A], b: &[B], same: impl Fn(&A, &B) -> bool) -> Vec<(usize, 
 const LIKENESS_CELLS: usize = 4_000_000;
 
 fn words(text: &str) -> HashSet<String> {
-    text.split_whitespace()
-        .map(|word| word.to_lowercase())
-        .collect()
+    text.split_whitespace().map(str::to_lowercase).collect()
 }
 
 /// Whether an edited block is plausibly the same block as `old`.
@@ -672,7 +670,8 @@ fn pair_unnamed(
         let mut ends: Vec<(usize, usize)> = likeness;
         ends.push((olds.len(), news.len()));
         for ((a, b), (c, d)) in cuts.into_iter().zip(ends) {
-            if c.saturating_sub(a) == d.saturating_sub(b) && c > a {
+            let (old_run, new_run) = (c.saturating_sub(a), d.saturating_sub(b));
+            if old_run == new_run && old_run > 0 {
                 matched.extend((a..c).zip(b..d).map(|(i, j)| {
                     (
                         olds.get(i).copied().unwrap_or_default(),
@@ -685,27 +684,14 @@ fn pair_unnamed(
     matched
 }
 
-/// Replace the body with `markdown`, as the fewest edits that make it so:
-/// blocks named by id, or whose line is unchanged, are kept; edited ones are
-/// edited in place; the rest are removed or inserted. Blocks Markdown cannot
-/// carry stay where they are.
-fn sync_body(dm: &mut DocMut<'_>, markdown: &str) -> Vec<Written> {
-    let order = body_order(dm.doc, dm.c);
-    let views = tilo_doc::model::materialize_region(dm.doc, dm.c, Region::Body);
-    let known = |token: &str| block_id(&order, token).ok();
-    let Ok(parsed) = parse(markdown, &Ids::Known(&known)) else {
-        return Vec::new();
-    };
-    // The blocks Markdown can carry, in order: what the new body may reuse.
-    let old: Vec<(BlockView, Shape)> = views
-        .into_iter()
-        .filter_map(|view| Shape::of_view(&view).map(|shape| (view, shape)))
-        .collect();
-    let at_of: HashMap<&str, usize> = old
-        .iter()
-        .enumerate()
-        .map(|(at, (view, _))| (view.id.as_str(), at))
-        .collect();
+/// Which block of `old` each line of `parsed` is: those it names by id, then
+/// those whose line is unchanged, then those edited in place; and which of
+/// `old` that took.
+fn pair_lines(
+    old: &[(BlockView, Shape)],
+    at_of: &HashMap<&str, usize>,
+    parsed: &[Parsed],
+) -> (Vec<Option<usize>>, Vec<bool>) {
     let mut used = vec![false; old.len()];
     let mut paired: Vec<Option<usize>> = vec![None; parsed.len()];
     for (at, line) in parsed.iter().enumerate() {
@@ -734,7 +720,7 @@ fn sync_body(dm: &mut DocMut<'_>, markdown: &str) -> Vec<Written> {
             _ => None,
         })
         .collect();
-    for (i, j) in pair_unnamed(&old, &free_old, &free_new) {
+    for (i, j) in pair_unnamed(old, &free_old, &free_new) {
         if let (Some(old_at), Some((new_at, _))) = (free_old.get(i), free_new.get(j))
             && let Some(taken) = used.get_mut(*old_at)
             && let Some(slot) = paired.get_mut(*new_at)
@@ -745,6 +731,31 @@ fn sync_body(dm: &mut DocMut<'_>, markdown: &str) -> Vec<Written> {
             *slot = Some(*old_at);
         }
     }
+    (paired, used)
+}
+
+/// Replace the body with `markdown`, as the fewest edits that make it so:
+/// blocks named by id, or whose line is unchanged, are kept; edited ones are
+/// edited in place; the rest are removed or inserted. Blocks Markdown cannot
+/// carry stay where they are.
+fn sync_body(dm: &mut DocMut<'_>, markdown: &str) -> Vec<Written> {
+    let order = body_order(dm.doc, dm.c);
+    let views = tilo_doc::model::materialize_region(dm.doc, dm.c, Region::Body);
+    let known = |token: &str| block_id(&order, token).ok();
+    let Ok(parsed) = parse(markdown, &Ids::Known(&known)) else {
+        return Vec::new();
+    };
+    // The blocks Markdown can carry, in order: what the new body may reuse.
+    let old: Vec<(BlockView, Shape)> = views
+        .into_iter()
+        .filter_map(|view| Shape::of_view(&view).map(|shape| (view, shape)))
+        .collect();
+    let at_of: HashMap<&str, usize> = old
+        .iter()
+        .enumerate()
+        .map(|(at, (view, _))| (view.id.as_str(), at))
+        .collect();
+    let (paired, used) = pair_lines(&old, &at_of, &parsed);
 
     let entries: Vec<Entry> = parsed
         .into_iter()
@@ -832,6 +843,10 @@ fn keep_a_paragraph(dm: &mut DocMut<'_>) {
 
 /// Apply a block edit. The action was [`check`]ed against the same document.
 /// What was typed in, for the invoker's authorship.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the dispatch over every block action, one arm each"
+)]
 pub(crate) fn apply(dm: &mut DocMut<'_>, action: &RichTextAction) -> Vec<Written> {
     let order = body_order(dm.doc, dm.c);
     let mut written = Vec::new();

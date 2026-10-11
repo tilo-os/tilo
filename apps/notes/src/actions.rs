@@ -1800,12 +1800,17 @@ pub(crate) fn find_text(
     {
         let body = crate::notebook::validated_page_body(doc, meta.id)?;
         let found = tilo_document::block_actions::find_under(doc, &body, text, false)?;
-        for hit in found["matches"].as_array().into_iter().flatten() {
+        for hit in found
+            .get("matches")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             matches.push(serde_json::json!({
                 "page": meta.id.to_string(),
                 "title": meta.title,
-                "block": hit["block"],
-                "text": hit["text"],
+                "block": hit.get("block"),
+                "text": hit.get("text"),
             }));
         }
     }

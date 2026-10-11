@@ -41,8 +41,10 @@ fn id_of(note: &Value, prefix: &str) -> String {
         .lines()
         .find(|line| line.starts_with(prefix))
         .and_then(|line| line.rsplit_once(" ^"))
-        .map(|(_, id)| id.to_owned())
-        .unwrap_or_else(|| panic!("no line starts with {prefix:?}: {note}"))
+        .map_or_else(
+            || panic!("no line starts with {prefix:?}: {note}"),
+            |(_, id)| id.to_owned(),
+        )
 }
 
 fn ids(note: &Value) -> Vec<String> {
@@ -55,6 +57,10 @@ fn ids(note: &Value) -> Vec<String> {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scripted story, read as the steps an agent takes"
+)]
 fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
