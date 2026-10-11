@@ -107,7 +107,7 @@ impl DisplayModel {
 
     fn shared_row(&self, display: &ResolvedDisplay) -> LiveRow {
         let revision = self.shared_revision(&display.device, &display.output);
-        LiveRow::new(
+        let row = LiveRow::new(
             format!(
                 "settings.shared-display:{}:{}",
                 display.device, display.output
@@ -123,8 +123,11 @@ impl DisplayModel {
                 on: display.enabled,
             })
             .bound_asking(&["on"]),
-        )
-        .operation(
+        );
+        if display.local_rect.width == 0 || display.local_rect.height == 0 {
+            return row;
+        }
+        row.operation(
             SettingsEffect::from(DisplayEffect::OrderSharedDisplay {
                 device: display.device.clone(),
                 output: display.output.clone(),
@@ -322,10 +325,12 @@ impl DisplayModel {
                     ("screen", display.name.clone().into()),
                     (
                         "status",
-                        t(if display.online {
-                            "display-device-online"
-                        } else {
+                        t(if !display.online {
                             "display-device-offline"
+                        } else if display.local_rect.width == 0 || display.local_rect.height == 0 {
+                            "display-device-switched-off"
+                        } else {
+                            "display-device-online"
                         })
                         .into(),
                     ),
@@ -696,6 +701,148 @@ mod tests {
         assert_eq!(inspection["devices"][0]["online"], false);
         assert_eq!(inspection["devices"][0]["outputs"][0]["mode_width"], 1920);
         assert_eq!(inspection["layout"]["displays"][0]["enabled"], false);
+        assert!(app.harness().component_contract_violations().is_empty());
+    }
+
+    #[test]
+    fn shared_display_inactive_output_keeps_inclusion_but_has_no_order_action() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .unwrap();
+        let mut observed = devices();
+        observed[0].online = true;
+        observed[0].outputs[0].enabled = false;
+        let mut active = observed[0].clone();
+        active.device = "active-peer".into();
+        active.label = "Other computer".into();
+        active.outputs[0].enabled = true;
+        observed.push(active);
+        app.surface::<SettingsApp, _>(|settings| {
+            settings.displays().model().borrow_mut().person_devices = observed;
+        });
+        app.settle();
+        let mut captions = Vec::new();
+        app.surface::<SettingsApp, _>(|settings| {
+            names(
+                settings
+                    .displays()
+                    .model()
+                    .borrow()
+                    .build_shared_displays_card()
+                    .unwrap()
+                    .as_ref(),
+                &mut captions,
+            );
+        });
+        assert!(
+            captions.iter().any(|name| name.contains("Desk computer")
+                && name.contains("Switched off on that device")),
+            "{captions:?}"
+        );
+        let address = "settings.shared-display:offline-peer:edid:panel-1";
+        let surface = app.agent_surface();
+        let actions = surface.as_array().unwrap();
+        assert!(
+            actions
+                .iter()
+                .any(|row| row["resource"] == address && row["action"] == "include-shared-display")
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|row| row["resource"] == address && row["action"] == "order-shared-display")
+        );
+        assert!(actions.iter().any(|row| row["resource"]
+            == "settings.shared-display:active-peer:edid:panel-1"
+            && row["action"] == "order-shared-display"));
+        let before = app
+            .call("inspect-shared-displays", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert!(
+            app.call_on(
+                address,
+                "order-shared-display",
+                serde_json::json!({"order":1})
+            )
+            .is_err()
+        );
+        assert_eq!(
+            app.call("inspect-shared-displays", serde_json::json!({}))
+                .unwrap()
+                .unwrap(),
+            before
+        );
+        app.call_on(
+            address,
+            "include-shared-display",
+            serde_json::json!({"on":false}),
+        )
+        .unwrap();
+        app.settle();
+        let after = app
+            .call("inspect-shared-displays", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after["devices"], before["devices"],
+            "inclusion cannot turn hardware on or alter native modes"
+        );
+        assert_eq!(after["layout"]["inactive"][0]["enabled"], false);
+        assert_eq!(after["automatic_input"], before["automatic_input"]);
+        assert!(app.harness().component_contract_violations().is_empty());
+    }
+
+    #[test]
+    fn shared_display_inactive_output_regains_order_only_after_hardware_turns_on() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .unwrap();
+        let mut observed = devices();
+        observed[0].online = true;
+        observed[0].outputs[0].enabled = false;
+        app.surface::<SettingsApp, _>(|settings| {
+            settings.displays().model().borrow_mut().person_devices = observed;
+        });
+        app.settle();
+        let address = "settings.shared-display:offline-peer:edid:panel-1";
+        assert!(
+            !app.agent_surface()
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["resource"] == address && row["action"] == "order-shared-display")
+        );
+        app.surface::<SettingsApp, _>(|settings| {
+            settings.displays().model().borrow_mut().person_devices[0].outputs[0].enabled = true;
+        });
+        app.settle();
+        assert!(
+            app.agent_surface()
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["resource"] == address && row["action"] == "order-shared-display")
+        );
+        let before = app
+            .call("inspect-shared-displays", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        app.call_on(
+            address,
+            "order-shared-display",
+            serde_json::json!({"order":1}),
+        )
+        .unwrap();
+        app.settle();
+        let after = app
+            .call("inspect-shared-displays", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(after["devices"], before["devices"]);
+        assert_eq!(after["layout"]["displays"].as_array().unwrap().len(), 1);
         assert!(app.harness().component_contract_violations().is_empty());
     }
 

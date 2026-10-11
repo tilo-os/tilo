@@ -2003,6 +2003,7 @@ display-devices-title = Screens on your devices
 display-device-screen = { $device } · { $screen } · { $status }
 display-device-online = Online
 display-device-offline = Offline
+display-device-switched-off = Switched off on that device
 display-devices-observed = Observed screen positions. Input access is granted separately.
 
 display-devices-arrange = Drag an online device screen beside yours. Screens on one device move together. Moving screens does not allow input.
