@@ -205,7 +205,18 @@ const fn operation(op: &EditOp) -> tilo_actions::EditOp {
 
 /// A field edit of a record of shape `shape`, as it reads before it applies.
 pub(crate) fn edit<R: crate::Model>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> Option<Described> {
-    edit_at(doc, shape, edit.path(), edit.op(), R::op_describe)
+    let mut described = edit_at(doc, shape, edit.path(), edit.op(), R::op_describe)?;
+    // A scalar field holding its default is not stored: what a set changed
+    // it from is that default.
+    if let (Did::Edit(field), EditOp::Set { .. }) = (&mut described.what, edit.op())
+        && field.old.is_none()
+        && locate(doc, shape, edit.path()).value.is_none()
+    {
+        field.old = crate::table::absent_json(R::TABLE, edit.path())
+            .as_ref()
+            .and_then(Scalar::from_json);
+    }
+    Some(described)
 }
 
 /// [`edit`] past its one typed step, describing a `rich` operation.

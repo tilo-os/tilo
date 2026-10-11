@@ -377,6 +377,38 @@ fn a_check_that_reads_an_undeclared_field_is_caught() {
 }
 
 #[test]
+fn a_new_record_leaves_out_scalar_fields_holding_their_default() {
+    use automerge::ReadDoc;
+    let mut library = Replica::<Library>::new();
+    library.apply(Library::NEW_SNIPPET.with("Deploy")).unwrap();
+    let id = first_snippet(&library);
+    let stored = |library: &Replica<Library>| {
+        let path = Library::paths().snippets.item(&id);
+        let snippet = path.path().object(library.doc()).unwrap();
+        library
+            .doc()
+            .keys(&snippet)
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    // The title holds a value, the counter is always kept (increments add
+    // up on one counter) and the body is a text, not a scalar; the unset
+    // flag and the default language are what absent fields read as.
+    let keys = stored(&library);
+    assert!(keys.contains("title") && keys.contains("uses"), "{keys:?}");
+    for absent in ["favorite", "language"] {
+        assert!(!keys.contains(absent), "{absent} stored: {keys:?}");
+    }
+    let snippet = &library.state().unwrap().snippets[&id];
+    assert!(!snippet.favorite && snippet.body.is_empty());
+    // Set back to its default, a field is written: it holds a value now.
+    let favorite = Library::paths().snippets.item(&id).favorite;
+    edit(&mut library, &favorite.set(true)).unwrap();
+    edit(&mut library, &favorite.set(false)).unwrap();
+    assert!(stored(&library).contains("favorite"));
+    assert!(!library.state().unwrap().snippets[&id].favorite);
+}
+
+#[test]
 fn readonly_fields_change_only_through_verbs() {
     let mut library = Replica::<Library>::new();
     library.apply(Library::NEW_SNIPPET.with("Deploy")).unwrap();

@@ -681,6 +681,9 @@ impl ui::tilo_resource::Model for CellFormat {
     fn missing() -> Result<Self, ui::tilo_resource::ModelError> {
         Ok(Self::General)
     }
+    fn stores_as(&self, before: &Self) -> bool {
+        self == before
+    }
     fn store(
         &self,
         doc: &mut ui::tilo_resource::Doc,

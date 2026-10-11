@@ -1161,12 +1161,48 @@ pub fn write_fields(
     doc: &mut Doc,
     obj: &ObjId,
 ) -> Result<(), ModelError> {
-    for (index, field) in record.fields.iter().enumerate() {
-        let inner = field_of(record, value, index)?;
-        (field.table.ops.store)(field.table, inner, doc, Slot::Key(obj, field.key))
-            .located(field.key)?;
-    }
-    Ok(())
+    with_defaults(record, |defaults| {
+        for (index, field) in record.fields.iter().enumerate() {
+            let inner = field_of(record, value, index)?;
+            if stays_absent(record, defaults, index, inner, (doc, obj)) {
+                continue;
+            }
+            (field.table.ops.store)(field.table, inner, doc, Slot::Key(obj, field.key))
+                .located(field.key)?;
+        }
+        Ok(())
+    })
+}
+
+/// Whether the field at `index`, holding `inner`, is left out of the map
+/// `obj`: a scalar field holding what an absent one reads as, absent from
+/// the map already. A record stores its input, not its default format too,
+/// and a field set back to its default is still written.
+fn stays_absent(
+    record: &RecordDesc,
+    defaults: Option<&Defaults>,
+    index: usize,
+    inner: &dyn Any,
+    (doc, obj): (&Doc, &ObjId),
+) -> bool {
+    let Some(defaults) = defaults else {
+        return false;
+    };
+    let Some(field) = record.fields.get(index) else {
+        return false;
+    };
+    // Cheapest first: most writes are of fields the map holds.
+    defaults.scalar.get(index).copied().unwrap_or(false)
+        && matches!(automerge::ReadDoc::get(doc, obj, field.key), Ok(None))
+        && (record.unwrap)(defaults.record.as_ref())
+            .and_then(|absent| (record.field)(absent, index))
+            .is_some_and(|default| {
+                // A leaf type that cannot tell compares as JSON: a scalar's
+                // is small.
+                (field.table.ops.stores_as)(field.table, inner, default)
+                    || (field.table.ops.to_json)(field.table, inner)
+                        == (field.table.ops.to_json)(field.table, default)
+            })
 }
 
 /// [`Model::store`] of a record.
@@ -1181,6 +1217,116 @@ pub fn store(
 ) -> Result<(), ModelError> {
     let obj = slot.object(doc, ObjType::Map)?;
     write_fields(record, value, doc, &obj)
+}
+
+/// The JSON of what the field at `path` (from a value of `table`) reads as
+/// while it is absent, when it is a scalar left out of storage
+/// ([`write_fields`]): what an edit that sets it changed it from.
+pub(crate) fn absent_json(
+    table: &'static ModelTable,
+    path: &[Segment],
+) -> Option<serde_json::Value> {
+    let (Segment::Field(key), parent) = path.split_last()? else {
+        return None;
+    };
+    let record = table_at(table, parent)?.record()?;
+    let index = record.fields.iter().position(|field| field.key == key)?;
+    let field = record.fields.get(index)?;
+    with_defaults(record, |defaults| {
+        let defaults = defaults?;
+        if !defaults.scalar.get(index).copied().unwrap_or(false) {
+            return None;
+        }
+        let absent = (record.unwrap)(defaults.record.as_ref())?;
+        let default = (record.field)(absent, index)?;
+        Some((field.table.ops.to_json)(field.table, default))
+    })
+}
+
+/// The table of the value at `path` from a value of `table`, through
+/// records, collections and options.
+fn table_at(table: &'static ModelTable, path: &[Segment]) -> Option<&'static ModelTable> {
+    if let Some(option) = table.option() {
+        return table_at(option.inner, path);
+    }
+    match path.split_first() {
+        None => Some(table),
+        Some((Segment::Field(key), rest)) => {
+            let field = table
+                .record()?
+                .fields
+                .iter()
+                .find(|field| field.key == key)?;
+            table_at(field.table, rest)
+        }
+        Some((Segment::Item(_), rest)) => table_at(table.collection()?.item_table(), rest),
+        Some(_) => None,
+    }
+}
+
+/// What a record's fields read as when absent, and which of them are
+/// stored as a single scalar (so leaving one out loses nothing).
+struct Defaults {
+    /// The record with every field absent, in an `Option` of it.
+    record: Box<dyn Any>,
+    scalar: Vec<bool>,
+}
+
+thread_local! {
+    /// Each record type's [`Defaults`], by its description; `None` for a
+    /// record with a field that has no absent value.
+    static DEFAULTS: std::cell::RefCell<std::collections::HashMap<usize, Option<std::rc::Rc<Defaults>>>> =
+        std::cell::RefCell::default();
+}
+
+/// Run `with` on `record`'s [`Defaults`], worked out once per type.
+fn with_defaults<T>(record: &RecordDesc, with: impl FnOnce(Option<&Defaults>) -> T) -> T {
+    let key = std::ptr::from_ref(record) as usize;
+    let cached = DEFAULTS.with(|defaults| defaults.borrow().get(&key).cloned());
+    let defaults = cached.unwrap_or_else(|| {
+        let made = defaults_of(record).map(std::rc::Rc::new);
+        DEFAULTS.with(|defaults| defaults.borrow_mut().insert(key, made.clone()));
+        made
+    });
+    with(defaults.as_deref())
+}
+
+fn defaults_of(record: &RecordDesc) -> Option<Defaults> {
+    let mut filled = (record.empty)();
+    missing(record, filled.as_mut()).ok()?;
+    let unwrapped = (record.unwrap)(filled.as_ref())?;
+    // Which fields a default stores as one scalar: written into a scratch
+    // map, they leave a scalar under their key.
+    let mut scratch = Doc::new();
+    let scalar: Vec<bool> = record
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            (record.field)(unwrapped, index).is_some_and(|default| {
+                (field.table.ops.store)(
+                    field.table,
+                    default,
+                    &mut scratch,
+                    Slot::Key(&automerge::ROOT, field.key),
+                )
+                .is_ok()
+                    && matches!(
+                        automerge::ReadDoc::get(&scratch, &automerge::ROOT, field.key),
+                        Ok(Some((Value::Scalar(scalar), _)))
+                        // A counter adds up the increments made to it: one
+                        // left out would be made by each writer, and all but
+                        // one writer's increments lost.
+                        if !matches!(scalar.as_ref(), automerge::ScalarValue::Counter(_))
+                    )
+            })
+        })
+        .collect();
+    // A record none of whose fields is a scalar leaves nothing out.
+    scalar.iter().any(|scalar| *scalar).then_some(Defaults {
+        record: filled,
+        scalar,
+    })
 }
 
 /// [`Model::stores_as`] of a record.
@@ -1211,12 +1357,19 @@ pub fn write_changed_fields(
     obj: &ObjId,
     dirty: &Delta,
 ) -> Result<(), ModelError> {
-    for (index, field) in record.fields.iter().enumerate() {
-        let now = field_of(record, value, index)?;
-        let was = field_of(record, before, index)?;
-        write_key_changed(field.table, (now, was), doc, obj, field.key, dirty)?;
-    }
-    Ok(())
+    with_defaults(record, |defaults| {
+        for (index, field) in record.fields.iter().enumerate() {
+            let now = field_of(record, value, index)?;
+            let was = field_of(record, before, index)?;
+            let unchanged = matches!(dirty.key(obj, field.key), Touch::Untouched)
+                && (field.table.ops.stores_as)(field.table, now, was);
+            if unchanged || stays_absent(record, defaults, index, now, (doc, obj)) {
+                continue;
+            }
+            write_key_changed(field.table, (now, was), doc, obj, field.key, dirty)?;
+        }
+        Ok(())
+    })
 }
 
 /// Write `now` under `key` of the map `obj`, which holds `was`: what

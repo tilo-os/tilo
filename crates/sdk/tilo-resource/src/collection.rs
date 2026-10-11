@@ -1319,6 +1319,13 @@ pub struct CollectionDesc {
     item_staged: (fn() -> Box<dyn Any>, crate::table::Unstage),
 }
 
+impl CollectionDesc {
+    /// Its items' table.
+    pub(crate) fn item_table(&self) -> &'static ModelTable {
+        self.item
+    }
+}
+
 /// The [`CollectionDesc`] of `Collection<T>`.
 pub struct CollectionOf<T>(std::marker::PhantomData<T>);
 
