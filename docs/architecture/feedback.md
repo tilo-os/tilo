@@ -132,6 +132,24 @@ Live configuration must name the already-authorized room UUID, exact provider
 `record:so.tilo.chat:` and text channel ID, and select the already-certified
 reporter's root/device. These values are not present in the public demo's verified
 configuration. No destination, enrollment or grant is created by this feature.
+
+The remaining image path is missing implementation, independently of that live
+configuration. The native SDK's `RecordContent` wrapper preserves its backing
+store's current durability result, but a served content lane is not a destination
+witness. `DeviceBackend` and the browser `FilesBackend` still lack an attestation
+from their storage owner; `DocumentBlobs` exposes presence and reads, not a
+durability barrier. The relay's `RoomRecordsLink` exposes retained documents and
+current Read policy, but no owner-scoped document-media binding. Complete the
+image path through the existing record-content broker and scoped content store,
+including owner persistence and current authorization before receipt signing;
+do not substitute the reporter's cache or a new upload endpoint. The production
+native/browser `NoCapture` bindings also require an explicit focused-surface
+producer with inspected privacy bounds and frame identity. The pure masking
+permit and private preview are already present; they are not that producer.
+Implementing these adapters needs no live capture or enrollment. Exercising them
+against an actual person's surface, reporter identity and destination does, and
+those selections and permissions remain prerequisites for deployed acceptance.
+
 Native startup reads optional `feedback-destination.json` under the existing
 `org.tilo.Shell/apps` private profile. Its closed JSON contains only `room`,
 `provider` and `channel`; it contains no role, capability, identity or key. Missing
