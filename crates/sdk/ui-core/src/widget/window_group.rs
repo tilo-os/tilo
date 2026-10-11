@@ -265,10 +265,11 @@ pub struct WindowGroup {
     /// and client-lifecycle transaction. The widget owns the fade; the
     /// shell owns whether a window remains open.
     pending_close_commit: Vec<u64>,
-    /// `None` while alive; `Some` once the last tab-close drains with no
-    /// tabs or in-flight closing hosts left. `GroupRow` prunes the group
+    /// `None` while alive; `Some` when the last tab starts closing.
+    /// Its existing hosts fade within the group transition. `GroupRow` prunes the group
     /// once `close_complete()` is true.
     closing_at: Option<Instant>,
+    close_duration: Duration,
     /// Last motion policy observed from the active theme. Widget scheduling
     /// has no `Theme` parameter, so draw latches it here and the next
     /// `needs_animation_frame` query can avoid waking for transitions that
@@ -430,6 +431,7 @@ impl WindowGroup {
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
+            close_duration: crate::tokens::motion::Durations::default().base(),
             reduce_motion: false,
             style_dirty: false,
             built_active: Some(active_id),
@@ -625,7 +627,7 @@ impl WindowGroup {
 
     pub fn close_complete(&self) -> bool {
         self.closing_at
-            .is_some_and(|t| t.elapsed() >= Duration::from_millis(GROUP_CLOSE_FADE_MS))
+            .is_some_and(|t| self.reduce_motion || t.elapsed() >= self.close_duration)
     }
 
     pub fn should_show_maximized_chrome(&self, cursor_y: Option<f64>) -> bool {
@@ -1061,6 +1063,7 @@ impl WindowGroup {
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
+            close_duration: crate::tokens::motion::Durations::default().base(),
             reduce_motion: false,
             style_dirty: false,
             built_active: Some(active_id),
@@ -1260,6 +1263,9 @@ impl WindowGroup {
             self.closing_hosts
                 .entry(close_id)
                 .or_insert_with(crate::time::now);
+        }
+        if self.bar.tabs().is_empty() {
+            self.start_closing();
         }
         true
     }
@@ -1552,6 +1558,9 @@ impl WindowGroup {
             if !self.pending_close_commit.contains(&close_id) {
                 self.pending_close_commit.push(close_id);
             }
+            if self.bar.tabs().is_empty() {
+                self.start_closing();
+            }
             handled = true;
         }
 
@@ -1595,17 +1604,19 @@ impl WindowGroup {
     /// `fade_y` is currently always 0, kept in the tuple in case a future
     /// close curve wants a settle.
     fn fade_transform_params(&self) -> (f32, f64, f64, f64) {
-        if self.reduce_motion && self.closing_at.is_none() {
-            return (1.0, 0.0, 0.0, 1.0);
+        if self.close_complete() {
+            return (0.0, 0.0, 0.0, 0.95);
+        }
+        if self.reduce_motion {
+            return (if self.is_closing() { 0.0 } else { 1.0 }, 0.0, 0.0, 1.0);
         }
         if let Some(started) = self.closing_at {
             // No offset: the per-host curve already carries the y-drift.
             // Ratio of two `Duration`s taken via `as_secs_f64` rather than
             // an integer->float `as` cast on the millisecond counts.
             let raw = px_f32(
-                (started.elapsed().as_secs_f64()
-                    / Duration::from_millis(GROUP_CLOSE_FADE_MS).as_secs_f64())
-                .clamp(0.0, 1.0),
+                (started.elapsed().as_secs_f64() / self.close_duration.as_secs_f64())
+                    .clamp(0.0, 1.0),
             );
             let eased = 1.0 - (1.0 - raw).powi(3);
             let alpha = (1.0 - eased).max(0.0);
@@ -2309,6 +2320,8 @@ impl Widget for WindowGroup {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.close_duration = theme.tokens.motion.durations.base();
+        self.set_reduce_motion(theme.reduce_motion);
         let bar_node =
             (!self.external_navigation).then(|| self.bar.build_layout(taffy, theme, node_map));
         let active_id = self.bar.active_id();
@@ -2528,6 +2541,9 @@ impl Widget for WindowGroup {
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.is_closing() {
+            return;
+        }
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         let bar_child = (!self.external_navigation)
             .then(|| children.first().copied())
@@ -2622,7 +2638,10 @@ impl Widget for WindowGroup {
         }
         let style = std::mem::take(&mut self.style_dirty);
         let active_switched = self.built_active != Some(active);
-        bar || active_host || style || active_switched
+        bar || active_host
+            || style
+            || active_switched
+            || (self.is_closing() && !self.close_complete())
     }
     fn needs_redraw(&self) -> bool {
         // Redraw follows the presentation tree. Retained inactive hosts still
@@ -2657,6 +2676,9 @@ impl Widget for WindowGroup {
             .any(Widget::has_pending_visual_work)
     }
     fn needs_animation_frame(&self) -> bool {
+        if self.close_complete() {
+            return false;
+        }
         // Include group and inactive closing-host animations beyond the active presentation.
         let spawn_in_flight = !self.reduce_motion
             && self
@@ -2665,13 +2687,14 @@ impl Widget for WindowGroup {
         // GROUP_CLOSE_FADE_MS mirrors CLOSE_FADE_MS (tabs.rs) as a whole
         // millisecond u64, avoiding an f32->u64 cast at every use site.
         let close_window = Duration::from_millis(GROUP_CLOSE_FADE_MS);
-        let close_in_flight = self
-            .closing_hosts
-            .values()
-            .any(|t| t.elapsed() < close_window);
+        let close_in_flight = !self.reduce_motion
+            && self
+                .closing_hosts
+                .values()
+                .any(|t| t.elapsed() < close_window);
         let group_close_in_flight = self
             .closing_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(GROUP_CLOSE_FADE_MS));
+            .is_some_and(|t| !self.reduce_motion && t.elapsed() < self.close_duration);
         let width_in_flight = !self.reduce_motion
             && !self.close_complete()
             && self.width_spring.as_ref().is_some_and(|s| !s.is_settled());
@@ -5205,7 +5228,7 @@ mod tests {
             g.bar_mut().start_closing(1);
 
             // First handle_event drains `pending_close` into `closing_hosts`;
-            // the group is NOT yet closing while a host close is in flight.
+            // the group starts collapsing in the same interval as its final host.
             let moved = WindowEvent::CursorMoved {
                 device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
@@ -5216,12 +5239,11 @@ mod tests {
                 "precondition: host-level close latched",
             );
             assert!(
-                !g.is_closing(),
-                "group close must NOT fire while a host-level close is still in flight",
+                g.is_closing(),
+                "the last tab and group close together, before canonical reconciliation",
             );
 
-            // Expire the host-level close; the next handle_event sweeps it
-            // away, discovers the group is empty, and latches the group close.
+            // A later event must not restart or prolong the already-owned group close.
             g.force_expire_closing(1);
             let moved2 = WindowEvent::CursorMoved {
                 device_id: winit::event::DeviceId::dummy(),
@@ -5230,7 +5252,7 @@ mod tests {
             dispatch_at(&mut g, &taffy, group_node, &moved2);
             assert!(
                 g.is_closing(),
-                "after the sole tab's fade sweeps out, the group must latch its own close fade",
+                "the group close remains latched without a second fade",
             );
         }
     }
@@ -5240,7 +5262,11 @@ mod tests {
         // Case `group_close_complete_true_after_fade_duration`.
         {
             let mut g = make_group();
-            g.set_closing_at_for_tests(instant_ago_ms(GROUP_CLOSE_FADE_MS.saturating_add(20)));
+            g.set_closing_at_for_tests(
+                crate::time::now()
+                    .checked_sub(g.close_duration.saturating_add(Duration::from_millis(20)))
+                    .expect("representable close deadline"),
+            );
             assert!(
                 g.close_complete(),
                 "close_complete must flip true after the fade window elapses",
@@ -5305,7 +5331,11 @@ mod tests {
                 g.needs_animation_frame(),
                 "group-level close fade must pump frames until close_complete",
             );
-            g.set_closing_at_for_tests(instant_ago_ms(GROUP_CLOSE_FADE_MS.saturating_add(20)));
+            g.set_closing_at_for_tests(
+                crate::time::now()
+                    .checked_sub(g.close_duration.saturating_add(Duration::from_millis(20)))
+                    .expect("representable close deadline"),
+            );
             assert!(
                 !g.needs_animation_frame(),
                 "after the fade window elapses, frames are no longer required",
