@@ -100,7 +100,27 @@ frame is in flight. When a frame no longer fits one interval (worst cost plus
 margin above it), the loop raises the floor to one queued frame
 (`PresentPipe::set_min_queue_depth`) so building overlaps presenting, as
 before; `TILO_PRESENT_PIPELINED=1` keeps one queued frame for A/B
-measurement. When the pipe is full the paint gate declines to build rather
+measurement.
+
+A single vblank-paced direct output overlaps rendering with the previous
+frame's flip instead (`Presenter::overlaps_presentation`). Its swapchain has
+three slots: while KMS shows one and a queued flip owns another, the next
+frame renders into the third, then is queued once that flip retired (KMS takes
+one flip per CRTC at a time). The presenter returns as soon as the frame is
+rendered and its flip queued; the pipe frees capacity then, and publishes the
+frame's retirement, physical proof and vblank only when its flip retires
+(`Presenter::retire_owed`), in submission order. No frame is admitted behind
+one rendering, the render-bound floor included: the GPU is busy either way,
+so the frame rendered next is built from the newest state, and at most two
+frames are between handoff and the screen (`present::admits`). The
+GPU-completion wait stays on the render thread: vello's bump-allocator
+counters must be read back before a frame may be shown, and a legacy page
+flip takes no in-fence. `TILO_PRESENT_OVERLAP=0` restores waiting for each
+frame's own flip, for A/B measurement; `FRAME-LIFECYCLE` reports
+`overlapped=` and `retire_wait_us=` (render return to flip retirement), and
+`kms_retirement_us=` then counts only the wait for the previous flip.
+
+When the pipe is full the paint gate declines to build rather
 than grow a queue the display can never drain. A transition's clock is held
 only while a *due* frame is refused (`present_hold_credit`); the normal wait
 for a vblank-paced flip is animation time.

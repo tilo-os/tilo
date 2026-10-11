@@ -12,6 +12,16 @@
 //! page flip admits none: a frame queued behind one that is still waiting for its vblank would
 //! start rendering only at that vblank and reach the screen an interval later.
 //!
+//! A presenter can also return before its frame's page flip retires
+//! ([`Presenter::overlaps_presentation`]): the frame is rendered and its flip queued, and the
+//! next frame renders while that flip waits for its vblank. Each frame then has two
+//! boundaries. Its render returning frees the pipe for the next frame; its flip retiring
+//! publishes the frame ([`PresentPipe::presented`], [`PresentPipe::latest_retirement`], its
+//! physical outcome), strictly in submission order. At most [`MAX_UNRETIRED`] frames are
+//! between handoff and retirement beyond the queue depth ([`admits`]), and no frame is admitted
+//! behind one rendering: the GPU is busy either way, and a queued frame would only age, so the
+//! frame rendered next is always built from the newest state.
+//!
 //! A presenter panic unwinds the render thread; the next [`PresentPipe::submit`] then sees a
 //! closed channel and drops to no presenter, so a lost display doesn't take the session (and
 //! clients' unsaved work) with it. The headless backend stays synchronous, since its `submit_frame` output is read back immediately by the test-control `snapshot` command.
@@ -31,6 +41,38 @@ use super::render::OutputId;
 /// Frames accepted beyond the one currently being presented, unless the
 /// presenter reports its own [`Presenter::queue_depth`].
 pub const QUEUE_DEPTH: usize = 1;
+
+/// Frames an overlapping presenter may owe a retirement for while the next one renders: the one
+/// whose flip waits for its vblank. The presenter queues the next flip only once that one
+/// retired, so with the frame rendering, two frames are between handoff and the screen.
+pub const MAX_UNRETIRED: usize = 1;
+
+/// Whether the loop may hand over another frame, with `inflight` frames handed over whose render
+/// has not returned and `unretired` rendered frames still waiting for their flip.
+///
+/// `inflight` stays within `depth` frames beyond the one rendering. The flips awaited stay within
+/// [`MAX_UNRETIRED`] beyond those: a presenter owing more than it should is refused frames until
+/// they retire, rather than growing the distance between the newest frame and the screen.
+pub fn admits(inflight: usize, unretired: usize, depth: usize) -> bool {
+    inflight <= depth && inflight.saturating_add(unretired) <= depth.saturating_add(MAX_UNRETIRED)
+}
+
+/// The queue depth the pipe enforces: the presenter's own, raised to the loop's render-bound
+/// floor unless the presenter overlaps presentation. An overlapping presenter renders the next
+/// frame while the previous one waits for its vblank, so the floor's reason, building only after
+/// a flip retired, does not arise; a frame admitted behind the one rendering would wait there a
+/// whole render and reach the screen with input that old.
+pub fn effective_queue_depth(presenter: usize, floor: usize, overlapping: bool) -> usize {
+    if overlapping {
+        presenter
+    } else {
+        presenter.max(floor)
+    }
+}
+
+/// How long an idle render thread waits on an owed flip before it looks for a new frame again.
+/// Bounds how late a frame arriving while a flip is overdue starts to render.
+const OWED_RETIRE_SLICE: Duration = Duration::from_millis(2);
 
 /// Normal refresh-rate frames stay silent. Anomalous lifecycle records flow
 /// through the session runner's bounded, periodically-synced flight log, so a
@@ -74,6 +116,15 @@ pub struct Retirement {
     pub at: Instant,
     /// How long the frame waited behind earlier frames before its render began.
     pub queue_wait: Duration,
+    pub display: DisplayTiming,
+}
+
+/// What a presenter reports when a frame retires: the frame it presented without one
+/// ([`Presenter::owes_retirement`] false), or one whose flip retired later
+/// ([`Presenter::retire_owed`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OwedRetirement {
+    pub physical: Option<PhysicalPresentation>,
     pub display: DisplayTiming,
 }
 
@@ -125,6 +176,33 @@ pub trait Presenter: Send {
     /// Display timing of the exact preceding observed frame.
     fn display_timing(&self) -> DisplayTiming {
         DisplayTiming::default()
+    }
+
+    /// This presenter returns once a frame is rendered and its flip queued, before the flip
+    /// retires, so the next frame renders while it waits for its vblank. Read after every frame.
+    /// Its own [`Self::queue_depth`] then stands without the loop's render-bound floor
+    /// ([`effective_queue_depth`]).
+    fn overlaps_presentation(&self) -> bool {
+        false
+    }
+
+    /// The frame just presented queued a flip that has not retired: its physical outcome and
+    /// display timing come from a later [`Self::retire_owed`], and what
+    /// [`Self::present_frame_observed`] and [`Self::display_timing`] returned for it is void.
+    fn owes_retirement(&self) -> bool {
+        false
+    }
+
+    /// When the oldest owed flip should retire, so an idle render thread sleeps until then.
+    fn owed_retirement_due(&self) -> Option<Instant> {
+        None
+    }
+
+    /// Owed frames whose flips retired since the last call, oldest first, after waiting at most
+    /// `wait` for the oldest still pending. Includes flips retired inside a later present, which
+    /// retires the previous flip before it queues its own.
+    fn retire_owed(&mut self, _wait: Duration) -> Vec<OwedRetirement> {
+        Vec::new()
     }
 
     /// Build the renderer before the first frame arrives. Called once on the render thread as it
@@ -180,6 +258,8 @@ pub struct PresentPipe {
     tx: Sender<PresentMsg>,
     /// Frames handed over but not yet presented; the logic thread reads it to decide whether to build the next frame.
     inflight: Arc<AtomicUsize>,
+    /// Frames presented whose flip has not retired ([`Presenter::owes_retirement`]).
+    unretired: Arc<AtomicUsize>,
     /// Serial of the newest frame the render thread has finished handling.
     /// With the FIFO channel this also equals the number of retired frames,
     /// but the identity is what callers need for a reliable acknowledgement.
@@ -194,6 +274,8 @@ pub struct PresentPipe {
     last_retirement: Arc<Mutex<Option<Retirement>>>,
     /// The presenter's own [`Presenter::queue_depth`], as of its last frame.
     queue_depth: Arc<AtomicUsize>,
+    /// [`Presenter::overlaps_presentation`], as of its last frame.
+    overlapping: Arc<AtomicBool>,
     /// The logic thread's floor on the queue depth ([`Self::set_min_queue_depth`]).
     min_queue_depth: usize,
     physical_results: Arc<Mutex<VecDeque<PhysicalOutcome>>>,
@@ -213,6 +295,11 @@ struct FrameLifecycle {
     input_age_at_enqueue: Option<Duration>,
     phases: Option<FramePhaseTiming>,
     display: DisplayTiming,
+    /// From the presenter returning to the frame's flip retiring, for a frame whose
+    /// retirement was owed ([`Presenter::owes_retirement`]); zero otherwise.
+    retire_wait: Duration,
+    /// The presenter overlapped this frame's render with the previous frame's flip.
+    overlapped: bool,
 }
 
 fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
@@ -224,6 +311,8 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
         input_age_at_enqueue,
         phases,
         display,
+        retire_wait,
+        overlapped,
     } = timing;
     // Keep the first completed presentation observable even when
     // it is fast and the event loop then parks indefinitely.
@@ -234,7 +323,7 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
         || total >= SLOW_FRAME_LIFECYCLE
     {
         eprintln!(
-            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} vblank_paced={} flip_to_vblank_us={} monotonic_us={}",
+            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} vblank_paced={} flip_to_vblank_us={} overlapped={overlapped} retire_wait_us={} monotonic_us={}",
             queue_wait.as_micros(),
             render.as_micros(),
             total.as_micros(),
@@ -255,6 +344,7 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
                     .as_micros()
                     .to_string()
             ),
+            retire_wait.as_micros(),
             // CLOCK_MONOTONIC at retirement, so a boot or sign-in measurement can place the
             // session's first presented frame on the system's own clock (TIL-767).
             crate::compositor::client_input::monotonic_time_ns()
@@ -269,39 +359,260 @@ struct RetireBoard {
     last_retirement: Arc<Mutex<Option<Retirement>>>,
     presented: Arc<AtomicU64>,
     queue_depth: Arc<AtomicUsize>,
+    overlapping: Arc<AtomicBool>,
     inflight: Arc<AtomicUsize>,
+    unretired: Arc<AtomicUsize>,
 }
 
 impl RetireBoard {
-    fn push_physical(&self, outcome: PhysicalOutcome) {
+    /// Publish one frame that reached the display, or was handled without
+    /// reaching it: its physical outcome, then the retirement the logic thread
+    /// paces by and acknowledges frames with.
+    fn retire(&self, retirement: Retirement, physical: Option<PhysicalPresentation>) {
         self.physical_results
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push_back(outcome);
-    }
-
-    /// Publish one finished frame, ending with the in-flight decrement that
-    /// returns its capacity.
-    fn publish(&self, retirement: Retirement, queue_depth: usize) {
+            .push_back((retirement.serial, physical));
         let serial = retirement.serial;
         *self
             .last_retirement
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retirement);
         self.presented.store(serial, Ordering::Release);
-        // Before the decrement: a loop that finds capacity already sees the
-        // depth that capacity was granted under.
+    }
+
+    /// One handed-over frame finished rendering: return its capacity. The depth
+    /// and the flips still owed are stored first, so a loop that finds capacity
+    /// already sees what that capacity was granted under.
+    fn release(&self, queue_depth: usize, overlapping: bool, unretired: usize) {
         self.queue_depth.store(queue_depth, Ordering::Release);
+        self.overlapping.store(overlapping, Ordering::Release);
+        self.unretired.store(unretired, Ordering::Release);
         // Decrement *after* the present so the logic thread's capacity check reflects work actually finished, not work dequeued.
         self.inflight.fetch_sub(1, Ordering::Release);
     }
 }
 
-/// Log one presented frame: its lifecycle record and the presenter's own detail.
-fn report_frame(presenter: &mut dyn Presenter, serial: u64, revision: u64, timing: FrameLifecycle) {
-    log_frame_lifecycle(serial, revision, timing);
-    if let Some(detail) = presenter.frame_detail() {
-        eprintln!("CPU-FRAME serial={serial} revision={revision} {detail}");
+/// Frames the presenter returned from, in submission order, until each is
+/// published. A frame owing its retirement holds back every frame after it,
+/// so retirements reach the logic thread in the order the frames were
+/// submitted: `presented` never passes a frame still waiting for its flip.
+struct RetireQueue<T> {
+    frames: VecDeque<(T, Option<OwedRetirement>)>,
+}
+
+impl<T> Default for RetireQueue<T> {
+    fn default() -> Self {
+        Self {
+            frames: VecDeque::new(),
+        }
+    }
+}
+
+impl<T> RetireQueue<T> {
+    /// Frames whose flip has not retired yet.
+    fn owed(&self) -> usize {
+        self.frames
+            .iter()
+            .filter(|(_, outcome)| outcome.is_none())
+            .count()
+    }
+
+    /// A frame the presenter returned from, with its outcome unless it is owed.
+    fn push(&mut self, frame: T, outcome: Option<OwedRetirement>) {
+        self.frames.push_back((frame, outcome));
+    }
+
+    /// Owed flips that retired, oldest first: each settles the oldest frame
+    /// still owing one. Surplus outcomes (a presenter retiring a flip it never
+    /// reported owing) have no frame to settle and are dropped.
+    fn settle(&mut self, outcomes: impl IntoIterator<Item = OwedRetirement>) {
+        let mut owed = self
+            .frames
+            .iter_mut()
+            .filter_map(|(_, outcome)| outcome.is_none().then_some(outcome));
+        for retired in outcomes {
+            let Some(slot) = owed.next() else {
+                break;
+            };
+            *slot = Some(retired);
+        }
+    }
+
+    /// The settled frames ahead of the first still owed, in order.
+    fn take_ready(&mut self) -> Vec<(T, OwedRetirement)> {
+        let mut ready = Vec::new();
+        while let Some((_, Some(_))) = self.frames.front() {
+            if let Some((frame, Some(outcome))) = self.frames.pop_front() {
+                ready.push((frame, outcome));
+            }
+        }
+        ready
+    }
+}
+
+/// A frame the presenter returned from, until its retirement is published.
+struct Rendered {
+    serial: u64,
+    revision: u64,
+    enqueued_at: Instant,
+    queue_wait: Duration,
+    render: Duration,
+    rendered_at: Instant,
+    inflight_at_enqueue: usize,
+    input_age_at_enqueue: Option<Duration>,
+    phases: Option<FramePhaseTiming>,
+    owed: bool,
+    overlapped: bool,
+}
+
+/// The `tilo-present` thread: presents frames, and publishes each one's
+/// retirement in submission order.
+struct RenderThread {
+    presenter: Box<dyn Presenter>,
+    board: RetireBoard,
+    on_retire: RetireSignal,
+    queue: RetireQueue<Rendered>,
+}
+
+impl RenderThread {
+    fn run(mut self, rx: &Receiver<PresentMsg>) {
+        self.presenter.prepare();
+        loop {
+            let msg = if self.queue.owed() > 0 {
+                // A flip is owed: sleep until it should have retired unless a frame
+                // arrives first, which then renders beside it.
+                let wait = self
+                    .presenter
+                    .owed_retirement_due()
+                    .map_or(OWED_RETIRE_SLICE, |due| {
+                        due.saturating_duration_since(Instant::now())
+                    });
+                match rx.recv_timeout(wait) {
+                    Ok(msg) => msg,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        self.settle(OWED_RETIRE_SLICE);
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            } else {
+                match rx.recv() {
+                    Ok(msg) => msg,
+                    Err(_) => break,
+                }
+            };
+            match msg {
+                PresentMsg::Frame {
+                    frame,
+                    output,
+                    serial,
+                    enqueued_at,
+                    input_age_at_enqueue,
+                    inflight_at_enqueue,
+                    pins,
+                } => {
+                    let render_started = Instant::now();
+                    let queue_wait = render_started.saturating_duration_since(enqueued_at);
+                    let physical = self.presenter.present_frame_observed(&frame, output);
+                    // Rendered: its client buffers may go back.
+                    drop(pins);
+                    if let Some(detail) = self.presenter.frame_detail() {
+                        eprintln!(
+                            "CPU-FRAME serial={serial} revision={} {detail}",
+                            frame.revision
+                        );
+                    }
+                    let owed = self.presenter.owes_retirement();
+                    let overlapped = self.presenter.overlaps_presentation();
+                    let rendered = Rendered {
+                        serial,
+                        revision: frame.revision,
+                        enqueued_at,
+                        queue_wait,
+                        render: render_started.elapsed(),
+                        rendered_at: Instant::now(),
+                        inflight_at_enqueue,
+                        input_age_at_enqueue,
+                        phases: self.presenter.frame_phase_timing(),
+                        owed,
+                        overlapped,
+                    };
+                    let outcome = (!owed).then(|| OwedRetirement {
+                        physical,
+                        display: self.presenter.display_timing(),
+                    });
+                    // Flips that retired inside this present are earlier frames'.
+                    let earlier = self.presenter.retire_owed(Duration::ZERO);
+                    self.queue.settle(earlier);
+                    self.queue.push(rendered, outcome);
+                    self.publish_ready();
+                    self.board
+                        .release(self.presenter.queue_depth(), overlapped, self.queue.owed());
+                    // Then wake the loop — strictly after the decrement, so a loop that wakes on this signal is guaranteed to see the capacity.
+                    (self.on_retire)();
+                }
+                PresentMsg::Resize(size) => {
+                    self.presenter.resize(size);
+                    self.settle(Duration::ZERO);
+                }
+                PresentMsg::Dpms(on) => {
+                    self.presenter.set_dpms(on);
+                    self.settle(Duration::ZERO);
+                }
+                PresentMsg::Stop => break,
+            }
+        }
+    }
+
+    /// Collect owed flips that retired, waiting at most `wait`, and publish
+    /// what they release.
+    fn settle(&mut self, wait: Duration) {
+        let retired = self.presenter.retire_owed(wait);
+        if retired.is_empty() {
+            return;
+        }
+        self.queue.settle(retired);
+        self.publish_ready();
+        self.board
+            .unretired
+            .store(self.queue.owed(), Ordering::Release);
+        (self.on_retire)();
+    }
+
+    fn publish_ready(&mut self) {
+        for (frame, outcome) in self.queue.take_ready() {
+            let now = Instant::now();
+            let at = if frame.owed { now } else { frame.rendered_at };
+            log_frame_lifecycle(
+                frame.serial,
+                frame.revision,
+                FrameLifecycle {
+                    queue_wait: frame.queue_wait,
+                    render: frame.render,
+                    total: at.saturating_duration_since(frame.enqueued_at),
+                    inflight_at_enqueue: frame.inflight_at_enqueue,
+                    input_age_at_enqueue: frame.input_age_at_enqueue,
+                    phases: frame.phases,
+                    display: outcome.display,
+                    retire_wait: if frame.owed {
+                        now.saturating_duration_since(frame.rendered_at)
+                    } else {
+                        Duration::ZERO
+                    },
+                    overlapped: frame.overlapped,
+                },
+            );
+            self.board.retire(
+                Retirement {
+                    serial: frame.serial,
+                    at,
+                    queue_wait: frame.queue_wait,
+                    display: outcome.display,
+                },
+                outcome.physical,
+            );
+        }
     }
 }
 
@@ -353,10 +664,12 @@ impl PresentPipe {
     /// `on_retire` fires on the render thread each time a frame finishes presenting, so the loop can
     /// wake up — without it, a parked loop sleeps out the whole frame interval even though capacity
     /// came back microseconds later, measured as a 33.3 ms paint period (every other deadline) on a render thread keeping up far better than that.
-    pub fn spawn(mut presenter: Box<dyn Presenter>, on_retire: RetireSignal) -> Self {
+    pub fn spawn(presenter: Box<dyn Presenter>, on_retire: RetireSignal) -> Self {
         let (tx, rx): (Sender<PresentMsg>, Receiver<PresentMsg>) = channel();
         let inflight = Arc::new(AtomicUsize::new(0));
+        let unretired = Arc::new(AtomicUsize::new(0));
         let queue_depth = Arc::new(AtomicUsize::new(QUEUE_DEPTH));
+        let overlapping = Arc::new(AtomicBool::new(false));
         let presented_frames = Arc::new(AtomicU64::new(0));
         let submitted_frames = Arc::new(AtomicU64::new(0));
         let last_retirement = Arc::new(Mutex::new(None));
@@ -366,7 +679,9 @@ impl PresentPipe {
             last_retirement: last_retirement.clone(),
             presented: presented_frames.clone(),
             queue_depth: queue_depth.clone(),
+            overlapping: overlapping.clone(),
             inflight: inflight.clone(),
+            unretired: unretired.clone(),
         };
         let finished = Arc::new(AtomicBool::new(false));
         let thread_finished = finished.clone();
@@ -375,60 +690,13 @@ impl PresentPipe {
             .spawn(move || {
                 // Flag completion however this thread leaves (normal return or unwind), so `shutdown` never waits on a thread that's already gone.
                 let _done = FinishedOnDrop(thread_finished);
-                presenter.prepare();
-                for msg in rx {
-                    match msg {
-                        PresentMsg::Frame {
-                            frame,
-                            output,
-                            serial,
-                            enqueued_at,
-                            input_age_at_enqueue,
-                            inflight_at_enqueue,
-                            pins,
-                        } => {
-                            let render_started = Instant::now();
-                            let queue_wait = render_started.saturating_duration_since(enqueued_at);
-                            let physical = presenter.present_frame_observed(&frame, output);
-                            // Rendered: its client buffers may go back.
-                            drop(pins);
-                            board.push_physical((serial, physical));
-                            let phases = presenter.frame_phase_timing();
-                            let display = presenter.display_timing();
-                            let render_done = Instant::now();
-                            let render = render_done.saturating_duration_since(render_started);
-                            let total = render_done.saturating_duration_since(enqueued_at);
-                            report_frame(
-                                &mut *presenter,
-                                serial,
-                                frame.revision,
-                                FrameLifecycle {
-                                    queue_wait,
-                                    render,
-                                    total,
-                                    inflight_at_enqueue,
-                                    input_age_at_enqueue,
-                                    phases,
-                                    display,
-                                },
-                            );
-                            board.publish(
-                                Retirement {
-                                    serial,
-                                    at: render_done,
-                                    queue_wait,
-                                    display,
-                                },
-                                presenter.queue_depth(),
-                            );
-                            // Then wake the loop — strictly after the decrement, so a loop that wakes on this signal is guaranteed to see the capacity.
-                            on_retire();
-                        }
-                        PresentMsg::Resize(size) => presenter.resize(size),
-                        PresentMsg::Dpms(on) => presenter.set_dpms(on),
-                        PresentMsg::Stop => break,
-                    }
+                RenderThread {
+                    presenter,
+                    board,
+                    on_retire,
+                    queue: RetireQueue::default(),
                 }
+                .run(&rx);
             });
         // If the OS refuses to hand over a thread, `rx` (moved into the closure above) is
         // dropped right here along with the rest of the unspawned closure — so every future
@@ -450,10 +718,12 @@ impl PresentPipe {
         Self {
             tx,
             inflight,
+            unretired,
             presented: presented_frames,
             submitted: submitted_frames,
             last_retirement,
             queue_depth,
+            overlapping,
             min_queue_depth: 0,
             physical_results,
             backpressured: 0,
@@ -471,22 +741,35 @@ impl PresentPipe {
             .collect()
     }
 
-    /// Whether another frame may be built and handed over.
+    /// Whether another frame may be built and handed over ([`admits`]).
     pub fn has_capacity(&self) -> bool {
-        self.inflight.load(Ordering::Acquire) <= self.queue_depth()
+        admits(
+            self.inflight.load(Ordering::Acquire),
+            self.unretired(),
+            self.queue_depth(),
+        )
     }
 
     /// Frames admitted beyond the one presenting: the presenter's own depth,
-    /// raised to the logic thread's floor.
+    /// raised to the logic thread's floor unless it overlaps presentation
+    /// ([`effective_queue_depth`]).
     pub fn queue_depth(&self) -> usize {
-        self.queue_depth
-            .load(Ordering::Acquire)
-            .max(self.min_queue_depth)
+        effective_queue_depth(
+            self.queue_depth.load(Ordering::Acquire),
+            self.min_queue_depth,
+            self.overlapping.load(Ordering::Acquire),
+        )
+    }
+
+    /// Rendered frames whose flip has not retired yet.
+    pub fn unretired(&self) -> usize {
+        self.unretired.load(Ordering::Acquire)
     }
 
     /// Admit at least `depth` frames beyond the one presenting, whatever the
-    /// presenter reports. The loop raises it when a frame no longer fits one
-    /// refresh interval, so building overlaps the previous frame's present.
+    /// presenter reports, unless it overlaps presentation. The loop raises it
+    /// when a frame no longer fits one refresh interval, so building overlaps
+    /// the previous frame's present.
     pub fn set_min_queue_depth(&mut self, depth: usize) {
         self.min_queue_depth = depth;
     }
@@ -499,8 +782,9 @@ impl PresentPipe {
         // wedge without emitting at the display refresh rate.
         if count == 1 || count.is_power_of_two() {
             eprintln!(
-                "FRAME-LIFECYCLE event=backpressure count={count} inflight={} submitted={} retired={}",
+                "FRAME-LIFECYCLE event=backpressure count={count} inflight={} unretired={} submitted={} retired={}",
                 self.inflight(),
+                self.unretired(),
                 self.submitted(),
                 self.presented(),
             );
@@ -511,7 +795,8 @@ impl PresentPipe {
         self.backpressured
     }
 
-    /// Frames the render thread has finished presenting.
+    /// Serial of the newest frame retired: shown, or handled without reaching the screen. A
+    /// frame an overlapping presenter rendered counts only once its flip retired.
     pub fn presented(&self) -> u64 {
         self.presented.load(Ordering::Acquire)
     }
@@ -529,7 +814,9 @@ impl PresentPipe {
     /// This is deliberately called a retirement rather than a physical
     /// display time: each backend defines when `present_frame` returns. The
     /// DRM direct path separately tightens that boundary to a page-flip event,
-    /// and reports that event's vblank in [`Retirement::display`].
+    /// and reports that event's vblank in [`Retirement::display`]; when it
+    /// overlaps rendering with the flip, the retirement is published once the
+    /// flip retired ([`Presenter::retire_owed`]), not when the render returned.
     pub fn latest_retirement(&self) -> Option<Retirement> {
         *self
             .last_retirement
@@ -1197,6 +1484,254 @@ mod tests {
         drop(held);
         tilo_test_env::wait_until("the held frames", || pipe.presented() == 3);
         assert!(pipe.has_capacity());
+        pipe.shutdown();
+    }
+
+    #[test]
+    fn admission_bounds_frames_in_flight_and_never_queues_behind_a_render() {
+        // Phase `an_overlapping_presenter_admits_a_frame_beside_the_owed_flip`.
+        assert!(admits(0, 0, 0), "an idle pipe takes a frame");
+        assert!(
+            admits(0, MAX_UNRETIRED, 0),
+            "the next frame renders while the previous one waits for its vblank"
+        );
+        // Phase `latest_wins_no_frame_waits_behind_one_rendering`.
+        assert!(
+            !admits(1, 0, 0),
+            "a frame queued behind one rendering would age a whole render"
+        );
+        assert_eq!(
+            effective_queue_depth(0, 1, true),
+            0,
+            "the render-bound floor does not apply while rendering overlaps the flip"
+        );
+        assert_eq!(
+            effective_queue_depth(0, 1, false),
+            1,
+            "a presenter waiting for its flip keeps the floor"
+        );
+        // Phase `in_flight_frames_stay_bounded`.
+        assert!(
+            !admits(0, MAX_UNRETIRED.saturating_add(1), 0),
+            "a presenter owing more flips than it should is refused frames"
+        );
+        assert!(
+            admits(1, 1, 1),
+            "an explicit queue depth still admits its frame"
+        );
+        assert!(!admits(1, 2, 1));
+        assert!(!admits(2, 0, 1));
+    }
+
+    #[test]
+    fn retirements_publish_in_submission_order() {
+        let shown = OwedRetirement {
+            physical: Some(PhysicalPresentation {
+                timestamp: Duration::from_millis(50),
+                sequence: 3,
+                refresh: None,
+            }),
+            display: DisplayTiming::default(),
+        };
+        let mut queue = RetireQueue::default();
+        queue.push(1_u64, None);
+        // An unchanged frame queued no flip: it is shown by the one still owed.
+        queue.push(2, Some(OwedRetirement::default()));
+        assert_eq!(queue.owed(), 1);
+        assert!(
+            queue.take_ready().is_empty(),
+            "a frame never retires ahead of an earlier one waiting for its flip"
+        );
+        queue.push(3, None);
+        queue.settle([shown]);
+        assert_eq!(
+            queue.take_ready(),
+            vec![(1, shown), (2, OwedRetirement::default())]
+        );
+        assert_eq!(queue.owed(), 1, "frame 3 still waits for its own flip");
+        // A presenter reporting a flip nobody owes cannot settle a future frame.
+        queue.settle([shown, shown]);
+        assert_eq!(queue.take_ready(), vec![(3, shown)]);
+        queue.push(4, None);
+        assert!(queue.take_ready().is_empty());
+    }
+
+    /// A presenter whose frames return once rendered (held on `gpu`) and retire when
+    /// the test releases their flip on `flips`.
+    struct Overlapping {
+        gpu: Arc<Mutex<()>>,
+        rendered: Arc<AtomicU64>,
+        /// Whether each next frame queues a flip; true once this runs out.
+        queues_flip: VecDeque<bool>,
+        flips: Receiver<OwedRetirement>,
+        owes: bool,
+    }
+
+    impl Presenter for Overlapping {
+        fn present(&mut self, _scene: &Scene, _output: OutputId) {
+            let _held = self
+                .gpu
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.owes = self.queues_flip.pop_front().unwrap_or(true);
+            self.rendered.fetch_add(1, Ordering::Release);
+        }
+        fn queue_depth(&self) -> usize {
+            0
+        }
+        fn overlaps_presentation(&self) -> bool {
+            true
+        }
+        fn owes_retirement(&self) -> bool {
+            self.owes
+        }
+        fn retire_owed(&mut self, wait: Duration) -> Vec<OwedRetirement> {
+            let mut retired: Vec<_> = self.flips.recv_timeout(wait).into_iter().collect();
+            retired.extend(self.flips.try_iter());
+            retired
+        }
+    }
+
+    fn flip_at(sequence: u64, vblank: Instant) -> OwedRetirement {
+        OwedRetirement {
+            physical: Some(PhysicalPresentation {
+                timestamp: Duration::from_millis(sequence),
+                sequence,
+                refresh: None,
+            }),
+            display: DisplayTiming {
+                vblank_paced: true,
+                vblank: Some(vblank),
+                flip_queued_at: Some(vblank),
+            },
+        }
+    }
+
+    #[test]
+    fn rendering_overlaps_the_previous_flip_when_the_gpu_is_slower_than_refresh() {
+        let gpu = Arc::new(Mutex::new(()));
+        let rendered = Arc::new(AtomicU64::new(0));
+        let (flip, flips) = channel();
+        let mut pipe = spawn_with_retire(Box::new(Overlapping {
+            gpu: gpu.clone(),
+            rendered: rendered.clone(),
+            queues_flip: VecDeque::new(),
+            flips,
+            owes: false,
+        }));
+        pipe.set_min_queue_depth(1);
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        tilo_test_env::wait_until("frame 1 to render", || {
+            rendered.load(Ordering::Acquire) == 1 && pipe.inflight() == 0
+        });
+        assert_eq!(
+            pipe.presented(),
+            0,
+            "frame 1 is not shown before its flip retires"
+        );
+        assert_eq!(pipe.unretired(), 1);
+        assert!(
+            pipe.has_capacity(),
+            "the next frame need not wait for frame 1's vblank"
+        );
+
+        // Frame 2 renders for longer than a refresh while frame 1 waits for its vblank.
+        let rendering = gpu.lock().expect("hold frame 2 on the GPU");
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        assert!(
+            !pipe.has_capacity(),
+            "no frame waits behind one rendering, whatever the render-bound floor says"
+        );
+        drop(rendering);
+        tilo_test_env::wait_until("frame 2 to render beside frame 1's pending flip", || {
+            rendered.load(Ordering::Acquire) == 2 && pipe.inflight() == 0
+        });
+        assert_eq!(
+            pipe.presented(),
+            0,
+            "frame 2 rendered without waiting for frame 1's flip"
+        );
+        assert_eq!(pipe.unretired(), 2);
+        assert!(
+            !pipe.has_capacity(),
+            "two frames between handoff and the screen: no third until one retires"
+        );
+        let vblank = Instant::now();
+        flip.send(flip_at(1, vblank))
+            .expect("release frame 1's flip");
+        tilo_test_env::wait_until("frame 1 to retire", || pipe.presented() == 1);
+        let retired = pipe.latest_retirement().expect("frame 1's retirement");
+        assert_eq!(retired.serial, 1);
+        assert_eq!(
+            retired.display.vblank,
+            Some(vblank),
+            "the retirement carries the vblank the flip retired on"
+        );
+        assert!(pipe.has_capacity());
+
+        // Nothing else arrives: the idle render thread still retires frame 2's flip.
+        let second = Instant::now();
+        flip.send(flip_at(2, second))
+            .expect("release frame 2's flip");
+        tilo_test_env::wait_until("frame 2 to retire on an idle thread", || {
+            pipe.presented() == 2
+        });
+        assert_eq!(pipe.unretired(), 0);
+        assert_eq!(
+            pipe.take_physical_results(),
+            vec![
+                (1, flip_at(1, vblank).physical),
+                (2, flip_at(2, second).physical)
+            ],
+            "physical outcomes keep their exact serials, in order"
+        );
+        pipe.shutdown();
+    }
+
+    #[test]
+    fn owed_flips_bound_the_frames_in_flight_and_hold_later_retirements() {
+        let rendered = Arc::new(AtomicU64::new(0));
+        let (flip, flips) = channel();
+        let mut pipe = spawn_with_retire(Box::new(Overlapping {
+            gpu: Arc::new(Mutex::new(())),
+            rendered: rendered.clone(),
+            // Frame 2 is unchanged: it queues no flip and is shown by frame 1's.
+            queues_flip: VecDeque::from([true, false, true]),
+            flips,
+            owes: false,
+        }));
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        tilo_test_env::wait_until("frame 1 to render", || pipe.inflight() == 0);
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        tilo_test_env::wait_until("frame 2 to render", || {
+            rendered.load(Ordering::Acquire) == 2 && pipe.inflight() == 0
+        });
+        assert_eq!(
+            pipe.presented(),
+            0,
+            "frame 2 retires with the flip that shows it, not ahead of frame 1"
+        );
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        tilo_test_env::wait_until("frame 3 to render", || {
+            rendered.load(Ordering::Acquire) == 3 && pipe.inflight() == 0
+        });
+        assert_eq!(pipe.unretired(), 2);
+        assert!(
+            !pipe.has_capacity(),
+            "two flips owed: no more frames until one retires"
+        );
+        let vblank = Instant::now();
+        flip.send(flip_at(1, vblank))
+            .expect("release frame 1's flip");
+        tilo_test_env::wait_until("frames 1 and 2 to retire", || pipe.presented() == 2);
+        assert!(pipe.has_capacity(), "capacity returns as the flip retires");
+        assert_eq!(
+            pipe.take_physical_results(),
+            vec![(1, flip_at(1, vblank).physical), (2, None)]
+        );
+        flip.send(flip_at(3, vblank))
+            .expect("release frame 3's flip");
+        tilo_test_env::wait_until("frame 3 to retire", || pipe.presented() == 3);
         pipe.shutdown();
     }
 

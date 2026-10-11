@@ -226,15 +226,21 @@ impl Card {
     }
 }
 
-/// Two compositor-owned GPU allocations that can be both rendered into and
-/// scanned out.  This is constructed as a capability probe before the Vulkan
-/// aliases exist; ordinary presentation continues using dumb buffers until
-/// the complete direct path is ready.
+/// Images in a direct output's swapchain: the one KMS shows, the one a queued
+/// flip will show, and one more the next frame renders into while that flip
+/// waits for its vblank. With two, a pending flip owns both and the renderer
+/// idles until the vblank; the third lets rendering overlap it.
+pub(super) const DIRECT_SLOTS: usize = 3;
+
+/// [`DIRECT_SLOTS`] compositor-owned GPU allocations that can be both rendered
+/// into and scanned out.  This is constructed as a capability probe before the
+/// Vulkan aliases exist; ordinary presentation continues using dumb buffers
+/// until the complete direct path is ready.
 struct GbmScanoutBuffers {
     device: GbmDevice<Card>,
-    buffers: [gbm::BufferObject<()>; 2],
-    dma_fds: [OwnedFd; 2],
-    fbs: [framebuffer::Handle; 2],
+    buffers: [gbm::BufferObject<()>; DIRECT_SLOTS],
+    dma_fds: [OwnedFd; DIRECT_SLOTS],
+    fbs: [framebuffer::Handle; DIRECT_SLOTS],
 }
 
 /// Immutable description borrowed by the Vulkan importer.  Ownership stays in
@@ -285,30 +291,38 @@ impl GbmScanoutBuffers {
                     }),
             }
         };
-        let buffers = [allocate(0)?, allocate(1)?];
+        let buffers = [allocate(0)?, allocate(1)?, allocate(2)?];
         for (index, buffer) in buffers.iter().enumerate() {
             validate_gbm_scanout_buffer(buffer, width, height, format)
                 .map_err(|error| format!("GBM scanout buffer[{index}]: {error}"))?;
         }
-        let dma_fds = [
-            buffers[0]
+        let export = |index: usize| {
+            buffers[index]
                 .fd_for_plane(0)
-                .map_err(|error| format!("export GBM scanout buffer[0]: {error}"))?,
-            buffers[1]
-                .fd_for_plane(0)
-                .map_err(|error| format!("export GBM scanout buffer[1]: {error}"))?,
-        ];
-        let fb0 = device
-            .add_planar_framebuffer(&buffers[0], FbCmd2Flags::MODIFIERS)
-            .map_err(|error| format!("add GBM framebuffer[0]: {error}"))?;
-        let fb1 = match device.add_planar_framebuffer(&buffers[1], FbCmd2Flags::MODIFIERS) {
-            Ok(fb) => fb,
-            Err(error) => {
-                let _ = device.destroy_framebuffer(fb0);
-                return Err(format!("add GBM framebuffer[1]: {error}"));
+                .map_err(|error| format!("export GBM scanout buffer[{index}]: {error}"))
+        };
+        let dma_fds = [export(0)?, export(1)?, export(2)?];
+        let mut fbs = Vec::with_capacity(DIRECT_SLOTS);
+        for (index, buffer) in buffers.iter().enumerate() {
+            match device.add_planar_framebuffer(buffer, FbCmd2Flags::MODIFIERS) {
+                Ok(fb) => fbs.push(fb),
+                Err(error) => {
+                    for fb in fbs {
+                        let _ = device.destroy_framebuffer(fb);
+                    }
+                    return Err(format!("add GBM framebuffer[{index}]: {error}"));
+                }
+            }
+        }
+        let fbs = match <[framebuffer::Handle; DIRECT_SLOTS]>::try_from(fbs) {
+            Ok(fbs) => fbs,
+            Err(fbs) => {
+                for fb in fbs {
+                    let _ = device.destroy_framebuffer(fb);
+                }
+                return Err("GBM framebuffer count does not match the swapchain".to_owned());
             }
         };
-        let fbs = [fb0, fb1];
         Ok(Self {
             device,
             buffers,
@@ -343,10 +357,11 @@ impl Drop for GbmScanoutBuffers {
     }
 }
 
-/// Ownership of two renderer/KMS-shared scanout images.  `front` is the image
-/// the CRTC is known to be reading; `pending` is owned by KMS until its page
-/// flip event arrives.  Consequently there is no renderable image while a
-/// flip is pending on a two-slot swapchain.
+/// Ownership of [`DIRECT_SLOTS`] renderer/KMS-shared scanout images.  `front`
+/// is the image the CRTC is known to be reading; `pending` is owned by KMS
+/// until its page flip event arrives.  The remaining image can be rendered
+/// while a flip is pending ([`Self::overlap_slot`]), but it is queued only once
+/// that flip retired: KMS takes one flip per CRTC at a time.
 ///
 /// A fullscreen client's own buffer can take the CRTC instead
 /// ([`super::client_scanout`]): while it is shown neither slot is, and the
@@ -369,7 +384,7 @@ pub(super) enum Flip {
 /// Imported Vulkan aliases must drop before their GBM allocation and KMS
 /// framebuffer IDs.  Field order makes that teardown relationship explicit.
 pub struct DirectScanoutTargets {
-    imported: [ui::dmabuf_import::ImportedRenderTarget; 2],
+    imported: [ui::dmabuf_import::ImportedRenderTarget; DIRECT_SLOTS],
     buffers: GbmScanoutBuffers,
     format: ScanoutFormat,
     /// The CRTC was modeset onto one of these buffers. A legacy page flip
@@ -384,6 +399,12 @@ pub struct DirectScanoutTargets {
     /// When the pending flip was queued. An output whose flip nothing waits for (it is
     /// slower than the output pacing the frames) is demoted once that flip is overdue.
     flip_queued_at: Option<Instant>,
+    /// The presenter returns before this output's flip retires, so the next
+    /// frame renders into the spare slot while it is pending
+    /// ([`DirectScanoutState::overlap_slot`]). Off, a pending flip defers the
+    /// output's next frame, which is how an output slower than the loop skips
+    /// the frames it cannot show.
+    overlap: bool,
     /// The client buffer KMS shows or has queued in place of a target, held
     /// until the flip that replaces it retires. Dropped with the targets,
     /// which happens only once the CRTC is back on the dumb front.
@@ -472,7 +493,7 @@ impl DirectScanoutTargets {
                 })
                 .map_err(|error| format!("import GBM scanout slot[{index}]: {error}"))
         };
-        let imported = [import(0)?, import(1)?];
+        let imported = [import(0)?, import(1)?, import(2)?];
         Ok(Self {
             imported,
             buffers,
@@ -484,6 +505,7 @@ impl DirectScanoutTargets {
             // initial ownership anchor; the first render uses index one.
             state: DirectScanoutState::new(0),
             flip_queued_at: None,
+            overlap: false,
             client: ClientHold::default(),
         })
     }
@@ -532,6 +554,23 @@ impl DirectScanoutTargets {
         self.imported.get(index).map(|target| (index, target))
     }
 
+    /// Whether this output's next frame renders while its flip is pending.
+    pub fn overlaps(&self) -> bool {
+        self.overlap
+    }
+
+    /// Set by the presenter before each frame: see the field.
+    pub fn set_overlap(&mut self, overlap: bool) {
+        self.overlap = overlap;
+    }
+
+    /// The slot neither shown nor pending, to render while a flip is pending.
+    /// It may be queued once that flip retired ([`DirectScanoutState::submit`]).
+    pub fn overlap_slot(&self) -> Option<(usize, &ui::dmabuf_import::ImportedRenderTarget)> {
+        let index = self.state.overlap_slot()?;
+        self.imported.get(index).map(|target| (index, target))
+    }
+
     fn framebuffer(&self, index: usize) -> Option<framebuffer::Handle> {
         self.buffers.slot(index).map(|slot| slot.framebuffer)
     }
@@ -545,19 +584,39 @@ impl DirectScanoutState {
         }
     }
 
-    /// Reserve the only slot which is not currently owned by scanout.  The
-    /// caller must render successfully before handing it to [`Self::submit`].
+    /// Reserve the slot after the front while no flip is pending.  The caller
+    /// must render successfully before handing it to [`Self::submit`].
     pub(super) fn render_slot(self) -> Option<usize> {
         self.pending
             .is_none()
-            .then_some(1usize.saturating_sub(self.front))
+            .then_some(self.front.saturating_add(1) % DIRECT_SLOTS)
+    }
+
+    /// The slot that is neither the front nor the pending flip's, so a frame
+    /// can render while that flip waits for its vblank. While a client buffer's
+    /// flip is pending, any slot but the front qualifies.
+    pub(super) fn overlap_slot(self) -> Option<usize> {
+        let pending = match self.pending? {
+            Flip::Slot(slot) => Some(slot),
+            Flip::Client => None,
+        };
+        (1..DIRECT_SLOTS)
+            .map(|step| self.front.saturating_add(step) % DIRECT_SLOTS)
+            .find(|&slot| Some(slot) != pending)
+    }
+
+    /// Whether `slot` may hold a freshly rendered frame: KMS neither shows
+    /// it nor has it queued.
+    fn renderable(self, slot: usize) -> bool {
+        slot < DIRECT_SLOTS && slot != self.front && self.pending != Some(Flip::Slot(slot))
     }
 
     /// Transfer a successfully rendered slot to KMS.  This records ownership
     /// only after `page_flip` itself succeeds; a rejected flip remains safely
-    /// renderable on the next attempt.
+    /// renderable on the next attempt. One flip at a time: a slot rendered
+    /// during a pending flip ([`Self::overlap_slot`]) waits for it to retire.
     pub(super) fn submit(&mut self, slot: usize) -> bool {
-        if self.render_slot() != Some(slot) {
+        if self.pending.is_some() || !self.renderable(slot) {
             return false;
         }
         self.pending = Some(Flip::Slot(slot));
@@ -577,7 +636,7 @@ impl DirectScanoutState {
     /// A modeset showed `slot` directly: it is the front at once, with no
     /// flip event to wait for.
     fn present_immediately(&mut self, slot: usize) -> bool {
-        if self.render_slot() != Some(slot) {
+        if self.pending.is_some() || !self.renderable(slot) {
             return false;
         }
         self.front = slot;
@@ -3310,7 +3369,11 @@ impl DrmScanout {
         targets: &mut DirectScanoutTargets,
         index: usize,
     ) -> DirectSubmit {
-        if !self.use_pageflip || self.flip_pending || targets.state.render_slot() != Some(index) {
+        if !self.use_pageflip
+            || self.flip_pending
+            || targets.state.pending.is_some()
+            || !targets.state.renderable(index)
+        {
             return DirectSubmit::Busy;
         }
         self.apply_adaptive_sync();
@@ -4293,16 +4356,54 @@ mod tests {
             let mut state = DirectScanoutState::new(0);
             assert_eq!(state.render_slot(), Some(1));
             assert!(state.submit(1));
-            assert_eq!(state.render_slot(), None, "both slots are owned by KMS");
+            assert_eq!(
+                state.render_slot(),
+                None,
+                "a pending flip defers an output that does not overlap it"
+            );
+            assert_eq!(
+                state.overlap_slot(),
+                Some(2),
+                "the spare slot is neither shown nor queued"
+            );
             assert!(
                 !state.submit(0),
                 "front cannot be submitted as fresh output"
             );
             assert!(!state.submit(1), "pending slot cannot be submitted twice");
+            assert!(
+                !state.submit(2),
+                "a slot rendered during the flip waits for it to retire"
+            );
 
             assert!(state.complete());
-            assert_eq!(state.render_slot(), Some(0));
             assert_eq!(state.front, 1);
+            assert!(
+                state.submit(2),
+                "the slot rendered during the flip is queued once it retired"
+            );
+            assert_eq!(
+                state.overlap_slot(),
+                Some(0),
+                "never the front or the pending slot"
+            );
+            assert!(!state.submit(1), "the front is never queued");
+        }
+        // Phase `overlapped_rendering_never_touches_a_slot_kms_reads`.
+        {
+            // Every frame renders while the previous flip is pending, then queues once it
+            // retired: the rendered slot is never the front nor the one queued.
+            let mut state = DirectScanoutState::new(0);
+            assert!(state.submit(1));
+            for _ in 0..(DIRECT_SLOTS * 4) {
+                let slot = state
+                    .overlap_slot()
+                    .expect("a spare slot while a flip is pending");
+                assert_ne!(slot, state.front);
+                assert_ne!(Some(Flip::Slot(slot)), state.pending);
+                assert!(state.complete());
+                assert!(state.submit(slot));
+            }
         }
         // Phase `direct_scanout_renderer_or_pageflip_failure_keeps_back_slot_available`.
         {
@@ -4340,10 +4441,10 @@ mod tests {
             assert_eq!(state.front, 1);
             assert_eq!(state.complete_flip(), None, "duplicate completion");
         }
-        // Phase `direct_scanout_completion_alternates_two_slots`.
+        // Phase `direct_scanout_completion_rotates_through_the_slots`.
         {
             let mut state = DirectScanoutState::new(0);
-            for expected in [1, 0, 1, 0] {
+            for expected in [1, 2, 0, 1] {
                 assert_eq!(state.render_slot(), Some(expected));
                 assert!(state.submit(expected));
                 assert!(state.complete());
