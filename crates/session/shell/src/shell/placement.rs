@@ -60,8 +60,9 @@ pub fn note_placement_for_launch_identities(
     identities: &[String],
     tree: &WorkspaceTree,
     viewport: Option<&StripViewport>,
+    target: OpenTarget,
 ) -> Placement {
-    let placement = placement_for(tree, OpenIntent::Search, viewport);
+    let placement = placement_for_target(tree, viewport, target);
     crate::shell::launcher::set_pending_placement_for_identities(key, identities, placement);
     placement
 }
@@ -76,11 +77,30 @@ pub fn note_placement_for_launch_targeted(
     viewport: Option<&StripViewport>,
     target: OpenTarget,
 ) {
-    let placement = match target {
-        OpenTarget::Here(group) if group_exists(tree, group) => Placement::TabIn(group),
-        _ => placement_for(tree, OpenIntent::Search, viewport),
-    };
+    let placement = placement_for_target(tree, viewport, target);
     crate::shell::launcher::set_pending_placement(package_id, placement);
+}
+
+/// Where a window the person asked for from search lands: a tab of the
+/// group whose "+" summoned the search ([`OpenTarget::Here`]), else the
+/// search rule. Every launch path (package, host app, document, URL) asks
+/// here, at the moment of the request, so the target survives the launch
+/// being queued and the window mapping seconds later.
+pub fn placement_for_target(
+    tree: &WorkspaceTree,
+    viewport: Option<&StripViewport>,
+    target: OpenTarget,
+) -> Placement {
+    explicit_group_placement(tree, target)
+        .unwrap_or_else(|| placement_for(tree, OpenIntent::Search, viewport))
+}
+
+/// The tab-in-group placement `target` names, when its group still exists.
+pub fn explicit_group_placement(tree: &WorkspaceTree, target: OpenTarget) -> Option<Placement> {
+    match target {
+        OpenTarget::Here(group) if group_exists(tree, group) => Some(Placement::TabIn(group)),
+        _ => None,
+    }
 }
 
 fn group_exists(tree: &WorkspaceTree, group: GroupId) -> bool {
@@ -309,6 +329,59 @@ mod tests {
             crate::shell::launcher::clear_pending_placements();
         }
 
+        fn a_plus_in_a_group_lands_the_picked_window_as_a_tab_of_that_group() {
+            crate::shell::launcher::clear_pending_placements();
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            // The "+" group is a single-window group, not the selected one,
+            // and the viewport's seam is elsewhere: only the carried target
+            // can put the window there, even after selection moves on.
+            let ids = strip_of(&mut tree, &[1, 1, 1]);
+            let strip_id = tree.desktop.workspaces[0].strips[0].id;
+            tree.desktop
+                .active_strip
+                .insert(tree.desktop.active, strip_id);
+            tree.desktop.set_active_group(strip_id, ids[0]);
+            let view = viewport(strip_id, &ids, (200.0, 300.0));
+
+            note_placement_for_launch_targeted(
+                "dev.tilo.plusfixture",
+                &tree,
+                Some(&view),
+                OpenTarget::Here(ids[1]),
+            );
+            tree.desktop.set_active_group(strip_id, ids[2]);
+            crate::shell::tab_binding::adopt_toplevel(
+                &mut tree,
+                9_106,
+                Some("plusfixture".to_string()),
+            );
+
+            let groups = &tree.desktop.workspaces[0].strips[0].window_groups;
+            assert_eq!(groups.len(), 3, "no new group for the window");
+            let landed = groups
+                .iter()
+                .find(|group| {
+                    group.tabs.iter().any(|tab| {
+                        matches!(
+                            &tab.tile,
+                            TileContent::Foreign {
+                                surface_id: 9_106,
+                                ..
+                            }
+                        )
+                    })
+                })
+                .expect("window mapped into a group")
+                .id;
+            assert_eq!(landed, ids[1], "a tab of the group whose + asked");
+            assert_eq!(
+                explicit_group_placement(&tree, OpenTarget::Here(ids[1])),
+                Some(Placement::TabIn(ids[1]))
+            );
+            assert_eq!(explicit_group_placement(&tree, OpenTarget::Beside), None);
+            crate::shell::launcher::clear_pending_placements();
+        }
+
         fn a_searched_app_keeps_its_rightmost_target_until_it_maps() {
             crate::shell::launcher::clear_pending_placements();
             let mut tree = WorkspaceTree::bootstrap_demo();
@@ -360,6 +433,7 @@ mod tests {
         }
 
         a_launch_with_no_selection_lands_at_the_seam_the_user_can_see();
+        a_plus_in_a_group_lands_the_picked_window_as_a_tab_of_that_group();
         a_launch_with_no_visible_seam_lands_at_the_next_one_rightwards();
         a_launch_beside_a_lone_selected_window_lands_right_of_it();
         a_launch_from_inside_a_tabbed_group_joins_it_rather_than_the_seam();

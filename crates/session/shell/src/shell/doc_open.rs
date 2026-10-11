@@ -599,7 +599,12 @@ pub fn set_personal_default(path: &Path, app_id: &str) -> Result<(), String> {
 /// A document opened elsewhere belongs *with* whatever asked for it —
 /// a tab in the focused group rather than a new column.
 fn placement_for_document_open(chrome: &Chrome) -> Option<Placement> {
-    focused_group(chrome).map(Placement::TabIn)
+    // The group whose "+" asked beats the focused one.
+    let explicit = {
+        let st = chrome.borrow();
+        crate::shell::placement::explicit_group_placement(&st.tree(), st.open_target)
+    };
+    explicit.or_else(|| focused_group(chrome).map(Placement::TabIn))
 }
 
 /// `None` when there's no strip or group to be "beside" — adoption
