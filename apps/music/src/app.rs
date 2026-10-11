@@ -26,7 +26,6 @@ use vello::peniko::{Color, Fill};
 use std::cell::Cell;
 use std::rc::Rc;
 use ui::ImageStore;
-use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle};
@@ -34,7 +33,7 @@ use ui::theme::Theme;
 #[cfg(test)]
 use ui::widget::SplitLayout;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::toast::ToastKind;
+use ui::widget::toast::{Notice, ToastKind};
 use ui::widget::{ModalDialog, PromptBody, SidebarDrawer, Widget};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -64,14 +63,6 @@ const PLAYBACK_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// What a failed offline download says in passing. The reason stays with the
 /// song: its row in Downloads offers Retry, and that button names the cause.
 const OFFLINE_FAILED: &str = "Couldn\u{2019}t download for offline listening";
-
-/// A transient message over the content: what it says, what kind of result
-/// it reports, and when it appeared.
-struct Notice {
-    text: String,
-    kind: ToastKind,
-    at: Instant,
-}
 
 fn cover_request() -> PickRequest {
     PickRequest::open("Choose a playlist cover", "Set cover")
@@ -490,7 +481,7 @@ pub struct MusicApp {
     /// resetting. `None` when the queue view wasn't opened via the toggle.
     queue_return: Option<(View, f64)>,
     dirty: bool,
-    toast: Option<Notice>,
+    toast: Notice,
 
     /// Self-routing right-click context menu (the `ui` primitive, driven
     /// imperatively: opened at the cursor, drawn last, polled via a sink).
@@ -892,7 +883,7 @@ impl MusicApp {
             queue_btn_rect: Rect::ZERO,
             queue_return: None,
             dirty: true,
-            toast: None,
+            toast: Notice::default(),
             context: ContextMenu::new(),
             context_text_scale: 1.0,
             menu_actions: Vec::new(),
@@ -1156,11 +1147,7 @@ impl MusicApp {
     /// Show a transient message: a confirmation (`Success`), something under
     /// way (`Info`) or a failure (`Error`).
     fn notify(&mut self, kind: ToastKind, text: impl Into<String>) {
-        self.toast = Some(Notice {
-            text: text.into(),
-            kind,
-            at: ui::time::now(),
-        });
+        self.toast.show(text, kind);
     }
 
     fn update_device_cache(&mut self, id: &str, state: CacheState) {
@@ -3224,11 +3211,7 @@ impl MusicApp {
         self.audio.stop();
         let message = "Audio startup timed out before playback could begin.";
         self.playback_error = Some(message.into());
-        self.toast = Some(Notice {
-            text: message.into(),
-            kind: ToastKind::Error,
-            at: now,
-        });
+        self.toast.show(message, ToastKind::Error);
         self.fail_resource_stream(
             "music.stream_start_timed_out",
             message,

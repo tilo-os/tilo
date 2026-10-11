@@ -21,6 +21,7 @@
 //! it's content-addressed and stable across peers, letting
 //! [`heads_for_entry`] turn a clicked row back into a document state.
 
+use crate::num::i64_of_usize;
 use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use automerge::transaction::Transactable;
@@ -372,7 +373,7 @@ fn structural_summary(
     }
     if blocks_added > 0 {
         return (
-            plural_signed(as_i64_count(blocks_added), "block"),
+            plural_signed(i64_of_usize(blocks_added), "block"),
             OpClass::Splice,
             delta,
         );
@@ -520,7 +521,7 @@ fn summarize_patches(
     }
     if list_inserted > 0 {
         return (
-            plural_signed(as_i64_count(list_inserted), "item"),
+            plural_signed(i64_of_usize(list_inserted), "item"),
             OpClass::Splice,
             delta,
         );
@@ -615,18 +616,11 @@ fn plural(n: usize, noun: &str) -> String {
     }
 }
 
-/// Converts a count to a non-negative `i64` for [`plural_signed`],
-/// saturating at `i64::MAX` instead of risking a wrap — no realistic
-/// block/item/field count on a document gets anywhere near that bound.
-fn as_i64_count(n: usize) -> i64 {
-    i64::try_from(n).unwrap_or(i64::MAX)
-}
-
 /// Converts a count to a negative `i64` for [`plural_signed`]. Saturates at
-/// `i64::MIN` rather than risking overflow on the negation; unreachable in
-/// practice for the same reason as [`as_i64_count`].
+/// `i64::MIN` rather than risking overflow on the negation; no realistic
+/// count gets anywhere near that bound.
 fn negative_count(n: usize) -> i64 {
-    as_i64_count(n).checked_neg().unwrap_or(i64::MIN)
+    i64_of_usize(n).checked_neg().unwrap_or(i64::MIN)
 }
 
 fn plural_signed(n: i64, noun: &str) -> String {

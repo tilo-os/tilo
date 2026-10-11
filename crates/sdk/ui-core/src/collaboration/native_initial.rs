@@ -123,10 +123,6 @@ impl NativeConstruction {
         let previous = CONSTRUCTION.with(|slot| slot.replace(Some(Rc::downgrade(&state))));
         Ok(Self { state, previous })
     }
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "native component admission briefly waits on the broker worker's owner recheck, as the broker transport module does"
-    )]
     pub(crate) fn bind_component(
         &self,
         binding: &crate::bound_dispatch::CallbackBinding,
@@ -157,6 +153,7 @@ impl NativeConstruction {
             // a fast component factory must not race the real owner recheck.
             let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
             loop {
+                let seen = bridge.progress();
                 bridge.check()?;
                 if binding.admission_route().as_ref() != Some(&requested) {
                     return Err("component record route changed before history application".into());
@@ -186,7 +183,9 @@ impl NativeConstruction {
                         "native component history was not confirmed before its factory".into(),
                     );
                 }
-                std::thread::sleep(crate::time::Duration::from_millis(10));
+                // The confirming read wakes this; the bound re-checks the
+                // worker's health and the deadline.
+                bridge.wait_progress(seen, crate::time::Duration::from_millis(10));
             }
         }
         manager.switch_native_record(&binding.checkout)?;
@@ -381,24 +380,6 @@ pub(crate) fn take_manager() -> Option<CollaborationManager> {
     fail("App construction attempted to take the prepared worker outside final launch");
     // A nested App must never fall through to ambient FD discovery.
     Some(CollaborationManager::disabled())
-}
-pub(crate) fn file_bridge() -> Result<Option<InitialReadBridge>, String> {
-    if let Some(state) = current() {
-        if let Some(error) = state.failure.borrow().clone() {
-            return Err(error);
-        }
-        if let Some(bridge) = &state.bridge {
-            bridge.check()?;
-        }
-        return Ok(state.bridge.clone());
-    }
-    if crate::host::environment()
-        .identity
-        .collab_service_configured
-    {
-        return Err("file record mode must be resolved by the native launch owner".into());
-    }
-    Ok(None)
 }
 pub(crate) fn capture_bridge() -> Option<InitialReadBridge> {
     current()?.bridge.clone()
@@ -632,6 +613,7 @@ impl InitialReadBridge {
         }
         let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
         loop {
+            let seen = self.progress();
             self.check()?;
             if let Some(read) = self.state.document_reads.initial(&key) {
                 return Ok(read);
@@ -640,9 +622,16 @@ impl InitialReadBridge {
                 return Err("native initial history unavailable before construction".into());
             }
             // The RPC worker has a separate runtime. No lock or application
-            // document borrow crosses this bounded construction wait.
-            std::thread::sleep(crate::time::Duration::from_millis(10));
+            // document borrow crosses this bounded construction wait; staging
+            // the capture ends it at once.
+            self.wait_progress(seen, crate::time::Duration::from_millis(10));
         }
+    }
+    fn progress(&self) -> u64 {
+        self.state.document_reads.progress()
+    }
+    fn wait_progress(&self, seen: u64, bound: crate::time::Duration) {
+        self.state.document_reads.wait_progress(seen, bound);
     }
 }
 
@@ -683,6 +672,12 @@ impl InitialReadBridge {
         match self.never {}
     }
     fn publishable(&self, _channel: &str) -> bool {
+        match self.never {}
+    }
+    fn progress(&self) -> u64 {
+        match self.never {}
+    }
+    fn wait_progress(&self, _seen: u64, _bound: crate::time::Duration) {
         match self.never {}
     }
     fn apply_prepared_capture(

@@ -8,10 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use shell::shell::state::{
-    AppKind, CapRole, Collaborator, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceTree,
-};
+use shell::shell::state::{WindowWidth, WorkspaceTree};
 
 #[test]
 fn default_tree_builds_three_workspaces_and_a_shell_root() {
@@ -78,20 +75,6 @@ fn window_widths_clamp_migrate_and_round_trip_as_fractions() {
             WindowWidth::Fraction(742),
         );
     }
-}
-
-// Reference the remaining imports so this compiles before the widget code
-// that exercises them lands.
-#[allow(dead_code, reason = "never called: only keeps the imports referenced")]
-fn _type_refs() {
-    let _ = std::marker::PhantomData::<Workspace>;
-    let _ = std::marker::PhantomData::<Strip>;
-    let _ = std::marker::PhantomData::<WindowGroup>;
-    let _ = std::marker::PhantomData::<Tab>;
-    let _ = std::marker::PhantomData::<TileContent>;
-    let _ = std::marker::PhantomData::<AppKind>;
-    let _ = std::marker::PhantomData::<CapRole>;
-    let _ = std::marker::PhantomData::<Collaborator>;
 }
 
 #[test]

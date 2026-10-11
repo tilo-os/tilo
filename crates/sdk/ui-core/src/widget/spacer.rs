@@ -147,12 +147,13 @@ impl Widget for Spacer {
 
     fn draw(
         &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
+        scene: &mut Scene,
+        transform: Affine,
         _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
     ) {
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -177,26 +178,6 @@ impl Widget for Spacer {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        crate::widget::draw_gated_leaf(
-            self,
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 

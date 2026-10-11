@@ -44,7 +44,7 @@ use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, ROO
 
 mod doc_writer;
 mod fs_store;
-mod load_hint;
+pub mod load_hint;
 pub use doc_writer::{DEFAULT_DEBOUNCE, DocOwner, DocWriter, DurabilitySnapshot, StoredLoad};
 pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR};
 
@@ -548,17 +548,27 @@ impl DocStore {
                 Ok(None)
             };
         }
-        let mut doc = AutoCommit::load_with_options(
-            &bytes,
-            LoadOptions::new().on_partial_load(if complete {
-                OnPartialLoad::Error
-            } else {
-                OnPartialLoad::Ignore
-            }),
-        )
-        .map_err(|source| StoreError::Automerge {
-            path: self.document_path().to_path_buf(),
-            source: Box::new(source),
+        // The hashes the last full save listed for these exact bytes, if this
+        // device kept them (`load_hint`); never anything a peer sent.
+        let known = self
+            .owner
+            .store()
+            .read_hint(self.owner.key())
+            .and_then(|hint| load_hint::hashes_for(&hint, &bytes));
+        let options = LoadOptions::new().on_partial_load(if complete {
+            OnPartialLoad::Error
+        } else {
+            OnPartialLoad::Ignore
+        });
+        let options = match known.as_deref() {
+            Some(hashes) => options.known_change_hashes(hashes),
+            None => options,
+        };
+        let mut doc = AutoCommit::load_with_options(&bytes, options).map_err(|source| {
+            StoreError::Automerge {
+                path: self.document_path().to_path_buf(),
+                source: Box::new(source),
+            }
         })?;
         // Check before reading any value: a newer layout may reuse a key with a
         // different meaning, and the writer above saves the whole document back.
@@ -679,10 +689,27 @@ impl DocStore {
         self.refuse_to_write()?;
         ensure_schema_version(doc, self.schema_version);
         let bytes = doc.save();
+        let hint = load_hint::encode(&bytes, doc.committed_document().change_hashes());
         self.commit(WriteOp::Replace(bytes))?;
+        self.keep_load_hint(hint.as_deref());
         self.has_base = Some(true);
         self.persisted = doc.get_heads();
         Ok(())
+    }
+
+    /// Keep `hint` (the change hashes of the replacement just committed)
+    /// beside the document for the next load. Only the primary writer keeps
+    /// one: shared writers' hints would race for one file. A document saved
+    /// without one leaves the previous hint, which names other bytes and is
+    /// ignored.
+    fn keep_load_hint(&self, hint: Option<&[u8]>) {
+        let Some(hint) = hint.filter(|_| self.owner.is_primary()) else {
+            return;
+        };
+        if let Err(error) = self.owner.store().write_hint(self.owner.key(), hint) {
+            // Only the next load's speed depends on it.
+            tracing::debug!(document = %self.document_path().display(), %error, "load hint not kept");
+        }
     }
 
     /// The guard both write paths share; returns the original refusal so a
@@ -2007,5 +2034,81 @@ mod tests {
                 .unwrap();
             autosave2.flush();
         }
+    }
+
+    #[test]
+    fn a_docstore_save_keeps_a_load_hint_its_next_load_takes() {
+        let tmp = TempDir::new().unwrap();
+        let store: Rc<dyn DurableStore> = Rc::new(FsStore::new(tmp.path()));
+        let key = StorageKey::room_index("so.tilo.test", "room");
+        let mut primary = DocStore::shared(Rc::clone(&store), key.clone()).unwrap();
+        assert!(primary.is_exclusive_writer());
+        // The desktop document's shape: many small changes, few bytes.
+        let mut doc = primary.new_document();
+        for i in 0..load_hint::MIN_HINTED_CHANGES {
+            doc.put(&ROOT, "active", u64::try_from(i % 6).unwrap())
+                .unwrap();
+            doc.commit();
+        }
+        primary.save(&mut doc).unwrap();
+        let saved = store.read(&key).unwrap().unwrap().bytes;
+        assert!(saved.len() < load_hint::MIN_HINTED_BYTES);
+        let hashes = doc.committed_document().change_hashes().to_vec();
+        let hint = store.read_hint(&key).expect("a save keeps a hint");
+        assert_eq!(load_hint::hashes_for(&hint, &saved), Some(hashes.clone()));
+
+        let loaded_hashes = |store: &mut DocStore| {
+            store
+                .load()
+                .unwrap()
+                .expect("stored document")
+                .committed_document()
+                .change_hashes()
+                .to_vec()
+        };
+        assert_eq!(loaded_hashes(&mut primary), hashes);
+
+        // Phase `the_load_takes_the_hint_as_given`: two changes listed in
+        // swapped order (heads unchanged) come back swapped, which a rebuild
+        // never produces.
+        let mut swapped = hashes.clone();
+        swapped.swap(1, 2);
+        store
+            .write_hint(&key, &load_hint::encode(&saved, &swapped).unwrap())
+            .unwrap();
+        assert_eq!(loaded_hashes(&mut primary), swapped);
+
+        // Phase `a_hint_for_other_bytes_is_ignored`.
+        let mut other = doc.fork();
+        other.put(&ROOT, "other", 1).unwrap();
+        other.commit();
+        let mut other_swapped = other.committed_document().change_hashes().to_vec();
+        other_swapped.swap(1, 2);
+        store
+            .write_hint(
+                &key,
+                &load_hint::encode(&other.save(), &other_swapped).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(loaded_hashes(&mut primary), hashes);
+
+        // Phase `a_shared_secondary_writer_keeps_none`.
+        let mut secondary = DocStore::shared(Rc::clone(&store), key.clone()).unwrap();
+        assert!(!secondary.is_exclusive_writer());
+        let before = store.read_hint(&key);
+        let mut copy = secondary.load().unwrap().unwrap();
+        copy.put(&ROOT, "secondary", 1).unwrap();
+        copy.commit();
+        secondary.save(&mut copy).unwrap();
+        assert_eq!(
+            store.read_hint(&key),
+            before,
+            "the secondary's save kept no hint"
+        );
+        assert_eq!(
+            loaded_hashes(&mut secondary),
+            copy.committed_document().change_hashes(),
+            "its bytes load in full past the primary's stale hint"
+        );
     }
 }

@@ -204,6 +204,7 @@ suites = [
   "os/tests/test_forgejo_dev_installer_metadata.py",
   "os/tests/test_download_dev_installer.py",
   "os/tests/windows_direct_install_orchestrator_test.py",
+  "os/tests/nearby_privileged_processes_test.sh",
   "os/tests/vm_firmware_selection.sh",
   "os/tests/vm_release_gate_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
@@ -307,6 +308,7 @@ inputs = ["os/", "tools/"]
 suites = [
   "os/tests/parallel_package_uploads.sh",
   "os/tests/prior_app_collection_reuse.sh",
+  "tools/apps/test_compare_build_outputs.py",
 ]
 
 [[group]]
@@ -358,6 +360,7 @@ suites = [
   "dist/ci/tests/test_failed_rpm_retention.py",
   "dist/ci/tests/test_host_session_rpm_replay.py",
   "dist/session/tests/vm-e2e-exit-status.py",
+  "dist/session/tests/vm-e2e-input-import.py",
   "dist/session/tests/test-files-workspace.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
   "dist/local-models/smolvlm2-500m/contract-test.sh",
@@ -415,6 +418,9 @@ suites = [
 name = "perf-tools"
 inputs = [
   "scripts/perf/", "apps/settings/src/categories.rs", "tools/perf/",
+  # tools/perf/test_compare.py and test_ab.py hold the workflows' groups and
+  # benchmarks equal to the budgets' lanes and the A/B groups.
+  ".forgejo/workflows/perf-scheduled.yml", ".forgejo/workflows/vm-acceptance.yml",
   # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the gate's SLOs
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
   "crates/system/fs/tests/performance_gate.rs",

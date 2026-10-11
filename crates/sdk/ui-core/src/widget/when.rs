@@ -232,13 +232,9 @@ mod tests {
     }
 
     fn rect_of(root: &dyn Widget, id: &str) -> Rect {
-        fn find(widget: &dyn Widget, id: &str) -> Option<Rect> {
-            if widget.test_id() == Some(id) {
-                return Some(widget.get_rect());
-            }
-            widget.children().into_iter().find_map(|c| find(c, id))
-        }
-        find(root, id).expect("child present")
+        crate::widget::find_test_id(root, id)
+            .expect("child present")
+            .get_rect()
     }
 
     #[test]

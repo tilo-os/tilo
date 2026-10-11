@@ -1,4 +1,5 @@
 //! Native semantic service consuming the ordinary durable invocation stream.
+use super::room_service::ServiceOutcome;
 use super::{
     Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
     PublishedSurface,
@@ -17,15 +18,6 @@ impl CapnpBrokerState {
         let room = service.room().to_string();
         uuid::Uuid::parse_str(&room).map_err(|e| e.to_string())?;
         let peer_id = self.next_service_peer_id();
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        self.invocation_subscribers
-            .lock()
-            .map_err(|_| "invocation subscribers unavailable")?
-            .insert(peer_id, sender);
-        self.stable_invocation_subscribers
-            .lock()
-            .map_err(|_| "stable invocation registry unavailable")?
-            .insert(peer_id);
         *self
             .desktop_command_peer
             .lock()
@@ -42,67 +34,41 @@ impl CapnpBrokerState {
                 })
                 .map(|entry| open_app_action(entry.app_id, entry.title)),
         );
-        self.surfaces
-            .lock()
-            .map_err(|_| "action surfaces unavailable")?
-            .insert(
-                peer_id,
-                PublishedSurface {
-                    peer_id,
-                    app_id: command::APP_ID.into(),
-                    route: CrdtRoute::record(command::APP_ID, &room, ""),
-                    live: true,
-                    actions,
-                },
-            );
-        let state = self.clone();
-        tokio::task::spawn_local(async move {
-            while let Some(envelope) = receiver.recv().await {
-                let mut id = None;
-                let outcome = state
-                    .execute_desktop_command(peer_id, &envelope, service.as_ref(), &mut id)
-                    .await;
-                let update = match outcome {
-                    Ok(receipt) => tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: envelope.invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(receipt.to_value()),
-                            resources: Vec::new(),
-                        },
-                    },
-                    Err(DesktopCommandError::Rejected(message)) => {
-                        tilo_actions::InvocationUpdate::Failed {
-                            invocation: envelope.invocation,
-                            error: refusal(id.as_ref(), message),
+        let surface = PublishedSurface {
+            peer_id,
+            app_id: command::APP_ID.into(),
+            route: CrdtRoute::record(command::APP_ID, &room, ""),
+            live: true,
+            actions,
+        };
+        self.serve_room(
+            surface,
+            move |state, envelope| {
+                let service = service.clone();
+                async move {
+                    let mut id = None;
+                    match state
+                        .execute_desktop_command(peer_id, &envelope, service.as_ref(), &mut id)
+                        .await
+                    {
+                        Ok(receipt) => ServiceOutcome::Succeeded(receipt.to_value()),
+                        Err(DesktopCommandError::Rejected(message)) => {
+                            ServiceOutcome::Failed(refusal(id.as_ref(), message))
+                        }
+                        Err(DesktopCommandError::Uncertain(reason)) => {
+                            ServiceOutcome::Uncertain(reason)
                         }
                     }
-                    Err(DesktopCommandError::Uncertain(reason)) => {
-                        if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                            failure.get_or_insert(reason);
-                        }
-                        break;
-                    }
-                };
-                if let Err(error) = state
-                    .apply_invocation_update(peer_id, envelope.id, update, None)
-                    .await
-                {
-                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                        failure.get_or_insert(error.to_string());
-                    }
-                    break;
                 }
-            }
-            if let Ok(mut surfaces) = state.surfaces.lock() {
-                surfaces.remove(&peer_id);
-            }
-            if let Ok(mut desktop) = state.desktop_command_peer.lock()
-                && *desktop == Some(peer_id)
-            {
-                *desktop = None;
-            }
-        });
-        Ok(())
+            },
+            move |state, _| {
+                if let Ok(mut desktop) = state.desktop_command_peer.lock()
+                    && *desktop == Some(peer_id)
+                {
+                    *desktop = None;
+                }
+            },
+        )
     }
 
     async fn execute_desktop_command(

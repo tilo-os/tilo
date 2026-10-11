@@ -129,8 +129,8 @@ pub fn driver(
     f: &NotebookFixture,
     instance: u64,
     checkout: &RecordCheckout,
-) -> ui::headless::Driver {
-    let mut driver = ui::headless::Driver::from_component(
+) -> ui::headless::FrameHarness {
+    let mut driver = ui::headless::FrameHarness::from_component(
         component(f, instance, existing(checkout)),
         (1000, 700),
         runner_inputs(),
@@ -143,7 +143,7 @@ pub fn driver(
     driver
 }
 pub fn invoke(
-    driver: &mut ui::headless::Driver,
+    driver: &mut ui::headless::FrameHarness,
     instance: u64,
     resource: impl Into<String>,
     action: impl Into<String>,
@@ -166,7 +166,7 @@ pub fn invoke(
         .unwrap();
     driver.relayout();
 }
-pub fn close_driver(driver: &mut ui::headless::Driver) {
+pub fn close_driver(driver: &mut ui::headless::FrameHarness) {
     driver.close_components();
     let reports = driver.take_component_close_reports();
     assert!(!reports.is_empty());
@@ -236,10 +236,10 @@ pub fn revision(f: &NotebookFixture, checkout: &RecordCheckout) -> u64 {
         .read_history(&checkout.id, |_, history| history.revision())
         .unwrap()
 }
-pub fn page_rect(driver: &ui::headless::Driver, page: notes::PageId) -> vello::kurbo::Rect {
+pub fn page_rect(driver: &ui::headless::FrameHarness, page: notes::PageId) -> vello::kurbo::Rect {
     semantic_rect(driver, &format!("notes:page:{page}"))
 }
-pub fn semantic_rect(driver: &ui::headless::Driver, target: &str) -> vello::kurbo::Rect {
+pub fn semantic_rect(driver: &ui::headless::FrameHarness, target: &str) -> vello::kurbo::Rect {
     fn access(node: &ui::a11y::AccessNode, target: &str) -> Option<vello::kurbo::Rect> {
         if node.action_target.as_deref() == Some(target)
             || node.semantic_key.as_deref() == Some(target)
@@ -349,11 +349,11 @@ impl BoundNotes {
         assert!(handled);
     }
 
-    pub fn into_driver(self, author: ui::permissions::UserId) -> ui::headless::Driver {
+    pub fn into_driver(self, author: ui::permissions::UserId) -> ui::headless::FrameHarness {
         drop(self.bindings);
         drop(self.nodes);
         drop(self.tree);
-        ui::headless::Driver::new_with_controlled_inputs(
+        ui::headless::FrameHarness::new_with_controlled_inputs(
             ui::state::State::new(),
             self.tile,
             (1000, 700),
@@ -369,7 +369,7 @@ impl BoundNotes {
 }
 
 pub fn invoke_confirmed(
-    driver: &mut ui::headless::Driver,
+    driver: &mut ui::headless::FrameHarness,
     instance: u64,
     resource: String,
     action: &str,
@@ -384,14 +384,14 @@ pub fn invoke_confirmed(
     driver.relayout();
 }
 
-pub fn move_pointer(driver: &mut ui::headless::Driver, point: vello::kurbo::Point) {
+pub fn move_pointer(driver: &mut ui::headless::FrameHarness, point: vello::kurbo::Point) {
     driver.send(&winit::event::WindowEvent::CursorMoved {
         device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(point.x, point.y),
     });
 }
 pub fn mouse(
-    driver: &mut ui::headless::Driver,
+    driver: &mut ui::headless::FrameHarness,
     button: winit::event::MouseButton,
     state: winit::event::ElementState,
 ) {

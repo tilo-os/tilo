@@ -15,6 +15,10 @@ pub(crate) struct StoredReservation {
     state_bytes: usize,
 }
 impl StoredReservation {
+    pub(super) fn has_recovery(&self) -> bool {
+        self.entries > 0
+    }
+
     pub(crate) fn bounds(&self) -> Result<(), String> {
         if self.entries > MAX_ENTRIES
             || self.wire_bytes > MAX_BYTES

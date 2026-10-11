@@ -954,14 +954,7 @@ impl Widget for FileView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `node` was created by `build_layout` in this same tree, so a lookup
-        // miss would mean the frame cycle called these out of order.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
-        )]
-        let l = taffy.layout(node).unwrap();
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if self.mode == ViewMode::Grid {
             self.columns = self.columns_for_width(self.rect.width());
             return;

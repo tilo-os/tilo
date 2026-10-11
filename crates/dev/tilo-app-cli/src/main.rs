@@ -2081,6 +2081,16 @@ fn dev_profile(release: bool, profile: Option<String>) -> Option<String> {
     }
 }
 
+/// What `build --platform web` asks of the web build; `--release` is the
+/// optimized module a page streams, not the debug one.
+fn web_build_request(args: BuildArgs) -> tilo_app_cli::web::WebBuildRequest {
+    tilo_app_cli::web::WebBuildRequest {
+        output: args.output,
+        app_only: args.app_only,
+        release: args.options.release,
+    }
+}
+
 fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
     let (platform, arch) = args.platform.or_target(args.target).resolve()?;
     if platform == tilo_app_cli::PackagePlatform::Android {
@@ -2092,13 +2102,7 @@ fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
     if args.profile.is_some() || args.static_link {
         anyhow::bail!("--profile and --static are for a native build");
     }
-    let build = tilo_app_cli::web::build_web(
-        path,
-        &tilo_app_cli::web::WebBuildRequest {
-            output: args.output,
-            app_only: args.app_only,
-        },
-    )?;
+    let build = tilo_app_cli::web::build_web(path, &web_build_request(args))?;
     eprintln!(
         "[tilo-app] built {} for the web in {:.1} s: {} ({}, module {} bytes)",
         build.app_id,
@@ -3754,6 +3758,24 @@ mod tests {
                 Some("release")
             );
             assert!(dev(&["--release", "--profile", "dev"]).is_err());
+        }
+
+        // Phase: a_web_build_honours_release.
+        {
+            let web = |args: &[&str]| {
+                let cli = Cli::try_parse_from(
+                    ["tilo-app", "build", "--platform", "web"]
+                        .iter()
+                        .chain(args),
+                )
+                .expect("web build CLI");
+                let Command::Build(build) = cli.command else {
+                    panic!("expected build command");
+                };
+                web_build_request(build).release
+            };
+            assert!(web(&["--release"]));
+            assert!(!web(&[]));
         }
 
         // Phase: every_build_command_takes_platform_and_arch.

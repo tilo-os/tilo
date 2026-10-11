@@ -151,10 +151,6 @@ impl ResourceApp for MusicShell {
     /// A local audio file or a `music://` link to play or open.
     const ARGUMENTS: usize = 1;
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
     }

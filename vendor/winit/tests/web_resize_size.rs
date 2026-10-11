@@ -8,16 +8,31 @@ use resize_size::physical_size;
 
 #[test]
 fn device_box_in_device_pixels_is_used_exactly() {
-    assert_eq!(physical_size((800.0, 600.0), (800.0, 600.0), 1.0), (800, 600));
-    assert_eq!(physical_size((1600.0, 1200.0), (800.0, 600.0), 2.0), (1600, 1200));
+    assert_eq!(
+        physical_size((800.0, 600.0), (800.0, 600.0), 1.0),
+        (800, 600)
+    );
+    assert_eq!(
+        physical_size((1600.0, 1200.0), (800.0, 600.0), 2.0),
+        (1600, 1200)
+    );
     // Fractional scale: the browser's edge snapping wins over rounding.
-    assert_eq!(physical_size((1001.0, 751.0), (800.4, 600.4), 1.25), (1001, 751));
+    assert_eq!(
+        physical_size((1001.0, 751.0), (800.4, 600.4), 1.25),
+        (1001, 751)
+    );
 }
 
 #[test]
 fn device_box_in_css_pixels_falls_back_to_css_times_scale() {
-    assert_eq!(physical_size((800.0, 600.0), (800.0, 600.0), 2.0), (1600, 1200));
-    assert_eq!(physical_size((800.0, 600.0), (800.0, 600.0), 1.5), (1200, 900));
+    assert_eq!(
+        physical_size((800.0, 600.0), (800.0, 600.0), 2.0),
+        (1600, 1200)
+    );
+    assert_eq!(
+        physical_size((800.0, 600.0), (800.0, 600.0), 1.5),
+        (1200, 900)
+    );
 }
 
 #[test]

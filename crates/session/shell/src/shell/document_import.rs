@@ -109,13 +109,20 @@ impl HostedRooms for NativeHostedRooms {
             match view.read_document(
                 view.device().device_public_key,
                 app,
-                record.as_str(),
+                if record.is_package_primary() {
+                    ""
+                } else {
+                    record.as_str()
+                },
                 None,
                 limit,
                 SystemTime::now(),
             )? {
                 DocumentRead::Captured(document) => Ok(document.bytes),
                 DocumentRead::Unchanged(_) => Err("nothing was read".into()),
+                DocumentRead::CheckpointPending => {
+                    Err("the record's checkpoint is still arriving".into())
+                }
             }
         })
     }

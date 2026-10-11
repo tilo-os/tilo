@@ -1067,10 +1067,7 @@ impl Widget for MergeView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.place(ui::widget::placed(l, origin));
+        self.place(ui::widget::layout_rect(taffy, node, origin));
         self.recompute_spans();
         let merged = self.merged_band_rect();
         self.merged_editor.control_mut().set_rect(Rect::new(
@@ -1359,7 +1356,7 @@ impl Widget for MergeView {
         true
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],

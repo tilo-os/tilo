@@ -2398,6 +2398,23 @@ fn build_launch_command_for(
     }
 }
 
+/// What [`original_application_creation`] verified, by the exact inputs it
+/// verified: the package (its signed root's hash), where it is installed, and
+/// the BLAKE3 of the installed manifest. The signed root names the manifest's
+/// hash and the package hash names the signed root, so an entry can never come
+/// to mean anything else; a reinstall or an edited manifest is a new key.
+type CreationKey = (String, String, PathBuf, PathBuf, [u8; 32]);
+/// Only what verified is kept: a failed read is tried again next launch.
+static CREATION_EVIDENCE: LazyLock<
+    Mutex<HashMap<CreationKey, tilo_action_broker::services::ApplicationCreationEvidence>>,
+> = LazyLock::new(Mutex::default);
+/// Entries kept before the cache starts over: one per installed version.
+const CREATION_EVIDENCE_MAX: usize = 256;
+
+/// The evidence a launch carries that `app` is the signed original: read the
+/// installed manifest and name the installed package on every launch, and
+/// verify the signed record and parse the manifest only the first time these
+/// exact bytes are launched from this installation.
 fn original_application_creation(
     app: &InstalledApp,
 ) -> Option<tilo_action_broker::services::ApplicationCreationEvidence> {
@@ -2405,13 +2422,49 @@ fn original_application_creation(
     if installed.manifest_path != app.manifest_path || installed.payload_root != app.payload_root {
         return None;
     }
+    let manifest = std::fs::read(&app.manifest_path).ok()?;
+    let key = (
+        app.package_id.clone(),
+        installed.package_id_hex.clone(),
+        installed.manifest_path.clone(),
+        installed.payload_root.clone(),
+        *blake3::hash(&manifest).as_bytes(),
+    );
+    cached_creation_evidence(key, || {
+        verify_original_application_creation(app, &installed, &manifest)
+    })
+}
+
+/// `verify`'s evidence for `key`, verified once while it holds.
+fn cached_creation_evidence(
+    key: CreationKey,
+    verify: impl FnOnce() -> Option<tilo_action_broker::services::ApplicationCreationEvidence>,
+) -> Option<tilo_action_broker::services::ApplicationCreationEvidence> {
+    if let Some(evidence) = lock(&CREATION_EVIDENCE).get(&key) {
+        return Some(evidence.clone());
+    }
+    let evidence = verify()?;
+    let mut cache = lock(&CREATION_EVIDENCE);
+    if cache.len() >= CREATION_EVIDENCE_MAX {
+        cache.clear();
+    }
+    cache.insert(key, evidence.clone());
+    drop(cache);
+    Some(evidence)
+}
+
+fn verify_original_application_creation(
+    app: &InstalledApp,
+    installed: &package_store::InstalledPackage,
+    manifest: &[u8],
+) -> Option<tilo_action_broker::services::ApplicationCreationEvidence> {
     let record = package_store::integrity::read_record(
-        &package_store::integrity::record_dir(&installed),
+        &package_store::integrity::record_dir(installed),
         &installed.id,
         &installed.package_id_hex,
     )
     .ok()?;
-    if std::fs::read(&app.manifest_path).ok()? != record.manifest_bytes {
+    if manifest != record.manifest_bytes {
         return None;
     }
     let original = std::str::from_utf8(&record.manifest_bytes).ok()?;
@@ -2422,7 +2475,7 @@ fn original_application_creation(
     let manifest: toml::Value = toml::from_str(original).ok()?;
     let kinds = manifest.get("resources")?.get("kinds")?.as_array()?;
     let evidence = tilo_action_broker::services::ApplicationCreationEvidence {
-        package_hash: installed.package_id_hex,
+        package_hash: installed.package_id_hex.clone(),
         declared_kinds: kinds
             .iter()
             .map(|kind| kind.as_str().map(str::to_owned))
@@ -2905,6 +2958,7 @@ fn execute_installed_inner(
     capability_snapshot: Option<Vec<CapOverride>>,
 ) -> Result<InstalledApp, LaunchError> {
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch preflight begin");
+    tilo_startup_metrics::launch_phase(&app.package_id, "preflight");
     let socket = wayland_socket().ok_or(LaunchError::NoDisplay)?;
     let launcher_bin = selected_execution_program()?;
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launcher and display resolved");
@@ -2918,6 +2972,7 @@ fn execute_installed_inner(
             detail: error.to_string(),
         })?;
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "identity selection resolved");
+    tilo_startup_metrics::launch_phase(&app.package_id, "identity");
 
     let mut command = build_launch_command_for(
         &app,
@@ -2934,6 +2989,7 @@ fn execute_installed_inner(
             uri,
         },
     );
+    tilo_startup_metrics::launch_phase(&app.package_id, "command");
     // This id is a durable shell-id allocation, not a random process token.
     // The pending-placement claim binds it to whichever tab the launch
     // actually adopts; sibling windows cannot overwrite each other's report.
@@ -3003,6 +3059,7 @@ fn execute_installed_inner(
     let authority_lease =
         attach_sandbox_authority(&app, room, &mut command, capabilities, capabilities_file)?;
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "governance projection staged");
+    tilo_startup_metrics::launch_phase(&app.package_id, "authority");
     remember_launch(&app);
     spawn_detached(app.clone(), command, authority_lease)
         .map_err(|detail| LaunchError::AgentLaunchWorkerUnavailable { detail })?;
@@ -3895,6 +3952,8 @@ fn start_launch(
             });
             return;
         }
+        // Includes any wait for the previous window of this app to retire.
+        tilo_startup_metrics::launch_phase(&app.package_id, "worker");
         let mut cmd = Command::new(&command.program);
         cmd.args(&command.args);
         apply_launch_env(&mut cmd, &command.env);
@@ -3908,8 +3967,10 @@ fn start_launch(
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        // The launcher waits on this gate before any launch work; see
-        // `launcher::registration_gate`.
+        // The launcher waits on this gate, its stdin, before any launch work;
+        // see `launcher::registration_gate`. Nothing here may add a
+        // `pre_exec` hook: with one, `spawn` forks the whole compositor
+        // instead of using `posix_spawn`.
         let launch_gate = match launcher::registration_gate::install(&mut cmd) {
             Ok(gate) => gate,
             Err(error) => {
@@ -3945,6 +4006,9 @@ fn start_launch(
                 return;
             }
         };
+        // The command still holds the launcher's end of the gate.
+        drop(cmd);
+        tilo_startup_metrics::launch_phase(&app.package_id, "spawned");
         if let Some(identity) = command.service_identity.clone() {
             // Capture compositor-authored launch input before releasing the
             // child gate. Never read window authority back from the sandbox.
@@ -4909,6 +4973,52 @@ mod tests {
                 managed_agent_id: None,
             },
         }
+    }
+
+    /// The signed record is verified once per installed manifest: a relaunch
+    /// of the same bytes reuses it, changed bytes are verified again, and a
+    /// failed verification is not remembered.
+    #[test]
+    fn creation_evidence_is_verified_once_per_installed_manifest() {
+        let evidence = tilo_action_broker::services::ApplicationCreationEvidence {
+            package_hash: "ab".repeat(32),
+            declared_kinds: vec!["note".into()],
+        };
+        let key = |manifest: u8| {
+            (
+                "dev.tilo.creation-cache-probe".to_owned(),
+                "ab".repeat(32),
+                PathBuf::from("/store/creation-cache-probe/manifest.toml"),
+                PathBuf::from("/store/creation-cache-probe/payload"),
+                [manifest; 32],
+            )
+        };
+        let verified = std::cell::Cell::new(0_u32);
+        let counter = &verified;
+        let verify =
+            move |result: Option<tilo_action_broker::services::ApplicationCreationEvidence>| {
+                move || {
+                    counter.set(counter.get().saturating_add(1));
+                    result
+                }
+            };
+        assert_eq!(
+            cached_creation_evidence(key(1), verify(Some(evidence.clone()))),
+            Some(evidence.clone())
+        );
+        assert_eq!(
+            cached_creation_evidence(key(1), verify(None)),
+            Some(evidence.clone()),
+            "the same installed bytes are not verified again"
+        );
+        assert_eq!(verified.get(), 1);
+        assert_eq!(cached_creation_evidence(key(2), verify(None)), None);
+        assert_eq!(
+            cached_creation_evidence(key(2), verify(Some(evidence.clone()))),
+            Some(evidence),
+            "a refusal is not remembered"
+        );
+        assert_eq!(verified.get(), 3);
     }
 
     #[test]

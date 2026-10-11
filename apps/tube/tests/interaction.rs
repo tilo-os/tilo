@@ -919,6 +919,120 @@ fn share_copies_a_link_through_a_real_click() {
     );
 }
 
+/// The settled watch page with the pointer resting on "Copy link", fed by a
+/// worker whose results the test lands; and that button's identity.
+fn hovering_copy_link() -> (
+    ui::framework::testing::TestApp<tube::TubeShell>,
+    std::sync::mpsc::SyncSender<tube::api::Update>,
+    usize,
+) {
+    let mut app = live_catalogue();
+    let results = app
+        .with_surface::<TubeApp, _>(TubeApp::script_worker_for_test)
+        .expect("the canonical Tube surface is mounted");
+    app.effect(&tube::actions::TubeEffect::OpenVideo {
+        video: WATCH_ID.into(),
+    })
+    .unwrap();
+    app.settle();
+    assert!(
+        app.harness()
+            .settle_for_capture(ui::time::Duration::from_secs(5)),
+        "the watch page must finish its entrance before the pointer arrives"
+    );
+    let centre = app.harness().targets()["watch_copy_link"].center();
+    app.harness().send(&winit::event::WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
+    });
+    let button = copy_link_identity(&mut app);
+    (app, results, button)
+}
+
+fn copy_link_identity(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> usize {
+    let button = find(app.harness().root_widget(), "watch_copy_link").expect("Copy link shows");
+    std::ptr::from_ref(button).cast::<()>().addr()
+}
+
+/// A worker result lands, as the network answering does, and the next
+/// frame folds it: the watch page is rebuilt with fresh widgets while the
+/// pointer stays where it was.
+fn land_worker_result(
+    app: &mut ui::framework::testing::TestApp<tube::TubeShell>,
+    results: &std::sync::mpsc::SyncSender<tube::api::Update>,
+    before: usize,
+    label: &str,
+) {
+    let rect = app.harness().targets()["watch_copy_link"];
+    results
+        .send(tube::api::Update::Status {
+            live: false,
+            label: label.into(),
+        })
+        .unwrap();
+    app.harness().relayout();
+    assert_ne!(
+        copy_link_identity(app),
+        before,
+        "the result rebuilt the page with a fresh Copy link button"
+    );
+    assert_eq!(
+        app.harness().targets()["watch_copy_link"],
+        rect,
+        "the fresh button sits where the pointer rests"
+    );
+}
+
+fn press(
+    app: &mut ui::framework::testing::TestApp<tube::TubeShell>,
+    state: winit::event::ElementState,
+) {
+    app.harness().send(&winit::event::WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state,
+        button: winit::event::MouseButton::Left,
+    });
+}
+
+fn link_copied(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> bool {
+    app.harness()
+        .wait_until(ui::time::Duration::from_secs(5), |h| {
+            h.a11y_nodes().iter().any(|(_, node)| {
+                node.label() == Some("Notifications")
+                    && node.value().is_some_and(|value| {
+                        value.contains("Link copied") && value.contains(WATCH_ID)
+                    })
+            })
+        })
+}
+
+/// A person hovers "Copy link", the page updates under the still pointer,
+/// and they click. The click must not be lost.
+#[test]
+fn a_click_after_a_worker_result_rebuilt_the_page_still_shares() {
+    let (mut app, results, button) = hovering_copy_link();
+    land_worker_result(&mut app, &results, button, "connecting… (rebuild)");
+    press(&mut app, winit::event::ElementState::Pressed);
+    press(&mut app, winit::event::ElementState::Released);
+    assert!(
+        link_copied(&mut app),
+        "a press after a content rebuild, with the pointer unmoved, submits Share"
+    );
+}
+
+/// As above, but the worker result lands while the button is held down.
+#[test]
+fn a_worker_result_between_press_and_release_still_shares() {
+    let (mut app, results, button) = hovering_copy_link();
+    press(&mut app, winit::event::ElementState::Pressed);
+    land_worker_result(&mut app, &results, button, "connecting… (held)");
+    press(&mut app, winit::event::ElementState::Released);
+    assert!(
+        link_copied(&mut app),
+        "a press, rebuild, release sequence submits Share"
+    );
+}
+
 // The play/pause and scrub transport now live in the shared `VideoPlayer`'s
 // controls overlay (driven by the `media::MediaEngine`), and SponsorBlock
 // auto-skip runs against the engine playhead each frame. Those paths are proven

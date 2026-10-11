@@ -1359,6 +1359,8 @@ search-action-quick-settings-devices = Geräte und Medien öffnen
 search-action-quick-settings-devices-subtitle = Zertifizierte Geräte, Medienwege, entfernte Eingabe und Übergaben
 search-action-projection-open = Wählen, wo der Desktop erscheint
 search-action-projection-open-subtitle = Erweitern, spiegeln, ein Bildschirm oder ein Miracast-, Google-Cast-, AirPlay- oder FCast-Empfänger
+search-action-projection-close = Bildschirmauswahl schließen
+search-action-projection-close-subtitle = Layout- und Empfängerauswahl ausblenden; die Bildschirme bleiben, wie sie sind
 search-action-display-layout-extend = Bildschirme erweitern
 search-action-display-layout-extend-subtitle = Alle verbundenen Bildschirme als einen größeren Desktop nutzen
 search-action-display-layout-mirror = Bildschirme spiegeln
@@ -1549,13 +1551,6 @@ search-action-device-revoked = Gerät widerrufen
 search-action-device-revoked-body = Der Widerruf wurde mit dem Stammschlüssel signiert und in der Geräteliste dieser Identität vermerkt.
 
 # Suche: Anwendungen
-search-apps-group-start-here = Zum Einstieg
-search-apps-group-everyday = Alltag
-search-apps-group-work = Arbeit
-search-apps-group-media = Medien
-search-apps-group-system-tools = Systemwerkzeuge
-search-apps-group-more-apps = Weitere Apps
-search-apps-group-developer-tools = Entwicklerwerkzeuge
 search-apps-detail-grouped = { $group } · { $detail }
 search-apps-open = { $app } öffnen
 search-apps-open-subtitle = { $target } · { $detail }
@@ -2549,3 +2544,43 @@ device-fabric-error-input-decline-save-failed = Die Eingabesteuerung wurde wider
 device-fabric-error-input-sequence-exhausted = Die Eingabesequenz ist ausgeschöpft. Fordere eine neue Steuerungsberechtigung an.
 
 device-fabric-error-input-cleanup-pending = Vorherige Eingaben werden noch freigegeben. Versuche es erneut.
+
+display-remote-heading = Deine anderen Bildschirme
+display-remote-title = { $number } · { $name } · { $device }
+display-remote-row = { $status } · { $title }
+display-remote-row-description = Diesen Bildschirm in dein gemeinsames Display-Layout aufnehmen
+display-remote-offline = Offline
+display-remote-offline-excluded = Offline · Nicht im Layout
+display-remote-switched-off = Auf dem Gerät ausgeschaltet
+display-remote-in-layout = Im Layout
+display-remote-out-of-layout = Nicht im Layout
+display-remote-unavailable = Dieser gemeinsame Bildschirm ist nicht mehr verfügbar.
+display-remote-permission = Deine Workspace-Rolle erlaubt keine Änderung des gemeinsamen Display-Layouts.
+display-remote-stale = Die Display-Anordnung hat sich geändert. Aktualisiere sie vor der Änderung.
+search-action-shared-display-inspect = Gemeinsame Bildschirme prüfen
+search-action-shared-display-inspect-subtitle = Bestätigte Ausgänge, Display-Nummern, Layout-Teilnahme und aktuelle Revisionen
+search-action-shared-display-include = Gemeinsame Display-Teilnahme festlegen
+search-action-shared-display-include-subtitle = Einen bestätigten Ausgang aufnehmen oder ausschließen, ohne Eingabezugriff zu gewähren
+activity-morning-choose = Für den Morgen auswählen
+activity-morning-remove = Morgenquelle entfernen
+activity-morning-empty = Morgenquellen: Ressource unter Erkunden → Details auswählen. Bis zu acht Quellen; keine automatische Verbindung.
+activity-morning-description = Ausgewählte Morgenquellen · Anbieter-Vorschauen aus autorisierten Ressourcen. Aktualisierung oder Zeitplan ausdrücklich wählen.
+activity-morning-unavailable = Quelle in diesem Arbeitsbereich nicht verfügbar · keine aktuellen Nachweise
+activity-morning-source = { $source } · letzte aufgezeichnete Aktivität: { $time } · externe Aktualität unbekannt
+activity-morning-open = Morgenquelle öffnen
+
+# Kanonische Zulassung von Einrichtungsaktionen; keine privaten Identitätsdaten.
+onboarding-semantic-unavailable = Diese Einrichtungsaktion ist in diesem Schritt nicht mehr verfügbar.
+onboarding-semantic-failed = Die Einrichtung konnte diese Aktion nicht abschließen. Der Desktop bleibt geschützt.
+activity-morning-payload-unavailable = Anbieter-Zusammenfassung nicht verfügbar. Quelle öffnen, um sie zu prüfen oder zu aktualisieren.
+
+activity-morning-refresh = Quelle aktualisieren
+activity-morning-draft = Geplante Aktualisierung entwerfen…
+activity-morning-draft-description = Öffnet einen Entwurf in Shortcuts. Zeitplan wählen und Berechtigungen vor dem Speichern prüfen; noch ist nichts aktiviert.
+activity-morning-command-unavailable = Quellenaktion nicht verfügbar
+activity-morning-command-pending = Anfrage läuft
+activity-morning-command-accepted = Anfrage angenommen; Ergebnis in Aktionen prüfen
+activity-morning-command-refused = Anfrage abgelehnt
+activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichsaktivität: { $time }
+
+activity-morning-next = Nächste ausgewählte Quelle

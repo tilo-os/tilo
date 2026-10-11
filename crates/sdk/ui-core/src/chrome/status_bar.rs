@@ -11,6 +11,7 @@
 //! `Caption` with tabular figures in the secondary ink, inset by the
 //! content gutter step `spacing.s4`.
 
+use crate::num::f32_of_f64;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -199,7 +200,7 @@ pub fn draw(
     // run into it: a cursor position is what the eye looks for.
     let left_max = (rx - lx - f64::from(theme.tokens.spacing.s2)).max(0.0);
     let left_shown = if f64::from(left_w) > left_max {
-        tr.elide_to_width_style(left, narrow(left_max), &style)
+        tr.elide_to_width_style(left, f32_of_f64(left_max), &style)
     } else {
         left.to_string()
     };
@@ -219,15 +220,6 @@ pub fn draw(
         None,
         &style,
     );
-}
-
-/// Narrows a bounded on-screen width to the renderer's `f32`.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "a status bar is a few thousand logical pixels at most, exact in f32"
-)]
-fn narrow(px: f64) -> f32 {
-    px as f32
 }
 
 #[cfg(test)]

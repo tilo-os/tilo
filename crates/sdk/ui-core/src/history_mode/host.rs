@@ -142,6 +142,12 @@ pub struct HistoryHost {
     body_node: Option<NodeId>,
     timeline_node: Option<NodeId>,
     canvas_node: Option<NodeId>,
+    /// What the frame being drawn painted ([`Self::draw_compared`]), and
+    /// what the last presented frame did ([`Self::paint_presented`]).
+    #[cfg(feature = "native")]
+    painting: Option<Scene>,
+    #[cfg(feature = "native")]
+    painted: Option<Scene>,
 }
 impl HistoryHost {
     /// Request the same read-only presentation as the History button. Restore
@@ -327,9 +333,46 @@ impl HistoryHost {
             control_domain: None,
             control_lease: None,
             invalid_owner: false,
+            #[cfg(feature = "native")]
+            painting: None,
+            #[cfg(feature = "native")]
+            painted: None,
         };
         host.rebuild_toolbar();
         Ok(host)
+    }
+
+    /// Draw into a scene of its own, append that to `scene`, and say whether
+    /// it differs from what the last presented frame painted: a window that
+    /// shows the live app under an unchanged History toolbar repaints only
+    /// what the app's widgets damage.
+    #[cfg(feature = "native")]
+    pub(crate) fn draw_compared(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut crate::text_render::TextRenderer,
+        (theme, presence): (&crate::theme::Theme, &crate::presence::PresenceCtx),
+    ) -> bool {
+        let mut own = self.painting.take().unwrap_or_default();
+        own.reset();
+        Widget::draw(self, &mut own, transform, text, theme, presence);
+        scene.append(&own, None);
+        let changed = self.painted.as_ref().map_or_else(
+            || !own.encoding().draw_tags.is_empty(),
+            |was| !was.encoding_eq(&own),
+        );
+        self.painting = Some(own);
+        changed
+    }
+
+    /// The frame drawn last was presented: what the next frame's paint is
+    /// compared with.
+    #[cfg(feature = "native")]
+    pub(crate) fn paint_presented(&mut self) {
+        if let Some(painting) = self.painting.take() {
+            self.painted = Some(painting);
+        }
     }
     pub(crate) fn set_control_domain(&mut self, domain: &crate::ControlDomain) {
         self.control_domain = Some(domain.clone());
@@ -871,17 +914,14 @@ impl HistoryHost {
     #[cfg(test)]
     pub(crate) fn activate_retained_control_for_test(&mut self, id: &str) -> bool {
         fn activate(widget: &mut dyn Widget, id: &str) -> bool {
-            if widget.test_id() == Some(id) {
-                return widget.perform_action(
+            crate::widget::find_test_id_mut(widget, id).is_some_and(|widget| {
+                widget.perform_action(
                     &crate::a11y::Action::Activate,
+                    &[],
                     &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT,
-                );
-            }
-            widget
-                .children_mut()
-                .into_iter()
-                .any(|child| activate(child, id))
+                )
+            })
         }
         // Invokes the retained production button callback. No phase, lease,
         // descriptor, or producer behavior is replaced by this access seam.

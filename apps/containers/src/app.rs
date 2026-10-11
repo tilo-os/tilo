@@ -21,7 +21,7 @@ use crate::resource::ContainersEffect;
 use automerge::AutoCommit;
 use automerge::ObjId;
 use taffy::prelude::*;
-use ui::a11y::{AccessNode, Politeness, Role};
+use ui::a11y::{AccessNode, Role};
 use ui::control_custody::RawControlSlot;
 use ui::framework::{Dispatcher, LiveRow};
 use ui::presence::PresenceCtx;
@@ -32,7 +32,7 @@ use ui::tilo_actions::{ActionAddress, ControlInvocation};
 use ui::tilo_resource::Effect as _;
 use ui::time::Instant;
 use ui::tokens::TextRole;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::{Notice, ToastAnchor, ToastKind};
 use ui::widget::{
     AppModel, Column, ModalDialog, ModelPath, ModelView, NavPane, PromptBody, Text, TextInput,
     Widget,
@@ -47,9 +47,6 @@ use crate::model::{DetailTab, Engine, Section};
 use crate::podman::{self, Action, StreamMsg};
 use crate::resource::{Containers, ContainersAction};
 use crate::view::{self, Intent, Intents};
-
-/// How long a result toast stays on screen.
-const TOAST_MS: u128 = 4000;
 
 /// What a destructive confirm targets — a container, an image, or a volume.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,13 +151,6 @@ pub(crate) struct PullProgress {
     pub(crate) lines: Vec<String>,
     pub(crate) done: bool,
     pub(crate) failed: Option<String>,
-}
-
-/// A transient status toast.
-pub(crate) struct Toast {
-    pub(crate) message: String,
-    pub(crate) error: bool,
-    pub(crate) born: Instant,
 }
 
 /// Background-thread message: a fresh engine probe arrived, or a streaming
@@ -317,7 +307,7 @@ pub struct ContainersApp {
     /// search and agents. The host re-resolves authority, records the
     /// Effect, then calls `Widget::start_operation`.
     pub(crate) pending_control_invocation: RawControlSlot,
-    pub(crate) toast: Option<Toast>,
+    pub(crate) toast: Notice,
     /// Background refresh plumbing. `None` in headless/shots mode.
     bg_rx: Option<Receiver<Bg>>,
     bg_tx: Option<Sender<Bg>>,
@@ -334,7 +324,6 @@ pub struct ContainersApp {
     structure_dirty: bool,
     /// Where the user is: the section, the selected container, its tab.
     pub(crate) view: ViewState,
-    motion_reduced: bool,
     /// Where edits of the draft go, once the framework attached the surface.
     dispatcher: Option<Dispatcher<Containers>>,
 }
@@ -410,7 +399,7 @@ impl ContainersApp {
             pull_dialog: None,
             pull_dirty: false,
             pending_control_invocation: RawControlSlot::replace_one(),
-            toast: None,
+            toast: Notice::default(),
             bg_rx: None,
             bg_tx: None,
             #[cfg(test)]
@@ -422,7 +411,6 @@ impl ContainersApp {
             past: false,
             structure_dirty: true,
             view: ViewState::default(),
-            motion_reduced: false,
             dispatcher: None,
         }
     }
@@ -628,11 +616,12 @@ impl ContainersApp {
     }
 
     pub(crate) fn show_toast(&mut self, message: impl Into<String>, error: bool) {
-        self.toast = Some(Toast {
-            message: message.into(),
-            error,
-            born: ui::time::now(),
-        });
+        let kind = if error {
+            ToastKind::Error
+        } else {
+            ToastKind::Success
+        };
+        self.toast.show(message, kind);
     }
 
     /// Whether lifecycle affordances are live. The deterministic sample
@@ -1482,20 +1471,13 @@ impl ContainersApp {
         theme: &Theme,
         window: Rect,
     ) {
-        let Some(toast) = &self.toast else { return };
-        let kind = if toast.error {
-            ToastKind::Error
-        } else {
-            ToastKind::Success
-        };
-        paint_transient(
+        self.toast.paint(
             scene,
             transform,
             tr,
             theme,
             window,
             ToastAnchor::BottomCenter,
-            &ToastCard::new(&toast.message, kind),
         );
     }
 }
@@ -1548,11 +1530,7 @@ impl Widget for ContainersApp {
             if self.pull_dirty {
                 self.rebuild_pull();
             }
-            if let Some(t) = &self.toast
-                && t.born.elapsed().as_millis() > TOAST_MS
-            {
-                self.toast = None;
-            }
+            self.toast.expire();
             self.publish_model();
         }
         self.window.sync(state, path);
@@ -1582,7 +1560,6 @@ impl Widget for ContainersApp {
 
     fn needs_idle_sync(&self) -> bool {
         self.live
-            || self.toast.is_some()
             || self
                 .pull
                 .as_ref()
@@ -1590,11 +1567,21 @@ impl Widget for ContainersApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        let mut needed = !self.motion_reduced && self.toast.is_some();
+        let mut needed = false;
         self.for_each_child(&mut |child| {
             needed = needed || child.needs_animation_frame();
         });
         needed
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let mut earliest = self.toast.deadline();
+        self.for_each_child(&mut |child| {
+            if let Some(deadline) = child.next_wake_deadline() {
+                earliest = Some(earliest.map_or(deadline, |old: Instant| old.min(deadline)));
+            }
+        });
+        earliest
     }
 
     fn build_layout(
@@ -1624,10 +1611,7 @@ impl Widget for ContainersApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let children = taffy.children(node).unwrap_or_default();
         let at = Point::new(self.rect.x0, self.rect.y0);
         let mut nodes = children.iter();
@@ -1752,23 +1736,15 @@ impl Widget for ContainersApp {
             .with_name("Containers")
             .with_description(&self.engine.connection)
             .with_bounds(self.rect);
-        if let Some(toast) = &self.toast {
-            root.children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(&toast.message)
-                    .with_hashed_key("containers.toast")
-                    .with_live(if toast.error {
-                        Politeness::Assertive
-                    } else {
-                        Politeness::Polite
-                    }),
-            );
-        }
+        root.children.extend(
+            self.toast
+                .access_node()
+                .map(|node| node.with_hashed_key("containers.toast")),
+        );
         Some(root)
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
-        self.motion_reduced = reduced;
         for child in self.children_mut() {
             child.set_motion_reduced(reduced);
         }
@@ -2069,11 +2045,11 @@ mod tests {
         app
     }
 
-    fn driver(app: ContainersApp) -> ui::headless::Driver {
-        ui::headless::Driver::for_root(ui::State::new(), app, (1280, 800), ui::Theme::dark())
+    fn driver(app: ContainersApp) -> ui::headless::FrameHarness {
+        ui::headless::FrameHarness::for_root(ui::State::new(), app, (1280, 800), ui::Theme::dark())
     }
 
-    fn app_of(driver: &mut ui::headless::Driver) -> &mut ContainersApp {
+    fn app_of(driver: &mut ui::headless::FrameHarness) -> &mut ContainersApp {
         driver.root_mut::<ContainersApp>()
     }
 
@@ -2147,7 +2123,7 @@ mod tests {
 
     #[test]
     fn escape_closes_the_detail_in_a_narrow_window_too() {
-        let mut d = ui::headless::Driver::for_root(
+        let mut d = ui::headless::FrameHarness::for_root(
             ui::State::new(),
             staged(),
             (390, 844),
@@ -2367,9 +2343,9 @@ mod tests {
             requests.recv().unwrap(),
             ControlledRuntimeRequest::Refresh(_)
         ));
-        let terminal = app.toast.as_ref().map(|toast| toast.born);
+        let terminal = app.toast.deadline();
         app.drain_bg();
-        assert_eq!(app.toast.as_ref().map(|toast| toast.born), terminal);
+        assert_eq!(app.toast.deadline(), terminal);
         assert!(
             requests.try_recv().is_err(),
             "terminal event was reduced once"

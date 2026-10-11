@@ -120,6 +120,12 @@ fn staged() -> DisplayTransaction {
 }
 
 fn owner_chrome() -> shell::shell::chrome_state::Chrome {
+    owner_host().1
+}
+
+/// The real host over a workspace its person owns, so the published
+/// display actions are theirs to invoke.
+fn owner_host() -> (ShellOverlayHost, shell::shell::chrome_state::Chrome) {
     use shell::shell::state::{FreshId as _, Workspace, WorkspaceId};
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::new();
@@ -130,7 +136,7 @@ fn owner_chrome() -> shell::shell::chrome_state::Chrome {
     workspace.set_owner(person);
     tree.desktop.workspaces.push(workspace);
     tree.desktop.active = id;
-    build_tilo_overlay_host_with_chrome(&tree).1
+    build_tilo_overlay_host_with_chrome(&tree)
 }
 
 /// Begin the real published layout action; it must retain its original job
@@ -138,23 +144,41 @@ fn owner_chrome() -> shell::shell::chrome_state::Chrome {
 fn begin_mirror(
     chrome: &shell::shell::chrome_state::Chrome,
 ) -> shell::shell::search::PendingInvocation {
+    begin_display_action(chrome, "display.layout.mirror")
+}
+
+/// The published action `id`, as the actions provider serves it to the
+/// control socket, search and the palette.
+fn display_action(
+    chrome: &shell::shell::chrome_state::Chrome,
+    id: &str,
+) -> shell::shell::search::SearchResult {
     use shell::shell::search::{ResourceKind, SearchContext, SearchProvider as _};
     let provider = shell::shell::search::providers::actions::ActionsProvider::new();
+    let doc = automerge::AutoCommit::new();
+    provider
+        .query(SearchContext {
+            query_scope: None,
+            include_programmatic: true,
+            needle: id,
+            wanted: &[ResourceKind::Action],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        })
+        .into_iter()
+        .find(|row| row.id == id)
+        .unwrap_or_else(|| panic!("{id} is a declared owner action"))
+}
+
+/// Begin the real published display action `id` through its lifecycle.
+fn begin_display_action(
+    chrome: &shell::shell::chrome_state::Chrome,
+    id: &str,
+) -> shell::shell::search::PendingInvocation {
     let mut doc = automerge::AutoCommit::new();
-    let rows = provider.query(SearchContext {
-        query_scope: None,
-        include_programmatic: true,
-        needle: "display.layout.mirror",
-        wanted: &[ResourceKind::Action],
-        chrome: &chrome.borrow(),
-        doc: &doc,
-        doc_root: &automerge::ROOT,
-    });
-    let row = rows
-        .iter()
-        .find(|row| row.id == "display.layout.mirror")
-        .expect("declared owner layout action");
-    let disposition = row.on_begin_invoke.as_ref().expect("layout lifecycle")(
+    let row = display_action(chrome, id);
+    let disposition = row.on_begin_invoke.as_ref().expect("display lifecycle")(
         &mut ui::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
         chrome,
@@ -162,7 +186,7 @@ fn begin_mirror(
     )
     .unwrap();
     let shell::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
-        panic!("a queued layout must retain its published job");
+        panic!("a queued display action must retain its published job");
     };
     ticket
 }
@@ -521,5 +545,254 @@ fn identify_puts_a_numbered_card_on_every_display() {
     assert!(
         !host.poll_display_identify(),
         "one request shows the numbers once"
+    );
+}
+
+/// Run an action's job to its durable receipt, as the control socket does.
+fn complete(ticket: &shell::shell::search::PendingInvocation) {
+    shell::shell::durable_writer::global().flush();
+    assert!(
+        ticket().expect("the display action succeeds").is_some(),
+        "a flushed request has its receipt"
+    );
+}
+
+/// Write the transaction's next state as the compositor does when it
+/// applies, confirms, reverts or refuses a staged layout.
+fn compositor_moves_to(state: DisplayTransactionState) {
+    let mut transaction = DisplayTransaction::load().expect("a staged display change");
+    transaction.state = state;
+    if state == DisplayTransactionState::AwaitingConfirmation {
+        transaction.deadline_unix_ms = Some(u64::MAX);
+    }
+    transaction
+        .save()
+        .expect("the compositor records the change");
+}
+
+fn sheet_open(chrome: &shell::shell::chrome_state::Chrome) -> bool {
+    chrome.borrow().overlays.projection
+}
+
+/// Drive the ordinary host update, as the compositor tick does, until the
+/// sheet closes or `window` (several of its 250 ms storage polls) passes.
+fn updates_close_the_sheet_within(
+    host: &mut ShellOverlayHost,
+    chrome: &shell::shell::chrome_state::Chrome,
+    window: std::time::Duration,
+) -> bool {
+    let doc = automerge::AutoCommit::new();
+    let started = std::time::Instant::now();
+    while started.elapsed() < window {
+        host.update(&doc, &automerge::ROOT);
+        if !sheet_open(chrome) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    false
+}
+
+/// The sheet closes within a few storage polls.
+fn updates_close_the_sheet(
+    host: &mut ShellOverlayHost,
+    chrome: &shell::shell::chrome_state::Chrome,
+) -> bool {
+    updates_close_the_sheet_within(host, chrome, std::time::Duration::from_secs(2))
+}
+
+/// The sheet is still open after three storage polls.
+fn updates_keep_the_sheet(
+    host: &mut ShellOverlayHost,
+    chrome: &shell::shell::chrome_state::Chrome,
+) -> bool {
+    !updates_close_the_sheet_within(host, chrome, std::time::Duration::from_millis(800))
+}
+
+fn assert_sheet_gone(host: &ShellOverlayHost, chrome: &shell::shell::chrome_state::Chrome) {
+    assert!(!sheet_open(chrome), "the display sheet closed");
+    assert!(
+        !host
+            .accessibility()
+            .expect("the host publishes a semantic tree")
+            .children
+            .iter()
+            .any(|node| node.role == Role::Dialog && node.name.as_deref() == Some("Display")),
+        "no display dialog is left to take the keyboard"
+    );
+}
+
+/// An agent mirrors the displays through the action door: the sheet shows
+/// the change with its Keep/Revert countdown while it waits.
+fn mirror_through_the_action(
+    host: &mut ShellOverlayHost,
+    chrome: &shell::shell::chrome_state::Chrome,
+) {
+    let ticket = begin_mirror(chrome);
+    assert!(sheet_open(chrome), "the layout action shows its change");
+    complete(&ticket);
+    compositor_moves_to(DisplayTransactionState::AwaitingConfirmation);
+    assert!(
+        updates_keep_the_sheet(host, chrome),
+        "a change still waiting for Keep or Revert keeps its sheet"
+    );
+}
+
+#[test]
+fn an_action_opened_sheet_closes_when_the_revert_action_answers_it() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    publish_laptop_with_monitor();
+    let (mut host, chrome) = owner_host();
+    let _layout = layout_host(&mut host);
+    mirror_through_the_action(&mut host, &chrome);
+
+    complete(&begin_display_action(&chrome, "display.change.revert"));
+    assert_eq!(
+        DisplayTransaction::load().unwrap().state,
+        DisplayTransactionState::RevertRequested
+    );
+    assert!(
+        updates_close_the_sheet(&mut host, &chrome),
+        "an answered change leaves no modal sheet behind"
+    );
+    assert_sheet_gone(&host, &chrome);
+}
+
+#[test]
+fn an_action_opened_sheet_closes_once_the_kept_change_is_confirmed() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    publish_laptop_with_monitor();
+    let (mut host, chrome) = owner_host();
+    let _layout = layout_host(&mut host);
+    mirror_through_the_action(&mut host, &chrome);
+
+    complete(&begin_display_action(&chrome, "display.change.keep"));
+    compositor_moves_to(DisplayTransactionState::Confirmed);
+    assert!(updates_close_the_sheet(&mut host, &chrome));
+    assert_sheet_gone(&host, &chrome);
+}
+
+#[test]
+fn an_action_opened_sheet_closes_when_its_change_times_out_or_is_refused() {
+    for settled in [
+        DisplayTransactionState::Reverted,
+        DisplayTransactionState::Rejected,
+    ] {
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        publish_laptop_with_monitor();
+        let (mut host, chrome) = owner_host();
+        let _layout = layout_host(&mut host);
+        mirror_through_the_action(&mut host, &chrome);
+
+        compositor_moves_to(settled);
+        assert!(
+            updates_close_the_sheet(&mut host, &chrome),
+            "a change that is {settled:?} with nobody answering closes its sheet"
+        );
+        assert_sheet_gone(&host, &chrome);
+    }
+}
+
+#[test]
+fn an_action_opened_sheet_closes_at_once_when_storage_refuses_the_layout() {
+    use std::sync::Arc;
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let paths = settings_store::SessionPaths::configured().unwrap();
+    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+    settings_store::install_source(Some(session.host_view().unwrap()));
+    publish_laptop_with_monitor();
+    let (mut host, chrome) = owner_host();
+    let _layout = layout_host(&mut host);
+    std::fs::create_dir_all(paths.device.parent().unwrap()).unwrap();
+    std::fs::create_dir(&paths.device).unwrap();
+    let ticket = begin_mirror(&chrome);
+    assert!(sheet_open(&chrome));
+    shell::shell::durable_writer::global().flush();
+    let result = ticket();
+    std::fs::remove_dir(&paths.device).unwrap();
+    settings_store::install_source(None);
+    assert!(matches!(
+        result,
+        Err(shell::shell::search::action_api::ActionError::Refused(_))
+    ));
+    assert_sheet_gone(&host, &chrome);
+}
+
+#[test]
+fn an_action_opened_sheet_closes_by_escape_and_by_the_close_action() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    publish_laptop_with_monitor();
+    let (mut host, chrome) = owner_host();
+    let layout = layout_host(&mut host);
+    mirror_through_the_action(&mut host, &chrome);
+    press(
+        &mut host,
+        &layout,
+        Key::Named(NamedKey::Escape),
+        ModifiersState::empty(),
+    );
+    assert_sheet_gone(&host, &chrome);
+
+    compositor_moves_to(DisplayTransactionState::Reverted);
+    mirror_through_the_action(&mut host, &chrome);
+    let mut doc = automerge::AutoCommit::new();
+    (display_action(&chrome, "projection.close").on_open)(
+        &mut ui::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+        &chrome,
+        &shell::shell::search::action_api::ActionArgs::none(),
+    )
+    .expect("closing the display sheet is an action, not only a click");
+    assert_sheet_gone(&host, &chrome);
+}
+
+#[test]
+fn a_sheet_the_person_opened_or_used_stays_when_its_change_settles() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    publish_laptop_with_monitor();
+    let (mut host, chrome) = owner_host();
+    let layout = layout_host(&mut host);
+
+    // Super+P, Mirror, Enter: the person's own picker.
+    super_p(&mut host, &layout);
+    press(
+        &mut host,
+        &layout,
+        Key::Named(NamedKey::ArrowDown),
+        ModifiersState::empty(),
+    );
+    press(
+        &mut host,
+        &layout,
+        Key::Named(NamedKey::Enter),
+        ModifiersState::empty(),
+    );
+    staged();
+    compositor_moves_to(DisplayTransactionState::AwaitingConfirmation);
+    compositor_moves_to(DisplayTransactionState::Reverted);
+    assert!(
+        updates_keep_the_sheet(&mut host, &chrome),
+        "a picker the person opened stays until they close it"
+    );
+    press(
+        &mut host,
+        &layout,
+        Key::Named(NamedKey::Escape),
+        ModifiersState::empty(),
+    );
+    assert!(!sheet_open(&chrome));
+
+    // An action opens it, then the person takes it over with a key.
+    mirror_through_the_action(&mut host, &chrome);
+    press(
+        &mut host,
+        &layout,
+        Key::Named(NamedKey::ArrowUp),
+        ModifiersState::empty(),
+    );
+    compositor_moves_to(DisplayTransactionState::Reverted);
+    assert!(
+        updates_keep_the_sheet(&mut host, &chrome),
+        "a sheet the person used is theirs to close"
     );
 }

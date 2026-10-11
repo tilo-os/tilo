@@ -12,6 +12,9 @@ use crate::action::{Action, ActionError, EncodedAction};
 
 type Decoder = Box<dyn Fn(&[u8]) -> Result<Box<dyn Action>, ActionError> + Send + Sync>;
 
+/// Decodes one action type's payload ([`ActionRegistry::register_decoder`]).
+pub type DecodePayload = fn(&[u8]) -> Result<Box<dyn Action>, serde_json::Error>;
+
 /// Maps a stable `type_id` to the decoder that reconstructs its action
 /// from a payload — cheap to share behind an `Arc`/`&` at dispatch time.
 #[derive(Default)]
@@ -49,6 +52,23 @@ impl ActionRegistry {
                     source: e,
                 })?;
                 Ok(Box::new(action) as Box<dyn Action>)
+            }),
+        );
+    }
+
+    /// Register `decode` under `type_id`, for an action type that decodes
+    /// its payload itself, such as one generic type whose payload one
+    /// non-generic function decodes for every instance.
+    pub fn register_decoder(&mut self, type_id: impl Into<String>, decode: DecodePayload) {
+        let type_id = type_id.into();
+        let tid = type_id.clone();
+        self.decoders.insert(
+            type_id,
+            Box::new(move |bytes: &[u8]| {
+                decode(bytes).map_err(|e| ActionError::Decode {
+                    type_id: tid.clone(),
+                    source: e,
+                })
             }),
         );
     }

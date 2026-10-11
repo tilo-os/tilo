@@ -372,8 +372,7 @@ impl Widget for Toggle {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.control.rect = crate::widget::placed(&layout, origin);
+        self.control.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -382,7 +381,7 @@ impl Widget for Toggle {
         transform: Affine,
         _text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
         // One painter for the retained widget and immediate-mode hosts, so
         // the two cannot drift: the pill is centred in the layout target and
@@ -397,6 +396,7 @@ impl Widget for Toggle {
                 .focused(c.is_focused)
                 .disabled(!c.effectively_enabled()),
         );
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     /// A fixed size: only the first layout (and a theme change, which
@@ -723,6 +723,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
@@ -831,6 +832,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut toggle,
                 &crate::a11y::Action::ToggleCheck,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

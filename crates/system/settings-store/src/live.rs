@@ -522,7 +522,7 @@ mod tests {
         );
 
         let mut input = Map::new();
-        input.insert("natural_scroll".into(), Value::Bool(true));
+        input.insert("mouse_natural_scroll".into(), Value::Bool(true));
         source.update_section("input", input).unwrap();
         let _ = live.wait_for_change(0, tilo_test_env::hang_bound());
         assert_eq!(

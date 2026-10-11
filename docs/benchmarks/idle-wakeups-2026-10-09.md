@@ -261,6 +261,73 @@ iroh-gossip's 60 s membership shuffle, outside the gate's window.
 The lone gate's budget is now 0.6/s (p95 0.45/s plus a quarter). The idle
 pair is gated on blocking switches too, at 12/s with a 1 % CPU bound.
 
+### Relays rest again, and invites name a home relay
+
+Waking the relays used to be sticky: after any collaboration, even an
+invitation issued and cancelled, an idle desktop ran iroh's net report every
+20-26 s again for the rest of the session. `Reachability` now records what
+holds the relays up: the network actor reports the remote parties it is
+connected to or keeps dialling (a peer it dials or one on its topics, a host,
+a governed room's relay, one of the person's devices, a streamed window, a
+held remote action, an enrolment, a bound Messages account), and the session
+what it has recorded (a joined room, a peer named in a room, a relay-governed
+or continuation room, an open invitation, another of the person's devices),
+re-read at most once a second while the compositor ticks. Five minutes after
+the last of these ended, and after the last wake, `Endpoint::remove_relay`
+empties the map, and net report, QAD and port mapping stop. iroh's API cannot
+close the home relay it chose, so that connection and its 15 s ping stay
+until the endpoint closes; the address keeps naming it.
+
+A peer whose name was removed from a room no longer counts: its certified
+identity row stays as revocation evidence, but it is not a member.
+
+Opening the invite composer starts the relays, and a direct invite waits up
+to 2 s for a home relay, so the token names one (a loopback relay without
+QAD is picked in about 0.2 s, one whose QAD never answers in about 3 s).
+
+Focused run 95964: once its collaborator had left and been taken out of the
+room, the desktop rested its relays and then blocked 0.65 times a second,
+against 0.30/s for a lone desktop that never had a peer (run 95857). The
+difference is gossip's sweeps of the three topics the pair linked, which
+iroh-gossip cannot stop; `reachability_tests` gates it at the lone budget
+plus those sweeps, 0.9/s.
+
+### iroh's own timers stop when they have nothing to do
+
+What was left on the lone desktop, the rested one and an idle `fs serve`
+was iroh's: netwatch's 15 s wall-clock poll, the socket's 20-26 s re-STUN
+tick with no relays, the 15 s ping of a home relay kept after the relays
+were removed, and iroh-gossip's 10 s cache sweep for the life of a topic.
+No release changes them (iroh 1.3.0, netwatch 0.19.3 and iroh-gossip
+0.101.0 have the same code), so the locked versions are vendored with one
+patch each (`vendor/iroh`, `vendor/netwatch`, `vendor/iroh-gossip`, each
+with a `TILO-PATCH.md`). The re-STUN tick waits for a relay, emptying the
+map releases the home relay, netwatch waits on a timerfd the kernel cancels
+on resume or a clock step (its poll could not see a sleep on Linux, where
+`Instant` stands still while suspended), and gossip sweeps only while
+something is cached. Network changes still arrive through netlink:
+`crates/system/fs/tests/iroh_idle.rs` sees `lo` come up and an address come
+and go in an endpoint's own network namespace after about 270 ms each.
+
+Focused runs, blocking (voluntary) switches per second:
+
+| gate | main `7180919b15` (96742-96744) | branch (96812, 96954-96958) |
+| -- | --: | --: |
+| lone desktop, all threads | 0.35-0.40 | 0.20 |
+| lone desktop, `tilo-net-rt` | 0.30-0.35 | 0.15 |
+| desktop whose collaborator left, all threads | 0.60-0.65 | 0.05 |
+| desktop whose collaborator left, `tilo-net-rt` | 0.55-0.65 | 0.00 |
+| endpoint with its relays removed (`iroh_idle`, 30 s) | | 0.00 |
+| idle `fs serve` (ci-filesystem; main 96747-96779, branch 97069) | 0.65 | 0.30 |
+
+The rested desktop is now measured once gossip's caches have drained (100 s
+after its relays rest; a real desktop rests them five minutes after the last
+collaborator), and gated at 0.10/s instead of the lone budget plus 0.3/s of
+sweeps. The lone budget is 0.25/s (p95 0.20/s plus a quarter), and an idle
+`fs serve`'s 0.5/s, between what it does now and what the iroh timers cost. What the lone
+desktop's network runtime still does 15 to 35 s after it starts is not
+periodic: the rested desktop, two minutes into its run, shows none.
+
 ## The collaboration-plane gate in the shell shard
 
 `idle_quiet_tests` (two converged desktops) had a 15/s budget, set from

@@ -52,6 +52,8 @@ mod read_content;
 mod responsive_drawer;
 #[path = "room_notebook.rs"]
 mod room_notebook;
+#[path = "scroll_damage.rs"]
+mod scroll_damage;
 #[path = "sidebar_collab_growth.rs"]
 mod sidebar_collab_growth;
 #[path = "sidebar_dnd.rs"]
@@ -64,6 +66,8 @@ mod tab_nesting;
 mod tree_operations;
 #[path = "two_peer_sync.rs"]
 mod two_peer_sync;
+#[path = "typing_damage.rs"]
+mod typing_damage;
 #[path = "typing_order.rs"]
 mod typing_order;
 #[path = "welcome_page_renders_all_block_kinds.rs"]

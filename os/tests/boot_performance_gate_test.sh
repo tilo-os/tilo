@@ -476,8 +476,7 @@ if grep -Eq '^\[Install\]|^WantedBy=' "$app_host_service"; then
   fail 'tilo-app-host service remains directly enableable instead of socket-only'
 fi
 grep -Fqx 'RuntimeDirectoryPreserve=yes' "$app_host_service"
-grep -Fq 'std::env::var("LISTEN_PID")' "$app_host_source"
-grep -Fq 'actual.as_pathname() == Some(expected)' "$app_host_source"
+grep -Fq 'activated_socket(&socket)' "$app_host_source"
 grep -Fq 'bounded_command::run_prepared(' "$app_host_rpc" \
   || fail 'app-host RPC trusts unbounded package-manager subprocesses'
 if grep -Fq '.output()' "$app_host_rpc"; then
@@ -509,8 +508,7 @@ for incompatible in ProtectKernelTunables ProtectKernelModules ProtectKernelLogs
 done
 grep -Fqx 'PartOf=tilo-graphical-session.target' "$ush_socket"
 grep -Fqx 'WantedBy=tilo-graphical-session.target' "$ush_socket"
-grep -Fq 'std::env::var("LISTEN_PID")' "$ush_source"
-grep -Fq 'listener.local_addr()?.as_pathname() == Some(expected)' "$ush_source"
+grep -Fq 'activated_socket(socket)' "$ush_source"
 ush_vm_probe="$repo/os/tests/ush-systemd-terminal-vm.sh"
 grep -Fq 'systemctl --user start tilo-ush.socket' "$ush_vm_probe"
 grep -Fq 'ush-systemd-terminal-probe.py' "$ush_vm_probe"
@@ -525,10 +523,14 @@ recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
 grep -Fqx 'ListenStream=%t/tilo/services/tilo-fs.sock' "$recipient_socket"
 grep -Fqx 'SocketMode=0600' "$recipient_socket"
 grep -Fqx 'Backlog=16' "$recipient_socket"
-# Activation may omit a pathname; an explicit path must still be this socket.
 recipient_src="$repo/crates/system/fs/src/main.rs"
-if ! grep -A3 -F 'if let Some(actual) = listener.local_addr()?.as_pathname()' "$recipient_src"   | grep -Fq 'actual == socket'; then
-  echo 'recipient-service no longer requires the activation listener to be the expected socket' >&2
+grep -Fq 'activated_socket(socket)' "$recipient_src"
+# Activation may omit a pathname; an explicit path must still be the socket.
+activation_src="$repo/crates/platform/tilo-files/src/native/private.rs"
+grep -Fq 'std::env::var("LISTEN_PID")' "$activation_src"
+if ! grep -A2 -F 'if let Some(actual) = listener.local_addr()?.as_pathname()' "$activation_src" \
+  | grep -Fq 'actual != expected'; then
+  echo 'socket activation no longer requires the listener to be the expected socket' >&2
   exit 1
 fi
 app_host_gc_line="$(grep -n 'let _startup = tokio::task::spawn_blocking' "$app_host_source" | cut -d: -f1)"

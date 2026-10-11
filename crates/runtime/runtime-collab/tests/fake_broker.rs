@@ -17,9 +17,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use capnp::capability::Promise;
-use capnp::message::ReaderOptions;
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+use capnp_rpc::rpc_twoparty_capnp;
 
 use runtime_collab::raw::{
     action_input, action_stream, blob_stream, channel_context, channel_handle, collab_service,
@@ -112,14 +110,7 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
 {
     let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
-    let (server_read, server_write) = tokio::io::split(server_side);
-    let server_network = Box::new(twoparty::VatNetwork::new(
-        server_read.compat(),
-        server_write.compat_write(),
-        rpc_twoparty_capnp::Side::Server,
-        ReaderOptions::default(),
-    ));
-    let server_rpc = RpcSystem::new(server_network, Some(broker_client.client));
+    let server_rpc = runtime_portal::serve_connected_io(server_side, broker_client.client);
     tokio::task::spawn_local(async move {
         let _ = server_rpc.await;
     });

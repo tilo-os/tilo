@@ -103,11 +103,6 @@ mod portable_committed {
 }
 pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};
 
-#[cfg(any(test, feature = "test-support"))]
-mod loopback;
-#[cfg(any(test, feature = "test-support"))]
-pub use loopback::{LoopbackPeer, LoopbackTransport};
-
 /// Reserved `invokePublishedAction.peerId` meaning "the application
 /// connection making this request". Live broker peer ids are allocated from
 /// zero upward; the broker never assigns this sentinel.
@@ -1646,12 +1641,17 @@ impl CollaborationManager {
     }
 
     /// Whether the actual route's original document history has been applied.
-    /// This is the same transport gate used before document publication.
+    /// This is the same transport gate used before document publication. A
+    /// closed transport never reopens, so its routes stop being ready the
+    /// moment it closes, before the worker clears their read state.
     pub(crate) fn document_route_ready(&self, route: Option<&RouteSpec>) -> bool {
         let channel = route.map(RouteSpec::channel_id);
         !self.awaiting_primary
             && match &self.backend {
-                Backend::Transport(transport) => transport.document_publishable(channel.as_deref()),
+                Backend::Transport(transport) => {
+                    !matches!(transport.status(), TransportStatus::Closed(_))
+                        && transport.document_publishable(channel.as_deref())
+                }
                 Backend::Disabled(_) => false,
             }
     }

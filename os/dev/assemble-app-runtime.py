@@ -134,6 +134,21 @@ def runtime_dependencies():
     return module
 
 
+def runtime_engines(directory):
+    """The engine libraries build-thin-apps.sh built beside the toolkit.
+
+    Signed into the SDK whichever apps are selected, like the toolkit itself:
+    each is loaded only by its app, but the runtime id covers it."""
+    listing = directory / 'runtime-engines'
+    if not listing.is_file():
+        raise ValueError('build-thin-apps.sh left no runtime engine list beside the toolkit')
+    engines = [directory / name for name in listing.read_text().split()]
+    if any(not re.fullmatch(r'lib[a-z0-9_]+\.so', path.name) or not path.is_file()
+           for path in engines):
+        raise ValueError('a listed runtime engine is not a built library beside the toolkit')
+    return engines
+
+
 def native_dependencies(objects, dependency_env):
     """Collect the native closure of every ELF before signing its SDK, with the
     libraries the toolkit loads on first use (GLib, GStreamer; TIL-713)."""
@@ -180,11 +195,12 @@ def assemble_inside(args):
     std = sorted(libdir.glob('libstd-*.so'))
     if len(std) != 1 or not toolkit.is_file():
         raise ValueError('the exact graph toolkit or Rust standard library is missing')
+    engines = runtime_engines(toolkit.parent)
     dependency_env = dict(os.environ, LD_LIBRARY_PATH=f'{toolkit.parent}:{libdir}')
-    closure = native_dependencies([toolkit, *binaries], dependency_env)
+    closure = native_dependencies([toolkit, *engines, *binaries], dependency_env)
     fonts = prepare_runtime_fonts(repo, stage / 'work')
     publish_runtime_fonts(repo, fonts, stage / 'tree/usr/share/tilo/font-catalogs')
-    includes = list(dict.fromkeys([toolkit, std[0], *closure, fonts]))
+    includes = list(dict.fromkeys([toolkit, *engines, std[0], *closure, fonts]))
     bundle = target / 'release/tilo-runtime-bundle'
     identity = stage / 'work/runtime-identity.json'
     version_file = stage / 'work/runtime-version'

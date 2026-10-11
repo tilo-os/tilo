@@ -181,10 +181,6 @@ impl ResourceApp for ApiTesterShell {
         Self::SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     /// Every scenario but the empty one shows the sample workspace.
     fn scenario(name: Option<&str>) -> Vec<Invoke<ApiTester>> {
         if name == Some("empty") {

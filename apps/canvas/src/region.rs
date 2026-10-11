@@ -17,6 +17,7 @@ use i_overlay::float::simplify::SimplifyShape;
 use i_overlay::float::single::SingleFloatOverlay;
 use i_overlay::mesh::float::outline::offset::OutlineOffset;
 use i_overlay::mesh::float::style::{LineJoin, OutlineStyle};
+use ui::num::f64_of_usize;
 use ui::vello::kurbo::{
     Affine, BezPath, ParamCurve as _, ParamCurveNearest as _, PathEl, PathSeg, Point, Rect,
     Shape as _,
@@ -481,7 +482,7 @@ impl Coverage<'_> {
                 0.5
             };
             // Grid point (column, row) is the centre of cell (column - 1, row - 1).
-            let (x, y) = (cell(column) - 0.5, cell(row) - 0.5);
+            let (x, y) = (f64_of_usize(column) - 0.5, f64_of_usize(row) - 0.5);
             if vertical {
                 [x, y + along]
             } else {
@@ -578,7 +579,7 @@ impl Region {
                 let first = index_of((low.y - 0.5).ceil());
                 let last = index_of((high.y - 0.5).ceil()).min(height);
                 for row in first..last {
-                    let y = cell(row) + 0.5;
+                    let y = f64_of_usize(row) + 0.5;
                     let x = low.x + (y - low.y) * (high.x - low.x) / (high.y - low.y);
                     if let Some(crossings) = rows.get_mut(row) {
                         crossings.push((x, winding));
@@ -625,14 +626,6 @@ fn index_of(value: f64) -> usize {
     }
 }
 
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "cell indices are at most a few thousand"
-)]
-fn cell(index: usize) -> f64 {
-    index as f64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,7 +666,10 @@ mod tests {
         let (width, height) = (60, 60);
         let cells: Vec<f32> = (0..width * height)
             .map(|index| {
-                let (x, y) = (cell(index % width) + 0.5, cell(index / width) + 0.5);
+                let (x, y) = (
+                    f64_of_usize(index % width) + 0.5,
+                    f64_of_usize(index / width) + 0.5,
+                );
                 #[allow(
                     clippy::cast_possible_truncation,
                     reason = "a coverage of 0 to 1 fits an f32"

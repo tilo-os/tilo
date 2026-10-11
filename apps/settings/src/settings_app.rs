@@ -807,6 +807,7 @@ impl Widget for SettingsApp {
         self.accounts.poll();
         self.displays.poll();
         self.network.poll();
+        self.bluetooth.poll();
         // After the first frame, the areas read one at a time until every
         // area's rows are published.
         if self.area_reads.take_due() {
@@ -913,29 +914,6 @@ impl Widget for SettingsApp {
     ) {
         if let Some(shell) = &mut self.shell {
             shell.draw(scene, transform, text_renderer, theme, presence);
-        }
-        self.area_reads.presented();
-        self.area_reads.wake();
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        if let Some(shell) = &mut self.shell {
-            shell.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
         }
         self.area_reads.presented();
         self.area_reads.wake();

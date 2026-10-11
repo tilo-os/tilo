@@ -39,6 +39,14 @@ pub const TILO_FS_RECORD_ALPN: &[u8] = b"tilo-fs-record/6";
 pub const RECORD_PROTOCOL_VERSION: u16 = 6;
 pub const MAX_RECORD_PROTOCOL_FRAME_BYTES: usize = 256 * 1024;
 pub const RECORD_PROTOCOL_TIMEOUT: Duration = Duration::from_secs(20);
+/// Longest a host holds a [`RecordProtocolOperationV1::AwaitChange`]
+/// before answering [`RecordProtocolResponseV1::Unchanged`]. An
+/// idle recipient therefore sends one request a minute, over a connection
+/// it already holds.
+pub const RECORD_AWAIT_CHANGE_LIMIT: Duration = Duration::from_secs(60);
+/// Change awaits one host holds at once. Past it, the host declines an
+/// await as it would an unknown operation, and that recipient polls.
+pub const MAX_RECORD_CHANGE_AWAITS: usize = 256;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -87,6 +95,19 @@ pub enum RecordProtocolOperationV1 {
     /// immutable revision. Read authority is sufficient; this grants no
     /// mutation capability and the session remains the only record scope.
     RequestReplicaAcknowledgement(ReplicaAckRequestV1),
+    /// Answer with the record's snapshot once it differs from the one whose
+    /// [`RecordProtocolSnapshotV1::digest`] is `known`: at once if it already
+    /// does, else when a write or a grant change makes it differ, or
+    /// [`RecordProtocolResponseV1::Unchanged`] after
+    /// [`RECORD_AWAIT_CHANGE_LIMIT`].
+    ///
+    /// Appended after the protocol shipped: a host that predates it fails
+    /// to decode the request and answers `InvalidRequest`, and the
+    /// recipient falls back to polling with `Read`. A host that answers
+    /// anything else keeps the stream open for the client's next request.
+    AwaitChange {
+        known: [u8; 32],
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +127,19 @@ pub struct RecordProtocolSnapshotV1 {
     pub content_revision: Option<ContentRevisionV1>,
     pub versions: Vec<FileVersionV1>,
     pub conflicts: Vec<FileConflictV1>,
+}
+
+impl RecordProtocolSnapshotV1 {
+    /// BLAKE3 of the snapshot's canonical encoding: what a recipient names
+    /// in [`RecordProtocolOperationV1::AwaitChange`], and what the host
+    /// compares it with. `None` only if the snapshot does not encode, in
+    /// which case a host treats it as changed.
+    #[must_use]
+    pub fn digest(&self) -> Option<[u8; 32]> {
+        collab_types::canonical_bytes(self)
+            .ok()
+            .map(|bytes| *blake3::hash(&bytes).as_bytes())
+    }
 }
 
 impl From<RecordSnapshot> for RecordProtocolSnapshotV1 {
@@ -179,6 +213,12 @@ pub enum RecordProtocolResponseV1 {
     RequestTooLarge,
     ResponseTooLarge,
     InternalError,
+    /// A change await reached its limit with the record still as the
+    /// recipient holds it. Appended with
+    /// [`RecordProtocolOperationV1::AwaitChange`]; only an await gets it.
+    Unchanged {
+        session: RecordProtocolSessionV1,
+    },
 }
 
 /// Optional durable handoff for an accepted record mutation.
@@ -252,6 +292,11 @@ pub struct RecordProtocol {
     mutation_sink: Arc<dyn RecordMutationSink>,
     availability: Option<Arc<Mutex<crate::availability::AvailabilityRegistry>>>,
     replica_store: Option<Arc<crate::store::ContentStore>>,
+    /// Permits for the change awaits held at once
+    /// ([`MAX_RECORD_CHANGE_AWAITS`]).
+    awaits: Arc<tokio::sync::Semaphore>,
+    /// How long one await is held: [`RECORD_AWAIT_CHANGE_LIMIT`].
+    await_limit: Duration,
 }
 
 impl std::fmt::Debug for RecordProtocol {
@@ -295,7 +340,18 @@ impl RecordProtocol {
             mutation_sink: Arc::new(NoopRecordMutationSink),
             availability: None,
             replica_store: None,
+            awaits: Arc::new(tokio::sync::Semaphore::new(MAX_RECORD_CHANGE_AWAITS)),
+            await_limit: RECORD_AWAIT_CHANGE_LIMIT,
         })
+    }
+
+    /// Hold change awaits for `limit` instead of
+    /// [`RECORD_AWAIT_CHANGE_LIMIT`] (never longer), so a test sees several
+    /// in seconds.
+    #[must_use]
+    pub fn with_await_limit(mut self, limit: Duration) -> Self {
+        self.await_limit = limit.min(RECORD_AWAIT_CHANGE_LIMIT);
+        self
     }
 
     /// Install a sink that must accept every successfully applied mutation
@@ -325,18 +381,18 @@ impl RecordProtocol {
         self
     }
 
-    async fn serve_stream(
+    async fn authenticate(
         &self,
         connection: &Connection,
         recv: &mut RecvStream,
         send: &mut SendStream,
-    ) -> Result<(), RecordProtocolError> {
+    ) -> Result<crate::peer_auth::AuthenticatedFsPeer, RecordProtocolError> {
         let revocations = self
             .revocations
             .read()
             .map_err(|_| RecordProtocolError::RevocationStatePoisoned)?
             .clone();
-        let peer = authenticate_fs_peer_parts_at(
+        Ok(authenticate_fs_peer_parts_at(
             recv,
             send,
             &self.credentials,
@@ -346,26 +402,83 @@ impl RecordProtocol {
             unix_now_ns(),
             AuthenticatedTransportConfig::default(),
         )
-        .await?;
+        .await?)
+    }
+
+    /// Serve one stream: one request, or, once the client's first request
+    /// is a change await, every request it sends after it.
+    /// Returns whether the stream was held for more than one request.
+    async fn serve_stream(
+        &self,
+        connection: &Connection,
+        recv: &mut RecvStream,
+        send: &mut SendStream,
+    ) -> Result<bool, RecordProtocolError> {
+        let peer = tokio::time::timeout(
+            RECORD_PROTOCOL_TIMEOUT,
+            self.authenticate(connection, recv, send),
+        )
+        .await
+        .map_err(|_| RecordProtocolError::TimedOut)??;
 
         // Capability bytes are read only after the line above succeeds.
-        let request = match read_request(recv).await {
-            Ok(request) => request,
-            Err(CanonicalFrameError::TooLarge(_)) => {
-                write_response(send, &RecordProtocolResponseV1::RequestTooLarge).await?;
+        let mut held = false;
+        loop {
+            let read = if held {
+                tokio::time::timeout(RECORD_PROTOCOL_TIMEOUT, read_next_request(recv)).await
+            } else {
+                tokio::time::timeout(RECORD_PROTOCOL_TIMEOUT, read_request(recv))
+                    .await
+                    .map(|read| read.map(Some))
+            };
+            let request = match read {
+                Ok(Ok(Some(request))) => request,
+                // A held stream ends when its client stops sending: it
+                // finished the stream, closed the connection or went quiet.
+                Ok(Ok(None) | Err(CanonicalFrameError::Io(_))) | Err(_) if held => break,
+                Err(_) => return Err(RecordProtocolError::TimedOut),
+                Ok(Err(CanonicalFrameError::TooLarge(_))) => {
+                    write_response(send, &RecordProtocolResponseV1::RequestTooLarge).await?;
+                    let _ = send.finish();
+                    return Ok(held);
+                }
+                Ok(Ok(None) | Err(_)) => {
+                    write_response(send, &RecordProtocolResponseV1::InvalidRequest).await?;
+                    let _ = send.finish();
+                    return Ok(held);
+                }
+            };
+            let awaits = matches!(
+                request.operation,
+                RecordProtocolOperationV1::AwaitChange { .. }
+            );
+            let budget = if awaits {
+                self.await_limit.saturating_add(RECORD_PROTOCOL_TIMEOUT)
+            } else {
+                RECORD_PROTOCOL_TIMEOUT
+            };
+            let exchange = async {
+                let response = self.handle_request(peer.clone(), request).await;
+                write_response(send, &response).await?;
+                Ok::<_, RecordProtocolError>(response)
+            };
+            let response = tokio::select! {
+                response = tokio::time::timeout(budget, exchange) => {
+                    response.map_err(|_| RecordProtocolError::TimedOut)??
+                }
+                // Nobody is left to answer: do not hold an await for them.
+                _ = connection.closed() => return Ok(held),
+            };
+            // A client that sends an await is new enough to send its next
+            // request on this stream; any other client gets one answer.
+            held |= awaits && response != RecordProtocolResponseV1::InvalidRequest;
+            if !held {
                 let _ = send.finish();
-                return Ok(());
+                return Ok(false);
             }
-            Err(_) => {
-                write_response(send, &RecordProtocolResponseV1::InvalidRequest).await?;
-                let _ = send.finish();
-                return Ok(());
-            }
-        };
-        let response = self.handle_request(peer, request).await;
-        write_response(send, &response).await?;
+        }
         let _ = send.finish();
-        Ok(())
+        Ok(true)
     }
 
     #[allow(
@@ -565,6 +678,9 @@ impl RecordProtocol {
                     Err(_) => RecordProtocolResponseV1::Denied,
                 }
             }
+            RecordProtocolOperationV1::AwaitChange { known } => {
+                self.await_change(key, &session, binding, known).await
+            }
             RecordProtocolOperationV1::RequestReplicaAcknowledgement(request) => {
                 if request.validate().is_err()
                     || request.workspace_id != key.workspace_id
@@ -625,29 +741,88 @@ impl RecordProtocol {
             }
         }
     }
+
+    /// Answer a change await: at once if the record already differs from
+    /// the snapshot the recipient holds, otherwise when a write or a grant
+    /// change makes it differ, or `Unchanged` once the await limit passes.
+    ///
+    /// Every wake reads the snapshot through the session again, which
+    /// rechecks certification, grant, revocation and expiry, and so does
+    /// the final `Unchanged`: a session revoked or expired while it waited
+    /// is answered `Denied`, never with data. A grant revocation wakes the
+    /// await at once; a device revocation is seen at the latest when the
+    /// limit passes, and no snapshot is sent before it is checked.
+    async fn await_change(
+        &self,
+        key: RecordRepositoryKey,
+        session: &ShareSession,
+        binding: RecordAccessBinding,
+        known: [u8; 32],
+    ) -> RecordProtocolResponseV1 {
+        let Ok(_permit) = Arc::clone(&self.awaits).try_acquire_owned() else {
+            return RecordProtocolResponseV1::InvalidRequest;
+        };
+        let mut writes = self.repository.subscribe_writes();
+        let mut grants = self.authority.subscribe_changes();
+        let limit = tokio::time::sleep(self.await_limit);
+        tokio::pin!(limit);
+        loop {
+            // Marked seen before the read below, so a change made after it
+            // still wakes the wait.
+            writes.borrow_and_update();
+            grants.borrow_and_update();
+            let snapshot = match self.repository.snapshot(key, &session.actor(), session) {
+                Ok(snapshot) => RecordProtocolSnapshotV1::from(snapshot),
+                Err(RecordRepositoryError::RecordNotFound) => {
+                    return RecordProtocolResponseV1::NotFound;
+                }
+                Err(RecordRepositoryError::Replication(_)) => {
+                    return RecordProtocolResponseV1::Denied;
+                }
+                Err(_) => return RecordProtocolResponseV1::InternalError,
+            };
+            if snapshot.digest() != Some(known) {
+                return RecordProtocolResponseV1::Snapshot {
+                    session: binding.into(),
+                    snapshot,
+                };
+            }
+            if limit.is_elapsed() {
+                return RecordProtocolResponseV1::Unchanged {
+                    session: binding.into(),
+                };
+            }
+            tokio::select! {
+                Ok(()) = writes.changed() => {}
+                Ok(()) = grants.changed() => {}
+                () = &mut limit => {}
+            }
+        }
+    }
 }
 
 impl ProtocolHandler for RecordProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let (mut send, mut recv) = connection.accept_bi().await?;
-        let result = tokio::time::timeout(
-            RECORD_PROTOCOL_TIMEOUT,
-            self.serve_stream(&connection, &mut recv, &mut send),
-        )
-        .await;
-        match result {
-            Ok(Ok(())) => {
+        match self.serve_stream(&connection, &mut recv, &mut send).await {
+            Ok(false) => {
                 // Keep the QUIC connection alive until the client has observed
                 // the finished response stream. Returning immediately lets the
                 // router close the connection before buffered bytes arrive.
                 connection.closed().await;
                 Ok(())
             }
-            Ok(Err(error)) => Err(AcceptError::from_err(io::Error::other(error.to_string()))),
-            Err(_) => Err(AcceptError::from_err(io::Error::new(
+            Ok(true) => {
+                // A held stream ends only once its client stopped sending,
+                // which it does after reading every answer it asked for.
+                connection.close(0u32.into(), b"");
+                Ok(())
+            }
+            Err(RecordProtocolError::TimedOut) => Err(AcceptError::from_err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "record protocol timed out",
             ))),
+            Err(error) => Err(AcceptError::from_err(io::Error::other(error.to_string()))),
         }
     }
 }
@@ -778,24 +953,71 @@ impl RecordProtocolClient {
                 RecordProtocolOperationV1::RequestReplicaAcknowledgement(request),
             )
             .await?;
-        let receipt = match response {
-            RecordProtocolResponseV1::ReplicaAcknowledgement { receipt, .. } => receipt,
-            RecordProtocolResponseV1::Denied | RecordProtocolResponseV1::NotFound => {
-                return Err(RecordProtocolClientError::ReplicaDenied);
-            }
-            RecordProtocolResponseV1::ReplicaUnavailable => {
-                return Err(RecordProtocolClientError::ReplicaUnavailable);
-            }
-            _ => return Err(RecordProtocolClientError::InvalidResponse),
-        };
-        receipt
-            .verify_for(
-                &request,
-                &peer,
-                collab_types::Ed25519PublicKey(self.credentials.device_public_key()),
-                unix_now_ms(),
-            )
-            .map_err(RecordProtocolClientError::ReplicaVerification)
+        verified_replica_ack(response, &request, &peer, self.local_device())
+    }
+
+    /// Dial `server` and authenticate both ends once, for a stream of
+    /// requests. See [`RecordProtocolStream`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the connection or the peer authentication
+    /// fails, or the server is not the endpoint asked for.
+    pub async fn open_stream(
+        &self,
+        server: iroh_base::EndpointAddr,
+    ) -> Result<RecordProtocolStream, RecordProtocolClientError> {
+        tokio::time::timeout(RECORD_PROTOCOL_TIMEOUT, self.connect(server))
+            .await
+            .map_err(|_| RecordProtocolClientError::Timeout)?
+    }
+
+    fn local_device(&self) -> collab_types::Ed25519PublicKey {
+        collab_types::Ed25519PublicKey(self.credentials.device_public_key())
+    }
+
+    async fn connect(
+        &self,
+        server: iroh_base::EndpointAddr,
+    ) -> Result<RecordProtocolStream, RecordProtocolClientError> {
+        let revocations = self
+            .revocations
+            .read()
+            .map_err(|_| RecordProtocolClientError::RevocationStatePoisoned)?
+            .clone();
+        let connection = self
+            .endpoint
+            .connect(server.clone(), TILO_FS_RECORD_ALPN)
+            .await
+            .map_err(|error| RecordProtocolClientError::Transport(error.to_string()))?;
+        if connection.remote_id() != server.id {
+            return Err(RecordProtocolClientError::ServerEndpointMismatch);
+        }
+        let (mut send, mut recv) = connection
+            .open_bi()
+            .await
+            .map_err(|error| RecordProtocolClientError::Transport(error.to_string()))?;
+        let peer = authenticate_fs_peer_parts_at(
+            &mut recv,
+            &mut send,
+            &self.credentials,
+            *self.endpoint.id().as_bytes(),
+            *server.id.as_bytes(),
+            &revocations,
+            unix_now_ns(),
+            AuthenticatedTransportConfig::default(),
+        )
+        .await?;
+        Ok(RecordProtocolStream {
+            connection,
+            send,
+            recv,
+            peer,
+            server: server.id,
+            local_device: self.local_device(),
+            held: false,
+            ended: false,
+        })
     }
 
     async fn request(
@@ -821,48 +1043,203 @@ impl RecordProtocolClient {
         ),
         RecordProtocolClientError,
     > {
+        let budget = request_budget(&operation);
         let exchange = async {
-            let revocations = self
-                .revocations
-                .read()
-                .map_err(|_| RecordProtocolClientError::RevocationStatePoisoned)?
-                .clone();
-            let connection = self
-                .endpoint
-                .connect(server.clone(), TILO_FS_RECORD_ALPN)
-                .await
-                .map_err(|error| RecordProtocolClientError::Transport(error.to_string()))?;
-            if connection.remote_id() != server.id {
-                return Err(RecordProtocolClientError::ServerEndpointMismatch);
-            }
-            let (mut send, mut recv) = connection
-                .open_bi()
-                .await
-                .map_err(|error| RecordProtocolClientError::Transport(error.to_string()))?;
-            let peer = authenticate_fs_peer_parts_at(
-                &mut recv,
-                &mut send,
-                &self.credentials,
-                *self.endpoint.id().as_bytes(),
-                *server.id.as_bytes(),
-                &revocations,
-                unix_now_ns(),
-                AuthenticatedTransportConfig::default(),
-            )
-            .await?;
-            let request = RecordProtocolRequestV1 {
-                protocol_version: RECORD_PROTOCOL_VERSION,
-                credential,
-                operation,
-            };
-            write_request(&mut send, &request).await?;
-            let response = read_response(&mut recv).await?;
+            let mut stream = self.connect(server).await?;
+            let response = stream.send_request(credential, operation).await?;
+            let RecordProtocolStream {
+                connection, peer, ..
+            } = stream;
             connection.close(0u32.into(), b"");
             Ok((response, peer))
         };
-        tokio::time::timeout(RECORD_PROTOCOL_TIMEOUT, exchange)
+        tokio::time::timeout(budget, exchange)
             .await
             .map_err(|_| RecordProtocolClientError::Timeout)?
+    }
+}
+
+/// How long a client waits for the answer to `operation`: the protocol
+/// timeout, plus the await limit for a change await.
+fn request_budget(operation: &RecordProtocolOperationV1) -> Duration {
+    match operation {
+        RecordProtocolOperationV1::AwaitChange { .. } => {
+            RECORD_AWAIT_CHANGE_LIMIT.saturating_add(RECORD_PROTOCOL_TIMEOUT)
+        }
+        _ => RECORD_PROTOCOL_TIMEOUT,
+    }
+}
+
+/// The host's replica receipt in `response`, verified against the request,
+/// the authenticated host and this device.
+fn verified_replica_ack(
+    response: RecordProtocolResponseV1,
+    request: &ReplicaAckRequestV1,
+    peer: &crate::peer_auth::AuthenticatedFsPeer,
+    local_device: collab_types::Ed25519PublicKey,
+) -> Result<crate::availability::ReplicaObservation, RecordProtocolClientError> {
+    let receipt = match response {
+        RecordProtocolResponseV1::ReplicaAcknowledgement { receipt, .. } => receipt,
+        RecordProtocolResponseV1::Denied | RecordProtocolResponseV1::NotFound => {
+            return Err(RecordProtocolClientError::ReplicaDenied);
+        }
+        RecordProtocolResponseV1::ReplicaUnavailable => {
+            return Err(RecordProtocolClientError::ReplicaUnavailable);
+        }
+        _ => return Err(RecordProtocolClientError::InvalidResponse),
+    };
+    receipt
+        .verify_for(request, peer, local_device, unix_now_ms())
+        .map_err(RecordProtocolClientError::ReplicaVerification)
+}
+
+/// One authenticated connection to a record host that carries a share
+/// recipient's requests one after another.
+///
+/// Its first request is a change await. A host that knows the operation
+/// keeps the stream after answering, and the recipient sends its next
+/// awaits, replica requests and receipts on it: no further connection and
+/// no further peer handshake while the record is idle. Every request still
+/// carries its credential, and the host authorizes each one from scratch.
+/// A host that predates the operation answers `InvalidRequest` and ends
+/// the stream; [`Self::is_held`] then stays false.
+pub struct RecordProtocolStream {
+    connection: Connection,
+    send: SendStream,
+    recv: RecvStream,
+    peer: crate::peer_auth::AuthenticatedFsPeer,
+    server: iroh_base::EndpointId,
+    local_device: collab_types::Ed25519PublicKey,
+    /// The host answered an await, so it reads the next request.
+    held: bool,
+    /// The host has answered its last request on this stream, or the
+    /// stream failed: nothing more can be sent on it.
+    ended: bool,
+}
+
+impl std::fmt::Debug for RecordProtocolStream {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RecordProtocolStream")
+            .field("server", &self.server)
+            .field("held", &self.held)
+            .field("ended", &self.ended)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RecordProtocolStream {
+    /// Whether the host keeps this stream for further requests: it has
+    /// answered a change await, and nothing has failed since.
+    #[must_use]
+    pub fn is_held(&self) -> bool {
+        self.held && !self.ended
+    }
+
+    /// Whether another request can still be sent on this stream.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        !self.ended
+    }
+
+    /// Send `operation` for a named invite.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stream has ended, or on transport,
+    /// encoding or timeout failure.
+    pub async fn request_named(
+        &mut self,
+        invite: FileInviteV1,
+        operation: RecordProtocolOperationV1,
+    ) -> Result<RecordProtocolResponseV1, RecordProtocolClientError> {
+        self.send_request(RecordProtocolCredentialV1::Named(invite), operation)
+            .await
+    }
+
+    /// Send `operation` for a copied link, validated first. The link must
+    /// name the endpoint this stream is connected to.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the link is invalid or names another
+    /// endpoint, the stream has ended, or on transport, encoding or
+    /// timeout failure.
+    pub async fn request_bearer_link(
+        &mut self,
+        link: &FileShareLinkV2,
+        operation: RecordProtocolOperationV1,
+    ) -> Result<RecordProtocolResponseV1, RecordProtocolClientError> {
+        let uri = self.link_uri(link)?;
+        self.send_request(RecordProtocolCredentialV1::BearerLinkV2(uri), operation)
+            .await
+    }
+
+    /// [`RecordProtocolClient::request_bearer_link_replica_ack`] on this
+    /// stream.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::request_bearer_link`], and when the host denies the
+    /// request or its receipt does not verify.
+    pub async fn request_bearer_link_replica_ack(
+        &mut self,
+        link: &FileShareLinkV2,
+        request: ReplicaAckRequestV1,
+    ) -> Result<crate::availability::ReplicaObservation, RecordProtocolClientError> {
+        let uri = self.link_uri(link)?;
+        let response = self
+            .send_request(
+                RecordProtocolCredentialV1::BearerLinkV2(uri),
+                RecordProtocolOperationV1::RequestReplicaAcknowledgement(request),
+            )
+            .await?;
+        verified_replica_ack(response, &request, &self.peer, self.local_device)
+    }
+
+    /// Close the connection.
+    pub fn close(self) {
+        self.connection.close(0u32.into(), b"");
+    }
+
+    fn link_uri(&self, link: &FileShareLinkV2) -> Result<String, RecordProtocolClientError> {
+        let now = unix_now_ms();
+        link.validate_at(now)?;
+        if link.endpoint.id != self.server {
+            return Err(RecordProtocolClientError::ServerEndpointMismatch);
+        }
+        Ok(link.encode_uri_at(now)?)
+    }
+
+    async fn send_request(
+        &mut self,
+        credential: RecordProtocolCredentialV1,
+        operation: RecordProtocolOperationV1,
+    ) -> Result<RecordProtocolResponseV1, RecordProtocolClientError> {
+        if self.ended {
+            return Err(RecordProtocolClientError::Transport(
+                "record stream has ended".into(),
+            ));
+        }
+        // Ended unless this exchange completes and the host keeps the stream.
+        self.ended = true;
+        let awaits = matches!(operation, RecordProtocolOperationV1::AwaitChange { .. });
+        let budget = request_budget(&operation);
+        let request = RecordProtocolRequestV1 {
+            protocol_version: RECORD_PROTOCOL_VERSION,
+            credential,
+            operation,
+        };
+        let exchange = async {
+            write_request(&mut self.send, &request).await?;
+            read_response(&mut self.recv).await
+        };
+        let response = tokio::time::timeout(budget, exchange)
+            .await
+            .map_err(|_| RecordProtocolClientError::Timeout)??;
+        self.held |= awaits && response != RecordProtocolResponseV1::InvalidRequest;
+        self.ended = !self.held;
+        Ok(response)
     }
 }
 
@@ -910,6 +1287,8 @@ pub enum RecordProtocolError {
     Io(#[from] io::Error),
     #[error("record protocol canonical encoding failed: {0}")]
     Canonical(#[from] collab_types::canonical::CanonicalError),
+    #[error("record protocol timed out")]
+    TimedOut,
 }
 
 /// Each record request and response: a big-endian `u32` length, then the
@@ -969,6 +1348,17 @@ where
     canonical_frame::read_required(RECORD_PROTOCOL_FRAMING, recv).await
 }
 
+/// A held stream's next request, or `None` if the client ended the stream
+/// before starting one.
+async fn read_next_request<R>(
+    recv: &mut R,
+) -> Result<Option<RecordProtocolRequestV1>, CanonicalFrameError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    canonical_frame::read(RECORD_PROTOCOL_FRAMING, recv).await
+}
+
 async fn write_response<W>(
     send: &mut W,
     response: &RecordProtocolResponseV1,
@@ -988,6 +1378,9 @@ where
     send.flush().await.map_err(io::Error::other)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod await_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1055,13 +1448,13 @@ mod tests {
         assert!(!other_record.is_for_invite(&invite));
     }
 
-    struct Party {
-        endpoint: Endpoint,
-        credentials: PeerCredentials,
-        device: SigningKey,
+    pub(super) struct Party {
+        pub(super) endpoint: Endpoint,
+        pub(super) credentials: PeerCredentials,
+        pub(super) device: SigningKey,
     }
 
-    async fn party() -> Party {
+    pub(super) async fn party() -> Party {
         let n = NEXT_PARTY.fetch_add(1, Ordering::Relaxed);
         let device_seed = *blake3::hash(&n.to_le_bytes()).as_bytes();
         let root_seed = *blake3::hash(&n.wrapping_add(99_999).to_le_bytes()).as_bytes();
@@ -1098,7 +1491,7 @@ mod tests {
         }
     }
 
-    struct AlwaysCurrent;
+    pub(super) struct AlwaysCurrent;
     impl LiveActorCertification for AlwaysCurrent {
         fn certification_is_current(
             &self,

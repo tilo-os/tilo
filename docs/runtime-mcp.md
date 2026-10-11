@@ -336,8 +336,9 @@ with the bound the refusal named and adds `adjusted` to the answer
 (`"pageSize 200 is out of range; used 64"`), so the caller need not retry.
 Pass content resource references returned by one successful action as typed
 arguments to a freshly discovered action in another app. The runtime contains
-no Photos/Writer workflow branch and never treats `Accepted` as `Succeeded` or
-replays a mutation automatically.
+no Photos/Writer workflow branch and never treats `Accepted` as `Succeeded`.
+A failed invocation is not replayed merely because a text argument matches a
+session handle.
 
 ### Opening an app
 
@@ -451,8 +452,11 @@ out, and a subschema repeated under several properties is one `$defs` entry
 each place `$ref`s, keeping its own description. In `tilo_invoke`'s
 `arguments`, a handle this session issued is replaced by its id where the
 action declares a `resource` parameter. Where the parameter is text, the handle
-goes as given, since it may be meant literally. If the action refuses it, the
-call runs once more with the id, and `adjusted` says so. A bound UI resource's id is
+goes as given, since it may be meant literally. If the invocation fails, the
+original failure and invocation id are returned without rewriting that text or
+running it again: the first call may already have applied a mutation. An admission
+refusal remains an MCP tool error; an admitted execution failure remains its
+structured `update`. A bound UI resource's id is
 about 130 characters, repeated in every call. A model reads every page again
 on each later turn, and version 1's rows repeated each resource id three times
 and each contract twice. `detail: "full"` returns version 1 rows, with full

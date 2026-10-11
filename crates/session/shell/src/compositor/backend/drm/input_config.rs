@@ -18,18 +18,6 @@ use settings_store::hardware::{InputDeviceKind, TouchpadClickMethod, TouchpadScr
 /// Settings section these values live in.
 pub const SECTION: &str = "input";
 
-/// Settings section of [`AccessibilityInputSettings`].
-pub const ACCESSIBILITY_SECTION: &str = "accessibility";
-
-pub const NATURAL_SCROLL_KEY: &str = "natural_scroll";
-pub const TAP_TO_CLICK_KEY: &str = "tap_to_click";
-pub const POINTER_SPEED_KEY: &str = "pointer_speed";
-pub const KEY_REPEAT_KEY: &str = "key_repeat";
-/// Exact host-imported delay; a Tilo slider choice clears this pair.
-pub const KEY_REPEAT_DELAY_MS_KEY: &str = "key_repeat_delay_ms";
-/// Exact host-imported rate. Zero means repeat is disabled.
-pub const KEY_REPEAT_RATE_HZ_KEY: &str = "key_repeat_rate_hz";
-
 /// Fully validated per-user XKB keymap request. The strings are ready for
 /// libxkbcommon's rules API: one comma-separated variant slot per layout,
 /// including empty slots for base layouts.
@@ -142,102 +130,6 @@ impl KeyboardSettings {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "accessibility toggles: each is an independent, named setting from a settings pane, not a state machine"
-)]
-pub struct AccessibilityInputSettings {
-    pub sticky_keys: bool,
-    pub slow_keys: bool,
-    /// Ignore a second press of the same key shortly after its release.
-    pub bounce_keys: bool,
-    /// The bounce-keys window in milliseconds.
-    pub bounce_keys_delay_ms: u32,
-    /// Flash the visual alert whenever bounce keys swallows a press.
-    pub bounce_keys_alert: bool,
-    /// The numeric keypad drives the pointer.
-    pub mouse_keys: bool,
-    pub large_cursor: bool,
-    pub cursor_size: u32,
-}
-
-impl Default for AccessibilityInputSettings {
-    fn default() -> Self {
-        Self {
-            sticky_keys: false,
-            slow_keys: false,
-            bounce_keys: false,
-            bounce_keys_delay_ms: settings_store::hardware::BOUNCE_KEYS_DEFAULT_DELAY_MS,
-            bounce_keys_alert: false,
-            mouse_keys: false,
-            large_cursor: false,
-            cursor_size: 24,
-        }
-    }
-}
-
-/// `accessibility` key the Shift+Alt+Num Lock chord flips.
-pub const MOUSE_KEYS_KEY: &str = settings_store::hardware::MOUSE_KEYS.name();
-
-impl AccessibilityInputSettings {
-    pub fn load() -> Self {
-        Self::from_section(&settings_store::load_section(ACCESSIBILITY_SECTION))
-    }
-
-    /// Parse the `accessibility` section; every field falls back to its
-    /// default on its own.
-    pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
-        let d = Self::default();
-        let bool_at = |key: &str, fallback: bool| {
-            section
-                .get(key)
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(fallback)
-        };
-        Self {
-            sticky_keys: bool_at("sticky_keys", d.sticky_keys),
-            slow_keys: bool_at("slow_keys", d.slow_keys),
-            bounce_keys: bool_at("bounce_keys", d.bounce_keys),
-            bounce_keys_delay_ms: section
-                .get("bounce_keys_delay_ms")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|v| u32::try_from(v).ok())
-                .unwrap_or(d.bounce_keys_delay_ms)
-                .clamp(
-                    settings_store::hardware::BOUNCE_KEYS_MIN_DELAY_MS,
-                    settings_store::hardware::BOUNCE_KEYS_MAX_DELAY_MS,
-                ),
-            bounce_keys_alert: bool_at("bounce_keys_alert", d.bounce_keys_alert),
-            mouse_keys: bool_at(MOUSE_KEYS_KEY, d.mouse_keys),
-            large_cursor: bool_at("large_cursor", d.large_cursor),
-            cursor_size: section
-                .get("cursor_size")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|v| u32::try_from(v).ok())
-                .unwrap_or(d.cursor_size)
-                .clamp(24, 64),
-        }
-    }
-
-    /// The bounce-keys window, or zero when bounce keys is off.
-    pub fn bounce_window(self) -> Duration {
-        if self.bounce_keys {
-            Duration::from_millis(u64::from(self.bounce_keys_delay_ms))
-        } else {
-            Duration::ZERO
-        }
-    }
-
-    pub fn effective_cursor_size(self) -> u32 {
-        if self.large_cursor {
-            self.cursor_size.clamp(24, 64)
-        } else {
-            24
-        }
-    }
-}
-
 /// Slowest auto-repeat the `key_repeat` slider can select, in keys per second — below this, holding a key feels broken rather than slow.
 pub const REPEAT_RATE_MIN: u32 = settings_store::hardware::KEY_REPEAT_SLIDER_MIN_HZ;
 /// Fastest auto-repeat the slider can select, in keys per second.
@@ -255,13 +147,10 @@ pub const REPEAT_DELAY_MIN_MS: u32 = 200;
     reason = "persisted input toggles: each is an independent, named setting mirroring the Settings pane, not a state machine"
 )]
 pub struct InputSettings {
-    /// Legacy scrolling preference used when the device-specific fields are
-    /// absent in an older settings document.
-    pub natural_scroll: bool,
     /// Content-follows-finger scrolling for touchpads.
-    pub touchpad_natural_scroll: Option<bool>,
+    pub touchpad_natural_scroll: bool,
     /// Content-follows-finger scrolling for mice and trackballs.
-    pub mouse_natural_scroll: Option<bool>,
+    pub mouse_natural_scroll: bool,
     /// Tap the touchpad to click. **On** by default — see the module docs.
     pub tap_to_click: bool,
     /// Pointer acceleration, `0.0` (slowest) … `1.0` (fastest), `0.5` being libinput's neutral profile.
@@ -297,11 +186,8 @@ pub struct InputSettings {
 impl Default for InputSettings {
     fn default() -> Self {
         Self {
-            natural_scroll: false,
-            touchpad_natural_scroll: Some(
-                settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
-            ),
-            mouse_natural_scroll: Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL),
+            touchpad_natural_scroll: settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
+            mouse_natural_scroll: settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL,
             tap_to_click: true,
             pointer_speed: 0.5,
             touchpad_pointer_speed: None,
@@ -327,70 +213,39 @@ impl Default for InputSettings {
 
 impl InputSettings {
     /// Parse the `input` section of a settings document. Every field falls back to its default
-    /// independently, so a document that only sets `tap_to_click` leaves the rest alone, and a wrong-typed value is treated as absent rather than discarding the whole section.
+    /// independently (see [`RichInputConfig::from_section`]); the slider values are then clamped
+    /// into range and the exact repeat pair bounded to what a keyboard can sensibly do.
+    ///
+    /// [`RichInputConfig::from_section`]: settings_store::hardware::RichInputConfig::from_section
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let d = Self::default();
-        let legacy_natural_scroll = section
-            .get(NATURAL_SCROLL_KEY)
-            .and_then(serde_json::Value::as_bool);
+        let config = settings_store::hardware::RichInputConfig::from_section(section);
+        let unit = |value: f64| value.clamp(0.0, 1.0);
         let bool_at = |k: &str, fallback: bool| {
             section
                 .get(k)
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(fallback)
         };
-        let unit_at = |k: &str, fallback: f64| {
-            section
-                .get(k)
-                .and_then(serde_json::Value::as_f64)
-                .filter(|v| v.is_finite())
-                .map_or(fallback, |v| v.clamp(0.0, 1.0))
-        };
         Self {
-            natural_scroll: legacy_natural_scroll.unwrap_or(d.natural_scroll),
-            touchpad_natural_scroll: section
-                .get("touchpad_natural_scroll")
-                .and_then(serde_json::Value::as_bool)
-                .or(legacy_natural_scroll)
-                .or(d.touchpad_natural_scroll),
-            mouse_natural_scroll: section
-                .get("mouse_natural_scroll")
-                .and_then(serde_json::Value::as_bool)
-                .or(legacy_natural_scroll)
-                .or(d.mouse_natural_scroll),
-            tap_to_click: bool_at(TAP_TO_CLICK_KEY, d.tap_to_click),
-            pointer_speed: unit_at(POINTER_SPEED_KEY, d.pointer_speed),
-            touchpad_pointer_speed: section
-                .get("touchpad_pointer_speed")
-                .and_then(serde_json::Value::as_f64)
-                .filter(|value| value.is_finite())
-                .map(|value| value.clamp(0.0, 1.0)),
-            mouse_pointer_speed: section
-                .get("mouse_pointer_speed")
-                .and_then(serde_json::Value::as_f64)
-                .filter(|value| value.is_finite())
-                .map(|value| value.clamp(0.0, 1.0)),
-            key_repeat: unit_at(KEY_REPEAT_KEY, d.key_repeat),
-            key_repeat_delay_ms: section
-                .get(KEY_REPEAT_DELAY_MS_KEY)
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|value| u32::try_from(value).ok())
+            touchpad_natural_scroll: config.touchpad_natural_scroll,
+            mouse_natural_scroll: config.mouse_natural_scroll,
+            tap_to_click: config.tap_to_click,
+            pointer_speed: unit(config.pointer_speed),
+            touchpad_pointer_speed: config.touchpad_pointer_speed.map(unit),
+            mouse_pointer_speed: config.mouse_pointer_speed.map(unit),
+            key_repeat: unit(config.key_repeat),
+            key_repeat_delay_ms: config
+                .key_repeat_delay_ms
                 .filter(|value| (1..=5_000).contains(value)),
-            key_repeat_rate_hz: section
-                .get(KEY_REPEAT_RATE_HZ_KEY)
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|value| u32::try_from(value).ok())
-                .filter(|value| *value <= 1_000),
-            tap_drag: bool_at("tap_drag", d.tap_drag),
-            tap_drag_lock: bool_at("tap_drag_lock", d.tap_drag_lock),
-            disable_while_typing: bool_at("disable_while_typing", d.disable_while_typing),
-            middle_emulation: bool_at("middle_emulation", d.middle_emulation),
-            left_handed: bool_at("left_handed", d.left_handed),
-            flat_acceleration: section
-                .get("accel_profile")
-                .and_then(serde_json::Value::as_str)
-                == Some("flat"),
-            touchpad_gestures: bool_at("touchpad_gestures", d.touchpad_gestures),
+            key_repeat_rate_hz: config.key_repeat_rate_hz.filter(|value| *value <= 1_000),
+            tap_drag: config.tap_drag,
+            tap_drag_lock: config.tap_drag_lock,
+            disable_while_typing: config.disable_while_typing,
+            middle_emulation: config.middle_emulation,
+            left_handed: config.left_handed,
+            flat_acceleration: config.accel_profile == settings_store::hardware::AccelProfile::Flat,
+            touchpad_gestures: config.touchpad_gestures,
             touchpad_enabled: bool_at(
                 settings_store::hardware::TOUCHPAD_ENABLED_KEY,
                 d.touchpad_enabled,
@@ -399,18 +254,9 @@ impl InputSettings {
                 settings_store::hardware::TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY,
                 d.touchpad_disabled_on_external_mouse,
             ),
-            touchpad_click_method: section
-                .get("touchpad_click_method")
-                .and_then(|value| serde_json::from_value(value.clone()).ok())
-                .unwrap_or(d.touchpad_click_method),
-            touchpad_scroll_method: section
-                .get("touchpad_scroll_method")
-                .and_then(|value| serde_json::from_value(value.clone()).ok())
-                .unwrap_or(d.touchpad_scroll_method),
-            scroll_speed: section
-                .get(settings_store::hardware::SCROLL_SPEED_KEY)
-                .and_then(serde_json::Value::as_f64)
-                .map_or(d.scroll_speed, settings_store::hardware::clamp_scroll_speed),
+            touchpad_click_method: config.touchpad_click_method,
+            touchpad_scroll_method: config.touchpad_scroll_method,
+            scroll_speed: config.scroll_speed,
         }
     }
 
@@ -438,13 +284,11 @@ impl InputSettings {
         (speed.clamp(0.0, 1.0) * 2.0) - 1.0
     }
 
-    /// Resolve the per-device preference, falling back to the legacy global
-    /// toggle for settings documents written before the split.
     pub fn natural_scroll_for(&self, touchpad: bool) -> bool {
         if touchpad {
-            self.touchpad_natural_scroll.unwrap_or(self.natural_scroll)
+            self.touchpad_natural_scroll
         } else {
-            self.mouse_natural_scroll.unwrap_or(self.natural_scroll)
+            self.mouse_natural_scroll
         }
     }
 
@@ -506,13 +350,13 @@ impl SettingsChange {
     /// (`input`), accessibility filters and cursor size (`accessibility`),
     /// and the shortcut chords tablet buttons press (`shortcuts`).
     pub fn input_devices(&self) -> bool {
-        self.touches(&[SECTION, ACCESSIBILITY_SECTION, "shortcuts"])
+        self.touches(&[SECTION, settings_store::accessibility::SECTION, "shortcuts"])
     }
 
     /// The seat and Xwayland keymaps and the input-method owner: keyboard
     /// sources (`input`) and the on-screen keyboard (`accessibility`).
     pub fn keyboard(&self) -> bool {
-        self.touches(&[SECTION, ACCESSIBILITY_SECTION])
+        self.touches(&[SECTION, settings_store::accessibility::SECTION])
     }
 
     /// The display arrangement, scale, modes and the pending display
@@ -539,7 +383,10 @@ impl SettingsChange {
     /// The theme: `appearance`, and the contrast and text-size layers in
     /// `accessibility`. The only change that wakes every window to repaint.
     pub fn appearance(&self) -> bool {
-        self.touches(&[settings_store::day_schedule::SECTION, ACCESSIBILITY_SECTION])
+        self.touches(&[
+            settings_store::day_schedule::SECTION,
+            settings_store::accessibility::SECTION,
+        ])
     }
 
     /// Idle blank, lock and suspend timeouts.
@@ -782,17 +629,6 @@ mod tests {
 
     #[test]
     fn input_settings_defaults_persistence_and_fallbacks() {
-        // Phase `accessibility_cursor_size_is_capability_safe`.
-        {
-            let normal = AccessibilityInputSettings::default();
-            assert_eq!(normal.effective_cursor_size(), 24);
-            let large = AccessibilityInputSettings {
-                large_cursor: true,
-                cursor_size: 48,
-                ..normal
-            };
-            assert_eq!(large.effective_cursor_size(), 48);
-        }
         // Phase `tap_to_click_defaults_on_for_a_laptop`.
         // The headline default: libinput says off, but that's the wrong answer on a laptop, and an empty settings file is exactly the state a fresh install is in.
         assert!(InputSettings::default().tap_to_click);
@@ -800,9 +636,8 @@ mod tests {
         // Phase `the_other_defaults_match_what_the_settings_pane_starts_from`.
         {
             let d = InputSettings::default();
-            assert!(!d.natural_scroll);
-            assert_eq!(d.touchpad_natural_scroll, Some(true));
-            assert_eq!(d.mouse_natural_scroll, Some(false));
+            assert!(d.touchpad_natural_scroll);
+            assert!(!d.mouse_natural_scroll);
             assert_eq!(d.pointer_speed, 0.5);
             assert_eq!(d.key_repeat, 0.5);
         }
@@ -814,23 +649,15 @@ mod tests {
             assert_eq!(plan_for(&settings, &touchpad()).natural_scroll, Some(true));
             assert_eq!(plan_for(&settings, &mouse()).natural_scroll, Some(false));
         }
-        // Phase `legacy_global_scroll_preference_still_applies_to_both_device_classes`.
-        {
-            let settings = InputSettings::from_section(&section(json!({
-                "natural_scroll": false,
-            })));
-            assert!(!settings.natural_scroll_for(true));
-            assert!(!settings.natural_scroll_for(false));
-        }
         // Phase `persisted_values_are_read_back`.
         {
             let s = InputSettings::from_section(&section(json!({
-                "natural_scroll": true,
+                "mouse_natural_scroll": true,
                 "tap_to_click": false,
                 "pointer_speed": 0.9,
                 "key_repeat": 0.25,
             })));
-            assert!(s.natural_scroll);
+            assert!(s.mouse_natural_scroll);
             assert!(!s.tap_to_click, "an explicit off must beat the default on");
             assert_eq!(s.pointer_speed, 0.9);
             assert_eq!(s.key_repeat, 0.25);
@@ -841,7 +668,7 @@ mod tests {
             let s = InputSettings::from_section(&section(json!({ "pointer_speed": 0.1 })));
             assert_eq!(s.pointer_speed, 0.1);
             assert!(s.tap_to_click);
-            assert!(!s.natural_scroll);
+            assert!(!s.mouse_natural_scroll);
             assert_eq!(s.key_repeat, 0.5);
         }
         // Phase `wrong_types_and_out_of_range_values_are_survivable`.
@@ -1072,29 +899,17 @@ mod tests {
             assert_eq!(plan.disable_while_typing, None);
             assert_eq!(plan.middle_emulation, None);
         }
-        // Phase `legacy_global_natural_scroll_reaches_every_device_when_device_overrides_are_absent`.
-        {
-            let s = InputSettings {
-                natural_scroll: true,
-                touchpad_natural_scroll: None,
-                mouse_natural_scroll: None,
-                ..Default::default()
-            };
-            assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(true));
-            assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(true));
-            // …and none that doesn't.
-            assert_eq!(plan_for(&s, &keyboard()).natural_scroll, None);
-        }
         // Phase `mouse_and_touchpad_can_keep_independent_scroll_directions`.
         {
             let s = InputSettings {
-                natural_scroll: false,
-                touchpad_natural_scroll: Some(true),
-                mouse_natural_scroll: Some(false),
+                touchpad_natural_scroll: false,
+                mouse_natural_scroll: true,
                 ..Default::default()
             };
-            assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(true));
-            assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(false));
+            assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(false));
+            assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(true));
+            // …and none on a device that cannot scroll.
+            assert_eq!(plan_for(&s, &keyboard()).natural_scroll, None);
         }
         // Phase `pointer_speed_reaches_devices_with_acceleration`.
         {
@@ -1121,7 +936,7 @@ mod tests {
             // Re-applying after a settings change must produce the same plan a freshly-plugged device would get — otherwise a re-plug silently changes behaviour.
             let s = InputSettings {
                 tap_to_click: false,
-                natural_scroll: true,
+                mouse_natural_scroll: true,
                 pointer_speed: 0.75,
                 key_repeat: 0.2,
                 ..Default::default()
@@ -1408,25 +1223,6 @@ mod tests {
         assert_eq!(devices[1].applied, [plan_for(&s, &mouse())]);
     }
 
-    // accessibility keyboard filters
-
-    #[test]
-    fn bounce_keys_window_defaults_to_300ms_and_is_off_until_enabled() {
-        let d = AccessibilityInputSettings::default();
-        assert_eq!(d.bounce_window(), Duration::ZERO);
-        let on = AccessibilityInputSettings::from_section(&section(json!({
-            "bounce_keys": true,
-        })));
-        assert_eq!(on.bounce_window(), Duration::from_millis(300));
-        let clamped = AccessibilityInputSettings::from_section(&section(json!({
-            "bounce_keys": true,
-            "bounce_keys_delay_ms": 60_000,
-            "mouse_keys": true,
-        })));
-        assert_eq!(clamped.bounce_window(), Duration::from_millis(1_000));
-        assert!(clamped.mouse_keys);
-        assert!(!clamped.sticky_keys);
-    }
     // settings follower
 
     fn scratch(name: &str) -> PathBuf {

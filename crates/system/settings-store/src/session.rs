@@ -1176,14 +1176,14 @@ mod tests {
         crate::update_section_at(
             &copy,
             "input",
-            object(json!({"natural_scroll": true, "touchpad_enabled": false})),
+            object(json!({"mouse_natural_scroll": true, "touchpad_enabled": false})),
         )
         .unwrap();
         let session = open(dir.path());
         let paths = session.paths().clone();
         assert_eq!(
             Value::Object(load_at(&paths.person)),
-            json!({"input": {"natural_scroll": true}})
+            json!({"input": {"mouse_natural_scroll": true}})
         );
         assert_eq!(
             Value::Object(load_at(&paths.device)),
@@ -1203,7 +1203,7 @@ mod tests {
         let session = open(dir.path());
         let expected = json!({
             "appearance": {"mode": "light"},
-            "input": {"natural_scroll": true, "touchpad_enabled": false}
+            "input": {"mouse_natural_scroll": true, "touchpad_enabled": false}
         });
         assert_eq!(Value::Object(session.load()), expected);
         assert_eq!(

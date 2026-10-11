@@ -6,7 +6,7 @@ use crate::application_test_support::{
 use crate::widget::{AppModel, ModelPath};
 use crate::{
     State,
-    headless::Driver,
+    headless::FrameHarness,
     widget::{BoundAppWidget, Widget},
 };
 use automerge::{ROOT, transaction::Transactable};
@@ -60,9 +60,12 @@ fn managed_components_bind_shared_history_to_their_real_owner() {
         let mut state = State::new();
         state.doc.put(ROOT, "body", "unrelated outer").unwrap();
         state.commit_action(None, None);
-        let mut driver =
-            Driver::from_managed_root(state, ManagedRoot::new(root, registration), (900, 650))
-                .expect("the registered actual bound owner must be admitted");
+        let mut driver = FrameHarness::from_managed_root(
+            state,
+            ManagedRoot::new(root, registration),
+            (900, 650),
+        )
+        .expect("the registered actual bound owner must be admitted");
         driver.click_named("history-open").unwrap();
         driver
             .perform_semantic_named(
@@ -82,7 +85,7 @@ fn managed_components_bind_shared_history_to_their_real_owner() {
     // phase: managed_component_bundle_automatically_installs_shared_history_in_frame_runner
     {
         let (_host, component) = component_with_history();
-        let mut driver = Driver::from_component(
+        let mut driver = FrameHarness::from_component(
             component,
             (900, 650),
             crate::application::ComponentRunnerInputs {
@@ -102,7 +105,7 @@ fn managed_components_bind_shared_history_to_their_real_owner() {
     {
         let (_host, component) = component_with_history();
         let root = crate::widget::TileHost::from_component(component);
-        let mut driver = Driver::new(State::new(), Box::new(root), (900, 650));
+        let mut driver = FrameHarness::new(State::new(), Box::new(root), (900, 650));
         assert!(
             driver.targets().contains_key("history-open"),
             "a managed tile retains the component's History bundle"
@@ -149,7 +152,7 @@ fn managed_review_confirmation_rechecks_authority_and_freshness() {
             ),
         };
         let registration = HistoryRegistration::new(&RESTORABLE, vec![source]).unwrap();
-        let mut driver = Driver::from_managed_root(
+        let mut driver = FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
             (900, 650),
@@ -284,7 +287,7 @@ thread_local! { static NOW: std::cell::Cell<u64> = const { std::cell::Cell::new(
 fn current_time() -> Option<u64> {
     Some(NOW.get())
 }
-fn review_driver() -> Driver {
+fn review_driver() -> FrameHarness {
     NOW.set(100);
     let mut state = State::new();
     state.doc.put(ROOT, "body", "old").unwrap();
@@ -302,7 +305,7 @@ fn review_driver() -> Driver {
         ),
     };
     let registration = HistoryRegistration::new(&RESTORABLE, vec![source]).unwrap();
-    let mut driver = Driver::from_managed_root(
+    let mut driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
         (900, 650),
@@ -401,14 +404,14 @@ fn historical_media_uses_only_the_selected_snapshot_in_every_registration() {
         state.commit_action(None, None);
         state.doc.put(ROOT, "body", "live").unwrap();
         state.commit_action(None, None);
-        let mut driver = Driver::from_managed_root(
+        let mut driver = FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
             (900, 650),
         )
         .unwrap();
         driver.click_named("history-open").unwrap();
-        let select = |driver: &mut Driver, hash: automerge::ChangeHash| {
+        let select = |driver: &mut FrameHarness, hash: automerge::ChangeHash| {
             let target = format!(
                 "timeline-entry:{}",
                 crate::widget::history_group::hex16(&crate::history_source::entry_id_from_hash(
@@ -493,7 +496,7 @@ fn historical_media_uses_only_the_selected_snapshot_in_every_registration() {
         .unwrap()
         .with_asset_source("media", provider.clone())
         .unwrap();
-        let mut driver = Driver::from_managed_root(
+        let mut driver = FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
             (900, 650),
@@ -554,7 +557,7 @@ fn historical_media_uses_only_the_selected_snapshot_in_every_registration() {
                 .with_asset_source("document", provider.clone())
                 .unwrap(),
         );
-        let mut driver = Driver::from_component(
+        let mut driver = FrameHarness::from_component(
             component,
             (900, 650),
             crate::application::ComponentRunnerInputs {
@@ -603,7 +606,7 @@ fn historical_media_uses_only_the_selected_snapshot_in_every_registration() {
             uuid::Uuid::new_v4(),
         )
         .unwrap();
-        let driver = Driver::from_managed_root(
+        let driver = FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
             (900, 650),
@@ -636,7 +639,7 @@ fn historical_media_uses_only_the_selected_snapshot_in_every_registration() {
         component
             .register_document_history(&AUTOMATIC_MEDIA_DEFINITION)
             .unwrap();
-        let driver = Driver::from_component(
+        let driver = FrameHarness::from_component(
             component,
             (900, 650),
             crate::application::ComponentRunnerInputs {
@@ -684,7 +687,7 @@ fn historical_media_uses_only_the_selected_snapshot_in_every_registration() {
         tile.register_document_history(&AUTOMATIC_MEDIA_DEFINITION)
             .unwrap();
         check_automatic_media(
-            Driver::new(State::new(), Box::new(tile), (900, 650)),
+            FrameHarness::new(State::new(), Box::new(tile), (900, 650)),
             selected,
         );
     }
@@ -778,7 +781,7 @@ struct LegacyTiles {
     store: crate::record::RecordStore,
     first: crate::record::RecordCheckout,
     second: crate::record::RecordCheckout,
-    driver: Driver,
+    driver: FrameHarness,
 }
 impl LegacyTiles {
     fn new() -> Self {
@@ -807,7 +810,7 @@ impl LegacyTiles {
         let mut state = State::new();
         state.doc.put(ROOT, "body", "outer").unwrap();
         state.commit_action(None, None);
-        let driver = Driver::new(state, root, (1200, 650));
+        let driver = FrameHarness::new(state, root, (1200, 650));
         Self {
             _directory: directory,
             _owners: owners,
@@ -1060,14 +1063,10 @@ impl<T: Widget + 'static> Widget for TileEditor<T> {
         node: taffy::NodeId,
         origin: vello::kurbo::Point,
     ) {
-        let layout = tree.layout(node).unwrap();
         self.0.apply_layout(
             tree,
             tree.children(node).unwrap()[0],
-            vello::kurbo::Point::new(
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
+            crate::widget::layout_rect(tree, node, origin).origin(),
         );
     }
     fn handle_event(
@@ -1259,7 +1258,7 @@ fn legacy_admission_refuses_busy_rebound_dropped_or_replaced_owners() {
         ));
         tile.bind_record(a.clone(), checkout.clone());
         let pointer = std::ptr::from_mut(tile.as_mut());
-        let mut driver = Driver::new(State::new(), tile, (900, 650));
+        let mut driver = FrameHarness::new(State::new(), tile, (900, 650));
         let old = driver.a11y_node_named("owned editor").unwrap();
         driver.relayout();
         assert_eq!(driver.a11y_node_named("owned editor"), Some(old));
@@ -1386,7 +1385,7 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
             let mut state = State::new();
             state.doc.put(ROOT, "body", "outer").unwrap();
             state.commit_action(None, None);
-            let mut driver = Driver::new(state, Box::new(tile), (900, 650));
+            let mut driver = FrameHarness::new(state, Box::new(tile), (900, 650));
             let principal = Subject::Principal(Principal::Person(LOCAL_USER.into()));
             let mut capabilities = vec![CapOverride::new(
                 principal.clone(),
@@ -1544,7 +1543,7 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
         )));
         tile.bind_record(store.clone(), first.clone());
         tile.register_document_history(&RESTORABLE).unwrap();
-        let mut driver = Driver::new(State::new(), Box::new(tile), (900, 650));
+        let mut driver = FrameHarness::new(State::new(), Box::new(tile), (900, 650));
         store
             .with_action_state(&other.id, |doc, _, _| {
                 doc.put(ROOT, "body", "unrelated unfinished edit").unwrap();
@@ -1610,7 +1609,7 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
         use crate::permissions::*;
         let mut fixture = TopLegacyFixture::new();
         let tile_pointer = std::ptr::from_mut(fixture.tile.as_mut());
-        let mut driver = Driver::from_managed_root(
+        let mut driver = FrameHarness::from_managed_root(
             State::new(),
             ManagedRoot::new(fixture.tile, fixture.registration),
             (900, 650),
@@ -1827,7 +1826,7 @@ static AUTOMATIC_MEDIA_DEFINITION: HistoryDefinition = HistoryDefinition {
         },
     }],
 };
-fn check_automatic_media(mut driver: Driver, selected: automerge::ChangeHash) {
+fn check_automatic_media(mut driver: FrameHarness, selected: automerge::ChangeHash) {
     use automerge::ReadDoc;
     let source = AUTOMATIC_MEDIA.with(|slot| slot.borrow_mut().take().unwrap());
     assert!(
@@ -2485,7 +2484,7 @@ fn hidden_legacy_tile_continues_exact_owner_lifecycle_and_settles_once() {
     outer.doc.put(ROOT, "owner", "outer").unwrap();
     outer.doc.put(ROOT, "body", "outer").unwrap();
     outer.commit_action(None, None);
-    let mut driver = Driver::new(outer, Box::new(root), (1200, 650));
+    let mut driver = FrameHarness::new(outer, Box::new(root), (1200, 650));
 
     first_handles.emitter.borrow_mut().emit(()).unwrap();
     driver.key("x");
@@ -2614,7 +2613,7 @@ fn nested_hidden_tile_and_component_sibling_keep_single_lifecycle_cadence() {
     let mut outer = State::new();
     outer.doc.put(ROOT, "body", "outer").unwrap();
     outer.commit_action(None, None);
-    let mut driver = Driver::new(outer, Box::new(root), (1200, 650));
+    let mut driver = FrameHarness::new(outer, Box::new(root), (1200, 650));
 
     let nested_live = (nested_handles.updates.get(), nested_handles.syncs.get());
     let component_live = (
@@ -2679,7 +2678,7 @@ fn hidden_canonical_component_updates_once_per_ordinary_host_pass() {
     component.root = Some(Box::new(probe));
     component.register_document_history(&BOUND).unwrap();
     let root = crate::widget::TileHost::from_component(component);
-    let mut driver = Driver::new(State::new(), Box::new(root), (900, 650));
+    let mut driver = FrameHarness::new(State::new(), Box::new(root), (900, 650));
 
     let live = (handles.updates.get(), handles.syncs.get());
     driver.relayout();
@@ -2734,7 +2733,7 @@ fn closed_hidden_owner_never_receives_queued_lifecycle_result() {
     let mut outer = automerge::AutoCommit::new();
     admit(&mut tile, invocation, &mut outer);
     let tile_pointer = std::ptr::from_mut(tile.as_mut());
-    let mut driver = Driver::new(State::new(), tile, (900, 650));
+    let mut driver = FrameHarness::new(State::new(), tile, (900, 650));
     driver.click_named("history-open").unwrap();
     *handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
         invocation,
@@ -2798,7 +2797,7 @@ fn rebound_owner_cannot_inherit_retained_result_or_invocation() {
     state.commit_action(None, None);
     admit(&mut tile, invocation, &mut state.doc);
     let tile_pointer = std::ptr::from_mut(tile.as_mut());
-    let mut driver = Driver::new(state, tile, (900, 650));
+    let mut driver = FrameHarness::new(state, tile, (900, 650));
     driver.click_named("history-open").unwrap();
     *handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
         invocation,
@@ -2867,7 +2866,7 @@ fn history_open_record_intent_cannot_loan_new_owner_to_unfenced_retained_result(
     admit(&mut tile, invocation, &mut outer);
     let mut tile = Box::new(tile);
     let tile_pointer = std::ptr::from_mut(tile.as_mut());
-    let mut driver = Driver::new(State::new(), tile, (900, 650));
+    let mut driver = FrameHarness::new(State::new(), tile, (900, 650));
     driver.click_named("history-open").unwrap();
     *handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
         invocation,
@@ -2897,7 +2896,7 @@ fn live_record_intent_without_owner_bound_work_still_switches_normally() {
     let (probe, handles) = retained_lifecycle_probe("ordinary-intent", "first");
     let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
     tile.bind_record(store, first);
-    let mut driver = Driver::new(State::new(), Box::new(tile), (900, 650));
+    let mut driver = FrameHarness::new(State::new(), Box::new(tile), (900, 650));
 
     handles.intent.replace(Some(second));
     *handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
@@ -3184,7 +3183,7 @@ fn renewed_lifetime_blocks_recovery_event_before_old_custody_release() {
     ));
     tile.bind_record(store.clone(), current.clone());
     let tile_pointer = std::ptr::from_mut(tile.as_mut());
-    let mut driver = Driver::new(State::new(), tile, (700, 480));
+    let mut driver = FrameHarness::new(State::new(), tile, (700, 480));
     let invocation = tilo_actions::InvocationId::new();
     assert!(matches!(
         unsafe {
@@ -3295,7 +3294,7 @@ fn refused_history_transition_is_accessible_and_back_to_live_remains_interactive
     let mut tile = Box::new(tile);
     let tile_pointer = std::ptr::from_mut(tile.as_mut());
     let root = crate::widget::Row::new().push(tile);
-    let mut driver = Driver::new(State::new(), Box::new(root), (900, 650));
+    let mut driver = FrameHarness::new(State::new(), Box::new(root), (900, 650));
     driver.click_named("history-open").unwrap();
     let target = format!(
         "timeline-entry:{}",

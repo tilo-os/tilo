@@ -2,6 +2,7 @@
 //! and the presets saved in this artwork, which travel with it.
 
 use std::collections::BTreeMap;
+use ui::num::f32_of_f64;
 
 use serde::{Deserialize, Serialize};
 use tilo_wet_media::{Engines, Pigment, Preset, Texture};
@@ -52,14 +53,6 @@ pub struct MediumSpec {
     pub palette: Vec<PigmentSpec>,
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "medium parameters are small bounded values"
-)]
-fn narrow(value: f64) -> f32 {
-    value as f32
-}
-
 impl MediumSpec {
     pub fn from_preset(preset: &Preset) -> Self {
         Self {
@@ -95,7 +88,7 @@ impl MediumSpec {
             params: self
                 .params
                 .iter()
-                .map(|(id, value)| (id.clone(), narrow(*value)))
+                .map(|(id, value)| (id.clone(), f32_of_f64(*value)))
                 .collect(),
             ground: self.ground.as_deref().and_then(Texture::parse),
             palette: self.pigments(),
@@ -108,8 +101,8 @@ impl MediumSpec {
             .map(|pigment| Pigment {
                 name: pigment.name.clone(),
                 colour: pigment.colour.clone(),
-                granulation: narrow(pigment.granulation),
-                strength: narrow(pigment.strength),
+                granulation: f32_of_f64(pigment.granulation),
+                strength: f32_of_f64(pigment.strength),
             })
             .collect()
     }

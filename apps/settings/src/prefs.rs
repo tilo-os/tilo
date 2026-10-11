@@ -28,7 +28,7 @@
 //!   "locale":  { … },                       // owned by region.rs
 //!   "audio":   { "system_sounds": { "enabled": true, "volume": 0.7, … } },
 //!   "display": { "auto_brightness": false, "night_light": false },
-//!   "input":   { "natural_scroll": false, "tap_to_click": true,
+//!   "input":   { "touchpad_natural_scroll": true, "tap_to_click": true,
 //!                "pointer_speed": 0.5, "key_repeat": 0.5,
 //!                "keyboard_layout": "us" },
 //!   "updates": { "auto": true, "channel": "Stable", "last_checked": "Never" },
@@ -54,6 +54,7 @@
 //! clobbers another pane's — or the region store's — section.
 
 use serde::{Deserialize, Serialize};
+use settings_store::accessibility::AccessibilitySettings;
 
 /// Remembered default audio devices, persistent transforms and which system
 /// events make a sound.
@@ -144,65 +145,21 @@ impl Default for DisplayPrefs {
 }
 
 /// Pointer + keyboard behaviour the compositor's libinput/xkb configuration
-/// reads at session start.
+/// reads at session start: the shared [`RichInputConfig`] plus the touchpad
+/// switches and the keyboard inspector state only Settings writes.
+///
+/// [`RichInputConfig`]: settings_store::hardware::RichInputConfig
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
-              independently meaningful serialized setting, not a related toggle group"
-)]
 pub struct InputPrefs {
-    /// Compatibility fallback for pre per-device input documents.
-    pub natural_scroll: bool,
-    pub touchpad_natural_scroll: Option<bool>,
-    pub mouse_natural_scroll: Option<bool>,
-    pub tap_to_click: bool,
-    /// 0.0..=1.0 pointer acceleration.
-    pub pointer_speed: f64,
-    pub touchpad_pointer_speed: Option<f64>,
-    pub mouse_pointer_speed: Option<f64>,
-    /// 0.0..=1.0 key-repeat rate.
-    pub key_repeat: f64,
-    /// Exact host-imported repeat pair. A Tilo slider selection clears both.
-    pub key_repeat_delay_ms: Option<u32>,
-    pub key_repeat_rate_hz: Option<u32>,
-    /// xkb layout code, e.g. `"us"`, `"de"`.
-    pub keyboard_layout: String,
-    pub tap_drag: bool,
-    /// Keep a tap-and-drag going after the finger lifts, until the next tap.
-    pub tap_drag_lock: bool,
-    pub disable_while_typing: bool,
-    pub middle_emulation: bool,
-    pub left_handed: bool,
-    /// `adaptive` or `flat`; capability-gated by libinput.
-    pub accel_profile: String,
-    pub touchpad_gestures: bool,
+    #[serde(flatten)]
+    pub config: settings_store::hardware::RichInputConfig,
     /// Whether touchpads send events at all. The touchpad-toggle key writes
     /// the same key, so both stay in agreement.
     pub touchpad_enabled: bool,
     /// Switch touchpads off while an external mouse is connected;
     /// capability-gated by libinput.
     pub touchpad_disabled_on_external_mouse: bool,
-    /// Which button a clickpad press means; capability-gated by libinput.
-    pub touchpad_click_method: settings_store::hardware::TouchpadClickMethod,
-    /// Two-finger or edge scrolling; capability-gated by libinput.
-    pub touchpad_scroll_method: settings_store::hardware::TouchpadScrollMethod,
-    /// Scroll-distance multiplier for wheels and touchpads.
-    pub scroll_speed: f64,
-    /// XKB compose option (`ralt`, `menu`, …), or none.
-    pub compose_key: Option<String>,
-    /// What Caps Lock does (`ctrl`, `escape`, `backspace`), or none for
-    /// Caps Lock itself.
-    pub caps_lock: Option<String>,
-    /// Ordered XKB layouts. `keyboard_layout` remains the active first item
-    /// for backward compatibility with old sessions.
-    pub keyboard_layouts: Vec<String>,
-    /// Explicit physical model; no hardware detection is implied.
-    pub keyboard_model: String,
-    #[serde(deserialize_with = "settings_store::keyboard_sources::lenient_profiles")]
-    pub keyboard_assignments:
-        std::collections::BTreeMap<String, settings_store::keyboard_sources::KeyboardProfile>,
     /// Layout being inspected without changing the active input source.
     pub keyboard_preview: Option<String>,
     /// Inspect the higher native XKB levels without changing typed input.
@@ -211,9 +168,6 @@ pub struct InputPrefs {
     pub keyboard_preview_level: usize,
     /// Explicit physical position inspected; never follows or records key presses.
     pub keyboard_inspected_key: String,
-    /// Per-tablet mapping, pressure and buttons, keyed by device identity.
-    #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
-    pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
 }
 
 impl Default for InputPrefs {
@@ -224,41 +178,17 @@ impl Default for InputPrefs {
         let keyboard_layouts = settings_store::keyboard_sources::default_sources();
         let keyboard_layout = keyboard_layouts.first().cloned().unwrap_or_default();
         Self {
-            natural_scroll: false,
-            touchpad_natural_scroll: Some(
-                settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
-            ),
-            mouse_natural_scroll: Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL),
-            tap_to_click: true,
-            pointer_speed: 0.5,
-            touchpad_pointer_speed: None,
-            mouse_pointer_speed: None,
-            key_repeat: 0.5,
-            key_repeat_delay_ms: None,
-            key_repeat_rate_hz: None,
-            keyboard_layout,
-            tap_drag: true,
-            tap_drag_lock: false,
-            disable_while_typing: true,
-            middle_emulation: true,
-            left_handed: false,
-            accel_profile: "adaptive".into(),
-            touchpad_gestures: true,
+            config: settings_store::hardware::RichInputConfig {
+                keyboard_layout,
+                keyboard_layouts,
+                ..settings_store::hardware::RichInputConfig::default()
+            },
             touchpad_enabled: true,
             touchpad_disabled_on_external_mouse: false,
-            touchpad_click_method: settings_store::hardware::TouchpadClickMethod::Default,
-            touchpad_scroll_method: settings_store::hardware::TouchpadScrollMethod::TwoFinger,
-            scroll_speed: 1.0,
-            compose_key: None,
-            caps_lock: None,
-            keyboard_layouts,
-            keyboard_model: "pc105".into(),
-            keyboard_assignments: std::collections::BTreeMap::new(),
             keyboard_preview: None,
             keyboard_preview_extra_levels: false,
             keyboard_preview_level: 0,
             keyboard_inspected_key: "AD01".into(),
-            tablets: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -270,76 +200,13 @@ impl ui::storage::SettingsSchema for InputPrefs {
 }
 
 impl InputPrefs {
-    /// Decode the input object while preserving the pre-split global scrolling
-    /// preference. A missing document receives the independent touchpad and
-    /// mouse defaults shared with the compositor.
+    /// Decode the input object. The shared fields go through the same
+    /// per-field fallbacks and source normalisation the compositor uses.
     fn from_json_value(value: &serde_json::Value) -> Option<Self> {
         let section = value.as_object()?;
-        let mut input: InputPrefs = serde_json::from_value(value.clone()).ok()?;
-        let legacy_natural_scroll = section
-            .get("natural_scroll")
-            .and_then(serde_json::Value::as_bool);
-        input.natural_scroll = legacy_natural_scroll.unwrap_or(false);
-        input.touchpad_natural_scroll = section
-            .get("touchpad_natural_scroll")
-            .and_then(serde_json::Value::as_bool)
-            .or(legacy_natural_scroll)
-            .or(Some(
-                settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
-            ));
-        input.mouse_natural_scroll = section
-            .get("mouse_natural_scroll")
-            .and_then(serde_json::Value::as_bool)
-            .or(legacy_natural_scroll)
-            .or(Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL));
-        input.scroll_speed = settings_store::hardware::clamp_scroll_speed(input.scroll_speed);
+        let mut input: InputPrefs = serde_json::from_value(value.clone()).unwrap_or_default();
+        input.config = settings_store::hardware::RichInputConfig::from_section(section);
         Some(input)
-    }
-
-    /// Reconcile the legacy active layout with the ordered source list using
-    /// the same validation and bounds the compositor enforces.
-    pub fn rich_input(&self) -> settings_store::hardware::RichInputConfig {
-        settings_store::hardware::RichInputConfig {
-            pointer_speed: self.pointer_speed,
-            touchpad_pointer_speed: self.touchpad_pointer_speed,
-            mouse_pointer_speed: self.mouse_pointer_speed,
-            natural_scroll: self.natural_scroll,
-            touchpad_natural_scroll: self.touchpad_natural_scroll,
-            mouse_natural_scroll: self.mouse_natural_scroll,
-            tap_to_click: self.tap_to_click,
-            tap_drag: self.tap_drag,
-            tap_drag_lock: self.tap_drag_lock,
-            disable_while_typing: self.disable_while_typing,
-            middle_emulation: self.middle_emulation,
-            left_handed: self.left_handed,
-            accel_profile: if self.accel_profile == "flat" {
-                settings_store::hardware::AccelProfile::Flat
-            } else {
-                settings_store::hardware::AccelProfile::Adaptive
-            },
-            key_repeat: self.key_repeat,
-            key_repeat_delay_ms: self.key_repeat_delay_ms,
-            key_repeat_rate_hz: self.key_repeat_rate_hz,
-            keyboard_layout: self.keyboard_layout.clone(),
-            keyboard_layouts: self.keyboard_layouts.clone(),
-            keyboard_model: self.keyboard_model.clone(),
-            keyboard_assignments: self.keyboard_assignments.clone(),
-            compose_key: self.compose_key.clone(),
-            caps_lock: self.caps_lock.clone(),
-            touchpad_gestures: self.touchpad_gestures,
-            touchpad_click_method: self.touchpad_click_method,
-            touchpad_scroll_method: self.touchpad_scroll_method,
-            scroll_speed: self.scroll_speed,
-            tablets: self.tablets.clone(),
-        }
-    }
-
-    pub fn normalise_keyboard_sources(&mut self) {
-        let mut config = self.rich_input();
-        config.normalise_sources();
-        self.keyboard_model = config.keyboard_model;
-        self.keyboard_layout = config.keyboard_layout;
-        self.keyboard_layouts = config.keyboard_layouts;
     }
 }
 
@@ -512,9 +379,6 @@ impl Default for UpdatePrefs {
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppearancePrefs {
-    /// Legacy preset selector retained for imported settings and the published `SetTheme` action.
-    #[serde(default = "default_legacy_theme")]
-    pub theme: String,
     /// `"light"`, `"dark"` or `"automatic"` (light by day, dark by night).
     #[serde(default = "default_mode")]
     pub mode: String,
@@ -633,13 +497,9 @@ fn default_ui_scale() -> f64 {
     1.0
 }
 
-fn default_legacy_theme() -> String {
-    "Light".into()
-}
 impl Default for AppearancePrefs {
     fn default() -> Self {
         Self {
-            theme: default_legacy_theme(),
             mode: default_mode(),
             dark_theme: default_dark_theme(),
             light_theme: default_light_theme(),
@@ -749,14 +609,7 @@ impl AppearancePrefs {
 
     /// The theme document the current mode shows, with the density over it.
     pub fn user_document(&self) -> Option<ui::theme::ThemeDocument> {
-        // Import the former preset field without discarding new paired-theme data.
-        // Typed SetTheme keeps both forms in agreement; older settings have only
-        // the preset and therefore still need this conversion when read.
-        let mut imported = self.clone();
-        if self.theme != default_legacy_theme() {
-            imported.choose_legacy_theme(self.theme.clone());
-        }
-        ui::theme::user_document(&imported.settings_value(), ui::theme::local_moment())
+        ui::theme::user_document(&self.settings_value(), ui::theme::local_moment())
     }
 
     fn layers(&self, accessibility: ui::theme::AccessibilityLayer) -> ui::theme::ThemeLayerStack {
@@ -823,10 +676,12 @@ impl AppearancePrefs {
         "Dark cool",
         "Dark soft",
     ];
-    pub fn choose_legacy_theme(&mut self, name: String) {
+    /// Show `name` from [`Self::THEMES`]: Automatic, or a preset that becomes
+    /// the theme of its own mode.
+    pub fn choose_theme(&mut self, name: &str) {
         if settings_store::day_schedule::is_automatic(&name.to_ascii_lowercase()) {
             self.mode = "automatic".into();
-        } else if let Some(preset) = ui::theme::Preset::find(&name) {
+        } else if let Some(preset) = ui::theme::Preset::find(name) {
             let doc = preset.document();
             self.mode = if doc.palette.dark { "dark" } else { "light" }.into();
             if doc.palette.dark {
@@ -835,7 +690,19 @@ impl AppearancePrefs {
                 self.light_theme = preset.id().into();
             }
         }
-        self.theme = name;
+    }
+
+    /// The [`Self::THEMES`] entry the stored mode and themes amount to; a
+    /// custom theme reads as its id.
+    pub fn theme_choice(&self) -> String {
+        let id = match self.mode.as_str() {
+            mode if settings_store::day_schedule::is_automatic(mode) => {
+                return "Automatic".into();
+            }
+            "light" => &self.light_theme,
+            _ => &self.dark_theme,
+        };
+        ui::theme::Preset::find(id).map_or_else(|| id.clone(), |preset| preset.name().into())
     }
 }
 /// Overwrite `known`'s fields in the `section` object, keeping any other key
@@ -931,353 +798,6 @@ impl Default for NotificationPrefs {
     }
 }
 
-/// Assistive-technology preferences the compositor's input + accessibility
-/// layer reads. The *vision* comforts a low-vision user reaches for first —
-/// high contrast, reduced motion, text size — live in [`AppearancePrefs`]
-/// (the single source of truth the whole system themes against); this section
-/// carries the pointer, typing, hearing, and screen-reader assists that do
-/// not belong to the theme. Every field is `#[serde(default)]` so older
-/// configs load.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
-              independently meaningful serialized setting, not a related toggle group"
-)]
-pub struct AccessibilityPrefs {
-    /// Enlarge the mouse pointer to [`Self::cursor_size`].
-    #[serde(default)]
-    pub large_cursor: bool,
-    /// Pointer size in logical pixels (the compositor's cursor theme size).
-    #[serde(default = "default_cursor_size")]
-    pub cursor_size: u32,
-    /// Run the AT-SPI screen reader.
-    #[serde(default)]
-    pub screen_reader: bool,
-    /// When the on-screen keyboard runs: automatically on touch-only use,
-    /// always, or never.
-    #[serde(default)]
-    pub on_screen_keyboard: OnScreenKeyboard,
-    /// Latch modifier keys so chords can be typed one key at a time.
-    #[serde(default)]
-    pub sticky_keys: bool,
-    /// Require a key to be held briefly before it registers, ignoring
-    /// accidental brushes.
-    #[serde(default)]
-    pub slow_keys: bool,
-    /// Ignore a second press of the same key soon after its release.
-    #[serde(default)]
-    pub bounce_keys: bool,
-    /// The bounce-keys window in milliseconds.
-    #[serde(default = "default_bounce_keys_delay_ms")]
-    pub bounce_keys_delay_ms: u32,
-    /// Flash the visual alert when bounce keys ignores a press.
-    #[serde(default)]
-    pub bounce_keys_alert: bool,
-    /// Move the pointer with the numeric keypad.
-    #[serde(default)]
-    pub mouse_keys: bool,
-    /// Flash the screen instead of (or alongside) an audible alert.
-    #[serde(default)]
-    pub visual_alerts: bool,
-    /// Whole-desktop colour transform owned by the compositor.
-    #[serde(default)]
-    pub color_filter: ColorFilter,
-    /// Desktop magnification factor. `1` means disabled.
-    #[serde(default = "default_magnifier_zoom")]
-    pub magnifier_zoom: u8,
-    /// A lens around the point of interest, or the whole screen magnified.
-    #[serde(default)]
-    pub magnifier_view: settings_store::magnifier::MagnifierView,
-    /// Paint full-screen guide lines through the hardware pointer.
-    #[serde(default)]
-    pub cursor_crosshair: bool,
-    /// Make text insertion carets wider in every Tilo toolkit application.
-    #[serde(default)]
-    pub thick_text_caret: bool,
-    /// Turn F6/F7 switch signals into standard scan-next/activate actions.
-    #[serde(default)]
-    pub switch_control: bool,
-    /// Which ordinary function-key pair a two-switch device emits.
-    #[serde(default)]
-    pub switch_key_pair: SwitchKeyPair,
-    /// Automatic scan period in milliseconds; zero means manual two-switch scanning.
-    #[serde(default)]
-    pub switch_scan_ms: u16,
-    /// Normalised screen-reader speech rate, where 100 is engine default.
-    #[serde(default = "default_screen_reader_rate")]
-    pub screen_reader_rate: u16,
-    /// Backend-neutral voice/language preset.
-    #[serde(default)]
-    pub screen_reader_voice: ScreenReaderVoice,
-    /// Personal recognition language; selecting it never grants microphone access.
-    #[serde(default)]
-    pub dictation_language: settings_store::dictation::DictationLanguage,
-    /// Preserve recognised speech without removing explicit self-repairs.
-    #[serde(default)]
-    pub dictation_literal: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ColorFilter {
-    #[default]
-    None,
-    Grayscale,
-    Inverted,
-    GrayscaleInverted,
-}
-
-impl ColorFilter {
-    pub const OPTIONS: &'static [&'static str] =
-        &["Off", "Grayscale", "Inverted", "Grayscale + inverted"];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::None => "Off",
-            Self::Grayscale => "Grayscale",
-            Self::Inverted => "Inverted",
-            Self::GrayscaleInverted => "Grayscale + inverted",
-        }
-    }
-
-    pub fn from_label(label: &str) -> Option<Self> {
-        Some(match label {
-            "Off" => Self::None,
-            "Grayscale" => Self::Grayscale,
-            "Inverted" => Self::Inverted,
-            "Grayscale + inverted" => Self::GrayscaleInverted,
-            _ => return None,
-        })
-    }
-}
-
-/// When the compositor runs the on-screen keyboard. `Auto` follows the
-/// hardware in use: a touchscreen with no physical typing since the last
-/// touch, or a convertible folded into tablet mode.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OnScreenKeyboard {
-    #[default]
-    Auto,
-    Always,
-    Never,
-}
-
-impl OnScreenKeyboard {
-    pub const OPTIONS: &'static [&'static str] = &["Automatic", "Always", "Never"];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Auto => "Automatic",
-            Self::Always => "Always",
-            Self::Never => "Never",
-        }
-    }
-
-    pub fn from_label(label: &str) -> Option<Self> {
-        Some(match label {
-            "Automatic" => Self::Auto,
-            "Always" => Self::Always,
-            "Never" => Self::Never,
-            _ => return None,
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ScreenReaderVoice {
-    #[default]
-    System,
-    EnglishUs,
-    EnglishGb,
-    German,
-    French,
-    Spanish,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SwitchKeyPair {
-    #[default]
-    F6F7,
-    F9F10,
-    Digits12,
-}
-
-impl SwitchKeyPair {
-    pub const OPTIONS: &'static [&'static str] = &["F6 / F7", "F9 / F10", "1 / 2"];
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::F6F7 => "F6 / F7",
-            Self::F9F10 => "F9 / F10",
-            Self::Digits12 => "1 / 2",
-        }
-    }
-    pub fn from_label(label: &str) -> Option<Self> {
-        Some(match label {
-            "F6 / F7" => Self::F6F7,
-            "F9 / F10" => Self::F9F10,
-            "1 / 2" => Self::Digits12,
-            _ => return None,
-        })
-    }
-}
-
-impl ScreenReaderVoice {
-    pub const OPTIONS: &'static [&'static str] = &[
-        "System voice",
-        "English (US)",
-        "English (UK)",
-        "German",
-        "French",
-        "Spanish",
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::System => "System voice",
-            Self::EnglishUs => "English (US)",
-            Self::EnglishGb => "English (UK)",
-            Self::German => "German",
-            Self::French => "French",
-            Self::Spanish => "Spanish",
-        }
-    }
-
-    pub fn backend_id(self) -> &'static str {
-        match self {
-            Self::System => "",
-            Self::EnglishUs => "en-us",
-            Self::EnglishGb => "en-gb",
-            Self::German => "de",
-            Self::French => "fr",
-            Self::Spanish => "es",
-        }
-    }
-
-    pub fn from_label(label: &str) -> Option<Self> {
-        const VARIANTS: [ScreenReaderVoice; 6] = [
-            ScreenReaderVoice::System,
-            ScreenReaderVoice::EnglishUs,
-            ScreenReaderVoice::EnglishGb,
-            ScreenReaderVoice::German,
-            ScreenReaderVoice::French,
-            ScreenReaderVoice::Spanish,
-        ];
-        Self::OPTIONS
-            .iter()
-            .position(|item| *item == label)
-            .and_then(|i| VARIANTS.get(i).copied())
-    }
-}
-
-fn default_cursor_size() -> u32 {
-    24
-}
-
-fn default_bounce_keys_delay_ms() -> u32 {
-    settings_store::hardware::BOUNCE_KEYS_DEFAULT_DELAY_MS
-}
-
-fn default_magnifier_zoom() -> u8 {
-    1
-}
-
-fn default_screen_reader_rate() -> u16 {
-    100
-}
-
-impl Default for AccessibilityPrefs {
-    fn default() -> Self {
-        Self {
-            large_cursor: false,
-            cursor_size: default_cursor_size(),
-            screen_reader: false,
-            on_screen_keyboard: OnScreenKeyboard::Auto,
-            sticky_keys: false,
-            slow_keys: false,
-            bounce_keys: false,
-            bounce_keys_delay_ms: default_bounce_keys_delay_ms(),
-            bounce_keys_alert: false,
-            mouse_keys: false,
-            visual_alerts: false,
-            color_filter: ColorFilter::None,
-            magnifier_zoom: default_magnifier_zoom(),
-            magnifier_view: settings_store::magnifier::MagnifierView::Lens,
-            cursor_crosshair: false,
-            thick_text_caret: false,
-            switch_control: false,
-            switch_key_pair: SwitchKeyPair::F6F7,
-            switch_scan_ms: 0,
-            screen_reader_rate: default_screen_reader_rate(),
-            screen_reader_voice: ScreenReaderVoice::System,
-            dictation_language: settings_store::dictation::DictationLanguage::default(),
-            dictation_literal: false,
-        }
-    }
-}
-
-/// The person's assists, read by the compositor's input and accessibility
-/// layer.
-impl ui::storage::SettingsSchema for AccessibilityPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("accessibility");
-}
-
-impl AccessibilityPrefs {
-    /// The offered bounce-keys windows as `(display label, milliseconds)`.
-    pub const BOUNCE_DELAYS: &'static [(&'static str, u32)] = &[
-        ("100 ms", 100),
-        ("200 ms", 200),
-        ("300 ms", 300),
-        ("500 ms", 500),
-        ("800 ms", 800),
-    ];
-
-    /// The offered bounce-keys window closest to `ms`.
-    pub fn bounce_delay_label(ms: u32) -> &'static str {
-        Self::BOUNCE_DELAYS
-            .iter()
-            .min_by_key(|(_, d)| d.abs_diff(ms))
-            .map_or("300 ms", |(l, _)| *l)
-    }
-
-    /// Map a bounce-keys label back to milliseconds, if recognised.
-    pub fn bounce_delay_ms(label: &str) -> Option<u32> {
-        Self::BOUNCE_DELAYS
-            .iter()
-            .find(|(l, _)| *l == label)
-            .map(|(_, d)| *d)
-    }
-
-    /// The offered pointer sizes as `(display label, size px)`. The compositor
-    /// applies [`Self::cursor_size`] as its cursor-theme size when
-    /// [`Self::large_cursor`] is set.
-    pub const CURSOR_SIZES: &'static [(&'static str, u32)] = &[
-        ("Default", 24),
-        ("Large", 36),
-        ("Larger", 48),
-        ("Largest", 64),
-    ];
-
-    /// Map a cursor size to its closest offered label.
-    pub fn cursor_size_label(size: u32) -> &'static str {
-        Self::CURSOR_SIZES
-            .iter()
-            .min_by_key(|(_, s)| s.abs_diff(size))
-            .map_or("Default", |(l, _)| *l)
-    }
-
-    /// Map a cursor-size label back to its pixel size, if recognised.
-    pub fn cursor_size_px(label: &str) -> Option<u32> {
-        Self::CURSOR_SIZES
-            .iter()
-            .find(|(l, _)| *l == label)
-            .map(|(_, s)| *s)
-    }
-}
-
 /// The preference sections this store owns. Loaded from and merged
 /// back into the shared `settings.json`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1289,7 +809,7 @@ pub struct SystemPrefs {
     pub updates: UpdatePrefs,
     pub appearance: AppearancePrefs,
     pub notifications: NotificationPrefs,
-    pub accessibility: AccessibilityPrefs,
+    pub accessibility: AccessibilitySettings,
 }
 
 impl SystemPrefs {
@@ -1298,7 +818,7 @@ impl SystemPrefs {
     pub fn from_json(text: &str) -> Self {
         let root: serde_json::Value = serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
         let section = |key: &str| root.get(key).cloned();
-        let mut prefs = Self {
+        Self {
             audio: section("audio")
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
@@ -1323,20 +843,7 @@ impl SystemPrefs {
             accessibility: section("accessibility")
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
-        };
-        // `serde(default)` fills a missing multi-source field with `["us"]`.
-        // For an old document whose only field is `keyboard_layout: "de"`,
-        // that would invent an unwanted second source. Clear the synthetic
-        // list before normalisation when the key genuinely was absent.
-        let has_sources = root
-            .get("input")
-            .and_then(serde_json::Value::as_object)
-            .is_some_and(|input| input.contains_key("keyboard_layouts"));
-        if !has_sources {
-            prefs.input.keyboard_layouts.clear();
         }
-        prefs.input.normalise_keyboard_sources();
-        prefs
     }
 
     /// Serialize to pretty JSON, **merging** into `existing` so foreign
@@ -1509,15 +1016,18 @@ mod tests {
         let p = SystemPrefs::default();
         assert!(p.audio.system_sounds.enabled);
         assert!(!p.display.night_light);
-        assert!(p.input.tap_to_click);
-        assert_eq!(p.input.touchpad_natural_scroll, Some(true));
-        assert_eq!(p.input.mouse_natural_scroll, Some(false));
+        assert!(p.input.config.tap_to_click);
+        assert!(p.input.config.touchpad_natural_scroll);
+        assert!(!p.input.config.mouse_natural_scroll);
         // Unchosen sources follow the layout the machine was set up with.
         assert_eq!(
-            p.input.keyboard_layouts,
+            p.input.config.keyboard_layouts,
             settings_store::keyboard_sources::default_sources()
         );
-        assert_eq!(p.input.keyboard_layout, p.input.keyboard_layouts[0]);
+        assert_eq!(
+            p.input.config.keyboard_layout,
+            p.input.config.keyboard_layouts[0]
+        );
         assert!(p.power.auto_suspend);
         assert_eq!(p.power.blank_minutes, 10);
         assert_eq!(p.power.lock_minutes, 5);
@@ -1533,16 +1043,6 @@ mod tests {
             !n.show_on_lock_screen,
             "lock screen is the most exposed surface"
         );
-
-        let a = AccessibilityPrefs::default();
-        assert!(!a.large_cursor);
-        assert_eq!(a.cursor_size, 24);
-        assert!(!a.screen_reader);
-        // Label ↔ px mapping is exact for the offered sizes.
-        assert_eq!(AccessibilityPrefs::cursor_size_label(24), "Default");
-        assert_eq!(AccessibilityPrefs::cursor_size_label(48), "Larger");
-        assert_eq!(AccessibilityPrefs::cursor_size_px("Largest"), Some(64));
-        assert_eq!(AccessibilityPrefs::cursor_size_px("nope"), None);
     }
 
     #[test]
@@ -1554,21 +1054,21 @@ mod tests {
         p.accessibility.bounce_keys_delay_ms = 500;
         p.accessibility.bounce_keys_alert = true;
         p.accessibility.mouse_keys = true;
-        p.input.touchpad_click_method = TouchpadClickMethod::Clickfinger;
-        p.input.touchpad_scroll_method = TouchpadScrollMethod::Edge;
-        p.input.scroll_speed = 2.0;
+        p.input.config.touchpad_click_method = TouchpadClickMethod::Clickfinger;
+        p.input.config.touchpad_scroll_method = TouchpadScrollMethod::Edge;
+        p.input.config.scroll_speed = 2.0;
         let json = p.to_json_merged("");
         let back = SystemPrefs::from_json(&json);
         assert_eq!(back.accessibility, p.accessibility);
         assert_eq!(
-            back.input.touchpad_click_method,
+            back.input.config.touchpad_click_method,
             TouchpadClickMethod::Clickfinger
         );
         assert_eq!(
-            back.input.touchpad_scroll_method,
+            back.input.config.touchpad_scroll_method,
             TouchpadScrollMethod::Edge
         );
-        assert_eq!(back.input.scroll_speed, 2.0);
+        assert_eq!(back.input.config.scroll_speed, 2.0);
 
         // The compositor reads the same document.
         let root: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -1612,29 +1112,21 @@ mod tests {
     }
 
     #[test]
-    fn bounce_delay_labels_map_both_ways() {
-        assert_eq!(AccessibilityPrefs::bounce_delay_label(300), "300 ms");
-        assert_eq!(AccessibilityPrefs::bounce_delay_label(450), "500 ms");
-        assert_eq!(AccessibilityPrefs::bounce_delay_ms("800 ms"), Some(800));
-        assert_eq!(AccessibilityPrefs::bounce_delay_ms("forever"), None);
-    }
-
-    #[test]
     fn prefs_round_trip_through_json() {
         let mut p = SystemPrefs::default();
         p.audio.system_sounds.enabled = false;
         p.audio.system_sounds.theme = Some("ocean".into());
         p.audio.system_sounds.events.error = false;
         p.display.night_light = true;
-        p.input.pointer_speed = 0.9;
-        p.input.keyboard_layout = "de".into();
-        p.input.keyboard_layouts = vec!["de".into()];
+        p.input.config.pointer_speed = 0.9;
+        p.input.config.keyboard_layout = "de".into();
+        p.input.config.keyboard_layouts = vec!["de".into()];
         p.power.auto_suspend = false;
         p.power.blank_minutes = 30;
         p.power.lock_minutes = 0;
         p.updates.auto = false;
         p.updates.channel = "Nightly".into();
-        p.appearance.theme = "Nord".into();
+        p.appearance.choose_theme("Dark soft");
         p.appearance.high_contrast = true;
         p.appearance.reduce_motion = true;
         p.appearance.text_scale = 1.25;
@@ -1648,11 +1140,17 @@ mod tests {
 
         // Keyboard source order and the active source survive.
         let mut prefs = SystemPrefs::default();
-        prefs.input.keyboard_layouts = vec!["us".into(), "de:nodeadkeys".into()];
-        prefs.input.keyboard_layout = "de:nodeadkeys".into();
+        prefs.input.config.keyboard_layouts = vec!["us".into(), "de:nodeadkeys".into()];
+        prefs.input.config.keyboard_layout = "de:nodeadkeys".into();
         let back = SystemPrefs::from_json(&prefs.to_json_merged(""));
-        assert_eq!(back.input.keyboard_layouts, prefs.input.keyboard_layouts);
-        assert_eq!(back.input.keyboard_layout, prefs.input.keyboard_layout);
+        assert_eq!(
+            back.input.config.keyboard_layouts,
+            prefs.input.config.keyboard_layouts
+        );
+        assert_eq!(
+            back.input.config.keyboard_layout,
+            prefs.input.config.keyboard_layout
+        );
 
         for a in [
             PowerActionPref::Suspend,
@@ -1678,23 +1176,19 @@ mod tests {
 
         // An old single keyboard layout migrates without inventing `us`.
         let prefs = SystemPrefs::from_json(r#"{"input":{"keyboard_layout":"de"}}"#);
-        assert_eq!(prefs.input.keyboard_layout, "de");
-        assert_eq!(prefs.input.keyboard_layouts, ["de"]);
+        assert_eq!(prefs.input.config.keyboard_layout, "de");
+        assert_eq!(prefs.input.config.keyboard_layouts, ["de"]);
 
-        // Scroll defaults are per device, but a legacy global value applies to both.
+        // Scroll defaults are per device.
         let empty = SystemPrefs::from_json(r#"{"input":{}}"#);
-        assert_eq!(empty.input.touchpad_natural_scroll, Some(true));
-        assert_eq!(empty.input.mouse_natural_scroll, Some(false));
-        let legacy = SystemPrefs::from_json(r#"{"input":{"natural_scroll":false}}"#);
-        assert_eq!(legacy.input.touchpad_natural_scroll, Some(false));
-        assert_eq!(legacy.input.mouse_natural_scroll, Some(false));
+        assert!(empty.input.config.touchpad_natural_scroll);
+        assert!(!empty.input.config.mouse_natural_scroll);
 
         // A settings file written before ui_scale existed must load with the
         // field defaulted to 1.0 rather than failing the appearance section.
         let p = SystemPrefs::from_json(
-            r#"{"appearance":{"theme":"Nord","high_contrast":false,"reduce_motion":false,"text_scale":1.15}}"#,
+            r#"{"appearance":{"mode":"dark","high_contrast":false,"reduce_motion":false,"text_scale":1.15}}"#,
         );
-        assert_eq!(p.appearance.theme, "Nord", "the section still parses");
         assert_eq!(
             p.appearance.ui_scale, 1.0,
             "missing ui_scale defaults to neutral"
@@ -1726,19 +1220,21 @@ mod tests {
     #[test]
     fn appearance_prefs_resolve_to_real_themes() {
         let p = AppearancePrefs::default();
-        assert_eq!(p.theme, "Light");
+        assert_eq!(p.theme_choice(), "Light");
         assert!(!p.high_contrast);
         assert_eq!(p.text_scale, 1.0);
 
-        let prefs =
-            |theme: &str, high_contrast, reduce_motion, text_scale, ui_scale| AppearancePrefs {
-                theme: theme.into(),
+        let prefs = |theme: &str, high_contrast, reduce_motion, text_scale, ui_scale| {
+            let mut prefs = AppearancePrefs {
                 high_contrast,
                 reduce_motion,
                 text_scale,
                 ui_scale,
                 ..AppearancePrefs::default()
             };
+            prefs.choose_theme(theme);
+            prefs
+        };
         // (case, prefs, resolved name, text scale, reduced motion)
         let cases = [
             (
@@ -1843,8 +1339,8 @@ mod tests {
             (
                 "appearance keeps the locale",
                 format!(r#"{{"version":1,{locale}}}"#),
-                |p| p.appearance.theme = "Gruvbox".into(),
-                &["\"theme\": \"Gruvbox\"", "\"currency\": \"EUR\""],
+                |p| p.appearance.choose_theme("Dark cool"),
+                &["\"dark_theme\": \"dark-cool\"", "\"currency\": \"EUR\""],
             ),
             (
                 "display keeps locale and foreign keys",

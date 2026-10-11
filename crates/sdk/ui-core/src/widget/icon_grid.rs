@@ -9,6 +9,8 @@
 //! selection with [`set_selection`](IconGrid::set_selection) and react to
 //! `on_item_click(index, ctrl, shift)`.
 
+use crate::num::f64_of_usize;
+use crate::num::{f32_of_f64, usize_of_f64};
 use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
@@ -158,7 +160,7 @@ impl IconGrid {
             return 1;
         }
         // width + gap, because the last cell needs no trailing gap.
-        floor_to_usize(((width + self.gap) / stride).floor()).max(1)
+        usize_of_f64(((width + self.gap) / stride).floor()).max(1)
     }
 
     fn content_height(&self, columns: usize) -> f64 {
@@ -170,7 +172,7 @@ impl IconGrid {
         if rows == 0 {
             0.0
         } else {
-            count_to_f64(rows) * self.cell_h + count_to_f64(rows.saturating_sub(1)) * self.gap
+            f64_of_usize(rows) * self.cell_h + f64_of_usize(rows.saturating_sub(1)) * self.gap
         }
     }
 
@@ -179,8 +181,8 @@ impl IconGrid {
         let col = i.checked_rem(columns).unwrap_or(0);
         let row = i.checked_div(columns).unwrap_or(0);
         Point::new(
-            self.rect.x0 + count_to_f64(col) * (self.cell_w + self.gap),
-            self.rect.y0 + count_to_f64(row) * (self.cell_h + self.gap),
+            self.rect.x0 + f64_of_usize(col) * (self.cell_w + self.gap),
+            self.rect.y0 + f64_of_usize(row) * (self.cell_h + self.gap),
         )
     }
 
@@ -200,16 +202,16 @@ impl IconGrid {
         if rel_x < 0.0 || rel_y < 0.0 {
             return None;
         }
-        let col = floor_to_usize(rel_x / stride_x);
-        let row = floor_to_usize(rel_y / stride_y);
+        let col = usize_of_f64(rel_x / stride_x);
+        let row = usize_of_f64(rel_y / stride_y);
         if col >= self.columns {
             return None;
         }
         // Reject points that land in the inter-cell gap.
-        if rel_x - count_to_f64(col) * stride_x > self.cell_w {
+        if rel_x - f64_of_usize(col) * stride_x > self.cell_w {
             return None;
         }
-        if rel_y - count_to_f64(row) * stride_y > self.cell_h {
+        if rel_y - f64_of_usize(row) * stride_y > self.cell_h {
             return None;
         }
         let idx = row.saturating_mul(self.columns).saturating_add(col);
@@ -230,39 +232,6 @@ impl IconGrid {
 )]
 fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
-}
-
-/// Widens a column/row count to `f64` for layout math. Goes through `u32`
-/// (exactly representable in `f64`) with a saturating fallback rather than
-/// an `as` cast, so it's lossless for any realistic grid size.
-fn count_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
-/// Narrows a layout dimension to `f32` for taffy. Grid width/height here
-/// are always screen-space pixel sizes, many orders of magnitude below
-/// `f32::MAX`, so the truncation the lint warns about can't actually
-/// occur.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "grid layout sizes never approach f32::MAX"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
-}
-
-/// Floors a non-negative layout measurement (column/row index or count)
-/// to `usize`. Grid dimensions here are always tiny (a handful of
-/// columns, at most a few hundred rows), nowhere near `usize::MAX`, and
-/// the `.max(0.0)` clamp rules out the sign-loss case the lint also warns
-/// about.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "grid column/row counts are always tiny and non-negative"
-)]
-fn floor_to_usize(v: f64) -> usize {
-    v.max(0.0) as usize
 }
 
 impl Widget for IconGrid {
@@ -311,8 +280,8 @@ impl Widget for IconGrid {
         self.columns = columns;
         let height = self.content_height(columns);
         taffy::Size {
-            width: to_f32(width),
-            height: to_f32(height),
+            width: f32_of_f64(width),
+            height: f32_of_f64(height),
         }
     }
 

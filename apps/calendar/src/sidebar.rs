@@ -226,7 +226,8 @@ impl Sidebar {
             let r = self.rect();
             let strip = Rect::new(r.x0 + inset, body_y, r.x1 - inset, body_y + height);
             let segments = segment_rects(strip, View::ALL.len());
-            let labels: Vec<&str> = View::ALL.iter().map(|v| v.label()).collect();
+            let owned: Vec<String> = View::ALL.iter().map(|v| v.display_label()).collect();
+            let labels: Vec<&str> = owned.iter().map(String::as_str).collect();
             let selected = View::ALL.iter().position(|v| *v == view).unwrap_or(0);
             let hovered = segments.iter().position(|s| s.contains(pointer));
             ToggleGroup::paint(

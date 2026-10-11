@@ -43,7 +43,6 @@ use winit::keyboard::{Key, NamedKey};
 use ui::Widget;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -64,6 +63,7 @@ use crate::ics;
 use crate::input_context::InputContext;
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View};
 use crate::sidebar::{Mode as SidebarMode, Sidebar};
+use crate::tasks::{TasksAction, TasksSource, TasksView};
 use crate::timeline_interaction::{
     TIMELINE_SNAP_MIN, TimelineEffect, TimelineInteraction, TimelineRenderEvent,
     TimelineRenderModel, TimelineSpan,
@@ -135,6 +135,10 @@ enum Action {
     ShiftTaskDueMonth(i32),
     /// Select a task to view its detail (without toggling completion).
     OpenTask(Id),
+    /// Focus the Tasks screen entry to create a task.
+    NewTask,
+    /// Focus the Tasks screen entry.
+    FocusTaskEntry,
     /// Show or hide the sidebar: the docked column when the window is wide,
     /// the floating drawer when it is narrow.
     ToggleSidebar,
@@ -349,6 +353,8 @@ pub struct CalendarApp {
     /// Self-contained upcoming-list view: scroll state, input, drawing and row
     /// actions live together instead of leaking into the root widget.
     agenda: AgendaView,
+    /// The Tasks screen: the selected list in full, with its entry field.
+    tasks: TasksView,
     /// Receiver for an in-flight background `CalDAV` pull. The live sync runs on a
     /// worker thread (the `ui` event loop is synchronous and must never block on
     /// the network); its result is drained here on the next `sync` pass.
@@ -499,6 +505,7 @@ impl CalendarApp {
             dirty: true,
             timeline: TimelineInteraction::new(),
             agenda: AgendaView::new(),
+            tasks: TasksView::new(),
             sync_rx: None,
             syncing: false,
             sync_requested: false,
@@ -591,8 +598,16 @@ impl CalendarApp {
             "week" | "empty_week" => Some(View::Week),
             "day" => Some(View::Day),
             "agenda" | "empty_agenda" => Some(View::Agenda),
+            "tasks" | "empty_tasks" => Some(View::Tasks),
             _ => None,
         };
+        match name {
+            // The sample's richest list: due dates, priorities and subtasks.
+            "tasks" => self.list_sel = Some(ListSel::Upcoming),
+            // A first run as `show-tasks` opens it.
+            "empty_tasks" => self.list_sel = Some(ListSel::Inbox),
+            _ => {}
+        }
         if let Some(view) = view {
             self.view = view;
         }
@@ -1720,6 +1735,9 @@ impl CalendarApp {
         if matches!(self.view, View::Agenda) {
             return self.handle_agenda_timeline_input(input);
         }
+        if matches!(self.view, View::Tasks) {
+            return self.handle_tasks_scroll_input(input);
+        }
         if !matches!(self.view, View::Week | View::Day) {
             return false;
         }
@@ -1778,6 +1796,173 @@ impl CalendarApp {
             }
         }
         false
+    }
+
+    /// The Tasks screen's scroll input: wheel and scrollbar over its rows.
+    fn handle_tasks_scroll_input(&mut self, input: &mut InputContext<'_>) -> bool {
+        if !matches!(
+            input.event,
+            WindowEvent::MouseWheel { .. }
+                | WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput {
+                    button: MouseButton::Left,
+                    ..
+                }
+        ) {
+            return false;
+        }
+        if self.tasks.wants_pointer_capture() || self.tasks.list_rect().contains(self.last_mouse) {
+            let handled = self.tasks.handle_scroll_event(input);
+            if handled {
+                self.dirty = true;
+            }
+            return handled;
+        }
+        false
+    }
+
+    fn draw_tasks(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        _area: Rect,
+        presence: &PresenceCtx,
+    ) -> Vec<(Rect, Action)> {
+        let source = TasksSource {
+            model: &self.model,
+            list: self.list_sel.as_ref().unwrap_or(&ListSel::Inbox),
+            today: self.today,
+        };
+        self.tasks
+            .draw(ctx, &source, self.last_mouse, presence)
+            .into_iter()
+            .map(|(rect, action)| {
+                (
+                    rect,
+                    match action {
+                        TasksAction::OpenTask(id) => Action::OpenTask(id),
+                        TasksAction::ToggleTask(id) => Action::ToggleTask(id),
+                        TasksAction::FocusEntry => Action::FocusTaskEntry,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// What the Tasks screen lists: the sidebar's selected list.
+    fn tasks_source(&self) -> TasksSource<'_> {
+        TasksSource {
+            model: &self.model,
+            list: self.list_sel.as_ref().unwrap_or(&ListSel::Inbox),
+            today: self.today,
+        }
+    }
+
+    /// Add a task titled `title` to the list on screen, through the same
+    /// action the root's `new-task` builds, filed so the list shows it.
+    fn add_task(&mut self, title: &str, doc: &mut ui::widget::Edits<'_>) {
+        let (project, due) = self.tasks_source().placement();
+        let task = match crate::actions::new_task(title, project, due) {
+            Ok(task) => task,
+            Err(error) => {
+                self.status = Some(error);
+                return;
+            }
+        };
+        if let Err(error) =
+            self.try_dispatch_action(doc, &crate::actions::upsert_task_action(&task))
+        {
+            self.status = Some(error.to_string());
+            return;
+        }
+        self.status = Some(crate::tasks_i18n::t_args(
+            "calendar-task-added",
+            &[("title", ui::i18n::ArgValue::from(task.title.clone()))],
+        ));
+        self.model.tasks.push(task);
+        self.dirty = true;
+    }
+
+    /// Show the Tasks screen with its entry field focused. Completed takes
+    /// no new task, so a new one is typed into the Inbox instead.
+    fn start_new_task(&mut self) {
+        if matches!(self.list_sel, Some(ListSel::Completed)) {
+            self.list_sel = Some(ListSel::Inbox);
+        }
+        self.view = View::Tasks;
+        self.blur_editor();
+        self.tasks.set_entry_focus(true);
+    }
+
+    /// The Tasks screen to assistive technology, only while it is on
+    /// screen: the "Task list" region with one item per task (empty when the
+    /// list is), and the empty state's explanation when it shows one. Each
+    /// row's open and complete controls are published from the hit map.
+    fn task_list_access_nodes(&self) -> Vec<AccessNode> {
+        if self.view != View::Tasks || self.content_rect.area() <= 0.0 {
+            return Vec::new();
+        }
+        let source = self.tasks_source();
+        let rows = source.rows();
+        let count = rows.len();
+        let items = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let task = row.task;
+                let mut name = task.title.clone();
+                if let Some(due) = task.due {
+                    name = crate::tasks_i18n::t_args(
+                        "calendar-task-due",
+                        &[
+                            ("title", ui::i18n::ArgValue::from(name)),
+                            (
+                                "due",
+                                ui::i18n::ArgValue::from(date::relative_label(due, self.today)),
+                            ),
+                        ],
+                    );
+                }
+                if task.priority != Priority::None {
+                    name = crate::tasks_i18n::t_args(
+                        "calendar-task-priority",
+                        &[
+                            ("title", ui::i18n::ArgValue::from(name)),
+                            ("priority", ui::i18n::ArgValue::from(task.priority.label())),
+                        ],
+                    );
+                }
+                if row.depth > 0 {
+                    name = crate::tasks_i18n::t_args(
+                        "calendar-task-subtask",
+                        &[("title", ui::i18n::ArgValue::from(name))],
+                    );
+                }
+                AccessNode::new(Role::ListItem)
+                    .with_name(name)
+                    .with_state(AccessState::new().checked(task.done))
+                    .with_position(index + 1, count)
+            })
+            .collect();
+        let mut nodes = vec![
+            AccessNode::new(Role::List)
+                .with_name(crate::tasks_i18n::t("calendar-task-list"))
+                .with_description(source.title())
+                .with_bounds(self.tasks.list_rect())
+                .with_children(items),
+        ];
+        if count == 0 {
+            let (title, message) = source.empty_copy();
+            nodes.push(
+                AccessNode::new(Role::StaticText).with_name(crate::tasks_i18n::t_args(
+                    "calendar-task-empty-description",
+                    &[
+                        ("title", ui::i18n::ArgValue::from(title)),
+                        ("message", ui::i18n::ArgValue::from(message)),
+                    ],
+                )),
+            );
+        }
+        nodes
     }
 
     // --- event form model edits -----------------------------------------
@@ -2272,6 +2457,7 @@ impl CalendarApp {
             View::Month => date::add_months(self.anchor, dir),
             View::Week | View::Agenda => self.anchor + Duration::days(7 * i64::from(dir)),
             View::Day => self.anchor + Duration::days(i64::from(dir)),
+            View::Tasks => self.anchor,
         };
         self.dirty = true;
     }
@@ -2313,7 +2499,19 @@ impl CalendarApp {
                     &theme,
                 );
             }
+            View::Tasks => {
+                let area = self.view_rect();
+                let source = TasksSource {
+                    model: &self.model,
+                    list: self.list_sel.as_ref().unwrap_or(&ListSel::Inbox),
+                    today: self.today,
+                };
+                self.tasks.layout(area, &source, &theme);
+            }
             View::Month => {}
+        }
+        if self.view != View::Tasks || self.content_rect.area() <= 0.0 {
+            self.tasks.park_entry();
         }
 
         self.seed_choices();
@@ -2499,6 +2697,7 @@ impl CalendarApp {
             }
             Action::OpenEvent(id) => self.select_event(id),
             Action::OpenTask(id) => self.select_task(id),
+            Action::NewTask | Action::FocusTaskEntry => self.start_new_task(),
             Action::ToggleTask(id) => self.toggle_task(id, doc),
             Action::List(s) => {
                 // The list's tasks show in the sidebar, under the lists, so
@@ -2595,7 +2794,7 @@ impl CalendarApp {
         let (target, name, role, state) = match action {
             Action::View(view) => (
                 format!("calendar.view:{}", view.label().to_lowercase()),
-                format!("{} view", view.label()),
+                crate::tasks_i18n::t_args("calendar-task-view-name", &[("view", ui::i18n::ArgValue::from(view.display_label()))]),
                 Role::RadioButton,
                 AccessState::new()
                     .focusable(true)
@@ -2624,6 +2823,20 @@ impl CalendarApp {
                 "New event".into(),
                 Role::Button,
                 AccessState::new().focusable(true),
+            ),
+            Action::NewTask => (
+                "calendar.new-task".into(),
+                "New task".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::FocusTaskEntry => (
+                "calendar.tasks:entry".into(),
+                crate::tasks_i18n::t_args("calendar-task-add-to", &[("list", ui::i18n::ArgValue::from(self.model.list_title(self.list_sel.as_ref().unwrap_or(&ListSel::Inbox))))]),
+                Role::Button,
+                AccessState::new()
+                    .focusable(true)
+                    .focused(self.tasks.entry_focused()),
             ),
             Action::ToggleSidebar => (
                 "calendar.sidebar".into(),
@@ -3164,7 +3377,8 @@ impl CalendarApp {
         let form_active = editor_active && matches!(self.selection, Some(Sel::Event(_)));
         let field_focused = self.title_input.is_focused()
             || self.location_input.is_focused()
-            || self.invite_input.is_focused();
+            || self.invite_input.is_focused()
+            || self.tasks.entry_focused();
         let notes_focused = editor_active && self.notes_editor.is_focused();
 
         if matches!(logical_key, Key::Named(NamedKey::Escape))
@@ -3252,6 +3466,7 @@ impl CalendarApp {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
             self.invite_input.set_focus(false);
+            self.tasks.set_entry_focus(false);
             self.notes_editor.set_focus(false);
             *handled = true;
             self.dirty = true;
@@ -3321,6 +3536,7 @@ impl CalendarApp {
                 "d" => Some(Action::View(View::Day)),
                 "a" => Some(Action::View(View::Agenda)),
                 "t" => Some(Action::Today),
+                "n" if self.view == View::Tasks => Some(Action::NewTask),
                 "n" => Some(Action::NewEvent),
                 "e" => Some(Action::Export),
                 "i" => Some(Action::Import),
@@ -3407,6 +3623,21 @@ impl CalendarApp {
             self.dirty = true;
             return true;
         }
+        // A click in the Tasks screen's entry field focuses it and lands the
+        // caret, unless the editor floats over it.
+        if !form_active
+            && !in_notes
+            && self.view == View::Tasks
+            && self.calendar_content_interactive()
+            && self.tasks.entry_rect().is_some_and(|rect| rect.contains(p))
+        {
+            self.blur_editor();
+            self.tasks.set_entry_focus(true);
+            self.tasks.handle_entry_event(input);
+            *input.handled = true;
+            self.dirty = true;
+            return true;
+        }
         // Clicks inside the notes region go to the editor (focus + caret).
         if in_notes {
             self.title_input.set_focus(false);
@@ -3429,6 +3660,7 @@ impl CalendarApp {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
             self.invite_input.set_focus(false);
+            self.tasks.set_entry_focus(false);
             self.notes_editor.set_focus(false);
             self.apply_action(a, &mut input.state);
             *input.handled = true;
@@ -3442,6 +3674,13 @@ impl CalendarApp {
     /// [`Self::flush_form_edits`] (part of [`Widget::handle_event`]).
     /// Returns `true` if the caller should stop dispatching.
     fn handle_form_field_input(&mut self, input: &mut InputContext<'_>) -> bool {
+        if self.tasks.entry_focused() {
+            if let Some(title) = self.tasks.handle_entry_event(input) {
+                self.add_task(&title, &mut input.state);
+            }
+            self.dirty = true;
+            return *input.handled;
+        }
         if self.title_input.is_focused() {
             self.title_input
                 .handle_event(input.event, &mut input.event_ctx());
@@ -3639,7 +3878,7 @@ impl Widget for CalendarApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         let t = transform;
         // No ground of our own: the framework painted the window ground.
@@ -3661,6 +3900,7 @@ impl Widget for CalendarApp {
                             TopbarAction::Today => Action::Today,
                             TopbarAction::Previous => Action::Prev,
                             TopbarAction::Next => Action::Next,
+                            TopbarAction::NewEvent if self.view == View::Tasks => Action::NewTask,
                             TopbarAction::NewEvent => Action::NewEvent,
                             TopbarAction::ShowSidebar => Action::ToggleSidebar,
                             TopbarAction::Search => Action::OpenSearch,
@@ -3724,6 +3964,7 @@ impl Widget for CalendarApp {
                             }),
                     );
                 }
+                View::Tasks => hits.extend(self.draw_tasks(&mut ctx, area, presence)),
             }
         }
 
@@ -3905,7 +4146,9 @@ impl Widget for CalendarApp {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.segmented_touch.is_active() || self.agenda.wants_pointer_capture()
+        self.segmented_touch.is_active()
+            || self.agenda.wants_pointer_capture()
+            || self.tasks.wants_pointer_capture()
     }
 
     fn name(&self) -> &'static str {
@@ -3936,6 +4179,7 @@ impl Widget for CalendarApp {
             .with_name("Calendar")
             .with_bounds(self.rect)
             .with_children(controls);
+        root.children.extend(self.task_list_access_nodes());
         if self.syncing {
             root.children.push(
                 AccessNode::new(Role::StaticText)
@@ -3995,6 +4239,7 @@ impl Widget for CalendarApp {
             || self.invite_input.needs_redraw()
             || self.timeline.needs_redraw()
             || self.agenda.needs_redraw()
+            || self.tasks.needs_redraw()
     }
 
     fn mark_drawn(&mut self) {
@@ -4005,6 +4250,7 @@ impl Widget for CalendarApp {
         self.invite_input.mark_drawn();
         self.timeline.mark_drawn();
         self.agenda.mark_drawn();
+        self.tasks.mark_drawn();
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -4022,7 +4268,10 @@ impl Widget for CalendarApp {
         // so its result is drained in `sync` the moment it arrives, without
         // waiting for an unrelated input event — and while a scroll container is
         // still settling momentum / fading its bar.
-        self.syncing || self.timeline.needs_animation_frame() || self.agenda.needs_animation_frame()
+        self.syncing
+            || self.timeline.needs_animation_frame()
+            || self.agenda.needs_animation_frame()
+            || self.tasks.needs_animation_frame()
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -4033,6 +4282,7 @@ impl Widget for CalendarApp {
             || self.invite_input.needs_redraw()
             || self.timeline.is_layout_dirty()
             || self.agenda.is_layout_dirty()
+            || self.tasks.is_layout_dirty()
     }
 
     /// While the event/task editor is open it OWNS the keyboard. Reporting the
@@ -4048,18 +4298,6 @@ impl Widget for CalendarApp {
         } else {
             None
         }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, text_renderer, theme, presence);
     }
 }
 
@@ -4220,6 +4458,7 @@ impl CalendarApp {
                     "week" => View::Week,
                     "day" => View::Day,
                     "agenda" => View::Agenda,
+                    "tasks" => View::Tasks,
                     other => return Err(format!("there is no `{other}` view")),
                 });
                 Ok(Effected::done())
@@ -4234,6 +4473,18 @@ impl CalendarApp {
             }
             CalendarEffect::ShowDay => {
                 self.show_view(View::Day);
+                Ok(Effected::done())
+            }
+            CalendarEffect::ShowTasks => {
+                self.view = View::Tasks;
+                self.list_sel = Some(ListSel::Inbox);
+                self.detail_open = false;
+                self.selection = None;
+                self.blur_editor();
+                if matches!(self.sidebar.mode(), SidebarMode::Overlay) {
+                    self.sidebar.set_open(false);
+                }
+                self.dirty = true;
                 Ok(Effected::done())
             }
             CalendarEffect::ShowAgenda => {
@@ -4335,7 +4586,7 @@ impl CalendarApp {
             "You’re invited to {} on {} at {} ({}).\n\nReview the attached calendar invitation for details.",
             event.display_title(),
             event.start.format("%A, %d %B %Y"),
-            event.start.format("%H:%M"),
+            ui::clock::time_of_day(&event.start),
             event.timezone
         );
         let calendar_ics = crate::ics::invitation_request(event);

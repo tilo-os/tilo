@@ -1011,7 +1011,7 @@ fn transport_play_pause_seek_and_repeat_stay_local_and_honest() {
 
         let (mut app, _doc) = app_with_doc();
         app.pb.playing = false;
-        app.toast = None;
+        app.toast.dismiss();
         app.live_search_pending = None;
         app.resolve_in_flight = 0;
         app.downloads.clear();
@@ -4902,7 +4902,7 @@ fn playback_failure_does_not_advertise_retry_of_an_at_most_once_invocation() {
 fn settled_playback_uses_bounded_wakes_instead_of_vsync() {
     let (mut app, _doc) = app_with_doc();
     app.pb.playing = true;
-    app.toast = None;
+    app.toast.dismiss();
     app.mark_drawn();
     let before = app.last_tick;
     assert!(

@@ -6,6 +6,7 @@
 
 use crate::authority::WorkspaceAuthority as _;
 use crate::i18n::{t, t_args};
+use ui::num::{f32_of_f64, f64_of_usize};
 use ui::time::{Duration, Instant};
 
 use vello::Scene;
@@ -862,7 +863,7 @@ impl WorkspaceSettingsOverlay {
             } else {
                 "workspace-settings-close-hint"
             }),
-            f64_to_f32_lossy(rect.width() - 2.0 * f64::from(tokens.spacing.s6)),
+            f32_of_f64(rect.width() - 2.0 * f64::from(tokens.spacing.s6)),
             &hsize,
         );
         let footer = Self::footer_hint_rect(rect, &hint, text_renderer, theme);
@@ -1041,7 +1042,7 @@ impl WorkspaceSettingsOverlay {
         };
         let description = text_renderer.elide_to_width_style(
             &description,
-            f64_to_f32_lossy(card.width() - 40.0),
+            f32_of_f64(card.width() - 40.0),
             &tokens.typography.style(TextRole::Caption),
         );
         text_renderer.draw_style(
@@ -1100,7 +1101,7 @@ impl WorkspaceSettingsOverlay {
             card.y0 + 112.0
         };
         for (index, (label, preview)) in labels.iter().zip(&previews).enumerate() {
-            let y0 = start_y + usize_to_f64_lossy(index) * (row_h + gap);
+            let y0 = start_y + f64_of_usize(index) * (row_h + gap);
             let option = Rect::new(option_x0, y0, option_x1, y0 + row_h);
             self.member_sheet_option_rects.push(option);
             let focused = index == self.member_sheet_focus;
@@ -1181,7 +1182,7 @@ impl WorkspaceSettingsOverlay {
                 .active_workspace()
                 .and_then(|workspace| workspace.role_of(model.local_user))
                 .map_or_else(|| t("workspace-settings-role-guest"), super::role_label);
-            let width = f64_to_f32_lossy(close.x0 - identity.x0 - 88.0);
+            let width = f32_of_f64(close.x0 - identity.x0 - 88.0);
             let caption = text_renderer.elide_to_width_style(
                 &t_args(
                     "workspace-settings-identity-caption",
@@ -1231,7 +1232,7 @@ impl WorkspaceSettingsOverlay {
         let tsize = tokens.typography.style(TextRole::Title);
         let shown_name = text_renderer.elide_to_width_style(
             &active_name,
-            f64_to_f32_lossy(close.x0 - (identity.x0 + 76.0) - 12.0),
+            f32_of_f64(close.x0 - (identity.x0 + 76.0) - 12.0),
             &tsize,
         );
         text_renderer.draw_style(
@@ -1252,7 +1253,7 @@ impl WorkspaceSettingsOverlay {
                 "workspace-settings-role-policy-line",
                 &[("role", active_role.into())],
             ),
-            f64_to_f32_lossy(identity.x1 - identity.x0 - 92.0),
+            f32_of_f64(identity.x1 - identity.x0 - 92.0),
             &tokens.typography.style(TextRole::Caption),
         );
         text_renderer.draw_style(
@@ -1369,7 +1370,7 @@ impl WorkspaceSettingsOverlay {
             None,
             &nav_rr,
         );
-        let segment_w = nav.width() / usize_to_f64_lossy(tabs.len());
+        let segment_w = nav.width() / f64_of_usize(tabs.len());
         // Every pill gets the same treatment: the plan is measured once for
         // the whole strip, so the strip never shows one elided label next to
         // four intact ones or one icon next to four bare labels.
@@ -1461,7 +1462,7 @@ impl WorkspaceSettingsOverlay {
             let icon_gap = if show_icon { TAB_ICON_GAP } else { 0.0 };
             let label = text_renderer.elide_to_width_style(
                 &label,
-                f64_to_f32_lossy(pill_rect.width() - icon_size - icon_gap - 8.0),
+                f32_of_f64(pill_rect.width() - icon_size - icon_gap - 8.0),
                 &label_style,
             );
             let (w, h) = text_renderer.measure_style(&label, None, &label_style);
@@ -1784,7 +1785,7 @@ impl WorkspaceSettingsOverlay {
         );
         let description = text_renderer.elide_to_width_style(
             &t("workspace-settings-identity-description"),
-            f64_to_f32_lossy(identity_card.width() - 32.0),
+            f32_of_f64(identity_card.width() - 32.0),
             &tokens.typography.style(TextRole::Caption),
         );
         text_renderer.draw_style(
@@ -1912,7 +1913,7 @@ impl WorkspaceSettingsOverlay {
         });
         let invite_url = text_renderer.elide_to_width_style(
             &invite_url,
-            f64_to_f32_lossy(url_pill.width() - 24.0),
+            f32_of_f64(url_pill.width() - 24.0),
             &tokens.typography.style(TextRole::Caption),
         );
         text_renderer.draw_style(
@@ -2000,7 +2001,7 @@ impl WorkspaceSettingsOverlay {
         );
         let description = text_renderer.elide_to_width_style(
             &t("workspace-settings-invite-description"),
-            f64_to_f32_lossy(sharing_card.width() - 76.0),
+            f32_of_f64(sharing_card.width() - 76.0),
             &tokens.typography.style(TextRole::Caption),
         );
         text_renderer.draw_style(
@@ -2301,7 +2302,7 @@ impl WorkspaceSettingsOverlay {
         let stat_y0 = summary_card.y0 + 44.0 * f64::from(theme.text_scale * theme.ui_scale);
         let stat_w = (summary_card.width() - 32.0 - stat_gap * 2.0) / 3.0;
         for (i, (value, label)) in stats.iter().enumerate() {
-            let x0 = summary_card.x0 + 16.0 + usize_to_f64_lossy(i) * (stat_w + stat_gap);
+            let x0 = summary_card.x0 + 16.0 + f64_of_usize(i) * (stat_w + stat_gap);
             let stat = Rect::new(
                 x0,
                 stat_y0,
@@ -2429,28 +2430,12 @@ pub(crate) fn tab_pill_widths(needs: &[f64], nav_width: f64) -> Vec<f64> {
     if count == 0 {
         return Vec::new();
     }
-    let equal = nav_width / usize_to_f64_lossy(count);
+    let equal = nav_width / f64_of_usize(count);
     let total: f64 = needs.iter().sum();
     if needs.iter().all(|need| *need <= equal) || total <= 0.0 {
         return vec![equal; count];
     }
     needs.iter().map(|need| need / total * nav_width).collect()
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "navigation item counts are tiny, far below f64's 2^53 exact-integer range"
-)]
-fn usize_to_f64_lossy(value: usize) -> f64 {
-    value as f64
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space geometry stays within f32 precision"
-)]
-fn f64_to_f32_lossy(value: f64) -> f32 {
-    value as f32
 }
 
 #[cfg(test)]

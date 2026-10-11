@@ -223,7 +223,7 @@ impl ShellOverlayHost {
             Some(primary) if self.is_partitioned() => primary.height,
             _ => self.rect.height(),
         };
-        sidebar_width_for_viewport(super::f64_to_f32_lossy(height))
+        sidebar_width_for_viewport(ui::num::f32_of_f64(height))
     }
 
     /// Bring the partition in line with the displays just reported. Called

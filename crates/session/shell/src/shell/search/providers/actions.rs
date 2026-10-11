@@ -23,6 +23,8 @@ use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchRe
 
 mod native_identity;
 
+use crate::shell::shared_display_actions;
+
 /// What `record.bring` must be told.
 const RECORD_BRING_PARAMS: &[ActionParam] = &[
     ActionParam::required(
@@ -180,6 +182,7 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "quick-settings.clipboard",
     "quick-settings.devices",
     "projection.open",
+    "projection.close",
     "capture.open",
     "collaborators.open",
     "room.activity.open",
@@ -189,9 +192,11 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "room.activity.tasks",
     "tab.menu",
     "tab.drag.cancel",
+    "room.activity.morning.toggle",
     "history.compare",
     "history.undo",
     "history.restore",
+    shared_display_actions::INSPECT_ID,
 ];
 
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
@@ -257,7 +262,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | DISPLAY_BUILTIN_ONLY_ID
         | DISPLAY_EXTERNAL_ONLY_ID
         | DISPLAY_KEEP_ID
-        | DISPLAY_REVERT_ID => contract = display_layout_contract(),
+        | DISPLAY_REVERT_ID
+        | shared_display_actions::INCLUDE_ID => contract = display_layout_contract(),
         BLUETOOTH_PAIRING_DECLINE_ID => {
             contract.permission = PermissionRequirement::Write;
             contract.retry = RetryPolicy::AtMostOnce;
@@ -1586,10 +1592,44 @@ impl Action {
             "search-action-projection-open",
             "search-action-projection-open-subtitle",
             |st, _| {
-                st.overlays.projection = true;
+                st.open_projection();
                 Ok(())
             },
         ),
+        chrome(
+            "projection.close",
+            "search-action-projection-close",
+            "search-action-projection-close-subtitle",
+            |st, _| {
+                st.close_projection();
+                Ok(())
+            },
+        ),
+        chrome(
+            shared_display_actions::INSPECT_ID,
+            "search-action-shared-display-inspect",
+            "search-action-shared-display-inspect-subtitle",
+            |_, _| Ok(()),
+        ),
+        Action {
+            id: shared_display_actions::INCLUDE_ID,
+            label: "search-action-shared-display-include",
+            subtitle: "search-action-shared-display-include-subtitle",
+            params: shared_display_actions::INCLUDE_PARAMS,
+            apply: |state, args| {
+                let revision = args
+                    .integer("revision")
+                    .and_then(|value| u64::try_from(value).ok())
+                    .ok_or_else(|| ActionError::Refused(t("display-remote-stale")))?;
+                shared_display_actions::include(
+                    state,
+                    args.text("device").unwrap_or_default(),
+                    args.text("output").unwrap_or_default(),
+                    revision,
+                    args.boolean("included").unwrap_or(false),
+                )
+            },
+        },
         chrome(
             DISPLAY_EXTEND_ID,
             "search-action-display-layout-extend",
@@ -3382,21 +3422,27 @@ impl ActionsProvider {
                                 .map_err(|error| ActionError::Refused(error.to_string()))?;
                             {
                                 let mut state = chrome.borrow_mut();
-                                state.overlays.projection = true;
+                                state.open_projection_for_action();
                                 state.bump();
                             }
                             let chrome = chrome.clone();
+                            // The sheet this opened follows the stored change
+                            // and closes once it settles; a refused layout
+                            // leaves nothing to answer, so it closes at once.
                             let ticket: crate::shell::search::PendingInvocation =
-                                Rc::new(move || {
-                                    pending
-                                        .poll()
-                                        .map(|done| {
-                                            done.map(|_| {
-                                                chrome.borrow_mut().bump();
-                                                crate::shell::search::ActionReceipt::completed()
-                                            })
-                                        })
-                                        .map_err(|error| ActionError::Refused(error.to_string()))
+                                Rc::new(move || match pending.poll() {
+                                    Ok(done) => Ok(done.map(|transaction| {
+                                        let mut state = chrome.borrow_mut();
+                                        state.projection_staged(transaction.id);
+                                        state.bump();
+                                        crate::shell::search::ActionReceipt::completed()
+                                    })),
+                                    Err(error) => {
+                                        let mut state = chrome.borrow_mut();
+                                        state.projection_refused();
+                                        state.bump();
+                                        Err(ActionError::Refused(error.to_string()))
+                                    }
                                 });
                             Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
                         },
@@ -3481,7 +3527,17 @@ impl ActionsProvider {
                     params: action.params.to_vec(),
                     contract: Some(shell_action_contract(action.id)),
                     on_open,
-                    on_invoke: None,
+                    on_invoke: (action.id == shared_display_actions::INSPECT_ID).then(|| {
+                        Rc::new(
+                            |_: &mut ui::widget::Edits<'_>,
+                             _: &automerge::ObjId,
+                             _: &Chrome,
+                             _: &ActionArgs| {
+                                shared_display_actions::inspect()
+                                    .map(crate::shell::search::ActionReceipt::completed_with)
+                            },
+                        ) as Rc<crate::shell::search::InvokeFn>
+                    }),
                     on_begin_invoke,
                 });
             }
@@ -3520,7 +3576,69 @@ impl ActionsProvider {
                 on_begin_invoke: None,
             });
         }
+        let morning = ctx.chrome.tree().active_workspace().map(|workspace| {
+            (
+                workspace.id,
+                workspace.room,
+                crate::shell::room_activity::morning_source_actions(workspace),
+            )
+        });
+        if let Some((workspace, room, actions)) = morning {
+            for (id, label) in actions {
+                let subtitle = t("activity-morning-description");
+                candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), &id);
+                let command = id.starts_with(tilo_desktop::activity::morning::MORNING_REFRESH)
+                    || id.starts_with(tilo_desktop::activity::morning::MORNING_DRAFT);
+                let kind = if command {
+                    tilo_actions::OperationKind::Effect
+                } else {
+                    tilo_actions::OperationKind::View
+                };
+                let contract = if command {
+                    tilo_actions::ActionContract {
+                        permission: tilo_actions::PermissionRequirement::Read,
+                        ..Default::default()
+                    }
+                } else {
+                    tilo_actions::ActionContract::view()
+                };
+                let request = id.clone();
+                out.push(SearchResult {
+                    kind: ResourceKind::Action,
+                    operation_kind: kind,
+                    provider_id: self.id().into(),
+                    id,
+                    title: label,
+                    subtitle: Some(subtitle),
+                    badge: None,
+                    score: 0,
+                    params: vec![],
+                    contract: Some(contract),
+                    on_open: Rc::new(move |_, _, chrome, _| {
+                        let mut state = chrome.borrow_mut();
+                        if !state
+                            .tree()
+                            .active_workspace()
+                            .is_some_and(|active| active.id == workspace && active.room == room)
+                        {
+                            return Err(ActionError::Refused("Workspace changed".into()));
+                        }
+                        state
+                            .request_history_selection_action(&request)
+                            .map_err(ActionError::Refused)
+                    }),
+                    on_invoke: None,
+                    on_begin_invoke: None,
+                });
+            }
+        }
         for (id, label_key, subtitle_key, keywords_key) in [
+            (
+                tilo_desktop::activity::morning::MORNING_SOURCE,
+                "activity-morning-choose",
+                "activity-morning-description",
+                "activity-morning-choose",
+            ),
             (
                 tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE,
                 "search-action-activity-acknowledge",
@@ -4053,6 +4171,105 @@ mod tests {
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
     use std::sync::Arc;
+
+    #[test]
+    fn shared_display_public_actions_inspect_and_edit_only_the_current_certified_pair() {
+        let _home = shared_display_actions::test_support::publish();
+        let chrome = chrome_with_room();
+        let inspect = invoke_shell_action(
+            &chrome,
+            shared_display_actions::INSPECT_ID,
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        let crate::shell::search::InvocationDisposition::Accepted(receipt) = inspect else {
+            panic!("inspection completes immediately")
+        };
+        let tilo_actions::InvocationUpdate::Succeeded { output, .. } = receipt.update else {
+            panic!("inspection returns current facts")
+        };
+        let value = output.value.unwrap();
+        let outputs = value["outputs"].as_array().unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert!(
+            outputs
+                .iter()
+                .any(|row| row["device"] == "bb02" && row["number"] == 2 && row["revision"] == 0)
+        );
+        assert!(
+            outputs
+                .iter()
+                .any(|row| row["device"] == "cc03" && row["online"] == false)
+        );
+        let before = settings_store::load();
+        let args =
+            serde_json::json!({"device":"bb02","output":"panel","revision":0,"included":false});
+        invoke_shell_action(&chrome, shared_display_actions::INCLUDE_ID, &args).unwrap();
+        let saved = settings_store::person_displays::Arrangement::load();
+        assert!(!saved.entry("bb02", "panel").unwrap().enabled);
+        assert!(
+            saved.entry("aa01", "panel").unwrap().enabled,
+            "same output ID on another device is independent"
+        );
+        assert_eq!(
+            settings_store::load().get("continuity"),
+            before.get("continuity"),
+            "inclusion cannot grant consent or input"
+        );
+        let after = settings_store::load();
+        assert!(
+            invoke_shell_action(&chrome, shared_display_actions::INCLUDE_ID, &args).is_err(),
+            "old arrangement revision must fail"
+        );
+        assert!(invoke_shell_action(&chrome, shared_display_actions::INCLUDE_ID,
+            &serde_json::json!({"device":"bb02","output":"connector-guess","revision":0,"included":true})).is_err());
+        assert!(invoke_shell_action(&chrome, shared_display_actions::INCLUDE_ID,
+            &serde_json::json!({"device":"bb02","output":"panel","revision":0,"included":"true"})).is_err());
+        assert_eq!(settings_store::load(), after);
+    }
+
+    #[test]
+    fn selected_shared_display_action_rechecks_workspace_authority_before_writing() {
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        let _home = shared_display_actions::test_support::publish();
+        let chrome = chrome_with_room();
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(Rc::new(ActionsProvider::new()));
+        let mut document = AutoCommit::new();
+        let resource = ResourceRef::new("actions", shared_display_actions::INCLUDE_ID);
+        let catalogue = ActionCatalog::build_exact(
+            &registry,
+            &resource,
+            crate::shell::search::SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &document,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        let action = catalogue
+            .select(&resource)
+            .expect("published inclusion action");
+        chrome
+            .borrow_mut()
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .unwrap()
+            .set_owner("foreign-owner");
+        assert!(!current_shell_action_authorized(
+            &chrome.borrow(),
+            shared_display_actions::INCLUDE_ID
+        ));
+        let before = settings_store::load();
+        assert!(action.invoke_json(&mut ui::widget::Edits::lend(&mut document), &automerge::ROOT,
+            &chrome, serde_json::json!({"device":"bb02","output":"panel","revision":0,"included":false}).as_object().unwrap()).is_err());
+        assert_eq!(
+            settings_store::load(),
+            before,
+            "revoked authority never saves an arrangement"
+        );
+    }
 
     #[test]
     fn topbar_editor_catalogue_opens_the_native_request_and_hides_in_fullscreen() {

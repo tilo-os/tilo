@@ -509,3 +509,18 @@ terminal-service-invalid-session = The shell service returned an invalid session
 terminal-service-missing-lease = The shell session did not provide its lifetime connection.
 terminal-service-missing-terminal = The shell session did not provide a terminal.
 terminal-service-invalid-lease = The shell session connection could not be validated.
+
+display-arrangement-offline = Offline
+display-arrangement-excluded = Not in layout
+display-arrangement-offline-excluded = Offline · Not in layout
+display-arrangement-item-status = { $position }; { $status }
+display-arrangement-caption-status = { $status } · { $name }
+
+# Search: starting points in the empty applications palette
+search-apps-group-start-here = Start here
+search-apps-group-everyday = Everyday
+search-apps-group-work = Work
+search-apps-group-media = Media
+search-apps-group-system-tools = System tools
+search-apps-group-more-apps = More apps
+search-apps-group-developer-tools = Developer tools

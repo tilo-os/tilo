@@ -9,6 +9,7 @@
 
 use serde_json::{Value, json};
 use ui::automerge::{Patch, PatchAction, Prop};
+use ui::num::f64_of_usize;
 use ui::tilo_resource::Doc;
 use ui::vello::kurbo::{BezPath, Point, Rect, Shape as _};
 
@@ -138,7 +139,7 @@ fn hidden(art: &Artwork, marks: &[&Mark]) -> Option<String> {
                     .iter()
                     .map(|point| 1.0 - greys.at(*point))
                     .sum::<f64>()
-                    / count(points.len())
+                    / f64_of_usize(points.len())
                     >= MOSTLY
         })
         .count();
@@ -151,14 +152,6 @@ fn hidden(art: &Artwork, marks: &[&Mark]) -> Option<String> {
     })
 }
 
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "sample counts are at most MOST_SAMPLES"
-)]
-fn count(n: usize) -> f64 {
-    n as f64
-}
-
 /// About `wanted` points spread over the area `mark` covers.
 fn inside(mark: &Mark, wanted: usize) -> Vec<Point> {
     let outline = crate::selection::mark_outline(mark).ok();
@@ -168,14 +161,14 @@ fn inside(mark: &Mark, wanted: usize) -> Vec<Point> {
     let steps = (2..=wanted.max(2))
         .find(|steps| steps * steps >= wanted)
         .unwrap_or(2);
-    let side = count(steps);
+    let side = f64_of_usize(steps);
     let grid = |at: f64, from: f64, length: f64| from + length * (at + 0.5) / side;
     let mut points = Vec::new();
     for row in 0..steps {
         for column in 0..steps {
             let point = Point::new(
-                grid(count(column), bounds.x0, bounds.width()),
-                grid(count(row), bounds.y0, bounds.height()),
+                grid(f64_of_usize(column), bounds.x0, bounds.width()),
+                grid(f64_of_usize(row), bounds.y0, bounds.height()),
             );
             if outline
                 .as_ref()
@@ -251,7 +244,8 @@ fn grey(mark: &Mark) -> Option<f64> {
             .iter()
             .filter_map(|(_, colour)| light(colour))
             .collect();
-        return (!lights.is_empty()).then(|| lights.iter().sum::<f64>() / count(lights.len()));
+        return (!lights.is_empty())
+            .then(|| lights.iter().sum::<f64>() / f64_of_usize(lights.len()));
     }
     style
         .fill

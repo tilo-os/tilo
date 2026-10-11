@@ -1,6 +1,7 @@
 //! The retained parts of a column header the shell owns itself: the title
 //! (with its count) and the More menu the actions overflow into.
 
+use crate::num::f32_of_f64;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -78,8 +79,8 @@ impl Widget for HeaderTitle {
         };
         let (w, h) = header_row::measure_title(text, &self.theme, title, self.count);
         taffy::Size {
-            width: known.width.unwrap_or(to_f32(w.ceil())),
-            height: known.height.unwrap_or(to_f32(h.ceil())),
+            width: known.width.unwrap_or(f32_of_f64(w.ceil())),
+            height: known.height.unwrap_or(f32_of_f64(h.ceil())),
         }
     }
 
@@ -338,12 +339,4 @@ impl Widget for MoreActions {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "on-screen layout extents fit f32 exactly at every UI scale"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
 }

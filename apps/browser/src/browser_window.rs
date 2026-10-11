@@ -387,10 +387,7 @@ impl Widget for BrowserWindow {
         )
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let Ok(children) = taffy.children(node) else {
             return;
         };
@@ -915,6 +912,7 @@ mod tests {
         assert!(unsafe {
             (&mut *button).perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut Edits::lend(doc),
                 &automerge::ROOT,
             )

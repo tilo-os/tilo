@@ -62,18 +62,6 @@ impl Widget for Page {
     fn wants_pointer_capture(&self) -> bool {
         self.0.wants_pointer_capture()
     }
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut tilo_ui::vello::Scene,
-        transform: tilo_ui::kurbo::Affine,
-        text: &mut tilo_ui::TextRenderer,
-        theme: &tilo_ui::Theme,
-        presence: &tilo_ui::presence::PresenceCtx,
-        permissions: &tilo_ui::permissions::PermissionContext,
-    ) {
-        self.0
-            .draw_with_presence(scene, transform, text, theme, presence, permissions);
-    }
     fn build_layout(
         &mut self,
         tree: &mut tilo_ui::taffy::TaffyTree<()>,
@@ -103,11 +91,7 @@ impl Widget for Page {
         node: tilo_ui::taffy::NodeId,
         origin: tilo_ui::kurbo::Point,
     ) {
-        let location = tree.layout(node).map(|l| l.location).unwrap_or_default();
-        let inner = tilo_ui::kurbo::Point::new(
-            origin.x + f64::from(location.x),
-            origin.y + f64::from(location.y),
-        );
+        let inner = tilo_ui::widget::layout_rect(tree, node, origin).origin();
         if let Some(&child) = tree.children(node).unwrap_or_default().first() {
             self.0.apply_layout(tree, child, inner);
         }

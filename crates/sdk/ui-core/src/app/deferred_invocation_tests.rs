@@ -1,4 +1,4 @@
-// Included in the actual native/Driver ordinary-confirmation fixtures.
+// Included in the actual native/FrameHarness ordinary-confirmation fixtures.
 fn deferred_fixture() -> (
     Fixture,
     std::sync::Arc<std::sync::atomic::AtomicUsize>,

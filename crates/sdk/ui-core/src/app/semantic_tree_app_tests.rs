@@ -761,6 +761,7 @@ fn activate_bound_button(app: &mut App) {
     assert!(unsafe {
         (*pointer).perform_action(
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(&mut app.state.doc),
             &app.state.root,
         )
@@ -932,6 +933,7 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         assert!(!unsafe {
             (*pointer).perform_action(
                 &crate::a11y::Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut app.state.doc),
                 &app.state.root,
             )

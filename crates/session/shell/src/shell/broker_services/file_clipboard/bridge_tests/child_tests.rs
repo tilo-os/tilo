@@ -97,16 +97,12 @@ fn clipboard_bridge_runs_in_a_real_sandboxed_child() {
 }
 
 fn await_registration() {
-    use std::io::Read as _;
-    let fd: i32 = std::env::var("TILO_INTERNAL_LAUNCH_REGISTRATION_FD")
-        .expect("production registration gate")
-        .parse()
-        .expect("gate descriptor");
-    assert!(fd >= 3);
-    // SAFETY: this disposable launcher child received ownership of this one
-    // inherited registration descriptor through the production launch gate.
-    let mut gate = unsafe { File::from_raw_fd(fd) };
-    gate.read_exact(&mut [0u8; 1])
+    assert_eq!(
+        std::env::var(launcher::registration_gate::LAUNCH_REGISTRATION_STDIN_ENV).as_deref(),
+        Ok("1"),
+        "production registration gate"
+    );
+    launcher::registration_gate::wait_on_stdin()
         .expect("production launch registration precedes child connection");
 }
 fn apply_landlock(info: &ChildInfo) {

@@ -68,8 +68,8 @@ fn presentation_files_open_and_save_through_the_chooser() {
         bench.read(|app| {
             assert_eq!(app.cur_slide, 0, "it opens on its first slide");
             assert!(matches!(
-                app.io_toast.as_ref(),
-                Some((message, ToastKind::Success)) if *message == tr("slides-toast-opened")
+                app.io_toast.get(),
+                Some((message, ToastKind::Success)) if message == tr("slides-toast-opened")
             ));
         });
         assert!(bench.undo(), "opening a file is one undo step");
@@ -108,7 +108,7 @@ fn presentation_files_open_and_save_through_the_chooser() {
         let before = bench.deck();
         let (_, answer) = through_the_chooser(&mut bench, PortalOutcome::Opened(path), &OPEN);
         assert!(answer.is_err(), "the caller hears the open failed");
-        assert!(bench.read(|app| matches!(app.io_toast.as_ref(), Some((_, ToastKind::Error)))));
+        assert!(bench.read(|app| matches!(app.io_toast.get(), Some((_, ToastKind::Error)))));
         assert_eq!(bench.deck(), before, "a failed open changes nothing");
     }
 
@@ -126,7 +126,7 @@ fn presentation_files_open_and_save_through_the_chooser() {
         let saved =
             crate::odp::read_odp(&std::fs::read(&out).unwrap(), &ContentStore::memory()).unwrap();
         assert_eq!(saved.title, bench.deck().title);
-        assert!(bench.read(|app| matches!(app.io_toast.as_ref(), Some((_, ToastKind::Success)))));
+        assert!(bench.read(|app| matches!(app.io_toast.get(), Some((_, ToastKind::Success)))));
     }
 
     // Case `ensure_odp_ext_appends_when_missing`.

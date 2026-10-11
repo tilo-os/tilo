@@ -12,7 +12,17 @@ pub(super) struct Reads(
     Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     Arc<std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Semaphore>>>>,
     Arc<std::sync::Mutex<Option<Vec<String>>>>,
+    Arc<Progress>,
 );
+/// Counts changes a constructing owner waits for (a capture staged, a route
+/// becoming publishable), so its bounded wait ends at the change instead of
+/// at its next poll.
+#[derive(Default)]
+struct Progress {
+    closed: AtomicBool,
+    changes: std::sync::Mutex<u64>,
+    changed: std::sync::Condvar,
+}
 #[derive(Clone)]
 enum Gate {
     Joining,
@@ -28,6 +38,75 @@ pub(super) struct ReadinessDiagnostic {
     pub(super) refresh_requested: bool,
 }
 impl Reads {
+    /// Terminal closure retains native requirements and private binding, while
+    /// withdrawing every generation before disconnected health is published.
+    pub(super) fn close(&self) {
+        self.5.closed.store(true, Ordering::Release);
+        if let Ok(rows) = self.0.lock() {
+            for gate in rows.values() {
+                if let Gate::Required(ready, _) = gate {
+                    ready.store(false, Ordering::Release);
+                }
+            }
+        }
+        if let Ok(mut rows) = self.1.lock() {
+            for read in rows.values() {
+                read.valid.store(false, Ordering::Release);
+            }
+            rows.clear();
+        }
+        if let Ok(mut requests) = self.2.lock() {
+            requests.clear();
+        }
+        self.progressed();
+    }
+    fn closed(&self) -> bool {
+        self.5.closed.load(Ordering::Acquire)
+    }
+    fn set_ready(&self, ready: &AtomicBool, value: bool) -> bool {
+        if !value {
+            return ready.swap(false, Ordering::AcqRel);
+        }
+        let Ok(rows) = self.0.lock() else {
+            return ready.swap(false, Ordering::AcqRel);
+        };
+        let current = !self.closed() && rows.values().any(|gate| {
+            matches!(gate, Gate::Required(candidate, _) if std::ptr::eq(candidate.as_ref(), ready))
+        });
+        // Serialize a positive publication with close's gate withdrawal.
+        ready.swap(current, Ordering::AcqRel) != current
+    }
+    /// How many readiness changes happened so far; pass it to
+    /// [`Self::wait_progress`] after checking the state it guards.
+    pub(super) fn progress(&self) -> u64 {
+        *self
+            .5
+            .changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    /// Wait until a readiness change after `seen`, or `bound` elapses.
+    pub(super) fn wait_progress(&self, seen: u64, bound: Duration) {
+        let changes = self
+            .5
+            .changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = self
+            .5
+            .changed
+            .wait_timeout_while(changes, bound, |changes| *changes == seen);
+    }
+    pub(super) fn progressed(&self) {
+        let mut changes = self
+            .5
+            .changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *changes = changes.wrapping_add(1);
+        drop(changes);
+        self.5.changed.notify_all();
+    }
     pub(super) fn readiness_diagnostic(&self, key: &str) -> Option<ReadinessDiagnostic> {
         let required = self
             .0
@@ -93,6 +172,9 @@ impl Reads {
         self.stage_for_test(key, read);
     }
     pub(super) fn publishable(&self, key: &str) -> bool {
+        if self.closed() {
+            return false;
+        }
         self.0
             .lock()
             .ok()
@@ -133,7 +215,7 @@ impl Reads {
         let Ok(mut rows) = self.0.lock() else {
             return false;
         };
-        if rows.contains_key(key) || rows.len() >= 64 {
+        if self.closed() || rows.contains_key(key) || rows.len() >= 64 {
             return false;
         }
         rows.insert(key.into(), Gate::Joining);
@@ -171,7 +253,8 @@ impl Reads {
         read: CommittedDocument,
     ) -> Result<(), String> {
         let gates = self.0.lock().map_err(|_| "document reads poisoned")?;
-        if !matches!(gates.get(key),Some(Gate::Required(current, _)) if Arc::ptr_eq(current,ready))
+        if self.closed()
+            || !matches!(gates.get(key),Some(Gate::Required(current, _)) if Arc::ptr_eq(current,ready))
         {
             return Err("committed route replaced".into());
         }
@@ -183,6 +266,9 @@ impl Reads {
             return Err("committed staging capacity".into());
         }
         rows.insert(key.into(), read);
+        drop(rows);
+        drop(gates);
+        self.progressed();
         Ok(())
     }
     fn clear_stage(&self, key: &str, merged: &Arc<AtomicBool>) {
@@ -195,6 +281,9 @@ impl Reads {
         }
     }
     pub(super) fn current(&self, key: &str, ready: &Arc<AtomicBool>) -> bool {
+        if self.closed() {
+            return false;
+        }
         self.0.lock().is_ok_and(|rows|matches!(rows.get(key),Some(Gate::Required(current, _)) if Arc::ptr_eq(current,ready)))
     }
     fn discard_stage(&self, key: &str) {
@@ -211,14 +300,20 @@ impl Reads {
         self.2.lock().is_ok_and(|mut requests| requests.remove(key))
     }
     fn legacy(&self, key: &str) -> Result<(), String> {
-        self.0
-            .lock()
-            .map_err(|_| "document reads poisoned")?
-            .insert(key.into(), Gate::Legacy);
+        let mut rows = self.0.lock().map_err(|_| "document reads poisoned")?;
+        if self.closed() {
+            return Err("committed document reader closed".into());
+        }
+        rows.insert(key.into(), Gate::Legacy);
+        drop(rows);
+        self.progressed();
         Ok(())
     }
     fn pending(&self, key: &str) -> Result<Arc<AtomicBool>, String> {
         let mut rows = self.0.lock().map_err(|_| "document reads poisoned")?;
+        if self.closed() {
+            return Err("committed document reader closed".into());
+        }
         if let Some(Gate::Required(old, _)) = rows.get(key) {
             old.store(false, Ordering::Release);
         }
@@ -241,6 +336,9 @@ impl Reads {
 pub struct CommittedDocument {
     data: Arc<Captured>,
     merged: Arc<AtomicBool>,
+    /// Wakes the route's reader as soon as the owner merges this capture,
+    /// so its confirming read follows the merge at once.
+    merge_wake: Arc<tokio::sync::Notify>,
     valid: Arc<AtomicBool>,
     creation: Option<runtime_collab::committed_document::CreationReceipt>,
     revision: [u8; 32],
@@ -314,6 +412,9 @@ impl CommittedDocument {
     }
     pub(crate) fn applied(&self) {
         self.merged.store(true, Ordering::Release);
+        // A permit is kept when the reader is not waiting yet, so a merge
+        // between its check and its wait is never missed.
+        self.merge_wake.notify_one();
     }
 }
 struct Captured {
@@ -394,6 +495,139 @@ impl Assembly {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn terminal_reads_cannot_be_republished_or_renewed() {
+        let reads = Reads::default();
+        let ready = reads.pending("original-native-route").unwrap();
+        reads
+            .bind_private_window("original-native-route", Some(42))
+            .unwrap();
+        let read = one_chunk_capture(&ByteBudget::new()).await;
+        reads
+            .stage("original-native-route", &ready, read.clone())
+            .unwrap();
+        assert!(read.is_current());
+        assert!(reads.set_ready(&ready, true));
+        assert!(reads.publishable("original-native-route"));
+        reads.close();
+        assert!(!read.is_current(), "closure invalidates retained captures");
+        assert!(reads.initial("original-native-route").is_none());
+        assert!(reads.stage("original-native-route", &ready, read).is_err());
+        assert!(
+            !reads.set_ready(&ready, true),
+            "a late unchanged reply cannot revive readiness"
+        );
+        assert!(!ready.load(Ordering::Acquire));
+        assert!(!reads.publishable("original-native-route"));
+        assert!(!reads.current("original-native-route", &ready));
+        assert!(
+            reads.required("original-native-route"),
+            "closure must retain the native requirement"
+        );
+        assert_eq!(
+            reads.private_window("original-native-route"),
+            Some(42),
+            "closure does not acquire a new private instance"
+        );
+        assert!(
+            reads.pending("original-native-route").is_err(),
+            "the terminal reader cannot admit a new generation"
+        );
+    }
+
+    async fn one_chunk_capture(budget: &ByteBudget) -> CommittedDocument {
+        read_capture_using(
+            Reply::Chunk {
+                capture: 1,
+                revision: [7; 32],
+                total: 1,
+                offset: 0,
+                bytes: vec![1],
+                token: [3; 16],
+            },
+            budget,
+            async |_| Ok(Reply::Cancelled),
+        )
+        .await
+        .unwrap()
+        .0
+    }
+    #[tokio::test(start_paused = true)]
+    async fn the_owner_s_merge_ends_the_reader_s_wait_at_once() {
+        let budget = ByteBudget::new();
+        let read = one_chunk_capture(&budget).await;
+        let started = tokio::time::Instant::now();
+        let owner = {
+            let read = read.clone();
+            tokio::spawn(async move {
+                tokio::task::yield_now().await;
+                read.applied();
+            })
+        };
+        until_merged(&read, || true).await;
+        owner.await.unwrap();
+        // The clock is paused: a wait that slept until its re-check would
+        // have advanced it by a whole interval.
+        assert!(started.elapsed() < MERGE_RECHECK);
+    }
+    #[tokio::test(start_paused = true)]
+    async fn a_merge_before_the_reader_waits_is_not_missed() {
+        let budget = ByteBudget::new();
+        let read = one_chunk_capture(&budget).await;
+        read.applied();
+        let started = tokio::time::Instant::now();
+        until_merged(&read, || true).await;
+        assert!(started.elapsed() < MERGE_RECHECK);
+    }
+    #[tokio::test(start_paused = true)]
+    async fn an_unmerged_capture_keeps_the_reader_waiting_until_its_route_goes() {
+        let budget = ByteBudget::new();
+        let read = one_chunk_capture(&budget).await;
+        let checks = std::cell::Cell::new(0);
+        let started = tokio::time::Instant::now();
+        until_merged(&read, || {
+            checks.set(checks.get() + 1);
+            checks.get() < 3
+        })
+        .await;
+        assert!(!read.merged.load(Ordering::Acquire));
+        // Two re-checks passed while the route stayed live.
+        assert!(started.elapsed() >= MERGE_RECHECK * 2);
+        assert_eq!(checks.get(), 3);
+    }
+    #[test]
+    fn staging_a_capture_ends_the_owner_s_bounded_wait() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let budget = ByteBudget::new();
+        let read = runtime.block_on(one_chunk_capture(&budget));
+        let reads = Reads::default();
+        let ready = reads.pending("route").unwrap();
+        let seen = reads.progress();
+        let waiter = {
+            let reads = reads.clone();
+            std::thread::spawn(move || {
+                let started = std::time::Instant::now();
+                reads.wait_progress(seen, Duration::from_secs(30));
+                started.elapsed()
+            })
+        };
+        reads.stage("route", &ready, read).unwrap();
+        assert!(waiter.join().unwrap() < Duration::from_secs(30));
+        assert!(reads.initial("route").is_some());
+    }
+    #[test]
+    fn a_wait_after_the_change_it_watches_for_returns_at_once() {
+        let reads = Reads::default();
+        let seen = reads.progress();
+        reads.legacy("route").unwrap();
+        let started = std::time::Instant::now();
+        reads.wait_progress(seen, Duration::from_secs(30));
+        assert!(started.elapsed() < Duration::from_secs(30));
+        assert!(reads.publishable("route"));
+    }
     #[tokio::test]
     async fn committed_document_downgrade_excludes_unapplied_owner_handoff() {
         use automerge::transaction::Transactable;
@@ -714,6 +948,7 @@ mod tests {
                 _reservation: budget.reserve(1, 1).unwrap(),
             }),
             merged: Arc::new(AtomicBool::new(false)),
+            merge_wake: Arc::new(tokio::sync::Notify::new()),
             valid: Arc::new(AtomicBool::new(true)),
             creation: None,
             revision: [0; 32],
@@ -803,8 +1038,9 @@ fn capture_budget() -> &'static ByteBudget {
 /// acknowledgement; equal to the polling Open deadline.
 const ACKNOWLEDGEMENT_DEADLINE: Duration = Duration::from_secs(2);
 
-/// Only local deadlines permit retiring a capture and renewing its read epoch.
-/// Broker refusals, invalid replies and authority failures remain terminal.
+/// Only local deadlines permit retiring a capture and renewing its read epoch,
+/// or retrying a renewal. Broker refusals, invalid replies and authority
+/// failures remain terminal.
 #[derive(Debug)]
 enum CaptureFailure {
     Deadline(&'static str),
@@ -951,6 +1187,7 @@ async fn capture_using(
                 _reservation: reservation,
             }),
             merged: Arc::new(AtomicBool::new(false)),
+            merge_wake: Arc::new(tokio::sync::Notify::new()),
             valid: Arc::new(AtomicBool::new(true)),
             creation,
             revision: assembly.revision,
@@ -961,7 +1198,8 @@ async fn capture_using(
 }
 // A parked owner must observe both publication readiness and its withdrawal.
 fn set_read_ready(inbound: &InboundBridge, ready: &AtomicBool, value: bool) {
-    if ready.swap(value, Ordering::AcqRel) != value {
+    if inbound.state.document_reads.set_ready(ready, value) {
+        inbound.state.document_reads.progressed();
         inbound.state.notify_events();
     }
 }
@@ -986,7 +1224,7 @@ impl NativeReadJoin {
         &self,
         spec: &RouteSpec,
         reads: &Reads,
-    ) -> Result<runtime_collab::ChannelHandle, String> {
+    ) -> Result<runtime_collab::ChannelHandle, CaptureFailure> {
         let key = spec.channel_id();
         let expected_instance = reads.private_window(&key);
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -1012,10 +1250,24 @@ impl NativeReadJoin {
             {
                 return Err("renewed committed read launcher instance changed".into());
             }
-            Ok(channel)
+            Ok::<_, String>(channel)
         })
         .await
-        .map_err(|_| "original committed read renewal deadline elapsed")?
+        .map_err(|_| CaptureFailure::Deadline("original committed read renewal deadline elapsed"))?
+        .map_err(CaptureFailure::Rejected)
+    }
+}
+
+/// How often a reader waiting for the owner's merge re-checks that its route
+/// is still healthy and current. The merge itself wakes it at once.
+const MERGE_RECHECK: Duration = Duration::from_millis(100);
+
+/// Wait until the owner merged `read` ([`CommittedDocument::applied`]), or
+/// `live` says the route is gone. The owner's component factory waits for
+/// the confirming read that follows, so the merge ends this wait at once.
+async fn until_merged(read: &CommittedDocument, live: impl Fn() -> bool) {
+    while !read.merged.load(Ordering::Acquire) && live() {
+        let _ = tokio::time::timeout(MERGE_RECHECK, read.merge_wake.notified()).await;
     }
 }
 
@@ -1055,10 +1307,15 @@ pub(super) async fn install(
     let spec = spec.clone();
     let inbound = inbound.clone();
     tokio::task::spawn_local(async move {
+        // One renewal per healthy read: a deadline renews unless the previous
+        // renewal has not yet produced a ready read. Readiness published on a
+        // renewed channel restores the budget, so a runner that stalls twice
+        // or a laptop that suspends twice recovers both times, while two
+        // deadlines with no successful read between them still close.
         let mut renewed = false;
         let mut current = initial;
         let mut revision = revision;
-        loop {
+        'read: loop {
             if !inbound.state.is_healthy() || !inbound.state.document_reads.current(&key, &ready) {
                 break;
             }
@@ -1075,7 +1332,7 @@ pub(super) async fn install(
                 break;
             }
             if let Some(read) = current.take() {
-                let merged = read.merged.clone();
+                let staged = read.clone();
                 if inbound
                     .state
                     .document_reads
@@ -1090,18 +1347,19 @@ pub(super) async fn install(
                 }) {
                     break;
                 }
-                while !merged.load(Ordering::Acquire)
-                    && inbound.state.is_healthy()
-                    && inbound.state.document_reads.current(&key, &ready)
-                {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
+                until_merged(&staged, || {
+                    inbound.state.is_healthy() && inbound.state.document_reads.current(&key, &ready)
+                })
+                .await;
                 if !inbound.state.is_healthy()
                     || !inbound.state.document_reads.current(&key, &ready)
                 {
                     break;
                 }
-                inbound.state.document_reads.clear_stage(&key, &merged);
+                inbound
+                    .state
+                    .document_reads
+                    .clear_stage(&key, &staged.merged);
             }
             let refresh = inbound.state.document_reads.refresh_requested(&key);
             if refresh {
@@ -1117,6 +1375,7 @@ pub(super) async fn install(
             let renew = match result {
                 Ok(Ok(Reply::Unchanged { revision: checked })) if Some(checked) == revision => {
                     set_read_ready(&inbound, &ready, true);
+                    renewed = false;
                     false
                 }
                 Ok(Ok(reply @ Reply::Chunk { .. })) => {
@@ -1184,17 +1443,41 @@ pub(super) async fn install(
                     break;
                 };
                 ready = next_ready;
-                if let Ok(next) = join.renew(&spec, &inbound.state.document_reads).await {
-                    channel = next;
-                    revision = None;
-                    #[cfg(any(test, feature = "test-support"))]
-                    tracing::warn!("original committed read generation renewed");
-                    continue;
+                let mut turn = Some(turn);
+                loop {
+                    match join.renew(&spec, &inbound.state.document_reads).await {
+                        Ok(next) => {
+                            channel = next;
+                            revision = None;
+                            #[cfg(any(test, feature = "test-support"))]
+                            tracing::warn!("original committed read generation renewed");
+                            continue 'read;
+                        }
+                        // A slow rejoin is an unknown outcome, not a refusal.
+                        // Readiness stays withheld and no capture exists in
+                        // this generation; release the delivery turn and
+                        // rejoin again. Every attempt is a fresh admission
+                        // the broker re-verifies, so a revoked peer is still
+                        // refused by the first rejoin that is answered.
+                        Err(CaptureFailure::Deadline(_)) => {
+                            #[cfg(any(test, feature = "test-support"))]
+                            tracing::warn!("committed read renewal deadline elapsed; rejoining");
+                            drop(turn.take());
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            if !inbound.state.is_healthy()
+                                || !inbound.state.document_reads.current(&key, &ready)
+                            {
+                                break 'read;
+                            }
+                        }
+                        Err(CaptureFailure::Rejected(_)) => {
+                            inbound
+                                .state
+                                .fail_closed("committed read renewal unavailable");
+                            break 'read;
+                        }
+                    }
                 }
-                inbound
-                    .state
-                    .fail_closed("committed read renewal unavailable");
-                break;
             }
             drop(turn);
             tokio::time::sleep(Duration::from_millis(200)).await;

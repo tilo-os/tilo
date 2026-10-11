@@ -988,7 +988,10 @@ impl<K: PartialEq + 'static> ui::widget::Decorator for Keyed<K> {
 
 /// What the save sheet's body is built from: the open draft with the
 /// permissions it needs, and the checker's problems.
-type SheetKey = (Option<(Id, Vec<Permission>)>, BTreeMap<String, Vec<String>>);
+type SheetKey = (
+    Option<(Id, Vec<Permission>, Vec<tilo_automation::TriggerSpec>)>,
+    BTreeMap<String, Vec<String>>,
+);
 
 type SaveDialog = ModalDialog<ModelView<SheetKey>>;
 
@@ -1027,6 +1030,7 @@ fn save_dialog(ui: &Ui, blocked: bool) -> SaveDialog {
                     (
                         id.clone(),
                         grant::least_privilege(&draft.program().steps, &input.catalog),
+                        draft.program().triggers,
                     )
                 }),
                 input.problems.clone(),
@@ -1170,6 +1174,7 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
                 .with_message(reason.clone()),
         ));
     }
+    items.push(schedule_section(ui, &draft_id));
     items.push(inputs_section(ui, &draft_id, draft));
     items.push(Box::new(Section::titled(
         ui::i18n!("shortcuts-steps"),
@@ -1177,6 +1182,127 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
     )));
     items.push(output_section(ui, input, &draft_id, draft));
     page(ui, items)
+}
+
+/// Scheduling edits only this draft; the existing save sheet reviews authority.
+fn schedule_section(ui: &Ui, draft_id: &Id) -> Element {
+    let id = draft_id.clone();
+    let controls_id = draft_id.clone();
+    let builder = ui.clone();
+    Box::new(ModelView::from_state_by(
+        &ui.editor,
+        move |input| {
+            input
+                .draft
+                .as_ref()
+                .filter(|(draft, _)| draft == &id)
+                .map(|(_, draft)| draft.program().triggers)
+        },
+        move |input| {
+            let time = input
+                .draft
+                .as_ref()
+                .filter(|(id, _)| id == &controls_id)
+                .and_then(|(_, draft)| {
+                    let triggers = draft.program().triggers;
+                    triggers.iter().find_map(|trigger| match trigger {
+                        tilo_automation::TriggerSpec::Schedule {
+                            schedule: tilo_automation::Schedule::Calendar { at, weekdays },
+                            ..
+                        } if weekdays.is_empty() => Some(*at),
+                        _ => None,
+                    })
+                });
+            schedule_controls(&builder, controls_id.clone(), time)
+        },
+    ))
+}
+fn schedule_controls(ui: &Ui, draft_id: Id, time: Option<tilo_automation::TimeOfDay>) -> Element {
+    let time = time.unwrap_or(tilo_automation::TimeOfDay { hour: 8, minute: 0 });
+    let enabled = LocalState::new(time_is_enabled(ui, &draft_id));
+    let hour = LocalState::new(format!("{:02}", time.hour));
+    let minute = LocalState::new(format!("{:02}", time.minute));
+    let checkbox = ui.bind(
+        Checkbox::from_state(&enabled)
+            .with_id("schedule-enabled")
+            .with_label("shortcuts-schedule-enabled"),
+        Workbench::SET_SCHEDULE.map({
+            let draft = draft_id.clone();
+            let hour = hour.clone();
+            let minute = minute.clone();
+            move |enabled: bool| {
+                (
+                    draft.clone(),
+                    enabled,
+                    hour.get().parse::<i64>().unwrap_or(8),
+                    minute.get().parse::<i64>().unwrap_or(0),
+                )
+            }
+        }),
+    );
+    let hour_control = ui.bind(
+        Dropdown::from_state((0..24).map(|hour| format!("{hour:02}")).collect(), &hour)
+            .with_id("schedule-hour")
+            .with_accessible_name("shortcuts-schedule-hour"),
+        Workbench::SET_SCHEDULE.map({
+            let draft = draft_id.clone();
+            let enabled = enabled.clone();
+            let minute = minute.clone();
+            move |hour: String| {
+                (
+                    draft.clone(),
+                    enabled.get(),
+                    hour.parse::<i64>().unwrap_or(8),
+                    minute.get().parse::<i64>().unwrap_or(0),
+                )
+            }
+        }),
+    );
+    let minute_control = ui.bind(
+        Dropdown::from_state(
+            (0..60).map(|minute| format!("{minute:02}")).collect(),
+            &minute,
+        )
+        .with_id("schedule-minute")
+        .with_accessible_name("shortcuts-schedule-minute"),
+        Workbench::SET_SCHEDULE.map({
+            move |minute: String| {
+                (
+                    draft_id.clone(),
+                    enabled.get(),
+                    hour.get().parse::<i64>().unwrap_or(8),
+                    minute.parse::<i64>().unwrap_or(0),
+                )
+            }
+        }),
+    );
+    Box::new(Section::titled(
+        ui::i18n!("shortcuts-schedule"),
+        vec![
+            Box::new(checkbox),
+            Box::new(labeled_field("shortcuts-schedule-hour", hour_control)),
+            Box::new(labeled_field("shortcuts-schedule-minute", minute_control)),
+            Box::new(
+                Text::new(&ui::i18n!("shortcuts-schedule-description"))
+                    .with_role(TextRole::Caption),
+            ),
+        ],
+    ))
+}
+fn time_is_enabled(ui: &Ui, draft_id: &Id) -> bool {
+    ui.editor.with(|input| {
+        input
+            .draft
+            .as_ref()
+            .filter(|(id, _)| id == draft_id)
+            .is_some_and(|(_, draft)| {
+                draft
+                    .program()
+                    .triggers
+                    .iter()
+                    .any(|trigger| matches!(trigger, tilo_automation::TriggerSpec::Schedule { schedule: tilo_automation::Schedule::Calendar { weekdays, .. }, .. } if weekdays.is_empty()))
+            })
+    })
 }
 
 fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
@@ -1819,7 +1945,35 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
     let mut body = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
-        .push(Box::new(Text::new("shortcuts-grant-explain")));
+        .push(Box::new(
+            Text::new("shortcuts-grant-explain").with_id("shortcuts-grant-explain"),
+        ));
+    for (index, trigger) in draft.program().triggers.iter().enumerate() {
+        if let tilo_automation::TriggerSpec::Schedule {
+            schedule: tilo_automation::Schedule::Calendar { at, .. },
+            catch_up,
+        } = trigger
+        {
+            body = body.push(Box::new(
+                Text::with_args(
+                    "shortcuts-schedule-review",
+                    &[(
+                        "time",
+                        ui::i18n::ArgValue::from(ui::clock::hour_minute(
+                            at.hour.into(),
+                            at.minute.into(),
+                        )),
+                    )],
+                )
+                .with_role(TextRole::Caption)
+                .with_id(format!("schedule-review-{index}")),
+            ));
+            body = body.push(Box::new(caption(match catch_up {
+                tilo_automation::CatchUp::RunOnce => "shortcuts-schedule-missed-once",
+                tilo_automation::CatchUp::Skip => "shortcuts-schedule-missed-skip",
+            })));
+        }
+    }
     if permissions.is_empty() {
         body = body.push(Box::new(caption("shortcuts-grant-none")));
     } else {

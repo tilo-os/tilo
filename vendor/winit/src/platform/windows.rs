@@ -394,7 +394,8 @@ impl WindowExtWindows for Window {
         // The windows docs don't mention NONE as a valid options but it works in practice and is
         // useful to circumvent the Windows option "Show accent color on title bars and
         // window borders"
-        self.window.set_title_background_color(color.unwrap_or(Color::NONE))
+        self.window
+            .set_title_background_color(color.unwrap_or(Color::NONE))
     }
 
     #[inline]
@@ -479,7 +480,10 @@ pub trait WindowAttributesExtWindows {
         windows_platform,
         doc = "[`CreateMenu`]: windows_sys::Win32::UI::WindowsAndMessaging::CreateMenu"
     )]
-    #[cfg_attr(not(windows_platform), doc = "[`CreateMenu`]: #only-available-on-windows")]
+    #[cfg_attr(
+        not(windows_platform),
+        doc = "[`CreateMenu`]: #only-available-on-windows"
+    )]
     fn with_menu(self, menu: HMENU) -> Self;
 
     /// This sets `ICON_BIG`. A good ceiling here is 256x256.

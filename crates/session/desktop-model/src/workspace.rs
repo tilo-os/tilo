@@ -700,39 +700,7 @@ impl Workspace {
             Subject::User(key) => hex::encode(key.as_bytes()) == *user,
             _ => false,
         };
-        let live_at = Some(now);
-        let mut best: Option<Verb> = None;
-        let mut blocked = false;
-        for c in capabilities {
-            if !subject_is_user(c) || !c.is_live_at(live_at) {
-                continue;
-            }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            if !covers_room {
-                continue;
-            }
-            match c.effect {
-                Effect::Grant => {
-                    best = Some(match best {
-                        Some(prev) if prev.implies(c.verb) => prev,
-                        _ => c.verb,
-                    });
-                }
-                // A room-wide Restrict below Read is how a member is
-                // blocked without being erased from history.
-                Effect::Restrict if !c.verb.implies(Verb::Read) => blocked = true,
-                Effect::Restrict => {}
-            }
-        }
-        if blocked {
-            return Some(CapRole::Denied);
-        }
-        best.map(|v| match v {
-            Verb::Admin => CapRole::Owner,
-            Verb::Write => CapRole::Editor,
-            Verb::Comment => CapRole::Commenter,
-            Verb::Read | Verb::Invite => CapRole::Viewer,
-        })
+        Self::role_from_capabilities(capabilities, subject_is_user, None, now)
     }
 
     /// Build the [`Actor`] for a person acting in this room.
@@ -844,23 +812,27 @@ impl Workspace {
         room: Option<&str>,
         now: u64,
     ) -> Option<CapRole> {
+        let subject_is_agent = |c: &CapOverride| matches!(&c.subject, Subject::Principal(Principal::Agent(a)) if a == agent);
+        Self::role_from_capabilities(&self.capabilities, subject_is_agent, room, now)
+    }
+
+    /// The strongest live room-wide grant `subject` holds, or
+    /// [`CapRole::Denied`] when a room-wide Restrict below Read blocks it.
+    /// `room` limits room-scoped capabilities to that one room.
+    fn role_from_capabilities(
+        capabilities: &[CapOverride],
+        subject: impl Fn(&CapOverride) -> bool,
+        room: Option<&str>,
+        now: u64,
+    ) -> Option<CapRole> {
         let live_at = Some(now);
         let mut best: Option<Verb> = None;
         let mut blocked = false;
-        for c in &self.capabilities {
-            let subject_matches = matches!(
-                &c.subject,
-                Subject::Principal(Principal::Agent(a)) if a == agent
-            );
-            if !subject_matches || !c.is_live_at(live_at) {
+        for c in capabilities {
+            if !subject(c) || !c.is_live_at(live_at) {
                 continue;
             }
-            let covers_room = match &c.scope {
-                Scope::Workspace => true,
-                Scope::Room(scope) => room.is_none_or(|room| room == scope),
-                _ => false,
-            };
-            if !covers_room {
+            if !covers_room(c, room) {
                 continue;
             }
             match c.effect {
@@ -870,6 +842,8 @@ impl Workspace {
                         _ => c.verb,
                     });
                 }
+                // A room-wide Restrict below Read is how a member is
+                // blocked without being erased from history.
                 Effect::Restrict if !c.verb.implies(Verb::Read) => blocked = true,
                 Effect::Restrict => {}
             }
@@ -908,12 +882,7 @@ impl Workspace {
             if !c.is_live_at(live_at) || c.effect != Effect::Grant {
                 continue;
             }
-            let covers_room = match &c.scope {
-                Scope::Workspace => true,
-                Scope::Room(scope) => room.is_none_or(|room| room == scope),
-                _ => false,
-            };
-            if !covers_room {
+            if !covers_room(c, room) {
                 continue;
             }
             if let Subject::Principal(Principal::Agent(a)) = &c.subject
@@ -950,24 +919,8 @@ impl Workspace {
     pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
         Self {
             id,
-            // A workspace that exists is a room that exists: minted
-            // here rather than lazily.
-            room: RoomId::new(),
             name: name.into(),
-            strips: Vec::new(),
-            collaborators: Vec::new(),
-            owner: None,
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
-            capabilities: Vec::new(),
-            permission_profiles: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
-            effect_receipts: Vec::new(),
-            shortcuts: Vec::new(),
-            schedule_claims: Vec::new(),
-            shared_surfaces: SharedSurfaces::default(),
+            ..Self::default()
         }
     }
 
@@ -1078,6 +1031,16 @@ impl Default for Workspace {
             schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
+    }
+}
+
+/// Whether `c` is room-wide: workspace scope, or room scope limited to
+/// `room` when one is given.
+fn covers_room(c: &CapOverride, room: Option<&str>) -> bool {
+    match &c.scope {
+        Scope::Workspace => true,
+        Scope::Room(scope) => room.is_none_or(|room| room == scope),
+        _ => false,
     }
 }
 

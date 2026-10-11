@@ -100,13 +100,18 @@ impl TrustedHumanDirectory {
     ///
     /// Returns the same read or validation errors as [`Self::load`].
     pub fn load_default() -> Result<Self, String> {
-        let path = std::env::var_os(TRUSTED_IDENTITIES_ENV)
+        Self::load(&Self::default_path())
+    }
+
+    /// The configured host projection's path, or the packaged default.
+    #[must_use]
+    pub fn default_path() -> PathBuf {
+        std::env::var_os(TRUSTED_IDENTITIES_ENV)
             .filter(|value| !value.is_empty())
             .map_or_else(
                 || PathBuf::from(DEFAULT_TRUSTED_IDENTITIES_PATH),
                 PathBuf::from,
-            );
-        Self::load(&path)
+            )
     }
 
     /// Convert and validate a legacy human-only projection.

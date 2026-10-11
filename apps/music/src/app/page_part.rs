@@ -78,7 +78,7 @@ impl PagePart {
             state: &mut ui::widget::Edits<'_>,
         ) -> bool {
             if widget.test_id() == Some(id) {
-                return widget.perform_action(action, state, &automerge::ROOT);
+                return widget.perform_action(action, &[], state, &automerge::ROOT);
             }
             widget
                 .children_mut()
@@ -179,15 +179,6 @@ impl PagePart {
     /// Where the widget whose test id is `id` stands.
     #[cfg(test)]
     pub(super) fn find(&self, id: &str) -> Option<Rect> {
-        fn find(widget: &dyn ui::widget::Widget, id: &str) -> Option<Rect> {
-            if widget.test_id() == Some(id) {
-                return Some(widget.get_rect());
-            }
-            widget
-                .children()
-                .into_iter()
-                .find_map(|child| find(child, id))
-        }
-        find(self.host.widget(), id)
+        ui::widget::find_test_id(self.host.widget(), id).map(ui::widget::Widget::get_rect)
     }
 }

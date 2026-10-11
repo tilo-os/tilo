@@ -121,6 +121,7 @@ fn press_launcher(app: &mut App) {
     let launcher = app.root_widget.children_mut().into_iter().next().unwrap();
     assert!(launcher.perform_action(
         &crate::a11y::Action::Activate,
+        &[],
         &mut crate::widget::Edits::lend(&mut app.state.doc),
         &app.state.root
     ));

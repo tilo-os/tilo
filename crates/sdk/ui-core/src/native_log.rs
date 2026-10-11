@@ -12,11 +12,13 @@ pub(crate) fn emit_json(prefix: &str, row: serde_json::Value) {
     panic_on_error(write_json(prefix, row));
 }
 
+#[cfg(feature = "native")]
 /// Join render phases to physical input despite namespace-local PID collisions.
 pub(crate) fn emit_timing_json(prefix: &str, row: serde_json::Value) {
     panic_on_error(timing_row(row).and_then(|row| write_json(prefix, row)));
 }
 
+#[cfg(feature = "native")]
 fn timing_row(mut row: serde_json::Value) -> io::Result<serde_json::Value> {
     let identity = row.as_object_mut().ok_or_else(|| {
         io::Error::new(

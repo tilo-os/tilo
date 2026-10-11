@@ -278,11 +278,11 @@ pub struct State {
     pub shm_state:            ShmState,
     pub seat_state:           SeatState<Self>,
     pub output_manager_state: OutputManagerState,
-    // … per-workspace bridge sockets, shell chrome handle, frame builder, …
+    // … shell chrome handle, frame builder, …
 }
 ```
 
-Each protocol handler attaches via `delegate_compositor!`, `delegate_xdg_shell!`, `delegate_shm!`, `delegate_seat!`, `delegate_output!`. The main socket is registered via `ListeningSocketSource`; per-workspace bridge sockets register additional sources on the same loop (see `docs/architecture/security.md`).
+Each protocol handler attaches via `delegate_compositor!`, `delegate_xdg_shell!`, `delegate_shm!`, `delegate_seat!`, `delegate_output!`. The main socket is registered via `ListeningSocketSource`; each accepted client is attributed from its peer credentials (see `docs/architecture/security.md`).
 
 The Wayland state is decoupled from the graphical backend so the compositor's logic can run in the headless integration test harness (`crates/session/shell/tests/interaction_test.rs`, `compositor_test.rs`) without a GPU.
 
@@ -300,7 +300,10 @@ The frame builder (`crates/session/shell/src/compositor/frame.rs`) produces one 
 
 `FrameBuilder::paint_with_damage` records the shell in ordered sections and
 proves which pixels changed since the previous frame; `None` means "redraw
-everything". The top bar and Quick Settings are bounded sections. The
+everything". The top bar and Quick Settings are bounded sections; Quick
+Settings also has parts (its panel, the strip ribbon and the strip rail), so
+moving focus to another strip repaints the ribbon and the rail rather than
+everything between them. The
 workspace, its overlays and everything above Quick Settings are split into
 keyed **damage parts** (`ui::scene_parts`): a draw site marks a stretch of
 commands with a key and the bounds those commands can paint, and every
@@ -334,21 +337,46 @@ between and where, and its chrome and the layers over its widgets are
 window-sized parts. A frame compared with the one that painted the generation
 before repaints only that damage (a tooltip repaints its chip); any other
 change to the app (it moved, repainted whole, a frame was skipped) repaints
-its tile. A tile's edge and the tab list's focus ring are parts too. Foreign
+its tile. A tile's edge and the tab list's focus ring are parts too; the
+edge's bounds are a square at each rounded corner and a band as thin as the
+stroke along each side, so a focus change repaints the outline, not a band as
+deep as the corners. Foreign
 buffer swaps keep their
 client-reported damage, from `wl_surface.damage_buffer` as from
 `wl_surface.damage` (scaled to buffer pixels unless a viewport crops or
 scales the buffer). A strip pan moves pixels instead of repainting them:
-while a strip pans, the producer draws the desktop as three layers
-(`FramePaint::cache`: what is behind the windows, the strips in canvas
-coordinates, the chrome above), pans land on whole pixels, and the DRM GPU
-presenter keeps each layer in a texture of the output's size
-(`render/strip_layers.rs`). A pure pan copies the part of each strip still on
-screen to where it moved, rasterises only the columns it uncovered, and
-composites the moved strip from the three textures; a layer is rasterised
-again only when its scene changes. Frames at rest keep the screen-space damage
-above, and a scaled, rotated, calibrated, HDR, blurred or multi-display output
-renders the scene as before. Night light and the
+while a strip pans, the producer draws the desktop as layers
+(`FramePaint::cache`: what is behind the windows, each strip on its own in
+canvas coordinates, the docked wheel on its own, the chrome above), in device
+pixels, and the DRM GPU presenter keeps the backdrop, the strips and the
+chrome in textures of the output's size and the wheel in one of its own size
+(`render/strip_layers.rs`). A pure pan copies the pixels whose strips all
+moved by the same distance, rasterises only the columns it uncovered and the
+band where a moving strip's shadows meet a strip that stayed, and composites
+from the textures; the wheel, which rides the top strip over the strips below,
+is only composited at its new place, and a layer is rasterised again only when
+its scene changes (a strip whose drawing changed, only inside its own row).
+While it pans, a strip draws only the windows the screen shows: a window
+wholly off screen replays its last drawing at the same canvas place
+(`GroupRow::draw_group_apart`), which no pixel shows, and is drawn afresh in
+every frame that shows any of it, so the strip's scene stays byte for byte
+the same while only the pan moves (a window carrying a blurred material or a
+client's GPU buffer is drawn every frame).
+On a scaled display pans step by one device pixel: the drawn pan is the
+gesture's rounded to a device pixel (a layout pixel at 100 %, half of one at
+200 %, two thirds at 150 %, four fifths at 125 %). A pan then moves strip
+pixels by whole pixels without resampling them, as finely as the panel shows,
+and the panned frame is what the desktop drawn without layers shows: what
+rides the strip moves by exactly the pan (the docked wheel replays its cached
+drawing under the exact change of its place, not a rounded one), so nothing
+lands a fraction of a pixel apart and twitches when the pan ends. Layout and
+input use the same drawn pan. A rotated, calibrated or HDR output composites
+the layers the same way and then turns, calibrates or PQ-encodes the result
+in its final pass, as it would a render of the scene. Frames at rest keep the
+screen-space damage above, and a blurred surface, an HDR surface or several
+displays (each draws its own view of the desktop, and a strip spanning two
+pans per display) render the scene as before.
+Night light and the
 colour filters are per-pixel tints drawn into the same scene, so frames under
 them stay sparse while the tint is unchanged; the magnifier and the
 crosshair, which follow the pointer, keep every frame dense.
@@ -751,7 +779,7 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 
 ## What's not here
 
-- **Sandboxing protocol details and the per-workspace Wayland bridge socket** — `docs/architecture/security.md`.
+- **Sandboxing protocol details and Wayland client attribution** — `docs/architecture/security.md`.
 - **Peer sync, foreign-surface streaming, remote input replay** — `docs/architecture/collaboration.md`.
 - **xdg-desktop-portal backend** — `docs/architecture/security.md` and `crates/session/shell/src/portal/`.
 - **WorkspaceTree CRDT shape** — `docs/architecture/overview.md` plus `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`.

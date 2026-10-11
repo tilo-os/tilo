@@ -21,7 +21,6 @@ use winit::keyboard::{Key as WKey, NamedKey};
 use ui::Widget;
 use ui::framework::Dispatcher;
 use ui::interaction::InteractionEnvironment;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -1280,10 +1279,7 @@ impl Widget for CalculatorApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        let area = ui::widget::placed(layout, origin);
+        let area = ui::widget::layout_rect(taffy, node, origin);
         self.dirty |= area != self.area;
         self.area = area;
         self.relayout();
@@ -1356,18 +1352,6 @@ impl Widget for CalculatorApp {
             self.drawn_remote_carets = remote;
             self.dirty = true;
         }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
