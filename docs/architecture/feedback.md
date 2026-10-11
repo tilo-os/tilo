@@ -319,6 +319,23 @@ still waits for that separate outbox write's durable acknowledgment. Closing
 the presentation discards its raw review without changing an already approved
 pending payload. Masked PNG clones share immutable bytes.
 
+The actual OPFS custody fixture lives in `crates/system/content/web/run.mjs`.
+Build the `web_custody` WASM example and bind it with the pinned wasm-bindgen
+before running it. The native `web_custody_host` example only launches this
+fixture; it invokes no nested Cargo and lets `rcargo --on-builder run` retain
+normal remote admission. Pass an already qualified browser executable:
+
+```sh
+rcargo --no-fallback --on-builder +1.97.1 run --locked -p tilo-content \
+  --example web_custody_host -- --chrome <remote-chrome> \
+  --prebuilt target/browser-custody-probe
+```
+
+Missing browser tooling fails before creating a browser profile. The fixture
+uses synthetic bytes and a throwaway profile; it exercises reload, exact-write
+failure, retry, deletion, corruption and bounded readback. A compiled probe is
+not evidence that this browser journey ran or that live capture is enabled.
+
 `FocusedCapture` implements the existing capture interface over a host-supplied
 focused renderer source. Construction starts no readback. An explicit request
 checks complete classified geometry and protection before reading exactly one

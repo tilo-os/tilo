@@ -47,6 +47,10 @@ name = "web_custody"
 crate-type = ["cdylib"]
 required-features = ["dir"]
 
+[[example]]
+name = "web_custody_host"
+required-features = ["dir"]
+
 [lints]
 workspace = true
 
