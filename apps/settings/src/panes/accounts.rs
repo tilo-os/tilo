@@ -2822,25 +2822,23 @@ mod tests {
         vault.put(&id, &accounts::Secret::password("test-only-password"));
         vault.try_save().expect("the vault is saved");
         let cx = PaneCx::in_file(dir.path().join("settings.json"));
-        let area = AccountsArea::new(&cx).with_account_root(root);
+        let area = AccountsArea::new(&cx).with_account_root(root.clone());
         assert!(area.start_read(), "the first read starts");
         assert!(!area.start_read(), "one read at a time");
         assert!(!area.is_open(), "a running read publishes nothing yet");
         until_finished(|| area.read_finished());
         let model = area.model().borrow();
         assert!(area.is_open());
+        assert!(vault.get(&id).is_some(), "the credential was saved");
         assert_eq!(
             model.vault.get(&id),
             vault.get(&id),
             "the vault read is held"
         );
-        assert!(
-            model
-                .directory()
-                .views_of(AccountKind::Mail)
-                .iter()
-                .any(|view| view.id == id.as_str()),
-            "the directory is read too"
+        assert_eq!(
+            model.directory(),
+            AccountsPane::in_root(root).directory(),
+            "the directory is the one reading in place shows"
         );
         drop(model);
         assert!(!area.start_read(), "a built model is not read again");
