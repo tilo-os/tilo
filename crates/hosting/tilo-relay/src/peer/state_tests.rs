@@ -786,9 +786,18 @@ async fn personal_continuity_caller_cancellation_before_admission_leaves_no_rece
             })
             .unwrap();
         reached.await.unwrap();
-        let queued = (0..32)
+        let mut queued = (0..32)
             .map(|_| owner.read(1, |_| Ok(())).unwrap())
             .collect::<Vec<_>>();
+        // The held job may run on the fast path, outside the queue; the owner
+        // task then takes the first queued job to wait behind it, freeing a
+        // slot. Fill that too, so the owner holds no capacity at all.
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+            while let Ok(receipt) = owner.read(1, |_| Ok(())) {
+                queued.push(receipt);
+            }
+        }
         let (channel, body) = fixture.continuity_checkpoint(Vec::new());
         let frame = fixture.checkpoint_frame(1, channel, body);
         let caller_fixture = fixture.clone();

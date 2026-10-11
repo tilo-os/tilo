@@ -48,6 +48,10 @@ const REPLAY_BYTES: usize = 64 * 1024;
 const NORMAL_MESSAGES: usize = GLOBAL_MESSAGES - REPLAY_MESSAGES;
 const NORMAL_BYTES: usize = GLOBAL_BYTES - REPLAY_BYTES;
 const BLOCKING_WORKERS: usize = 4;
+/// Jobs on the fast path at once, process-wide ([`Lane`]). Each holds a
+/// blocking-pool thread for its turn, waits included, so this keeps most of
+/// the daemon's pool (`tilo_rt`'s 32 threads) for everything else.
+const FAST_TURNS: usize = 2 * BLOCKING_WORKERS;
 const RECLAIM_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 const RECLAIM_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
 /// How far past the sequence it hands out [`State::next_sequence`] reserves
@@ -91,6 +95,11 @@ fn replay_byte_budget() -> &'static Arc<Semaphore> {
     BYTES.get_or_init(|| Arc::new(Semaphore::new(REPLAY_BYTES)))
 }
 
+fn fast_turn_budget() -> &'static Arc<Semaphore> {
+    static TURNS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    TURNS.get_or_init(|| Arc::new(Semaphore::new(FAST_TURNS)))
+}
+
 fn detached_replay_budget() -> &'static Arc<Semaphore> {
     static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
     WORKERS.get_or_init(|| Arc::new(Semaphore::new(1)))
@@ -104,6 +113,7 @@ struct AdmissionBudgets {
     replay_bytes: Arc<Semaphore>,
     workers: Arc<Semaphore>,
     replay_worker: Arc<Semaphore>,
+    fast_turns: Arc<Semaphore>,
 }
 impl AdmissionBudgets {
     fn global() -> Self {
@@ -114,6 +124,7 @@ impl AdmissionBudgets {
             replay_bytes: replay_byte_budget().clone(),
             workers: blocking_budget().clone(),
             replay_worker: detached_replay_budget().clone(),
+            fast_turns: fast_turn_budget().clone(),
         }
     }
 
@@ -126,6 +137,7 @@ impl AdmissionBudgets {
             replay_bytes: Arc::new(Semaphore::new(REPLAY_BYTES)),
             workers,
             replay_worker: Arc::new(Semaphore::new(1)),
+            fast_turns: Arc::new(Semaphore::new(FAST_TURNS)),
         }
     }
 }
@@ -151,6 +163,8 @@ fn next_normal_job(sequence: &AtomicU64) -> Result<u64, StoreError> {
 pub(crate) struct Persistence {
     tx: mpsc::Sender<NormalJob>,
     replay_tx: mpsc::Sender<ReplayJob>,
+    lane: Arc<Lane>,
+    fast: FastRunner,
     normal_sequence: Arc<AtomicU64>,
     admission: Arc<tokio::sync::Mutex<()>>,
     budgets: AdmissionBudgets,
@@ -294,9 +308,9 @@ fn initial_budgets(runtime: &crate::workspace::WorkspaceRuntime) -> AdmissionBud
     AdmissionBudgets::global()
 }
 
-#[expect(
+#[allow(
     clippy::significant_drop_tightening,
-    reason = "the owner state is shared with the spawned owner task; the local Arc clone holds no lock"
+    reason = "the owner state moves into the owner task and the fast runner; no local holds its lock"
 )]
 fn start(
     runtime: &mut crate::workspace::WorkspaceRuntime,
@@ -317,10 +331,14 @@ fn start(
         workers: budgets.workers.clone(),
         replay_worker: budgets.replay_worker.clone(),
     }));
-    tokio::spawn(run_owner(rx, replay_rx, state));
+    let lane = Arc::new(Lane::default());
+    let fast = fast_runner(&state, &lane);
+    tokio::spawn(run_owner(rx, replay_rx, state, lane.clone()));
     let handle = Persistence {
         tx,
         replay_tx,
+        lane,
+        fast,
         normal_sequence,
         admission,
         budgets,
@@ -369,28 +387,369 @@ fn test_budgets() -> &'static Mutex<std::collections::HashMap<std::path::PathBuf
     BUDGETS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
+#[cfg(test)]
+type TurnCounts = Mutex<std::collections::HashMap<std::path::PathBuf, u64>>;
+
 /// Idle owner turns per store root, for tests that bound them.
 #[cfg(test)]
-fn idle_turns() -> &'static Mutex<std::collections::HashMap<std::path::PathBuf, u64>> {
-    static TURNS: OnceLock<Mutex<std::collections::HashMap<std::path::PathBuf, u64>>> =
-        OnceLock::new();
+fn idle_turns() -> &'static TurnCounts {
+    static TURNS: OnceLock<TurnCounts> = OnceLock::new();
     TURNS.get_or_init(Mutex::default)
 }
 
+/// Normal jobs the owner task ran itself, per store root.
 #[cfg(test)]
-fn note_idle_turn(state: &Mutex<State>) {
+fn owner_jobs() -> &'static TurnCounts {
+    static JOBS: OnceLock<TurnCounts> = OnceLock::new();
+    JOBS.get_or_init(Mutex::default)
+}
+
+#[cfg(test)]
+fn note_turn(counts: &TurnCounts, state: &Mutex<State>) {
     let root = state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .store
         .root()
         .to_path_buf();
-    idle_turns()
+    counts
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .entry(root)
         .and_modify(|turns| *turns = turns.saturating_add(1))
         .or_insert(1);
+}
+
+/// Whether a room's next job may skip its owner task.
+///
+/// The owner task runs every job it dequeues, and each one hands off three
+/// times: the admitting session wakes the owner, the owner wakes a pool thread
+/// to persist, the pool thread wakes the owner to publish. A normal job
+/// admitted while the owner has nothing else (nothing queued or running, no
+/// replay pending, no entry to reclaim) instead runs, preparation to
+/// publication, on the pool thread that persists it, and the owner task does
+/// not wake for it: on a quiet room every edit is such a job. Order stays the
+/// owner's. The fast job takes the place of an empty queue; every job
+/// admitted after it queues, and the owner waits for it to finish, and
+/// disposes of what it left, before it touches the state.
+#[derive(Default)]
+struct Lane {
+    /// Jobs admitted and not finished (a fast or handed-off one included) in
+    /// the low bits, and the [`Lane::FAST`], [`Lane::HANDOFF`] and
+    /// [`Lane::OPEN`] flags: one word, so admission decides atomically.
+    word: AtomicU64,
+    /// The highest normal job sequence finished, for replay prerequisites.
+    completed_normal: AtomicU64,
+    /// Notified as a fast job finishes, for an owner waiting to go on.
+    done: tokio::sync::Notify,
+    /// Notified when a finished fast job left the owner something to do.
+    handoff: tokio::sync::Notify,
+}
+
+impl Lane {
+    /// A job runs on the fast path.
+    const FAST: u64 = 1 << 48;
+    /// The finished fast job left scratch to dispose of or a replay entry to
+    /// reclaim, which the owner does before anything else. It counts as
+    /// admitted until then.
+    const HANDOFF: u64 = 1 << 49;
+    /// The owner serves (its startup reclamation done), reclaims no replay
+    /// entry and has not ended, so a job may take the fast path.
+    const OPEN: u64 = 1 << 50;
+    const ADMITTED: u64 = Self::FAST - 1;
+
+    /// Apply `change` to the word atomically; the word before it.
+    fn update(&self, change: impl Fn(u64) -> u64) -> u64 {
+        let mut old = self.word.load(Ordering::Acquire);
+        loop {
+            match self.word.compare_exchange_weak(
+                old,
+                change(old),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return old,
+                Err(current) => old = current,
+            }
+        }
+    }
+
+    fn with_admitted(word: u64, admitted: u64) -> u64 {
+        (word & !Self::ADMITTED) | admitted.min(Self::ADMITTED)
+    }
+
+    fn may_take(word: u64) -> bool {
+        word & Self::OPEN != 0 && word & Self::ADMITTED == 0
+    }
+
+    /// Count one job admitted under the admission lock. Whether it takes the
+    /// fast path, which it may only when `fast`.
+    fn admit(&self, fast: bool) -> bool {
+        let old = self.update(|word| {
+            let next = Self::with_admitted(word, (word & Self::ADMITTED).saturating_add(1));
+            if fast && Self::may_take(word) {
+                next | Self::FAST
+            } else {
+                next
+            }
+        });
+        fast && Self::may_take(old)
+    }
+
+    /// `jobs` admitted jobs finished, or never reached the owner.
+    fn finished(&self, jobs: u64) {
+        self.update(|word| Self::with_admitted(word, (word & Self::ADMITTED).saturating_sub(jobs)));
+    }
+
+    /// The fast job finished; `left` says it left the owner work, which keeps
+    /// it admitted until the owner has done it.
+    fn fast_finished(&self, sequence: u64, left: bool) {
+        self.completed_normal.fetch_max(sequence, Ordering::AcqRel);
+        self.update(|word| {
+            let word = word & !Self::FAST;
+            if left {
+                word | Self::HANDOFF
+            } else {
+                Self::with_admitted(word, (word & Self::ADMITTED).saturating_sub(1))
+            }
+        });
+        self.done.notify_one();
+        if left {
+            self.handoff.notify_one();
+        }
+    }
+
+    fn completed(&self, sequence: u64) {
+        self.completed_normal.fetch_max(sequence, Ordering::AcqRel);
+    }
+
+    fn completed_normal(&self) -> u64 {
+        self.completed_normal.load(Ordering::Acquire)
+    }
+
+    fn set_open(&self, open: bool) {
+        self.update(|word| {
+            if open {
+                word | Self::OPEN
+            } else {
+                word & !Self::OPEN
+            }
+        });
+    }
+
+    /// Nothing admitted, and a job may take the fast path.
+    #[cfg(test)]
+    fn quiet(&self) -> bool {
+        Self::may_take(self.word.load(Ordering::Acquire))
+    }
+
+    /// Wait until no job runs on the fast path. Whether the last one handed
+    /// work to the owner, which now does it. Only the owner clears the
+    /// hand-off, and no fast job starts while one is pending.
+    async fn settled_fast(&self) -> bool {
+        loop {
+            let done = self.done.notified();
+            tokio::pin!(done);
+            done.as_mut().enable();
+            if self.word.load(Ordering::Acquire) & Self::FAST == 0 {
+                return self.word.fetch_and(!Self::HANDOFF, Ordering::AcqRel) & Self::HANDOFF != 0;
+            }
+            done.await;
+        }
+    }
+}
+
+/// Closes the lane as the owner task ends: a job queued to a dead owner
+/// fails, and one on the fast path would outlive it.
+struct CloseLane(Arc<Lane>);
+
+impl Drop for CloseLane {
+    fn drop(&mut self) {
+        self.0.set_open(false);
+    }
+}
+
+/// Ends a fast job's turn however the job ends, a panic included, and hands
+/// the owner anything it left.
+struct FastTurn {
+    lane: Arc<Lane>,
+    state: Arc<Mutex<State>>,
+    sequence: u64,
+}
+
+impl Drop for FastTurn {
+    fn drop(&mut self) {
+        let left = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.retention_scratch.is_some()
+                || !state.retention_candidates.is_empty()
+                || state.replays.reclaimable()
+        };
+        self.lane.fast_finished(self.sequence, left);
+    }
+}
+
+/// Runs a job on the fast path: a closure over the owner's state, so that a
+/// [`Persistence`] handle does not own the state's lock and holding one is
+/// not holding a lock.
+type FastRunner =
+    Arc<dyn Fn(&tokio::runtime::Handle, OwnedSemaphorePermit, NormalJob) + Send + Sync>;
+
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the state's Arc moves into the runner; no local holds its lock"
+)]
+fn fast_runner(state: &Arc<Mutex<State>>, lane: &Arc<Lane>) -> FastRunner {
+    let state = state.clone();
+    let lane = lane.clone();
+    Arc::new(move |runtime, fast_turn, job| {
+        run_fast(&state, &lane, runtime, fast_turn, job);
+    })
+}
+
+/// Run `job` on a pool thread for the turn `fast_turn` admits: its blocking
+/// quanta run there, each under a worker as on the owner, and its
+/// preparation and publication wait there.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the state's Arc and the turn guard move into the pool closure; no local holds a lock"
+)]
+fn run_fast(
+    state: &Arc<Mutex<State>>,
+    lane: &Arc<Lane>,
+    runtime: &tokio::runtime::Handle,
+    fast_turn: OwnedSemaphorePermit,
+    job: NormalJob,
+) {
+    let turn = FastTurn {
+        lane: lane.clone(),
+        state: state.clone(),
+        sequence: job.sequence,
+    };
+    let state = state.clone();
+    let driver = runtime.clone();
+    // Detached: the job answers through its receipt, and `turn` hands the
+    // lane back as the job ends, a panic included.
+    drop(runtime.spawn_blocking(move || {
+        let inline = InlineBlocking::enter();
+        driver.block_on((job.job)(state));
+        drop(inline);
+        drop(turn);
+        drop(fast_turn);
+    }));
+}
+
+thread_local! {
+    /// Set on a pool thread while it runs a fast job: [`blocking`] work there
+    /// runs where it is, under a worker it takes per call as anywhere else.
+    static FAST_TURN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+struct InlineBlocking;
+
+impl InlineBlocking {
+    fn enter() -> Self {
+        FAST_TURN.with(|fast| fast.set(true));
+        Self
+    }
+}
+
+impl Drop for InlineBlocking {
+    fn drop(&mut self) {
+        FAST_TURN.with(|fast| fast.set(false));
+    }
+}
+
+/// Dispose of what the last job left: its scratch root and staged checkpoint
+/// generations. One retained transaction can leave at most one known scratch
+/// root, so this finishes before another mutation can create one. False when
+/// no worker is left, which ends the owner.
+async fn settle_retention(state: &Arc<Mutex<State>>, workers: &Arc<Semaphore>) -> bool {
+    let root = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retention_scratch
+        .take();
+    if let Some(root) = root {
+        let mut discard = None;
+        loop {
+            let path = root.clone();
+            let Ok((next, result)) = blocking(workers.clone(), move || {
+                let result = (|| -> Result<Step<()>, StoreError> {
+                    let start = std::time::Instant::now();
+                    let cursor = match discard.take() {
+                        Some(cursor) => cursor,
+                        None => crate::store::replay::WorkDiscard::new(path)?,
+                    };
+                    let cursor = discard.insert(cursor);
+                    loop {
+                        let step = cursor.step(WorkLimit::default())?;
+                        if step != Step::More || start.elapsed() >= SLICE {
+                            return Ok(step);
+                        }
+                    }
+                })();
+                (discard, result)
+            })
+            .await
+            else {
+                tracing::error!("retention disposal worker unavailable");
+                return false;
+            };
+            discard = next;
+            match result {
+                Ok(Step::Done(())) => break,
+                Ok(Step::More) => tokio::task::yield_now().await,
+                Err(error) => {
+                    tracing::warn!(%error, "retention disposal failed");
+                    tokio::time::sleep(RECLAIM_RETRY).await;
+                }
+            }
+        }
+    }
+    let candidates = std::mem::take(
+        &mut state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retention_candidates,
+    );
+    for (lineage, staged) in candidates {
+        let mut discard = None;
+        loop {
+            let lineage = lineage.clone();
+            let staged = staged.clone();
+            let Ok((next, result)) = blocking(workers.clone(), move || {
+                let result = (|| {
+                    if discard.is_none() {
+                        discard = crate::store::retained::CheckpointDiscard::new(&lineage, staged)?;
+                    }
+                    match discard.as_mut() {
+                        Some(discard) => discard.step(WorkLimit::default()),
+                        None => Ok(Step::Done(())),
+                    }
+                })();
+                (discard, result)
+            })
+            .await
+            else {
+                tracing::error!("checkpoint stage disposal worker unavailable");
+                return false;
+            };
+            discard = next;
+            match result {
+                Ok(Step::Done(())) => break,
+                Ok(Step::More) => tokio::task::yield_now().await,
+                Err(error) => {
+                    tracing::warn!(%error, "checkpoint stage disposal failed");
+                    tokio::time::sleep(RECLAIM_RETRY).await;
+                }
+            }
+        }
+    }
+    true
 }
 
 #[expect(
@@ -401,7 +760,10 @@ async fn run_owner(
     mut rx: mpsc::Receiver<NormalJob>,
     mut replay_rx: mpsc::Receiver<ReplayJob>,
     state: Arc<Mutex<State>>,
+    lane: Arc<Lane>,
 ) {
+    // However the owner ends, no job takes the fast path past it.
+    let _closed = CloseLane(lane.clone());
     let workers = state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -442,18 +804,24 @@ async fn run_owner(
         }
     }
     drop(startup);
-    // Idle turns exist only to reclaim replay entries: one becomes
-    // reclaimable when its session lets go of its ticket, which nothing
-    // signals to this task. So the owner polls while it has entries, and with
-    // none it sleeps until work arrives instead of waking every interval.
+    // Idle turns exist only to reclaim replay entries. One becomes
+    // reclaimable when its session lets go of its ticket, and dropping the
+    // ticket wakes this task (`reclaim_wake`). From then on the owner steps
+    // the released entries one per interval, between jobs, until none is
+    // left; with none it sleeps until a job or a released ticket arrives.
+    let reclaim_wake = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .replays
+        .reclaim_wake();
     let mut idle = tokio::time::interval(RECLAIM_INTERVAL);
     idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut reclaiming = false;
     let mut prefer_normal = false;
     let mut normal_open = true;
     let mut replay_open = true;
-    let mut completed_normal = 0u64;
     let mut pending_replay = None;
+    lane.set_open(true);
     loop {
         enum Work {
             Normal(NormalJob),
@@ -472,13 +840,22 @@ async fn run_owner(
         if !normal_open && !replay_open && pending_replay.is_none() {
             break;
         }
+        // A normal job admitted before a pending replay may still run on the
+        // fast path; the replay's watermark counts it once it has finished.
+        // None starts while a replay is pending.
+        if pending_replay.is_some() && lane.settled_fast().await {
+            if !settle_retention(&state, &workers).await {
+                return;
+            }
+            lane.finished(1);
+        }
         // A first shell basis may depend on normal jobs already queued when the
         // capture was admitted. Its fixed watermark excludes later traffic, so
         // unrelated continuous input cannot extend this prerequisite window.
         let mut waiting_prerequisite = pending_replay
             .as_ref()
             .and_then(|job| job.prerequisite)
-            .is_some_and(|required| required > completed_normal);
+            .is_some_and(|required| required > lane.completed_normal());
         if waiting_prerequisite {
             let shared = state.clone();
             let has_basis = blocking(workers.clone(), move || {
@@ -518,6 +895,8 @@ async fn run_owner(
                             biased;
                             job = rx.recv(), if normal_open => if let Some(job) = job { Work::Normal(job) } else { normal_open = false; Work::Idle },
                             job = replay_rx.recv(), if replay_open => if let Some(job) = job { Work::QueueReplay(job) } else { replay_open = false; Work::Idle },
+                            () = reclaim_wake.notified(), if !reclaiming => Work::Idle,
+                            () = lane.handoff.notified() => Work::Idle,
                             _ = idle.tick(), if reclaiming => Work::Idle,
                         }
                     }
@@ -530,126 +909,67 @@ async fn run_owner(
                 biased;
                 job = replay_rx.recv(), if replay_open => if let Some(job) = job { Work::QueueReplay(job) } else { replay_open = false; Work::Idle },
                 job = rx.recv(), if normal_open => if let Some(job) = job { Work::Normal(job) } else { normal_open = false; Work::Idle },
+                () = reclaim_wake.notified(), if !reclaiming => Work::Idle,
+                () = lane.handoff.notified() => Work::Idle,
                 _ = idle.tick(), if reclaiming => Work::Idle,
             }
         } else {
             Work::Closed
         };
+        // A job on the fast path finishes before this turn touches the
+        // state, and what it left to dispose of goes before anything else.
+        if !matches!(work, Work::Closed) && lane.settled_fast().await {
+            if !settle_retention(&state, &workers).await {
+                return;
+            }
+            lane.finished(1);
+        }
+        let mut finished = 0;
         match work {
             Work::Normal(job) => {
+                #[cfg(test)]
+                note_turn(owner_jobs(), &state);
                 (job.job)(state.clone()).await;
-                completed_normal = completed_normal.max(job.sequence);
+                lane.completed(job.sequence);
+                finished = 1;
                 prefer_normal = false;
             }
             Work::Replay(job) => {
                 (job.job)(state.clone()).await;
+                finished = 1;
                 prefer_normal = true;
             }
             Work::QueueReplay(job) => pending_replay = Some(job),
             Work::Idle => {
                 #[cfg(test)]
-                note_idle_turn(&state);
+                note_turn(idle_turns(), &state);
             }
             Work::Closed => break,
         }
-        // One retained transaction can leave at most one known scratch
-        // root. Finish its disposal before another mutation can create one.
-        let root = state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retention_scratch
-            .take();
-        if let Some(root) = root {
-            let mut discard = None;
-            loop {
-                let path = root.clone();
-                let Ok((next, result)) = blocking(workers.clone(), move || {
-                    let result = (|| -> Result<Step<()>, StoreError> {
-                        let start = std::time::Instant::now();
-                        let cursor = match discard.take() {
-                            Some(cursor) => cursor,
-                            None => crate::store::replay::WorkDiscard::new(path)?,
-                        };
-                        let cursor = discard.insert(cursor);
-                        loop {
-                            let step = cursor.step(WorkLimit::default())?;
-                            if step != Step::More || start.elapsed() >= SLICE {
-                                return Ok(step);
-                            }
-                        }
-                    })();
-                    (discard, result)
-                })
-                .await
-                else {
-                    tracing::error!("retention disposal worker unavailable");
-                    return;
-                };
-                discard = next;
-                match result {
-                    Ok(Step::Done(())) => break,
-                    Ok(Step::More) => tokio::task::yield_now().await,
-                    Err(error) => {
-                        tracing::warn!(%error, "retention disposal failed");
-                        tokio::time::sleep(RECLAIM_RETRY).await;
-                    }
-                }
-            }
+        if !settle_retention(&state, &workers).await {
+            return;
         }
-        let candidates = std::mem::take(
-            &mut state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .retention_candidates,
-        );
-        for (lineage, staged) in candidates {
-            let mut discard = None;
-            loop {
-                let lineage = lineage.clone();
-                let staged = staged.clone();
-                let Ok((next, result)) = blocking(workers.clone(), move || {
-                    let result = (|| {
-                        if discard.is_none() {
-                            discard =
-                                crate::store::retained::CheckpointDiscard::new(&lineage, staged)?;
-                        }
-                        match discard.as_mut() {
-                            Some(discard) => discard.step(WorkLimit::default()),
-                            None => Ok(Step::Done(())),
-                        }
-                    })();
-                    (discard, result)
-                })
-                .await
-                else {
-                    tracing::error!("checkpoint stage disposal worker unavailable");
-                    return;
-                };
-                discard = next;
-                match result {
-                    Ok(Step::Done(())) => break,
-                    Ok(Step::More) => tokio::task::yield_now().await,
-                    Err(error) => {
-                        tracing::warn!(%error, "checkpoint stage disposal failed");
-                        tokio::time::sleep(RECLAIM_RETRY).await;
-                    }
-                }
-            }
-        }
-        if state
+        // An entry still in use needs no turn: its ticket's drop wakes the
+        // owner. So does an entry whose session or connection ended, since
+        // that session drops its ticket as it ends. While it reclaims, the
+        // owner runs every job itself, between steps: the lane closes before
+        // this turn's job counts as finished, so no job takes the fast path
+        // past a reclamation step.
+        let reclaimable = state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .replays
-            .is_empty()
-        {
-            reclaiming = false;
-            continue;
-        }
-        if !reclaiming {
+            .reclaimable();
+        if reclaimable && !reclaiming {
             // The first idle turn comes an interval from now, not at once
             // for every interval missed while there was nothing to reclaim.
             idle.reset();
-            reclaiming = true;
+        }
+        reclaiming = reclaimable;
+        lane.set_open(!reclaiming);
+        lane.finished(finished);
+        if !reclaiming {
+            continue;
         }
         let shared = state.clone();
         let _ = blocking(workers.clone(), move || {
@@ -805,8 +1125,25 @@ impl Persistence {
         if let Some(hook) = &self.admission_hook {
             hook();
         }
-        permit.send(NormalJob { sequence, job });
+        self.dispatch(permit, NormalJob { sequence, job });
         Ok(rx)
+    }
+
+    /// Hand an admitted normal job, under the admission lock, to the fast
+    /// path when its owner is idle and a fast turn is free ([`Lane`]), else
+    /// to the owner's queue.
+    fn dispatch(&self, permit: mpsc::Permit<'_, NormalJob>, job: NormalJob) {
+        let fast = tokio::runtime::Handle::try_current()
+            .ok()
+            .zip(self.budgets.fast_turns.clone().try_acquire_owned().ok());
+        if self.lane.admit(fast.is_some())
+            && let Some((runtime, turn)) = fast
+        {
+            drop(permit);
+            (self.fast)(&runtime, turn, job);
+        } else {
+            permit.send(job);
+        }
     }
 
     /// Durable state and replay apply capacity-driven backpressure instead of
@@ -857,7 +1194,7 @@ impl Persistence {
         if let Some(hook) = &self.admission_hook {
             hook();
         }
-        permit.send(NormalJob { sequence, job });
+        self.dispatch(permit, NormalJob { sequence, job });
         Ok(rx)
     }
 
@@ -923,6 +1260,8 @@ impl Persistence {
         if let Some(hook) = &self.admission_hook {
             hook();
         }
+        // A bounded input sequence may wait on anything; the owner runs it.
+        self.lane.admit(false);
         permit.send(NormalJob { sequence, job });
         Ok(rx)
     }
@@ -974,10 +1313,16 @@ impl Persistence {
         if let Some(hook) = &self.replay_admission_hook {
             hook();
         }
-        self.replay_tx
+        self.lane.admit(false);
+        if self
+            .replay_tx
             .send(ReplayJob { prerequisite, job })
             .await
-            .map_err(|_| error("state persistence unavailable"))?;
+            .is_err()
+        {
+            self.lane.finished(1);
+            return Err(error("state persistence unavailable"));
+        }
         Ok(rx)
     }
 
@@ -1113,6 +1458,17 @@ pub(crate) async fn blocking<T: Send + 'static>(
     workers: Arc<Semaphore>,
     operation: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, StoreError> {
+    if FAST_TURN.with(std::cell::Cell::get) {
+        // A fast job, already on a pool thread. Its quanta take a worker
+        // each, so a long one still lets other workspaces in between slices.
+        // A panic fails the operation as a panicked pool task would.
+        let _permit = workers
+            .acquire_owned()
+            .await
+            .map_err(|e| error(e.to_string()))?;
+        return std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
+            .map_err(|_| error("blocking operation panicked"));
+    }
     let permit = workers
         .acquire_owned()
         .await
@@ -1144,16 +1500,19 @@ mod tests {
         let state = state(root);
         let (tx, rx) = mpsc::channel::<NormalJob>(8);
         let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
+        let lane = Arc::new(Lane::default());
         let owner = Persistence {
             tx,
             replay_tx,
+            lane: lane.clone(),
+            fast: fast_runner(&state, &lane),
             normal_sequence: Arc::new(AtomicU64::new(0)),
             admission: Arc::new(tokio::sync::Mutex::new(())),
             budgets,
             admission_hook: None,
             replay_admission_hook: None,
         };
-        let running = tokio::spawn(run_owner(rx, replay_rx, state));
+        let running = tokio::spawn(run_owner(rx, replay_rx, state, lane));
         (owner, running)
     }
 
@@ -1182,13 +1541,145 @@ mod tests {
         })
     }
 
-    fn idle_turns_of(root: &std::path::Path) -> u64 {
-        super::idle_turns()
+    fn turns_of(counts: &TurnCounts, root: &std::path::Path) -> u64 {
+        counts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(root)
             .copied()
             .unwrap_or(0)
+    }
+
+    fn idle_turns_of(root: &std::path::Path) -> u64 {
+        turns_of(super::idle_turns(), root)
+    }
+
+    fn owner_jobs_of(root: &std::path::Path) -> u64 {
+        turns_of(super::owner_jobs(), root)
+    }
+
+    /// Until the owner has nothing admitted and lets jobs take the fast path.
+    async fn quiesced(owner: &Persistence) {
+        tilo_test_env::within("the owner to have nothing admitted", async {
+            while !owner.lane.quiet() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_idle_owners_jobs_run_without_its_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let (owner, _running) = test_persistence(
+            dir.path(),
+            AdmissionBudgets::isolated(isolated_test_workers()),
+        );
+        let root = store_root(&owner).await;
+        let before = owner_jobs_of(&root);
+        let order = Arc::new(Mutex::new(Vec::new()));
+        for n in 0..8 {
+            quiesced(&owner).await;
+            let order = order.clone();
+            receipt(
+                owner
+                    .read(1, move |_| {
+                        order.lock().unwrap().push(n);
+                        Ok(())
+                    })
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(*order.lock().unwrap(), (0..8).collect::<Vec<_>>());
+        assert_eq!(
+            owner_jobs_of(&root) - before,
+            0,
+            "a job admitted to an idle owner runs on its pool thread, not the owner task"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_job_admitted_behind_a_fast_job_waits_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (owner, _running) = test_persistence(
+            dir.path(),
+            AdmissionBudgets::isolated(isolated_test_workers()),
+        );
+        let root = store_root(&owner).await;
+        quiesced(&owner).await;
+        let before = owner_jobs_of(&root);
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let first_order = order.clone();
+        let first = owner
+            .read(1, move |_| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                first_order.lock().unwrap().push("fast");
+                Ok(())
+            })
+            .unwrap();
+        tokio::task::spawn_blocking(move || entered_rx.recv().unwrap())
+            .await
+            .unwrap();
+        let second_order = order.clone();
+        let second = owner
+            .read(1, move |_| {
+                second_order.lock().unwrap().push("queued");
+                Ok(())
+            })
+            .unwrap();
+        tokio::time::sleep(RECLAIM_INTERVAL * 5).await;
+        assert!(
+            order.lock().unwrap().is_empty(),
+            "a job ran while the fast job before it held the owner"
+        );
+        release_tx.send(()).unwrap();
+        receipt(first).await.unwrap();
+        receipt(second).await.unwrap();
+        assert_eq!(*order.lock().unwrap(), ["fast", "queued"]);
+        assert_eq!(
+            owner_jobs_of(&root) - before,
+            1,
+            "the job admitted behind the fast one ran on the owner task"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_fast_jobs_scratch_is_disposed_of_before_the_next_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let (owner, _running) = test_persistence(
+            dir.path(),
+            AdmissionBudgets::isolated(isolated_test_workers()),
+        );
+        let root = store_root(&owner).await;
+        quiesced(&owner).await;
+        let scratch = root
+            .join("store-work-v1")
+            .join(format!("retain-{}", "0f".repeat(16)));
+        let made = scratch.clone();
+        receipt(
+            owner
+                .read(1, move |state| {
+                    std::fs::create_dir_all(&made).map_err(StoreError::from)?;
+                    state.retention_scratch = Some(made);
+                    Ok(())
+                })
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let seen = scratch.clone();
+        let survived = receipt(owner.read(1, move |_| Ok(seen.exists())).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            !survived,
+            "the scratch a fast job left was disposed of before the next job ran"
+        );
     }
 
     async fn store_root(owner: &Persistence) -> std::path::PathBuf {
@@ -1227,14 +1718,7 @@ mod tests {
         assert_eq!(workspace, 7, "the sleeping owner still runs the next job");
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn an_owner_with_a_reclaimable_replay_keeps_reclaiming() {
-        let dir = tempfile::tempdir().unwrap();
-        let (owner, _running) = test_persistence(
-            dir.path(),
-            AdmissionBudgets::isolated(isolated_test_workers()),
-        );
-        let root = store_root(&owner).await;
+    async fn captured_replay(owner: &Persistence) -> ReplayTicket {
         let ticket = ReplayTicket::reserve([2; 32], None).unwrap();
         let authority = ticket.authority.clone();
         receipt(
@@ -1251,19 +1735,62 @@ mod tests {
         )
         .await
         .unwrap();
-        // The session lets go of its ticket; nothing tells the owner, so
-        // only its idle turns can reclaim the entry.
+        ticket
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_owner_with_a_reclaimable_replay_keeps_reclaiming() {
+        let dir = tempfile::tempdir().unwrap();
+        let (owner, _running) = test_persistence(
+            dir.path(),
+            AdmissionBudgets::isolated(isolated_test_workers()),
+        );
+        let root = store_root(&owner).await;
+        let ticket = captured_replay(&owner).await;
+        // The session lets go of its ticket outside the owner; only the
+        // owner's own idle turns can reclaim the entry, without a job.
         drop(ticket);
         let before = idle_turns_of(&root);
         tokio::time::sleep(RECLAIM_INTERVAL * 25).await;
         assert!(
             idle_turns_of(&root) > before,
-            "an owner with a replay entry keeps its idle turns"
+            "a released ticket wakes its owner to reclaim the entry"
         );
         let reclaimed = receipt(owner.read(1, |state| Ok(state.replays.is_empty())).unwrap())
             .await
             .unwrap();
         assert!(reclaimed, "idle turns reclaimed the released replay");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_owner_whose_replays_are_in_use_does_not_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let (owner, _running) = test_persistence(
+            dir.path(),
+            AdmissionBudgets::isolated(isolated_test_workers()),
+        );
+        let root = store_root(&owner).await;
+        let ticket = captured_replay(&owner).await;
+        let before = idle_turns_of(&root);
+        tokio::time::sleep(RECLAIM_INTERVAL * 25).await;
+        assert_eq!(
+            idle_turns_of(&root) - before,
+            0,
+            "an owner whose replay entries are all in use sleeps until one is released"
+        );
+        let held = receipt(owner.read(1, |state| Ok(state.replays.is_empty())).unwrap())
+            .await
+            .unwrap();
+        assert!(!held, "the entry in use stays in the table");
+        drop(ticket);
+        tokio::time::sleep(RECLAIM_INTERVAL * 25).await;
+        let reclaimed = receipt(owner.read(1, |state| Ok(state.replays.is_empty())).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            reclaimed,
+            "releasing the ticket woke the owner to reclaim it"
+        );
     }
 
     #[tokio::test]
@@ -1478,6 +2005,7 @@ mod tests {
             replay_bytes: Arc::new(Semaphore::new(REPLAY_BYTES)),
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
+            fast_turns: Arc::new(Semaphore::new(FAST_TURNS)),
         };
         let _normal_message_hold = budgets
             .normal_messages
@@ -1495,16 +2023,19 @@ mod tests {
         let state = state(tmp.path());
         let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
         let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
+        let lane = Arc::new(Lane::default());
         let owner = Persistence {
             tx: normal_tx,
             replay_tx,
+            lane: lane.clone(),
+            fast: fast_runner(&state, &lane),
             normal_sequence: Arc::new(AtomicU64::new(0)),
             admission: Arc::new(tokio::sync::Mutex::new(())),
             budgets,
             admission_hook: None,
             replay_admission_hook: None,
         };
-        let running = tokio::spawn(run_owner(normal_rx, replay_rx, state));
+        let running = tokio::spawn(run_owner(normal_rx, replay_rx, state, lane));
         assert!(
             owner
                 .submit_resumable(
@@ -1553,7 +2084,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let running = tokio::spawn(run_owner(normal_rx, replay_rx, state));
+        let running = tokio::spawn(run_owner(normal_rx, replay_rx, state, Arc::default()));
         started.notified().await;
         normal_tx
             .send(NormalJob {
@@ -1648,7 +2179,7 @@ mod tests {
             .unwrap();
         drop(normal_tx);
         drop(replay_tx);
-        Box::pin(run_owner(normal_rx, replay_rx, state)).await;
+        Box::pin(run_owner(normal_rx, replay_rx, state, Arc::default())).await;
         assert_eq!(*order.lock().unwrap(), ["normal-basis", "replay-capture"]);
     }
 
@@ -1698,7 +2229,7 @@ mod tests {
         }
         drop(normal_tx);
         drop(replay_tx);
-        Box::pin(run_owner(normal_rx, replay_rx, state)).await;
+        Box::pin(run_owner(normal_rx, replay_rx, state, Arc::default())).await;
         assert_eq!(
             *order.lock().unwrap(),
             [
@@ -1745,9 +2276,12 @@ mod tests {
                 }
             }) as Arc<dyn Fn() + Send + Sync>
         };
+        let lane = Arc::new(Lane::default());
         let owner = Persistence {
             tx: normal_tx,
             replay_tx,
+            lane: lane.clone(),
+            fast: fast_runner(&state, &lane),
             normal_sequence: Arc::new(AtomicU64::new(0)),
             admission: Arc::new(tokio::sync::Mutex::new(())),
             budgets: AdmissionBudgets::global(),
@@ -1757,7 +2291,7 @@ mod tests {
                 Arc::new(move || admitted.notify_one())
             }),
         };
-        let running = tokio::spawn(run_owner(normal_rx, replay_rx, state));
+        let running = tokio::spawn(run_owner(normal_rx, replay_rx, state, lane));
         let order = Arc::new(Mutex::new(Vec::new()));
 
         let first_owner = owner.clone();
