@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -161,6 +162,54 @@ app-sdk = { path = "../../app_sdk" }
         env.setdefault("INCLUDE_PACKAGES", "calculator other")
         env.update(overrides)
         return subprocess.run(args, cwd=self.root, env=env, text=True, capture_output=True, timeout=120)
+
+    def test_explicit_compiler_selection(self):
+        # Real Cargo must select the caller's compiler before it can compile
+        # anything. Refusing -vV gives this production-path test zero codegen.
+        tools = self.root / "compiler-probes"
+        tools.mkdir()
+        marker = self.root / "compiler-selected"
+        for name, label in (("rustc", "default"), ("chosen-compiler", "explicit")):
+            self.write(f"compiler-probes/{name}",
+                       f"#!/bin/sh\nprintf '{label}\\n' >> '{marker}'\nexit 97\n")
+        compiler = tools / "chosen-compiler"
+        cargo_home = self.root / "cargo-home"
+        cargo_home.mkdir()
+        config_dir = self.root / ".cargo"
+        config_dir.mkdir()
+        cli_config = self.root / "compiler.toml"
+        cli_config.write_text(f'[build]\nrustc = "{compiler}"\n')
+        cases = (
+            ("RUSTC", {"RUSTC": str(compiler)}, None),
+            ("CARGO_BUILD_RUSTC", {"CARGO_BUILD_RUSTC": str(compiler)}, None),
+            ("inline config", {"EXTRA_CARGO_ARGS": f'--config build.rustc="{compiler}"'}, None),
+            ("CLI config file", {"EXTRA_CARGO_ARGS": f"--config {cli_config}"}, None),
+            ("project config", {}, config_dir / "config.toml"),
+            ("legacy project config", {}, config_dir / "config"),
+            ("Cargo home config", {}, cargo_home / "config.toml"),
+        )
+        with patch.dict(os.environ):
+            for key in ("RUSTC", "CARGO_BUILD_RUSTC", "EXTRA_CARGO_ARGS"):
+                os.environ.pop(key, None)
+            for name, overrides, config in cases:
+                with self.subTest(compiler_source=name):
+                    marker.unlink(missing_ok=True)
+                    if config is not None:
+                        config.write_text(cli_config.read_text())
+                    try:
+                        result = self.run_command(
+                            "bash", "os/scripts/build-thin-apps.sh",
+                            PATH=str(tools) + os.pathsep + os.environ["PATH"],
+                            CARGO_HOME=str(cargo_home), **overrides,
+                        )
+                        self.assertNotEqual(result.returncode, 0, "probe compiler unexpectedly succeeded")
+                        self.assertTrue(marker.exists(), result.stdout + result.stderr)
+                        selected = marker.read_text().splitlines()
+                        self.assertIn("explicit", selected, result.stdout + result.stderr)
+                        self.assertNotIn("default", selected, "script masked Cargo's explicit compiler")
+                    finally:
+                        if config is not None:
+                            config.unlink()
 
     def test_package_selection(self):
         with self.subTest(phase="selected_binary_retains_full_runtime_features_and_hash"):
