@@ -21,6 +21,43 @@ pub(crate) fn watch_entries(dir: &Path) -> Result<Watch, FsError> {
     watch_mode(dir, &VPath::root(), RecursiveMode::NonRecursive)
 }
 
+/// Filesystems whose entries can change without passing through this
+/// kernel, by `statfs` magic: FUSE, NFS, SMB, CIFS, SMB2, 9P, Ceph and the
+/// two AFS implementations.
+#[cfg(target_os = "linux")]
+const REMOTE_FILESYSTEMS: [u32; 9] = [
+    0x6573_5546,
+    0x0000_6969,
+    0x0000_517B,
+    0xFF53_4D42,
+    0xFE53_4D42,
+    0x0102_1997,
+    0x00C3_6400,
+    0x6B41_4653,
+    0x5346_414F,
+];
+
+/// [`crate::native::watch_sees_every_change`].
+#[cfg(target_os = "linux")]
+pub(crate) fn sees_every_change(dir: &Path) -> bool {
+    rustix::fs::statfs(dir).is_ok_and(|stat| {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "statfs magic numbers are 32-bit; the width and sign of `f_type` vary by target"
+        )]
+        let magic = stat.f_type as u32;
+        !REMOTE_FILESYSTEMS.contains(&magic)
+    })
+}
+
+/// Elsewhere the filesystem's type is not told apart, so a watch is trusted
+/// for local edits only.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn sees_every_change(_dir: &Path) -> bool {
+    false
+}
+
 fn watch_mode(root: &Path, path: &VPath, mode: RecursiveMode) -> Result<Watch, FsError> {
     let target = crate::disk::resolve(root, path);
     let inbox = Arc::new(Inbox::default());
@@ -161,6 +198,14 @@ mod tests {
             })
         );
         assert_eq!(watch.try_next(), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_watch_on_a_local_directory_sees_every_change() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(sees_every_change(dir.path()));
+        assert!(!sees_every_change(&dir.path().join("missing")));
     }
 
     #[test]

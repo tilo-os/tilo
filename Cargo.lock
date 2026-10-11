@@ -4365,6 +4365,7 @@ dependencies = [
  "tilo-clock",
  "tilo-copy-lint",
  "tilo-doc-codecs",
+ "tilo-files",
  "tilo-fs",
  "tilo-paths",
  "tilo-test-env",

@@ -608,10 +608,21 @@ pub struct FileExplorerWidget {
     local_outcomes: HashMap<String, crate::file_ops::Outcome>,
     /// Transient status line (operation results), shown in the footer.
     status: Option<String>,
-    /// Filesystem/xattr changes have no winit event of their own. The widget
-    /// asks the host for this low-frequency wake so sync/availability/share/
-    /// history badges update without burning an animation frame loop.
-    next_metadata_refresh: Instant,
+    /// The next poll of what no change signal covers (see
+    /// [`metadata_refresh`]): a directory its watch does not fully cover,
+    /// the workspace record catalogue, an unwatched identity projection.
+    /// `None` when every source has a change signal, so an idle window with
+    /// an unchanged directory has no deadline at all.
+    next_metadata_refresh: Option<Instant>,
+    /// Reports changes to the open directory's entries and wakes the window.
+    directory_watch: crate::directory_watch::DirectoryWatch,
+    /// Reports changes to the trusted-identity projection's directory.
+    identity_watch: crate::directory_watch::DirectoryWatch,
+    /// The directory watch reported a change that has not been read yet
+    /// (held while a rename or pin drag defers the read).
+    directory_changed: bool,
+    /// When the open directory was last read, for [`metadata_refresh::change_read_gap`].
+    last_directory_read: Instant,
     /// When `Some(i)`, an inline rename of displayed entry `i` is in
     /// progress: the in-place editor is drawn over row/cell `i`. `None` = not
     /// renaming.
@@ -1719,7 +1730,12 @@ impl FileExplorerWidget {
             ops_presented: false,
             local_outcomes: HashMap::new(),
             status: None,
-            next_metadata_refresh: ui::time::now() + metadata_refresh::LIVE_INTERVAL,
+            // Scheduled by the first sync, once the watches exist.
+            next_metadata_refresh: None,
+            directory_watch: crate::directory_watch::DirectoryWatch::new(ui::WakeHandle::new()),
+            identity_watch: crate::directory_watch::DirectoryWatch::new(ui::WakeHandle::new()),
+            directory_changed: false,
+            last_directory_read: ui::time::now(),
             renaming: None,
             rename_buffer: String::new(),
             rename_seed_pending: false,
@@ -3216,6 +3232,15 @@ impl FileExplorerWidget {
         }
         let recent = crate::recent::is_location(&path);
         self.shown_folder = shown_selection::folder(&path);
+        // Watch before reading, so a change landing between the two is
+        // reported (and costs one more read) rather than lost.
+        let watched = self.watched_directory(&path);
+        self.directory_watch.point_at(watched.as_deref());
+        self.directory_changed = false;
+        // The new directory's watch decides whether and how often it is
+        // polled; the next sync schedules that.
+        self.next_metadata_refresh = None;
+        self.last_directory_read = ui::time::now();
         let loaded = if let Some((archive_path, prefix)) = crate::archive::location(&path) {
             crate::archive::list_directory(&archive_path, &prefix)
                 .map(|archive_entries| {
@@ -3324,29 +3349,99 @@ impl FileExplorerWidget {
         self.load(self.current_path.clone());
     }
 
-    /// Poll the visible directory without treating it as navigation. Stable
-    /// record identity preserves selection across remote rename/move metadata;
-    /// ordinary files fall back to their path. Scroll and transient operation
-    /// status remain untouched.
+    /// Re-read the visible directory without treating it as navigation, when
+    /// its watch reported a change or, where no watch covers it, when its
+    /// poll is due. Stable record identity preserves selection across remote
+    /// rename/move metadata; ordinary files fall back to their path. Scroll
+    /// and transient operation status remain untouched.
     fn refresh_metadata_if_due(&mut self, now: Instant) -> bool {
-        if now < self.next_metadata_refresh {
-            return false;
+        // The first sync after construction starts the watches; changes made
+        // before a watch started are covered by one more read.
+        let watched = self.watched_directory(&self.current_path);
+        if self.directory_watch.point_at(watched.as_deref()) {
+            self.directory_changed = true;
         }
-        // Set the next deadline before doing any I/O.  A transient read error
-        // must not accidentally turn a very large directory into a busy loop.
-        self.next_metadata_refresh = now + metadata_refresh::interval(self.entries.len());
-        let catalog_changed = self
-            .collaborative_record_pager
-            .borrow_mut()
-            .poll_generation();
+        let identities_watched = self.startup_accounts.is_none()
+            && self.identity_watch.point_at(
+                crate::identity_directory::TrustedHumanDirectory::default_path()
+                    .parent()
+                    .filter(|dir| !dir.as_os_str().is_empty()),
+            );
+        // A directory already known to have changed is not drained again
+        // until it is read: its events would only wake the window again.
+        if !self.directory_changed && self.directory_watch.take_changes() {
+            self.directory_changed = true;
+        }
+        let identity_signal = identities_watched || self.identity_watch.take_changes();
+        let poll_due = self.next_metadata_refresh.is_some_and(|due| now >= due);
+        if poll_due || self.next_metadata_refresh.is_none() {
+            // Set the next deadline before doing any I/O.  A transient read
+            // error must not accidentally turn a very large directory into a
+            // busy loop.
+            self.next_metadata_refresh = self.next_poll_interval().map(|interval| now + interval);
+        }
+        let catalog_changed = poll_due
+            && self
+                .collaborative_record_pager
+                .borrow_mut()
+                .poll_generation();
         // `sync` admits the one bounded page for this turn. Keep polling and
         // admission separate so an authority change cannot consume two pages
         // in one UI frame.
-        let identities_changed = self.refresh_trusted_identities(None);
-        if self.renaming.is_some() || self.pin_drag.is_some() {
+        let identities_changed = (identity_signal
+            || (poll_due
+                && self.identity_watch.coverage() != crate::directory_watch::Coverage::Complete))
+            && self.refresh_trusted_identities(None);
+        let directory_polled = poll_due
+            && self.directory_watch.coverage() != crate::directory_watch::Coverage::Complete;
+        let change_readable = self.directory_changed
+            && now
+                >= self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len());
+        if !(directory_polled || change_readable)
+            || self.renaming.is_some()
+            || self.pin_drag.is_some()
+        {
             return identities_changed || catalog_changed;
         }
+        // Drain before reading: a change after this point wakes the window
+        // again and is read next time.
+        let _ = self.directory_watch.take_changes();
+        self.directory_changed = false;
+        self.last_directory_read = now;
         self.refresh_metadata_preserving_view() || identities_changed || catalog_changed
+    }
+
+    /// The directory to watch for `path`'s listing: `None` for listings that
+    /// are not one directory's entries (Recent, an archive, the hosted Trash
+    /// that merges two directories), which are polled instead.
+    fn watched_directory(&self, path: &Path) -> Option<PathBuf> {
+        let virtual_listing = crate::recent::is_location(path)
+            || crate::archive::location(path).is_some()
+            || (self.hosted_clipboard() && fileops::is_trash_dir(path));
+        (!virtual_listing).then(|| path.to_path_buf())
+    }
+
+    /// How often to poll what no change signal covers, or `None` when
+    /// nothing needs polling.
+    fn next_poll_interval(&self) -> Option<Duration> {
+        use crate::directory_watch::Coverage;
+        let entries = self.entries.len();
+        let directory = match self.directory_watch.coverage() {
+            Coverage::Complete => None,
+            // Local edits arrive as events; remote ones (tilo-fs gossip, a
+            // network share) only by reading, as promptly as before.
+            Coverage::Partial => Some(metadata_refresh::interval(entries)),
+            Coverage::None => Some(metadata_refresh::unwatched_interval(entries)),
+        };
+        let catalog = self
+            .collaborative_record_pager
+            .borrow()
+            .has_roots()
+            .then_some(metadata_refresh::BACKGROUND_INTERVAL);
+        let identities = (self.startup_accounts.is_none()
+            && self.identity_watch.coverage() != Coverage::Complete)
+            .then_some(metadata_refresh::BACKGROUND_INTERVAL);
+        [directory, catalog, identities].into_iter().flatten().min()
     }
 
     fn refresh_trusted_identities(&mut self, path: Option<&Path>) -> bool {
@@ -8973,8 +9068,16 @@ impl Widget for FileExplorerWidget {
                     .ok()
                     .and_then(|reply| (!reply.is_pending(*token)).then(Instant::now))
             });
-        Some(self.next_metadata_refresh.min(self.nearby_send.next_poll()))
+        // A rename or pin drag defers the read; its end is input of its own,
+        // and a due deadline here would only spin until then.
+        let read_deferred = self.renaming.is_some() || self.pin_drag.is_some();
+        let changed_directory = (self.directory_changed && !read_deferred).then(|| {
+            self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len())
+        });
+        Some(self.nearby_send.next_poll())
             .into_iter()
+            .chain(self.next_metadata_refresh)
+            .chain(changed_directory)
             .chain(document_open_reply)
             .chain(self.local_clipboard.next_wake())
             .chain(self.nav.next_wake_deadline())

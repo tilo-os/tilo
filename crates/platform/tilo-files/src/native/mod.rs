@@ -49,6 +49,21 @@ pub fn watch_entries(dir: &std::path::Path) -> Result<crate::Watch, crate::FsErr
     crate::disk_watch::watch_entries(dir)
 }
 
+/// Whether a watch on the native directory `dir` ([`watch_entries`]) sees
+/// every change to its entries. Not on a FUSE or network mount (a projected
+/// collaborative filesystem, virtiofs, NFS, SMB, 9P, Ceph, AFS), whose
+/// entries can change without passing through this kernel, and not where
+/// the filesystem's type cannot be told: there a watch reports local edits
+/// only, and whoever lists `dir` must still read it again for the rest.
+#[cfg(all(
+    feature = "watch",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+#[must_use]
+pub fn watch_sees_every_change(dir: &std::path::Path) -> bool {
+    crate::disk_watch::sees_every_change(dir)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
