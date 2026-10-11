@@ -225,17 +225,73 @@ class FocusedTests(unittest.TestCase):
             self.assertNotIn('push:', workflow)
             self.assertEqual(workflow.count('persist-credentials: false'), 3)
             self.assertIn('uses: ./control/.forgejo/actions/restore-cargo-downloads', workflow)
-            self.assertIn('lockfile: source/Cargo.lock', workflow)
+            self.assertIn("lockfile: ${{ github.event.inputs.operation == 'clippy' && 'Cargo.lock' "
+                          "|| 'source/Cargo.lock' }}", workflow)
             self.assertIn('key: ${{ steps.downloads.outputs.cache-key }}', workflow)
             self.assertIn('ref: ${{ needs.builder.outputs.source }}', workflow)
             self.assertIn('python3 -I control/tools/ci/focused_test.py run --root source', workflow)
             native = workflow.split('  focused:', 1)[1]
             self.assertEqual(native.count('path: control'), 1)
-            self.assertEqual(native.count('path: source'), 1)
+            self.assertEqual(native.count(
+                "path: ${{ github.event.inputs.operation == 'clippy' && '.' || 'source' }}"), 1)
+            # The source is checked out before the helpers, so for clippy the
+            # helpers land in a child of the source, never its ancestor.
+            self.assertLess(native.index('ref: ${{ needs.builder.outputs.source }}'),
+                            native.index('path: control'))
             # Checkout uses the job token; the runner provides the compiler
             # cache.
             self.assertNotIn('compiler_cache_env', native)
             self.assertNotIn('secrets.', workflow)
+
+    def test_clippy_runs_the_sources_ci_gate_over_validated_packages(self):
+        values = dict(self.values, OPERATION='clippy', TEST_TARGET='', TEST_NAME='')
+        with self.subTest(phase='test inputs and unbounded scopes are rejected'):
+            for key, value in [('TEST_TARGET', 'it'), ('TEST_NAME', 'module::case'),
+                               ('TEST_NAMES', '["module::case"]'), ('PACKAGE', '--workspace'),
+                               ('PACKAGE', '')]:
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    focused.request(dict(values, **{key: value}))
+            for packages in ([], ['p' + str(n) for n in range(65)], ['shell', 'shell'], ['--workspace']):
+                with self.subTest(packages=packages), self.assertRaises(ValueError):
+                    focused.request(dict(values, PACKAGE='', PACKAGES=json.dumps(packages)))
+        with self.subTest(phase='one package runs clippy-check.sh from the source root'):
+            request = focused.request(values)
+            with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
+                    patch.object(focused.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1)) as run:
+                self.assertEqual(focused.execute(Path('/focused-test-fixture'), request), 1)
+            self.assertEqual(run.call_args.args[0], ['bash', 'tools/ci/clippy-check.sh', '-p', 'shell'])
+            self.assertEqual(run.call_args.kwargs['cwd'], Path('/focused-test-fixture'))
+        with self.subTest(phase='a package set is linted in one invocation'):
+            self.metadata['workspace_members'].append('relay-id')
+            self.metadata['packages'].append({'id': 'relay-id', 'name': 'tilo-relay', 'targets': []})
+            request = focused.request(dict(values, PACKAGE='', PACKAGES='["shell","tilo-relay"]'))
+            with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
+                    patch.object(focused.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+                self.assertEqual(focused.execute(Path('/focused-test-fixture'), request), 0)
+            self.assertEqual(run.call_args.args[0],
+                             ['bash', 'tools/ci/clippy-check.sh', '-p', 'shell', '-p', 'tilo-relay'])
+        with self.subTest(phase='non-members fail before linting'):
+            request = focused.request(dict(values, PACKAGE='tilo-other'))
+            with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
+                    patch.object(focused.subprocess, 'run') as run, \
+                    self.assertRaisesRegex(ValueError, 'workspace member'):
+                focused.execute(Path('/focused-test-fixture'), request)
+            run.assert_not_called()
+        with self.subTest(phase='the gate and environment are the ones CI clippy uses'):
+            root = PATH.parents[2]
+            check = (root / '.forgejo/workflows/check.yml').read_text()
+            self.assertIn('tools/ci/clippy-check.sh ${{ matrix.packages }}', check)
+            self.assertIn("CARGO_BUILD_JOBS: '8'", check.split('\n  clippy:\n', 1)[1].split('steps:', 1)[0])
+            workflow = (root / '.forgejo/workflows/dev-focused-test.yml').read_text()
+            self.assertIn('options: [test, check-tests, clippy,', workflow)
+            self.assertIn("CARGO_BUILD_JOBS: ${{ github.event.inputs.operation == 'clippy' && '8' || '4' }}",
+                          workflow)
+            lint = workflow.split("- name: Lint the requested packages with CI's Clippy gate", 1)[1]
+            lint = lint.split('- name:', 1)[0]
+            self.assertIn("if: github.event.inputs.operation == 'clippy'", lint)
+            self.assertIn('XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime', lint)
+            self.assertIn('python3 -I control/tools/ci/focused_test.py run --root .', lint)
+            self.assertNotIn('with-headless-audio', lint)
 
 
 if __name__ == '__main__':
