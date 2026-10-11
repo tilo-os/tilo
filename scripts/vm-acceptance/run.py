@@ -57,6 +57,10 @@ BUDGETS = {
     # processes and the compositor by anonymous RSS, the memory they hold privately.
     "app_memory_mb": 400, "app_anon_mb": 250,
     "shell_anon_mb": 500, "process_anon_mb": 300, "session_memory_mb": 2500,
+    # The compositor with no app open (R01): 238.7 MB on main before its freed
+    # heap was trimmed after startup and quiet moments and before its renderer stopped
+    # initialising GL beside Vulkan; 159-167 MB after (runs 94419, 94637, lavapipe).
+    "shell_idle_anon_mb": 200,
     # Frames at 60 Hz. Work per frame: CPU everywhere, wall time on real display hardware.
     "work_ms_p95": 16.7, "work_ms_p99": 33.4,
     # Transitions, the compositor's side: frames painted, lateness against its own
