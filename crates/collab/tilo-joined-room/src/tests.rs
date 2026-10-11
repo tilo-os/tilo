@@ -600,7 +600,11 @@ fn opened_sealed_local_write_refuses_bad_plaintext_without_publication() {
         request,
         &mut |_| {
             opened += 1;
-            Ok(b"not an Automerge document mutation".to_vec())
+            Ok(
+                collab_types::DocumentMutation::Incremental(b"not Automerge storage".to_vec())
+                    .encode()
+                    .unwrap(),
+            )
         },
         joined.now,
     );
@@ -611,6 +615,30 @@ fn opened_sealed_local_write_refuses_bad_plaintext_without_publication() {
     assert_eq!(
         opened, 1,
         "the actual owner must open after envelope validation"
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+}
+
+#[test]
+fn opened_sealed_local_write_refuses_missing_dependencies_without_publication() {
+    let joined = enrolled();
+    let (request, _) = sealed_edit(&joined);
+    let before = std::fs::read(&joined.path).unwrap();
+    let mut alien = AutoCommit::new();
+    alien.put(ROOT, "unadmitted", "basis").unwrap();
+    alien.commit();
+    let basis = alien.get_heads();
+    alien.put(ROOT, "topic", "orphan").unwrap();
+    alien.commit();
+    let plaintext = collab_types::DocumentMutation::Incremental(alien.save_after(&basis))
+        .encode()
+        .unwrap();
+    assert!(
+        joined
+            .owner
+            .commit_document_with_opening(request, &mut |_| Ok(plaintext.clone()), joined.now,)
+            .is_err(),
+        "a sealed write cannot admit an uncommitted dependency basis"
     );
     assert_eq!(std::fs::read(&joined.path).unwrap(), before);
 }
