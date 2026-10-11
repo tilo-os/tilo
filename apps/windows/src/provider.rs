@@ -6,8 +6,8 @@ use ui::time::{Duration, Instant};
 
 use compat_service::{
     InstallationStatus, ManagedApplication, ManagedInstallation, MatchReason, PROTOCOL_VERSION,
-    ProtocolRequest, ProtocolResponse, RouteKind, SessionClient, VmAvailability, VmInstallation,
-    VmUninstallation,
+    ProtocolRequest, ProtocolResponse, RouteKind, SessionClient, SessionError, VmAvailability,
+    VmInstallation, VmUninstallation,
 };
 
 use crate::model::{
@@ -758,407 +758,176 @@ fn worker(
     events: &Sender<WorkerEvent>,
 ) {
     while let Ok(command) = commands.recv() {
-        match command {
+        // Commands that change server state are followed by a fresh list.
+        let (event, refresh) = match command {
             WorkerCommand::Refresh => {
                 // A setup surface can be closed while Windows keeps working.
                 // Refreshing the server-owned singleton status before listing
                 // prevents discovery rows from being permanently stale; the
                 // client never supplies an operation ID.
-                match client.request(&ProtocolRequest::RefreshVmInstallation {
-                    version: PROTOCOL_VERSION,
-                }) {
-                    Ok(ProtocolResponse::VmInstallationRefreshed { .. }) => {}
-                    Ok(ProtocolResponse::Error { error }) => {
-                        let _ = events.send(WorkerEvent::Notice(error.message));
-                    }
-                    Ok(_) => {
-                        let _ = events.send(WorkerEvent::Notice(
-                            "The compatibility service returned an invalid Windows setup refresh."
-                                .into(),
-                        ));
-                    }
-                    Err(error) => {
-                        let _ = events.send(WorkerEvent::Notice(error.to_string()));
-                    }
-                }
-                match client.request(&ProtocolRequest::RefreshVmUninstallation {
-                    version: PROTOCOL_VERSION,
-                }) {
-                    Ok(ProtocolResponse::VmUninstallationRefreshed { .. }) => {}
-                    Ok(ProtocolResponse::Error { error }) => {
-                        let _ = events.send(WorkerEvent::Notice(error.message));
-                    }
-                    Ok(_) => {
-                        let _ = events.send(WorkerEvent::Notice(
-                            "The compatibility service returned an invalid Windows uninstall refresh."
-                                .into(),
-                        ));
-                    }
-                    Err(error) => {
-                        let _ = events.send(WorkerEvent::Notice(error.to_string()));
-                    }
-                }
-                let event = match client.request(&ProtocolRequest::List {
-                    version: PROTOCOL_VERSION,
-                }) {
-                    Ok(ProtocolResponse::Listed {
-                        applications,
-                        installations,
-                        vm_availability,
-                        vm_installation,
-                        vm_uninstallation,
-                    }) => WorkerEvent::Listed {
-                        applications,
-                        installations,
-                        vm_availability,
-                        vm_installation,
-                        vm_uninstallation,
+                for request in [
+                    ProtocolRequest::RefreshVmInstallation {
+                        version: PROTOCOL_VERSION,
                     },
-                    Ok(ProtocolResponse::Error { error }) => {
-                        WorkerEvent::Unavailable(error.message)
-                    }
-                    Ok(_) => WorkerEvent::Unavailable(
-                        "The compatibility service returned an invalid list response.".into(),
+                    ProtocolRequest::RefreshVmUninstallation {
+                        version: PROTOCOL_VERSION,
+                    },
+                ] {
+                    let notice = match client.request(&request) {
+                        Ok(
+                            ProtocolResponse::VmInstallationRefreshed { .. }
+                            | ProtocolResponse::VmUninstallationRefreshed { .. },
+                        ) => continue,
+                        Ok(ProtocolResponse::Error { error }) => error.message,
+                        Ok(_) => UNEXPECTED_RESPONSE.into(),
+                        Err(error) => error.to_string(),
+                    };
+                    let _ = events.send(WorkerEvent::Notice(notice));
+                }
+                (list(&mut client), false)
+            }
+            WorkerCommand::Launch(entry_id) => (
+                launched(
+                    client.request(&ProtocolRequest::Launch {
+                        version: PROTOCOL_VERSION,
+                        entry_id,
+                    }),
+                    "The Windows application exited normally.",
+                    "The Windows application exited with status",
+                ),
+                false,
+            ),
+            WorkerCommand::LaunchVmFallback(entry_id) => (
+                launched(
+                    client.request(&ProtocolRequest::LaunchVmFallback {
+                        version: PROTOCOL_VERSION,
+                        entry_id,
+                    }),
+                    "The application exited from the managed Windows fallback.",
+                    "The Windows fallback application exited with status",
+                ),
+                false,
+            ),
+            WorkerCommand::LaunchVmWithFile { entry_id, source } => (
+                launched(
+                    client.request_with_file(
+                        &ProtocolRequest::LaunchVmWithPortalFile {
+                            version: PROTOCOL_VERSION,
+                            entry_id,
+                        },
+                        &source,
                     ),
-                    Err(error) => WorkerEvent::Unavailable(error.to_string()),
-                };
-                if events.send(event).is_err() {
-                    return;
-                }
-            }
-            WorkerCommand::Launch(entry_id) => {
-                let event = match client.request(&ProtocolRequest::Launch {
-                    version: PROTOCOL_VERSION,
-                    entry_id,
-                }) {
-                    Ok(ProtocolResponse::Launched { receipt }) if receipt.success => {
-                        WorkerEvent::Operation(
-                            Ok("The Windows application exited normally.".into()),
-                        )
-                    }
-                    Ok(ProtocolResponse::Launched { receipt }) => {
-                        WorkerEvent::Operation(Err(format!(
-                            "The Windows application exited with status {}.",
-                            receipt
-                                .exit_code
-                                .map_or_else(|| "unknown".to_string(), |code| code.to_string())
-                        )))
-                    }
-                    Ok(ProtocolResponse::Error { error }) => {
-                        WorkerEvent::Operation(Err(error.message))
-                    }
-                    Ok(_) => WorkerEvent::Operation(Err(
-                        "The compatibility service returned an invalid launch response.".into(),
-                    )),
-                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
-                };
-                if events.send(event).is_err() {
-                    return;
-                }
-            }
-            WorkerCommand::LaunchVmFallback(entry_id) => {
-                let event = match client.request(&ProtocolRequest::LaunchVmFallback {
-                    version: PROTOCOL_VERSION,
-                    entry_id,
-                }) {
-                    Ok(ProtocolResponse::Launched { receipt }) if receipt.success => {
-                        WorkerEvent::Operation(Ok(
-                            "The application exited from the managed Windows fallback.".into(),
-                        ))
-                    }
-                    Ok(ProtocolResponse::Launched { receipt }) => {
-                        WorkerEvent::Operation(Err(format!(
-                            "The Windows fallback application exited with status {}.",
-                            receipt
-                                .exit_code
-                                .map_or_else(|| "unknown".to_string(), |code| code.to_string())
-                        )))
-                    }
-                    Ok(ProtocolResponse::Error { error }) => {
-                        WorkerEvent::Operation(Err(error.message))
-                    }
-                    Ok(_) => WorkerEvent::Operation(Err(
-                        "The compatibility service returned an invalid VM launch response.".into(),
-                    )),
-                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
-                };
-                if events.send(event).is_err() {
-                    return;
-                }
-            }
-            WorkerCommand::LaunchVmWithFile { entry_id, source } => {
-                let event = match client.request_with_file(&ProtocolRequest::LaunchVmWithPortalFile { version: PROTOCOL_VERSION, entry_id }, &source) {
-                    Ok(ProtocolResponse::Launched { receipt }) if receipt.success => WorkerEvent::Operation(Ok("Opened the portal-selected file in Windows.".into())),
-                    Ok(ProtocolResponse::Launched { receipt }) => WorkerEvent::Operation(Err(format!("Windows closed with status {:?}.", receipt.exit_code))),
-                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Operation(Err(error.message)),
-                    Ok(_) => WorkerEvent::Operation(Err("The compatibility service returned an invalid portal-file launch response.".into())),
-                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
-                };
-                if events.send(event).is_err() {
-                    return;
-                }
-            }
+                    "Opened the portal-selected file in Windows.",
+                    "Windows closed with status",
+                ),
+                false,
+            ),
             WorkerCommand::Install {
                 source,
                 source_name,
-            } => {
-                let event = match client.request_with_file(
-                    &ProtocolRequest::Install {
-                        version: PROTOCOL_VERSION,
-                        source_name: source_name.clone(),
-                    },
-                    &source,
-                ) {
-                    Ok(ProtocolResponse::VmInstallConfirmation { confirmation }) => {
-                        WorkerEvent::VmInstallConfirmation {
-                            source,
-                            source_name,
-                            confirmation,
-                        }
-                    }
-                    Ok(ProtocolResponse::Installed { receipt }) => {
-                        WorkerEvent::Operation(Ok(receipt.detail))
-                    }
-                    Ok(ProtocolResponse::Error { error }) => {
-                        WorkerEvent::Operation(Err(error.message))
-                    }
-                    Ok(_) => WorkerEvent::Operation(Err(
-                        "The compatibility service returned an invalid install response.".into(),
-                    )),
-                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
-                };
-                let needs_confirmation = matches!(event, WorkerEvent::VmInstallConfirmation { .. });
-                if events.send(event).is_err() {
-                    return;
-                }
-                if needs_confirmation {
-                    continue;
-                }
-                let refresh = match client.request(&ProtocolRequest::List {
+            } => match client.request_with_file(
+                &ProtocolRequest::Install {
                     version: PROTOCOL_VERSION,
-                }) {
-                    Ok(ProtocolResponse::Listed {
-                        applications,
-                        installations,
-                        vm_availability,
-                        vm_installation,
-                        vm_uninstallation,
-                    }) => WorkerEvent::Listed {
-                        applications,
-                        installations,
-                        vm_availability,
-                        vm_installation,
-                        vm_uninstallation,
+                    source_name: source_name.clone(),
+                },
+                &source,
+            ) {
+                Ok(ProtocolResponse::VmInstallConfirmation { confirmation }) => (
+                    WorkerEvent::VmInstallConfirmation {
+                        source,
+                        source_name,
+                        confirmation,
                     },
-                    Ok(ProtocolResponse::Error { error }) => {
-                        WorkerEvent::Unavailable(error.message)
-                    }
-                    Ok(_) => WorkerEvent::Unavailable(
-                        "The compatibility service returned an invalid list response.".into(),
-                    ),
-                    Err(error) => WorkerEvent::Unavailable(error.to_string()),
-                };
-                if events.send(refresh).is_err() {
-                    return;
-                }
-            }
+                    false,
+                ),
+                response => (operation(response), true),
+            },
             WorkerCommand::InstallInCapsule {
                 source,
                 source_name,
-            } => {
-                install_destination_request(
-                    &mut client,
-                    events,
+            } => (
+                operation(client.request_with_file(
                     &ProtocolRequest::InstallInCapsule {
                         version: PROTOCOL_VERSION,
                         source_name,
                     },
                     &source,
-                    "Private capsule setup started.",
-                );
-            }
+                )),
+                true,
+            ),
             WorkerCommand::InstallInVm {
                 source,
                 source_name,
-            } => {
-                install_destination_request(
-                    &mut client,
-                    events,
+            } => (
+                operation(client.request_with_file(
                     &ProtocolRequest::InstallInVm {
                         version: PROTOCOL_VERSION,
                         source_name,
                     },
                     &source,
-                    "Windows setup finished or is still running in its integrated app surface.",
-                );
-            }
-            WorkerCommand::PublishVmCandidate(entry_id) => {
-                lifecycle_request(
-                    &mut client,
-                    events,
-                    &ProtocolRequest::PublishVmCandidate {
-                        version: PROTOCOL_VERSION,
-                        entry_id,
-                    },
-                    "Application added to Windows Apps.",
-                );
-            }
-            WorkerCommand::RetryInstall(capsule_id) => {
-                lifecycle_request(
-                    &mut client,
-                    events,
-                    &ProtocolRequest::RetryInstall {
-                        version: PROTOCOL_VERSION,
-                        capsule_id,
-                    },
-                    "Retry finished",
-                );
-            }
-            WorkerCommand::EscalateInstallToVm(capsule_id) => {
-                let event = match client.request(&ProtocolRequest::EscalateInstallToVm {
+                )),
+                true,
+            ),
+            WorkerCommand::PublishVmCandidate(entry_id) => (
+                operation(client.request(&ProtocolRequest::PublishVmCandidate {
+                    version: PROTOCOL_VERSION,
+                    entry_id,
+                })),
+                true,
+            ),
+            WorkerCommand::RetryInstall(capsule_id) => (
+                operation(client.request(&ProtocolRequest::RetryInstall {
                     version: PROTOCOL_VERSION,
                     capsule_id,
-                }) {
-                    Ok(ProtocolResponse::VmInstallStarted { installation }) => {
-                        WorkerEvent::Operation(Ok(installation.detail))
-                    }
-                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Operation(Err(error.message)),
-                    Ok(_) => WorkerEvent::Operation(Err(
-                        "The compatibility service returned an invalid Windows escalation response."
-                            .into(),
-                    )),
-                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
-                };
-                if events.send(event).is_err() {
-                    return;
-                }
-                lifecycle_request(
-                    &mut client,
-                    events,
-                    &ProtocolRequest::List {
-                        version: PROTOCOL_VERSION,
-                    },
-                    "The retained installer is running in the shared Windows appliance.",
-                );
-            }
-            WorkerCommand::RemoveLauncher(entry_id) => {
-                lifecycle_request(
-                    &mut client,
-                    events,
-                    &ProtocolRequest::RemoveLauncher {
-                        version: PROTOCOL_VERSION,
-                        entry_id,
-                    },
-                    "Launcher removed; the installed application and its data were kept.",
-                );
-            }
-            WorkerCommand::VendorUninstall(capsule_id) => {
-                lifecycle_request(
-                    &mut client,
-                    events,
-                    &ProtocolRequest::VendorUninstall {
-                        version: PROTOCOL_VERSION,
-                        capsule_id,
-                    },
-                    "Vendor uninstall finished; private leftover data was kept.",
-                );
-            }
-            WorkerCommand::VendorUninstallVm(entry_id) => {
-                lifecycle_request(
-                    &mut client,
-                    events,
-                    &ProtocolRequest::VendorUninstallVm {
-                        version: PROTOCOL_VERSION,
-                        entry_id,
-                    },
-                    "Windows uninstall finished; the published application was removed.",
-                );
-            }
-            WorkerCommand::DeleteData(capsule_id) => {
-                lifecycle_request(
-                    &mut client,
-                    events,
-                    &ProtocolRequest::DeleteData {
-                        version: PROTOCOL_VERSION,
-                        capsule_id,
-                    },
-                    "Application and all of its private capsule data were deleted.",
-                );
-            }
+                })),
+                true,
+            ),
+            WorkerCommand::EscalateInstallToVm(capsule_id) => (
+                operation(client.request(&ProtocolRequest::EscalateInstallToVm {
+                    version: PROTOCOL_VERSION,
+                    capsule_id,
+                })),
+                true,
+            ),
+            WorkerCommand::RemoveLauncher(entry_id) => (
+                operation(client.request(&ProtocolRequest::RemoveLauncher {
+                    version: PROTOCOL_VERSION,
+                    entry_id,
+                })),
+                true,
+            ),
+            WorkerCommand::VendorUninstall(capsule_id) => (
+                operation(client.request(&ProtocolRequest::VendorUninstall {
+                    version: PROTOCOL_VERSION,
+                    capsule_id,
+                })),
+                true,
+            ),
+            WorkerCommand::VendorUninstallVm(entry_id) => (
+                operation(client.request(&ProtocolRequest::VendorUninstallVm {
+                    version: PROTOCOL_VERSION,
+                    entry_id,
+                })),
+                true,
+            ),
+            WorkerCommand::DeleteData(capsule_id) => (
+                operation(client.request(&ProtocolRequest::DeleteData {
+                    version: PROTOCOL_VERSION,
+                    capsule_id,
+                })),
+                true,
+            ),
+        };
+        if events.send(event).is_err() || refresh && events.send(list(&mut client)).is_err() {
+            return;
         }
     }
 }
 
-fn install_destination_request(
-    client: &mut SessionClient,
-    events: &Sender<WorkerEvent>,
-    request: &ProtocolRequest,
-    source: &File,
-    success: &str,
-) {
-    let event = match client.request_with_file(request, source) {
-        Ok(ProtocolResponse::Installed { receipt }) => WorkerEvent::Operation(Ok(receipt.detail)),
-        Ok(ProtocolResponse::VmInstallStarted { installation }) => {
-            WorkerEvent::Operation(Ok(installation.detail))
-        }
-        Ok(ProtocolResponse::Error { error }) => WorkerEvent::Operation(Err(error.message)),
-        Ok(_) => WorkerEvent::Operation(Err(
-            "The compatibility service returned an invalid installer response.".into(),
-        )),
-        Err(error) => WorkerEvent::Operation(Err(error.to_string())),
-    };
-    if events.send(event).is_err() {
-        return;
-    }
-    lifecycle_request(
-        client,
-        events,
-        &ProtocolRequest::List {
-            version: PROTOCOL_VERSION,
-        },
-        success,
-    );
-}
+const UNEXPECTED_RESPONSE: &str = "The compatibility service returned an unexpected response.";
 
-fn lifecycle_request(
-    client: &mut SessionClient,
-    events: &Sender<WorkerEvent>,
-    request: &ProtocolRequest,
-    success: &str,
-) {
-    let event = match client.request(request) {
-        Ok(ProtocolResponse::Listed {
-            applications,
-            installations,
-            vm_availability,
-            vm_installation,
-            vm_uninstallation,
-        }) => WorkerEvent::Listed {
-            applications,
-            installations,
-            vm_availability,
-            vm_installation,
-            vm_uninstallation,
-        },
-        Ok(
-            ProtocolResponse::Retried { receipt } | ProtocolResponse::VendorUninstalled { receipt },
-        ) => WorkerEvent::Operation(Ok(receipt.detail)),
-        Ok(ProtocolResponse::LauncherRemoved { .. } | ProtocolResponse::DataDeleted { .. }) => {
-            WorkerEvent::Operation(Ok(success.to_string()))
-        }
-        Ok(ProtocolResponse::VmVendorUninstallation { uninstallation }) => {
-            WorkerEvent::Operation(Ok(uninstallation.detail))
-        }
-        Ok(ProtocolResponse::Error { error }) => WorkerEvent::Operation(Err(error.message)),
-        Ok(_) => WorkerEvent::Operation(Err(
-            "The compatibility service returned an invalid management response.".into(),
-        )),
-        Err(error) => WorkerEvent::Operation(Err(error.to_string())),
-    };
-    if events.send(event).is_err() {
-        return;
-    }
-    let refresh = match client.request(&ProtocolRequest::List {
+fn list(client: &mut SessionClient) -> WorkerEvent {
+    match client.request(&ProtocolRequest::List {
         version: PROTOCOL_VERSION,
     }) {
         Ok(ProtocolResponse::Listed {
@@ -1175,12 +944,58 @@ fn lifecycle_request(
             vm_uninstallation,
         },
         Ok(ProtocolResponse::Error { error }) => WorkerEvent::Unavailable(error.message),
-        Ok(_) => WorkerEvent::Unavailable(
-            "The compatibility service returned an invalid list response.".into(),
-        ),
+        Ok(_) => WorkerEvent::Unavailable(UNEXPECTED_RESPONSE.into()),
         Err(error) => WorkerEvent::Unavailable(error.to_string()),
-    };
-    let _ = events.send(refresh);
+    }
+}
+
+/// Reports a launch: `success` when the application exited cleanly, otherwise
+/// `failure` followed by its exit status.
+fn launched(
+    response: Result<ProtocolResponse, SessionError>,
+    success: &str,
+    failure: &str,
+) -> WorkerEvent {
+    match response {
+        Ok(ProtocolResponse::Launched { receipt }) if receipt.success => {
+            WorkerEvent::Operation(Ok(success.into()))
+        }
+        Ok(ProtocolResponse::Launched { receipt }) => WorkerEvent::Operation(Err(format!(
+            "{failure} {}.",
+            receipt
+                .exit_code
+                .map_or_else(|| "unknown".to_string(), |code| code.to_string())
+        ))),
+        response => operation(response),
+    }
+}
+
+/// Reports an install or management operation through the detail the service
+/// returned.
+fn operation(response: Result<ProtocolResponse, SessionError>) -> WorkerEvent {
+    WorkerEvent::Operation(match response {
+        Ok(
+            ProtocolResponse::Installed { receipt }
+            | ProtocolResponse::Retried { receipt }
+            | ProtocolResponse::VendorUninstalled { receipt },
+        ) => Ok(receipt.detail),
+        Ok(
+            ProtocolResponse::VmInstallStarted { installation }
+            | ProtocolResponse::VmCandidatePublished { installation },
+        ) => Ok(installation.detail),
+        Ok(ProtocolResponse::VmVendorUninstallation { uninstallation }) => {
+            Ok(uninstallation.detail)
+        }
+        Ok(ProtocolResponse::LauncherRemoved { .. }) => {
+            Ok("Launcher removed; the installed application and its data were kept.".into())
+        }
+        Ok(ProtocolResponse::DataDeleted { .. }) => {
+            Ok("Application and all of its private capsule data were deleted.".into())
+        }
+        Ok(ProtocolResponse::Error { error }) => Err(error.message),
+        Ok(_) => Err(UNEXPECTED_RESPONSE.into()),
+        Err(error) => Err(error.to_string()),
+    })
 }
 
 fn unavailable_catalogue(detail: &str) -> Catalogue {
@@ -1561,6 +1376,22 @@ mod tests {
     use compat_service::{AccessSummary, ExplainStatus};
 
     use super::*;
+
+    #[test]
+    fn publishing_a_vm_candidate_reports_the_service_detail() {
+        let event = operation(Ok(ProtocolResponse::VmCandidatePublished {
+            installation: VmInstallation {
+                detail: "Example Editor was added to Windows Apps.".into(),
+                phase: compat_service::VmInstallationPhase::Completed,
+                exit_code: Some(0),
+                candidates: Vec::new(),
+            },
+        }));
+        assert!(matches!(
+            event,
+            WorkerEvent::Operation(Ok(detail)) if detail == "Example Editor was added to Windows Apps."
+        ));
+    }
 
     fn retained_installation(status: InstallationStatus) -> ManagedInstallation {
         ManagedInstallation {

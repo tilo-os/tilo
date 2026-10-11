@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod appsets;
+mod artifact;
 pub mod build;
 pub mod builderapp;
 pub mod builderlayer;

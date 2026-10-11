@@ -193,6 +193,16 @@ impl RoomRecordsLink for RelayRecordsLink {
         )
     }
 
+    fn steward_keys(
+        &self,
+        route: &tilo_browser_peer::DocumentRoute,
+        create: bool,
+    ) -> Option<Result<tilo_browser_peer::ChannelContentKeys, String>> {
+        self.member
+            .runtime
+            .block_on(self.rooms.as_ref()?.steward_endpoint_keys(route, create))
+    }
+
     fn view_locator(
         &self,
         room: &str,

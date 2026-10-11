@@ -16,9 +16,9 @@ use crate::smart::{DEFAULT_MAX_QUEUED_PREDICTIVE_BYTES, Heuristics, PredictivePo
 const MIN_FREE_BYTES: u64 = 1024 * 1024 * 1024;
 const MIN_FREE_PERCENT: u64 = 10;
 const MIN_BATTERY_PERCENT: u8 = 25;
-/// Power and storage are sampled on this interval, and a missing
-/// `NetworkManager` connection is retried on it. Network changes apply as
-/// they are signalled.
+/// Power and storage are sampled on this interval while files are being
+/// opened, and a missing `NetworkManager` connection is retried on it.
+/// Network changes apply as they are signalled.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(15);
 
 /// The network gate: the internet is reachable and the primary connection,
@@ -116,20 +116,32 @@ pub async fn start(
         return None;
     };
     let mut network = tilo_nm::watch().await.ok();
-    heuristics.set_policy(sample(&cache_root, network.as_ref()));
+    let mut applied = sample(&cache_root, network.as_ref());
+    heuristics.set_policy(applied);
     Some(tokio::spawn(async move {
-        let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
-        // The initial sample was applied synchronously above.
-        interval.tick().await;
         loop {
+            // Power and storage only matter to an open's predictions, so
+            // they are sampled every interval while files are opened, and
+            // at the first open after a quiet interval; an idle mount
+            // sleeps (TIL-774). That first open is judged by the previous
+            // sample, and a gate the fresh one closes cancels what it
+            // queued. Network changes apply as signalled.
+            let busy = heuristics.take_opened();
             tokio::select! {
-                _ = interval.tick() => {}
+                () = tokio::time::sleep(SAMPLE_INTERVAL), if busy => {}
+                () = heuristics.opened(), if !busy => {}
                 () = network_changed(&mut network) => {}
             }
             if network.is_none() {
                 network = tilo_nm::watch().await.ok();
             }
-            heuristics.set_policy(sample(&cache_root, network.as_ref()));
+            let policy = sample(&cache_root, network.as_ref());
+            // An unchanged policy is not re-applied: applying one cancels
+            // every queued and running prediction.
+            if policy != applied {
+                heuristics.set_policy(policy);
+                applied = policy;
+            }
         }
     }))
 }
