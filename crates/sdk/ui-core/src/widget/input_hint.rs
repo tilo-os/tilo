@@ -635,7 +635,7 @@ impl Widget for InputHint {
     /// The estimate `build_layout` reserved becomes the keycaps' measured
     /// width, so the hint ends where its last keycap does and a column of
     /// hints shares one trailing edge.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,

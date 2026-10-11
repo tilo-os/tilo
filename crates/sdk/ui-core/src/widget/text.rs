@@ -879,7 +879,12 @@ impl Widget for Text {
 
     /// A bound text that has nothing to say leaves its container's flow,
     /// so its container skips the gap it would have taken.
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let display = self.flow_display();
         match taffy.style(node) {
             Ok(style) if style.display != display => {

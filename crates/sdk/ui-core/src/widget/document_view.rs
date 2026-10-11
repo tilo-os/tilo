@@ -292,7 +292,12 @@ where
 
     /// A child that left the flow (an absent element, bound text with
     /// nothing to say) takes the boundary out with it.
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let child = taffy
             .children(node)
             .ok()

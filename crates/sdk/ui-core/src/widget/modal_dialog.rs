@@ -2018,7 +2018,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // The content is laid out in the host's tree, so its nodes are the
         // window's: a field's focus request and the focus order name the
         // same nodes. The dialog's node covers its parent out of flow;
-        // `adjust_layout_with_measure` narrows its content box to the body.
+        // `adjust_layout_style` narrows its content box to the body.
         let content_node = self.content.build_layout(taffy, theme, node_map);
         self.host_content = Some(content_node);
         let dialog = self.test_id.clone();
@@ -2062,7 +2062,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         node
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,

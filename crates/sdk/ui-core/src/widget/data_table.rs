@@ -3291,7 +3291,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
 
     /// Measure [`ColumnWidth::Auto`] columns from their header and the
     /// visible cells, never narrower than four characters' worth of line.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         _taffy: &mut TaffyTree<()>,
         _node: NodeId,
@@ -6702,7 +6702,7 @@ mod tests {
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = table.build_layout(&mut tree, &theme, &mut map);
         table.set_viewport(200.0, 32.0);
-        assert!(table.adjust_layout_with_measure(&mut tree, node, &mut text));
+        assert!(table.adjust_layout_style(&mut tree, node, &mut text));
         let measured = f64::from(table.auto_widths["name"]);
         let cell = f64::from(
             text.measure_style(
@@ -6714,7 +6714,7 @@ mod tests {
         );
         assert!(measured >= cell, "{measured} fits {cell}");
         assert!(
-            !table.adjust_layout_with_measure(&mut tree, node, &mut text),
+            !table.adjust_layout_style(&mut tree, node, &mut text),
             "settles"
         );
 
@@ -6821,7 +6821,7 @@ mod content_edge_tests {
             let rect = tree.layout(tnode).copied().unwrap_or_default();
             let _ = rect;
             table.apply_layout(&tree, tnode, Point::new(24.0, 0.0));
-            let changed = table.adjust_layout_with_measure(&mut tree, tnode, &mut text);
+            let changed = table.adjust_layout_style(&mut tree, tnode, &mut text);
             node = Some(tnode);
             if !changed {
                 break;

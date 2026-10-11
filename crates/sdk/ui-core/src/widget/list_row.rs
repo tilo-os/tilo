@@ -2629,7 +2629,7 @@ impl Widget for ListRow {
         taffy.widget_node(style, &[band, child], node_map, self)
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         _node: NodeId,
