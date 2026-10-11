@@ -518,18 +518,10 @@ fn recording_client() -> Recorded {
             .build()
             .unwrap();
         tokio::task::LocalSet::new().block_on(&runtime, async move {
-            let (read_half, write_half) = tokio::net::UnixStream::from_std(server_end)
-                .unwrap()
-                .into_split();
-            let network = twoparty::VatNetwork::new(
-                read_half.compat(),
-                write_half.compat_write(),
-                rpc_twoparty_capnp::Side::Server,
-                capnp::message::ReaderOptions::default(),
-            );
+            let stream = tokio::net::UnixStream::from_std(server_end).unwrap();
             let bootstrap: document_blobs::Client = capnp_rpc::new_client(recording);
             // Ends when the app side closes.
-            let _ = RpcSystem::new(Box::new(network), Some(bootstrap.client)).await;
+            let _ = runtime_portal::serve_connected_io(stream, bootstrap.client).await;
         });
     });
     Recorded {
