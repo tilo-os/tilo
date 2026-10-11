@@ -34,7 +34,6 @@ Related pieces:
 
 - `tilo_rt::sleep` is the portable pause for retry backoffs.
 - `tilo_dav::net` is the async WebDAV/CalDAV client on `Client`.
-- `tilo_browser_peer::NetHttp` is the peer's HTTPS carrier on `Client`.
 
 ## Using it from an app
 

@@ -94,6 +94,7 @@ pub mod magnifier;
 mod managed_agent;
 pub mod media_keys;
 pub(crate) mod membership;
+pub mod memory_report;
 pub mod mls_vault;
 pub mod mpris;
 pub(crate) mod native_media;

@@ -6,7 +6,7 @@
 > the boot chain and disk encryption it is superseded by
 > [docs/security/](../security/README.md).
 
-The security boundary is the **workspace**. Every workspace runs apps inside its own Bubblewrap sandbox with its own user namespace, mount namespace, seccomp-bpf filter, and a per-workspace Wayland bridge socket. Capabilities (filesystem, hardware, network) require explicit grants surfaced as inline prompts; grants persist in the workspace's CRDT and replicate to peers.
+The security boundary is the **workspace**. Every workspace runs apps inside its own Bubblewrap sandbox with its own user namespace, mount namespace, and seccomp-bpf filter; its Wayland connection is attributed to its package and workspace from the launch record. Capabilities (filesystem, hardware, network) require explicit grants surfaced as inline prompts; grants persist in the workspace's CRDT and replicate to peers.
 
 ## Threat model
 
@@ -35,7 +35,7 @@ A launch is refused unless the complete Landlock policy is enforced, with one ex
 What a sandboxed app is actually presented with. It names none of this; the launcher decides all of it, and the read side is identical for every package:
 
 - Read-only: the system read profile (`launcher::profile`) — loader and C library, fonts, GPU loader manifests, `/sys`, CA bundle, timezone data — plus the package payload at `/var/tilo-apps/<pkg-id>` and its runtime bundle. `/etc/resolv.conf` and `/etc/hosts` only when the launch shares the host network.
-- Read-write: exactly one directory, `<data home>/tilo-rooms/<room>/<pkg-id>` → `/run/tilo/app`, with `HOME` and every `XDG_*` pointed inside it. Two rooms are two directories, so an app opened in one room cannot read what it wrote in another. Plus the bridge socket → `/run/user/1000/wayland-0`.
+- Read-write: exactly one directory, `<data home>/tilo-rooms/<room>/<pkg-id>` → `/run/tilo/app`, with `HOME` and every `XDG_*` pointed inside it. Two rooms are two directories, so an app opened in one room cannot read what it wrote in another. Plus the compositor's public Wayland socket → `/run/user/1000/wayland-0`.
 - `env`: `WAYLAND_DISPLAY=wayland-0`, `XDG_RUNTIME_DIR=/run/user/1000`, and `TILO_APP_DIR`, `HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` all under `/run/tilo/app`.
 - Private DBus session bus per workspace.
 - `unshare(CLONE_NEWNET)` if `net_isolated`. Default: invited peers run isolated; the owner's session runs without isolation unless overridden.
@@ -164,17 +164,11 @@ so it is trusted exactly as far as the record bytes beside it:
   device-local directory, behind the same write access that already decides
   what the record contains.
 
-## Per-workspace Wayland bridge socket
+## Wayland client attribution
 
-The compositor's main wayland socket lives at `$XDG_RUNTIME_DIR/wayland-1` (or whatever the listener registered). For each workspace, the bridge (`crates/session/shell/src/compositor/bridge.rs`) binds an additional listening socket `$XDG_RUNTIME_DIR/tilo-ws-<ws_id>` and proxies its connections to the main socket.
+Apps connect to the compositor's public Wayland socket; there is no per-workspace proxy socket. When a connection is accepted, the compositor reads the peer's `SO_PEERCRED` (`wayland_peer_credentials` in `crates/session/shell/src/compositor/native.rs`) and looks the pid up in the launcher's live registry (`verified_launch_for_descendant`). A match records the package and workspace from the host-owned launch record in the connection's `ClientState` (`crates/session/shell/src/compositor/state.rs`); nothing the client says over the protocol can set or change them.
 
-The bridge:
-
-- **Tags** every accepted client with a `WorkspaceTag` `UserData` on the smithay `Client`. Adoption logic in `tab_binding` reads this tag to route surfaces to the correct workspace.
-- **Filters** protocol messages against the workspace's grants. Pass-through globals: `wl_compositor`, `wl_subcompositor`, `wl_shm`, `xdg_shell`. Capability-gated globals: `wl_data_device` (cross-workspace clipboard, blocked v1), `zwlr_screencopy_v1` (always prompts).
-- **Routes** the per-workspace seat capabilities so input from the compositor's seat only reaches surfaces tagged for the corresponding workspace.
-
-Surfaces from sandbox A literally cannot adopt into workspace B — the bridge tag mismatches.
+A connection with no launch record is accepted only from a same-uid process that shares the compositor's user and mount namespaces (an explicitly unconfined host client); anything else is refused. Authority-bearing globals (data-control clipboard managers, session lock) are reachable only from the privileged socket, which the sandbox launcher never bind-mounts into a sandbox.
 
 ## Capability grants
 
@@ -353,8 +347,8 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 | Unauthorised peer connect  | Ed25519 invite token + authenticated Iroh endpoint      | `network/invite.rs`, Iroh          |
 | File exfil from sandbox    | bwrap mount namespace + fixed system read profile + one per-room app dir | `packaging/launcher/{profile,appdir}.rs` |
 | Hardware exfil (cam/mic)   | Default-deny binds + portal-mediated grant              | `packaging/launcher/capabilities.rs`, `portal/` |
-| Cross-workspace input leak | Bridge tag + per-workspace seat routing                 | `compositor/bridge.rs`             |
-| Clipboard data leak        | `wl_data_device` blocked at bridge v1                   | `compositor/bridge.rs`             |
+| Cross-workspace input leak | Launch-record attribution in `ClientState` (`SO_PEERCRED`) | `compositor/{native,state}.rs` |
+| Clipboard data leak        | Selection follows keyboard focus; data-control managers on the privileged socket only | `compositor/state.rs` |
 | Input injection (remote)   | Region + Z-order + scrubber + rate limit                | `network/input_firewall.rs`, driven from `compositor/state.rs::review_remote_input` |
 | Sandbox escape via syscall | seccomp-bpf blocklist + Landlock                        | `system/sandbox-core`, `packaging/launcher/landlock_shim.rs` |
 | Host key theft via a hostile record (agents, room actions) | One confined app worker per record; keys and signing stay in the host; worker output admitted through the isolate | `agent/agent-participant/src/worker/` |
@@ -371,7 +365,6 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 
 - `crates/packaging/launcher/src/{sandbox.rs, run.rs, capabilities.rs, landlock_shim.rs, seccomp.rs}` — the bwrap argv, grants, Landlock shim and seccomp profile choice.
 - `crates/system/sandbox-core/src/{landlock.rs, seccomp.rs}` — Landlock ruleset construction and seccomp compilation.
-- `crates/session/shell/src/compositor/bridge.rs` — the per-workspace Wayland bridge socket.
 - `crates/session/shell/src/portal/{mod.rs, file_chooser.rs, screencast.rs, screencast_pipewire.rs, remote_desktop.rs, camera.rs}` — D-Bus impls.
 - `crates/session/shell/src/shell/state.rs` — `Capability`, `GrantScope`, `Workspace.grants`.
 - `crates/session/shell/src/network/invite.rs` — invite tokens.

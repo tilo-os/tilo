@@ -31,7 +31,7 @@ use ui_core::widget::{AppKind, AppWidget, Decorator, Element, IconDescriptor, Wi
 use ui_core::{LocalState, Theme};
 
 use super::dispatch::Dispatcher;
-use super::effect::Effects;
+use super::effect::{EffectStatus, Effects};
 use super::live::Live;
 use super::rows::{find, join, merge, outside_document};
 use super::scenario::Run;
@@ -40,7 +40,7 @@ use super::surface::SurfacePublication;
 use super::view::{Bindings, Updaters, ViewCx};
 
 mod shared_tree;
-use shared_tree::{ItemChildren, NestedViews, SharedTreeCache};
+use shared_tree::SharedTree;
 
 pub(crate) struct ResourceRoot<R: Resource> {
     title: &'static str,
@@ -76,20 +76,13 @@ pub(crate) struct ResourceRoot<R: Resource> {
     presentation: Vec<tilo_actions::ActionSpec>,
     /// The resource's and its surfaces' search entries, indexed.
     search: std::cell::RefCell<Option<SearchCache>>,
-    /// The document-owned tree at one live and translation revision, shared
-    /// with the last one wherever the change left it as it was (TIL-766).
-    /// Surface bindings, local rows and effect availability are decorated
-    /// afresh for every caller.
-    publication_tree: std::cell::RefCell<Option<SharedTreeCache>>,
-    /// The item children last published, kept so the next tree builds only
-    /// the items whose label changed.
-    item_children: std::cell::RefCell<Option<ItemChildren>>,
+    /// The document-owned tree, shared with the last one wherever the
+    /// change left it as it was, and the nested views it holds.
+    tree: SharedTree,
     /// The head bound controls were last refreshed from, kept between syncs
     /// for a resource whose publication may be reused
     /// ([`Resource::publication_cache_epoch`]).
     binding_head: std::cell::RefCell<Option<BindingHead>>,
-    /// The view operation types of the nested resources at one live revision.
-    nested_views: std::cell::RefCell<Option<NestedViews>>,
     /// Whether the resource keeps document state History shows.
     history: bool,
     /// Platform presentation actions; the browser implementation has no state.
@@ -256,10 +249,8 @@ impl<R: Resource> ResourceRoot<R> {
             content,
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
-            publication_tree: std::cell::RefCell::new(None),
-            item_children: std::cell::RefCell::new(None),
+            tree: SharedTree::default(),
             binding_head: std::cell::RefCell::new(None),
-            nested_views: std::cell::RefCell::new(None),
             history: true,
             native_presentation,
         }
@@ -399,13 +390,9 @@ impl<R: Resource> ResourceRoot<R> {
         let state = self.live.get();
         let revision = (self.live.revision(), ui_core::i18n::I18nManager::revision());
         let epoch = R::publication_cache_epoch(&state);
-        let cached = epoch.as_ref().and_then(|epoch| {
-            self.publication_tree
-                .borrow()
-                .as_ref()
-                .filter(|cached| cached.revision == (revision.0, revision.1, epoch.clone()))
-                .map(|cached| cached.tree.head().clone())
-        });
+        let cached = epoch
+            .as_ref()
+            .and_then(|epoch| self.tree.head_at(&(revision.0, revision.1, epoch.clone())));
         let resource = cached.unwrap_or_else(|| {
             #[cfg(feature = "test-support")]
             let _profile = super::profiling::Scope::start("framework.resource_head");
@@ -509,74 +496,26 @@ impl<R: Resource> ResourceRoot<R> {
         for decl in bound {
             resource = tilo_resource::bind_declaration(resource, &decl);
         }
-        for status in &availability {
-            for spec in resource
-                .actions
-                .iter_mut()
-                .filter(|spec| spec.id == status.id())
-            {
-                status.overlay(spec);
-            }
-        }
+        overlay_availability(&mut resource, &availability);
         if children {
             merge(&mut resource.children, rows);
             #[cfg(feature = "test-support")]
             let _profile = super::profiling::Scope::start("framework.row_declarations");
             self.bind_row_declarations(&mut resource.children);
         }
-        for spec in &self.presentation {
-            if spec.kind == tilo_actions::OperationKind::Document {
-                continue;
-            }
-            if resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == spec.id)
-            {
-                continue;
-            }
-            resource = resource.with_action(spec.clone());
-        }
-        // The app's own effects come before the framework's history and
-        // render operations: an app answering `diff` its own way is asked.
         let effects = {
             #[cfg(feature = "test-support")]
             let _profile = super::profiling::Scope::start("framework.effect_specs");
             self.effects.specs()
         };
-        for spec in effects {
-            let shadowed = resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == spec.id);
-            debug_assert!(!shadowed, "effect `{}` shadows an action", spec.id);
-            if shadowed {
-                tracing::warn!(effect = spec.id, "effect shadows an action; not published");
-                continue;
-            }
-            resource = resource.with_action(spec);
+        let mut resource = FrameworkActions {
+            presentation: &self.presentation,
+            effects,
+            readable: R::READABLE,
+            history: self.history,
+            document_jobs: self.effects.has_causal_drains(),
         }
-        resource = with_native_presentations(resource);
-        if R::READABLE
-            && !resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == "read")
-        {
-            resource = resource.with_action(read_spec());
-        }
-        for spec in super::history::specs().into_iter().filter(|_| self.history) {
-            if !resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == spec.id)
-            {
-                resource = resource.with_action(spec);
-            }
-        }
-        if self.effects.has_causal_drains() {
-            mark_document_jobs(&mut resource);
-        }
+        .publish_on(resource);
         if children {
             resource.children.extend(self.storage.person_resources());
         }
@@ -657,6 +596,172 @@ fn without_children(resource: &tilo_actions::Resource) -> tilo_actions::Resource
         children: Vec::new(),
         actions: actions.clone(),
         views: views.clone(),
+    }
+}
+
+/// The content of a root, for the resources it publishes beside the root's
+/// own, not generic over the resource.
+struct BesideContent<'a> {
+    content: &'a dyn Widget,
+    /// Whether the content is a hosted surface of the resource.
+    surface: bool,
+    /// Whether the view opens items, so the root offers `open`.
+    opens: bool,
+}
+
+impl BesideContent<'_> {
+    /// `resource`, then what the content publishes beside it for
+    /// `participant`. The content may add live external entities beside the
+    /// resource, never a document action: those are the resource's own. A
+    /// hosted surface has already admitted what it adds. One naming the
+    /// resource joins it rather than publishing it twice.
+    fn resources(
+        self,
+        mut resource: tilo_actions::Resource,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        let mut extras = Vec::new();
+        for extra in ui_core::resources::resources_for(self.content, participant, doc) {
+            let extra = if self.surface {
+                extra
+            } else {
+                outside_document(extra)
+            };
+            if extra.id == resource.id {
+                join(&mut resource, extra);
+            } else {
+                extras.push(extra);
+            }
+        }
+        if self.opens
+            && !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == "open")
+        {
+            resource = resource.with_action(open_spec());
+        }
+        let mut resources = vec![resource];
+        resources.append(&mut extras);
+        resources
+    }
+}
+
+/// The framework's own operations every root answers, whatever its
+/// resource: `open` at an anchor, the document's history and a person's.
+/// `None` for any other operation. Not generic over the resource, so it is
+/// compiled once in the shared runtime rather than in every app.
+fn start_framework_operation(
+    op: &ui_core::host_operation::ResourceOperation<'_>,
+    stages: &Stages,
+    storage: &super::settings::ViewStorage,
+    doc: &AutoCommit,
+) -> Result<Option<tilo_actions::ActionOutput>, String> {
+    let Some(request) = op.unscoped() else {
+        return Ok(None);
+    };
+    if request.type_id == OPEN_TYPE {
+        let args: serde_json::Value =
+            serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
+        let anchor = args
+            .get(OPEN_ANCHOR)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "open needs the anchor of an item".to_owned())?;
+        if !stages.open(anchor) {
+            return Err("this app does not open items".into());
+        }
+        return Ok(Some(tilo_actions::ActionOutput::default()));
+    }
+    if request.type_id == super::history::VIEW_TYPE {
+        return super::history::answer(doc, request.payload).map(Some);
+    }
+    if request.type_id == super::person::HISTORY_TYPE {
+        return storage.person_history(request.payload).map(Some);
+    }
+    Ok(None)
+}
+
+/// Overlay each effect's availability on the action of its id.
+fn overlay_availability(resource: &mut tilo_actions::Resource, availability: &[EffectStatus]) {
+    for status in availability {
+        for spec in resource
+            .actions
+            .iter_mut()
+            .filter(|spec| spec.id == status.id())
+        {
+            status.overlay(spec);
+        }
+    }
+}
+
+/// The operations the framework publishes on every resource, after the
+/// resource's own and those its view binds. Not generic over the resource,
+/// so it is compiled once in the shared runtime rather than in every app.
+struct FrameworkActions<'a> {
+    /// The view and effect operations of the app's presentation.
+    presentation: &'a [tilo_actions::ActionSpec],
+    /// The app's own effects.
+    effects: Vec<tilo_actions::ActionSpec>,
+    /// Whether the resource answers `read` ([`Resource::READABLE`]).
+    readable: bool,
+    /// Whether it keeps document state History shows.
+    history: bool,
+    /// Whether its document operations run as jobs (an effect drains them).
+    document_jobs: bool,
+}
+
+impl FrameworkActions<'_> {
+    fn publish_on(self, mut resource: tilo_actions::Resource) -> tilo_actions::Resource {
+        for spec in self.presentation {
+            if spec.kind == tilo_actions::OperationKind::Document {
+                continue;
+            }
+            if resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id)
+            {
+                continue;
+            }
+            resource = resource.with_action(spec.clone());
+        }
+        // The app's own effects come before the framework's history and
+        // render operations: an app answering `diff` its own way is asked.
+        for spec in self.effects {
+            let shadowed = resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id);
+            debug_assert!(!shadowed, "effect `{}` shadows an action", spec.id);
+            if shadowed {
+                tracing::warn!(effect = spec.id, "effect shadows an action; not published");
+                continue;
+            }
+            resource = resource.with_action(spec);
+        }
+        resource = with_native_presentations(resource);
+        if self.readable
+            && !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == "read")
+        {
+            resource = resource.with_action(read_spec());
+        }
+        for spec in super::history::specs().into_iter().filter(|_| self.history) {
+            if !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id)
+            {
+                resource = resource.with_action(spec);
+            }
+        }
+        if self.document_jobs {
+            mark_document_jobs(&mut resource);
+        }
+        resource
     }
 }
 
@@ -1220,36 +1325,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
         }
-        if let Some(request) = op.unscoped()
-            && request.type_id == OPEN_TYPE
-        {
-            let args: serde_json::Value =
-                serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
-            let anchor = args
-                .get(OPEN_ANCHOR)
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "open needs the anchor of an item".to_owned())?;
-            if !self.stages.open(anchor) {
-                return Err("this app does not open items".into());
-            }
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                ),
-            ));
-        }
-        if let Some(request) = op.unscoped()
-            && request.type_id == super::history::VIEW_TYPE
-        {
-            let output = super::history::answer(doc, request.payload)?;
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
-        }
-        if let Some(request) = op.unscoped()
-            && request.type_id == super::person::HISTORY_TYPE
-        {
-            let output = self.storage.person_history(request.payload)?;
+        if let Some(output) = start_framework_operation(op, &self.stages, &self.storage, doc)? {
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
@@ -1299,66 +1375,79 @@ impl<R: Resource> ResourceRoot<R> {
     /// from the UI thread: until that index arrives, search answers from the
     /// one before it.
     fn current_search_index(&self, revision: u64, shown: Vec<SearchEntry>) -> Arc<IndexedEntries> {
-        let mut cached = self.search.borrow_mut();
-        if let Some(cache) = cached.as_mut()
-            && let Some((at, entries_shown, arriving)) = cache.building.take()
-        {
-            match arriving.try_recv() {
-                Ok(indexed) => {
-                    cache.revision = at;
-                    cache.shown = entries_shown;
-                    cache.indexed = Arc::new(indexed);
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    cache.building = Some((at, entries_shown, arriving));
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
-            }
-        }
-        if let Some(cache) = cached.as_ref() {
-            let current = cache.revision == revision && cache.shown == shown;
-            let arriving = cache
-                .building
-                .as_ref()
-                .is_some_and(|(at, building, _)| *at == revision && *building == shown);
-            if current || arriving {
-                return Arc::clone(&cache.indexed);
-            }
-        }
-        let generation = cached
-            .as_ref()
-            .map_or(0, |cache| cache.indexed.generation.wrapping_add(1));
-        let mut entries = R::search(&self.live.get());
-        entries.extend(shown.iter().cloned());
-        if entries.len() >= OFF_THREAD_ENTRIES || entries.iter().any(|entry| entry.body.is_some()) {
-            let (send, arriving) = std::sync::mpsc::channel();
-            let building = entries.clone();
-            let spawned = ui_core::background::Background::current().spawn(
-                "resource-search-index",
-                move || {
-                    let _ = send.send(IndexedEntries::built(building, generation));
-                },
-            );
-            if spawned.is_ok() {
-                let cache = cached.get_or_insert_with(|| SearchCache {
-                    revision,
-                    shown: Vec::new(),
-                    indexed: Arc::new(IndexedEntries::built(Vec::new(), generation)),
-                    building: None,
-                });
-                cache.building = Some((revision, shown, arriving));
-                return Arc::clone(&cache.indexed);
-            }
-        }
-        let indexed = Arc::new(IndexedEntries::built(entries, generation));
-        *cached = Some(SearchCache {
-            revision,
-            shown,
-            indexed: Arc::clone(&indexed),
-            building: None,
-        });
-        indexed
+        current_search_index(&self.search, revision, shown, &|| {
+            R::search(&self.live.get())
+        })
     }
+}
+
+/// [`ResourceRoot::current_search_index`] over its cache, with `entries`
+/// reading the resource's own. Not generic over the resource, so it, its
+/// channel and its background job are compiled once in the shared runtime
+/// rather than in every app.
+fn current_search_index(
+    search: &std::cell::RefCell<Option<SearchCache>>,
+    revision: u64,
+    shown: Vec<SearchEntry>,
+    entries: &dyn Fn() -> Vec<SearchEntry>,
+) -> Arc<IndexedEntries> {
+    let mut cached = search.borrow_mut();
+    if let Some(cache) = cached.as_mut()
+        && let Some((at, entries_shown, arriving)) = cache.building.take()
+    {
+        match arriving.try_recv() {
+            Ok(indexed) => {
+                cache.revision = at;
+                cache.shown = entries_shown;
+                cache.indexed = Arc::new(indexed);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                cache.building = Some((at, entries_shown, arriving));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+        }
+    }
+    if let Some(cache) = cached.as_ref() {
+        let current = cache.revision == revision && cache.shown == shown;
+        let arriving = cache
+            .building
+            .as_ref()
+            .is_some_and(|(at, building, _)| *at == revision && *building == shown);
+        if current || arriving {
+            return Arc::clone(&cache.indexed);
+        }
+    }
+    let generation = cached
+        .as_ref()
+        .map_or(0, |cache| cache.indexed.generation.wrapping_add(1));
+    let mut entries = entries();
+    entries.extend(shown.iter().cloned());
+    if entries.len() >= OFF_THREAD_ENTRIES || entries.iter().any(|entry| entry.body.is_some()) {
+        let (send, arriving) = std::sync::mpsc::channel();
+        let building = entries.clone();
+        let spawned =
+            ui_core::background::Background::current().spawn("resource-search-index", move || {
+                let _ = send.send(IndexedEntries::built(building, generation));
+            });
+        if spawned.is_ok() {
+            let cache = cached.get_or_insert_with(|| SearchCache {
+                revision,
+                shown: Vec::new(),
+                indexed: Arc::new(IndexedEntries::built(Vec::new(), generation)),
+                building: None,
+            });
+            cache.building = Some((revision, shown, arriving));
+            return Arc::clone(&cache.indexed);
+        }
+    }
+    let indexed = Arc::new(IndexedEntries::built(entries, generation));
+    *cached = Some(SearchCache {
+        revision,
+        shown,
+        indexed: Arc::clone(&indexed),
+        building: None,
+    });
+    indexed
 }
 
 impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> {
@@ -1423,39 +1512,17 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         let _viewer = participant
             .cloned()
             .map(ui_core::invocation_scope::ViewerScope::enter);
-        let mut resource = self.current_publication(doc);
-        // The content may add live external entities beside the resource,
-        // never a document action: those are the resource's own. A hosted
-        // surface has already admitted what it adds. One naming the resource
-        // joins it rather than publishing it twice.
+        let resource = self.current_publication(doc);
         let surface = ui_core::widget::capability::capability::<dyn SurfacePublication<R>>(
             self.content.as_ref(),
         )
         .is_some();
-        let mut extras = Vec::new();
-        for extra in ui_core::resources::resources_for(self.content.as_ref(), participant, doc) {
-            let extra = if surface {
-                extra
-            } else {
-                outside_document(extra)
-            };
-            if extra.id == resource.id {
-                join(&mut resource, extra);
-            } else {
-                extras.push(extra);
-            }
+        BesideContent {
+            content: self.content.as_ref(),
+            surface,
+            opens: self.stages.opens(),
         }
-        if self.stages.opens()
-            && !resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == "open")
-        {
-            resource = resource.with_action(open_spec());
-        }
-        let mut resources = vec![resource];
-        resources.append(&mut extras);
-        resources
+        .resources(resource, participant, doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         ui_core::resources::PublishesResources::resource_for(self, None, doc, id)
