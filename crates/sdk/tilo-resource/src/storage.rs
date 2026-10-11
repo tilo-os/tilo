@@ -1085,7 +1085,7 @@ impl<O: Serialize + serde::de::DeserializeOwned + 'static> Model for Settled<O> 
     crate::model::leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
-        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+        crate::__private::json_via_bytes(self).unwrap_or(serde_json::Value::Null)
     }
     #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {

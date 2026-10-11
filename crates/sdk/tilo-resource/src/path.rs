@@ -500,7 +500,7 @@ impl<R, T: Operations> Path<R, T> {
     /// Returns the serialization error of `op`.
     pub fn perform(&self, op: &T::Op) -> Result<Edit<R>, serde_json::Error> {
         Ok(self.edit(EditOp::Rich {
-            rich: serde_json::to_value(op)?,
+            rich: crate::__private::json_via_bytes(op)?,
         }))
     }
 }
@@ -1194,11 +1194,11 @@ impl<R> Serialize for Edit<R> {
 #[inline(never)]
 fn edit_to_json(path: &[Segment], op: &EditOp) -> serde_json::Value {
     // Both are plain data: their JSON never fails to build.
-    let mut form = serde_json::to_value(op).unwrap_or_default();
+    let mut form = crate::__private::json_via_bytes(op).unwrap_or_default();
     if let serde_json::Value::Object(map) = &mut form {
         map.insert(
             "path".into(),
-            serde_json::to_value(path).unwrap_or_default(),
+            crate::__private::json_via_bytes(path).unwrap_or_default(),
         );
     }
     form

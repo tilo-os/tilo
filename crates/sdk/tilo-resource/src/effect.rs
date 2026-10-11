@@ -621,7 +621,7 @@ pub fn put<T: serde::Serialize>(
     name: &str,
     value: &T,
 ) {
-    match serde_json::to_value(value) {
+    match crate::__private::json_via_bytes(value) {
         Ok(serde_json::Value::Null) | Err(_) => {}
         Ok(value) => {
             arguments.insert(name.to_owned(), value);

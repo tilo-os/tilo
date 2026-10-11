@@ -170,7 +170,7 @@ where
     /// A gesture records each of its members, and the item they share.
     fn describe(&self, doc: &Doc) -> Option<tilo_actions::Described> {
         describe_members(doc, &self.members(), &|index| {
-            serde_json::to_value(self.actions.get(index)?).ok()
+            crate::__private::json_via_bytes(self.actions.get(index)?).ok()
         })
     }
 

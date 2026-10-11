@@ -227,7 +227,7 @@ fn edit_at(
         }
         EditOp::Add { by } => old
             .as_ref()
-            .and_then(|old| serde_json::to_value(old).ok())
+            .and_then(|old| crate::__private::json_via_bytes(old).ok())
             .and_then(|old| old.as_i64())
             .map(|old| Scalar::from_json(&old.saturating_add(*by).into()))
             .unwrap_or_default(),

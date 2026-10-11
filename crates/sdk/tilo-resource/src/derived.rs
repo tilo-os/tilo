@@ -141,7 +141,7 @@ fn bound_value<P, V: Serialize>(param: Path<P, V>, value: &V) -> (String, serde_
     };
     (
         name,
-        serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
+        crate::__private::json_via_bytes(value).unwrap_or(serde_json::Value::Null),
     )
 }
 

@@ -2302,11 +2302,11 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> Json
         to_value: |value| {
             value
                 .downcast_ref::<T>()
-                .and_then(|value| serde_json::to_value(value).ok())
+                .and_then(|value| crate::__private::json_via_bytes(value).ok())
                 .unwrap_or(serde_json::Value::Null)
         },
         try_value: |value| {
-            serde_json::to_value(value.downcast_ref::<T>().ok_or_else(mismatch)?)
+            crate::__private::json_via_bytes(value.downcast_ref::<T>().ok_or_else(mismatch)?)
                 .map_err(serde_invalid)
         },
         from_value: |value, out| {
@@ -2326,11 +2326,11 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> Json
         to_value: |value| {
             value
                 .downcast_ref::<crate::Json<T>>()
-                .and_then(|value| serde_json::to_value(&value.0).ok())
+                .and_then(|value| crate::__private::json_via_bytes(&value.0).ok())
                 .unwrap_or(serde_json::Value::Null)
         },
         try_value: |value| {
-            serde_json::to_value(
+            crate::__private::json_via_bytes(
                 &value
                     .downcast_ref::<crate::Json<T>>()
                     .ok_or_else(mismatch)?

@@ -1484,7 +1484,7 @@ impl<R: Resource> Invoke<R> {
     pub fn apply(action: &R::Action) -> Result<Self, serde_json::Error> {
         // A unit variant serializes as its name; written as a map it reads
         // back the same, and is the object the action's parameter takes.
-        let value = match serde_json::to_value(action)? {
+        let value = match crate::__private::json_via_bytes(action)? {
             serde_json::Value::String(variant) => serde_json::Value::Object(
                 serde_json::Map::from_iter([(variant, serde_json::Value::Null)]),
             ),
@@ -1508,7 +1508,7 @@ impl<R: Resource> Invoke<R> {
             id: crate::FIELD_EDIT,
             arguments: serde_json::Map::from_iter([(
                 crate::EDIT_PARAM.to_owned(),
-                serde_json::to_value(edit)?,
+                crate::__private::json_via_bytes(edit)?,
             )]),
             refusal: None,
             effect: false,
