@@ -79,7 +79,7 @@ use taffy::NodeId;
 use vello::kurbo::Rect;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::accessibility::{NativeAccessibility, Request as AccessibilityRequest};
 use crate::compositor::backend::drm::runtime::{DirectTouchDown, DirectTouchOwnership};
@@ -6247,112 +6247,13 @@ fn portal_capture_event(
             };
             Some(CapturedInput::Scroll { dx, dy })
         }
-        WindowEvent::KeyboardInput { event, .. } => {
-            keycode_for_eis(event.physical_key).map(|keycode| CapturedInput::Keyboard {
+        WindowEvent::KeyboardInput { event, .. } => ui::evdev::from_physical(event.physical_key)
+            .map(|keycode| CapturedInput::Keyboard {
                 keycode,
                 pressed: event.state == ElementState::Pressed,
-            })
-        }
+            }),
         _ => None,
     }
-}
-
-/// USB HID / evdev keycodes for keys whose physical positions winit exposes.
-/// This deliberately maps physical keys, never characters, so a non-US layout
-/// still sees the correct key event over EIS.
-fn keycode_for_eis(key: PhysicalKey) -> Option<u32> {
-    let PhysicalKey::Code(code) = key else {
-        return None;
-    };
-    Some(match code {
-        KeyCode::Escape => 1,
-        KeyCode::Digit1 => 2,
-        KeyCode::Digit2 => 3,
-        KeyCode::Digit3 => 4,
-        KeyCode::Digit4 => 5,
-        KeyCode::Digit5 => 6,
-        KeyCode::Digit6 => 7,
-        KeyCode::Digit7 => 8,
-        KeyCode::Digit8 => 9,
-        KeyCode::Digit9 => 10,
-        KeyCode::Digit0 => 11,
-        KeyCode::Minus => 12,
-        KeyCode::Equal => 13,
-        KeyCode::Backspace => 14,
-        KeyCode::Tab => 15,
-        KeyCode::KeyQ => 16,
-        KeyCode::KeyW => 17,
-        KeyCode::KeyE => 18,
-        KeyCode::KeyR => 19,
-        KeyCode::KeyT => 20,
-        KeyCode::KeyY => 21,
-        KeyCode::KeyU => 22,
-        KeyCode::KeyI => 23,
-        KeyCode::KeyO => 24,
-        KeyCode::KeyP => 25,
-        KeyCode::BracketLeft => 26,
-        KeyCode::BracketRight => 27,
-        KeyCode::Enter => 28,
-        KeyCode::ControlLeft => 29,
-        KeyCode::KeyA => 30,
-        KeyCode::KeyS => 31,
-        KeyCode::KeyD => 32,
-        KeyCode::KeyF => 33,
-        KeyCode::KeyG => 34,
-        KeyCode::KeyH => 35,
-        KeyCode::KeyJ => 36,
-        KeyCode::KeyK => 37,
-        KeyCode::KeyL => 38,
-        KeyCode::Semicolon => 39,
-        KeyCode::Quote => 40,
-        KeyCode::Backquote => 41,
-        KeyCode::ShiftLeft => 42,
-        KeyCode::Backslash => 43,
-        KeyCode::KeyZ => 44,
-        KeyCode::KeyX => 45,
-        KeyCode::KeyC => 46,
-        KeyCode::KeyV => 47,
-        KeyCode::KeyB => 48,
-        KeyCode::KeyN => 49,
-        KeyCode::KeyM => 50,
-        KeyCode::Comma => 51,
-        KeyCode::Period => 52,
-        KeyCode::Slash => 53,
-        KeyCode::ShiftRight => 54,
-        KeyCode::AltLeft => 56,
-        KeyCode::Space => 57,
-        KeyCode::CapsLock => 58,
-        KeyCode::F1 => 59,
-        KeyCode::F2 => 60,
-        KeyCode::F3 => 61,
-        KeyCode::F4 => 62,
-        KeyCode::F5 => 63,
-        KeyCode::F6 => 64,
-        KeyCode::F7 => 65,
-        KeyCode::F8 => 66,
-        KeyCode::F9 => 67,
-        KeyCode::F10 => 68,
-        KeyCode::NumLock => 69,
-        KeyCode::ScrollLock => 70,
-        KeyCode::F11 => 87,
-        KeyCode::F12 => 88,
-        KeyCode::ControlRight => 97,
-        KeyCode::AltRight => 100,
-        KeyCode::Home => 102,
-        KeyCode::ArrowUp => 103,
-        KeyCode::PageUp => 104,
-        KeyCode::ArrowLeft => 105,
-        KeyCode::ArrowRight => 106,
-        KeyCode::End => 107,
-        KeyCode::ArrowDown => 108,
-        KeyCode::PageDown => 109,
-        KeyCode::Insert => 110,
-        KeyCode::Delete => 111,
-        KeyCode::SuperLeft => 125,
-        KeyCode::SuperRight => 126,
-        KeyCode::ContextMenu => 127,
-        _ => return None,
-    })
 }
 
 #[derive(Clone, Debug)]
@@ -7038,7 +6939,7 @@ fn forward_spatial_window_event(
             }
         }
         WindowEvent::KeyboardInput { event, .. } => {
-            let Some(keycode) = keycode_for_eis(event.physical_key) else {
+            let Some(keycode) = ui::evdev::from_physical(event.physical_key) else {
                 return true;
             };
             crate::shell::device_fabric::FabricInputEvent::Key {
@@ -16244,6 +16145,25 @@ mod tests {
             );
         }
 
+        fn assert_waiting_after_wake(
+            &mut self,
+            conn: &mut TestControlConn,
+            reader: &mut BufReader<UnixStream>,
+            settle_by: Instant,
+        ) {
+            self.event_loop
+                .dispatch(Some(Duration::ZERO), &mut self.state)
+                .expect("dispatch");
+            self.pump(conn);
+            assert_socket_pending(reader);
+            assert!(!conn.closed, "the original connection must remain open");
+            assert_eq!(
+                control_invocation_deadline(std::slice::from_ref(conn), Instant::now()),
+                Some(settle_by),
+                "an early wake must preserve the original settle deadline"
+            );
+        }
+
         fn wait_for_invoke_response(
             &mut self,
             conn: &mut TestControlConn,
@@ -16380,15 +16300,20 @@ mod tests {
 
     #[test]
     fn wait_ms_answers_the_settled_outcome_in_one_call() {
-        wait_ms_answer_with_loop_wake(false);
+        wait_ms_answer_with_loop_wake(false, false);
     }
 
     #[test]
     fn wait_ms_tolerates_an_unrelated_wake_before_the_completion_watch() {
-        wait_ms_answer_with_loop_wake(true);
+        wait_ms_answer_with_loop_wake(true, false);
     }
 
-    fn wait_ms_answer_with_loop_wake(unrelated_wake: bool) {
+    #[test]
+    fn wait_ms_tolerates_the_status_index_wake_before_job_progress() {
+        wait_ms_answer_with_loop_wake(false, true);
+    }
+
+    fn wait_ms_answer_with_loop_wake(unrelated_wake: bool, early_index_wake: bool) {
         use std::io::Write as _;
 
         let mut fixture = ControlFixture::new();
@@ -16408,7 +16333,7 @@ mod tests {
                 runs: std::rc::Rc::clone(&runs),
                 receipt: crate::shell::search::ActionReceipt {
                     broker_invocation_id: Some(job),
-                    update: accepted,
+                    update: accepted.clone(),
                 },
             }),
         );
@@ -16422,21 +16347,38 @@ mod tests {
         writer
             .write_all(format!("{invoke}\n").as_bytes())
             .expect("invoke");
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .expect("observation deadline");
         fixture.pump(&mut conn);
         assert_socket_pending(&mut reader);
-        fixture
-            .event_loop
-            .dispatch(Some(Duration::ZERO), &mut fixture.state)
-            .expect("dispatch");
-        assert!(!woken.get(), "nothing has moved the job yet");
+        let settle_by = control_invocation_deadline(std::slice::from_ref(&conn), Instant::now())
+            .expect("the original request has a settle deadline");
+        if early_index_wake {
+            // Resolving the status starts the production action index worker.
+            // Observe its ping before recording any job progress, rather than
+            // relying on which thread wins the initial zero-time dispatch.
+            assert!(park_until_woken(
+                &mut fixture.event_loop,
+                &mut fixture.state,
+                &woken,
+                deadline.saturating_duration_since(Instant::now()),
+            ));
+        }
+        // Index readiness shares the invocation loop ping. A wake is a reason
+        // to serve the original request again, not proof that its job moved.
+        fixture.assert_waiting_after_wake(&mut conn, &mut reader, settle_by);
+        assert_eq!(
+            broker.status_for_actor(job, &actor),
+            Some(accepted),
+            "index readiness must not change the job's accepted receipt"
+        );
+        woken.set(false);
 
         let held = unrelated_wake.then(hold_session_workers);
         if held.is_some() {
             wake();
         }
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .expect("observation deadline");
         broker.record_completion_for_test(
             job,
             &actor,

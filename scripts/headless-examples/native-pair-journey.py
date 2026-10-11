@@ -836,7 +836,74 @@ class Fixture:
             require_ok(call(session[0], {"op": "snapshot", "path": str(self.output / f"{name}-shared-state.png")}))
             self.record(f"{name}-shared-state-locally-presented", frame_seq=frame["frame_seq"])
 
-    def run(self, *, voice_only=False, state_only=False):
+    def save_automatic_failure(self, socket):
+        state = call(socket, {"op": "state_dump"}).get("state", {})
+        observations = {"frames": packaged.foreign_frames(call(socket, {"op": "foreign_frames"})),
+                        "workspaces": state.get("workspace_tree", {}).get("workspaces"),
+                        "peer_sync": state.get("chrome", {}).get("peer_sync")}
+        (self.output / "bob-automatic-opening.json").write_text(json.dumps(observations, indent=2))
+        require_ok(call(socket, {"op": "snapshot", "path": str(self.output / "bob-automatic-opening.png")}))
+
+    def reconnect(self, sessions, bootstrap, host, early):
+        # Only the disposable host this fixture spawned is stopped. Its keys,
+        # room, app workers and grants are unchanged; no revocation is minted.
+        if host not in self.processes or host.poll() is not None:
+            raise RuntimeError("private governor custody is unavailable")
+        os.kill(host.pid, signal.SIGSTOP)
+        try:
+            self.record("owned-governor-process-paused-without-revocation")
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline:
+                time.sleep(0.1)
+                if host.poll() is not None:
+                    raise RuntimeError("governor exited during transport partition")
+            status = pathlib.Path(f"/proc/{host.pid}/status").read_text()
+            if not any(line.startswith("State:") and "T (stopped)" in line for line in status.splitlines()):
+                raise RuntimeError("private host transport partition cannot be observed")
+            expected = {}
+            for index, (name, session) in enumerate(sessions.items()):
+                rows = [row for row in self.catalogue(session[0])
+                        if row.get("application") == "so.tilo.chat" and row.get("room") == bootstrap["room"]
+                        and row.get("operation") == "post" and self.logical_resource(row["resource"]) == early]
+                if len(rows) != 1:
+                    raise RuntimeError("offline app lost its exact resource action")
+                marker = f"Fixture offline {name}"
+                self.act(session, bootstrap["room"], "post", {"value": marker}, resource=rows[0]["resource"])
+                expected[name] = {"text": marker, "author": bootstrap["users"][index]}
+            self.record("both-same-person-native-apps-edited-while-host-stopped", messages=expected,
+                        peer_status={name: packaged.chrome_state(session[0]).get("peer_sync", {}).get("status")
+                                     for name, session in sessions.items()})
+        finally:
+            if host.poll() is None:
+                os.kill(host.pid, signal.SIGCONT)
+        observations = {}
+        def converged():
+            for name, session in sessions.items():
+                rows = [row for row in self.catalogue(session[0])
+                        if row.get("application") == "so.tilo.chat" and row.get("room") == bootstrap["room"]
+                        and row.get("operation") == "read-messages" and self.logical_resource(row["resource"]) == early]
+                if len(rows) != 1:
+                    return False
+                page = self.act(session, bootstrap["room"], "read-messages", {"pageSize": 32}, resource=rows[0]["resource"])
+                content = page.get("content", {})
+                if content.get("channel") != early.removeprefix("chat.channel:"):
+                    raise RuntimeError("reconnected app read another record")
+                messages = content.get("messages", [])
+                if any(sum(m.get("text") == marker["text"] and m.get("complete") is True for m in messages) != 1
+                       for marker in expected.values()):
+                    return False
+                actual = [m for m in messages if m.get("text") in {marker["text"] for marker in expected.values()}]
+                if any(m.get("author") != marker["author"] for marker in expected.values()
+                       for m in actual if m.get("text") == marker["text"]):
+                    raise RuntimeError("offline message lost its certified author")
+                observations[name] = actual
+            return True
+        packaged.wait_for("offline edits rejoin the same record without duplication", converged,
+                          sessions["bob"][1], timeout=90)
+        self.record("same-person-offline-edits-converged-after-native-reconnect", messages=observations)
+
+    def run(self, *, voice_only=False, state_only=False, continuity=None):
+        state_only = state_only or continuity is not None
         environments = {name: self.env(name) for name in ("alice", "bob")}
         publisher = self.root / "alice"
         for name, env in environments.items():
@@ -853,12 +920,29 @@ class Fixture:
         environments["bob"]["TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE"] = environments["alice"]["TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE"]
         packaged.run(self.binaries / "tilo-install", ["install", publisher / "chat.tapp", "--allow-self-signed"], environments["bob"])
         self.record("ordinary-signed-chat-packages-installed")
-        host = self.spawn("host", [self.binaries / "examples/native_pair_host", self.root],
-                          environments["alice"], stdin=subprocess.PIPE, text=True)
+        command = [self.binaries / "examples/native_pair_host", self.root]
+        if continuity is not None:
+            command.append("--same-person")
+        host = self.spawn("host", command, environments["alice"], stdin=subprocess.PIPE, text=True)
         bootstrap_path = self.root / "bootstrap.json"
         packaged.wait_for("private signed host invitations", bootstrap_path.exists, host)
         bootstrap = json.loads(bootstrap_path.read_text())
-        self.record("two-distinct-certified-native-identities", users=bootstrap["users"])
+        same_person = bootstrap["users"][0] == bootstrap["users"][1]
+        if same_person != (continuity is not None):
+            raise RuntimeError("certified person identity does not match fixture mode")
+        self.record("same-person-independent-certified-devices" if same_person else
+                    "two-distinct-certified-native-identities", users=bootstrap["users"])
+        if same_person:
+            # Keep the production installer's authorization artifact paths intact.
+            member_root = self.root / "bob/joined"
+            member_identity = member_root / "var/lib/tilo"
+            if (member_identity / "user-identity/privkey.bin").exists():
+                raise RuntimeError("member received primary personal signing material")
+            environments["bob"].update({
+                "XDG_CONFIG_HOME": str(member_root / "var/home/bob/.config"),
+                "TILO_IDENTITY_ROOT": str(member_identity),
+                "TILO_PEER_KEY_PATH": str(member_identity / "device-private/keypair.bin"),
+            })
         sessions = {}
         for name, frequency in (("alice", 700), ("bob", 1100)):
             env = environments[name]
@@ -874,14 +958,32 @@ class Fixture:
             invitation = bootstrap["invitations"][0 if name == "alice" else 1]
             require_ok(call(socket, {"op": "type", "text": invitation}))
             require_ok(call(socket, {"op": "key", "key": "Enter"}))
-            packaged.wait_for("signed native join", lambda: (
-                packaged.chrome_state(socket).get("peer_sync", {}).get("status") or "").startswith("Joined"), shell)
+            try:
+                packaged.wait_for("signed native join", lambda: (
+                    packaged.chrome_state(socket).get("peer_sync", {}).get("status") or "").startswith("Joined"), shell)
+            except RuntimeError:
+                (self.output / f"{name}-join-failure.json").write_text(json.dumps(
+                    packaged.chrome_state(socket).get("peer_sync", {}), indent=2))
+                raise
             require_ok(call(socket, {"op": "key", "key": "Escape"}))
             self.record(f"{name}-governed-native-join")
             sessions[name] = (socket, shell)
             require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-joined.png")}))
         early = None
+        if continuity == "automatic" and packaged.presented_primary_frame(
+                call(sessions["bob"][0], {"op": "foreign_frames"}), "so.tilo.chat") is not None:
+            raise RuntimeError("receiving device opened Chat before the source device")
         for name, (socket, shell) in sessions.items():
+            if continuity == "automatic" and name == "bob":
+                try:
+                    frame = packaged.wait_for("same-person device automatically opens local Chat", lambda:
+                        packaged.presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat"),
+                        shell, timeout=90)
+                except Exception:
+                    self.save_automatic_failure(socket)
+                    raise
+                self.record("same-person-peer-app-opened-without-second-open-invocation", frame=frame)
+                continue
             app = packaged.wait_for("signed Chat offering", lambda: next((
                 row for row in packaged.actions(socket, "Chat")
                 if row.get("provider") == "applications" and row.get("id") == "so.tilo.chat"), None), shell)
@@ -921,6 +1023,8 @@ class Fixture:
                 self.record("alice-state-committed-before-bob-app-launch", channel=early)
         if state_only:
             self.app_state(sessions, bootstrap["room"], early, bootstrap["users"])
+            if continuity == "reconnect":
+                self.reconnect(sessions, bootstrap, host, early)
             return
         if not voice_only:
             self.context(sessions, bootstrap["room"], bootstrap["presence_ids"])
@@ -938,13 +1042,20 @@ def main():
     parser.add_argument("--voice-proof", action="store_true", help="test governed native voice without qualifying follow or the combined pair")
     parser.add_argument("--state-proof", action="store_true",
                         help="qualify native app state independently of voice and following")
+    parser.add_argument("--automatic-opening-proof", action="store_true",
+                        help="test automatic native app opening on an enrolled same-person device")
+    parser.add_argument("--reconnect-proof", action="store_true",
+                        help="test same-person native apps across a private governor transport partition")
     parser.add_argument("--font-namespace", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if sum((args.cleanup_proof, args.voice_proof, args.state_proof)) > 1:
+    continuity = "automatic" if args.automatic_opening_proof else "reconnect" if args.reconnect_proof else None
+    state_mode = args.state_proof or continuity is not None
+    if sum((args.cleanup_proof, args.voice_proof, args.state_proof,
+            args.automatic_opening_proof, args.reconnect_proof)) > 1:
         parser.error("choose only one isolated proof mode")
-    if not args.state_proof and not args.cleanup_proof and args.pipewire is None:
+    if not state_mode and not args.cleanup_proof and args.pipewire is None:
         parser.error("voice requires --pipewire")
-    if args.state_proof and not args.font_namespace:
+    if state_mode and not args.font_namespace:
         # Reuse the existing packaged-native proof's OS font-catalog stage.
         # Only this fixture's mount namespace changes; host fonts stay intact.
         with tempfile.TemporaryDirectory(prefix="tilo-state-fonts-") as scratch:
@@ -958,7 +1069,7 @@ def main():
                             sys.executable, "-B", str(pathlib.Path(__file__).resolve()),
                             *sys.argv[1:], "--font-namespace"], check=True)
         return
-    if args.state_proof:
+    if state_mode:
         subprocess.run([sys.executable, "-B", str(REPO / "tools/font-catalog.py"),
                         "verify", "/usr/share/fonts/tilo", "--scope", "os"], check=True)
         mounts = pathlib.Path("/proc/self/mountinfo").read_text().splitlines()
@@ -972,9 +1083,9 @@ def main():
         if args.cleanup_proof:
             fixture.cleanup_proof()
         else:
-            fixture.run(voice_only=args.voice_proof, state_only=args.state_proof)
-            state_qualified = args.state_proof
-            qualified = not args.voice_proof and not args.state_proof
+            fixture.run(voice_only=args.voice_proof, state_only=state_mode, continuity=continuity)
+            state_qualified = state_mode
+            qualified = not args.voice_proof and not state_mode
     except Exception as failure:
         error = str(failure)
         raise
@@ -987,12 +1098,12 @@ def main():
             cleanup_error = str(failure)
         (args.out / "journey.json").write_text(json.dumps({
             "qualified": qualified, "app_state_qualified": state_qualified,
-            "mode": "native-app-state-proof" if args.state_proof else "cleanup-proof" if args.cleanup_proof else "native-voice-proof" if args.voice_proof else "native-pair",
+            "mode": f"same-person-{continuity}-proof" if continuity else "native-app-state-proof" if args.state_proof else "cleanup-proof" if args.cleanup_proof else "native-voice-proof" if args.voice_proof else "native-pair",
             "error": error, "cleanup_error": cleanup_error, "stages": fixture.stages,
             "real_microphone": False, "video_screen_sharing": False,
-            "same_person_devices_qualified": False,
-            "automatic_peer_app_launch_qualified": False,
-            "offline_reconnect_qualified": False,
+            "same_person_devices_qualified": state_qualified and continuity is not None,
+            "automatic_peer_app_launch_qualified": state_qualified and continuity == "automatic",
+            "offline_reconnect_qualified": state_qualified and continuity == "reconnect",
         }, indent=2) + "\n")
         if cleanup_error is not None:
             raise RuntimeError(f"fixture cleanup failed: {cleanup_error}")

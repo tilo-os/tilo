@@ -1,10 +1,11 @@
 //! Opt-in projections caused by the current admitted document action.
 
 use super::{
-    ActingFor, ActionFailure, ActionOutput, EffectAnswer, EffectCx, EffectEnv, Effected, Handle,
-    InvocationId, InvocationUpdate, Pending, Polled, ResourceOperation, ResourceOperationStart,
-    Running, failed, failure,
+    ActionFailure, ActionOutput, EffectAnswer, EffectCx, EffectEnv, Effected, Handle, InvocationId,
+    InvocationUpdate, Pending, Polled, ResourceOperation, ResourceOperationStart, Running,
+    answer_under, failed, failure,
 };
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -42,11 +43,13 @@ impl Completion {
 
 type Group = Rc<RefCell<Completion>>;
 
-trait CausalDrainer<R: Resource> {
+/// A causal drain, type-erased: `before` and `after` are its resource's
+/// state.
+trait CausalDrainer {
     fn start(
         &mut self,
-        before: &R::State,
-        after: &R::State,
+        before: &dyn Any,
+        after: &dyn Any,
         operation: &ResourceOperation<'_>,
         group: &Group,
     ) -> Result<(), String>;
@@ -63,16 +66,22 @@ struct CausalDrain<R: Resource, K, T> {
     groups: HashMap<K, (InvocationId, Group)>,
 }
 
-impl<R: Resource, K: Eq + Hash + Clone + 'static, T: 'static> CausalDrainer<R>
+impl<R: Resource, K: Eq + Hash + Clone + 'static, T: 'static> CausalDrainer
     for CausalDrain<R, K, T>
 {
     fn start(
         &mut self,
-        before: &R::State,
-        after: &R::State,
+        before: &dyn Any,
+        after: &dyn Any,
         operation: &ResourceOperation<'_>,
         group: &Group,
     ) -> Result<(), String> {
+        let (Some(before), Some(after)) = (
+            before.downcast_ref::<R::State>(),
+            after.downcast_ref::<R::State>(),
+        ) else {
+            return Err("a document consequence read another resource's state".into());
+        };
         let previous: HashSet<K> = (self.pending)(before)
             .into_iter()
             .map(|(key, _)| key)
@@ -99,15 +108,16 @@ impl<R: Resource, K: Eq + Hash + Clone + 'static, T: 'static> CausalDrainer<R>
                 completion.remaining = completion.remaining.saturating_add(1);
                 completion.admitted = completion.admitted.saturating_add(1);
             }
-            let answer = {
-                let _acting = ActingFor::enter(Some(request.invocation));
-                match custody {
-                    Some(custody) => custody
-                        .with_effect(|| (self.run)(entry, &mut cx))
-                        .and_then(|answer| custody.check().map(|()| answer)),
-                    None => (self.run)(entry, &mut cx),
-                }
-            };
+            let run = &mut self.run;
+            let mut entry = Some(entry);
+            let answer = answer_under(
+                custody,
+                Some(request.invocation),
+                &mut || match entry.take() {
+                    Some(entry) => run(entry, &mut cx),
+                    None => Err("a document consequence ran twice".into()),
+                },
+            );
             match (answer, cx.started.take()) {
                 (Ok(Effected::Pending), Some(started)) => {
                     self.jobs.insert(key.clone(), started);
@@ -178,27 +188,24 @@ impl<R: Resource, K: Eq + Hash + Clone + 'static, T: 'static> CausalDrainer<R>
     }
 }
 
-struct RegisteredCausal<R: Resource> {
+struct RegisteredCausal {
     alive: Weak<()>,
-    drain: Box<dyn CausalDrainer<R>>,
+    drain: Box<dyn CausalDrainer>,
 }
 
-pub(super) struct CausalEffects<R: Resource> {
-    drains: Vec<RegisteredCausal<R>>,
+/// Every causal drain of one resource, type-erased so that admitting,
+/// polling and settling them is compiled once in the shared runtime.
+#[derive(Default)]
+pub(super) struct CausalEffects {
+    drains: Vec<RegisteredCausal>,
     groups: HashMap<InvocationId, Group>,
 }
 
-impl<R: Resource> Default for CausalEffects<R> {
-    fn default() -> Self {
-        Self {
-            drains: Vec::new(),
-            groups: HashMap::new(),
-        }
-    }
-}
+/// Reads a resource's state from a document, type-erased.
+pub(super) type ReadState = dyn Fn(&tilo_resource::Doc) -> Result<Box<dyn Any>, String>;
 
-impl<R: Resource> CausalEffects<R> {
-    pub(super) fn register<K: Eq + Hash + Clone + 'static, T: 'static>(
+impl CausalEffects {
+    pub(super) fn register<R: Resource, K: Eq + Hash + Clone + 'static, T: 'static>(
         &mut self,
         alive: Weak<()>,
         env: EffectEnv<R>,
@@ -227,6 +234,7 @@ impl<R: Resource> CausalEffects<R> {
         &mut self,
         operation: &ResourceOperation<'_>,
         applied: &AppliedDocument<'_>,
+        read: &ReadState,
     ) -> Result<Option<ResourceOperationStart>, String> {
         if !self.registered() {
             return Ok(None);
@@ -241,8 +249,8 @@ impl<R: Resource> CausalEffects<R> {
         let before_doc = snapshot
             .fork_at(applied.before())
             .map_err(|error| error.to_string())?;
-        let before = R::read(&before_doc).map_err(|error| error.to_string())?;
-        let after = R::read(applied.document()).map_err(|error| error.to_string())?;
+        let before = read(&before_doc)?;
+        let after = read(applied.document())?;
         let group = Rc::new(RefCell::new(Completion {
             invocation: applied.invocation(),
             remaining: 0,
@@ -255,7 +263,7 @@ impl<R: Resource> CausalEffects<R> {
             if entry.alive.strong_count() == 0 {
                 continue;
             }
-            if let Err(error) = entry.drain.start(&before, &after, operation, &group) {
+            if let Err(error) = entry.drain.start(&*before, &*after, operation, &group) {
                 group
                     .borrow_mut()
                     .error

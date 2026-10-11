@@ -945,6 +945,12 @@ impl ContextMenu {
         self.hovered
     }
 
+    /// An unchanged opening pointer was replayed by the host. Keep its
+    /// hit-testing position without replacing the menu's keyboard focus.
+    pub(crate) fn remember_pointer(&mut self, point: Point) {
+        self.last_cursor = point;
+    }
+
     fn row_height(&self) -> f64 {
         self.row_height
     }

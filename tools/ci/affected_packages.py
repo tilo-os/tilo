@@ -976,6 +976,9 @@ def main() -> int:
                              "limit the plan to what the base changed since (--base is the new base)")
     args = parser.parse_args()
 
+    if args.metadata is None and os.environ.get('GITHUB_ACTIONS') != 'true':
+        parser.error('local planning requires verified metadata; use the stable offline_affected_plan.py entrypoint')
+
     root = Path(run("git", "rev-parse", "--show-toplevel", cwd=Path.cwd()))
     metadata = json.loads(args.metadata.read_text()) if args.metadata else cargo_metadata(root)
     changes = args.changes.read_text().splitlines() if args.changes else changed_files(root, args.base, args.head)

@@ -118,13 +118,52 @@ fn chat_catalogue() -> AppCatalogue {
     )
 }
 
-async fn serve(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let identities = [
-        provision(&root.join("alice"))?,
-        provision(&root.join("bob"))?,
-    ];
-    if identities[0].user_public_key == identities[1].user_public_key {
-        return Err("native pair must represent two distinct people".into());
+fn enroll_member(root: &Path) -> Result<DeviceCert, Box<dyn std::error::Error>> {
+    let alice = root.join("alice");
+    let bob = root.join("bob");
+    let identity_dir = alice.join("config/tilo/identity");
+    if !provisioning::is_throwaway_test_identity(&identity_dir)
+        || runtime_identity::resolve_active_identity(&bob.join("config/tilo/identity")).is_some()
+    {
+        return Err("member installation requires marked disposable owner and empty member".into());
+    }
+    let paths = IdentityPaths::under(alice.join("identity"));
+    let target = bob.join("joined");
+    let cert = provisioning::enroll_from_local_identity(
+        &provisioning::JoinedDeviceLayout {
+            target_root: &target,
+            username: "bob",
+            local_identity_dir: &identity_dir,
+            local_system: &paths,
+            local_home_peers: &alice.join("identity/home-peers.json"),
+            local_rooms: &alice.join("state/tilo/personal-rooms.json"),
+        },
+        "Same-person fixture",
+        "Fixture second device",
+        tilo_clock::unix_now_ns(),
+    )?;
+    // Authorization artifacts retain their installed paths. Run the member
+    // against this layout rather than relocating its certificate authority.
+    let member = IdentityPaths::under(target.join("var/lib/tilo"));
+    if member.user_privkey.exists() || cert.capabilities.can_admit_devices {
+        return Err("member must not receive personal signing custody".into());
+    }
+    Ok(cert)
+}
+
+async fn serve(root: &Path, same_person: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let first = provision(&root.join("alice"))?;
+    let second = if same_person {
+        enroll_member(root)?
+    } else {
+        provision(&root.join("bob"))?
+    };
+    let identities = [first, second];
+    if (identities[0].user_public_key == identities[1].user_public_key) != same_person {
+        return Err("native pair person identities do not match the selected mode".into());
+    }
+    if identities[0].device_public_key == identities[1].device_public_key {
+        return Err("native fixture requires independent device keys".into());
     }
     let host = enroll_host(&root.join("alice"), &identities[0])?;
     let cert = host.device_cert.clone();
@@ -224,5 +263,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(serve(&root))
+        .block_on(serve(
+            &root,
+            std::env::args_os().nth(2).as_deref() == Some(std::ffi::OsStr::new("--same-person")),
+        ))
 }

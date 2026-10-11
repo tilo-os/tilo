@@ -103,6 +103,20 @@ unset CARGO_PROFILE_RELEASE_CODEGEN_UNITS CARGO_PROFILE_RELEASE_LTO \
 # its own allowlist of variables.
 cd "$REPO"
 read -r -a extra_cargo_args <<< "${EXTRA_CARGO_ARGS:-}"
+# sccache must see the real compiler after the workspace wrapper adds its
+# flags. Outside it, sccache 0.17 rejects an absolute compiler as a second
+# input; a literal compiler is cacheable but bypasses the flag-mutating wrapper.
+# Keep Cargo's compiler selection intact and route workspace calls through the
+# size wrapper before caching. The dispatcher retains native compiler caching.
+if [[ ${RUSTC_WRAPPER:-} == */sccache || ${RUSTC_WRAPPER:-} == sccache ]]; then
+    cache_path=$RUSTC_WRAPPER
+    cache_config=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$cache_path")
+    export TILO_THIN_SCCACHE="$cache_path"
+    export RUSTC_WRAPPER="$REPO/tools/ci/thin-app/sccache"
+    extra_cargo_args+=(--config "build.rustc-wrapper=\"$RUSTC_WRAPPER\""
+                      --config "env.TILO_THIN_SCCACHE.value=$cache_config"
+                      --config "env.TILO_THIN_SCCACHE.force=true")
+fi
 if [ -n "${SDK_COMPILER_UNITS:-}" ]; then
     extra_cargo_args+=(--message-format=json-render-diagnostics)
     # Keep the actual unit identities on the producing machine; no runtime bytes change.

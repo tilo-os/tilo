@@ -135,7 +135,7 @@ pub use params::{
     validate_json_schema,
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
-pub use registry::ActionRegistry;
+pub use registry::{ActionRegistry, DecodePayload};
 #[allow(
     deprecated,
     reason = "existing app impls still name this trait until they publish through tilo_resource"
@@ -219,6 +219,38 @@ mod tests {
         r.register::<Counter>(COUNTER_TYPE);
         r.register::<Seen>(SEEN_TYPE);
         r
+    }
+
+    fn decode_seen(payload: &[u8]) -> Result<Box<dyn Action>, serde_json::Error> {
+        serde_json::from_slice::<Seen>(payload).map(|seen| Box::new(seen) as Box<dyn Action>)
+    }
+
+    /// A type registered with a decoder of its own decodes, and applies, as
+    /// one registered by type; a payload it cannot decode is a decode error
+    /// naming the type.
+    #[test]
+    fn a_registered_decoder_decodes_its_type_and_names_it_when_it_cannot() {
+        let mut registry = ActionRegistry::new();
+        registry.register_decoder(SEEN_TYPE, decode_seen);
+        let action = registry
+            .decode(&EncodedAction::encode(SEEN_TYPE, &Seen(7)).unwrap())
+            .unwrap();
+        let mut doc = AutoCommit::new();
+        action.apply(&mut doc).unwrap();
+        assert_eq!(
+            doc.get(&ROOT, "seen")
+                .unwrap()
+                .map(|(value, _)| value.as_i64()),
+            Some(Some(7))
+        );
+        let refused = registry.decode(&EncodedAction {
+            type_id: SEEN_TYPE.to_owned(),
+            payload: b"not a number".to_vec(),
+        });
+        assert!(
+            matches!(&refused, Err(ActionError::Decode { type_id, .. }) if type_id == SEEN_TYPE),
+            "{refused:?}"
+        );
     }
 
     fn last_message(doc: &mut AutoCommit) -> Option<String> {
