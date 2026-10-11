@@ -1429,9 +1429,9 @@ impl CollaborationManager {
     }
 
     /// Fire-and-forget and non-blocking on every backend. Presence may be
-    /// shed under saturation; any other durable enqueue failure visibly
-    /// disconnects the manager, so callers never continue under the illusion
-    /// it was sent. Document mutations never disconnect: see
+    /// shed under saturation; any other durable command is accepted and
+    /// waits for the transport's queue to have room, so a burst is
+    /// backpressure, never a disconnect. Document mutations never disconnect: see
     /// [`Self::try_send`] for why one was not sent.
     ///
     /// While the manager is [`CollaborationState::Connecting`] only a

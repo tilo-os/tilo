@@ -5,9 +5,11 @@
 //! `LocalSet`, because capnp-rpc futures are `!Send`. The owner thread
 //! reaches it over a pair of bounded queues: [`CollabTransport::submit`]
 //! enqueues commands and [`CollabTransport::drain`] empties the event queue.
-//! Durable traffic fails the bridge closed on overload; only transient
-//! presence may be shed. Document mutations have their own budget and are
-//! deferred (`Busy`) or refused (`TooLarge`) without closing it. Joining,
+//! Overload never closes the bridge. Only transient presence is shed;
+//! other durable commands that do not fit wait in the owner's ordered spill
+//! (a newer action surface replaces an older one) until the shovel frees
+//! room. Document mutations have their own budget and are deferred (`Busy`)
+//! or refused (`TooLarge`). Joining,
 //! document signing and envelope verification all happen on the worker with
 //! the certified launcher (or host-supplied) identity.
 #![allow(
@@ -257,9 +259,10 @@ pub(super) fn flush_live_activity() {
 }
 
 /// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions are
-/// bounded. Durable overflow makes the bridge unavailable rather than
-/// silently losing an action or invocation transition; a document change
-/// that does not fit is reported to its sender instead, never dropped.
+/// bounded. Durable overflow waits in the owner's spill rather than losing
+/// an action or invocation transition or disabling the bridge; a document
+/// change that does not fit is reported to its sender instead, never
+/// dropped.
 ///
 /// Dropping the manager drops `outbound_tx`; the shovel thread's
 /// `.recv()` then yields `None` and the thread exits. `_thread` is kept
@@ -289,6 +292,10 @@ pub(super) struct BrokerTransport {
     /// Whether [`wifi_continuity_command`] has been pointed at this
     /// transport; done once it has connected.
     wifi_bridge_registered: bool,
+    /// Durable commands the bounded queue had no room for, in submission
+    /// order. They wait here for the shovel to catch up instead of
+    /// disabling collaboration; see [`Self::enqueue`].
+    spill: std::collections::VecDeque<SdkCommand>,
     _thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -306,8 +313,75 @@ pub(crate) struct NativeHistoryInvocationFixture {
 }
 
 impl BrokerTransport {
-    fn enqueue(&self, command: SdkCommand) -> Result<(), TransportError> {
-        try_enqueue_sdk_command(&self.outbound_tx, command, &self.state)
+    /// Hand a command to the shovel. A full bounded queue is backpressure,
+    /// never a reason to disable collaboration: a durable command that does
+    /// not fit waits in [`Self::spill`] (in order, with a newer action
+    /// surface replacing an older one) and is sent as the shovel frees room.
+    /// Presence is shed and document changes report `Busy`, as before.
+    fn enqueue(&mut self, command: SdkCommand) -> Result<(), TransportError> {
+        self.flush_spill();
+        if !self.spill.is_empty() {
+            // Everything behind a parked command stays behind it.
+            if command.is_transient_presence() {
+                return Err(TransportError::Shed);
+            }
+            if command.document_len().is_some() {
+                self.state.command_bytes.arm_room_wake();
+                return Err(TransportError::Busy);
+            }
+            self.park(command);
+            return Ok(());
+        }
+        match admit_sdk_command(&self.outbound_tx, command, &self.state) {
+            Ok(()) => Ok(()),
+            Err(Refused {
+                command: Some(command),
+                ..
+            }) => {
+                self.park(command);
+                Ok(())
+            }
+            Err(refused) => Err(refused.error),
+        }
+    }
+
+    fn park(&mut self, command: SdkCommand) {
+        if let SdkCommand::Primary(CollabRequest::PublishActions { app_id, .. }) = &command
+            && let Some(older) = self.spill.iter_mut().find(|parked| {
+                matches!(parked, SdkCommand::Primary(CollabRequest::PublishActions { app_id: parked_app, .. })
+                    if parked_app == app_id)
+            })
+        {
+            // The surface is level-triggered: only the latest matters.
+            *older = command;
+        } else {
+            self.spill.push_back(command);
+        }
+        // Arm before the retry so a release racing it is never missed.
+        self.state.command_bytes.arm_room_wake();
+        self.flush_spill();
+    }
+
+    /// Move parked commands into the queue while it has room.
+    fn flush_spill(&mut self) {
+        while let Some(command) = self.spill.pop_front() {
+            match admit_sdk_command(&self.outbound_tx, command, &self.state) {
+                Ok(()) => {}
+                Err(Refused {
+                    command: Some(command),
+                    ..
+                }) => {
+                    self.spill.push_front(command);
+                    self.state.command_bytes.arm_room_wake();
+                    return;
+                }
+                Err(_) => {
+                    // The bridge is gone; nothing parked can be sent.
+                    self.spill.clear();
+                    return;
+                }
+            }
+        }
     }
 
     /// Route [`wifi_continuity_command`] through this transport.
@@ -391,6 +465,7 @@ impl CollabTransport for BrokerTransport {
     fn drain(&mut self, out: &mut Vec<CollabEvent>) {
         self.document_turns.clear();
         self.state.begin_poll();
+        self.flush_spill();
         if !self.wifi_bridge_registered
             && matches!(self.state.connect_phase(), ConnectPhase::Connected)
         {
@@ -1836,7 +1911,9 @@ fn bounded_rpc_diagnostic(error: &runtime_portal::NotAvailable) -> (&'static str
 }
 
 /// Non-blocking UI enqueue. Presence may be dropped when the finite queue is
-/// full; a durable command makes the whole bridge unavailable instead.
+/// full; a durable command that does not fit is refused as busy, and the
+/// owning transport parks it until room frees. Overload never disables the
+/// bridge.
 fn enqueue_sdk_command(
     tx: &tokio_mpsc::Sender<QueuedSdkCommand>,
     command: SdkCommand,
@@ -1845,18 +1922,43 @@ fn enqueue_sdk_command(
     try_enqueue_sdk_command(tx, command, state).is_ok()
 }
 
+/// Why a command was not queued, with the command itself when it is durable
+/// and may be retried.
+struct Refused {
+    error: TransportError,
+    command: Option<SdkCommand>,
+}
+
+impl Refused {
+    fn error(error: TransportError) -> Self {
+        Self {
+            error,
+            command: None,
+        }
+    }
+}
+
+fn try_enqueue_sdk_command(
+    tx: &tokio_mpsc::Sender<QueuedSdkCommand>,
+    command: SdkCommand,
+    state: &BridgeState,
+) -> Result<(), TransportError> {
+    admit_sdk_command(tx, command, state).map_err(|refused| refused.error)
+}
+
 /// Enqueue with an explicit outcome. Document mutations are checked against
 /// the transport limit here, before anything is queued, and use their own
 /// budget: a full budget is [`TransportError::Busy`] (retry later) and an
-/// over-limit change is [`TransportError::TooLarge`]. Neither disables
-/// collaboration. Other durable commands keep the fail-closed policy.
-fn try_enqueue_sdk_command(
+/// over-limit change is [`TransportError::TooLarge`]. Other durable commands
+/// are also `Busy` when the queue is full, and come back to the caller to
+/// retry. Only a queue whose receiver is gone closes the bridge.
+fn admit_sdk_command(
     tx: &tokio_mpsc::Sender<QueuedSdkCommand>,
     mut command: SdkCommand,
     state: &BridgeState,
-) -> Result<(), TransportError> {
+) -> Result<(), Refused> {
     if !state.is_healthy() {
-        return Err(TransportError::Closed);
+        return Err(Refused::error(TransportError::Closed));
     }
     if let Some(len) = command.document_len() {
         if let Err(collab_types::DocumentMutationEncodeError::TooLarge { actual, max }) =
@@ -1867,7 +1969,7 @@ fn try_enqueue_sdk_command(
                 limit = max,
                 "collab: document change exceeds the transfer limit; not sent"
             );
-            return Err(TransportError::TooLarge { actual, max });
+            return Err(Refused::error(TransportError::TooLarge { actual, max }));
         }
         command.shrink_document();
         let bytes = command_bytes(&command).unwrap_or(usize::MAX);
@@ -1883,7 +1985,7 @@ fn try_enqueue_sdk_command(
                 bytes = len,
                 "collab: document budget full; change will be retried"
             );
-            return Err(TransportError::Busy);
+            return Err(Refused::error(TransportError::Busy));
         };
         return match tx.try_send(QueuedSdkCommand {
             command,
@@ -1899,34 +2001,52 @@ fn try_enqueue_sdk_command(
                 if tx.capacity() > 0 {
                     state.owner_wake.notify_events();
                 }
-                Err(TransportError::Busy)
+                Err(Refused::error(TransportError::Busy))
             }
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
                 state.fail_closed("outbound command queue");
-                Err(TransportError::Closed)
+                Err(Refused::error(TransportError::Closed))
             }
         };
     }
     let transient = command.is_transient_presence();
-    let Some(reservation) = state.command_bytes.reserve(
-        command_bytes(&command).unwrap_or(usize::MAX),
+    let bytes = command_bytes(&command);
+    // A command alone above the budget is admitted into an empty one, so it
+    // can always make progress; a metering overflow is treated as that.
+    let Some(reservation) = state.command_bytes.reserve_sole(
+        bytes.unwrap_or(SDK_COMMAND_QUEUE_BYTES),
         SDK_COMMAND_QUEUE_BYTES,
     ) else {
         if transient {
-            return Err(TransportError::Shed);
+            return Err(Refused::error(TransportError::Shed));
         }
-        state.fail_closed("outbound command byte budget");
-        return Err(TransportError::Closed);
+        return Err(Refused {
+            error: TransportError::Busy,
+            command: Some(command),
+        });
     };
     match tx.try_send(QueuedSdkCommand {
         command,
         _reservation: reservation,
     }) {
         Ok(()) => Ok(()),
-        Err(tokio_mpsc::error::TrySendError::Full(_)) if transient => Err(TransportError::Shed),
-        Err(_) => {
+        Err(tokio_mpsc::error::TrySendError::Full(refused)) => {
+            if transient {
+                return Err(Refused::error(TransportError::Shed));
+            }
+            let QueuedSdkCommand {
+                command,
+                _reservation,
+            } = refused;
+            drop(_reservation);
+            Err(Refused {
+                error: TransportError::Busy,
+                command: Some(command),
+            })
+        }
+        Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
             state.fail_closed("outbound command queue");
-            Err(TransportError::Closed)
+            Err(Refused::error(TransportError::Closed))
         }
     }
 }
@@ -3317,6 +3437,7 @@ impl CollaborationManager {
             primary_deadline: None,
             worker_stopped: false,
             wifi_bridge_registered: false,
+            spill: std::collections::VecDeque::new(),
             _thread: Some(handle),
         };
         Ok((transport, init_rx))
@@ -8558,6 +8679,131 @@ mod tests {
         thread.join().unwrap();
     }
 
+    fn parking_transport(
+        capacity: usize,
+    ) -> (BrokerTransport, tokio_mpsc::Receiver<QueuedSdkCommand>) {
+        let (outbound_tx, outbound_rx) = tokio_mpsc::channel(capacity);
+        let (_, inbound_rx) = tokio_mpsc::channel(1);
+        let (action_directory_tx, action_directory_rx) = mpsc::sync_channel(1);
+        let transport = BrokerTransport {
+            outbound_tx,
+            media: None,
+            inbound_rx,
+            document_turns: Vec::new(),
+            state: BridgeState::new(),
+            action_directory_rx,
+            action_directory_tx,
+            pending_primary: None,
+            primary_deadline: None,
+            worker_stopped: false,
+            wifi_bridge_registered: false,
+            spill: std::collections::VecDeque::new(),
+            _thread: None,
+        };
+        (transport, outbound_rx)
+    }
+
+    /// A burst of durable commands, more than the queue holds by count and
+    /// by bytes, waits for the shovel instead of disabling collaboration,
+    /// and reaches it in submission order.
+    #[test]
+    fn a_durable_burst_waits_for_the_shovel_instead_of_disabling_collaboration() {
+        let (mut transport, mut shovel) = parking_transport(4);
+        let total = 100;
+        for n in 0..total {
+            // One megabyte each: the burst is far past the byte budget too.
+            let command = TransportCommand::Primary(CollabRequest::ReportHandoff {
+                app_id: format!("app-{n}"),
+                message: vec![0; 1024 * 1024],
+            });
+            assert_eq!(transport.submit(command), Ok(()), "command {n} was refused");
+            assert!(
+                transport.state.is_healthy(),
+                "command {n} disabled the bridge"
+            );
+        }
+        assert!(!transport.spill.is_empty(), "the queue really was full");
+        assert!(matches!(transport.status(), TransportStatus::Connecting));
+
+        let mut seen = Vec::new();
+        let mut events = Vec::new();
+        while seen.len() < total {
+            let mut moved = false;
+            while let Ok(queued) = shovel.try_recv() {
+                let SdkCommand::Primary(CollabRequest::ReportHandoff { app_id, .. }) =
+                    queued.command
+                else {
+                    panic!("unexpected command");
+                };
+                seen.push(app_id);
+                moved = true;
+            }
+            // The owner's drain is what refills the queue after a wake.
+            transport.drain(&mut events);
+            assert!(moved || !transport.spill.is_empty() || seen.len() == total);
+        }
+        let expected = (0..total).map(|n| format!("app-{n}")).collect::<Vec<_>>();
+        assert_eq!(seen, expected);
+        assert!(transport.state.is_healthy());
+    }
+
+    /// A single command larger than the whole outbound byte budget (a merged
+    /// notebook's action surface is megabytes) is admitted when the budget is
+    /// empty and the commands behind it wait, rather than being refused as an
+    /// overload that disables collaboration.
+    #[test]
+    fn a_command_larger_than_the_whole_budget_is_admitted_alone() {
+        let (mut transport, mut shovel) = parking_transport(8);
+        let huge = || {
+            TransportCommand::Primary(CollabRequest::ReportHandoff {
+                app_id: "notes".into(),
+                message: vec![0; SDK_COMMAND_QUEUE_BYTES + 1024 * 1024],
+            })
+        };
+        assert_eq!(transport.submit(huge()), Ok(()));
+        assert_eq!(transport.submit(huge()), Ok(()), "the next one waits");
+        assert_eq!(transport.spill.len(), 1);
+        assert!(transport.state.is_healthy());
+        assert!(shovel.try_recv().is_ok());
+        let mut events = Vec::new();
+        transport.drain(&mut events);
+        assert!(transport.spill.is_empty());
+        assert!(shovel.try_recv().is_ok());
+        assert!(transport.state.is_healthy());
+    }
+
+    /// Commands behind a parked one stay behind it, and a newer action surface
+    /// replaces an older one still waiting: it is level-triggered, so a burst
+    /// of republications is one parked surface, not a queue of large ones.
+    #[test]
+    fn parked_surfaces_coalesce_and_document_changes_wait_behind_parked_commands() {
+        let (mut transport, mut shovel) = parking_transport(1);
+        let surface = || {
+            TransportCommand::Primary(CollabRequest::PublishActions {
+                app_id: "notes".into(),
+                actions: Vec::new(),
+            })
+        };
+        assert_eq!(transport.submit(surface()), Ok(()));
+        for _ in 0..500 {
+            assert_eq!(transport.submit(surface()), Ok(()));
+        }
+        assert_eq!(transport.spill.len(), 1, "surfaces coalesce while parked");
+        assert_eq!(
+            transport.submit(TransportCommand::Primary(
+                CollabRequest::document_incremental(b"edit".to_vec())
+            )),
+            Err(TransportError::Busy),
+            "a document change never overtakes a parked command"
+        );
+        assert!(transport.state.is_healthy());
+        assert!(shovel.try_recv().is_ok());
+        let mut events = Vec::new();
+        transport.drain(&mut events);
+        assert!(transport.spill.is_empty());
+        assert!(shovel.try_recv().is_ok());
+    }
+
     #[cfg(unix)]
     struct RefusedDocumentIdentity;
 
@@ -9277,6 +9523,7 @@ mod tests {
             primary_deadline: None,
             worker_stopped: false,
             wifi_bridge_registered: false,
+            spill: std::collections::VecDeque::new(),
             _thread: None,
         }));
         let earlier = manager.begin_document_publication_barrier().unwrap();
@@ -10257,7 +10504,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_backpressure_sheds_presence_and_fails_closed_for_results() {
+    fn bridge_backpressure_sheds_presence_and_defers_results() {
         // Case `saturated_outbound_bridge_sheds_only_presence_then_fails_closed`.
         {
             let (tx, mut rx) = tokio_mpsc::channel(1);
@@ -10310,9 +10557,12 @@ mod tests {
                     SdkCommand::Primary(CollabRequest::RequestDocumentSnapshot),
                     &state
                 ),
-                "a durable control overflow must be observable as a disconnected bridge"
+                "a durable control overflow is refused as busy, to be parked by the transport"
             );
-            assert!(!state.is_healthy());
+            assert!(
+                state.is_healthy(),
+                "overload must never disable collaboration"
+            );
             assert!(
                 rx.try_recv().is_ok() && rx.try_recv().is_err(),
                 "the bounded queue retains only its admitted durable command"
