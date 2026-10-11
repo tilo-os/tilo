@@ -158,7 +158,6 @@ pub struct SetupApp {
     status: String,
     status_is_error: bool,
     composed: ui::widget::Composed,
-    structure_dirty: bool,
     import_requested: bool,
     /// Whether the view shows folder imports in place of setup.
     imports: Option<LocalState<bool>>,
@@ -303,7 +302,6 @@ impl SetupApp {
             status: "Choose an available experience to begin.".into(),
             status_is_error: false,
             composed: ui::widget::Composed::default(),
-            structure_dirty: true,
             import_requested: false,
             imports: None,
             starts_when_live: false,
@@ -757,7 +755,7 @@ impl SetupApp {
             }
             _ => unreachable!("validated Desktop effect"),
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
         if self.status_is_error {
             return Err(self.status.clone());
         }
@@ -969,7 +967,7 @@ impl SetupApp {
             | SetupCommand::InternalDisableFastStartup
             | SetupCommand::RecheckInternal => self.apply_internal_install_command(command),
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -991,13 +989,13 @@ impl SetupApp {
             self.status =
                 "Wait for the current folder scan to finish before adding another.".into();
             self.status_is_error = true;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             return;
         }
         if let Some(error) = self.scan_source_error(&source) {
             self.status = error;
             self.status_is_error = true;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             return;
         }
         let source_label = source.display().to_string();
@@ -1021,7 +1019,7 @@ impl SetupApp {
             self.pending_scans = self.pending_scans.saturating_sub(1);
             self.status = format!("Folder scan could not start for {source_label}: {error}");
             self.status_is_error = true;
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
     }
 
@@ -1039,7 +1037,7 @@ impl SetupApp {
             self.known_folders = unavailable_suggestions("Known-folder lookup could not start.");
             self.status = format!("Known-folder lookup could not start: {error}");
             self.status_is_error = true;
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
     }
 
@@ -1105,7 +1103,7 @@ impl SetupApp {
                         if let Some(error) = self.scan_source_error(&scan.source) {
                             self.status = error;
                             self.status_is_error = true;
-                            self.structure_dirty = true;
+                            self.composed.invalidate();
                             return;
                         }
                         let skipped_count = scan.skipped_count;
@@ -1159,7 +1157,7 @@ impl SetupApp {
                 self.apply_host_command_result(command, result);
             }
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     fn poll_background(&mut self) -> bool {
@@ -1209,7 +1207,7 @@ impl SetupApp {
                     _ => {}
                 }
             }
-            self.structure_dirty = true;
+            self.composed.invalidate();
             changed = true;
         }
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -1226,7 +1224,7 @@ impl SetupApp {
                         Some(super::internal_cache::coordinator::Phase::Failed)
                     );
                 }
-                self.structure_dirty = true;
+                self.composed.invalidate();
                 changed = true;
             }
         }
@@ -2105,7 +2103,7 @@ impl SetupApp {
                     &[("gib", gib.into())],
                 );
                 self.status_is_error = false;
-                self.structure_dirty = true;
+                self.composed.invalidate();
                 return Ok(None);
             }
             Op::InstallInternal { reviewed } => {
@@ -2166,7 +2164,7 @@ impl SetupApp {
             );
             self.status_is_error = true;
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     /// Mirror the gated readiness into the capabilities the controller and
@@ -2322,7 +2320,7 @@ impl SetupApp {
                 self.status_is_error = true;
             }
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     /// Follow helper runs and stepper commits; announce finished runs.
@@ -2371,7 +2369,7 @@ impl SetupApp {
                 self.status = status;
                 self.status_is_error = is_error;
             }
-            self.structure_dirty = true;
+            self.composed.invalidate();
             changed = true;
         }
         if self.internal_install.take_reprobe() {
@@ -3129,10 +3127,6 @@ impl Widget for SetupApp {
                 }
             }
     }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty) || self.composed.take_structure_dirty()
-    }
 }
 
 /// The screenshot scenarios guided setup stages.
@@ -3172,7 +3166,7 @@ impl ResourceSurface<Imager, SetupEffect> for SetupApp {
         self.imports = imports;
         self.actions = actions;
         self.usb = usb;
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     fn effect(&mut self, effect: SetupEffect, _cx: &mut EffectCx<Imager, Self>) -> EffectAnswer {
@@ -5348,21 +5342,11 @@ mod tests {
     }
 
     fn retained_value(root: &dyn Widget, id: &str) -> Option<String> {
-        if root.test_id() == Some(id) {
-            return root.accessibility().and_then(|node| node.value);
-        }
-        root.children()
-            .into_iter()
-            .find_map(|child| retained_value(child, id))
+        ui::widget::find_test_id(root, id)?.accessibility()?.value
     }
 
     fn retained_name(root: &dyn Widget, id: &str) -> Option<String> {
-        if root.test_id() == Some(id) {
-            return root.accessibility().and_then(|node| node.name);
-        }
-        root.children()
-            .into_iter()
-            .find_map(|child| retained_name(child, id))
+        ui::widget::find_test_id(root, id)?.accessibility()?.name
     }
 
     fn internal_action(app: &SetupApp, id: &str) -> tilo_actions::ActionSpec {

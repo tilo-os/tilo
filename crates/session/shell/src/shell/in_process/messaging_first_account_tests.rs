@@ -272,6 +272,7 @@ fn receive_and_reply(
         apps.pump_messaging_records();
     })
     .unwrap();
+    await_private_reply(&mut mounted.harness, || apps.pump_messaging_records());
     assert!(
         mounted
             .harness

@@ -1362,6 +1362,8 @@ search-action-quick-settings-devices = Open devices and media
 search-action-quick-settings-devices-subtitle = Certified devices, media routes, remote input, and handoffs
 search-action-projection-open = Choose where the desktop appears
 search-action-projection-open-subtitle = Extend, mirror, one screen, or a Miracast, Google Cast, AirPlay or FCast receiver
+search-action-projection-close = Close the display sheet
+search-action-projection-close-subtitle = Put away the layout and receiver choices; displays stay as they are
 search-action-display-layout-extend = Extend displays
 search-action-display-layout-extend-subtitle = Use every connected display as one larger desktop
 search-action-display-layout-mirror = Mirror displays
@@ -1552,13 +1554,6 @@ search-action-device-revoked = Device revoked
 search-action-device-revoked-body = The revocation was root-signed and recorded in this identity's device list.
 
 # Search: applications
-search-apps-group-start-here = Start here
-search-apps-group-everyday = Everyday
-search-apps-group-work = Work
-search-apps-group-media = Media
-search-apps-group-system-tools = System tools
-search-apps-group-more-apps = More apps
-search-apps-group-developer-tools = Developer tools
 search-apps-detail-grouped = { $group } · { $detail }
 search-apps-open = Open { $app }
 search-apps-open-subtitle = { $target } · { $detail }
@@ -2546,3 +2541,43 @@ device-fabric-error-input-decline-save-failed = Input control was revoked, but t
 device-fabric-error-input-sequence-exhausted = Input sequencing is exhausted. Request a new control lease.
 
 device-fabric-error-input-cleanup-pending = Previous input is still being released. Try again.
+
+display-remote-heading = Your other screens
+display-remote-title = { $number } · { $name } · { $device }
+display-remote-row = { $status } · { $title }
+display-remote-row-description = Include this screen in your shared display layout
+display-remote-offline = Offline
+display-remote-offline-excluded = Offline · Not in layout
+display-remote-switched-off = Switched off on its device
+display-remote-in-layout = In layout
+display-remote-out-of-layout = Not in layout
+display-remote-unavailable = This shared display is no longer available.
+display-remote-permission = Your workspace role does not allow changing the shared display layout.
+display-remote-stale = This display arrangement changed. Refresh before editing.
+search-action-shared-display-inspect = Inspect shared displays
+search-action-shared-display-inspect-subtitle = Certified outputs, display numbers, inclusion and current arrangement revisions
+search-action-shared-display-include = Set shared display inclusion
+search-action-shared-display-include-subtitle = Include or exclude one certified output without granting input access
+activity-morning-choose = Choose for morning
+activity-morning-remove = Remove morning source
+activity-morning-empty = Morning sources: choose a resource in Explore → Details. Up to eight sources; no sources connected automatically.
+activity-morning-description = Chosen morning sources · provider previews from authorized workspace resources. Refresh or draft a schedule explicitly.
+activity-morning-unavailable = Source unavailable in this workspace · no current evidence
+activity-morning-source = { $source } · last recorded workspace activity: { $time } · external freshness unknown
+activity-morning-open = Open morning source
+
+# Canonical first-use action admission; never includes private identity material.
+onboarding-semantic-unavailable = This setup action is no longer available at this step.
+onboarding-semantic-failed = Setup could not complete this action. The desktop remains protected.
+activity-morning-payload-unavailable = Provider summary unavailable. Open the source to inspect or refresh it.
+
+activity-morning-refresh = Refresh source
+activity-morning-draft = Draft scheduled refresh…
+activity-morning-draft-description = Opens a draft in Shortcuts. Choose a schedule and review its permissions before saving; nothing is armed yet.
+activity-morning-command-unavailable = Source command unavailable
+activity-morning-command-pending = Request pending
+activity-morning-command-accepted = Request accepted; inspect its result in Actions
+activity-morning-command-refused = Request refused
+activity-morning-recorded = { $source } · last recorded workspace activity: { $time }
+
+activity-morning-next = Next chosen source

@@ -119,7 +119,12 @@ impl ImeContext {
 
         let (x, y) = spot.to_physical::<i32>(scale_factor).into();
         let (width, height): (i32, i32) = size.to_physical::<i32>(scale_factor).into();
-        let rc_area = RECT { left: x, top: y, right: x + width, bottom: y + height };
+        let rc_area = RECT {
+            left: x,
+            top: y,
+            right: x + width,
+            bottom: y + height,
+        };
         let candidate_form = CANDIDATEFORM {
             dwIndex: 0,
             dwStyle: CFS_EXCLUDE,

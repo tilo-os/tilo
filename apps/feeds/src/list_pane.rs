@@ -509,7 +509,7 @@ impl Widget for ListPane {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::reader_pane::leaf_rect(taffy, node, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if let (Some((_, empty)), Some(child)) = (self.empty.as_mut(), self.empty_node) {
             empty.apply_layout(taffy, child, self.rect.origin());
         }

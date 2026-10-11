@@ -47,11 +47,9 @@ where
 {
     let wrap: Arc<dyn Fn(C::Action) -> R::Action + Send + Sync> = Arc::new(wrap);
     let resource = {
-        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
         let _phase = crate::profiling::Phase::start("child.publish_parts");
         publish_parts::<C>(id, label, state)
     };
-    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     let _phase = crate::profiling::Phase::start("child.rewrap");
     rewrap::<C, R>(resource, &wrap)
 }

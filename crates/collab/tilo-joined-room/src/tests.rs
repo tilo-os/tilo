@@ -23,6 +23,7 @@ struct Enrolled {
     owner: NativeWorkspaceOwner,
     room: RoomId,
     now: SystemTime,
+    replay: NeighbourMsg,
 }
 
 /// Enroll through the file store and admit the governor's history.
@@ -35,6 +36,12 @@ fn enrolled() -> Enrolled {
     let enrollment = crate::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
     let room = RoomId::parse(ROOM).unwrap();
+    let replay = messages
+        .iter()
+        .rev()
+        .find(|message| matches!(message, NeighbourMsg::AppDocument { .. }))
+        .expect("fixture has signed app state")
+        .clone();
     for message in messages.into_iter().skip(1) {
         owner
             .receive(
@@ -51,6 +58,7 @@ fn enrolled() -> Enrolled {
         owner,
         room,
         now,
+        replay,
     }
 }
 
@@ -869,6 +877,70 @@ fn a_member_reads_the_admitted_document_and_a_stranger_does_not() {
         "a device outside the room reads nothing"
     );
     assert!(read(member, "uuid:absent", None, usize::MAX).is_err());
+}
+
+/// A governor checkpoint reaches this owner as several signed frames. A read
+/// between them hands out nothing and says the checkpoint is pending, so the
+/// reader asks again; a refusal would end an app's collaboration for good.
+/// It still refuses a device that may not read the record.
+#[test]
+fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
+    let joined = enrolled();
+    let member = member().verifying_key().to_bytes();
+    let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
+    let governor_key = SigningKey::from_bytes(&[61; 32]);
+    let covered = edit_with(&joined.owner, joined.room, joined.now, "covered next");
+    joined.owner.commit_document(covered, joined.now).unwrap();
+    let mut remote = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.peer().clone()))
+        .unwrap();
+    let frames = remote
+        .durable_bootstrap_messages(&governor_key, joined.now, 600)
+        .unwrap();
+    let read = |reader| {
+        joined.owner.with_current(joined.room, |view| {
+            view.read_document(reader, APP, "", None, usize::MAX, joined.now)
+        })
+    };
+    let mut pending = 0;
+    for frame in frames {
+        joined
+            .owner
+            .receive(
+                joined.room,
+                TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+                frame,
+                joined.now,
+            )
+            .unwrap();
+        match read(member) {
+            Ok(DocumentRead::Captured(_)) => {}
+            Ok(DocumentRead::CheckpointPending) => {
+                pending += 1;
+                assert!(
+                    read(stranger).is_err(),
+                    "a pending checkpoint is reported only to a reader of the record"
+                );
+            }
+            Ok(DocumentRead::Unchanged(_)) => panic!("no revision was offered"),
+            Err(error) => panic!("a read between checkpoint frames was refused: {error}"),
+        }
+    }
+    assert!(
+        pending > 0,
+        "the checkpoint's frames leave the room between cuts"
+    );
+    let Ok(DocumentRead::Captured(document)) = read(member) else {
+        panic!("the completed checkpoint is read again");
+    };
+    let doc = AutoCommit::load(&document.bytes).unwrap();
+    assert_eq!(
+        doc.get(ROOT, "topic")
+            .unwrap()
+            .map(|(value, _)| value.to_string()),
+        Some("\"covered next\"".into())
+    );
 }
 
 #[test]
@@ -1776,4 +1848,45 @@ fn legacy_int_array_owner_file_still_loads() {
         rewritten
     );
     assert_eq!(state(&reread), after);
+}
+
+#[test]
+fn retained_replay_reuses_exact_committed_publication() {
+    let joined = enrolled();
+    let governor = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.governor().device_public_key))
+        .unwrap();
+    let message = joined.replay.clone();
+    let before = std::fs::read(&joined.path).unwrap();
+    let generation = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.generation()))
+        .unwrap();
+    let report = joined
+        .owner
+        .receive(
+            joined.room,
+            TransportOrigin::RetainedRelayDelta(governor),
+            message,
+            joined.now,
+        )
+        .unwrap();
+    assert!(matches!(
+        report.primary(),
+        tilo_peer_state::InputDisposition::Duplicate(_)
+    ));
+    assert_eq!(
+        joined
+            .owner
+            .with_current(joined.room, |view| Ok(view.generation()))
+            .unwrap(),
+        generation,
+        "an unchanged authenticated replay must reuse the actual committed generation"
+    );
+    assert_eq!(
+        std::fs::read(&joined.path).unwrap(),
+        before,
+        "an unchanged authenticated replay must not rewrite durable owner state"
+    );
 }

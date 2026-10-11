@@ -288,10 +288,6 @@ impl ResourceApp for ContainersShell {
         SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     /// A screenshot shows a made-up engine (or, for `empty`, none at all)
     /// instead of the podman of the machine it is taken on.
     fn fixture(fixture: &mut Fixture<Containers>) {

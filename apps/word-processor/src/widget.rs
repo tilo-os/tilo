@@ -36,7 +36,7 @@ use ui::clipboard_copy;
 use ui::icons::Icon;
 use ui::permissions::UserId;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::{Notice, ToastAnchor, ToastKind};
 use ui::widget::{BlockEditor, Embedded, Widget};
 use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_paste};
 
@@ -105,12 +105,10 @@ use image_layout::{
 use layout_cache::{ShapeKeyInput, shape_key};
 use proofing::misspelled_spans;
 pub use proofing::{PersonalDictionary, WriterLayout};
-#[cfg(test)]
-use text_runs::block_runs;
 use text_runs::{
-    block_change_decos, block_change_ranges, block_comment_ranges, block_note_refs,
-    block_runs_markup, char_font_family, char_font_size, char_highlight, composed_block,
-    note_numbering, note_text, parse_hex_rgb, running_head_runs, running_head_runs_editing,
+    block_change_decos, block_change_ranges, block_comment_ranges, block_note_refs, block_runs,
+    char_font_family, char_font_size, char_highlight, composed_block, note_numbering, note_text,
+    parse_hex_rgb, running_head_runs, running_head_runs_editing,
 };
 use toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE, ToolAction, ToolEntry};
 
@@ -1248,7 +1246,7 @@ pub struct WordProcessorWidget {
     // ---- transient status toast -------------------------------------------
     /// A transient operation result (e.g. save confirmation or failure),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
-    toast: Option<(String, ToastKind)>,
+    toast: Notice,
     ime_rect: Option<Rect>,
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
@@ -1516,7 +1514,7 @@ impl WordProcessorWidget {
             portal_rx: None,
             pending_save: None,
             style_menu: StyleMenu::default(),
-            toast: None,
+            toast: Notice::default(),
             ime_rect: None,
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),
@@ -1816,7 +1814,7 @@ impl WordProcessorWidget {
             }
             Err(error) => {
                 if self.read_only() {
-                    self.toast = Some((t("toast-view-only"), ToastKind::Error));
+                    self.toast.show(t("toast-view-only"), ToastKind::Error);
                     self.lifecycle.dirty = true;
                 }
                 eprintln!("word-processor: edit refused: {error}");
@@ -3414,7 +3412,8 @@ impl WordProcessorWidget {
                     }
                     portal::PortalOutcome::Failed(reason) => {
                         eprintln!("word-processor: portal error: {reason}");
-                        self.toast = Some((t("toast-file-dialog-failed"), ToastKind::Error));
+                        self.toast
+                            .show(t("toast-file-dialog-failed"), ToastKind::Error);
                     }
                     portal::PortalOutcome::Cancelled => {}
                 }
@@ -3473,7 +3472,7 @@ impl WordProcessorWidget {
                         },
                     )?;
                     self.save_error = None;
-                    self.toast = Some((t("toast-saved"), ToastKind::Success));
+                    self.toast.show(t("toast-saved"), ToastKind::Success);
                     self.note_file_written(path, &bytes);
                 }
                 Err(e) => {
@@ -5377,7 +5376,7 @@ impl WordProcessorWidget {
             .collect();
         if entries.is_empty() {
             // Nothing to build a TOC from — tell the user *why* nothing happened.
-            self.toast = Some((t("toast-toc-empty"), ToastKind::Info));
+            self.toast.show(t("toast-toc-empty"), ToastKind::Info);
             self.lifecycle.dirty = true;
             return;
         }
@@ -5388,10 +5387,10 @@ impl WordProcessorWidget {
         // Scroll the freshly-inserted TOC (always at the document top) into view
         // and surface a confirmation toast, so the action has a visible result.
         self.scroll_y = 0.0;
-        self.toast = Some((
+        self.toast.show(
             t_args("toast-toc-updated", &[arg("n", num::i64_of_usize(n))]),
             ToastKind::Success,
-        ));
+        );
     }
 
     /// Draw the transient confirmation through the shared toast-card renderer.
@@ -5404,24 +5403,14 @@ impl WordProcessorWidget {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some((msg, kind)) = self.toast.as_ref() else {
-            return;
-        };
         let area = Rect::new(
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
             self.rect.y1 - self.layout_bar_height,
         );
-        paint_transient(
-            scene,
-            transform,
-            tr,
-            theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new(msg, *kind),
-        );
+        self.toast
+            .paint(scene, transform, tr, theme, area, ToastAnchor::BottomCenter);
     }
 }
 
@@ -6221,7 +6210,7 @@ impl WordProcessorWidget {
                 let Some(slot) = self.num_inputs.iter_mut().find(|slot| slot.field == field) else {
                     return false;
                 };
-                Widget::perform_action(&mut slot.input, action, state, &automerge::ROOT)
+                Widget::perform_action(&mut slot.input, action, &[], state, &automerge::ROOT)
             }
         } else {
             if matches!(action, ui::a11y::Action::Focus) {
@@ -6241,7 +6230,7 @@ impl WordProcessorWidget {
                 Widget::set_focus(menu, true);
                 true
             } else {
-                Widget::perform_action(menu, action, state, &automerge::ROOT)
+                Widget::perform_action(menu, action, &[], state, &automerge::ROOT)
             }
         };
         if performed {
@@ -7039,8 +7028,7 @@ impl WordProcessorWidget {
             let mut row_h = 26.0f64;
             for c in 0..ncols {
                 if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
-                    let (runs, underlines, strikes) =
-                        block_runs_markup(cell, self.review.is_visible());
+                    let (runs, underlines, strikes) = block_runs(cell, self.review.is_visible());
                     let wrap_w = num::f32_of_f64((col_w - 2.0 * layout.cell_padding).max(24.0));
                     let align = block_align(cell, TextAlign::Left);
                     let key = shape_key(&ShapeKeyInput {
@@ -7356,7 +7344,7 @@ impl WordProcessorWidget {
         };
         let wrap_w =
             (fg.content_w - num::f32_of_f64(indent) - num::f32_of_f64(float_reserve)).max(40.0);
-        let (runs, underlines, strikes) = block_runs_markup(b, self.review.is_visible());
+        let (runs, underlines, strikes) = block_runs(b, self.review.is_visible());
         let align = block_align(b, style_align(&st.align));
         let family = parse_font(&st.font);
         // The paragraph's line-spacing multiplier (1.0 = single) scales the
@@ -9000,7 +8988,7 @@ impl WordProcessorWidget {
             return;
         }
         // Any left press dismisses a staged toast (a transient cue).
-        if self.toast.take().is_some() {
+        if self.toast.dismiss() {
             self.lifecycle.dirty = true;
         }
         if !self.rect.contains(self.pointer) {
@@ -10549,7 +10537,9 @@ impl Widget for WordProcessorWidget {
         if !self.styles_panel_full_window() {
             tree.node = tree.node.with_name(t("a11y-document-editor"));
         }
-        Some(tree.into_access_node())
+        let mut node = tree.into_access_node();
+        node.children.extend(self.toast.access_node());
+        Some(node)
     }
 
     fn perform_semantic_action(
@@ -10569,10 +10559,10 @@ impl Widget for WordProcessorWidget {
         {
             return false;
         }
-        self.perform_action_at(action, &[ui::a11y::hash_key(&target)], state, path)
+        ui::Widget::perform_action(self, action, &[ui::a11y::hash_key(&target)], state, path)
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
@@ -12430,7 +12420,8 @@ impl WordProcessorWidget {
                 if self.sheet.remove(&id) {
                     self.persist_stylesheet_via_actions(state);
                     self.refresh_blocks(state);
-                    self.toast = Some((t("toast-style-deleted"), ToastKind::Success));
+                    self.toast
+                        .show(t("toast-style-deleted"), ToastKind::Success);
                 }
             }
             StyleMenuAction::Duplicate(id) => {
@@ -12442,7 +12433,8 @@ impl WordProcessorWidget {
                     // Apply the copy to the caret block so the panel focuses it.
                     self.dispatch_apply_named_style(state, &new_id);
                     self.refresh_blocks(state);
-                    self.toast = Some((t("toast-style-duplicated"), ToastKind::Success));
+                    self.toast
+                        .show(t("toast-style-duplicated"), ToastKind::Success);
                 }
             }
         }
@@ -12509,7 +12501,8 @@ impl WordProcessorWidget {
 
     fn open_comment_thread(&mut self, comment: &str) {
         if !self.review.comments().iter().any(|item| item.id == comment) {
-            self.toast = Some((t("review-thread-unavailable"), ToastKind::Error));
+            self.toast
+                .show(t("review-thread-unavailable"), ToastKind::Error);
             return;
         }
         self.thread_comment = Some(comment.to_string());

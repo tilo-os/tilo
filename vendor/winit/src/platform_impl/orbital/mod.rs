@@ -145,12 +145,27 @@ impl<'a> WindowProperties<'a> {
         // orbital:flags/x/y/w/h/t
         let mut parts = path.splitn(6, '/');
         let flags = parts.next().unwrap_or("");
-        let x = parts.next().map_or(0, |part| part.parse::<i32>().unwrap_or(0));
-        let y = parts.next().map_or(0, |part| part.parse::<i32>().unwrap_or(0));
-        let w = parts.next().map_or(0, |part| part.parse::<u32>().unwrap_or(0));
-        let h = parts.next().map_or(0, |part| part.parse::<u32>().unwrap_or(0));
+        let x = parts
+            .next()
+            .map_or(0, |part| part.parse::<i32>().unwrap_or(0));
+        let y = parts
+            .next()
+            .map_or(0, |part| part.parse::<i32>().unwrap_or(0));
+        let w = parts
+            .next()
+            .map_or(0, |part| part.parse::<u32>().unwrap_or(0));
+        let h = parts
+            .next()
+            .map_or(0, |part| part.parse::<u32>().unwrap_or(0));
         let title = parts.next().unwrap_or("");
-        Self { flags, x, y, w, h, title }
+        Self {
+            flags,
+            x,
+            y,
+            w,
+            h,
+            title,
+        }
     }
 }
 

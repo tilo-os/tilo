@@ -4836,6 +4836,11 @@ async fn enqueue_state_inner(
                                     .map_or(0, |stats| stats.peak_metadata_entries),
                             );
                         }
+                        if !build.holds_scratch() {
+                            // A plain delta made no scratch, so the owner has
+                            // nothing to dispose of after this job.
+                            state.retention_scratch = None;
+                        }
                         persist_metrics.add_bytes_queued(written);
                         current.persisted_bytes = written;
                         retained_build = None;
@@ -5939,22 +5944,6 @@ fn checkpoint_prefix_recovery_allowed(
         && source.authorized(runtime)
 }
 
-/// The coalescing slot of a co-edit presence body (TIL-710): latest-state
-/// presence (a pointer, a caret) has one, events do not. Only the two
-/// `NeighbourMsg` variants that can have one are decoded, to tell which;
-/// the body is forwarded as it came.
-fn presence_slot(body: &[u8]) -> Option<tilo_peer_state::PresenceSlot> {
-    if !body
-        .first()
-        .is_some_and(|tag| tilo_peer_state::NeighbourMsg::SLOTTED_PRESENCE_TAGS.contains(tag))
-    {
-        return None;
-    }
-    postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(body)
-        .ok()?
-        .presence_slot()
-}
-
 /// Handle an inbound `Presence`: fan it out to every other subscriber.
 /// Ephemeral, with device attribution stamped from the authenticated session.
 #[expect(
@@ -5987,7 +5976,7 @@ async fn handle_presence(
         // A sender's claim is not transport evidence, even if that other
         // device has a valid certificate in the same workspace.
         attributed.author = peer.device_public_key;
-        slot = presence_slot(&attributed.body);
+        slot = crate::coedit::presence_slot(&attributed.body);
         *payload = attributed
             .encode()
             .map_err(|error| PeerError::Protocol(error.to_string()))?;

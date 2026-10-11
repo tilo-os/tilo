@@ -1152,9 +1152,13 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
                     .err()
                     .unwrap()
             } else {
-                tilo_ui::headless::Driver::from_component(component, (320, 180), runner_inputs())
-                    .err()
-                    .unwrap()
+                tilo_ui::headless::FrameHarness::from_component(
+                    component,
+                    (320, 180),
+                    runner_inputs(),
+                )
+                .err()
+                .unwrap()
             };
             let LaunchError::ComponentSetup {
                 record, recovery, ..

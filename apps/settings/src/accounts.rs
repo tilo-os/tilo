@@ -26,9 +26,10 @@
 //! [`AccountDirectory::load`] projects that shared store into the in-memory
 //! [`MailStore`] / [`DavStore`] shapes this pane renders, so the pane code is
 //! unchanged while the on-disk store is the shared one. Consequently the
-//! `MailStore` / `MailAccount` / `AccountConfig` types below are now **render
-//! view-models** populated from the shared store; every account kind writes
-//! the canonical store.
+//! `MailStore` / `MailAccount` types below are now **render view-models**
+//! populated from the shared store (around the shared
+//! [`accounts::email::AccountConfig`]); every account kind writes the
+//! canonical store.
 //!
 //! # Whose accounts these are
 //!
@@ -47,6 +48,7 @@
 
 use std::path::PathBuf;
 
+use accounts::email::AccountConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -470,6 +472,15 @@ impl AccountRoot {
         self.finish_mutation()
     }
 
+    /// Whether a mutation's intent is on disk, so loading the stores
+    /// recovers it first. An intent that cannot be ruled out counts.
+    pub(crate) fn mutation_pending(&self) -> bool {
+        self.path().is_some()
+            && self
+                .mutation_journal_path()
+                .is_ok_and(|path| path.try_exists().unwrap_or(true))
+    }
+
     /// Recover an interrupted mutation, logging rather than failing: the
     /// inventory is still worth presenting.
     pub(crate) fn recover_mutation_or_warn(&self) {
@@ -484,76 +495,6 @@ impl AccountRoot {
 // ---------------------------------------------------------------------------
 // Mail view-model.
 // ---------------------------------------------------------------------------
-
-/// IMAP receive + SMTP send settings. Field-for-field the shape Mail's
-/// transport layer consumes. `password` is `#[serde(skip)]` — it never
-/// touches the JSON; Settings stores it in the OS secret store.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AccountConfig {
-    pub display_name: String,
-    pub email: String,
-    pub imap_host: String,
-    pub imap_port: u16,
-    pub imap_tls: bool,
-    pub smtp_host: String,
-    pub smtp_port: u16,
-    pub smtp_tls: bool,
-    pub username: String,
-    #[serde(skip)]
-    pub password: String,
-}
-
-impl Default for AccountConfig {
-    fn default() -> Self {
-        Self {
-            display_name: String::new(),
-            email: String::new(),
-            imap_host: String::new(),
-            imap_port: 993,
-            imap_tls: true,
-            smtp_host: String::new(),
-            smtp_port: 465,
-            smtp_tls: true,
-            username: String::new(),
-            password: String::new(),
-        }
-    }
-}
-
-impl AccountConfig {
-    /// Provider autoconfig: given an email, guess IMAP/SMTP hosts for the
-    /// big providers — mirrors Thunderbird's autoconfig. Returns whether
-    /// the domain was recognised.
-    pub fn autofill_from_email(&mut self) -> bool {
-        let Some((local, domain)) = self.email.split_once('@') else {
-            return false;
-        };
-        if self.username.is_empty() {
-            self.username = self.email.clone();
-        }
-        if self.display_name.is_empty() {
-            self.display_name = local.to_string();
-        }
-        let known = match domain.to_ascii_lowercase().as_str() {
-            "gmail.com" | "googlemail.com" => Some(("imap.gmail.com", "smtp.gmail.com")),
-            "outlook.com" | "hotmail.com" | "live.com" => {
-                Some(("outlook.office365.com", "smtp.office365.com"))
-            }
-            "yahoo.com" => Some(("imap.mail.yahoo.com", "smtp.mail.yahoo.com")),
-            "icloud.com" | "me.com" => Some(("imap.mail.me.com", "smtp.mail.me.com")),
-            _ => None,
-        };
-        if let Some((imap, smtp)) = known {
-            self.imap_host = imap.to_string();
-            self.smtp_host = smtp.to_string();
-            true
-        } else {
-            self.imap_host = format!("imap.{domain}");
-            self.smtp_host = format!("smtp.{domain}");
-            false
-        }
-    }
-}
 
 /// A single configured mail account — Mail's `Account` shape.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1054,9 +995,8 @@ fn mail_store_from_shared(shared: &accounts::AccountStore) -> MailStore {
         .list(&ty)
         .into_iter()
         .filter_map(|a| {
-            // The opaque config deserialises into the same `AccountConfig`
-            // shape; unknown fields (Mail's `auth`, the sidebar `collapsed`)
-            // are ignored.
+            // The opaque config is Mail's own `AccountConfig`; unknown
+            // fields (the sidebar `collapsed`) are ignored.
             let config: AccountConfig = serde_json::from_value(a.config.clone()).ok()?;
             Some(MailAccount {
                 id: a.id.to_string(),
@@ -1167,7 +1107,7 @@ pub fn sample_directory() -> AccountDirectory {
         smtp_port: 465,
         smtp_tls: true,
         username: "ada@example.com".into(),
-        password: String::new(),
+        ..Default::default()
     });
     work.tint = 2;
 
@@ -1181,7 +1121,7 @@ pub fn sample_directory() -> AccountDirectory {
         smtp_port: 465,
         smtp_tls: true,
         username: "ada.personal@gmail.com".into(),
-        password: String::new(),
+        ..Default::default()
     });
     personal.tint = 5;
 
@@ -1514,19 +1454,6 @@ mod tests {
         assert_eq!(dir.mail.accounts[0].config.imap_host, "imap.fastmail.com");
         let cloud = &dir.views_of(AccountKind::Nextcloud)[0];
         assert_eq!(cloud.summary, "cloud.example.com");
-
-        // (email, recognised provider, resulting IMAP host)
-        for (email, known, host) in [
-            ("x@gmail.com", true, "imap.gmail.com"),
-            ("x@acme.test", false, "imap.acme.test"),
-        ] {
-            let mut c = AccountConfig {
-                email: email.into(),
-                ..Default::default()
-            };
-            assert_eq!(c.autofill_from_email(), known, "{email}");
-            assert_eq!(c.imap_host, host, "{email}");
-        }
 
         for (url, short) in [
             ("https://cloud.example.com/", "cloud.example.com"),

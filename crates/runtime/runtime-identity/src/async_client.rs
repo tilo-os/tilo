@@ -13,7 +13,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use wire_frame::FrameError;
 
-use super::client::connection_failed;
+use crate::client::{BrokerMetadata, channel_keys_reply, connection_failed, signature_reply};
 use crate::{NotAvailable, wire};
 
 trait BrokerAsyncIo: AsyncRead + AsyncWrite {}
@@ -29,14 +29,7 @@ type BrokerStream = Pin<Box<dyn BrokerAsyncIo>>;
 /// complete write, flush, frame read, and decode. A transport or protocol
 /// failure drops the stream so a late reply can never satisfy another request.
 pub struct AsyncBrokerSigningIdentity {
-    display_name: String,
-    avatar_color: [u8; 3],
-    group_public_key: [u8; 32],
-    signing_public_key: [u8; 32],
-    device_certificate: Option<Vec<u8>>,
-    threshold: u16,
-    total_shares: u16,
-    share_index: u16,
+    metadata: BrokerMetadata,
     stream: Option<BrokerStream>,
     exchange_timeout: Duration,
 }
@@ -64,86 +57,18 @@ impl AsyncBrokerSigningIdentity {
     where
         S: AsyncRead + AsyncWrite + 'static,
     {
-        let mut identity = Self {
-            display_name: String::new(),
-            avatar_color: [0; 3],
-            group_public_key: [0; 32],
-            signing_public_key: [0; 32],
-            device_certificate: None,
-            threshold: 0,
-            total_shares: 0,
-            share_index: 0,
-            stream: Some(Box::pin(stream)),
+        let mut stream: BrokerStream = Box::pin(stream);
+        let reply = exchange(&mut stream, &wire::Request::Metadata, exchange_timeout).await?;
+        Ok(Self {
+            metadata: BrokerMetadata::from_reply(reply)?,
+            stream: Some(stream),
             exchange_timeout,
-        };
-        match identity.exchange(&wire::Request::Metadata).await? {
-            wire::Response::Metadata {
-                display_name,
-                avatar_color,
-                group_public_key,
-                signing_public_key,
-                device_certificate,
-                threshold,
-                total_shares,
-                share_index,
-            } => {
-                identity.display_name = display_name;
-                identity.avatar_color = avatar_color;
-                identity.group_public_key = group_public_key;
-                identity.signing_public_key = signing_public_key;
-                identity.device_certificate = device_certificate;
-                identity.threshold = threshold;
-                identity.total_shares = total_shares;
-                identity.share_index = share_index;
-                Ok(identity)
-            }
-            wire::Response::Denied(reason) | wire::Response::Error(reason) => {
-                Err(permission_denied(reason))
-            }
-            wire::Response::Signature(_) | wire::Response::ChannelKeys { .. } => {
-                identity.poison();
-                Err(invalid_data(
-                    "identity broker returned an invalid metadata response",
-                ))
-            }
-        }
+        })
     }
 
-    /// Human-picked name supplied by the host.
-    pub fn display_name(&self) -> &str {
-        &self.display_name
-    }
-    /// Avatar RGB supplied by the host.
-    pub fn avatar_color(&self) -> [u8; 3] {
-        self.avatar_color
-    }
-    /// Root/group public key supplied by the host.
-    pub fn group_public_key(&self) -> [u8; 32] {
-        self.group_public_key
-    }
-    /// Enrolled device signing key supplied by the host.
-    pub fn signing_public_key(&self) -> [u8; 32] {
-        self.signing_public_key
-    }
-    /// Opaque device certificate bytes; this client does not validate them.
-    pub fn device_certificate(&self) -> Option<&[u8]> {
-        self.device_certificate.as_deref()
-    }
-    /// Threshold in the host's t-of-n metadata.
-    pub fn threshold(&self) -> u16 {
-        self.threshold
-    }
-    /// Total shares in the host's t-of-n metadata.
-    pub fn total_shares(&self) -> u16 {
-        self.total_shares
-    }
-    /// This device's share index.
-    pub fn share_index(&self) -> u16 {
-        self.share_index
-    }
-    /// Whether the host reports a 1-of-1 identity.
-    pub fn is_single_device(&self) -> bool {
-        self.threshold == 1 && self.total_shares == 1
+    /// The public metadata the host reported when this connection opened.
+    pub fn metadata(&self) -> &BrokerMetadata {
+        &self.metadata
     }
 
     /// Whether another request can safely use the framed stream.
@@ -208,7 +133,25 @@ impl AsyncBrokerSigningIdentity {
                 known_generation,
             })
             .await?;
-        let reply = crate::client::channel_keys_reply(response);
+        self.unless_invalid(channel_keys_reply(response))
+    }
+
+    async fn signature(&mut self, request: &wire::Request) -> Result<[u8; 64], NotAvailable> {
+        let response = self.exchange(request).await?;
+        self.unless_invalid(signature_reply(response))
+    }
+
+    /// Exchange one request; a transport, framing or timeout failure drops
+    /// the stream so a late reply can never satisfy another request.
+    async fn exchange(&mut self, request: &wire::Request) -> Result<wire::Response, NotAvailable> {
+        let mut stream = self.stream.take().ok_or_else(poisoned)?;
+        let response = exchange(&mut stream, request, self.exchange_timeout).await?;
+        self.stream = Some(stream);
+        Ok(response)
+    }
+
+    /// A reply the protocol does not allow leaves the stream unaligned.
+    fn unless_invalid<T>(&mut self, reply: Result<T, NotAvailable>) -> Result<T, NotAvailable> {
         if matches!(&reply, Err(NotAvailable::ConnectionFailed(error)) if error.kind() == io::ErrorKind::InvalidData)
         {
             self.poison();
@@ -216,56 +159,40 @@ impl AsyncBrokerSigningIdentity {
         reply
     }
 
-    async fn signature(&mut self, request: &wire::Request) -> Result<[u8; 64], NotAvailable> {
-        match self.exchange(request).await? {
-            wire::Response::Signature(bytes) if bytes.len() == 64 => {
-                let mut signature = [0; 64];
-                signature.copy_from_slice(&bytes);
-                Ok(signature)
-            }
-            wire::Response::Denied(reason) => Err(permission_denied(reason)),
-            wire::Response::Error(reason) => {
-                Err(NotAvailable::ConnectionFailed(io::Error::other(reason)))
-            }
-            _ => {
-                self.poison();
-                Err(invalid_data(
-                    "identity broker returned an invalid signature response",
-                ))
-            }
-        }
-    }
-
-    async fn exchange(&mut self, request: &wire::Request) -> Result<wire::Response, NotAvailable> {
-        let mut stream = self.stream.take().ok_or_else(poisoned)?;
-        // A timeout too large to represent as an instant is a deadline that
-        // never elapses, not a reason to panic.
-        let deadline = tokio::time::Instant::now().checked_add(self.exchange_timeout);
-        let exchange = async {
-            write_frame(&mut stream, request).await?;
-            read_frame(&mut stream).await
-        };
-        let result = match deadline {
-            Some(deadline) => tokio::time::timeout_at(deadline, exchange).await,
-            None => Ok(exchange.await),
-        };
-        match result {
-            Ok(Ok(response))
-                if deadline.is_none_or(|deadline| tokio::time::Instant::now() < deadline) =>
-            {
-                self.stream = Some(stream);
-                Ok(response)
-            }
-            Ok(Ok(_)) | Err(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "identity broker exchange timed out",
-            ))),
-            Ok(Err(error)) => Err(error),
-        }
-    }
-
     fn poison(&mut self) {
         self.stream = None;
+    }
+}
+
+/// Write `request` and read its response within one absolute deadline
+/// covering the write, flush, frame read and decode.
+async fn exchange(
+    stream: &mut BrokerStream,
+    request: &wire::Request,
+    timeout: Duration,
+) -> Result<wire::Response, NotAvailable> {
+    // A timeout too large to represent as an instant is a deadline that
+    // never elapses, not a reason to panic.
+    let deadline = tokio::time::Instant::now().checked_add(timeout);
+    let exchange = async {
+        write_frame(stream, request).await?;
+        read_frame(stream).await
+    };
+    let result = match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline, exchange).await,
+        None => Ok(exchange.await),
+    };
+    match result {
+        Ok(Ok(response))
+            if deadline.is_none_or(|deadline| tokio::time::Instant::now() < deadline) =>
+        {
+            Ok(response)
+        }
+        Ok(Ok(_)) | Err(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "identity broker exchange timed out",
+        ))),
+        Ok(Err(error)) => Err(error),
     }
 }
 
@@ -287,14 +214,6 @@ async fn read_frame(stream: &mut BrokerStream) -> Result<wire::Response, NotAvai
         .await
         .map_err(connection_failed)?
         .ok_or_else(|| connection_failed(FrameError::Closed))
-}
-
-fn permission_denied(reason: String) -> NotAvailable {
-    NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::PermissionDenied, reason))
-}
-
-fn invalid_data(message: &'static str) -> NotAvailable {
-    NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, message))
 }
 
 fn poisoned() -> NotAvailable {

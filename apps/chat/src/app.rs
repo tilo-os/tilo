@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, SyncSender};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -28,7 +29,6 @@ use winit::event::WindowEvent;
 
 use ui::Widget;
 use ui::icons::Icon;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -691,7 +691,7 @@ pub struct ChatApp {
 
     // The OS permission gate: routes channel participation + file-embed
     // hydration through the toolkit's permission model. Refreshed from the
-    // `PermissionContext` the compositor passes into `draw`.
+    // `PermissionContext` the compositor scopes around `draw`.
     pub(crate) perms: ChatPermissions,
 
     // The resource's dispatcher: every doc-mutating affordance (Send, a
@@ -1469,7 +1469,7 @@ impl ChatApp {
 
     /// Take the room's view of the participants off the presence store.
     ///
-    /// Called once per frame from `draw_with_presence`. The presence store is
+    /// Called once per frame from `draw`. The presence store is
     /// seeded from `CollabEvent::Context` — the broker's roster snapshot — so a
     /// name here is the room's answer, arrived over the same transport as the
     /// messages. Nothing a peer says about itself reaches this map.
@@ -3242,10 +3242,7 @@ impl Widget for ChatApp {
                 ..Default::default()
             }
         };
-        // `new_leaf` on a freshly created tree never fails.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
-        let video_node = taffy.new_leaf(video_style).unwrap();
-        node_map.insert(video_node, &raw mut self.video as *mut dyn Widget);
+        let video_node = taffy.widget_leaf(video_style, node_map, &mut self.video);
         self.video_node = Some(video_node);
 
         // `new_with_children` only fails when a child belongs to a different
@@ -3272,14 +3269,11 @@ impl Widget for ChatApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
         if !self.presented {
             self.presented = true;
             self.read_on_present = true;
         }
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if !self.call.expanded {
             self.call
                 .placement
@@ -3315,6 +3309,18 @@ impl Widget for ChatApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Adopt the OS-provided permission context so channel participation and
+        // file-embed hydration are gated by the real grant policy (the
+        // compositor scopes each app's context around its draw every frame).
+        if let Some(permissions) = presence.permission_context() {
+            self.perms = ChatPermissions::from_context(permissions);
+        }
+        // Adopt the room's answer for who everybody is. Names and colours are
+        // the room's to give: they arrive on the collaboration context stream
+        // and land in the presence store, and this is the one door an app has
+        // onto that store. Taken first so the same frame that learns a name
+        // paints it.
+        self.adopt_room(presence);
         // Adopt this theme's chrome and advance the drawers for this frame.
         self.layout_text_scale = theme.text_scale;
         self.advance_flaps(theme);
@@ -3384,29 +3390,6 @@ impl Widget for ChatApp {
         }
 
         self.hits = hits;
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        // Adopt the OS-provided permission context so channel participation and
-        // file-embed hydration are gated by the real grant policy (the
-        // compositor hands each app its context here every frame).
-        self.perms = ChatPermissions::from_context(permissions.clone());
-        // Adopt the room's answer for who everybody is. Names and colours are
-        // the room's to give: they arrive on the collaboration context stream
-        // and land in the presence store, and this is the one door an app has
-        // onto that store. Taken before `draw` so the same frame that learns a
-        // name paints it.
-        self.adopt_room(presence);
-        // Root spans the whole window — always paint.
-        self.draw(scene, tf, tr, theme, presence);
     }
 
     fn draw_overlay(
@@ -3715,8 +3698,13 @@ impl Widget for ChatApp {
                         if self.rename.is_none() {
                             return false;
                         }
-                        if !ui::Widget::perform_action(&mut self.rename_input, action, state, path)
-                        {
+                        if !ui::Widget::perform_action(
+                            &mut self.rename_input,
+                            action,
+                            &[],
+                            state,
+                            path,
+                        ) {
                             return false;
                         }
                     }
@@ -4015,6 +4003,7 @@ impl ChatApp {
     /// still requests a clean relayout).
     pub(crate) fn request_relayout(&mut self) {
         self.relayout = true;
+        self.canonical_dirty = true;
     }
 }
 

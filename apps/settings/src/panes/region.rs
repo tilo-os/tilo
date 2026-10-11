@@ -25,9 +25,8 @@ use crate::i18n::t;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{Item, card, choice_row, note, rows};
-use tilo_locale::{
-    Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle, TimeStyle,
-};
+use tilo_locale::{Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle};
+use ui::clock::TimeStyle;
 
 fn date_label(style: DateStyle) -> String {
     t(match style {
@@ -214,7 +213,6 @@ pub struct RegionPane {
     cx: PaneCx,
     locale: Followed<Locale>,
     shown: Shown,
-    structure_dirty: bool,
     composed: ui::widget::Composed,
 }
 
@@ -227,7 +225,6 @@ impl RegionPane {
             cx,
             locale,
             shown,
-            structure_dirty: false,
             composed: ui::widget::Composed::default(),
         }
     }
@@ -376,7 +373,7 @@ impl Widget for RegionPane {
         if self.locale.refresh() {
             self.shown.show(*self.locale.get());
             // The preview card follows the values.
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         self.composed.sync(state, root);
     }
@@ -398,12 +395,6 @@ impl Widget for RegionPane {
 
     fn name(&self) -> &'static str {
         "RegionPane"
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self.composed.take_structure_dirty();
-        own || child
     }
 }
 

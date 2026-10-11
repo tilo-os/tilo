@@ -14,6 +14,7 @@
 //! over the stack, and under the capture clock (`--shots`) so a scenario can
 //! hold a toast in frame.
 
+use crate::num::{f32_of_f64, f64_of_usize, usize_of_f64};
 use crate::time::Duration;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -37,26 +38,6 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(3);
 /// exceeded by [`ToastStack::push`] the oldest entry is dropped.
 pub const DEFAULT_MAX: usize = 5;
 
-/// Widens a small on-screen count (toast count, card index) to `f64` for
-/// layout math.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "a toast count/index is always tiny, far below f64's exact-integer range"
-)]
-fn idx_to_f64(n: usize) -> f64 {
-    n as f64
-}
-
-/// Narrows a screen-space `f64` (rect extent or coordinate) to the `f32`
-/// vello/text-layout math expects.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "on-screen layout coordinates never approach f32::MAX; this narrowing is exact for every practical UI extent"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
-}
-
 /// Toast cards have a fixed height and therefore paint each text field on a
 /// single baseline. Collapse all Unicode whitespace before measuring or
 /// eliding a field so an app-provided/localized newline cannot turn a card
@@ -64,17 +45,6 @@ fn to_f32(v: f64) -> f32 {
 /// only whitespace behave like an omitted body.
 fn single_line_text(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Floors an already-non-negative screen-space `f64` to a small on-screen
-/// index (a card position within the stack).
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "callers check `v >= 0.0` first, and a card index never approaches usize::MAX"
-)]
-fn f64_to_idx(v: f64) -> usize {
-    v as usize
 }
 
 /// Severity / category of a toast. Maps to the semantic color ramp in
@@ -115,7 +85,99 @@ impl ToastAnchor {
 /// toast keeps it in frame.
 #[must_use]
 pub fn transient_expired(shown: crate::time::Instant, ttl: Duration) -> bool {
-    !crate::time::wall_frozen() && shown.elapsed() > ttl
+    !crate::time::wall_frozen() && crate::time::now().saturating_duration_since(shown) > ttl
+}
+
+/// How long a [`Notice`] stays up.
+pub const NOTICE_LIFETIME: Duration = Duration::from_secs(4);
+
+/// The one transient message an app shows over its content: a confirmation,
+/// something under way, or a failure. The app shows it and paints it where
+/// it belongs; the notice keeps its own lifetime and its announcement.
+#[derive(Clone, Debug, Default)]
+pub struct Notice {
+    current: Option<(String, ToastKind, crate::time::Instant)>,
+}
+
+impl Notice {
+    /// Show `text`, replacing any notice already up.
+    pub fn show(&mut self, text: impl Into<String>, kind: ToastKind) {
+        self.current = Some((text.into(), kind, crate::time::now()));
+    }
+
+    /// Take the notice down; whether one was up.
+    pub fn dismiss(&mut self) -> bool {
+        self.current.take().is_some()
+    }
+
+    /// The notice's text and kind, while it is up.
+    pub fn get(&self) -> Option<(&str, ToastKind)> {
+        self.current
+            .as_ref()
+            .map(|(text, kind, _)| (text.as_str(), *kind))
+    }
+
+    pub fn is_shown(&self) -> bool {
+        self.current.is_some()
+    }
+
+    /// Take the notice down once its lifetime is over; whether it did.
+    pub fn expire(&mut self) -> bool {
+        let over = self
+            .current
+            .as_ref()
+            .is_some_and(|(_, _, shown)| transient_expired(*shown, NOTICE_LIFETIME));
+        over && self.dismiss()
+    }
+
+    /// When the notice expires, for a widget's `next_wake_deadline`. Under
+    /// the capture clock nothing expires.
+    pub fn deadline(&self) -> Option<crate::time::Instant> {
+        if crate::time::wall_frozen() {
+            return None;
+        }
+        self.current
+            .as_ref()
+            .map(|(_, _, shown)| *shown + NOTICE_LIFETIME)
+    }
+
+    /// Paint the notice in `area`, at `anchor`, with [`paint_transient`].
+    pub fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        anchor: ToastAnchor,
+    ) -> ToastCardHit {
+        let Some((text, kind)) = self.get() else {
+            return ToastCardHit::default();
+        };
+        paint_transient(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            area,
+            anchor,
+            &ToastCard::new(text, kind),
+        )
+    }
+
+    /// The notice as a live region: a failure interrupts, anything else
+    /// waits its turn.
+    pub fn access_node(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Politeness, Role};
+        let (text, kind) = self.get()?;
+        Some(AccessNode::new(Role::StaticText).with_name(text).with_live(
+            if kind == ToastKind::Error {
+                Politeness::Assertive
+            } else {
+                Politeness::Polite
+            },
+        ))
+    }
 }
 
 /// A single toast entry held by a [`ToastStack`]. Entries are produced
@@ -284,9 +346,9 @@ impl ToastStack {
             return None;
         }
         let stride = TOAST_HEIGHT + TOAST_GAP;
-        let idx = f64_to_idx(rel / stride);
+        let idx = usize_of_f64(rel / stride);
         // Reject the inter-card gap.
-        if rel - idx_to_f64(idx) * stride > TOAST_HEIGHT {
+        if rel - f64_of_usize(idx) * stride > TOAST_HEIGHT {
             return None;
         }
         if idx < self.toasts.len() {
@@ -301,14 +363,14 @@ impl ToastStack {
         if n == 0 {
             (0.0, 0.0)
         } else {
-            (to_f32(TOAST_WIDTH), to_f32(stack_height(n)))
+            (f32_of_f64(TOAST_WIDTH), f32_of_f64(stack_height(n)))
         }
     }
 
     /// The dismiss control of the card at `index`, as [`paint_card`] lays
     /// it out.
     fn close_rect(&self, index: usize) -> Rect {
-        let y0 = self.rect.y0 + idx_to_f64(index) * (TOAST_HEIGHT + TOAST_GAP);
+        let y0 = self.rect.y0 + f64_of_usize(index) * (TOAST_HEIGHT + TOAST_GAP);
         let card = Rect::new(
             self.rect.x0,
             y0,
@@ -369,7 +431,7 @@ fn stack_height(n: usize) -> f64 {
     if n == 0 {
         0.0
     } else {
-        (TOAST_HEIGHT * idx_to_f64(n)) + (TOAST_GAP * idx_to_f64(n.saturating_sub(1)))
+        (TOAST_HEIGHT * f64_of_usize(n)) + (TOAST_GAP * f64_of_usize(n.saturating_sub(1)))
     }
 }
 
@@ -788,8 +850,7 @@ fn paint_card_surface(scene: &mut Scene, transform: Affine, rect: Rect, alpha: f
     let radius = card_radius(theme);
     let faded = alpha < 0.999;
     if faded {
-        let reach = f64::from(theme.tokens.elevation.floating.blur) * 2.0
-            + f64::from(theme.tokens.elevation.floating.offset_y).abs();
+        let reach = crate::widget::floating_surface::shadow_reach(theme);
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -947,7 +1008,7 @@ fn transient_size(
         },
     );
     let width = (natural + chrome).clamp(min_width, max_width);
-    let text_width = to_f32((width - chrome).max(1.0));
+    let text_width = f32_of_f64((width - chrome).max(1.0));
     let mut text_h = f64::from(
         text_renderer
             .measure_style(&title, Some(text_width), &title_style)
@@ -1032,14 +1093,14 @@ fn paint_card_text(ctx: &mut PaintCtx<'_>, column: Rect, card: &ToastCard<'_>, a
     let theme = ctx.theme;
     let (pad_x, pad_y) = card_pad(theme);
     let text_x = column.x0 + pad_x;
-    let width_avail = to_f32((column.x1 - text_x).max(0.0));
+    let width_avail = f32_of_f64((column.x1 - text_x).max(0.0));
     // A card sized for its text (`paint_transient`) wraps it; one that is
     // shorter than its wrapped text keeps each field to one elided line.
     if paint_wrapped_card_text(ctx, column, card, alpha, text_x, width_avail) {
         return;
     }
     let text_renderer = &mut *ctx.text;
-    let width_avail = to_f32((column.x1 - text_x).max(0.0));
+    let width_avail = f32_of_f64((column.x1 - text_x).max(0.0));
     let caption_style = theme.text(TextRole::Caption);
     let title_style = theme.text(TextRole::Label).strong();
     let body_style = theme.text(TextRole::Caption);
@@ -1217,7 +1278,12 @@ impl Widget for ToastStack {
         Some(last + soonest)
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let (w, h) = self.stack_size();
         let Ok(current) = taffy.style(node) else {
             return false;
@@ -1350,7 +1416,7 @@ mod tests {
         tree.compute_layout(
             node,
             Size {
-                width: taffy::AvailableSpace::Definite(to_f32(TOAST_WIDTH)),
+                width: taffy::AvailableSpace::Definite(f32_of_f64(TOAST_WIDTH)),
                 height: taffy::AvailableSpace::Definite(1000.0),
             },
         )

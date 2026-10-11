@@ -49,6 +49,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "RecordEffectReceipt",
         "082430303030303030302d303030302d303030302d303030302d3030303030303030303030311000112233445566778899aabbccddeeff03090807",
     ),
+    (
+        "ClaimTopologyNamespace",
+        "092430303030303030302d303030302d303030302d303030302d3030303030303030303030312a",
+    ),
 ];
 
 const REPLIES: &[(&str, &str)] = &[
@@ -207,6 +211,13 @@ fn commands() -> Vec<(&'static str, RoomCommand)> {
                 room: room(),
                 invocation: uuid::Uuid::from_u128(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff),
                 redacted: vec![9, 8, 7],
+            },
+        ),
+        (
+            "ClaimTopologyNamespace",
+            RoomCommand::ClaimTopologyNamespace {
+                room: room(),
+                salt: 42,
             },
         ),
     ]
@@ -398,7 +409,8 @@ fn room_admin_wire_cases_cover_every_variant() {
             | RoomCommand::Pending { .. }
             | RoomCommand::SetRole { .. }
             | RoomCommand::Remove { .. }
-            | RoomCommand::RecordEffectReceipt { .. } => {}
+            | RoomCommand::RecordEffectReceipt { .. }
+            | RoomCommand::ClaimTopologyNamespace { .. } => {}
         }
     }
     for (_, reply) in replies() {
@@ -413,6 +425,6 @@ fn room_admin_wire_cases_cover_every_variant() {
             | RoomReply::Refused(_) => {}
         }
     }
-    assert_eq!(commands().len(), 9);
+    assert_eq!(commands().len(), 10);
     assert_eq!(replies().len(), 8);
 }

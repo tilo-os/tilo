@@ -3203,60 +3203,6 @@ fn mutation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
     })
 }
 
-/// Check a direct affordance against the same live permission-filtered spec
-/// as named actions. Only a genuinely unbound call keeps legacy compatibility;
-/// an active record with missing/mismatched/revoked custody always refuses.
-pub(crate) fn authorize_current_resource_action(
-    doc: &AutoCommit,
-    resource: &tilo_actions::Resource,
-    action_id: &str,
-) -> Result<(), String> {
-    let active =
-        ACTIVE.with_borrow(|active| active.as_ref().map(|entry| (entry.2, entry.3.clone())));
-    let Some((witness, frame)) = active else {
-        return Ok(());
-    };
-    if !std::ptr::eq(witness, doc) {
-        return Err("resource action document does not match its owned frame".into());
-    }
-    let frame = frame.ok_or("resource action has no owned frame")?;
-    let binding = {
-        let owned = frame.borrow();
-        let frame = owned.as_ref().ok_or("resource action frame has ended")?;
-        frame
-            .mutation
-            .as_ref()
-            .map(|mutation| mutation.binding.clone())
-            .or_else(|| {
-                frame
-                    .operations
-                    .last()
-                    .map(|operation| operation.binding.clone())
-            })
-            .ok_or("resource action has no current owner")?
-    };
-    if binding.registry_owner.upgrade().is_none() {
-        return Err("resource action registry owner has ended".into());
-    }
-    let _entry = binding
-        .enter()
-        .map_err(|error| format!("resource action owner refused: {error:?}"))?;
-    if !binding
-        .check_record()
-        .map_err(|error| format!("resource action record refused: {error:?}"))?
-        .is_some_and(|current| std::ptr::eq(current, doc))
-    {
-        return Err("resource action record does not match its owner".into());
-    }
-    if filter_resource(&binding, resource.clone())
-        .is_some_and(|resource| resource.actions.iter().any(|action| action.id == action_id))
-    {
-        Ok(())
-    } else {
-        Err("resource action is unavailable under current permissions".into())
-    }
-}
-
 /// Stash the compensating action on the open span. `report_typed_action`
 /// records it with the undo entry. No span (a standalone widget) leaves the
 /// `ActionHost` path to record its own pair.
@@ -5195,10 +5141,6 @@ mod document_action_ack_tests;
 #[cfg(test)]
 #[path = "bound_dispatch/legacy_document_tests.rs"]
 pub(crate) mod legacy_document_tests;
-
-#[cfg(test)]
-#[path = "bound_dispatch/semantic_authority_tests.rs"]
-mod semantic_authority_tests;
 
 #[cfg(test)]
 #[path = "bound_dispatch/author_writer_tests.rs"]

@@ -28,11 +28,17 @@ impl XConnection {
         let atoms = self.atoms();
 
         // Get the current owner of the screen's settings.
-        let owner = self.xcb_connection().get_selection_owner(xsettings_screen)?.reply()?;
+        let owner = self
+            .xcb_connection()
+            .get_selection_owner(xsettings_screen)?
+            .reply()?;
 
         // Read the _XSETTINGS_SETTINGS property.
-        let data: Vec<u8> =
-            self.get_property(owner.owner, atoms[_XSETTINGS_SETTINGS], atoms[_XSETTINGS_SETTINGS])?;
+        let data: Vec<u8> = self.get_property(
+            owner.owner,
+            atoms[_XSETTINGS_SETTINGS],
+            atoms[_XSETTINGS_SETTINGS],
+        )?;
 
         // Parse the property.
         let dpi_setting = read_settings(&data)?
@@ -43,10 +49,10 @@ impl XConnection {
                 SettingData::Integer(dpi) => dpi as f64,
                 SettingData::String(_) => {
                     return Err(ParserError::BadType(SettingType::String).into())
-                },
+                }
                 SettingData::Color(_) => {
                     return Err(ParserError::BadType(SettingType::Color).into())
-                },
+                }
             };
 
             Ok(Some(base_dpi / DPI_MULTIPLIER))
@@ -106,7 +112,7 @@ impl<'a> Setting<'a> {
             SettingType::Integer => {
                 // Read a 32-bit integer.
                 SettingData::Integer(parser.i32()?)
-            },
+            }
 
             SettingType::String => {
                 // Read the data.
@@ -115,7 +121,7 @@ impl<'a> Setting<'a> {
                 parser.pad(data.len(), 4)?;
 
                 SettingData::String(data)
-            },
+            }
 
             SettingType::Color => {
                 // Read i16's of color.
@@ -123,7 +129,7 @@ impl<'a> Setting<'a> {
                     (parser.i16()?, parser.i16()?, parser.i16()?, parser.i16()?);
 
                 SettingData::Color([red, blue, green, alpha])
-            },
+            }
         };
 
         Ok(Setting { name, data })
@@ -159,7 +165,9 @@ struct Parser<'a> {
 impl<'a> Parser<'a> {
     /// Create a new parser.
     fn new(bytes: &'a [u8]) -> Result<Self> {
-        let (endianness, bytes) = bytes.split_first().ok_or_else(|| ParserError::ran_out(1, 0))?;
+        let (endianness, bytes) = bytes
+            .split_first()
+            .ok_or_else(|| ParserError::ran_out(1, 0))?;
         let endianness = match *endianness {
             BIG_ENDIAN => Endianness::Big,
             LITTLE_ENDIAN => Endianness::Little,
@@ -168,7 +176,9 @@ impl<'a> Parser<'a> {
 
         Ok(Self {
             // Ignore three bytes of padding and the four-byte serial.
-            bytes: bytes.get(7..).ok_or_else(|| ParserError::ran_out(7, bytes.len()))?,
+            bytes: bytes
+                .get(7..)
+                .ok_or_else(|| ParserError::ran_out(7, bytes.len()))?,
             endianness,
         })
     }
@@ -246,7 +256,10 @@ impl Endianness {
 #[derive(Debug)]
 pub enum ParserError {
     /// Ran out of bytes.
-    NoMoreBytes { expected: NonZeroUsize, found: usize },
+    NoMoreBytes {
+        expected: NonZeroUsize,
+        found: usize,
+    },
 
     /// Invalid type.
     InvalidType(i8),
@@ -279,7 +292,7 @@ mod tests {
             ParserError::NoMoreBytes { expected, found } => {
                 assert_eq!(expected.get(), 1);
                 assert_eq!(found, 0);
-            },
+            }
 
             _ => panic!(),
         }
@@ -296,7 +309,10 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let settings = read_settings(&data).unwrap().collect::<Result<Vec<_>>>().unwrap();
+        let settings = read_settings(&data)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
 
         let dpi = settings.iter().find(|s| s.name == b"Xft/DPI").unwrap();
         assert_int(&dpi.data, 96 * 1024);
@@ -305,7 +321,10 @@ mod tests {
 
         let rgba = settings.iter().find(|s| s.name == b"Xft/RGBA").unwrap();
         assert_string(&rgba.data, "rgb");
-        let lcd = settings.iter().find(|s| s.name == b"Xft/Lcdfilter").unwrap();
+        let lcd = settings
+            .iter()
+            .find(|s| s.name == b"Xft/Lcdfilter")
+            .unwrap();
         assert_string(&lcd.data, "lcddefault");
     }
 

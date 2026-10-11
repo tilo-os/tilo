@@ -834,7 +834,7 @@ pub enum ContentEdge {
 
 /// How far a [`content_edge_fade`] reaches into the viewport, at most a
 /// third of it.
-const CONTENT_FADE_PX: f64 = 24.0;
+pub(crate) const CONTENT_FADE_PX: f64 = 24.0;
 
 /// Fade content out toward `edge` of the viewport `rect`: the `ground` the
 /// content is drawn on, opaque at the edge and clear a short way in, eased

@@ -215,7 +215,7 @@ fn empty_workspace_cards_offer_accessible_collaboration_entry_points() {
 
 #[test]
 fn app_cards_open_their_app_directly() {
-    /// Without an action host (as in this fixture) the call card
+    /// Without an action host (as in this fixture) the Tasks and call cards
     /// still open their app; with one they invoke its action, below.
     fn app_cards_open_their_app_without_the_launcher() {
         use tilo_desktop::launchpad::LaunchpadAction;
@@ -345,14 +345,22 @@ fn host_with_live_app(
 }
 
 #[test]
-fn the_call_card_invokes_chats_start_call() {
+fn tasks_and_call_cards_invoke_their_apps_action() {
     use tilo_desktop::launchpad::LaunchpadAction;
-    for (card, app, resource, action) in [(
-        LaunchpadAction::Meet,
-        "so.tilo.chat",
-        "chat.workspace",
-        "start-call",
-    )] {
+    for (card, app, resource, action) in [
+        (
+            LaunchpadAction::Tasks,
+            "so.tilo.calendar",
+            "calendar.calendar",
+            "show-tasks",
+        ),
+        (
+            LaunchpadAction::Meet,
+            "so.tilo.chat",
+            "chat.workspace",
+            "start-call",
+        ),
+    ] {
         let (mut host, mut delivered) = host_with_live_app(
             app,
             resource,

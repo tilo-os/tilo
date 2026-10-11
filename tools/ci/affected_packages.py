@@ -103,6 +103,23 @@ QUALITY_ONLY_HELPERS = {
 # file in the mandatory repository-policy suite. A file missing from this exact
 # map retains native Rust checks.
 QUALITY_ONLY_CONTROL_INPUTS = {
+    "os/dev/ci-native-podman-store.sh": (
+        "tools/tests/test_ci_native_podman_store.py",
+        "os/tests/disk_image_root_podman_store.sh",
+    ),
+    # These wrappers select/request the existing image workflow; they change
+    # no compiler, app source or packaging inputs. Mandatory policy tests
+    # observe their request gate, paths, architecture selection and delegation.
+    ".forgejo/workflows/os-dev.yml": (
+        "tools/tests/test_os_dev_arches.py",
+        "tools/tests/test_os_release_matrix.py",
+    ),
+    ".forgejo/workflows/os-dev-x86.yml": (
+        "tools/tests/test_os_dev_arches.py",
+    ),
+    ".forgejo/workflows/os-dev-arm.yml": (
+        "tools/tests/test_os_dev_arches.py",
+    ),
     "os/dev/rpm-snapshot-fingerprint.py": (
         "os/tests/test_rpm_snapshot_fingerprint.py",
         "tools/tests/test_rpm_pin_contract.py",
@@ -962,6 +979,9 @@ def main() -> int:
                         help="re-check of a pull request that was green on this older base commit: "
                              "limit the plan to what the base changed since (--base is the new base)")
     args = parser.parse_args()
+
+    if args.metadata is None and os.environ.get('GITHUB_ACTIONS') != 'true':
+        parser.error('local planning requires verified metadata; use the stable offline_affected_plan.py entrypoint')
 
     root = Path(run("git", "rev-parse", "--show-toplevel", cwd=Path.cwd()))
     metadata = json.loads(args.metadata.read_text()) if args.metadata else cargo_metadata(root)

@@ -371,7 +371,7 @@ impl Widget for ProgressBar {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
         self.reduce_motion = theme.reduce_motion || crate::time::wall_frozen();
         let segment_width = self.rect.width() * INDETERMINATE_SEGMENT_FRAC;
@@ -401,6 +401,7 @@ impl Widget for ProgressBar {
             };
             self.last_segment = current_segment;
         }
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -466,26 +467,6 @@ impl Widget for ProgressBar {
     /// initial `apply_layout` writes a non-zero rect.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        crate::widget::draw_gated_leaf(
-            self,
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 

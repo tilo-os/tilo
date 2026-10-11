@@ -156,12 +156,12 @@ fn app_with_sample() -> VideoEditorApp {
 // ---- Accessibility: the editor's synthetic tree ----------------------
 //
 // Everything here is asserted against the REAL exported tree and the REAL
-// routed-action path, through `ui::headless::Driver` — the same bridge that
+// routed-action path, through `ui::headless::FrameHarness` — the same bridge that
 // reaches AT-SPI2 and Orca. A test that inspected `accessibility()`'s return
 // value directly would prove the app builds nodes, not that a screen reader
 // can reach or operate them.
 
-fn a11y_driver() -> ui::headless::Driver {
+fn a11y_driver() -> ui::headless::FrameHarness {
     let mut doc = AutoCommit::new();
     VideoDoc::seed_sample(&mut doc);
     let mut state = ui::State::new();
@@ -169,12 +169,12 @@ fn a11y_driver() -> ui::headless::Driver {
     let mut app = editor();
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     present(&mut app, &state.doc);
-    ui::headless::Driver::for_root(state, app, (1280, 800), Theme::dark())
+    ui::headless::FrameHarness::for_root(state, app, (1280, 800), Theme::dark())
 }
 
 /// Every exported node's `(role, label)`, so a test can state what a reader
 /// would find without caring where it sits.
-fn exported(d: &ui::headless::Driver) -> Vec<(ui::accesskit::Role, String)> {
+fn exported(d: &ui::headless::FrameHarness) -> Vec<(ui::accesskit::Role, String)> {
     d.a11y_nodes()
         .into_iter()
         .map(|(_, n)| (n.role(), n.label().unwrap_or_default().to_string()))
@@ -395,7 +395,7 @@ fn clip_activation_and_held_ids_survive_deletes() {
         // pair we pick is genuinely two clips on ONE track — which is the
         // arrangement where deleting the earlier one renumbers the later one.
         let clip_nodes =
-            |d: &ui::headless::Driver| -> Vec<(ui::accesskit::NodeId, String, String)> {
+            |d: &ui::headless::FrameHarness| -> Vec<(ui::accesskit::NodeId, String, String)> {
                 d.a11y_nodes()
                     .into_iter()
                     .filter_map(|(id, n)| {
@@ -842,7 +842,7 @@ fn reader_reaches_every_inspector_control_it_can_adjust() {
         let path = vec![Pane::Inspector.key(), NumField::Opacity.a11y_key()];
         let root = automerge::ROOT;
         assert!(
-            app.perform_action_at(
+            app.perform_action(
                 &ui::a11y::Action::Decrement,
                 &path,
                 &mut ui::widget::Edits::lend(&mut doc),
@@ -5943,11 +5943,11 @@ fn render_status_is_painted_cached_and_announced() {
     // dialog took the render off the accessibility tree with it: no progress,
     // no outcome, no failure. The only evidence was a file appearing on disk.
     //
-    // Driven through `ui::headless::Driver`, so this is the AccessKit tree a
+    // Driven through `ui::headless::FrameHarness`, so this is the AccessKit tree a
     // screen reader actually receives, dismissed the ways a user actually
     // dismisses it — including by pressing the exported Close button itself.
     {
-        type Dismiss = fn(&mut ui::headless::Driver);
+        type Dismiss = fn(&mut ui::headless::FrameHarness);
         let dismissals: [(&str, Dismiss); 3] = [
             // Outside the card: the card is centred, so the far left is clear
             // of it at this size.
@@ -5971,7 +5971,7 @@ fn render_status_is_painted_cached_and_announced() {
             // A render in flight, with the dialog that started it up.
             app.presentation.export_open = true;
             app.export_status = ExportStatus::Rendering { progress: 0.42 };
-            let mut d = ui::headless::Driver::new(state, Box::new(app), (1280, 800));
+            let mut d = ui::headless::FrameHarness::new(state, Box::new(app), (1280, 800));
             assert!(
                 d.a11y_node_named("Close export").is_some(),
                 "{how}: the dialog is up to begin with",
@@ -6472,7 +6472,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         );
 
         let activate = ui::a11y::Action::Activate;
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &activate,
             &[
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
@@ -6483,7 +6483,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         ));
         assert!(app.bin_flap.is_open(app.bin_layout()));
         assert!(
-            !app.perform_action_at(
+            !app.perform_action(
                 &activate,
                 &[
                     ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
@@ -6494,7 +6494,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
             ),
             "the open bin scrim makes other topbar actions unavailable"
         );
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &activate,
             &[
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
@@ -6504,7 +6504,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
             &automerge::ROOT,
         ));
         assert!(!app.bin_flap.is_open(app.bin_layout()));
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &activate,
             &[
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
@@ -8224,7 +8224,7 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
         ];
         let root = automerge::ROOT;
         assert!(
-            app.perform_action_at(
+            app.perform_action(
                 &ui::a11y::Action::Increment,
                 &path,
                 &mut ui::widget::Edits::lend(&mut doc),
@@ -9088,7 +9088,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
             ui::a11y::hash_key(&m.id),
         ];
         assert!(
-            app.perform_action_at(
+            app.perform_action(
                 &ui::a11y::Action::Activate,
                 &path,
                 &mut ui::widget::Edits::lend(&mut doc),
@@ -9124,7 +9124,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
 
         // Setting the note's text writes it through the same commit the
         // inline editor ends at.
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &ui::a11y::Action::SetValue("mind the skyline".into()),
             &verb(0),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -9140,7 +9140,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         );
 
         // And renaming.
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &ui::a11y::Action::SetValue("act three".into()),
             &verb(1),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -9156,7 +9156,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         // An empty name is refused at the commit, so the verb reports the
         // refusal rather than claiming a write it did not make.
         assert!(
-            !app.perform_action_at(
+            !app.perform_action(
                 &ui::a11y::Action::SetValue("   ".into()),
                 &verb(1),
                 &mut ui::widget::Edits::lend(&mut doc),
@@ -9166,7 +9166,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         );
 
         // Activating the delete control removes it, exactly as the X does.
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &ui::a11y::Action::Activate,
             &verb(2),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -9210,7 +9210,7 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
         );
 
         app.playhead = 0.0;
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &ui::a11y::Action::Activate,
             &held,
             &mut ui::widget::Edits::lend(&mut doc),
@@ -9498,7 +9498,8 @@ fn keyboard_and_reader_walks_follow_what_is_painted() {
             let (app, doc) = app_and_doc();
             let mut state = ui::State::new();
             state.doc = doc;
-            let mut driver = ui::headless::Driver::for_root(state, app, (w, h), theme.clone());
+            let mut driver =
+                ui::headless::FrameHarness::for_root(state, app, (w, h), theme.clone());
             let (on, off) = place(driver.root_mut::<VideoEditorApp>());
             driver.relayout();
             let bound = ui::time::Duration::from_secs(30);
@@ -9777,7 +9778,7 @@ fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
             app.a11y_project().state.focusable,
             "the compact film icon opens the project menu"
         );
-        assert!(app.perform_action_at(
+        assert!(app.perform_action(
             &ui::a11y::Action::Activate,
             &[
                 ui::a11y::hash_key(&TOPBAR_A11Y_KEY),

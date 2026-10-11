@@ -755,20 +755,6 @@ impl Widget for PermissionPrompt {
     /// Keep that route identical to the raw-key handler and the synthetic AT
     /// child, rather than falling back to a coordinate click in the middle of
     /// the dialog.
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        if matches!(action, crate::a11y::Action::Activate)
-            && let Some(choice) = self.focused_choice
-        {
-            self.choose(choice)
-        } else {
-            false
-        }
-    }
 
     fn traps_focus(&self) -> bool {
         self.local_input.as_ref().is_none_or(|local| local.modal)
@@ -801,13 +787,20 @@ impl Widget for PermissionPrompt {
         true
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
+        if key_path.is_empty() {
+            return matches!(action, crate::a11y::Action::Activate)
+                && self
+                    .focused_choice
+                    .is_some_and(|choice| self.choose(choice));
+        }
+
         let [key] = key_path else {
             return false;
         };
@@ -885,7 +878,7 @@ mod tests {
         assert_eq!(prompt.always_rect(), Rect::ZERO);
         let mut doc = AutoCommit::new();
         for key in [SESSION_KEY, ALWAYS_KEY] {
-            assert!(!prompt.perform_action_at(
+            assert!(!prompt.perform_action(
                 &crate::a11y::Action::Activate,
                 &[key],
                 &mut crate::widget::Edits::lend(&mut doc),
@@ -967,13 +960,14 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut p,
                 &crate::a11y::Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
 
             p.pending_choice = None;
-            assert!(Widget::perform_action_at(
+            assert!(Widget::perform_action(
                 &mut p,
                 &crate::a11y::Action::Activate,
                 &[SESSION_KEY],
@@ -984,7 +978,7 @@ mod tests {
 
             p.pending_choice = None;
             assert!(
-                !Widget::perform_action_at(
+                !Widget::perform_action(
                     &mut p,
                     &crate::a11y::Action::Activate,
                     &[ALWAYS_KEY],

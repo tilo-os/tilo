@@ -54,7 +54,6 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use tilo_ui::TextRole;
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::offscreen::{OffscreenRenderTiming, OffscreenRenderer};
-use tilo_ui::permissions::PermissionContext;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -866,7 +865,6 @@ struct BenchState<'a> {
     root_node: NodeId,
     text_renderer: &'a mut TextRenderer,
     presence: &'a PresenceCtx,
-    perms: &'a PermissionContext,
     theme: &'a Theme,
     scene: &'a mut Scene,
     renderer: &'a mut OffscreenRenderer,
@@ -1008,7 +1006,7 @@ fn full_draw(
     let t_draw = tilo_ui::time::now();
     state.scene.reset();
     // Wire the spatial-culling viewport just like the live App
-    // does. Without this the bench's `draw_with_presence` walks
+    // does. Without this the bench's `draw` walks
     // see `viewport == None` and skip the culling short-circuit,
     // masking the Item 1 win in the benchmark output.
     let vp = vello::kurbo::Rect::new(
@@ -1018,13 +1016,12 @@ fn full_draw(
         f64::from(state.canvas_h),
     );
     let prev_vp = state.presence.push_viewport(vp);
-    state.root.draw_with_presence(
+    state.root.draw(
         state.scene,
         Affine::IDENTITY,
         state.text_renderer,
         state.theme,
         state.presence,
-        state.perms,
     );
     state.presence.pop_viewport(prev_vp);
     let peer_damage = state
@@ -1334,15 +1331,15 @@ fn print_warmup_report(state: &BenchState<'_>) {
     );
     println!(
         "after warm-up: CPU path-tag retained host pool={}B (excluded from known GPU bytes)",
-        state.renderer.cpu_pathtag_pool_retained_bytes(),
+        state.renderer.vello().cpu_pathtag_pool_retained_bytes(),
     );
     println!(
         "after warm-up: CPU metadata retained host pool={}B (excluded from known GPU bytes)",
-        state.renderer.cpu_metadata_pool_retained_bytes(),
+        state.renderer.vello().cpu_metadata_pool_retained_bytes(),
     );
     println!(
         "after warm-up: CPU draw-prefix retained host pool={}B (excluded from known GPU bytes)",
-        state.renderer.cpu_draw_prefix_pool_retained_bytes(),
+        state.renderer.vello().cpu_draw_prefix_pool_retained_bytes(),
     );
 }
 
@@ -2251,15 +2248,15 @@ fn print_final_report(
     );
     println!(
         "CPU path-tag retained host pool: {}B (excluded from known GPU bytes)",
-        state.renderer.cpu_pathtag_pool_retained_bytes(),
+        state.renderer.vello().cpu_pathtag_pool_retained_bytes(),
     );
     println!(
         "CPU metadata retained host pool: {}B (excluded from known GPU bytes)",
-        state.renderer.cpu_metadata_pool_retained_bytes(),
+        state.renderer.vello().cpu_metadata_pool_retained_bytes(),
     );
     println!(
         "CPU draw-prefix retained host pool: {}B (excluded from known GPU bytes)",
-        state.renderer.cpu_draw_prefix_pool_retained_bytes(),
+        state.renderer.vello().cpu_draw_prefix_pool_retained_bytes(),
     );
     if let Some((rss, peak)) = process_memory_kib() {
         println!("process memory: rss={rss} KiB peak={peak} KiB");
@@ -2776,94 +2773,94 @@ pub fn run(_args: &[String]) {
             "UI renderer adapter: unavailable (selected shared render context is inaccessible)"
         ),
     }
-    let gpu_dispatch_timestamp_status = renderer.gpu_dispatch_timestamp_status();
+    let gpu_dispatch_timestamp_status = renderer.vello_mut().gpu_dispatch_timestamp_status();
     println!(
         "sparse fine: configured={} supported={} (raster metric is actual fine-shaded native pixels; profile retains coarse-prefix accounting)",
         sparse_fine_configured,
-        renderer.sparse_fine_supported(),
+        renderer.vello().sparse_fine_supported(),
     );
     println!(
         "compute-pass batching: configured={compute_batch_configured} active={} (default shared GPU batching; VELLO_COMPUTE_BATCH=0 disables it)",
-        renderer.compute_pass_batching_enabled(),
+        renderer.vello().compute_pass_batching_enabled(),
     );
     println!(
         "sparse coarse: forced={sparse_coarse_configured} auto={sparse_coarse_auto_configured} supported={} adaptive_active={} active_bin_available={} (AUTO requires no forced coarse flag and selects active native bins only when coverage saves at least half and 32 bins; otherwise coarse remains dense)",
-        renderer.sparse_coarse_supported(),
-        renderer.sparse_coarse_adaptive_enabled(),
-        renderer.sparse_coarse_active_bins_available(),
+        renderer.vello().sparse_coarse_supported(),
+        renderer.vello().sparse_coarse_adaptive_enabled(),
+        renderer.vello().sparse_coarse_active_bins_available(),
     );
     println!(
         "sparse path tile bounds: env_requested={sparse_tile_bounds_requested} renderer_requested={} available={} (reported bbox tile area is only actual applied coverage; it is not allocated per-path tiles or physical memory saved)",
-        renderer.sparse_tile_bounds_requested(),
-        renderer.sparse_tile_bounds_available(),
+        renderer.vello().sparse_tile_bounds_requested(),
+        renderer.vello().sparse_tile_bounds_available(),
     );
     println!(
         "sparse fine quad skip: env_requested={sparse_fine_quad_skip_requested} renderer_requested={} available={} (reported groups are actual Area fine invocations, not GPU memory or copy savings)",
-        renderer.sparse_fine_quad_skip_requested(),
-        renderer.sparse_fine_quad_skip_available(),
+        renderer.vello().sparse_fine_quad_skip_requested(),
+        renderer.vello().sparse_fine_quad_skip_available(),
     );
     println!(
         "sparse opaque prune: env_requested={sparse_opaque_prune_requested} renderer_requested={} available={} (reported selections mean only that the coarse shader was selected; they do not count tiles or commands pruned, GPU memory, or copy savings)",
-        renderer.sparse_opaque_prune_requested(),
-        renderer.sparse_opaque_prune_available(),
+        renderer.vello().sparse_opaque_prune_requested(),
+        renderer.vello().sparse_opaque_prune_available(),
     );
     println!(
         "sparse solid fuse: env_requested={sparse_solid_fuse_requested} renderer_requested={} available={} (reported selections mean only that the matched producer/consumer shader path was selected; they do not count fused commands, GPU memory, or copy savings)",
-        renderer.sparse_solid_fuse_requested(),
-        renderer.sparse_solid_fuse_available(),
+        renderer.vello().sparse_solid_fuse_requested(),
+        renderer.vello().sparse_solid_fuse_available(),
     );
     println!(
         "sparse segment row mask: env_requested={sparse_segment_row_mask_requested} renderer_requested={} available={} (reported selections mean only that the paired sparse shader path was selected; they do not count skipped rows, GPU memory, or copy savings)",
-        renderer.sparse_segment_row_mask_requested(),
-        renderer.sparse_segment_row_mask_available(),
+        renderer.vello().sparse_segment_row_mask_requested(),
+        renderer.vello().sparse_segment_row_mask_available(),
     );
     println!(
         "canonical segment order: env_requested={canonical_segment_order_requested} renderer_requested={} available={} (selected attempts report only an actual recorded pass, not completion or speed)",
-        renderer.canonical_segment_order_requested(),
-        renderer.canonical_segment_order_available(),
+        renderer.vello().canonical_segment_order_requested(),
+        renderer.vello().canonical_segment_order_available(),
     );
     println!(
         "area PPT8: env_requested={area_ppt8_requested} renderer_requested={} available={} (selected attempts report only an actual recorded Area shader pass, not completion or speed)",
-        renderer.area_ppt8_requested(),
-        renderer.area_ppt8_available(),
+        renderer.vello().area_ppt8_requested(),
+        renderer.vello().area_ppt8_available(),
     );
     println!(
         "clip single group: env_requested={clip_single_group_requested} renderer_requested={} available={} (selected attempts report only an actual recorded clip shader pass, not completion or speed)",
-        renderer.clip_single_group_requested(),
-        renderer.clip_single_group_available(),
+        renderer.vello().clip_single_group_requested(),
+        renderer.vello().clip_single_group_available(),
     );
     println!(
         "CPU path tags: configured={cpu_pathtag_configured} active={} (only path-tag reduce/scan use CPU; flatten and later stages remain GPU, with CPU tag-monoid upload retained)",
-        renderer.cpu_pathtag_enabled(),
+        renderer.vello().cpu_pathtag_enabled(),
     );
     println!(
         "CPU path-tag reuse: configured={cpu_pathtag_reuse_configured} active={} retained_host_pool={}B (excluded from known GPU bytes)",
-        renderer.cpu_pathtag_reuse_enabled(),
-        renderer.cpu_pathtag_pool_retained_bytes(),
+        renderer.vello().cpu_pathtag_reuse_enabled(),
+        renderer.vello().cpu_pathtag_pool_retained_bytes(),
     );
     println!(
         "CPU metadata: configured={cpu_metadata_configured} active={} retained_host_pool={}B (bbox-clear and draw-reduce only; flatten and later stages remain GPU)",
-        renderer.cpu_metadata_enabled(),
-        renderer.cpu_metadata_pool_retained_bytes(),
+        renderer.vello().cpu_metadata_enabled(),
+        renderer.vello().cpu_metadata_pool_retained_bytes(),
     );
     println!(
         "CPU draw prefix: configured={cpu_draw_prefix_configured} active={} retained_host_pool={}B (bounded draw-prefix only; GPU draw leaf consumes the same GPU monoid table)",
-        renderer.cpu_draw_prefix_enabled(),
-        renderer.cpu_draw_prefix_pool_retained_bytes(),
+        renderer.vello().cpu_draw_prefix_enabled(),
+        renderer.vello().cpu_draw_prefix_pool_retained_bytes(),
     );
     println!(
         "sparse upload reuse: configured={} active={} persistent_gpu_bytes={} (before the first sparse upload)",
         sparse_upload_reuse_configured,
-        renderer.sparse_upload_reuse_enabled(),
+        renderer.vello().sparse_upload_reuse_enabled(),
         renderer.memory_stats().vello.sparse_upload_bytes,
     );
     println!(
         "deferred bump readback: configured={defer_bump_readback_configured} active={} (moves the same synchronous bump download after fine; it does not eliminate measurement, recovery, or waits)",
-        renderer.defer_bump_readback_enabled(),
+        renderer.vello().defer_bump_readback_enabled(),
     );
     println!(
         "direct path dispatch: configured={direct_path_dispatch_configured} active={} (replaces GPU indirect path-count/path-tiling setup; it does not remove CPU readback)",
-        renderer.direct_path_dispatch_enabled(),
+        renderer.vello().direct_path_dispatch_enabled(),
     );
     println!(
         "geometric damage capacity: configured={} active={} (default on; TILO_UI_DAMAGE_GEOMETRIC=0 restores fixed-width capacity)",
@@ -2878,7 +2875,6 @@ pub fn run(_args: &[String]) {
     let theme = Theme::dark();
     let mut text_renderer = TextRenderer::new();
     let presence = PresenceCtx::default();
-    let perms = PermissionContext::permissive();
     let mut doc = AutoCommit::new();
 
     let mut root = build_tree(include_animated);
@@ -2909,7 +2905,6 @@ pub fn run(_args: &[String]) {
         root_node,
         text_renderer: &mut text_renderer,
         presence: &presence,
-        perms: &perms,
         theme: &theme,
         scene: &mut scene,
         renderer: &mut renderer,
@@ -3053,9 +3048,9 @@ pub fn run(_args: &[String]) {
         print_render_timing_profile(
             &run.histo,
             timings,
-            state.renderer.gpu_timestamp_buffer_bytes(),
+            state.renderer.vello().gpu_timestamp_buffer_bytes(),
             gpu_dispatch_timestamp_status,
-            state.renderer.gpu_dispatch_timestamp_buffer_bytes(),
+            state.renderer.vello().gpu_dispatch_timestamp_buffer_bytes(),
         );
     }
     if let Some(path) = tilo_ui::env::var_os("TILO_UI_DASH_SAMPLES").filter(|raw| !raw.is_empty()) {

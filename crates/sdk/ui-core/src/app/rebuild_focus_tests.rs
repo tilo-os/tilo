@@ -79,8 +79,7 @@ impl Widget for RebuildHarness {
         taffy.widget_node(taffy::Style::default(), &child_nodes, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = crate::widget::placed(layout, origin);
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let Ok(child_nodes) = taffy.children(node) {
             for (c, &cn) in self.children.iter_mut().zip(child_nodes.iter()) {
                 c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));

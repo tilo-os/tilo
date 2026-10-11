@@ -11,6 +11,7 @@
 )]
 
 use std::collections::BTreeMap;
+use ui::num::f64_of_usize;
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_actions::{self, ActionError};
@@ -2339,7 +2340,7 @@ impl Align {
                 (start(&all), start(&all) + length(&all))
             };
             let total: f64 = boxes.iter().map(length).sum();
-            let gaps = count_f64(boxes.len().saturating_sub(1)).max(1.0);
+            let gaps = f64_of_usize(boxes.len().saturating_sub(1)).max(1.0);
             let gap = (to - from - total) / gaps;
             let mut cursor = if boxes.len() == 1 {
                 from + (to - from - total) / 2.0
@@ -2368,10 +2369,6 @@ impl Align {
         }
         Ok(())
     }
-}
-
-fn count_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 /// The members `id` addresses: a mark, or a group's members.

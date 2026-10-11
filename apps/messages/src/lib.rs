@@ -143,11 +143,7 @@ impl std::fmt::Debug for MessagesEffect {
     }
 }
 
-pub(crate) static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "messages-empty-heading",
-);
+ui::embedded_catalog!(pub(crate) static CATALOG, "messages-empty-heading", ["en-US"]);
 
 pub struct MessagesShell;
 

@@ -190,7 +190,10 @@ impl Canvas {
 
     pub fn position(&self) -> LogicalPosition<f64> {
         let bounds = self.common.raw.get_bounding_client_rect();
-        let mut position = LogicalPosition { x: bounds.x(), y: bounds.y() };
+        let mut position = LogicalPosition {
+            x: bounds.x(),
+            y: bounds.y(),
+        };
 
         if self.document().contains(Some(self.raw())) && self.style().get("display") != "none" {
             position.x += super::style_size_property(self.style(), "border-left-width")
@@ -297,8 +300,9 @@ impl Canvas {
         F: 'static + FnMut(PhysicalKey, Key, Option<SmolStr>, KeyLocation, bool, ModifiersState),
     {
         let prevent_default = Rc::clone(&self.prevent_default);
-        self.on_keyboard_press =
-            Some(self.common.add_event("keydown", move |event: KeyboardEvent| {
+        self.on_keyboard_press = Some(self.common.add_event(
+            "keydown",
+            move |event: KeyboardEvent| {
                 if prevent_default.get() {
                     event.prevent_default();
                 }
@@ -312,7 +316,8 @@ impl Canvas {
                     event.repeat(),
                     modifiers,
                 );
-            }));
+            },
+        ));
     }
 
     pub fn on_cursor_leave<F>(&mut self, handler: F)
@@ -334,7 +339,8 @@ impl Canvas {
         M: 'static + FnMut(ModifiersState, i32, PhysicalPosition<f64>, MouseButton),
         T: 'static + FnMut(ModifiersState, i32, PhysicalPosition<f64>, Force),
     {
-        self.pointer_handler.on_mouse_release(&self.common, mouse_handler, touch_handler)
+        self.pointer_handler
+            .on_mouse_release(&self.common, mouse_handler, touch_handler)
     }
 
     pub fn on_mouse_press<M, T>(&mut self, mouse_handler: M, touch_handler: T)
@@ -433,12 +439,14 @@ impl Canvas {
 
     pub(crate) fn on_context_menu(&mut self) {
         let prevent_default = Rc::clone(&self.prevent_default);
-        self.on_context_menu =
-            Some(self.common.add_event("contextmenu", move |event: PointerEvent| {
+        self.on_context_menu = Some(self.common.add_event(
+            "contextmenu",
+            move |event: PointerEvent| {
                 if prevent_default.get() {
                     event.prevent_default();
                 }
-            }));
+            },
+        ));
     }
 
     pub fn request_fullscreen(&self) {
@@ -552,14 +560,20 @@ impl Style {
     }
 
     pub(crate) fn get(&self, property: &str) -> String {
-        self.read.get_property_value(property).expect("Invalid property")
+        self.read
+            .get_property_value(property)
+            .expect("Invalid property")
     }
 
     pub(crate) fn remove(&self, property: &str) {
-        self.write.remove_property(property).expect("Property is read only");
+        self.write
+            .remove_property(property)
+            .expect("Property is read only");
     }
 
     pub(crate) fn set(&self, property: &str, value: &str) {
-        self.write.set_property(property, value).expect("Property is read only");
+        self.write
+            .set_property(property, value)
+            .expect("Property is read only");
     }
 }

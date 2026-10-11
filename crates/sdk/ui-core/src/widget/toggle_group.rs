@@ -22,6 +22,8 @@
 //! rail: each segment shows its icon, and its label (with the
 //! [`Segment::with_hint`] shortcut) is its tooltip; the label is its
 //! accessible name.
+use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
 use crate::widget::binding::{BoxedBinding, Pulled};
 use crate::widget::toolbar::Orientation;
 use crate::widget::{AppModel, ModelPath};
@@ -211,21 +213,6 @@ impl SegmentedTouch {
             _ => SegmentedTouchResult::Unhandled,
         }
     }
-}
-
-/// Lossless `usize -> f64` widening for segment-strip geometry. Segment
-/// counts are bounded far below `u32::MAX`, so routing through `u32` (which
-/// `f64` represents exactly) avoids the precision loss a direct cast risks.
-fn usize_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "logical pixel counts far below f32 precision"
-)]
-fn px_f32(value: f64) -> f32 {
-    value as f32
 }
 
 /// One choice of a [`ToggleGroup`] or a [`SegmentedFace`].
@@ -914,7 +901,7 @@ impl ToggleGroup {
 
     fn strip_height(&self) -> f64 {
         if self.chosen.is_some() {
-            let rows = usize_to_f64(self.rows.max(1));
+            let rows = f64_of_usize(self.rows.max(1));
             rows * self.metrics.height + (rows - 1.0) * self.metrics.gap
         } else {
             self.metrics.height
@@ -926,11 +913,11 @@ impl ToggleGroup {
 /// between them sharing the height left over.
 fn stack(rect: Rect, n: usize) -> Vec<Rect> {
     let side = rect.width();
-    let gaps = usize_to_f64(n.saturating_sub(1)).max(1.0);
-    let gap = ((rect.height() - side * usize_to_f64(n)) / gaps).max(0.0);
+    let gaps = f64_of_usize(n.saturating_sub(1)).max(1.0);
+    let gap = ((rect.height() - side * f64_of_usize(n)) / gaps).max(0.0);
     (0..n)
         .map(|i| {
-            let y = rect.y0 + usize_to_f64(i) * (side + gap);
+            let y = rect.y0 + f64_of_usize(i) * (side + gap);
             Rect::new(rect.x0, y, rect.x1, y + side)
         })
         .collect()
@@ -942,15 +929,15 @@ fn partition(rect: Rect, n: usize) -> Vec<Rect> {
     if n == 0 {
         return Vec::new();
     }
-    let seg_w = rect.width() / usize_to_f64(n);
+    let seg_w = rect.width() / f64_of_usize(n);
     let last = n.saturating_sub(1);
     (0..n)
         .map(|i| {
-            let x0 = rect.x0 + usize_to_f64(i) * seg_w;
+            let x0 = rect.x0 + f64_of_usize(i) * seg_w;
             let x1 = if i == last {
                 rect.x1
             } else {
-                rect.x0 + usize_to_f64(i.saturating_add(1)) * seg_w
+                rect.x0 + f64_of_usize(i.saturating_add(1)) * seg_w
             };
             Rect::new(x0, rect.y0, x1, rect.y1)
         })
@@ -1006,7 +993,7 @@ fn partition_sized(rect: Rect, naturals: &[(f64, f64)]) -> (Vec<Rect>, Vec<bool>
         return (Vec::new(), Vec::new());
     }
     let avail = rect.width().max(0.0);
-    let count = usize_to_f64(n);
+    let count = f64_of_usize(n);
     let full: Vec<f64> = naturals.iter().map(|(full, _)| *full).collect();
     let widest = full.iter().copied().fold(0.0, f64::max);
     if widest * count <= avail + 1e-6 {
@@ -1196,7 +1183,7 @@ impl StripMetrics {
             return naturals.iter().map(|(full, _)| full).sum::<f64>().ceil();
         }
         let widest = naturals.iter().map(|(full, _)| *full).fold(0.0, f64::max);
-        (widest * usize_to_f64(segments.len()) + 2.0 * self.inset).ceil()
+        (widest * f64_of_usize(segments.len()) + 2.0 * self.inset).ceil()
     }
 }
 
@@ -1625,7 +1612,7 @@ impl ToggleGroup {
                 Some(short) if full_w > room + 0.5 => short,
                 _ => item.label,
             };
-            let shown = text_renderer.elide_to_width_style(label, px_f32(room + 0.5), style);
+            let shown = text_renderer.elide_to_width_style(label, f32_of_f64(room + 0.5), style);
             let (tw, th) = text_renderer.measure_style(&shown, None, style);
             // Tabs set their labels from the leading edge; segments centre.
             let text_x = if tabs {
@@ -1911,6 +1898,26 @@ fn tab_label_span(
 }
 
 impl ToggleGroup {
+    /// Pin the node to the measured strip width. True when the style changed.
+    fn pin_measured_width(&self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Some(width) = self
+            .measured_width
+            .filter(|_| !self.fill && self.chosen.is_none())
+        else {
+            return false;
+        };
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let width = Dimension::length(width);
+        if style.size.width == width {
+            return false;
+        }
+        let mut style = style.clone();
+        style.size.width = width;
+        taffy.set_style(node, style).is_ok()
+    }
+
     /// Apply a `tilo.ui.segmented.select` addressed to this control.
     /// `Ok(false)` when the operation is not this control's.
     fn select_segment_operation(
@@ -1987,11 +1994,11 @@ impl Widget for ToggleGroup {
                 .max(f64::from(theme.tokens.metrics.min_pointer_target));
             let gap = f64::from(theme.tokens.spacing.s1);
             self.stacked = (side, gap);
-            let n = usize_to_f64(self.segments.len().max(1));
+            let n = f64_of_usize(self.segments.len().max(1));
             let node = taffy.leaf_node(Style {
                 size: Size {
-                    width: Dimension::length(px_f32(side)),
-                    height: Dimension::length(px_f32(side * n + gap * (n - 1.0))),
+                    width: Dimension::length(f32_of_f64(side)),
+                    height: Dimension::length(f32_of_f64(side * n + gap * (n - 1.0))),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
@@ -2013,7 +2020,7 @@ impl Widget for ToggleGroup {
                 height: if self.chosen.is_some() {
                     Dimension::auto()
                 } else {
-                    Dimension::length(px_f32(height))
+                    Dimension::length(f32_of_f64(height))
                 },
             },
             max_size: Size {
@@ -2041,13 +2048,15 @@ impl Widget for ToggleGroup {
     ) -> Size<f32> {
         if self.orientation == Orientation::Vertical {
             let (side, gap) = self.stacked;
-            let n = usize_to_f64(self.segments.len().max(1));
+            let n = f64_of_usize(self.segments.len().max(1));
             return Size {
-                width: known.width.unwrap_or(px_f32(side)),
-                height: known.height.unwrap_or(px_f32(side * n + gap * (n - 1.0))),
+                width: known.width.unwrap_or(f32_of_f64(side)),
+                height: known
+                    .height
+                    .unwrap_or(f32_of_f64(side * n + gap * (n - 1.0))),
             };
         }
-        let intrinsic = px_f32(
+        let intrinsic = f32_of_f64(
             self.metrics
                 .intrinsic_width(&self.segments, self.style, text),
         );
@@ -2067,7 +2076,7 @@ impl Widget for ToggleGroup {
             self.rows = rows;
             return Size {
                 width,
-                height: px_f32(self.strip_height() + self.caption_height),
+                height: f32_of_f64(self.strip_height() + self.caption_height),
             };
         }
         if !self.fill {
@@ -2077,30 +2086,11 @@ impl Widget for ToggleGroup {
             width: known.width.unwrap_or(intrinsic),
             height: known
                 .height
-                .unwrap_or(px_f32(self.strip_height() + self.caption_height)),
+                .unwrap_or(f32_of_f64(self.strip_height() + self.caption_height)),
         }
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        let Some(width) = self
-            .measured_width
-            .filter(|_| !self.fill && self.chosen.is_none())
-        else {
-            return false;
-        };
-        let Ok(style) = taffy.style(node) else {
-            return false;
-        };
-        let width = Dimension::length(width);
-        if style.size.width == width {
-            return false;
-        }
-        let mut style = style.clone();
-        style.size.width = width;
-        taffy.set_style(node, style).is_ok()
-    }
-
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -2114,22 +2104,17 @@ impl Widget for ToggleGroup {
             return false;
         }
         if self.measured_width.is_none() {
-            self.measured_width = Some(px_f32(self.metrics.intrinsic_width(
+            self.measured_width = Some(f32_of_f64(self.metrics.intrinsic_width(
                 &self.segments,
                 self.style,
                 text,
             )));
         }
-        self.adjust_layout_style(taffy, node)
+        self.pin_measured_width(taffy, node)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x0 = origin.x + f64::from(layout.location.x);
-        let y0 = origin.y + f64::from(layout.location.y);
-        let x1 = x0 + f64::from(layout.size.width);
-        let y1 = y0 + f64::from(layout.size.height);
-        self.place(Rect::new(x0, y0, x1, y1));
+        self.place(crate::widget::layout_rect(taffy, node, origin));
         self.layout_dirty = false;
     }
 
@@ -2199,7 +2184,7 @@ impl Widget for ToggleGroup {
             let style = theme.text(TextRole::Caption);
             let shown = text_renderer.elide_to_width_style(
                 caption,
-                px_f32(self.outer.width().max(1.0)),
+                f32_of_f64(self.outer.width().max(1.0)),
                 &style,
             );
             let at = Affine::translate((self.outer.x0, self.outer.y0));
@@ -2622,15 +2607,15 @@ mod tests {
         // Populate segment_rects manually (mirrors apply_layout).
         let n = g.segments.len();
         if n > 0 {
-            let w = rect.width() / usize_to_f64(n);
+            let w = rect.width() / f64_of_usize(n);
             let last = n.saturating_sub(1);
             g.segment_rects = (0..n)
                 .map(|i| {
-                    let x0 = rect.x0 + usize_to_f64(i) * w;
+                    let x0 = rect.x0 + f64_of_usize(i) * w;
                     let x1 = if i == last {
                         rect.x1
                     } else {
-                        rect.x0 + usize_to_f64(i.saturating_add(1)) * w
+                        rect.x0 + f64_of_usize(i.saturating_add(1)) * w
                     };
                     Rect::new(x0, rect.y0, x1, rect.y1)
                 })

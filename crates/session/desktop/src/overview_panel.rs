@@ -8,6 +8,7 @@
 //! navigation. A host that draws the overview itself reads the same cards.
 
 use std::collections::HashMap;
+use ui::num::f64_of_usize;
 
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
@@ -261,7 +262,7 @@ impl OverviewPanel {
             window_step
         } else {
             window_step
-                * small_f64(
+                * f64_of_usize(
                     self.windows
                         .len()
                         .saturating_add(usize::from(self.more_windows > 0)),
@@ -270,7 +271,7 @@ impl OverviewPanel {
         let rooms = if self.rooms.is_empty() {
             0.0
         } else {
-            m.caption_h + (m.room_h + m.gap) * small_f64(self.rooms.len())
+            m.caption_h + (m.room_h + m.gap) * f64_of_usize(self.rooms.len())
         };
         let add = if self.can_add {
             window_step + m.row_gap
@@ -410,7 +411,7 @@ impl OverviewPanel {
             let chip_style = theme.text(TextRole::Caption);
             let body = theme.text(TextRole::Body);
             let apps = card.apps();
-            let marks = small_f64(apps.len().min(6));
+            let marks = f64_of_usize(apps.len().min(6));
             let marks_w = marks * m.mark_step;
             let chip_label = t("overview-panel-you-are-here");
             let (chip_w, chip_h) = text.measure_style(&chip_label, None, &chip_style);
@@ -713,10 +714,6 @@ fn room_line(card: &RoomCard) -> String {
     } else {
         room_access_label(card)
     }
-}
-
-fn small_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 impl Widget for OverviewPanel {

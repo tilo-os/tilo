@@ -38,15 +38,8 @@ impl Parts {
     }
 
     pub(super) fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let start = Point::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-        );
-        self.rect = Rect::from_origin_size(
-            start,
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        let start = self.rect.origin();
         for (child, &node) in self.children.iter_mut().zip(&self.nodes) {
             child.apply_layout(taffy, node, start);
         }

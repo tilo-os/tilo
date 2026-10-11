@@ -27,7 +27,6 @@ use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, Windo
 
 use ui::chart_palette::ChartPalette;
 use ui::collaboration::PresencePayload;
-use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest};
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextStyle};
@@ -54,7 +53,8 @@ use crate::grid::{Grid, GridCmd, GridMetrics};
 use crate::infer::infer_entry;
 use crate::model::{Addr, CellFormat, CellValue, a1_to_addr, format_value};
 use crate::settings::{DocSettings, EffectiveLocale};
-use tilo_locale::{Currency, DateStyle, Locale, TimeStyle};
+use tilo_locale::{Currency, DateStyle, Locale};
+use ui::clock::TimeStyle;
 
 /// Rows of the sheet-tab context menu, top to bottom.
 const TAB_MENU_ACTIONS: [TabAction; 6] = [
@@ -293,13 +293,6 @@ fn tile_count(sel: u32, block: u32) -> u32 {
         (Some(0), Some(n)) => n,
         _ => 1,
     }
-}
-
-/// An item count as an `f64` for layout maths. Menus, chip rows and labels run
-/// to tens of items, far inside `f64`'s exact-integer range; an absurd count
-/// clamps rather than silently losing precision.
-fn count_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 fn tab_action_label(act: TabAction) -> &'static str {
@@ -2596,10 +2589,7 @@ impl Widget for SheetsApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.relayout();
     }
 
@@ -2626,6 +2616,11 @@ impl Widget for SheetsApp {
         // tab strip, below the top layer.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
         self.draw_tab_rename(scene, transform, text_renderer, theme);
+        // Presence-in-navigation: when a peer is on a DIFFERENT sheet,
+        // glow that sheet's tab in their colour so you can see where they
+        // went ("Alice is on Q2"). Painted after the chrome so it reads on
+        // top of the tab surface.
+        self.draw_sheet_tab_presence(scene, transform, theme, presence);
     }
 
     fn draw_overlay(
@@ -2653,23 +2648,6 @@ impl Widget for SheetsApp {
         // fading, so it hides itself without needing a stray pointer event.
         (self.motion == MotionPreference::Full && self.status_bubble.needs_frame(ui::time::now()))
             || self.children().iter().any(|c| c.needs_animation_frame())
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, text_renderer, theme, presence);
-        // Presence-in-navigation: when a peer is on a DIFFERENT sheet,
-        // glow that sheet's tab in their colour so you can see where they
-        // went ("Alice is on Q2"). Painted after the chrome so it reads on
-        // top of the tab surface.
-        self.draw_sheet_tab_presence(scene, transform, theme, presence);
     }
 
     fn settle(&mut self, edits: &mut Edits<'_>, _path: &ObjId) {

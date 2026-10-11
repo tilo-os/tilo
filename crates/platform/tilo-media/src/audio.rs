@@ -687,24 +687,13 @@ fn run(bin: &str, args: &[String]) -> Result<(), String> {
     if out.status.success() {
         Ok(())
     } else {
-        Err(sanitize_diagnostic(&out.stderr))
+        Err(out.stderr_diagnostic())
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 fn run(_: &str, _: &[String]) -> Result<(), String> {
     Err("PipeWire audio graph control is unsupported on this platform".to_owned())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn sanitize_diagnostic(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
-        .take(512)
-        .collect::<String>()
-        .trim()
-        .to_string()
 }
 
 /// Production [`GraphControl`]: `wpctl` for defaults + per-node volume/mute,

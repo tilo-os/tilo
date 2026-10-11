@@ -10,6 +10,7 @@
 //! `realtime` feature is on (any app that streams video enables it); in other
 //! builds the feed methods report that nothing was decoded.
 
+use crate::num::f64_of_u64;
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
@@ -954,7 +955,7 @@ impl VideoPlayer {
         if self.duration_ms == 0 {
             0.0
         } else {
-            (ms_to_f64(self.position_ms) / ms_to_f64(self.duration_ms)).clamp(0.0, 1.0)
+            (f64_of_u64(self.position_ms) / f64_of_u64(self.duration_ms)).clamp(0.0, 1.0)
         }
     }
 
@@ -2266,17 +2267,6 @@ impl VideoPlayer {
     }
 }
 
-/// Millisecond timestamps here are bounded by realistic media durations —
-/// far below 2^53 — so the `u64 -> f64` conversion cannot lose precision in
-/// practice.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "millisecond timestamps are bounded well under 2^53; exact in f64"
-)]
-fn ms_to_f64(ms: u64) -> f64 {
-    ms as f64
-}
-
 /// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
 /// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
 /// but composing two f64-based affine transforms cannot meaningfully
@@ -2889,7 +2879,7 @@ impl VideoPlayer {
             clippy::cast_sign_loss,
             reason = "frac is clamped to 0.0..=1.0, so frac * duration_ms stays within 0..=duration_ms"
         )]
-        let target = (frac * ms_to_f64(self.duration_ms)) as u64;
+        let target = (frac * f64_of_u64(self.duration_ms)) as u64;
         self.seek_to_ms(target);
     }
 

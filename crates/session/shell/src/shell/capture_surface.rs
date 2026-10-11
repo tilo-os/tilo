@@ -7,12 +7,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use ui::num::f32_of_f64;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{Image, ImageFit, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -273,7 +275,7 @@ impl CaptureMirrorImage {
             return;
         };
         let raw = ((mix - 0.58) / 0.42).clamp(0.0, 1.0);
-        let alpha = f64_to_f32_lossy(raw * raw * (3.0 - 2.0 * raw) * 0.46);
+        let alpha = f32_of_f64(raw * raw * (3.0 - 2.0 * raw) * 0.46);
         if alpha <= 0.001 {
             return;
         }
@@ -310,21 +312,17 @@ impl Widget for CaptureMirrorImage {
         _: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = match taffy.new_leaf(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
+        taffy.widget_leaf(
+            Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
             },
-            ..Default::default()
-        }) {
-            Ok(node) => node,
-            Err(error) => {
-                tracing::error!(%error, "capture mirror leaf allocation failed");
-                NodeId::from(0_u64)
-            }
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -358,7 +356,7 @@ impl Widget for CaptureMirrorImage {
                 scene.push_layer(
                     Fill::NonZero,
                     BlendMode::default(),
-                    f64_to_f32_lossy(mix),
+                    f32_of_f64(mix),
                     transform,
                     &self.rect,
                 );
@@ -502,14 +500,6 @@ pub(super) fn capture_mirror_initial_size(
     let height_cap = (viewport.height() * 0.55).max(135.0);
     let height = (width / aspect).clamp(135.0, 520.0).min(height_cap);
     vello::kurbo::Size::new(width, height)
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space geometry stays well within f32 precision"
-)]
-fn f64_to_f32_lossy(value: f64) -> f32 {
-    value as f32
 }
 
 #[cfg(test)]

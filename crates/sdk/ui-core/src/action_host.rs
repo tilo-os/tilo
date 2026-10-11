@@ -51,21 +51,6 @@ impl ActionHost {
         Self::default()
     }
 
-    /// Authorize a direct widget affordance using its actual published action
-    /// contract and the current canonical component's live permission context.
-    /// Unbound native widgets retain their existing host policy.
-    ///
-    /// # Errors
-    /// Refuses missing/revoked owned custody or an action removed by the same
-    /// permission filter used for named resource actions.
-    pub fn authorize_resource_action(
-        doc: &AutoCommit,
-        resource: &tilo_actions::Resource,
-        action_id: &str,
-    ) -> Result<(), String> {
-        crate::bound_dispatch::authorize_current_resource_action(doc, resource, action_id)
-    }
-
     /// Set task/session provenance inherited by later dispatches. Concrete
     /// action/resource fields always win; this is primarily for purpose and
     /// work-group metadata supplied by an agent run or issue context.

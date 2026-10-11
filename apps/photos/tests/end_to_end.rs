@@ -160,7 +160,7 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
             .with_text_scale(2.0)
             .with_reduce_motion(true);
         let mut driver =
-            ui::headless::Driver::new_with_theme(state, Box::new(app), (390, 844), theme);
+            ui::headless::FrameHarness::new_with_theme(state, Box::new(app), (390, 844), theme);
         register(driver.action_registry_mut());
         let audit = driver.native_app_audit();
         assert!(
@@ -810,7 +810,7 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
     // the exported pixels against the original by identity rather than by size.
     eprintln!("phase a_caller_with_no_display_crops_by_address_and_gets_those_pixels");
     {
-        use tilo_actions::{ActionInput, ActionRegistry};
+        use tilo_actions::ActionRegistry;
 
         let dir = tempfile::tempdir().unwrap();
         let (path, original) = staged(dir.path(), 400, 400);
@@ -837,18 +837,16 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
             .find(|child| child.id.0 == id)
             .expect("the photograph is published by its id");
 
-        let ActionInput::Prompted { build, .. } = &photo
+        let built = photo
             .actions
             .iter()
             .find(|a| a.id == "crop")
             .expect("crop is published")
-            .input
-        else {
-            panic!("crop collects an argument");
-        };
+            .build_text("0.5,0.5,0.5,0.5")
+            .expect("crop collects an argument");
 
         ActionRegistry::with(register)
-            .decode(&build("0.5,0.5,0.5,0.5"))
+            .decode(&built)
             .expect("the envelope decodes")
             .apply(&mut hz.state().doc)
             .expect("the crop applies");

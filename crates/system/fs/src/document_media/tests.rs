@@ -82,6 +82,150 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
     }
 }
 
+/// Cold daemon reads must not materialise or cache the entire attachment.
+#[tokio::test]
+async fn ranged_reads_after_a_restart_read_only_the_range() {
+    let dir = tempfile::tempdir().unwrap();
+    let photos = scope("room-1", "so.tilo.photos");
+    let data = pattern(9 * 1024 * 1024 + 12_345);
+    let hash = {
+        let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
+        let media = DocumentMedia::new(Arc::clone(&store));
+        let hash = media.store(&photos, data.clone()).await.unwrap();
+        store.store().shutdown().await.unwrap();
+        hash
+    };
+    let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
+    let media = DocumentMedia::new(Arc::clone(&store));
+    assert!(!store.is_cached(hash));
+    let total_len = data.len() as u64;
+    for (offset, max_len) in [
+        (0, 0),
+        (16_380, 10),
+        (4 * 1024 * 1024 - 7, MAX_READ_CHUNK),
+        (total_len - 123, MAX_READ_CHUNK),
+        (total_len, 10),
+        (total_len + 1, 10),
+        (u64::MAX, u32::MAX),
+        (0, u32::MAX),
+    ] {
+        let start = usize::try_from(offset.min(total_len)).unwrap();
+        let end = (start + max_len as usize).min(data.len());
+        assert_eq!(
+            media
+                .read_range(photos.clone(), hash, offset, max_len)
+                .await,
+            ReadOutcome::Ready {
+                bytes: data[start..end].to_vec(),
+                total_len
+            },
+            "range {offset} + {max_len}"
+        );
+        assert!(
+            !store.is_cached(hash),
+            "range {offset} + {max_len} cached the blob"
+        );
+    }
+    for max_len in [0, MAX_READ_CHUNK] {
+        assert_eq!(
+            media
+                .read_range(scope("room-2", "so.tilo.photos"), hash, 0, max_len)
+                .await,
+            ReadOutcome::Unavailable
+        );
+    }
+    // The whole-blob API still loads and caches for its existing callers.
+    assert_eq!(store.local(hash).await.unwrap().as_ref(), data);
+    assert!(store.is_cached(hash));
+    store.store().shutdown().await.unwrap();
+}
+
+/// BAO verification must cover the selected chunk group without scanning
+/// unrelated groups. All corruption is confined to this disposable store.
+#[tokio::test]
+async fn cold_ranged_reads_verify_only_selected_chunk_groups() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let dir = tempfile::tempdir().unwrap();
+    let photos = scope("room-1", "so.tilo.photos");
+    let data = pattern(9 * 1024 * 1024 + 12_345);
+    let hash = {
+        let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
+        let media = DocumentMedia::new(Arc::clone(&store));
+        let hash = media.store(&photos, data.clone()).await.unwrap();
+        store.store().shutdown().await.unwrap();
+        hash
+    };
+    let damaged = data.len() - 100;
+    let path = dir
+        .path()
+        .join("data")
+        .join(format!("{}.data", hash.to_hex()));
+    let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.seek(SeekFrom::Start(damaged as u64)).unwrap();
+    file.write_all(&[data[damaged] ^ 0xff]).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+
+    let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
+    let media = DocumentMedia::new(Arc::clone(&store));
+    assert_eq!(
+        media.read_range(photos.clone(), hash, 0, 10).await,
+        ReadOutcome::Ready {
+            bytes: data[..10].to_vec(),
+            total_len: data.len() as u64
+        }
+    );
+    assert_eq!(
+        media
+            .read_range(photos.clone(), hash, damaged as u64, 1)
+            .await,
+        ReadOutcome::Unavailable
+    );
+    assert_eq!(
+        media.read_range(photos, hash, 0, 0).await,
+        ReadOutcome::Ready {
+            bytes: Vec::new(),
+            total_len: data.len() as u64
+        }
+    );
+    assert!(!store.is_cached(hash));
+    store.store().shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn ranged_reads_keep_the_verified_file_chunk_fallback() {
+    let store = Arc::new(ContentStore::memory());
+    let photos = scope("room-1", "so.tilo.photos");
+    let data = pattern(3 * 1024 * 1024);
+    let content = store.write_content(&data).await.unwrap().unwrap();
+    let manifest = store.manifest(content).await.unwrap();
+    let chunk = manifest.chunks()[0];
+    let hash = Hash::from(chunk.hash);
+    assert!(matches!(
+        store.store().blobs().status(hash).await.unwrap(),
+        BlobStatus::NotFound
+    ));
+    record_reference(&store, &photos, hash).await.unwrap();
+    let media = DocumentMedia::new(Arc::clone(&store));
+    assert_eq!(
+        media.read_range(photos.clone(), hash, 7, 11).await,
+        ReadOutcome::Ready {
+            bytes: data[7..18].to_vec(),
+            total_len: u64::from(chunk.len)
+        }
+    );
+    assert!(!store.is_cached(hash));
+    store
+        .files()
+        .write_at(content.as_bytes(), 7, &[data[7] ^ 0xff])
+        .unwrap();
+    assert_eq!(
+        media.read_range(photos, hash, 7, 11).await,
+        ReadOutcome::Unavailable
+    );
+}
+
 const PROOF_SOCKET: &str = "TILO_MEDIA_PROOF_SOCKET";
 const PROOF_HASH: &str = "TILO_MEDIA_PROOF_HASH";
 const IMAGE: &[u8] = b"\x89PNG\r\n\x1a\n pixels put by one application";
@@ -226,6 +370,7 @@ impl BlobBackend for Observed {
 /// backend, over a launcher-scoped connection to the daemon's document media.
 struct DeviceHarness {
     observed: Arc<Observed>,
+    daemon_store: Arc<ContentStore>,
     store: tilo_content::ContentStore,
     _dir: tempfile::TempDir,
     _runtime: tokio::runtime::Runtime,
@@ -241,10 +386,11 @@ impl DeviceHarness {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("fs-blobs.sock");
         // The in-memory store spawns its actor on the ambient runtime.
-        let media = {
+        let daemon_store = {
             let _guard = runtime.enter();
-            DocumentMedia::new(Arc::new(ContentStore::memory()))
+            Arc::new(ContentStore::memory())
         };
+        let media = DocumentMedia::new(Arc::clone(&daemon_store));
         let observed = Arc::new(Observed {
             media,
             reads: std::sync::Mutex::default(),
@@ -263,6 +409,7 @@ impl DeviceHarness {
         ));
         Self {
             observed,
+            daemon_store,
             store,
             _dir: dir,
             _runtime: runtime,
@@ -306,6 +453,8 @@ fn device_backend_streams_a_large_put_in_chunks() {
         "the chunks were assembled into one stored item"
     );
 
+    let hash = stored.hash.parse().unwrap();
+    harness.daemon_store.forget_cached(hash);
     // Opening reads one range; the rest is fetched as the reader is consumed.
     let mut reader = harness.store.open(&stored.hash).unwrap();
     assert_eq!(harness.reads(), [MAX_READ_CHUNK]);
@@ -314,6 +463,7 @@ fn device_backend_streams_a_large_put_in_chunks() {
     assert_eq!(read, data);
     let ranges = data.len().div_ceil(MAX_READ_CHUNK as usize);
     assert_eq!(harness.reads(), vec![MAX_READ_CHUNK; ranges]);
+    assert!(!harness.daemon_store.is_cached(hash));
 }
 
 #[test]
@@ -389,10 +539,13 @@ fn device_backend_state_does_not_download() {
     let harness = DeviceHarness::start();
     let data = pattern(9 * 1024 * 1024);
     let hash = harness.store.put(&data).unwrap();
+    let daemon_hash = hash.parse().unwrap();
+    harness.daemon_store.forget_cached(daemon_hash);
     assert_eq!(
         harness.store.state(&hash),
         tilo_content::ContentState::Resolved
     );
+    assert!(!harness.daemon_store.is_cached(daemon_hash));
     let absent = blake3::hash(b"never stored").to_hex().to_string();
     assert_eq!(
         harness.store.state(&absent),

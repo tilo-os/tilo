@@ -48,16 +48,6 @@ fn target_of(target: &Result<Option<String>, String>) -> Option<&str> {
     target.as_ref().ok().and_then(Option::as_deref)
 }
 
-fn helper_diagnostic(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
-        .take(512)
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
 fn schedule_shown(id: &str) -> String {
     match id {
         "Daily" => t("upd-schedule-daily"),
@@ -227,7 +217,7 @@ fn parse_pretty_name(contents: &str) -> Option<String> {
 fn read_bootc_status() -> Result<String, String> {
     let out = run_bounded("bootc", &["status", "--format", "json"], STATUS_TIMEOUT)?;
     if !out.status.success() {
-        let diagnostic = helper_diagnostic(&out.stderr);
+        let diagnostic = out.stderr_diagnostic();
         return Err(if diagnostic.is_empty() {
             format!("bootc status exited with {}", out.status)
         } else {
@@ -412,7 +402,7 @@ fn start_update_policy(action: &str) -> Result<(), String> {
     if output.status.success() {
         Ok(())
     } else {
-        let error = helper_diagnostic(&output.stderr);
+        let error = output.stderr_diagnostic();
         Err(if error.is_empty() {
             format!("{unit} failed")
         } else {
@@ -477,7 +467,7 @@ impl UpdateControl for RealUpdateControl {
         if out.status.success() {
             return Ok(());
         }
-        let err = helper_diagnostic(&out.stderr);
+        let err = out.stderr_diagnostic();
         Err(if err.is_empty() {
             format!("systemctl {verb} {UPDATE_TIMER} failed")
         } else {
@@ -498,7 +488,7 @@ impl UpdateControl for RealUpdateControl {
         if out.status.success() {
             return Ok(());
         }
-        let err = helper_diagnostic(&out.stderr);
+        let err = out.stderr_diagnostic();
         Err(if err.is_empty() {
             format!("{ROLLBACK_UNIT} failed; see journalctl -u {ROLLBACK_UNIT}")
         } else {
@@ -551,7 +541,7 @@ impl UpdateControl for RealUpdateControl {
         if output.status.success() {
             Ok(())
         } else {
-            let error = helper_diagnostic(&output.stderr);
+            let error = output.stderr_diagnostic();
             Err(if error.is_empty() {
                 "update service failed; see its system journal".into()
             } else {
@@ -623,7 +613,7 @@ impl Rebooter for RealRebooter {
         if out.status.success() {
             Ok(())
         } else {
-            Err(helper_diagnostic(&out.stderr))
+            Err(out.stderr_diagnostic())
         }
     }
 }
@@ -668,9 +658,12 @@ type FirmwareRefreshEvent = Result<
 
 /// A real wall-clock "last checked" stamp, e.g. `Monday, 4 July 2026 14:05`.
 fn now_stamp() -> String {
-    let date = os_actions::now_date().unwrap_or_default();
-    let time = os_actions::now_clock(true).unwrap_or_default();
-    format!("{date} {time}").trim().to_string()
+    let now = ui::clock::local_now();
+    format!(
+        "{} {}",
+        now.format("%A, %-d %B %Y"),
+        ui::clock::time_of_day(&now)
+    )
 }
 
 #[allow(

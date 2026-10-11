@@ -192,18 +192,11 @@ impl Widget for Manual {
     ) {
         self.parts.draw(scene, transform, text, theme, presence);
     }
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &crate::permissions::PermissionContext,
-    ) {
-        // Authored allocations may deliberately be smaller than their children.
-        // Keep negative as well as positive child extents in the culling box.
-        let paint_rect = self.info.get().map_or(self.parts.rect, |info| {
+
+    /// Authored allocations may deliberately be smaller than their children,
+    /// so negative as well as positive child extents count.
+    fn paint_bounds(&self) -> Rect {
+        self.info.get().map_or(self.parts.rect, |info| {
             let [x, y, width, height] = info.content_bounds;
             self.parts.rect.union(Rect::from_origin_size(
                 (
@@ -212,10 +205,7 @@ impl Widget for Manual {
                 ),
                 (f64::from(width), f64::from(height)),
             ))
-        });
-        if !presence.should_cull(paint_rect) {
-            self.draw(scene, transform, text, theme, presence);
-        }
+        })
     }
 }
 

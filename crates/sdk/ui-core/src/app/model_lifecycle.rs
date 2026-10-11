@@ -301,6 +301,12 @@ impl super::App {
         if settled || submitted {
             self.root_widget.sync(&self.state.doc, &self.state.root);
         }
+        // The record's durability changed and the root synced with it: a
+        // frame presents it. Nothing about the tree changed, so it is not a
+        // rebuild (which would repaint the whole window for a save bubble).
+        if crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut()) {
+            self.layout.layout_dirty = true;
+        }
         self.invalidate_widget_resource_cache();
         self.needs_sync = false;
         self.forget_replaced_widgets();

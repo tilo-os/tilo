@@ -8,6 +8,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use ui::num::u32_of_usize;
 
 use ui::icons::Icon;
 use ui::text_render::TextKind;
@@ -95,10 +96,6 @@ fn place_id(place: Place) -> &'static str {
     place.as_str()
 }
 
-fn count(n: usize) -> u32 {
-    u32::try_from(n).unwrap_or(u32::MAX)
-}
-
 /// The sections of the engine, with what each holds. An engine that did
 /// not answer holds nothing anyone counted, so its sections show no count.
 pub(crate) fn section_list(
@@ -111,7 +108,11 @@ pub(crate) fn section_list(
         let item = NavItem::new(place_id(place), place.label())
             .icon(icon)
             .without_actions();
-        if counted { item.count(count(n)) } else { item }
+        if counted {
+            item.count(u32_of_usize(n))
+        } else {
+            item
+        }
     };
     let items = vec![
         item(Place::Containers, Icon::Box, engine.containers.len()),

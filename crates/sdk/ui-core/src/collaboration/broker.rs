@@ -1780,7 +1780,12 @@ impl BridgeState {
     ) {
         // Latch before withdrawing health or dropping any queued receipt sender.
         self.record_publication_failure(DocumentPublicationError::Failed(direction.into()));
-        if self.healthy.swap(false, Ordering::AcqRel) {
+        self.document_reads.close();
+        let was_healthy = self.healthy.swap(false, Ordering::AcqRel);
+        // Re-notify after health publication: a construction waiter may have
+        // consumed the readiness withdrawal while health was still closing.
+        self.document_reads.progressed();
+        if was_healthy {
             if let Some((invocation_id, error)) = rejected {
                 let (rpc_kind, rpc_error, rpc_error_truncated) = bounded_rpc_diagnostic(error);
                 tracing::error!(
@@ -2346,10 +2351,10 @@ impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
         )
     }
     fn device_certificate(&self) -> Option<&[u8]> {
-        runtime_identity::BrokerSigningIdentity::device_certificate(self)
+        self.metadata().device_certificate()
     }
     fn signing_public_key(&self) -> [u8; 32] {
-        runtime_identity::BrokerSigningIdentity::signing_public_key(self)
+        self.metadata().signing_public_key()
     }
     fn sign_collaboration_join(
         &self,
@@ -2519,6 +2524,7 @@ async fn sdk_join_identity_from_host(
     cluster_id: Uuid,
 ) -> Result<LocalSdkJoinIdentity, runtime_portal::NotAvailable> {
     let device_certificate = identity
+        .metadata()
         .device_certificate()
         .map(<[u8]>::to_vec)
         .ok_or_else(|| {
@@ -2700,35 +2706,6 @@ impl CollaborationManager {
         )
     }
 
-    /// Connect using a one-shot handoff supplied by the platform host.
-    ///
-    /// This shared SDK seam is for host bootstrap, not app identity selection.
-    /// It reuses certified joining and waits for the existing primary-route
-    /// acknowledgement. The route given to the factory is the exact Hello
-    /// route. Failure consumes the connector and never falls back to Env/Fd,
-    /// local keys or a harness signer. Reconnecting needs a fresh host handoff.
-    ///
-    /// # Errors
-    /// Returns the host/identity/transport error or primary-route refusal.
-    pub async fn for_route_host(
-        connector: HostSessionConnector,
-        app_id: String,
-        cluster_id: Uuid,
-        record: Option<String>,
-        handle: Option<String>,
-    ) -> Result<Self, runtime_portal::NotAvailable> {
-        tokio::task::spawn_blocking(move || {
-            Self::connect_route_host_blocking(connector, app_id, cluster_id, record, handle)
-        })
-        .await
-        .map_err(|error| {
-            runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::other(format!(
-                "host collaboration bootstrap worker failed: {error}"
-            )))
-        })?
-        .map(Self::from_connected)
-    }
-
     /// Synchronous form for deterministic unit harnesses. Production callers
     /// only receive the async entry point above, so identity and
     /// primary-route deadlines do not stall the application's owner/frame
@@ -2741,18 +2718,6 @@ impl CollaborationManager {
         record: Option<String>,
         handle: Option<String>,
     ) -> Result<Self, runtime_portal::NotAvailable> {
-        Self::connect_route_host_blocking(connector, app_id, cluster_id, record, handle)
-            .map(Self::from_connected)
-    }
-
-    /// Synchronous implementation run inside the background bootstrap task.
-    fn connect_route_host_blocking(
-        connector: HostSessionConnector,
-        app_id: impl Into<String>,
-        cluster_id: Uuid,
-        record: Option<String>,
-        handle: Option<String>,
-    ) -> Result<ConnectedBroker, runtime_portal::NotAvailable> {
         let app_id = app_id.into();
         let route = RouteSpec {
             app_id: app_id.clone(),
@@ -2768,6 +2733,7 @@ impl CollaborationManager {
             None,
             "person",
         )
+        .map(Self::from_connected)
     }
 
     pub(crate) fn switch_native_record(
@@ -2998,6 +2964,9 @@ impl CollaborationManager {
             cluster_id,
             record,
         } = route;
+        // The connect's phases, so a launch's startup file splits it from the
+        // rest of the time before `app-prepare`.
+        tilo_startup_metrics::startup_mark("collab-connect");
         let mut identity = match endpoint_identity {
             Some(identity) => Some(identity),
             None if matches!(&source, SdkConnectSource::Host(_, _)) => None,
@@ -3013,7 +2982,9 @@ impl CollaborationManager {
         if let Some(identity) = &mut identity {
             identity.participant_kind = participant_kind;
         }
+        tilo_startup_metrics::startup_mark("collab-identity-ready");
         let mut transport = Self::spawn_sdk(source, identity)?;
+        tilo_startup_metrics::startup_mark("collab-transport-ready");
         let mut primary_route = PrimaryRouteState::default();
         primary_route.announce(RouteSpec {
             app_id: app_id.clone(),
@@ -3028,6 +2999,7 @@ impl CollaborationManager {
             handle,
         }));
         await_primary_route_on(&mut transport, &mut primary_route)?;
+        tilo_startup_metrics::startup_mark("collab-primary-ready");
         Ok(ConnectedBroker {
             transport,
             primary_route,
@@ -3889,15 +3861,25 @@ async fn drive_shovel(
                     Err(_) => Err(PRIMARY_ROUTE_TIMED_OUT.to_string()),
                 };
                 primary = primary_result.is_ok().then_some(key);
+                // The startup file splits the owner's wait for `PrimaryReady`.
+                tilo_startup_metrics::startup_mark("collab-route-joined");
                 if let Some(route) = primary.as_ref().and_then(|key| routes.get(key)) {
-                    settings_link = link_settings(&route.channel, &inbound_tx).await;
+                    // Both capabilities are independent: asking for them
+                    // together costs the owner's wait one broker round trip.
+                    let (settings, live_activity) = tokio::join!(
+                        link_settings(&route.channel, &inbound_tx),
+                        link_live_activity(&route.channel, &inbound_tx),
+                    );
+                    settings_link = settings;
                     if let Some(link) = settings_link.as_ref() {
                         link.flush(&inbound_tx).await;
                     }
-                    live_activity_link = link_live_activity(&route.channel, &inbound_tx).await;
+                    tilo_startup_metrics::startup_mark("collab-settings-linked");
+                    live_activity_link = live_activity;
                     if let Some(link) = live_activity_link.as_ref() {
                         link.flush(true).await;
                     }
+                    tilo_startup_metrics::startup_mark("collab-activity-linked");
                 }
             }
             SdkCommand::Primary(request) => {
@@ -4279,7 +4261,7 @@ async fn ensure_sdk_route(
     }
     // The streams are independent: subscribing to them together costs the
     // join one broker round trip instead of one per stream.
-    let ((), (), (), (), (), (), presence) = tokio::join!(
+    let ((), (), (), (), (), (), (), presence) = tokio::join!(
         async {
             if !committed {
                 spawn_op_stream(
@@ -4303,9 +4285,9 @@ async fn ensure_sdk_route(
                 spawn_task_run_stream(&channel, inbound_tx).await;
             }
         },
+        spawn_content_stream(&channel, spec.clone(), inbound_tx),
         spawn_presence_stream(&channel, inbound_tx),
     );
-    spawn_content_stream(&channel, spec.clone(), inbound_tx).await;
     // Subscriptions are installed first so an existing holder's response
     // cannot race ahead of our document stream.
     if !committed && let Err(error) = channel.request_document_snapshot().await {
@@ -5216,7 +5198,7 @@ async fn try_send_frame(
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key)) => {
             key.verifying_key().to_bytes()
         }
-        LocalSdkDocumentSigner::Host(identity) => identity.signing_public_key(),
+        LocalSdkDocumentSigner::Host(identity) => identity.metadata().signing_public_key(),
     };
     let author = collab_types::Ed25519PublicKey::from_bytes(author);
     let attestation =
@@ -6814,12 +6796,10 @@ mod tests {
     use std::rc::Rc;
 
     use capnp::capability::Promise;
-    use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
     #[cfg(unix)]
     use tokio::net::UnixStream as TokioUnixStream;
     #[cfg(unix)]
     use tokio::task::LocalSet as TokioLocalSet;
-    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
     use runtime_collab::PresencePayload as SdkPayload;
     use runtime_collab::raw::{
@@ -6849,6 +6829,14 @@ mod tests {
         committed_private_binding: Option<u64>,
         committed_ack_failure: Option<String>,
         committed_ack_reply: Option<runtime_collab::committed_document::Reply>,
+        /// Refuse every committed Open, as a broker does for a revoked peer.
+        committed_open_failure: Option<String>,
+        /// Hold each next `join_channel` reply until its gate opens, as a
+        /// starved broker does.
+        join_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
+        /// Refuse every ungated `join_channel`, as a broker does for a
+        /// revoked peer.
+        join_refusal: Option<String>,
         committed_reads: Vec<runtime_collab::committed_document::Request>,
         media_commands: Vec<runtime_collab::native_media::Request>,
         media_active_fixture: bool,
@@ -7415,6 +7403,11 @@ mod tests {
                     .map_err(|error| capnp::Error::failed(error.into()))?;
                 let mut captures = self.captures.lock().unwrap();
                 captures.committed_reads.push(request.clone());
+                if matches!(request, Request::Open { .. })
+                    && let Some(error) = captures.committed_open_failure.clone()
+                {
+                    return Err(capnp::Error::failed(error));
+                }
                 let current_revision = captures.committed_revision.unwrap_or([7; 32]);
                 let reply = match captures.committed_history_fixture.as_ref() {
                     None => Reply::Legacy,
@@ -7735,6 +7728,12 @@ mod tests {
             let mut captures = self.captures.lock().unwrap();
             captures.joined.push((channel_id, identity));
             captures.joined_record_kinds.push(record_kind);
+            let gate = captures.join_gates.pop_front();
+            if gate.is_none()
+                && let Some(error) = captures.join_refusal.clone()
+            {
+                return Promise::err(capnp::Error::failed(error));
+            }
             drop(captures);
 
             let chan = FakeChannel {
@@ -7745,8 +7744,16 @@ mod tests {
                 scrollback_response: Rc::new(RefCell::new(self.scrollback_response.clone())),
             };
             let client: channel_handle::Client = capnp_rpc::new_client(chan);
-            results.get().set_handle(client);
-            Promise::ok(())
+            let Some(gate) = gate else {
+                results.get().set_handle(client);
+                return Promise::ok(());
+            };
+            Promise::from_future(async move {
+                gate.await
+                    .map_err(|_| capnp::Error::failed("fixture join gate dropped".into()))?;
+                results.get().set_handle(client);
+                Ok(())
+            })
         }
     }
 
@@ -7980,14 +7987,7 @@ mod tests {
                 };
                 let (client, server) = tokio::io::duplex(64 * 1024);
                 let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
-                let (r, w) = tokio::io::split(server);
-                let network = Box::new(twoparty::VatNetwork::new(
-                    r.compat(),
-                    w.compat_write(),
-                    rpc_twoparty_capnp::Side::Server,
-                    capnp::message::ReaderOptions::default(),
-                ));
-                let rpc = RpcSystem::new(network, Some(broker_client.client));
+                let rpc = runtime_portal::serve_connected_io(server, broker_client.client);
                 tokio::task::spawn_local(async move {
                     let _ = rpc.await;
                 });
@@ -8338,14 +8338,8 @@ mod tests {
                             stopped,
                         };
                         let broker_client: collab_service::Client = capnp_rpc::new_client(gate);
-                        let (r, w) = tokio::io::split(server);
-                        let network = Box::new(twoparty::VatNetwork::new(
-                            r.compat(),
-                            w.compat_write(),
-                            rpc_twoparty_capnp::Side::Server,
-                            capnp::message::ReaderOptions::default(),
-                        ));
-                        let _ = RpcSystem::new(network, Some(broker_client.client)).await;
+                        let _ =
+                            runtime_portal::serve_connected_io(server, broker_client.client).await;
                     });
                 })
                 .unwrap();
@@ -8376,14 +8370,8 @@ mod tests {
                     let tokio_stream =
                         TokioUnixStream::from_std(server_side).expect("wrap server side");
                     let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
-                    let (r, w) = tokio_stream.into_split();
-                    let network = Box::new(twoparty::VatNetwork::new(
-                        r.compat(),
-                        w.compat_write(),
-                        rpc_twoparty_capnp::Side::Server,
-                        capnp::message::ReaderOptions::default(),
-                    ));
-                    let rpc = RpcSystem::new(network, Some(broker_client.client));
+                    let rpc =
+                        runtime_portal::serve_connected_io(tokio_stream, broker_client.client);
                     let _ = rpc.await;
                 });
             })

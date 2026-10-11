@@ -139,7 +139,61 @@ env:
   TILO_RECHUNK: ${{ vars.TILO_RECHUNK || '1' }}
 
 jobs:
+  # A dispatch builds main's head, and `plan` accepts only a published app
+  # collection with that commit's app inputs. Release / apps publishes it about
+  # 40 minutes after the commit lands, and main has usually moved on by then,
+  # so a dispatch made once the collection exists finds a head it does not
+  # match. Dispatch while Release / apps is publishing for the head instead:
+  # this job waits for every Release / apps main run, pushed or dispatched,
+  # that was queued or running when the dispatch was made (on a quiet main,
+  # dispatch a full Release / apps publication first), so `plan`, which
+  # reads the collection variables when it starts, sees what that run
+  # published. It decides nothing; `plan` still refuses a collection whose
+  # app inputs differ.
+  await-app-collection:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.app_collection_source == '' && github.event.inputs.signed_development_board != 'true'
+    runs-on: runner-quality
+    timeout-minutes: 110
+    steps:
+      - name: Checkout app input policy
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Wait for the Release / apps run publishing this commit's apps
+        env:
+          COLLECTION_SOURCE: ${{ vars.TILO_APP_COLLECTION_SOURCE }}
+          TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ $COLLECTION_SOURCE =~ ^[0-9a-f]{40}$ ]] \
+             && git fetch --quiet --no-tags --depth=1 origin "$COLLECTION_SOURCE" \
+             && bash tools/ci/check_app_collection_source.sh "$COLLECTION_SOURCE" "$GITHUB_SHA" >/dev/null 2>&1; then
+            echo "::notice::the published collection of $COLLECTION_SOURCE already has this commit's app inputs"
+            exit 0
+          fi
+          api="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/actions/runs"
+          get() { curl --fail --silent --show-error --retry 3 --header "Authorization: token $TOKEN" "$1"; }
+          # Runs created before this one are for this commit or its ancestors.
+          since=$(get "$api/$GITHUB_RUN_ID" | jq -er '.created') || since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          deadline=$((SECONDS + 100 * 60))
+          while :; do
+            publishing=$(get "$api?workflow_id=release-apps.yml&limit=50" | jq -r --arg since "$since" \
+              '[.workflow_runs[] | select(.prettyref == "main" and .created <= $since
+                 and (.status == "running" or .status == "waiting" or .status == "blocked"))
+               | .index_in_repo] | map(tostring) | join(" ")') || publishing=unknown
+            [[ -n $publishing ]] || break
+            if (( SECONDS >= deadline )); then
+              echo "::warning::Release / apps run(s) $publishing still publishing; planning with the current collection"
+              break
+            fi
+            echo "waiting for Release / apps run(s) $publishing"
+            sleep 60
+          done
+
   plan:
+    needs: await-app-collection
+    # Build / OS dev and every event but a main dispatch skip the wait.
+    if: ${{ !cancelled() && needs.await-app-collection.result != 'failure' }}
     # Orchestration only: it must not queue behind the test lanes.
     runs-on: runner-quality
     timeout-minutes: 15
@@ -1502,6 +1556,13 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          # Signs the apps a dev image compiles itself, the same identity in
+          # every build, so unchanged apps keep their bytes and paths and an
+          # update carries only the apps that changed. It is in no
+          # trust list; a publication takes the released collection instead
+          # and never receives it. The runtime bundles' keys, which the
+          # launcher trusts, stay minted per build.
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1541,6 +1602,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           # The toolchain is the builder stage up to the workspace sources. A
@@ -1629,6 +1691,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1668,6 +1731,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           # No layer cache: the compile goes through the compiler cache, and its
@@ -1751,6 +1815,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1790,6 +1855,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
@@ -1808,6 +1874,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1844,6 +1911,7 @@ jobs:
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-tools-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
@@ -1869,6 +1937,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1916,6 +1985,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           # The compile results are this builder's own; the rootfs and the
@@ -1944,6 +2014,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1982,6 +2053,7 @@ jobs:
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-to: |
@@ -2505,6 +2577,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          DEV_APP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish != 'true' && secrets.DEV_APP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -2550,6 +2623,7 @@ jobs:
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            app_publisher_identity=DEV_APP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
 
@@ -2968,6 +3042,8 @@ jobs:
           # The call card starts the workspace's call through Chat's own
           # action: Chat opens already in the call, not on a Call button.
           ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh card "Start a call" Chat --expect "Leave call"'
+          # The Tasks card opens Calendar through its own read-only view action.
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh card Tasks Calendar --expect "Task list"'
           # Browser renders a page through its Chromium engine runtime: Browser
           # opens through the app palette's action, the page comes from a
           # server in the guest, the address arrives on the real keyboard, and

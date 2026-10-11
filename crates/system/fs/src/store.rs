@@ -28,11 +28,12 @@ use std::sync::{
 use std::time::Duration;
 
 use anyhow::Result;
+use bao_tree::io::mixed::EncodedItem;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use iroh_blobs::api::Store;
-#[cfg(feature = "filesystem")]
 use iroh_blobs::api::blobs::BlobStatus;
+use iroh_blobs::protocol::{ChunkRanges, ChunkRangesExt as _};
 use iroh_blobs::provider::events::EventSender;
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::store::mem::MemStore;
@@ -487,6 +488,64 @@ impl ContentStore {
             }
             Err(_) => self.local_chunk(hash).await,
         }
+    }
+
+    /// Read a clipped range and the whole length of a locally complete blob.
+    /// Loose data is BAO-verified over the requested chunk groups only; an
+    /// empty range needs just its status. Existing cached bytes and bounded,
+    /// hash-checked file chunks remain readable. Never fills the blob cache.
+    pub async fn read_blob_range(
+        &self,
+        hash: Hash,
+        range: std::ops::Range<u64>,
+    ) -> Option<(Vec<u8>, u64)> {
+        if let Some(bytes) = self.cache.get(&hash) {
+            let mut out = Vec::new();
+            content::copy_part(&mut out, &bytes, 0, range.start, range.end);
+            return Some((out, bytes.len() as u64));
+        }
+        let Ok(BlobStatus::Complete { size }) = self.store().blobs().status(hash).await else {
+            let bytes = self.local_chunk(hash).await?;
+            let mut out = Vec::new();
+            content::copy_part(&mut out, &bytes, 0, range.start, range.end);
+            return Some((out, bytes.len() as u64));
+        };
+        let end = range.end.min(size);
+        let start = range.start.min(end);
+        if start == end {
+            return Some((Vec::new(), size));
+        }
+        let requested = end.checked_sub(start)?;
+        let mut out = Vec::with_capacity(usize::try_from(requested).ok()?);
+        let mut items = self
+            .store()
+            .blobs()
+            .export_bao(hash, ChunkRanges::bytes(start..end))
+            .stream();
+        while let Some(item) = items.next().await {
+            match item {
+                EncodedItem::Leaf(leaf) => {
+                    content::copy_part(&mut out, &leaf.data, leaf.offset, start, end);
+                }
+                EncodedItem::Size(actual) if actual != size => return None,
+                EncodedItem::Parent(_) | EncodedItem::Size(_) => {}
+                EncodedItem::Done => {
+                    return (out.len() as u64 == requested).then_some((out, size));
+                }
+                EncodedItem::Error(_) => return None,
+            }
+        }
+        None
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_cached(&self, hash: Hash) -> bool {
+        self.cache.contains_key(&hash)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forget_cached(&self, hash: Hash) {
+        self.cache.invalidate(&hash);
     }
 
     /// Persist + cache bytes that were fetched and verified from a peer.

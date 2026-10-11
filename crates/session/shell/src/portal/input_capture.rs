@@ -218,6 +218,11 @@ struct CaptureSession {
     cursor: (f64, f64),
 }
 impl CaptureSession {
+    /// Clipboard was requested before `Start` and the capture is running.
+    fn clipboard_live(&self) -> bool {
+        self.started && self.clipboard_requested && self.active
+    }
+
     fn new(owner: String, app_id: String, caller: PortalCaller) -> Self {
         Self {
             owner,
@@ -437,10 +442,10 @@ impl InputCaptureBackend {
     }
 }
 
-impl InputCaptureSessionHandle {
-    fn request_clipboard(&self, key: &str, owner: &str) -> bool {
+impl super::clipboard::ClipboardSessionProvider for InputCaptureSessionHandle {
+    fn request_clipboard(&self, session: &str, owner: &str) -> bool {
         self.state.lock().ok().is_some_and(|mut state| {
-            state.sessions.get_mut(key).is_some_and(|session| {
+            state.sessions.get_mut(session).is_some_and(|session| {
                 if session.owner != owner || session.started {
                     return false;
                 }
@@ -449,22 +454,10 @@ impl InputCaptureSessionHandle {
             })
         })
     }
-    fn clipboard_active(&self, key: &str, owner: &str) -> bool {
-        self.state.lock().ok().is_some_and(|state| {
-            state.sessions.get(key).is_some_and(|session| {
-                session.owner == owner
-                    && session.started
-                    && session.clipboard_requested
-                    && session.active
-            })
-        })
-    }
-    fn clipboard_live(&self, key: &str) -> bool {
-        self.state.lock().ok().is_some_and(|state| {
-            state.sessions.get(key).is_some_and(|session| {
-                session.started && session.clipboard_requested && session.active
-            })
-        })
+    fn clipboard_owner(&self, session: &str) -> Option<String> {
+        let state = self.state.lock().ok()?;
+        let session = state.sessions.get(session)?;
+        session.clipboard_live().then(|| session.owner.clone())
     }
     fn clipboard_sessions(&self) -> Vec<String> {
         self.state.lock().map_or_else(
@@ -473,28 +466,11 @@ impl InputCaptureSessionHandle {
                 state
                     .sessions
                     .iter()
-                    .filter(|(_, session)| {
-                        session.started && session.clipboard_requested && session.active
-                    })
+                    .filter(|(_, session)| session.clipboard_live())
                     .map(|(path, _)| path.clone())
                     .collect()
             },
         )
-    }
-}
-
-impl super::clipboard::ClipboardSessionProvider for InputCaptureSessionHandle {
-    fn request_clipboard(&self, session: &str, owner: &str) -> bool {
-        Self::request_clipboard(self, session, owner)
-    }
-    fn clipboard_active(&self, session: &str, owner: &str) -> bool {
-        Self::clipboard_active(self, session, owner)
-    }
-    fn clipboard_live(&self, session: &str) -> bool {
-        Self::clipboard_live(self, session)
-    }
-    fn clipboard_sessions(&self) -> Vec<String> {
-        Self::clipboard_sessions(self)
     }
 }
 
@@ -1402,6 +1378,7 @@ fn send_eis_input(state: &mut EisState, input: CapturedInput) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::portal::clipboard::ClipboardSessionProvider as _;
 
     #[test]
     fn input_capture_persistence_and_clipboard_are_bound_to_active_capture() {
@@ -1431,15 +1408,14 @@ mod tests {
                 state: handle.state.clone(),
             };
             assert!(provider.request_clipboard(&session, owner));
-            assert!(!provider.clipboard_active(&session, owner));
+            assert_eq!(provider.clipboard_owner(&session), None);
             {
                 let mut state = handle.state.lock().unwrap();
                 let capture = state.sessions.get_mut(&session).unwrap();
                 capture.started = true;
                 capture.active = true;
             }
-            assert!(provider.clipboard_active(&session, owner));
-            assert!(provider.clipboard_live(&session));
+            assert_eq!(provider.clipboard_owner(&session).as_deref(), Some(owner));
             // v2 only permits the request before Start, so a capture cannot add
             // clipboard access after the user has already approved it.
             assert!(!provider.request_clipboard(&session, owner));

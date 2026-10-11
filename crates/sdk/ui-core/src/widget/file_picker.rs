@@ -2096,19 +2096,14 @@ impl Widget for FilePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        matches!(action, crate::a11y::Action::Activate) && self.activate_focus()
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
+        if key_path.is_empty() {
+            return matches!(action, crate::a11y::Action::Activate) && self.activate_focus();
+        }
+
         use crate::a11y::{Action, hash_key};
         if self.replace_prompt.is_some() {
             let control = match key_path {
@@ -4196,7 +4191,7 @@ mod tests {
             let mut picker = save_picker(&root, "alpha.txt");
             let mut doc = AutoCommit::new();
             let path = automerge::ROOT;
-            assert!(Widget::perform_action_at(
+            assert!(Widget::perform_action(
                 &mut picker,
                 &Action::Activate,
                 &[PickerFocus::Confirm.id()],
@@ -4205,7 +4200,7 @@ mod tests {
             ));
             assert!(picker.replace_prompt().is_some());
             assert!(
-                !Widget::perform_action_at(
+                !Widget::perform_action(
                     &mut picker,
                     &Action::Activate,
                     &[PickerFocus::Confirm.id()],
@@ -4216,7 +4211,7 @@ mod tests {
             );
             let prompt = prompt_node(&picker);
             let replace = prompt.children[1].key.expect("Replace key");
-            assert!(Widget::perform_action_at(
+            assert!(Widget::perform_action(
                 &mut picker,
                 &Action::Activate,
                 &[prompt.key.expect("prompt key"), replace],

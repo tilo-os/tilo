@@ -5364,11 +5364,11 @@ mod tests {
                 .iter()
                 .find(|a| a.id == "crop")
                 .unwrap();
-            let tilo_actions::ActionInput::Prompted { build, .. } = &crop.input else {
-                panic!("crop collects an argument");
-            };
+            let built = crop
+                .build_text("0,0,0.5,0.5")
+                .expect("crop collects an argument");
             ActionRegistry::with(register)
-                .decode(&build("0,0,0.5,0.5"))
+                .decode(&built)
                 .unwrap()
                 .apply(&mut doc)
                 .unwrap();
@@ -5812,11 +5812,11 @@ mod tests {
                 .iter()
                 .find(|a| a.id == "crop")
                 .expect("crop is published");
-            let tilo_actions::ActionInput::Prompted { build, .. } = &crop.input else {
-                panic!("crop collects an argument");
-            };
+            let built = crop
+                .build_text("nonsense")
+                .expect("crop collects an argument");
             let registry = ActionRegistry::with(register);
-            assert!(registry.decode(&build("nonsense")).is_err());
+            assert!(registry.decode(&built).is_err());
             let e = first_edits(&doc);
             assert!(
                 e.crop.is_full(),
