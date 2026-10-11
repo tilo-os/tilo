@@ -112,6 +112,17 @@ required = true
 type = "string"
 
 [[resources.verbs]]
+id = "draft-shortcut"
+kind = "undoable"
+label = "Import a shortcut as an unsaved draft for review. Never arms a trigger"
+
+[[resources.verbs.params]]
+name = "shortcut"
+required = true
+
+[resources.verbs.params.schema]
+
+[[resources.verbs]]
 id = "open-shortcut"
 kind = "undoable"
 label = "Open a saved shortcut as a draft to change it"
@@ -121,6 +132,39 @@ name = "shortcut"
 required = true
 
 [resources.verbs.params.schema]
+
+[[resources.verbs]]
+id = "set-schedule"
+kind = "undoable"
+label = "Choose or disable a local morning refresh schedule in this unsaved draft"
+
+[[resources.verbs.params]]
+name = "draft"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "enabled"
+required = true
+
+[resources.verbs.params.schema]
+type = "boolean"
+
+[[resources.verbs.params]]
+name = "hour"
+required = true
+
+[resources.verbs.params.schema]
+type = "integer"
+
+[[resources.verbs.params]]
+name = "minute"
+required = true
+
+[resources.verbs.params.schema]
+type = "integer"
 
 [[resources.verbs]]
 id = "discard"

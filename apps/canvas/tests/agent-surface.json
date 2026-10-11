@@ -200,7 +200,7 @@
                         "align",
                         "set-reference",
                         "import-svg",
-                        "open",
+                        "open-picture",
                         "new-artwork",
                         "open-artwork",
                         "select",
@@ -368,7 +368,7 @@
   },
   {
     "resource": "canvas.artwork",
-    "action": "diff",
+    "action": "compare-versions",
     "resource_kind": "canvas.artwork",
     "label": "Compare versions",
     "description": "Compare versions. Compare two versions: marks and layers added, removed or changed by id (with what changed: stacking, shape, fill, …), the changed region, and with look a before|after picture of it.",
@@ -404,6 +404,28 @@
             "null"
           ]
         }
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "diff",
+    "resource_kind": "canvas.artwork",
+    "label": "Compare versions",
+    "description": "List the items that differ between two versions.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "from",
+        "ty": "text",
+        "required": true,
+        "description": "A change id from history, or a checkpoint name"
+      },
+      {
+        "name": "to",
+        "ty": "text",
+        "description": "The later version (default now)",
+        "nullable": true
       }
     ]
   },
@@ -2099,7 +2121,7 @@
                       "align",
                       "set-reference",
                       "import-svg",
-                      "open",
+                      "open-picture",
                       "new-artwork",
                       "open-artwork",
                       "select",
@@ -2244,7 +2266,7 @@
                                       "align",
                                       "set-reference",
                                       "import-svg",
-                                      "open",
+                                      "open-picture",
                                       "new-artwork",
                                       "open-artwork",
                                       "select",
@@ -2665,7 +2687,26 @@
   },
   {
     "resource": "canvas.artwork",
-    "action": "open",
+    "action": "open-artwork",
+    "resource_kind": "canvas.artwork",
+    "label": "Open artwork",
+    "description": "Replace the artwork with a saved .artwork file (path, content address or JSON), one undo away.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "file",
+        "ty": "text",
+        "required": true,
+        "description": "A `.artwork` path, a content address, or the file's JSON.",
+        "schema": {
+          "type": "string"
+        }
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "open-picture",
     "resource_kind": "canvas.artwork",
     "label": "Open picture",
     "description": "Open a PNG, JPEG or WebP as a new artwork the size of the picture (a unit per pixel), the picture its first mark, `picture`. Replaces what the artwork held (undo brings it back).",
@@ -2689,25 +2730,6 @@
             "string",
             "null"
           ]
-        }
-      }
-    ]
-  },
-  {
-    "resource": "canvas.artwork",
-    "action": "open-artwork",
-    "resource_kind": "canvas.artwork",
-    "label": "Open artwork",
-    "description": "Replace the artwork with a saved .artwork file (path, content address or JSON), one undo away.",
-    "operation": "Document",
-    "params": [
-      {
-        "name": "file",
-        "ty": "text",
-        "required": true,
-        "description": "A `.artwork` path, a content address, or the file's JSON.",
-        "schema": {
-          "type": "string"
         }
       }
     ]

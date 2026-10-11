@@ -311,7 +311,7 @@ fn folders_keep_paint_order_and_round_trip_through_history_and_saved_artwork() {
         before.layers.iter().map(|l| &l.order).collect::<Vec<_>>()
     );
     let diff = app
-        .call("diff", json!({"from":"before folder"}))
+        .call("compare-versions", json!({"from":"before folder"}))
         .unwrap()
         .unwrap();
     assert_eq!(diff["layers"]["changed"]["hut"], json!(["group"]));

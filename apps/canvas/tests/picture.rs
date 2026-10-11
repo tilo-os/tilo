@@ -338,7 +338,8 @@ fn opening_a_picture_makes_a_new_artwork_of_it() {
         json!({"marks": [{"id": "old", "shape": {"kind": "rect", "x": 0, "y": 0, "width": 9, "height": 9}}]}),
     )
     .unwrap();
-    app.call("open", json!({"path": halves(320, 180)})).unwrap();
+    app.call("open-picture", json!({"path": halves(320, 180)}))
+        .unwrap();
     let art = app.state();
     assert_eq!((art.width, art.height), (320.0, 180.0));
     assert_eq!(art.layers.len(), 1);
@@ -373,7 +374,8 @@ fn the_artwork_is_cut_to_a_region_or_to_what_a_mark_shows() {
 #[test]
 fn exports_are_png_jpeg_or_webp_at_any_scale() {
     let mut app = TestApp::<App>::new().unwrap();
-    app.call("open", json!({"path": halves(400, 200)})).unwrap();
+    app.call("open-picture", json!({"path": halves(400, 200)}))
+        .unwrap();
     let art = app.state();
     let mut renderer = Renderer::default();
     renderer.pictures.read_from(app.content());
@@ -418,7 +420,8 @@ fn exports_are_png_jpeg_or_webp_at_any_scale() {
 #[test]
 fn exports_are_written_where_the_caller_names() {
     let mut app = TestApp::<App>::new().unwrap();
-    app.call("open", json!({"path": halves(40, 20)})).unwrap();
+    app.call("open-picture", json!({"path": halves(40, 20)}))
+        .unwrap();
     let dir = std::env::temp_dir().join(format!("canvas-export-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let jpeg = dir.join("halves.jpg");

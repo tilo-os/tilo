@@ -351,7 +351,7 @@ pub enum ViewOp {
     /// (with what changed: stacking, shape, fill, …), the changed region, and
     /// with look a before|after picture of it.
     #[effect(view, returns, idempotent)]
-    Diff {
+    CompareVersions {
         #[param(flatten)]
         diff: Diff,
     },
@@ -464,7 +464,7 @@ pub fn keep_picture_bytes(named: &str, bytes: &[u8]) -> Result<(String, (u32, u3
 /// Returns why the bytes are not a picture or cannot be kept.
 pub fn open_picture(name: &str, bytes: &[u8]) -> Result<Invoke<Artwork>, String> {
     let (src, _) = keep_picture_bytes(name, bytes)?;
-    Ok(Artwork::OPEN.with(crate::actions::Open {
+    Ok(Artwork::OPEN_PICTURE.with(crate::actions::Open {
         path: src,
         title: Some(
             std::path::Path::new(name)
@@ -621,7 +621,7 @@ mod prepare {
     }
 
     /// The picture is kept as content, with its size and its file's name.
-    pub(super) fn open(params: &mut artwork::Open) -> Result<(), String> {
+    pub(super) fn open(params: &mut artwork::OpenPicture) -> Result<(), String> {
         let open = &mut params.picture;
         let (src, _) = keep_picture(&open.path)?;
         if open.title.is_none() {
@@ -864,7 +864,10 @@ impl Artwork {
     /// unit per pixel), the picture its first mark, `picture`. Replaces what
     /// the artwork held (undo brings it back).
     #[action(prepare = prepare::open)]
-    pub fn open(&mut self, #[param(flatten)] picture: PictureToOpen) -> Result<(), Refusal> {
+    pub fn open_picture(
+        &mut self,
+        #[param(flatten)] picture: PictureToOpen,
+    ) -> Result<(), Refusal> {
         // The picture is named by its content, which every replica reads
         // from its own store.
         if ui::tilo_actions::content_hash(&picture.path).is_none() {

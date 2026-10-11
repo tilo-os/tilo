@@ -64,7 +64,10 @@ fn a_bad_passage_is_found_by_diff_and_undone_by_its_run() {
     );
 
     let diff = app
-        .call("diff", json!({"from": "before sky rework", "look": true}))
+        .call(
+            "compare-versions",
+            json!({"from": "before sky rework", "look": true}),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(ids(&diff["marks"]["added"]), ["blot"], "{diff}");
@@ -95,7 +98,7 @@ fn a_bad_passage_is_found_by_diff_and_undone_by_its_run() {
     assert_eq!(fill(&app, "sky").as_deref(), Some("#6fa8dc"));
     assert!(fill(&app, "blot").is_none());
     let same = app
-        .call("diff", json!({"from": "before sky rework"}))
+        .call("compare-versions", json!({"from": "before sky rework"}))
         .unwrap()
         .unwrap();
     assert_eq!(same["same"], true, "{same}");

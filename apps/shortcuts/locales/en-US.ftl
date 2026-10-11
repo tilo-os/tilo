@@ -55,6 +55,8 @@ shortcuts-open-drafted = Open as a draft
 ## History
 
 shortcuts-draft-name = Renamed the shortcut { $item }
+shortcuts-draft-shortcut = Started a shortcut draft from a suggestion
+shortcuts-set-schedule = Changed the daily schedule of { $item }
 shortcuts-draft-output = Changed what { $item } reports back
 shortcuts-new-draft = Started the shortcut { $name }
 shortcuts-open-shortcut = Opened a saved shortcut to change it

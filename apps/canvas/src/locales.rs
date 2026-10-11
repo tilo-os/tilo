@@ -335,9 +335,9 @@ pub mod keys {
     pub const CANVAS_NEW_TAB_HINT: LabelKey = LabelKey::new("canvas-new-tab-hint");
     pub const CANVAS_OBJECTS: LabelKey = LabelKey::new("canvas-objects");
     pub const CANVAS_OPACITY: LabelKey = LabelKey::new("canvas-opacity");
-    pub const CANVAS_OPEN: LabelKey = LabelKey::new("canvas-open");
     pub const CANVAS_OPEN_ARTWORK: LabelKey = LabelKey::new("canvas-open-artwork");
     pub const CANVAS_OPEN_FAILED: LabelKey = LabelKey::new("canvas-open-failed");
+    pub const CANVAS_OPEN_PICTURE: LabelKey = LabelKey::new("canvas-open-picture");
     pub const CANVAS_OPEN_TITLE: LabelKey = LabelKey::new("canvas-open-title");
     pub const CANVAS_OPENED: LabelKey = LabelKey::new("canvas-opened");
     pub const CANVAS_PAINT: LabelKey = LabelKey::new("canvas-paint");

@@ -2150,7 +2150,7 @@ type = "number"
 
 [[resources.verbs]]
 description = "Open a PNG, JPEG or WebP as a new artwork the size of the picture (a unit per pixel), the picture its first mark, `picture`. Replaces what the artwork held (undo brings it back)."
-id = "open"
+id = "open-picture"
 kind = "undoable"
 label = "Open picture"
 

@@ -2436,7 +2436,7 @@ impl CanvasSurface {
                 &art,
                 export,
             ))),
-            ViewOp::Diff { diff } => {
+            ViewOp::CompareVersions { diff } => {
                 let versions = Self::versions(cx, &art, diff)?;
                 let look = diff.look.unwrap_or(false);
                 picture(view_ops::diff(

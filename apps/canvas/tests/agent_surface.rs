@@ -70,7 +70,7 @@ fn the_agent_surface_matches_its_golden_file_and_budget() {
         "media",
         "apply",
         "history",
-        "diff",
+        "compare-versions",
         "undo",
         "redo",
         "restore",

@@ -587,7 +587,7 @@ mod tests {
         image::RgbaImage::new(10, 10)
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        let open = Artwork::OPEN.with(crate::actions::Open {
+        let open = Artwork::OPEN_PICTURE.with(crate::actions::Open {
             path: format!(
                 "data:image/png;base64,{}",
                 base64::engine::general_purpose::STANDARD.encode(&png)
