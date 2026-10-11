@@ -6736,7 +6736,7 @@ mod tests {
         use crate::compositor::cursor::{CursorBitmap, CursorShape, PointerImage};
         for scale in [1.0, 1.5, 2.0] {
             let client =
-                CursorBitmap::from_client(&vec![255; 32 * 32 * 4], 32, 32, (4, 6), 2, scale)
+                CursorBitmap::from_client(&vec![255; 32 * 32 * 4], 32, 32, (4, 6), 2.0, scale)
                     .expect("a valid client cursor buffer");
             let expected = (
                 i32::try_from(client.hotspot.0).unwrap(),

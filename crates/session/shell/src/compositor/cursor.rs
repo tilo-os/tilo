@@ -268,29 +268,32 @@ impl CursorBitmap {
     }
 
     /// Convert a client's cursor buffer (premultiplied RGBA, as `wl_shm`
-    /// ARGB8888 is) to output pixels. The buffer is `buffer_scale` times its
-    /// logical size and the hotspot is surface-local logical coordinates;
-    /// both are resampled to `output_scale` and bounded to the cursor plane,
-    /// preserving the aspect ratio. `None` for an empty or truncated buffer.
+    /// ARGB8888 is) to output pixels. The buffer holds `density` pixels per
+    /// logical pixel (its buffer scale, or the ratio its viewport sets) and
+    /// the hotspot is surface-local logical coordinates; both are resampled
+    /// to `output_scale` and bounded to the cursor plane, preserving the
+    /// aspect ratio. `None` for an empty or truncated buffer.
     pub fn from_client(
         rgba: &[u8],
         width: u32,
         height: u32,
         hotspot: (i32, i32),
-        buffer_scale: i32,
+        density: f64,
         output_scale: f64,
     ) -> Option<Self> {
         let expected = usize::try_from(width.checked_mul(height)?.checked_mul(4)?).ok()?;
         if width == 0 || height == 0 || rgba.len() < expected {
             return None;
         }
-        let buffer_scale = f64::from(buffer_scale.max(1));
-        let output_scale = if output_scale.is_finite() && output_scale > 0.0 {
-            output_scale
-        } else {
-            1.0
+        let positive = |value: f64| {
+            if value.is_finite() && value > 0.0 {
+                value
+            } else {
+                1.0
+            }
         };
-        let mut factor = output_scale / buffer_scale;
+        let (density, output_scale) = (positive(density), positive(output_scale));
+        let mut factor = output_scale / density;
         let longest = f64::from(width.max(height)) * factor;
         if longest > f64::from(PLANE_SIZE) {
             factor *= f64::from(PLANE_SIZE) / longest;
@@ -317,8 +320,10 @@ impl CursorBitmap {
                 pixel.copy_from_slice(&source);
             }
         }
+        // The hotspot goes where its pixel went: a cursor shrunk to fit the
+        // plane takes its hotspot along, or the drawn tip leaves the point.
         let scale_hotspot = |value: i32, limit: u32| {
-            let scaled = (f64::from(value.max(0)) * output_scale).round();
+            let scaled = (f64::from(value.max(0)) * density * factor).round();
             clamp_to_u32(scaled).min(limit.saturating_sub(1))
         };
         Some(Self {
@@ -1240,7 +1245,7 @@ mod tests {
     fn client_cursor_is_resampled_to_output_scale_with_its_hotspot() {
         // A 2x buffer for a 16-logical-pixel cursor, on a 1x output.
         let rgba: Vec<u8> = (0..32 * 32).flat_map(|_| [10, 20, 30, 255]).collect();
-        let cursor = CursorBitmap::from_client(&rgba, 32, 32, (4, 6), 2, 1.0).unwrap();
+        let cursor = CursorBitmap::from_client(&rgba, 32, 32, (4, 6), 2.0, 1.0).unwrap();
         assert_eq!((cursor.width, cursor.height), (16, 16));
         assert_eq!(cursor.hotspot, (4, 6));
         assert!(
@@ -1251,17 +1256,44 @@ mod tests {
         );
 
         // The same logical cursor on a 1.5x output keeps its logical size.
-        let cursor = CursorBitmap::from_client(&rgba, 32, 32, (4, 6), 2, 1.5).unwrap();
+        let cursor = CursorBitmap::from_client(&rgba, 32, 32, (4, 6), 2.0, 1.5).unwrap();
         assert_eq!((cursor.width, cursor.height), (24, 24));
         assert_eq!(cursor.hotspot, (6, 9));
 
         // Oversized cursors are bounded to the plane, aspect preserved.
         let wide: Vec<u8> = vec![255; 256 * 64 * 4];
-        let cursor = CursorBitmap::from_client(&wide, 256, 64, (300, 300), 1, 1.0).unwrap();
+        let cursor = CursorBitmap::from_client(&wide, 256, 64, (300, 300), 1.0, 1.0).unwrap();
         assert_eq!((cursor.width, cursor.height), (PLANE_SIZE, 16));
         assert!(cursor.hotspot.0 < cursor.width && cursor.hotspot.1 < cursor.height);
 
-        assert!(CursorBitmap::from_client(&rgba[..10], 32, 32, (0, 0), 1, 1.0).is_none());
+        assert!(CursorBitmap::from_client(&rgba[..10], 32, 32, (0, 0), 1.0, 1.0).is_none());
+    }
+
+    /// At 2x a big client cursor is shrunk to fit the plane; its hotspot
+    /// must shrink with it, or the drawn tip is away from where clicks land.
+    #[test]
+    fn a_client_cursor_shrunk_to_the_plane_takes_its_hotspot_along() {
+        // 96 logical pixels at 1x on a 2x output: 192 pixels, shrunk to 64.
+        let mut rgba = vec![0_u8; 96 * 96 * 4];
+        let tip = (24 * 96 + 24) * 4;
+        rgba[tip..tip + 4].copy_from_slice(&[255, 255, 255, 255]);
+        let cursor = CursorBitmap::from_client(&rgba, 96, 96, (24, 24), 1.0, 2.0).unwrap();
+        assert_eq!((cursor.width, cursor.height), (PLANE_SIZE, PLANE_SIZE));
+        assert_eq!(
+            cursor.hotspot,
+            (16, 16),
+            "the same relative point of the image, not 2 * 24 logical"
+        );
+        let at =
+            |x: u32, y: u32| cursor.rgba()[usize::try_from((y * cursor.width + x) * 4).unwrap()];
+        assert_eq!(at(16, 16), 255, "the hotspot is on the drawn tip");
+
+        // A fractionally scaled client: a 48-pixel buffer its viewport
+        // declares 24 logical pixels big is 2x, and needs no shrinking at 2x.
+        let viewported: Vec<u8> = vec![255; 48 * 48 * 4];
+        let cursor = CursorBitmap::from_client(&viewported, 48, 48, (4, 6), 2.0, 2.0).unwrap();
+        assert_eq!((cursor.width, cursor.height), (48, 48));
+        assert_eq!(cursor.hotspot, (8, 12));
     }
 
     #[test]
