@@ -204,8 +204,7 @@ impl ViewStorage {
     /// Read every followed setting whose document changed, dropping those
     /// of views that are gone.
     pub(crate) fn refresh(&self) {
-        #[cfg(feature = "test-support")]
-        let _profile = super::profiling::Scope::start("framework.view_storage_refresh");
+        let _profile = tilo_resource::profiling::Phase::start("framework.view_storage_refresh");
         if let Some(person) = &self.person {
             person.refresh();
         }

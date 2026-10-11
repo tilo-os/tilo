@@ -95,8 +95,7 @@ impl<R: Resource> Live<R> {
     /// # Errors
     /// Returns [`ModelError`] when the document no longer holds the resource.
     pub fn sync(&self, doc: &Doc) -> Result<bool, ModelError> {
-        #[cfg(feature = "test-support")]
-        let _profile = super::profiling::Scope::start("framework.live_sync");
+        let _profile = tilo_resource::profiling::Phase::start("framework.live_sync");
         self.inner.borrow_mut().sync(doc)
     }
 }

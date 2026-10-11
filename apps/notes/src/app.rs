@@ -858,8 +858,7 @@ impl NotesApp {
     }
 
     fn refresh_transclusion_previews(&mut self, doc: &AutoCommit) {
-        #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("transclusion_previews");
+        let _profile = ui::tilo_resource::profiling::Phase::start("transclusion_previews");
         self.main
             .set_transclusion_previews(self.transclusion_previews(doc));
     }
@@ -1294,8 +1293,7 @@ impl NotesApp {
     }
 
     fn refresh_search_blocks(&mut self, doc: &AutoCommit) {
-        #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("search_blocks");
+        let _profile = ui::tilo_resource::profiling::Phase::start("search_blocks");
         let heads = doc.base_heads();
         let committed = doc.pending_ops() == 0;
         if committed && self.search_heads.as_ref() == Some(&heads) {
@@ -1310,10 +1308,9 @@ impl NotesApp {
                 self.search_heads.as_ref() == Some(&refresh.before) && refresh.after == heads
             })
             .map(|refresh| refresh.pages.clone());
-        #[cfg(test)]
         let _delta_profile = changed
             .as_ref()
-            .map(|_| crate::cpu_profile::Phase::start("search_delta_adopted"));
+            .map(|_| ui::tilo_resource::profiling::Phase::start("search_delta_adopted"));
         let pages = changed.unwrap_or_else(|| {
             self.search_blocks.clear();
             self.backlink_index.clear();
@@ -1336,8 +1333,8 @@ impl NotesApp {
             } else {
                 // Standalone surfaces and open transactions do not carry a
                 // validated projection receipt: read their actual document.
-                #[cfg(test)]
-                let _read_profile = crate::cpu_profile::Phase::start("search_body_decode");
+                let _read_profile =
+                    ui::tilo_resource::profiling::Phase::start("search_body_decode");
                 let stored = NotesDoc::page_stored_blocks(doc, source);
                 self.index_search_page(source, &stored, &known_pages);
             }
@@ -1402,8 +1399,7 @@ impl NotesApp {
     /// Canonical synchronization is a projection, never an attempt to replay
     /// local rows that are absent from the document.
     fn reconcile_canonical(&mut self, doc: &AutoCommit) -> Result<(), String> {
-        #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("reconcile_canonical");
+        let _profile = ui::tilo_resource::profiling::Phase::start("reconcile_canonical");
         self.workspace =
             crate::notebook::project_without_asset_rehash(doc, self.workspace.selected())?;
         if self
@@ -2310,8 +2306,7 @@ impl Widget for NotesApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("surface_sync");
+        let _profile = ui::tilo_resource::profiling::Phase::start("surface_sync");
         self.shell.sync(state, path);
         self.drain_header_requests();
         let (state, path) = ui::doc::document_ref(state, path);
@@ -2358,9 +2353,9 @@ impl Widget for NotesApp {
         if !unchanged {
             let adopted =
                 pending == 0 && self.workspace.canonical_projection_heads.as_ref() == Some(&key.0);
-            #[cfg(test)]
-            let _profile =
-                adopted.then(|| crate::cpu_profile::Phase::start("canonical_projection_adopted"));
+            let _profile = adopted.then(|| {
+                ui::tilo_resource::profiling::Phase::start("canonical_projection_adopted")
+            });
             if !adopted && let Err(error) = self.reconcile_canonical(state) {
                 tracing::warn!(%error, "notes: canonical projection refused");
                 return;
