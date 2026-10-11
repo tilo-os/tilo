@@ -58,7 +58,9 @@ if [ "$crate_name" = "runtime_dylib" ]; then
     # (TIL-713): runtime-dylib-lazy-link.py links them out of DT_NEEDED and in
     # through hidden trampolines. It runs the linker cargo chose (the last
     # `-C linker=`, else cc) for the real link. The flavor stays the target's
-    # default, as it is for any linker name rustc does not recognise.
+    # default, as it is for any linker name rustc does not recognise. The
+    # same link drops the code no app can reach (sections nothing exported
+    # uses, and the macro-only crates syn, quote and proc-macro2).
     lazy_link=()
     if [ "$(uname -s)" = Linux ]; then
         chosen=""
