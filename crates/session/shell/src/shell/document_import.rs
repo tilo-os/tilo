@@ -109,7 +109,11 @@ impl HostedRooms for NativeHostedRooms {
             match view.read_document(
                 view.device().device_public_key,
                 app,
-                record.as_str(),
+                if record.is_package_primary() {
+                    ""
+                } else {
+                    record.as_str()
+                },
                 None,
                 limit,
                 SystemTime::now(),

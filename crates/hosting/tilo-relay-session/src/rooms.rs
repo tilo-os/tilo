@@ -171,6 +171,14 @@ pub enum RoomCommand {
         /// Canonical redacted public receipt; never action arguments or results.
         redacted: Vec<u8>,
     },
+    /// Claim only the authenticated member's own topology namespace.
+    /// Membership and current workspace Write remain independently required.
+    ClaimTopologyNamespace {
+        /// The governed room.
+        room: String,
+        /// Nonzero namespace; existing ownership can never be rebound.
+        salt: u16,
+    },
 }
 
 /// One room administration request on the wire: the caller's certificate and
