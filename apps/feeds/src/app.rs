@@ -2263,28 +2263,6 @@ impl ui::widget::Decorator for FeedsApp {
         Widget::draw(&mut self.shell, scene, transform, text, theme, presence);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.core.borrow_mut().drain_fetches_live();
-        self.take_toast();
-        Widget::draw_with_presence(
-            &mut self.shell,
-            scene,
-            transform,
-            text,
-            theme,
-            presence,
-            permissions,
-        );
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
