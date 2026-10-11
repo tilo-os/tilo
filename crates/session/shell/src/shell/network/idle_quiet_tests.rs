@@ -97,6 +97,97 @@ const LONE_WAKEUP_BUDGET: f64 = 0.6;
 /// 0.0 % (under one 10 ms tick in the window).
 const LONE_CPU_BUDGET: f64 = 0.5;
 
+/// Set once the test runs inside a network namespace of its own.
+const PRIVATE_NETWORK: &str = "TILO_IDLE_PRIVATE_NETWORK";
+
+/// `program` run by `unshare` in a user and network namespace of its own.
+fn unshare(program: &str, args: &[&str]) -> std::process::Command {
+    let mut command = std::process::Command::new("unshare");
+    command
+        .args(["--user", "--map-root-user", "--net", "--"])
+        .arg(program)
+        .args(args);
+    command
+}
+
+/// Run `test` again with only a loopback interface, and report that it did.
+///
+/// A wakeup budget measures what Tilo does while idle, and a host's network
+/// is not Tilo. The kernel tells every netlink subscriber, which is how
+/// iroh's network monitor learns of changes, about each address refresh on
+/// the host: a router that advertises its prefix every 3 s on a wifi
+/// network wakes the monitor 0.3 times a second by itself (0.70 to 0.75/s
+/// measured on the Yoga against 0.40 to 0.45/s with nothing else on the
+/// link). So the gate runs in a user and network namespace whose only link
+/// is loopback, which is also all the test uses.
+///
+/// Returns `true` when the child ran and passed (the caller is done) and
+/// `false` when the caller is the child, or when the machine does not allow
+/// user namespaces, in which case it measures the host network as it is.
+fn in_private_network(test: &str) -> bool {
+    if std::env::var_os(PRIVATE_NETWORK).is_some() {
+        bring_loopback_up();
+        return false;
+    }
+    if !unshare("true", &[]).status().is_ok_and(|s| s.success()) {
+        eprintln!("no user namespaces here: measuring on the host's network");
+        return false;
+    }
+    let exe = std::env::current_exe().expect("this test binary's path");
+    let name = test_name(test);
+    let status = unshare(
+        exe.to_str().expect("a UTF-8 path"),
+        &["--exact", &name, "--nocapture", "--test-threads=1"],
+    )
+    .env(PRIVATE_NETWORK, "1")
+    .status()
+    .expect("start the test in a private network");
+    assert!(status.success(), "{name} failed in its private network");
+    true
+}
+
+/// libtest's name of `test`, a function of this module: its path without
+/// the crate's name.
+fn test_name(test: &str) -> String {
+    let module = module_path!();
+    let (_, in_crate) = module.split_once("::").unwrap_or(("", module));
+    format!("{in_crate}::{test}")
+}
+
+/// Bring the namespace's `lo` up (a new network namespace starts with it
+/// down), which the endpoint's loopback address needs.
+fn bring_loopback_up() {
+    // SAFETY: a plain datagram socket; its descriptor is closed below.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    assert!(
+        fd >= 0,
+        "open a socket: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: an all-zero ifreq is a valid value.
+    let mut request: libc::ifreq = unsafe { std::mem::zeroed() };
+    for (slot, byte) in request.ifr_name.iter_mut().zip(b"lo\0") {
+        *slot = libc::c_char::try_from(*byte).unwrap_or(0);
+    }
+    // SAFETY: SIOCGIFFLAGS fills the flags of the one ifreq it is given.
+    let got = unsafe { libc::ioctl(fd, libc::SIOCGIFFLAGS as _, &raw mut request) };
+    assert_eq!(
+        got,
+        0,
+        "read lo's flags: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: SIOCGIFFLAGS filled the flags member of the union.
+    unsafe {
+        request.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
+    }
+    // SAFETY: SIOCSIFFLAGS reads the one initialised ifreq it is given.
+    let set = unsafe { libc::ioctl(fd, libc::SIOCSIFFLAGS as _, &raw const request) };
+    assert_eq!(set, 0, "bring lo up: {}", std::io::Error::last_os_error());
+    // SAFETY: `fd` is ours and unused after this.
+    unsafe { libc::close(fd) };
+}
+
 /// Every thread of this process except the one driving the desktops'
 /// frame loops, whose 10 Hz is the simulation's and not the session's.
 fn session_threads(driver: Option<u32>) -> Vec<tilo_test_env::idle::ThreadSample> {
@@ -448,6 +539,9 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
 #[test]
 #[serial_test::serial]
 fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
+    if in_private_network("a_lone_idle_desktop_keeps_its_network_runtime_asleep") {
+        return;
+    }
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[44; 32]);
