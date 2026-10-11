@@ -2019,16 +2019,6 @@ mod tests {
             self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-        }
-
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             if self.consumes_press
                 && matches!(

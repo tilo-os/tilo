@@ -793,16 +793,6 @@ impl Widget for AnonymousFocusProbe {
         nodes.insert(node, self as *mut dyn Widget);
         node
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut TextRenderer,
-        _: &crate::Theme,
-        _: &crate::PresenceCtx,
-    ) {
-    }
     fn get_rect(&self) -> vello::kurbo::Rect {
         vello::kurbo::Rect::ZERO
     }
@@ -834,7 +824,7 @@ impl crate::undo::UndoPoints for AnonymousFocusProbe {
 mod tests {
     use super::*;
     use crate::widget::TaffyTreeExt;
-    use vello::kurbo::{Affine, Point, Rect};
+    use vello::kurbo::{Point, Rect};
 
     #[derive(Default)]
     struct UnsettledStyles {
@@ -885,15 +875,6 @@ mod tests {
         }
         fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {
             panic!("unsettled geometry must not be applied")
-        }
-        fn draw(
-            &mut self,
-            _: &mut vello::Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &crate::Theme,
-            _: &crate::PresenceCtx,
-        ) {
         }
         fn get_rect(&self) -> Rect {
             Rect::ZERO

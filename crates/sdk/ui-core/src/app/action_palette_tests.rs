@@ -77,9 +77,6 @@ impl Widget for ConsumingKeyboardRoot {
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if matches!(
             event,
@@ -112,16 +109,6 @@ impl Widget for Publisher {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
     }
     fn name(&self) -> &'static str {
         "publisher"
@@ -193,16 +180,6 @@ impl Widget for CountingPublisher {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
     }
     fn name(&self) -> &'static str {
         "counting-publisher"
@@ -1108,16 +1085,6 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
             let node = tree.new_leaf(taffy::Style::default()).unwrap();
             nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
-        }
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
         }
         fn handle_event(&mut self, _: &WindowEvent, _: &mut crate::widget::EventCtx<'_>) {}
     }

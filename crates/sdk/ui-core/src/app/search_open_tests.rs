@@ -60,8 +60,6 @@ impl Widget for MailRoot {
         let child = taffy.children(node).unwrap()[0];
         self.search.apply_layout(taffy, child, origin);
     }
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.search]
     }

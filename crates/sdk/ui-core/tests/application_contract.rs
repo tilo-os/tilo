@@ -1280,22 +1280,6 @@ mod save_status_fixture {
         ) -> taffy::NodeId {
             tree.new_leaf(taffy::Style::default()).unwrap()
         }
-        fn apply_layout(
-            &mut self,
-            _: &taffy::TaffyTree<()>,
-            _: taffy::NodeId,
-            _: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _: &mut vello::Scene,
-            _: vello::kurbo::Affine,
-            _: &mut tilo_ui::TextRenderer,
-            _: &tilo_ui::Theme,
-            _: &tilo_ui::presence::PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Status"
         }
@@ -1626,22 +1610,6 @@ mod paired_local {
             _: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             tree.new_leaf(taffy::Style::default()).unwrap()
-        }
-        fn apply_layout(
-            &mut self,
-            _: &taffy::TaffyTree<()>,
-            _: taffy::NodeId,
-            _: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _: &mut vello::Scene,
-            _: vello::kurbo::Affine,
-            _: &mut tilo_ui::TextRenderer,
-            _: &tilo_ui::Theme,
-            _: &tilo_ui::presence::PresenceCtx,
-        ) {
         }
         fn name(&self) -> &'static str {
             "Local pair"
