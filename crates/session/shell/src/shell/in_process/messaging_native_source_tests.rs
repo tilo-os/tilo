@@ -81,6 +81,22 @@ impl SignalAuthority for Provider {
         self.authorize(&route())
     }
 }
+
+fn await_private_reply(harness: &mut ui::headless::FrameHarness, mut pump: impl FnMut()) {
+    // A completed send can schedule another authorized private-history read.
+    // Observe its actual accessibility projection, not just the send receipt.
+    assert!(
+        harness.wait_until(ui::time::Duration::from_secs(5), |harness| {
+            pump();
+            harness
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.label() == Some("native private reply"))
+        }),
+        "the completed native reply must reach the private accessibility tree"
+    );
+}
+
 fn seed_person<P: Resource<State = P> + Fields + SharedRecord>(
     apps: &mut super::super::super::InProcessApps,
     value: &P,
@@ -857,6 +873,7 @@ fn default_native_launch_receives_displays_and_replies_on_exact_signed_account()
         apps.pump_messaging_records();
     })
     .unwrap();
+    await_private_reply(&mut mounted.harness, || apps.pump_messaging_records());
     assert!(
         mounted
             .harness
@@ -1068,6 +1085,7 @@ fn activate_linked_conversation(
     );
     assert!(effect(&mut mounted.harness, &reply, false).is_err());
     effect(&mut mounted.harness, &reply, true).unwrap();
+    await_private_reply(&mut mounted.harness, || {});
     assert!(
         mounted
             .harness

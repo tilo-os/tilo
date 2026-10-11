@@ -37,7 +37,8 @@ pub struct Button {
     compact_presentation: Option<(String, Option<String>, Option<String>)>,
     rect: Rect,
     is_hovered: bool,
-    is_pressed: bool,
+    /// The press this button took, carried to a rebuilt button in its place.
+    press: crate::pointer_replay::HeldPress,
     is_focused: bool,
     /// Focus came from pressing the button: the pointer already shows where
     /// the person is, so the focus ring is kept for keyboard focus.
@@ -147,7 +148,7 @@ impl Button {
             compact_presentation: None,
             rect: Rect::ZERO,
             is_hovered: false,
-            is_pressed: false,
+            press: crate::pointer_replay::HeldPress::default(),
             is_focused: false,
             pressed_into_focus: false,
             icon: None,
@@ -1514,7 +1515,7 @@ impl Widget for Button {
         self.observe_i18n_revision();
         let current_state = (
             self.is_hovered,
-            self.is_pressed,
+            self.press.is_held(),
             self.focus_visible(),
             self.effectively_enabled(),
         );
@@ -1553,7 +1554,7 @@ impl Widget for Button {
             on,
             interact: ButtonInteract {
                 hovered: self.is_hovered,
-                pressed: self.is_pressed,
+                pressed: self.press.is_held(),
                 focused: self.focus_visible(),
                 disabled: !enabled,
             },
@@ -1581,7 +1582,7 @@ impl Widget for Button {
             || self.i18n_revision != crate::i18n::I18nManager::revision()
             || (
                 self.is_hovered,
-                self.is_pressed,
+                self.press.is_held(),
                 self.focus_visible(),
                 self.effectively_enabled(),
             ) != self.last_state
@@ -1637,24 +1638,35 @@ impl Widget for Button {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.is_hovered {
-                    let pressed = *element_state == ElementState::Pressed;
-                    if pressed != self.is_pressed {
-                        self.is_pressed = pressed;
+                use crate::pointer_replay::{PressAt, Release};
+                let rect = self.hit_rect();
+                let at = PressAt::one(&self.id, rect);
+                match element_state {
+                    ElementState::Pressed if self.is_hovered && !self.press.is_held() => {
+                        self.press.press(at);
                         *ctx.handled = true;
-
-                        if self.is_pressed {
-                            self.pressed_into_focus |= !self.is_focused;
-                            *ctx.focus_target = Some(ctx.node_id);
-                        }
-
-                        if !self.is_pressed {
-                            self.activate();
+                        self.pressed_into_focus |= !self.is_focused;
+                        *ctx.focus_target = Some(ctx.node_id);
+                    }
+                    ElementState::Pressed => {
+                        if !self.is_hovered && self.press.is_held() {
+                            self.press.cancel();
+                            *ctx.handled = true;
                         }
                     }
-                } else if self.is_pressed {
-                    self.is_pressed = false;
-                    *ctx.handled = true;
+                    // The press this button took, or the one a button it
+                    // replaced took at this place (a rebuild while the
+                    // button was held), completes here.
+                    ElementState::Released => {
+                        match self.press.release(self.is_hovered.then_some(at)) {
+                            Release::Click(()) => {
+                                *ctx.handled = true;
+                                self.activate();
+                            }
+                            Release::Cancelled => *ctx.handled = true,
+                            Release::NotHeld => {}
+                        }
+                    }
                 }
             }
             _ => {}
@@ -1791,26 +1803,6 @@ impl Widget for Button {
                 ..Default::default()
             });
         Some(node)
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        crate::widget::draw_gated_leaf(
-            self,
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 

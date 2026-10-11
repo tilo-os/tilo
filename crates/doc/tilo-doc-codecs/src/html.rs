@@ -437,7 +437,7 @@ fn marks_from_style(style: &str) -> Vec<(&'static str, MarkVal)> {
             }
             "font-family" => out.push((
                 "fontFamily",
-                MarkVal::Str(generic_font_family(val).to_string()),
+                MarkVal::Str(crate::generic_font_family(val).to_string()),
             )),
             "font-weight" => {
                 if val == "bold" || val.parse::<i32>().is_ok_and(|w| w >= 600) {
@@ -487,21 +487,6 @@ fn normalize_css_color(v: &str) -> String {
         "white" => "#ffffff".into(),
         "yellow" => "#ffff00".into(),
         _ => t.to_string(),
-    }
-}
-
-fn generic_font_family(val: &str) -> &'static str {
-    let v = val.to_ascii_lowercase();
-    if v.contains("mono") || v.contains("courier") || v.contains("consol") {
-        "mono"
-    } else if v.contains("times")
-        || v.contains("georgia")
-        || v.contains("garamond")
-        || (v.contains("serif") && !v.contains("sans"))
-    {
-        "serif"
-    } else {
-        "sans"
     }
 }
 

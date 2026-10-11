@@ -987,6 +987,7 @@ impl RetainedGpuTarget {
     /// rendered whole, in one piece, of the size the layers are drawn at.
     pub fn layers_eligible(&self, cache: &crate::shell::frame::FrameCache) -> bool {
         !cache.strips.is_empty()
+            && cache.strips.len() == cache.layers.strips.len()
             && Self::band_rows(self.size).is_none()
             && cache.width >= self.size.0
             && self.hdr_pass.is_none()
@@ -1177,15 +1178,15 @@ impl RetainedGpuTarget {
                 policy,
             )?;
         }
-        let size = (f64::from(self.size.0), f64::from(self.size.1));
+        if let (Some(_), Some(wheel)) = (work.wheel, cache.layers.wheel.as_ref()) {
+            if let Some(layers) = self.strip_layers.as_mut() {
+                layers.size_wheel(&self.device, (wheel.width, wheel.height));
+            }
+            self.render_layer(Layer::Wheel, &wheel.scene, None, transparent, policy)?;
+        }
         let panned = || {
             let mut scene = Scene::new();
-            super::strip_layers::append_panned(
-                &mut scene,
-                &cache.layers.workspace,
-                &cache.strips,
-                size,
-            );
+            super::strip_layers::append_panned(&mut scene, &cache.layers, &cache.strips);
             scene
         };
         match &work.workspace {
@@ -1223,7 +1224,16 @@ impl RetainedGpuTarget {
                 label: Some("tilo-strip-layer-composite"),
             });
         if let (Some(layers), Some(rect)) = (self.strip_layers.as_ref(), work.composite) {
-            layers.encode_composite(&self.device, &self.queue, &mut encoder, &self.view, rect);
+            layers.encode_composite(
+                super::strip_layers::CompositeTarget {
+                    device: &self.device,
+                    queue: &self.queue,
+                    encoder: &mut encoder,
+                    output: &self.view,
+                },
+                cache.layers.wheel.as_ref(),
+                rect,
+            );
         }
         post_render(&self.device, &mut encoder, &self.view);
         let submission = self.queue.submit([encoder.finish()]);
@@ -1259,11 +1269,14 @@ impl RetainedGpuTarget {
         rendered.map(|_| ())
     }
 
+    /// Exchange the target's texture with `layer`'s, size included: the
+    /// wheel's texture is the wheel's size, not the output's.
     fn swap_layer(&mut self, layer: super::strip_layers::Layer) {
         if let Some(layers) = self.strip_layers.as_mut() {
             let slot = layers.texture_mut(layer);
             std::mem::swap(&mut self.texture, &mut slot.texture);
             std::mem::swap(&mut self.view, &mut slot.view);
+            std::mem::swap(&mut self.size, &mut slot.size);
         }
     }
 
@@ -1977,146 +1990,17 @@ impl RetainedGpuTarget {
         Ok(())
     }
 
-    /// Forward existing Vello renderer diagnostics.
+    /// The Vello renderer underneath, for its feature and diagnostic
+    /// queries.
     #[doc(hidden)]
-    pub fn gpu_dispatch_timestamp_status(&mut self) -> vello::GpuDispatchTimestampStatus {
-        self.renderer.gpu_dispatch_timestamp_status()
+    pub fn vello(&self) -> &Renderer {
+        &self.renderer
     }
 
-    /// Forward existing Vello renderer diagnostics.
+    /// The Vello renderer underneath, for the queries that take samples.
     #[doc(hidden)]
-    pub fn take_gpu_dispatch_timestamp_sample(
-        &mut self,
-    ) -> Option<vello::GpuDispatchTimestampSample> {
-        self.renderer.take_gpu_dispatch_timestamp_sample()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn gpu_dispatch_timestamp_latest_submission_id(&self) -> Option<u64> {
-        self.renderer.gpu_dispatch_timestamp_latest_submission_id()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn gpu_dispatch_timestamp_buffer_bytes(&self) -> u64 {
-        self.renderer.gpu_dispatch_timestamp_buffer_bytes()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn direct_path_workgroups(&self) -> u32 {
-        self.renderer.direct_path_workgroups()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn diagnostic_packed_scene(&self) -> &[u8] {
-        self.renderer.diagnostic_packed_scene()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn diagnostic_geometry_input(
-        &self,
-    ) -> Result<vello::GeometryInput<'_>, vello::GeometryInputError> {
-        self.renderer.diagnostic_geometry_input()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_tile_bounds_requested(&self) -> bool {
-        self.renderer.sparse_tile_bounds_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_tile_bounds_available(&self) -> bool {
-        self.renderer.sparse_tile_bounds_available()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_fine_quad_skip_requested(&self) -> bool {
-        self.renderer.sparse_fine_quad_skip_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_fine_quad_skip_available(&self) -> bool {
-        self.renderer.sparse_fine_quad_skip_available()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_opaque_prune_requested(&self) -> bool {
-        self.renderer.sparse_opaque_prune_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_opaque_prune_available(&self) -> bool {
-        self.renderer.sparse_opaque_prune_available()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_solid_fuse_requested(&self) -> bool {
-        self.renderer.sparse_solid_fuse_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_solid_fuse_available(&self) -> bool {
-        self.renderer.sparse_solid_fuse_available()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_segment_row_mask_requested(&self) -> bool {
-        self.renderer.sparse_segment_row_mask_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn sparse_segment_row_mask_available(&self) -> bool {
-        self.renderer.sparse_segment_row_mask_available()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn canonical_segment_order_requested(&self) -> bool {
-        self.renderer.canonical_segment_order_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn canonical_segment_order_available(&self) -> bool {
-        self.renderer.canonical_segment_order_available()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn area_ppt8_requested(&self) -> bool {
-        self.renderer.area_ppt8_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn area_ppt8_available(&self) -> bool {
-        self.renderer.area_ppt8_available()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn clip_single_group_requested(&self) -> bool {
-        self.renderer.clip_single_group_requested()
-    }
-
-    /// Forward existing Vello renderer diagnostics.
-    #[doc(hidden)]
-    pub fn clip_single_group_available(&self) -> bool {
-        self.renderer.clip_single_group_available()
+    pub fn vello_mut(&mut self) -> &mut Renderer {
+        &mut self.renderer
     }
 
     /// Actual statistics from the latest normal render transaction.
@@ -2153,30 +2037,6 @@ impl RetainedGpuTarget {
             #[cfg(target_os = "linux")]
             drm_device: ui::dmabuf_import::vulkan_drm_device_identity(&self.device),
         }
-    }
-    /// Existing Vello resource accounting; framebuffer staging is owned by the bridge.
-    pub fn memory_stats(&self) -> vello::RendererMemoryStats {
-        self.renderer.memory_stats()
-    }
-    /// The image atlas and the CPU pixels its residents keep alive.
-    pub fn image_cache_stats(&self) -> vello::ImageCacheStats {
-        self.renderer.image_cache_stats()
-    }
-    /// Existing opt-in timestamp status.
-    pub fn gpu_timestamp_status(&mut self) -> vello::GpuTimestampStatus {
-        self.renderer.gpu_timestamp_status()
-    }
-    /// Consume existing opt-in timestamp data without conflating it with completion.
-    pub fn take_gpu_timestamp_sample(&mut self) -> Option<vello::GpuTimestampSample> {
-        self.renderer.take_gpu_timestamp_sample()
-    }
-    /// Latest Vello timestamp recording identity.
-    pub fn gpu_timestamp_latest_submission_id(&self) -> Option<u64> {
-        self.renderer.gpu_timestamp_latest_submission_id()
-    }
-    /// Existing opt-in timestamp resource bytes.
-    pub fn gpu_timestamp_buffer_bytes(&self) -> u64 {
-        self.renderer.gpu_timestamp_buffer_bytes()
     }
 
     fn allocate_texture(
@@ -4950,12 +4810,12 @@ impl VelloDrmBridge {
 
     /// The image atlas and the CPU pixels its residents keep alive.
     pub fn image_cache_stats(&self) -> vello::ImageCacheStats {
-        self.target.image_cache_stats()
+        self.target.vello().image_cache_stats()
     }
 
     /// GPU allocations the renderer accounts for, the image atlas included.
     pub fn renderer_memory_stats(&self) -> vello::RendererMemoryStats {
-        self.target.memory_stats()
+        self.target.vello().memory_stats()
     }
 
     /// After each frame (TIL-731). When a window closed since the last
@@ -4972,7 +4832,7 @@ impl VelloDrmBridge {
             self.target.renderer.shrink_image_atlas_soon();
         }
         let atlas_before = self.logged_memory.map(|mark| mark[0]);
-        let atlas_now = u64::from(self.target.image_cache_stats().atlas_side);
+        let atlas_now = u64::from(self.target.vello().image_cache_stats().atlas_side);
         if atlas_before.is_some_and(|was| atlas_now < was) {
             self.target.renderer.trim_pooled_buffers();
             crate::shell::heap_trim::request();
@@ -4986,8 +4846,8 @@ impl VelloDrmBridge {
     /// left still holds.
     fn log_memory_changes(&mut self) {
         const STEP: u64 = 8 << 20;
-        let memory = self.target.memory_stats();
-        let images = self.target.image_cache_stats();
+        let memory = self.target.vello().memory_stats();
+        let images = self.target.vello().image_cache_stats();
         let mark = [
             u64::from(images.atlas_side),
             memory.image_bytes,
@@ -6694,7 +6554,8 @@ mod tests {
             }
             scene
         };
-        let pooled = |bridge: &VelloDrmBridge| bridge.target.memory_stats().pooled_buffer_bytes;
+        let pooled =
+            |bridge: &VelloDrmBridge| bridge.target.vello().memory_stats().pooled_buffer_bytes;
         let mut bridge = required_bridge(1024, 768);
         let mut pixels = vec![0; 1024 * 768 * 4];
         let scene = busy(1024, 768);
@@ -7314,11 +7175,11 @@ mod tests {
                     Err(BridgeError::DeadlineExceeded)
                 ));
                 assert_eq!(
-                    target.gpu_timestamp_latest_submission_id(),
+                    target.vello().gpu_timestamp_latest_submission_id(),
                     None,
                     "aborted recording must not advertise a submitted timestamp identity"
                 );
-                assert!(target.take_gpu_timestamp_sample().is_none());
+                assert!(target.vello_mut().take_gpu_timestamp_sample().is_none());
                 assert!(target.completed_view().is_none());
             }
 

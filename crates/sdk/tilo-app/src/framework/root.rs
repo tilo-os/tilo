@@ -291,8 +291,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// Apply a permission change made while the app runs: dispatchers stop
     /// (or resume) submitting, bound state and surfaces see the new value.
     fn refresh_access(&self) {
-        #[cfg(feature = "test-support")]
-        let _profile = super::profiling::Scope::start("framework.access_refresh");
+        let _profile = tilo_resource::profiling::Phase::start("framework.access_refresh");
         if let (Some(permissions), Some(write)) = (&self.permissions, &self.write) {
             self.dispatch.set_read_only(!permissions.check(write));
         }
@@ -353,8 +352,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// views and surfaces bound to where the user is, the live rows surfaces
     /// show, and the framework's operations every app answers.
     fn publication(&self) -> tilo_actions::Resource {
-        #[cfg(feature = "test-support")]
-        let _profile = super::profiling::Scope::start("framework.publication");
+        let _profile = tilo_resource::profiling::Phase::start("framework.publication");
         let state = self.live.get();
         let tree = self.shared_document_tree(&state).to_resource();
         self.decorate_publication(&state, tree, Decoration::Tree)
@@ -373,8 +371,7 @@ impl<R: Resource> ResourceRoot<R> {
             .as_ref()
             .and_then(|epoch| self.tree.head_at(&(revision.0, revision.1, epoch.clone())));
         let resource = cached.unwrap_or_else(|| {
-            #[cfg(feature = "test-support")]
-            let _profile = super::profiling::Scope::start("framework.resource_head");
+            let _profile = tilo_resource::profiling::Phase::start("framework.resource_head");
             tilo_resource::publish_head::<R>(self.dispatch.resource_id(), &self.label, &state)
         });
         BindingHead {
@@ -406,8 +403,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// live state and locale are those it was built at. Answers the head
     /// they were refreshed from.
     fn refresh_bindings(&self, head: Option<BindingHead>) -> BindingHead {
-        #[cfg(feature = "test-support")]
-        let _profile = super::profiling::Scope::start("framework.action_bindings");
+        let _profile = tilo_resource::profiling::Phase::start("framework.action_bindings");
         let revision = (self.live.revision(), ui_core::i18n::I18nManager::revision());
         let head = match head {
             Some(head) if head.revision == revision => head,
@@ -435,8 +431,7 @@ impl<R: Resource> ResourceRoot<R> {
     }
 
     fn publication_of(&self, state: &R::State) -> tilo_actions::Resource {
-        #[cfg(feature = "test-support")]
-        let _profile = super::profiling::Scope::start("framework.publication");
+        let _profile = tilo_resource::profiling::Phase::start("framework.publication");
         let tree = self.shared_document_tree(state).to_resource();
         self.decorate_publication(state, tree, Decoration::Tree)
     }
@@ -452,15 +447,13 @@ impl<R: Resource> ResourceRoot<R> {
     ) -> tilo_actions::Resource {
         let children = decoration == Decoration::Tree;
         let mut bound = {
-            #[cfg(feature = "test-support")]
-            let _profile = super::profiling::Scope::start("framework.bound_declarations");
+            let _profile = tilo_resource::profiling::Phase::start("framework.bound_declarations");
             self.bindings.declarations(state)
         };
         let mut rows = Vec::new();
         let mut availability = Vec::new();
         self.surfaces(&mut |surface| {
-            #[cfg(feature = "test-support")]
-            let _profile = super::profiling::Scope::start("framework.surface_publication");
+            let _profile = tilo_resource::profiling::Phase::start("framework.surface_publication");
             bound.extend(surface.bound_declarations());
             availability.extend(surface.availability());
             if children {
@@ -478,13 +471,11 @@ impl<R: Resource> ResourceRoot<R> {
         overlay_availability(&mut resource, &availability);
         if children {
             merge(&mut resource.children, rows);
-            #[cfg(feature = "test-support")]
-            let _profile = super::profiling::Scope::start("framework.row_declarations");
+            let _profile = tilo_resource::profiling::Phase::start("framework.row_declarations");
             self.bind_row_declarations(&mut resource.children);
         }
         let effects = {
-            #[cfg(feature = "test-support")]
-            let _profile = super::profiling::Scope::start("framework.effect_specs");
+            let _profile = tilo_resource::profiling::Phase::start("framework.effect_specs");
             self.effects.specs()
         };
         let mut resource = FrameworkActions {

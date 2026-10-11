@@ -1,12 +1,11 @@
 //! Real private host + canonical installer, with pre-existing scoped trust.
 use app_host::app_host_capnp::app_host as rpc;
 use app_host::local_package::LocalReview;
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use capnp_rpc::rpc_twoparty_capnp;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use tilo_app_package::trust::{RevocationList, RevokedKey};
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[path = "../src/local_package/fixture.rs"]
 mod fixture;
@@ -65,17 +64,8 @@ async fn connect(socket: &Path) -> rpc::Client {
         .await
         .unwrap();
     stream.write_all(handoff).await.unwrap();
-    let (reader, writer) = stream.into_split();
-    let network = Box::new(twoparty::VatNetwork::new(
-        futures_util::io::BufReader::new(reader.compat()),
-        futures_util::io::BufWriter::new(writer.compat_write()),
-        rpc_twoparty_capnp::Side::Client,
-        capnp::message::ReaderOptions::default(),
-    ));
-    let mut system = RpcSystem::new(network, None);
-    let client = system.bootstrap(rpc_twoparty_capnp::Side::Server);
-    tokio::task::spawn_local(system);
-    client
+    runtime_portal::CapnpClient::from_connected_io(stream, rpc_twoparty_capnp::Side::Client)
+        .bootstrap()
 }
 
 fn review(

@@ -2196,27 +2196,8 @@ impl QuickSettingsRoot {
                 radius,
                 &theme.tokens.elevation.floating,
             );
-            let tier = ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(true));
-            let shape = RoundedRect::from_rect(ghost, radius);
-            scene.fill(Fill::NonZero, transform, tier.fill, None, &shape);
-            if let Some(border) = tier.border {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    border,
-                    None,
-                    &shape,
-                );
-            }
-            if let Some(glow) = tier.inner_glow {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    glow,
-                    None,
-                    &RoundedRect::from_rect(ghost.inset(1.0), (radius - 1.0).max(0.0)),
-                );
-            }
+            ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(true))
+                .paint(scene, transform, ghost, radius);
             scene.fill(
                 Fill::NonZero,
                 transform,

@@ -14,13 +14,12 @@ use std::os::fd::{BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::sync::{Mutex, OnceLock};
 
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use capnp_rpc::rpc_twoparty_capnp;
 use rustix::io::{FdFlags, fcntl_setfd};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::{CapnpClient, NotAvailable};
+use crate::{CapnpClient, NotAvailable, serve_connected_io};
 
 type Hub = mpsc::UnboundedSender<StdUnixStream>;
 
@@ -98,14 +97,7 @@ async fn serve(upstream: StdUnixStream, mut clients: mpsc::UnboundedReceiver<Std
         else {
             continue;
         };
-        let (read, write) = tokio::io::split(client);
-        let network = Box::new(twoparty::VatNetwork::new(
-            read.compat(),
-            write.compat_write(),
-            rpc_twoparty_capnp::Side::Server,
-            capnp::message::ReaderOptions::default(),
-        ));
-        let rpc = RpcSystem::new(network, Some(service.clone()));
+        let rpc = serve_connected_io(client, service.clone());
         tokio::task::spawn_local(async move {
             let _ = rpc.await;
         });

@@ -4028,6 +4028,15 @@ impl TextInput {
         })
     }
 
+    /// What the last draw painted outside the field's rect: while a
+    /// correction is offered, its chip, which floats above or below the
+    /// field. A host proving its own damage repaints this too when the field
+    /// changes.
+    #[must_use]
+    pub fn overhang(&self) -> Option<Rect> {
+        self.suggestion_chip
+    }
+
     /// Replace the previewed word with its correction (a click on the chip).
     fn accept_suggestion(&mut self) -> bool {
         self.refresh_personal_spelling();
@@ -4892,8 +4901,7 @@ impl Widget for TextInput {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.apply_layout_external(crate::widget::placed(&layout, origin));
+        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
     /// Single-line keeps its fixed row height from `build_layout` (ZERO

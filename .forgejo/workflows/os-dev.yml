@@ -50,11 +50,12 @@ on:
       - ".forgejo/actions/setup-buildx/**"
       - "tools/ci/os_dev_arches.py"
 
-# One run per pull request: its newest commit cancels the build of the one
-# before.
+# Share the x86 dev-image queue with the main wrapper. A PR image and a main
+# image must not occupy two of the four available native package slots.
+# Queue requests without cancelling a build that already has useful progress.
 concurrency:
-  group: os-dev-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: os-dev-x86-native
+  cancel-in-progress: false
 
 jobs:
   arches:

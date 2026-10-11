@@ -1584,11 +1584,32 @@ impl ChromeState {
             | tilo_desktop::activity::HISTORY_UNDO
             | tilo_desktop::activity::HISTORY_RESTORE
             | tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE
-            | tilo_desktop::activity::ACTIVITY_TASKS => {}
+            | tilo_desktop::activity::ACTIVITY_TASKS
+            | tilo_desktop::activity::morning::MORNING_SOURCE => {}
+            _ if [
+                tilo_desktop::activity::morning::MORNING_OPEN,
+                tilo_desktop::activity::morning::MORNING_REMOVE,
+                tilo_desktop::activity::morning::MORNING_REFRESH,
+                tilo_desktop::activity::morning::MORNING_DRAFT,
+                tilo_desktop::activity::morning::MORNING_NEXT,
+            ]
+            .iter()
+            .any(|prefix| tilo_desktop::activity::morning::decode_action(id, prefix).is_some()) => {
+            }
             _ => return Err("Unknown history action".into()),
         }
+        let request = if id == tilo_desktop::activity::morning::MORNING_SOURCE {
+            let room = self
+                .tree()
+                .active_workspace()
+                .map(|workspace| workspace.room)
+                .ok_or_else(|| "Workspace unavailable".to_string())?;
+            format!("{id}.{room}")
+        } else {
+            id.to_string()
+        };
         self.open_room_activity(None);
-        self.history_action_request = Some(id.to_string());
+        self.history_action_request = Some(request);
         self.bump();
         Ok(())
     }

@@ -247,6 +247,17 @@ impl EditableLabel {
         self.editing
     }
 
+    /// What the last draw painted outside the label's rect: while it is
+    /// being edited, what its field painted beyond it (a correction chip).
+    #[must_use]
+    pub fn overhang(&self) -> Option<Rect> {
+        if self.editing {
+            self.input.overhang()
+        } else {
+            None
+        }
+    }
+
     /// Selects the whole value so the first keystroke replaces it (native
     /// rename behaviour).
     pub fn begin_edit(&mut self) {

@@ -106,10 +106,14 @@ mkdir -p "$STAGE" "$STORE"
 initial_rows="$(grep -c '^\[\[entry\]\]' "$STORE/registry.toml" 2>/dev/null || true)"
 
 # --- source-package signing identity ---------------------------------------
-# Minted per build and discarded with the stage dir, exactly like the runtime
-# bundle's. Nothing needs to sign as this identity again: the packages are
-# already unpacked into the store by the time the image is sealed, so the
-# signature's job (binding manifest to payload during install) is done.
+# The caller's IDENTITY_JSON when it names one, else minted here and discarded
+# with the stage dir. The signature's job (binding manifest to payload during
+# install) is done once the packages are unpacked into the store, and the key
+# is in no trust list. It does name every package: the publisher key is in the
+# signed root, whose hash is the package id and the payload tree's directory
+# name. So a key minted per build gives identical binaries new paths and new
+# cohort archives in every image; Build / OS dev passes one identity for all
+# its builds instead (os/Containerfile).
 prebuilt=0
 if [ -n "$TAPP_DIR" ] && compgen -G "$TAPP_DIR/*.tapp" >/dev/null; then
     prebuilt=1

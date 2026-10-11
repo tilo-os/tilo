@@ -60,11 +60,30 @@ impl App {
     /// app's own origin. `synthesized_touch` marks pointer events the host
     /// made from a touch, which keep touch modality. Returns whether
     /// anything handled the event.
+    pub fn surface_input(
+        &mut self,
+        window: &dyn AppSurface,
+        event: WindowEvent,
+        synthesized_touch: bool,
+    ) -> bool {
+        // Controls swapped in or moved under a still pointer learn it is
+        // there before the press or release that follows.
+        if let Some(moved) = self.input.pointer_replay.before(&event) {
+            self.dispatch_surface_input(window, moved, synthesized_touch);
+        }
+        let ends_press = crate::pointer_replay::PointerReplay::ends_press(&event);
+        let handled = self.dispatch_surface_input(window, event, synthesized_touch);
+        if ends_press {
+            self.input.pointer_replay.end_press();
+        }
+        handled
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "input routing shares mutable state and must retain fixed precedence"
     )]
-    pub fn surface_input(
+    fn dispatch_surface_input(
         &mut self,
         window: &dyn AppSurface,
         event: WindowEvent,
@@ -802,6 +821,9 @@ impl App {
             damage.repaint("no layout");
             return true;
         };
+        if geometry_changed {
+            self.input.pointer_replay.mark_unsettled();
+        }
         let search_pending = self
             .actions
             .action_palette
@@ -1045,8 +1067,7 @@ mod tests {
             taffy.widget_leaf(style, nodes, self)
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let layout = taffy.layout(node).unwrap();
-            self.rect = crate::widget::placed(layout, origin);
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
         fn draw(
             &mut self,

@@ -1,81 +1,15 @@
 //! Test-only observations around the actual Notes projection functions.
 //! No timing budgets: the canonical mutation assertions establish the subject.
 
-use std::cell::RefCell;
-use std::time::Instant;
+use ui::tilo_resource::profiling::Sample;
 
-thread_local! {
-    static RECORDS: RefCell<Option<Capture>> = const { RefCell::new(None) };
-}
-
-const MAX_PHASES: usize = 32;
-
-#[derive(Default)]
-struct Capture {
-    rows: Vec<Sample>,
-    overflow: bool,
-}
-
-/// Repeated scopes aggregate by name, with exact counts and bounded memory.
-/// These nested durations must not be added to their enclosing scope.
-#[derive(serde::Serialize)]
-struct Sample {
-    phase: &'static str,
-    elapsed_ns: u128,
-    calls: usize,
-}
-
-pub(crate) struct Phase(Option<(&'static str, Instant)>);
-
-impl Phase {
-    pub(crate) fn start(name: &'static str) -> Self {
-        Self(RECORDS.with(|records| records.borrow().as_ref().map(|_| (name, ui::time::now()))))
-    }
-}
-
-impl Drop for Phase {
-    fn drop(&mut self) {
-        if let Some((name, start)) = self.0 {
-            RECORDS.with(|records| {
-                if let Some(capture) = records.borrow_mut().as_mut() {
-                    let elapsed_ns = start.elapsed().as_nanos();
-                    if let Some(row) = capture.rows.iter_mut().find(|row| row.phase == name) {
-                        match (
-                            row.elapsed_ns.checked_add(elapsed_ns),
-                            row.calls.checked_add(1),
-                        ) {
-                            (Some(elapsed), Some(calls)) => {
-                                row.elapsed_ns = elapsed;
-                                row.calls = calls;
-                            }
-                            _ => capture.overflow = true,
-                        }
-                    } else if capture.rows.len() < MAX_PHASES {
-                        capture.rows.push(Sample {
-                            phase: name,
-                            elapsed_ns,
-                            calls: 1,
-                        });
-                    } else {
-                        capture.overflow = true;
-                    }
-                }
-            });
-        }
-    }
-}
-
+/// Run `operation` and return its wall time with every scope it ran.
 fn observe(operation: impl FnOnce()) -> (u128, Vec<Sample>) {
-    RECORDS.with(|records| assert!(records.replace(Some(Capture::default())).is_none()));
-    let start = ui::time::now();
-    operation();
-    let elapsed = start.elapsed().as_nanos();
-    let capture = RECORDS.with(|records| records.take().unwrap());
-    assert!(
-        !capture.overflow,
-        "Notes phase observation exceeded its bound"
-    );
-    (elapsed, capture.rows)
+    ui::tilo_resource::profiling::observe(|| {
+        let start = ui::time::now();
+        operation();
+        start.elapsed().as_nanos()
+    })
 }
 
 fn fixture(
@@ -135,12 +69,7 @@ fn mounted_typing_observes_canonical_projection_scaling() {
         let setup_ns = setup.elapsed().as_nanos();
         app.harness().begin_profiling();
         for sample in 0..22 {
-            let (((elapsed, rows), framework_rows), resource_rows) =
-                ui::tilo_resource::profiling::observe(|| {
-                    ui::framework::testing::phases::observe(|| {
-                        observe(|| app.harness().type_text("a"))
-                    })
-                });
+            let (elapsed, rows) = observe(|| app.harness().type_text("a"));
             // This maintained observer pumps pending wakes. Measure its work
             // separately; captured passes belong to the combined interval.
             let mut frames = Vec::new();
@@ -194,7 +123,7 @@ fn mounted_typing_observes_canonical_projection_scaling() {
                 "framework.view_storage_refresh",
                 "framework.access_refresh",
             ] {
-                assert!(framework_rows.iter().any(|row| row.phase == phase));
+                assert!(rows.iter().any(|row| row.phase == phase));
             }
             for phase in [
                 "child.publish_parts",
@@ -204,7 +133,7 @@ fn mounted_typing_observes_canonical_projection_scaling() {
                 "resource.group_spec",
                 "resource.declaration_spec",
             ] {
-                assert!(resource_rows.iter().any(|row| row.phase == phase));
+                assert!(rows.iter().any(|row| row.phase == phase));
             }
             if sample >= 2 {
                 eprintln!(
@@ -218,7 +147,6 @@ fn mounted_typing_observes_canonical_projection_scaling() {
                         "fixture_initialization": "peer_action_commits",
                         "setup_action_commits": pages * 2 - 1,
                         "phases": rows, "profile_drain_phases": drain_rows, "frames": frames,
-                        "framework_phases": framework_rows, "resource_phases": resource_rows,
                         "includes_layout": true, "includes_cpu_scene_draw": true,
                         "includes_gpu_or_display": false,
                     })
@@ -286,22 +214,19 @@ fn mounted_wheel_observes_long_note_main_thread_phases() {
             "presence agrees with complete action inventory"
         );
         let has_action_controls = answers[0];
-        let ((elapsed, notes_rows), framework_rows) =
-            ui::framework::testing::phases::observe(|| {
-                observe(|| {
-                    assert!(
-                        app.harness()
-                            .dispatch_to_root_with(&event, &winit::event::Modifiers::default()),
-                        "real notebook wheel handled"
-                    );
-                    app.harness().relayout();
-                })
-            });
+        let (elapsed, rows) = observe(|| {
+            assert!(
+                app.harness()
+                    .dispatch_to_root_with(&event, &winit::event::Modifiers::default()),
+                "real notebook wheel handled"
+            );
+            app.harness().relayout();
+        });
         let frames = app.harness().take_profile_samples();
         assert!(!frames.is_empty(), "real CPU frame observed");
         eprintln!(
             "notes-scroll-phases {}",
-            serde_json::json!({"sample":sample,"baseline_presence_ns":baseline_presence_ns,"presence_ns":presence_ns,"has_action_controls":has_action_controls,"root_type":app.harness().root_widget().concrete_type_name(),"paragraphs":180,"markdown_bytes":body.len(),"viewport":[1051,952],"elapsed_ns":elapsed,"notes_phases":notes_rows,"framework_phases":framework_rows,"frames":frames,"includes_gpu_or_display":false,"architecture":std::env::consts::ARCH})
+            serde_json::json!({"sample":sample,"baseline_presence_ns":baseline_presence_ns,"presence_ns":presence_ns,"has_action_controls":has_action_controls,"root_type":app.harness().root_widget().concrete_type_name(),"paragraphs":180,"markdown_bytes":body.len(),"viewport":[1051,952],"elapsed_ns":elapsed,"phases":rows,"frames":frames,"includes_gpu_or_display":false,"architecture":std::env::consts::ARCH})
         );
     }
     assert_eq!(

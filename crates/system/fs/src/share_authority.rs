@@ -52,6 +52,10 @@ struct GrantState {
 pub struct ShareAuthority {
     path: PathBuf,
     state: Mutex<AuthorityState>,
+    /// Announces every published change of `state`, so a held change await
+    /// re-authorizes the moment a grant is revoked
+    /// ([`ShareAuthority::subscribe_changes`]).
+    changes: tokio::sync::watch::Sender<u64>,
 }
 
 impl ShareAuthority {
@@ -85,6 +89,7 @@ impl ShareAuthority {
         Ok(Self {
             path,
             state: Mutex::new(state),
+            changes: tokio::sync::watch::Sender::new(0),
         })
     }
 
@@ -138,6 +143,7 @@ impl ShareAuthority {
                     .token = Some(token.clone());
                 persist(&self.path, &next)?;
                 *current = next;
+                self.announce_change();
             }
             return Ok(());
         }
@@ -171,6 +177,7 @@ impl ShareAuthority {
         );
         persist(&self.path, &next)?;
         *current = next;
+        self.announce_change();
         Ok(())
     }
 
@@ -201,7 +208,22 @@ impl ShareAuthority {
             .revoked = true;
         persist(&self.path, &next)?;
         *current = next;
+        self.announce_change();
         Ok(true)
+    }
+
+    /// Wakes on every change this authority publishes: a grant registered,
+    /// redeemed or revoked. A watcher re-authorizes; the value says only
+    /// that something changed.
+    #[must_use]
+    pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
+    fn announce_change(&self) {
+        self.changes.send_modify(|generation| {
+            *generation = generation.wrapping_add(1);
+        });
     }
 
     /// Whether any grant is still unrevoked: someone holding its link or
@@ -332,6 +354,7 @@ impl ShareAuthority {
         };
         persist(&self.path, &next)?;
         *current = next;
+        self.announce_change();
         Ok(Redemption {
             grant_id: token.id,
             redemption_number: count,

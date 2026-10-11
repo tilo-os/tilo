@@ -557,6 +557,9 @@ pub struct FrameHarness {
     last_layout_viewport: Option<(u32, u32)>,
     input_scale: f64,
     host_pointer_position: Option<winit::dpi::PhysicalPosition<f64>>,
+    /// As the live host: where the pointer last moved, replayed before a
+    /// press or release that follows a rebuild under a still pointer.
+    pointer_replay: crate::pointer_replay::PointerReplay,
     /// Records this driver has open, when the app under test uses them —
     /// without this a record-aware app would be driven against its room
     /// index instead of the record it checked out, testing something the
@@ -1587,6 +1590,7 @@ impl FrameHarness {
             last_layout_viewport: None,
             input_scale: 1.0,
             host_pointer_position: None,
+            pointer_replay: crate::pointer_replay::PointerReplay::default(),
             focused: None,
             focus_trap_active: false,
             active_input_instance: None,
@@ -2734,6 +2738,10 @@ impl FrameHarness {
         use crate::widget::layout::{
             CompositionFocus, composition_geometry, settle_widget_composition,
         };
+        // A pointer at rest sees no event when a relayout moves a control
+        // under it; compare the geometry to replay it, as the live host does.
+        let resting_geometry = (self.pointer_replay.is_resting() && self.layout_built)
+            .then(|| crate::pointer_replay::widget_geometry(self.root.as_ref()));
         self.swap_requested_component();
         let viewport_changed = self.last_layout_viewport != Some(self.viewport);
         self.presence_redraw = false;
@@ -3069,6 +3077,16 @@ impl FrameHarness {
         })?;
         self.last_layout_viewport = Some(self.viewport);
         self.last_relayout = stats;
+        if stats.rebuilt
+            || viewport_changed
+            || resting_geometry.is_some_and(|before| {
+                before != crate::pointer_replay::widget_geometry(self.root.as_ref())
+            })
+        {
+            // Fresh, resized or moved controls have not seen where the
+            // pointer is.
+            self.pointer_replay.mark_unsettled();
+        }
         self.relayout_frames = self.relayout_frames.saturating_add(1);
         if !stats.rebuilt {
             self.retained_frames = self.retained_frames.saturating_add(1);
@@ -5455,6 +5473,22 @@ impl FrameHarness {
     }
 
     fn send_with_host_navigation(&mut self, event: &WindowEvent, host_navigation_allowed: bool) {
+        // Controls swapped in or moved under a still pointer learn it is
+        // there before the press or release that follows, as in the App.
+        if let Some(moved) = self.pointer_replay.before(event) {
+            self.dispatch_with_host_navigation(&moved, host_navigation_allowed);
+        }
+        self.dispatch_with_host_navigation(event, host_navigation_allowed);
+        if crate::pointer_replay::PointerReplay::ends_press(event) {
+            self.pointer_replay.end_press();
+        }
+    }
+
+    fn dispatch_with_host_navigation(
+        &mut self,
+        event: &WindowEvent,
+        host_navigation_allowed: bool,
+    ) {
         if let WindowEvent::ModifiersChanged(modifiers) = event {
             self.modifiers = *modifiers;
         }
@@ -12240,15 +12274,7 @@ mod undo_driver_tests {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let l = taffy.layout(node).unwrap();
-            let x = origin.x + f64::from(l.location.x);
-            let y = origin.y + f64::from(l.location.y);
-            self.rect = vello::kurbo::Rect::new(
-                x,
-                y,
-                x + f64::from(l.size.width),
-                y + f64::from(l.size.height),
-            );
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(
@@ -12516,15 +12542,7 @@ mod dispatched_action_driver_tests {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let l = taffy.layout(node).unwrap();
-            let x = origin.x + f64::from(l.location.x);
-            let y = origin.y + f64::from(l.location.y);
-            self.rect = vello::kurbo::Rect::new(
-                x,
-                y,
-                x + f64::from(l.size.width),
-                y + f64::from(l.size.height),
-            );
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(
@@ -13625,8 +13643,7 @@ mod framed_tests {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let layout = taffy.layout(node).unwrap();
-            self.rect = crate::widget::placed(layout, origin);
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(
@@ -13749,8 +13766,7 @@ mod framed_tests {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let layout = taffy.layout(node).unwrap();
-            self.rect = crate::widget::placed(layout, origin);
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(

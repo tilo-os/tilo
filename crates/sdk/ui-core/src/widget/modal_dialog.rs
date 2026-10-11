@@ -2075,12 +2075,16 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // Compact presentation depends on both viewport axes. A synthetic
         // one-pixel height would classify every desktop sheet as a page and
         // measure its body at the wrong width, leaving it perpetually dirty.
-        let window = if self.presented {
-            self.window
-        } else {
-            tree_window(taffy, node)
-                .unwrap_or_else(|| Rect::new(0.0, 0.0, node_w, f64::from(l.size.height)))
-        };
+        // A presented dialog's last painted viewport can precede a resize.
+        // Measure against the current host tree before the next paint, so
+        // its body and wrapped text use the width they will actually occupy.
+        let window = tree_window(taffy, node).unwrap_or_else(|| {
+            if self.presented {
+                self.window
+            } else {
+                Rect::new(0.0, 0.0, node_w, f64::from(l.size.height))
+            }
+        });
         let body_w = body_width(window, self.max_width, &self.layout_theme);
         let pad = crate::num::f32_of_f64((node_w - body_w).max(0.0));
         let Ok(mut style) = taffy.style(node).cloned() else {
@@ -2097,14 +2101,13 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
         // Until the top layer has been painted over the window once, the
         // root of the tree the dialog stands in is the window: the sheet is
         // centred where the first paint will put it, so the content is
         // placed where it is drawn and hit from the first frame.
         if !self.presented {
-            self.window =
-                tree_window(taffy, node).unwrap_or_else(|| crate::widget::placed(&l, origin));
+            self.window = tree_window(taffy, node)
+                .unwrap_or_else(|| crate::widget::layout_rect(taffy, node, origin));
         }
         let Some(content_node) = taffy
             .children(node)

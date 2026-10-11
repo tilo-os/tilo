@@ -237,21 +237,7 @@ impl Widget for UndoButton {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        #[allow(
-            clippy::expect_used,
-            reason = "Widget apply_layout receives the node created by build_layout"
-        )]
-        let layout = taffy
-            .layout(node)
-            .expect("build_layout registered this node with the same tree");
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        let next = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
+        let next = crate::widget::layout_rect(taffy, node, origin);
         if next != self.rect {
             self.rect = next;
             self.dirty = true;

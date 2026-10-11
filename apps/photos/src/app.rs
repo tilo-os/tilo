@@ -11414,25 +11414,9 @@ impl Widget for PhotosApp {
 
     #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
-        let here = Point::new(x, y);
-        let child_rect = |child: NodeId| {
-            let l = taffy.layout(child).unwrap();
-            Rect::new(
-                x + f64::from(l.location.x),
-                y + f64::from(l.location.y),
-                x + f64::from(l.location.x) + f64::from(l.size.width),
-                y + f64::from(l.location.y) + f64::from(l.size.height),
-            )
-        };
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        let here = self.rect.origin();
+        let child_rect = |child: NodeId| ui::widget::layout_rect(taffy, child, here);
 
         let children = taffy.children(node).unwrap();
         if let Some(&header) = children.first() {

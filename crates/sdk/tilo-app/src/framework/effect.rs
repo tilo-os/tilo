@@ -19,7 +19,7 @@
 //! with [`ViewCx::drain`](super::ViewCx::drain): the framework runs it in the
 //! live app after each change, on every participant's device.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -262,21 +262,240 @@ type Then<R, H> = Box<dyn FnOnce(&mut H, Box<dyn Any + Send>, &mut EffectCx<R, H
 /// time the job is, `Some` once it arrived.
 type Source = Box<dyn FnMut() -> Option<Box<dyn Any + Send>>>;
 
-/// A job a handler or a completion started, not yet tracked.
-struct Started<R: Resource, H> {
+/// A job's completion with its types erased: a boxed [`Then`]. Only the
+/// completion needs the resource and the handler, so everything else a job
+/// is — its channel, its custody checks, its progress, stopping it — is
+/// compiled once in the shared runtime rather than once per resource and
+/// handler in every app.
+type ErasedThen = Box<dyn Any>;
+
+/// A job a handler or a completion started.
+struct Job {
     events: Receiver<JobEvent>,
-    then: Option<Then<R, H>>,
+    then: Option<ErasedThen>,
     cancelled: Arc<AtomicBool>,
     task: Option<ui_core::rt::JoinHandle<()>>,
     source: Option<Source>,
+    /// How many progress reports were taken from it.
+    sequence: u64,
     custody: Option<ResourceInvocationScope>,
 }
 
-impl<R: Resource, H> Started<R, H> {
+/// Where a job reports and under whose authority it runs: what the
+/// [`EffectCx`] that starts it holds.
+struct JobOrigin<'a> {
+    wake: &'a WakeHandle,
+    worker_custody: Option<&'a ResourceEffectScope>,
+    custody: Option<&'a ResourceInvocationScope>,
+}
+
+/// What polling a job found, before anything typed runs.
+enum Step {
+    /// Nothing new.
+    Idle,
+    /// It reported progress.
+    Progress(Polled),
+    /// It failed, or its caller's authority lapsed: stop it.
+    Stop(ActionFailure),
+    /// It ended without an answer.
+    Gone(ActionFailure),
+    /// It finished with this value; its completion runs next.
+    Finished(Box<dyn Any + Send>),
+}
+
+impl Job {
+    /// A job from `origin`, with the [`Progress`] its work reports through.
+    fn start(origin: &JobOrigin<'_>, then: Option<ErasedThen>) -> (Self, Progress) {
+        let (events, receiver) = channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let progress = Progress {
+            events,
+            cancelled: Arc::clone(&cancelled),
+            wake: origin.wake.clone(),
+            custody: origin.worker_custody.cloned(),
+        };
+        let job = Self {
+            events: receiver,
+            then,
+            cancelled,
+            task: None,
+            source: None,
+            sequence: 0,
+            custody: origin.custody.cloned(),
+        };
+        (job, progress)
+    }
+
+    /// A job whose answer, `output`, is already there.
+    fn answered(origin: &JobOrigin<'_>, output: ActionOutput) -> Self {
+        let (job, progress) = Self::start(origin, None);
+        EffectReply {
+            progress,
+            completion: false,
+        }
+        .finish(Ok(output));
+        job
+    }
+
     fn stop(self) {
         self.cancelled.store(true, Ordering::Release);
         if let Some(task) = self.task {
             task.abort();
+        }
+    }
+
+    /// The next thing the job reports.
+    fn next(&mut self) -> Step {
+        if let Some(error) = self.lapsed() {
+            return Step::Stop(failure(error));
+        }
+        let answered = self.source.as_mut().and_then(|source| source());
+        let event = match answered.map_or_else(
+            || self.events.try_recv(),
+            |value| Ok(JobEvent::Finished(value)),
+        ) {
+            Ok(event) => event,
+            Err(TryRecvError::Empty) => return Step::Idle,
+            Err(TryRecvError::Disconnected) => {
+                return Step::Gone(failure("the effect ended without an answer".into()));
+            }
+        };
+        if let Some(error) = self.lapsed() {
+            return Step::Stop(failure(error));
+        }
+        match event {
+            JobEvent::Failed(error) => Step::Stop(error),
+            JobEvent::Progress {
+                phase,
+                completed,
+                total,
+            } => {
+                self.sequence = self.sequence.saturating_add(1);
+                Step::Progress(Polled::Progress {
+                    sequence: self.sequence,
+                    phase,
+                    completed,
+                    total,
+                })
+            }
+            JobEvent::Finished(value) => Step::Finished(value),
+        }
+    }
+
+    /// Why the caller the job runs for may no longer have it run.
+    fn lapsed(&self) -> Option<String> {
+        self.custody
+            .as_ref()
+            .and_then(|custody| custody.check().err())
+    }
+
+    /// The answer of a job with no completion, which finished with `value`.
+    fn answer(value: Box<dyn Any + Send>) -> Polled {
+        let answered = match value.downcast::<Result<ActionOutput, ActionFailure>>() {
+            Ok(result) => *result,
+            Err(_) => Err(failure("the effect answered with another type".into())),
+        };
+        Polled::Finished(Some(answered))
+    }
+}
+
+/// Keep `job` as the one a context started, stopping one it started before.
+fn replace_started(started: &mut Option<Job>, job: Job) {
+    if let Some(previous) = started.replace(job) {
+        tracing::warn!("an effect started a second job; the first one is stopped");
+        previous.stop();
+    }
+}
+
+/// Run `answer` for the effect invocation `invocation`, under `custody`
+/// when a caller's authority bounds it, rechecking that authority after.
+fn answer_under(
+    custody: Option<&ResourceInvocationScope>,
+    invocation: Option<InvocationId>,
+    answer: &mut dyn FnMut() -> EffectAnswer,
+) -> EffectAnswer {
+    let _acting = ActingFor::enter(invocation);
+    match custody {
+        Some(custody) => custody
+            .with_effect(&mut *answer)
+            .and_then(|answer| custody.check().map(|()| answer)),
+        None => answer(),
+    }
+}
+
+/// What the caller of effect `id` learns from its handler's `answer`, and
+/// the job to keep running for it: `started`, the one the handler started,
+/// or for a `job` effect answered at once, one already answered.
+///
+/// # Errors
+/// The handler's failure, or why its answer breaks the effect's declaration.
+fn admit(
+    id: &str,
+    answer: EffectAnswer,
+    started: Option<Job>,
+    job: bool,
+    origin: &JobOrigin<'_>,
+) -> Result<(ResourceOperationStart, Option<Job>), String> {
+    let answer = match answer {
+        Ok(answer) => answer,
+        Err(error) => {
+            if let Some(started) = started {
+                started.stop();
+            }
+            return Err(error);
+        }
+    };
+    match (answer, started, job) {
+        (Effected::Done(output), started, false) => {
+            if let Some(started) = started {
+                started.stop();
+            }
+            Ok((ResourceOperationStart::Completed(output), None))
+        }
+        // A job's caller learns its result as the job's, even when it was
+        // ready at once.
+        (Effected::Done(output), started, true) => {
+            if let Some(started) = started {
+                started.stop();
+            }
+            let ready = Job::answered(origin, output);
+            Ok((ResourceOperationStart::Accepted, Some(ready)))
+        }
+        (Effected::Pending, Some(started), true) => {
+            Ok((ResourceOperationStart::Accepted, Some(started)))
+        }
+        (Effected::Pending, Some(started), false) => {
+            started.stop();
+            Err(format!(
+                "`{id}` is declared to answer at once; declare it `#[effect(job)]` to answer later"
+            ))
+        }
+        (Effected::Pending, None, _) => Err(format!("`{id}` answered later but started no job")),
+    }
+}
+
+/// What a completion's `answer` and the job it started, `next`, make of the
+/// job: its result, or the job that carries it on.
+fn settle(answer: EffectAnswer, next: Option<Job>) -> (Polled, Option<Job>) {
+    match (answer, next) {
+        (Ok(Effected::Pending), Some(next)) => (Polled::Finished(None), Some(next)),
+        (Ok(Effected::Pending), None) => (
+            Polled::Finished(Some(Err(failure(
+                "the effect's completion answered later but started no job".into(),
+            )))),
+            None,
+        ),
+        (answer, next) => {
+            if let Some(next) = next {
+                next.stop();
+            }
+            let result = answer
+                .map(|answer| match answer {
+                    Effected::Done(output) => output,
+                    Effected::Pending => ActionOutput::default(),
+                })
+                .map_err(failure);
+            (Polled::Finished(Some(result)), None)
         }
     }
 }
@@ -306,7 +525,7 @@ impl<R: Resource> Clone for EffectEnv<R> {
 pub struct EffectCx<R: Resource, H = ()> {
     env: EffectEnv<R>,
     invocation: Option<InvocationId>,
-    started: Option<Started<R, H>>,
+    started: Option<Job>,
     /// The resource's document while a surface's handler answers an
     /// invocation, lent to it for reading.
     document: Option<Rc<RefCell<tilo_resource::Doc>>>,
@@ -315,6 +534,8 @@ pub struct EffectCx<R: Resource, H = ()> {
     custody: Option<ResourceInvocationScope>,
     worker_custody: Option<ResourceEffectScope>,
     target: Option<ui_core::host_operation::OperationTarget>,
+    /// What a completion of a job started here gets mutable access to.
+    handler: std::marker::PhantomData<fn(&mut H)>,
 }
 
 /// The resource as it was at a past version a view asked for: its
@@ -337,6 +558,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             custody: None,
             worker_custody: None,
             target: None,
+            handler: std::marker::PhantomData,
         }
     }
 
@@ -451,27 +673,20 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         self.env.wake.clone()
     }
 
-    fn track(&mut self, then: Option<Then<R, H>>) -> (Progress, Arc<AtomicBool>) {
-        let (events, receiver) = channel();
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let progress = Progress {
-            events,
-            cancelled: Arc::clone(&cancelled),
-            wake: self.env.wake.clone(),
-            custody: self.worker_custody.clone(),
-        };
-        if let Some(previous) = self.started.replace(Started {
-            events: receiver,
-            then,
-            cancelled: Arc::clone(&cancelled),
-            task: None,
-            source: None,
-            custody: self.custody.clone(),
-        }) {
-            tracing::warn!("an effect started a second job; the first one is stopped");
-            previous.stop();
+    /// Where jobs this context starts report, and under whose authority.
+    fn origin(&self) -> JobOrigin<'_> {
+        JobOrigin {
+            wake: &self.env.wake,
+            worker_custody: self.worker_custody.as_ref(),
+            custody: self.custody.as_ref(),
         }
-        (progress, cancelled)
+    }
+
+    fn track(&mut self, then: Option<Then<R, H>>) -> Progress {
+        let then = then.map(|then| Box::new(then) as ErasedThen);
+        let (job, progress) = Job::start(&self.origin(), then);
+        replace_started(&mut self.started, job);
+        progress
     }
 
     fn then<T: Send + 'static>(
@@ -495,7 +710,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         T: Send + 'static,
         F: std::future::Future<Output = T> + Send + 'static,
     {
-        let (progress, _) = self.track(Some(Self::then(then)));
+        let progress = self.track(Some(Self::then(then)));
         let future = work(progress.clone());
         let task = ui_core::rt::app().spawn(async move {
             let mut future = std::pin::pin!(future);
@@ -529,7 +744,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     where
         T: Send + 'static,
     {
-        let (progress, _) = self.track(Some(Self::then(then)));
+        let progress = self.track(Some(Self::then(then)));
         let task = ui_core::rt::app().spawn_blocking(move || {
             match progress.with_effect(|| Ok(work(progress.clone()))) {
                 Ok(value) => progress.finish(Box::new(value)),
@@ -545,7 +760,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// Answer later, from wherever the work settles. Return
     /// [`Effected::Pending`] and keep the reply until then.
     pub fn reply(&mut self) -> EffectReply {
-        let (progress, _) = self.track(None);
+        let progress = self.track(None);
         EffectReply {
             progress,
             completion: false,
@@ -560,7 +775,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         &mut self,
         then: impl FnOnce(&mut H, ActionOutput, &mut Self) -> EffectAnswer + 'static,
     ) -> EffectReply {
-        let (progress, _) = self.track(Some(Self::then(then)));
+        let progress = self.track(Some(Self::then(then)));
         EffectReply {
             progress,
             completion: true,
@@ -576,7 +791,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         receiver: Receiver<T>,
         then: impl FnOnce(&mut H, Option<T>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
-        let (progress, _) = self.track(Some(Self::then(then)));
+        let progress = self.track(Some(Self::then(then)));
         if let Some(started) = self.started.as_mut() {
             started.source = Some(Box::new(move || {
                 // The job's own channel stays open while it waits here.
@@ -694,7 +909,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             }
         }
         let asked = Asked(opener.open(arguments));
-        let (progress, _) = self.track(Some(Self::then(then)));
+        let progress = self.track(Some(Self::then(then)));
         if let Some(started) = self.started.as_mut() {
             started.source = Some(Box::new(move || {
                 // The job's own channel stays open while it waits here.
@@ -745,12 +960,83 @@ pub struct JobProgress {
 /// What the jobs' owner has yet to take up.
 #[derive(Default)]
 struct JobQueue {
-    /// Jobs started and not yet tracked, each a `Started<R, H>`.
-    started: Vec<(String, Box<dyn Any>)>,
+    /// Jobs started and not yet tracked, with the type of the owner whose
+    /// completions they run with.
+    started: Vec<(String, TypeId, Job)>,
     cancelled: Vec<String>,
     running: std::collections::HashSet<String>,
     /// The last progress each running job reported.
     progress: HashMap<String, JobProgress>,
+}
+
+impl JobQueue {
+    /// Queue `job`, started under `key` for the owner of type `owner`, in
+    /// place of any job queued or cancelled under it.
+    fn queue(&mut self, key: String, owner: TypeId, job: Job) {
+        self.cancelled.retain(|cancelled| *cancelled != key);
+        self.started.retain(|(queued, _, _)| *queued != key);
+        self.running.insert(key.clone());
+        self.progress.remove(&key);
+        self.started.push((key, owner, job));
+    }
+
+    fn cancel(&mut self, key: &str) {
+        self.started.retain(|(queued, _, _)| queued != key);
+        self.progress.remove(key);
+        if self.running.remove(key) {
+            self.cancelled.push(key.to_owned());
+        }
+    }
+
+    /// Stop in `running` the jobs cancelled since, and hand it those
+    /// started for the owner of type `owner`.
+    fn adopt(&mut self, owner: TypeId, running: &mut JobMap<String>) {
+        for key in std::mem::take(&mut self.cancelled) {
+            running.cancel(&key);
+        }
+        let mut others = Vec::new();
+        for (key, queued_for, job) in std::mem::take(&mut self.started) {
+            if queued_for == owner {
+                running.insert(key, job);
+            } else {
+                others.push((key, queued_for, job));
+            }
+        }
+        self.started = others;
+    }
+
+    /// Record what the job `key` of a `kind` resource reported. Answers
+    /// whether to poll it again.
+    fn record(&mut self, kind: &str, key: &str, polled: Polled) -> bool {
+        match polled {
+            Polled::Progress {
+                phase,
+                completed,
+                total,
+                ..
+            } => {
+                self.progress.insert(
+                    key.to_owned(),
+                    JobProgress {
+                        phase,
+                        completed,
+                        total,
+                    },
+                );
+                true
+            }
+            Polled::Finished(result) => {
+                if let Some(result) = result {
+                    if let Err(error) = result {
+                        tracing::warn!(error = %error.message, kind, %key, "a job failed");
+                    }
+                    self.running.remove(key);
+                    self.progress.remove(key);
+                }
+                false
+            }
+        }
+    }
 }
 
 impl<R: Resource> Jobs<R> {
@@ -778,12 +1064,9 @@ impl<R: Resource> Jobs<R> {
         let answer = start(&mut cx);
         match (answer, cx.started.take()) {
             (Ok(Effected::Pending), Some(started)) => {
-                let mut queue = self.queue.borrow_mut();
-                queue.cancelled.retain(|cancelled| *cancelled != key);
-                queue.started.retain(|(queued, _)| *queued != key);
-                queue.running.insert(key.clone());
-                queue.progress.remove(&key);
-                queue.started.push((key, Box::new(started)));
+                self.queue
+                    .borrow_mut()
+                    .queue(key, TypeId::of::<H>(), started);
             }
             (answer, started) => {
                 if let Some(started) = started {
@@ -798,12 +1081,7 @@ impl<R: Resource> Jobs<R> {
 
     /// Stop the job `key`; its result, if it comes, is dropped.
     pub fn cancel(&self, key: &str) {
-        let mut queue = self.queue.borrow_mut();
-        queue.started.retain(|(queued, _)| queued != key);
-        queue.progress.remove(key);
-        if queue.running.remove(key) {
-            queue.cancelled.push(key.to_owned());
-        }
+        self.queue.borrow_mut().cancel(key);
     }
 
     /// Whether the job `key` is still running.
@@ -838,50 +1116,15 @@ impl<R: Resource, H: 'static> OwnedJobs<R, H> {
         let Some(env) = self.jobs.env.clone() else {
             return;
         };
-        {
-            let mut queue = self.jobs.queue.borrow_mut();
-            for key in std::mem::take(&mut queue.cancelled) {
-                self.running.cancel(&key);
-            }
-            let mut others = Vec::new();
-            for (key, started) in std::mem::take(&mut queue.started) {
-                match started.downcast::<Started<R, H>>() {
-                    Ok(started) => self.running.insert(key, *started),
-                    Err(started) => others.push((key, started)),
-                }
-            }
-            queue.started = others;
-        }
+        self.jobs
+            .queue
+            .borrow_mut()
+            .adopt(TypeId::of::<H>(), &mut self.running.jobs);
         for key in self.running.keys() {
             while let Some(polled) = self.running.poll(&key, host, &env, None) {
-                let result = match polled {
-                    Polled::Progress {
-                        phase,
-                        completed,
-                        total,
-                        ..
-                    } => {
-                        self.jobs.queue.borrow_mut().progress.insert(
-                            key.clone(),
-                            JobProgress {
-                                phase,
-                                completed,
-                                total,
-                            },
-                        );
-                        continue;
-                    }
-                    Polled::Finished(result) => result,
-                };
-                if let Some(result) = result {
-                    if let Err(error) = result {
-                        tracing::warn!(error = %error.message, kind = R::KIND, %key, "a job failed");
-                    }
-                    let mut queue = self.jobs.queue.borrow_mut();
-                    queue.running.remove(&key);
-                    queue.progress.remove(&key);
+                if !self.jobs.queue.borrow_mut().record(R::KIND, &key, polled) {
+                    break;
                 }
-                break;
             }
         }
     }
@@ -961,40 +1204,6 @@ pub(crate) fn published_specs<E: Effect>(statuses: &[EffectStatus]) -> Vec<Actio
         .collect()
 }
 
-/// A tracked job.
-struct Job<R: Resource, H> {
-    events: Receiver<JobEvent>,
-    then: Option<Then<R, H>>,
-    cancelled: Arc<AtomicBool>,
-    task: Option<ui_core::rt::JoinHandle<()>>,
-    source: Option<Source>,
-    sequence: u64,
-    custody: Option<ResourceInvocationScope>,
-}
-
-impl<R: Resource, H> From<Started<R, H>> for Job<R, H> {
-    fn from(started: Started<R, H>) -> Self {
-        Self {
-            events: started.events,
-            then: started.then,
-            cancelled: started.cancelled,
-            task: started.task,
-            source: started.source,
-            sequence: 0,
-            custody: started.custody,
-        }
-    }
-}
-
-impl<R: Resource, H> Job<R, H> {
-    fn stop(self) {
-        self.cancelled.store(true, Ordering::Release);
-        if let Some(task) = self.task {
-            task.abort();
-        }
-    }
-}
-
 /// What a job reported when polled.
 enum Polled {
     Progress {
@@ -1007,45 +1216,64 @@ enum Polled {
     Finished(Option<Result<ActionOutput, ActionFailure>>),
 }
 
-/// The jobs one handler runs, keyed by what they answer.
-pub(crate) struct Running<R: Resource, H, K = InvocationId> {
-    running: HashMap<K, Job<R, H>>,
-}
+/// Jobs keyed by what they answer, stopped when dropped. Generic only over
+/// the key, so its table is shared by every resource and handler.
+struct JobMap<K>(HashMap<K, Job>);
 
-impl<R: Resource, H, K> Default for Running<R, H, K> {
-    fn default() -> Self {
-        Self {
-            running: HashMap::new(),
-        }
-    }
-}
-
-impl<R: Resource, H, K> Drop for Running<R, H, K> {
+impl<K> Drop for JobMap<K> {
     fn drop(&mut self) {
-        for (_, job) in self.running.drain() {
+        for (_, job) in self.0.drain() {
             job.stop();
         }
     }
 }
 
-impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
-    fn insert(&mut self, key: K, started: Started<R, H>) {
-        if let Some(previous) = self.running.insert(key, started.into()) {
+impl<K: Eq + Hash> JobMap<K> {
+    /// Track `job` under `key`, stopping a job tracked there before.
+    fn insert(&mut self, key: K, job: Job) {
+        if let Some(previous) = self.0.insert(key, job) {
             previous.stop();
         }
     }
 
+    /// Stop the job answering `key`; its result, if it comes, is dropped.
+    fn cancel(&mut self, key: &K) -> bool {
+        self.0.remove(key).map(Job::stop).is_some()
+    }
+}
+
+/// The jobs one handler runs, keyed by what they answer.
+pub(crate) struct Running<R: Resource, H, K = InvocationId> {
+    jobs: JobMap<K>,
+    /// The resource and the handler the jobs' completions run with.
+    completes: std::marker::PhantomData<fn(R, &mut H)>,
+}
+
+impl<R: Resource, H, K> Default for Running<R, H, K> {
+    fn default() -> Self {
+        Self {
+            jobs: JobMap(HashMap::new()),
+            completes: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
+    fn insert(&mut self, key: K, job: Job) {
+        self.jobs.insert(key, job);
+    }
+
     fn contains(&self, key: &K) -> bool {
-        self.running.contains_key(key)
+        self.jobs.0.contains_key(key)
     }
 
     fn keys(&self) -> Vec<K> {
-        self.running.keys().cloned().collect()
+        self.jobs.0.keys().cloned().collect()
     }
 
     /// Stop the job answering `key`; its result, if it comes, is dropped.
     fn cancel(&mut self, key: &K) -> bool {
-        self.running.remove(key).map(Job::stop).is_some()
+        self.jobs.cancel(key)
     }
 
     /// The next thing the job `key` reports, running its completion on this
@@ -1057,102 +1285,47 @@ impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
         env: &EffectEnv<R>,
         invocation: Option<InvocationId>,
     ) -> Option<Polled> {
-        if let Some(error) = self
-            .running
-            .get(key)
-            .and_then(|job| job.custody.as_ref())
-            .and_then(|custody| custody.check().err())
-        {
-            self.cancel(key);
-            return Some(Polled::Finished(Some(Err(failure(error)))));
-        }
-        let job = self.running.get_mut(key)?;
-        let answered = job.source.as_mut().and_then(|source| source());
-        let event = match answered.map_or_else(
-            || job.events.try_recv(),
-            |value| Ok(JobEvent::Finished(value)),
-        ) {
-            Ok(event) => event,
-            Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => {
-                self.running.remove(key);
-                return Some(Polled::Finished(Some(Err(failure(
-                    "the effect ended without an answer".into(),
-                )))));
-            }
-        };
-        if let Some(error) = job
-            .custody
-            .as_ref()
-            .and_then(|custody| custody.check().err())
-        {
-            self.cancel(key);
-            return Some(Polled::Finished(Some(Err(failure(error)))));
-        }
-        let value = match event {
-            JobEvent::Failed(error) => {
+        let value = match self.jobs.0.get_mut(key)?.next() {
+            Step::Idle => return None,
+            Step::Progress(progress) => return Some(progress),
+            Step::Stop(error) => {
                 self.cancel(key);
                 return Some(Polled::Finished(Some(Err(error))));
             }
-            JobEvent::Progress {
-                phase,
-                completed,
-                total,
-            } => {
-                job.sequence = job.sequence.saturating_add(1);
-                return Some(Polled::Progress {
-                    sequence: job.sequence,
-                    phase,
-                    completed,
-                    total,
-                });
+            Step::Gone(error) => {
+                self.jobs.0.remove(key);
+                return Some(Polled::Finished(Some(Err(error))));
             }
-            JobEvent::Finished(value) => value,
+            Step::Finished(value) => value,
         };
-        let job = self.running.remove(key)?;
-        let Some(then) = job.then else {
-            let answered = match value.downcast::<Result<ActionOutput, ActionFailure>>() {
-                Ok(result) => *result,
-                Err(_) => Err(failure("the effect answered with another type".into())),
-            };
-            return Some(Polled::Finished(Some(answered)));
+        let mut job = self.jobs.0.remove(key)?;
+        let Some(then) = job.then.take() else {
+            return Some(Job::answer(value));
         };
-        let mut cx = match EffectCx::new(env.clone(), invocation).with_custody(job.custody.clone())
-        {
+        let custody = job.custody.take();
+        let Ok(then) = then.downcast::<Then<R, H>>() else {
+            return Some(Polled::Finished(Some(Err(failure(
+                "a job's completion runs with another handler".into(),
+            )))));
+        };
+        let mut cx = match EffectCx::new(env.clone(), invocation).with_custody(custody.clone()) {
             Ok(cx) => cx,
             Err(error) => return Some(Polled::Finished(Some(Err(failure(error))))),
         };
-        let answer = {
-            let _acting = ActingFor::enter(invocation);
-            match &job.custody {
-                Some(custody) => custody
-                    .with_effect(|| then(host, value, &mut cx))
-                    .and_then(|answer| custody.check().map(|()| answer)),
-                None => then(host, value, &mut cx),
-            }
-        };
-        Some(match (answer, cx.started.take()) {
-            (Ok(Effected::Pending), Some(next)) => {
-                self.insert(key.clone(), next);
-                Polled::Finished(None)
-            }
-            (Ok(Effected::Pending), None) => Polled::Finished(Some(Err(failure(
-                "the effect's completion answered later but started no job".into(),
-            )))),
-            (answer, next) => {
-                if let Some(next) = next {
-                    next.stop();
-                }
-                Polled::Finished(Some(
-                    answer
-                        .map(|answer| match answer {
-                            Effected::Done(output) => output,
-                            Effected::Pending => ActionOutput::default(),
-                        })
-                        .map_err(failure),
-                ))
-            }
-        })
+        let mut completion = Some((then, value));
+        let answer = answer_under(
+            custody.as_ref(),
+            invocation,
+            &mut || match completion.take() {
+                Some((then, value)) => then(host, value, &mut cx),
+                None => Err("a job's completion ran twice".into()),
+            },
+        );
+        let (polled, next) = settle(answer, cx.started.take());
+        if let Some(next) = next {
+            self.insert(key.clone(), next);
+        }
+        Some(polled)
     }
 }
 
@@ -1253,60 +1426,22 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
             cx.heads = doc.base_heads();
             Rc::new(RefCell::new(doc.clone()))
         });
-        let answer = {
-            let _acting = ActingFor::enter(Some(request.invocation));
-            match custody {
-                Some(custody) => custody
-                    .with_effect(|| handle(host, effect, &mut cx))
-                    .and_then(|answer| custody.check().map(|()| answer)),
-                None => handle(host, effect, &mut cx),
-            }
-        };
+        let mut handled = Some((handle, effect));
+        let answer = answer_under(
+            custody,
+            Some(request.invocation),
+            &mut || match handled.take() {
+                Some((handle, effect)) => handle(host, effect, &mut cx),
+                None => Err("an effect's handler ran twice".into()),
+            },
+        );
         cx.document = None;
         let started = cx.started.take();
-        let answer = match answer {
-            Ok(answer) => answer,
-            Err(error) => {
-                if let Some(started) = started {
-                    started.stop();
-                }
-                return Err(error);
-            }
-        };
-        match (answer, started, job) {
-            (Effected::Done(output), started, false) => {
-                if let Some(started) = started {
-                    started.stop();
-                }
-                Ok(Some(ResourceOperationStart::Completed(output)))
-            }
-            // A job's caller learns its result as the job's, even when it
-            // was ready at once.
-            (Effected::Done(output), started, true) => {
-                if let Some(started) = started {
-                    started.stop();
-                }
-                let reply = cx.reply();
-                reply.finish(Ok(output));
-                if let Some(ready) = cx.started.take() {
-                    self.jobs.insert(request.invocation, ready);
-                }
-                Ok(Some(ResourceOperationStart::Accepted))
-            }
-            (Effected::Pending, Some(started), true) => {
-                self.jobs.insert(request.invocation, started);
-                Ok(Some(ResourceOperationStart::Accepted))
-            }
-            (Effected::Pending, Some(started), false) => {
-                started.stop();
-                Err(format!(
-                    "`{id}` is declared to answer at once; declare it `#[effect(job)]` to answer later"
-                ))
-            }
-            (Effected::Pending, None, _) => {
-                Err(format!("`{id}` answered later but started no job"))
-            }
+        let (start, keep) = admit(id, answer, started, job, &cx.origin())?;
+        if let Some(keep) = keep {
+            self.jobs.insert(request.invocation, keep);
         }
+        Ok(Some(start))
     }
 
     /// The next update of the job answering `invocation`, if this runner
@@ -1360,7 +1495,7 @@ struct Published {
 }
 
 /// A view's effect handler, type-erased for the root.
-trait ViewHandler<R: Resource> {
+trait ViewHandler {
     fn start(
         &mut self,
         op: &ResourceOperation<'_>,
@@ -1375,7 +1510,7 @@ struct Handler<R: Resource, E> {
     handle: Handle<R, E>,
 }
 
-impl<R: Resource, E: Effect> ViewHandler<R> for Handler<R, E> {
+impl<R: Resource, E: Effect> ViewHandler for Handler<R, E> {
     fn start(
         &mut self,
         op: &ResourceOperation<'_>,
@@ -1423,9 +1558,10 @@ impl std::fmt::Debug for Projection {
 }
 
 /// A projection drain, type-erased for the root.
-trait Drainer<R: Resource> {
-    /// Start what is pending in `state` and not running or just settled.
-    fn run(&mut self, state: &R::State, revision: u64);
+trait Drainer {
+    /// Start what is pending in `state`, the drain's resource state, and
+    /// not running or just settled.
+    fn run(&mut self, state: &dyn Any, revision: u64);
     /// Settle finished jobs at `revision`; whether any did.
     fn poll(&mut self, revision: u64) -> bool;
     /// Forget which entries finished, so those still pending run again.
@@ -1444,8 +1580,11 @@ struct Drain<R: Resource, K, T> {
     settled: HashMap<K, u64>,
 }
 
-impl<R: Resource, K: Eq + Hash + Clone + 'static, T: 'static> Drainer<R> for Drain<R, K, T> {
-    fn run(&mut self, state: &R::State, revision: u64) {
+impl<R: Resource, K: Eq + Hash + Clone + 'static, T: 'static> Drainer for Drain<R, K, T> {
+    fn run(&mut self, state: &dyn Any, revision: u64) {
+        let Some(state) = state.downcast_ref::<R::State>() else {
+            return;
+        };
         let pending = (self.pending)(state);
         self.settled
             .retain(|key, _| pending.iter().any(|(entry, _)| entry == key));
@@ -1495,22 +1634,26 @@ impl<R: Resource, K: Eq + Hash + Clone + 'static, T: 'static> Drainer<R> for Dra
     }
 }
 
-struct Registered<R: Resource> {
+struct Registered {
     alive: Weak<()>,
     operation: &'static str,
-    handler: Box<dyn ViewHandler<R>>,
+    handler: Box<dyn ViewHandler>,
 }
 
-struct Drains<R: Resource> {
+struct Drains {
     alive: Weak<()>,
-    drain: Box<dyn Drainer<R>>,
+    drain: Box<dyn Drainer>,
 }
 
-struct Inner<R: Resource> {
-    causal: causal::CausalEffects<R>,
+/// What [`Effects`] keeps. Its handlers and drains are type-erased, so it
+/// and everything it does without the resource's state is compiled once in
+/// the shared runtime rather than once per resource in every app.
+#[derive(Default)]
+struct Inner {
+    causal: causal::CausalEffects,
     published: Vec<Published>,
-    handlers: Vec<Registered<R>>,
-    drains: Vec<Drains<R>>,
+    handlers: Vec<Registered>,
+    drains: Vec<Drains>,
     /// The revision drains last ran at.
     drained: Option<u64>,
     /// Set when the outside world a drain compares against changed, so the
@@ -1518,11 +1661,80 @@ struct Inner<R: Resource> {
     outside_changed: Rc<Cell<bool>>,
 }
 
+impl Inner {
+    fn prune(&mut self) {
+        self.published
+            .retain(|entry| entry.alive.strong_count() > 0);
+        self.handlers.retain(|entry| entry.alive.strong_count() > 0);
+        self.drains.retain(|entry| entry.alive.strong_count() > 0);
+    }
+
+    fn operations(&mut self) -> Vec<&'static str> {
+        self.prune();
+        self.published.iter().map(|entry| entry.operation).collect()
+    }
+
+    fn specs(&mut self) -> Vec<ActionSpec> {
+        self.prune();
+        self.published
+            .iter()
+            .flat_map(|entry| (entry.specs)())
+            .collect()
+    }
+
+    fn start(
+        &mut self,
+        op: &ResourceOperation<'_>,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        self.prune();
+        for entry in &mut self.handlers {
+            if op.with_custody().0.type_id == entry.operation
+                && let Some(started) = entry.handler.start(op)?
+            {
+                return Ok(Some(started));
+            }
+        }
+        Ok(None)
+    }
+
+    fn poll(&mut self, invocation: InvocationId, cancel: bool) -> Option<InvocationUpdate> {
+        if let Some(update) = self.causal.poll_invocation(invocation, cancel) {
+            return Some(update);
+        }
+        self.handlers
+            .iter_mut()
+            .find_map(|entry| entry.handler.poll(invocation, cancel))
+    }
+
+    /// [`Effects::drain_projections`], `state` being the resource's state.
+    fn drain_projections(&mut self, state: &dyn Any, revision: u64) {
+        if self.drains.is_empty() {
+            return;
+        }
+        self.prune();
+        let mut settled = false;
+        for entry in &mut self.drains {
+            settled |= entry.drain.poll(revision);
+        }
+        let outside_changed = self.outside_changed.replace(false);
+        if !settled && !outside_changed && self.drained == Some(revision) {
+            return;
+        }
+        self.drained = Some(revision);
+        for entry in &mut self.drains {
+            if outside_changed {
+                entry.drain.forget_settled();
+            }
+            entry.drain.run(state, revision);
+        }
+    }
+}
+
 /// Every effect handler and projection drain of one live resource root, and
 /// what they publish. Clones share it.
 pub(crate) struct Effects<R: Resource> {
     env: Option<EffectEnv<R>>,
-    inner: Rc<RefCell<Inner<R>>>,
+    inner: Rc<RefCell<Inner>>,
     /// The jobs the views start on their own, polled with the drains.
     jobs: Rc<RefCell<OwnedJobs<R, ()>>>,
 }
@@ -1537,17 +1749,11 @@ impl<R: Resource> Clone for Effects<R> {
     }
 }
 
-impl<R: Resource> Default for Inner<R> {
-    fn default() -> Self {
-        Self {
-            causal: causal::CausalEffects::default(),
-            published: Vec::new(),
-            handlers: Vec::new(),
-            drains: Vec::new(),
-            drained: None,
-            outside_changed: Rc::default(),
-        }
-    }
+/// `R`'s state as `doc` holds it, type-erased for [`causal::CausalEffects`].
+fn read_state<R: Resource>(doc: &tilo_resource::Doc) -> Result<Box<dyn Any>, String> {
+    R::read(doc)
+        .map(|state| Box::new(state) as Box<dyn Any>)
+        .map_err(|error| error.to_string())
 }
 
 impl<R: Resource> Effects<R> {
@@ -1654,36 +1860,14 @@ impl<R: Resource> Effects<R> {
         }
     }
 
-    fn prune(inner: &mut Inner<R>) {
-        inner
-            .published
-            .retain(|entry| entry.alive.strong_count() > 0);
-        inner
-            .handlers
-            .retain(|entry| entry.alive.strong_count() > 0);
-        inner.drains.retain(|entry| entry.alive.strong_count() > 0);
-    }
-
     /// The operation types of every published vocabulary.
     pub(crate) fn operations(&self) -> Vec<&'static str> {
-        let mut inner = self.inner.borrow_mut();
-        Self::prune(&mut inner);
-        inner
-            .published
-            .iter()
-            .map(|entry| entry.operation)
-            .collect()
+        self.inner.borrow_mut().operations()
     }
 
     /// Every published effect, as callers see it now.
     pub(crate) fn specs(&self) -> Vec<ActionSpec> {
-        let mut inner = self.inner.borrow_mut();
-        Self::prune(&mut inner);
-        inner
-            .published
-            .iter()
-            .flat_map(|entry| (entry.specs)())
-            .collect()
+        self.inner.borrow_mut().specs()
     }
 
     /// Answer `op` with the view handler of its vocabulary.
@@ -1691,27 +1875,11 @@ impl<R: Resource> Effects<R> {
         &self,
         op: &ResourceOperation<'_>,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        let mut inner = self.inner.borrow_mut();
-        Self::prune(&mut inner);
-        for entry in &mut inner.handlers {
-            if op.with_custody().0.type_id == entry.operation
-                && let Some(started) = entry.handler.start(op)?
-            {
-                return Ok(Some(started));
-            }
-        }
-        Ok(None)
+        self.inner.borrow_mut().start(op)
     }
 
     pub(crate) fn poll(&self, invocation: InvocationId, cancel: bool) -> Option<InvocationUpdate> {
-        let mut inner = self.inner.borrow_mut();
-        if let Some(update) = inner.causal.poll_invocation(invocation, cancel) {
-            return Some(update);
-        }
-        inner
-            .handlers
-            .iter_mut()
-            .find_map(|entry| entry.handler.poll(invocation, cancel))
+        self.inner.borrow_mut().poll(invocation, cancel)
     }
 
     pub(crate) fn has_causal_drains(&self) -> bool {
@@ -1723,7 +1891,10 @@ impl<R: Resource> Effects<R> {
         operation: &ResourceOperation<'_>,
         applied: &ui_core::widget::document_effects::AppliedDocument<'_>,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner.borrow_mut().causal.start(operation, applied)
+        self.inner
+            .borrow_mut()
+            .causal
+            .start(operation, applied, &read_state::<R>)
     }
 
     pub(crate) fn drain_causal<K: Eq + Hash + Clone + 'static, T: 'static>(
@@ -1743,26 +1914,7 @@ impl<R: Resource> Effects<R> {
     /// Settle finished projection jobs, then start what the document at
     /// `revision` lists and is not running yet.
     pub(crate) fn drain_projections(&self, state: &R::State, revision: u64) {
-        let mut inner = self.inner.borrow_mut();
-        if inner.drains.is_empty() {
-            return;
-        }
-        Self::prune(&mut inner);
-        let mut settled = false;
-        for entry in &mut inner.drains {
-            settled |= entry.drain.poll(revision);
-        }
-        let outside_changed = inner.outside_changed.replace(false);
-        if !settled && !outside_changed && inner.drained == Some(revision) {
-            return;
-        }
-        inner.drained = Some(revision);
-        for entry in &mut inner.drains {
-            if outside_changed {
-                entry.drain.forget_settled();
-            }
-            entry.drain.run(state, revision);
-        }
+        self.inner.borrow_mut().drain_projections(state, revision);
     }
 }
 

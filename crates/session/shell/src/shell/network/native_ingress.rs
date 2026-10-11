@@ -309,6 +309,7 @@ impl ShellNetwork {
         if self.dispatch_channel_traffic(input) {
             return;
         }
+        let generation = input.generation().ok();
         let report = match input.admit(identity) {
             Ok(report) => report,
             Err(error) => {
@@ -316,10 +317,13 @@ impl ShellNetwork {
                 return;
             }
         };
-        // Actual governor admission can enable successors or retire custody.
-        let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
-            ws: room_topic_id(input.room()),
-        });
+        // A genuine committed change can enable successors or retire custody.
+        // An unchanged replay must not enqueue another expensive recovery pass.
+        if generation != input.generation().ok() {
+            let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
+                ws: room_topic_id(input.room()),
+            });
+        }
         // The durable owner already projected governed shell state. Only an exact
         // admitted app operation may now reach the existing broker fanout.
         if !matches!(

@@ -52,6 +52,26 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
 done
 
 [ "${#packages[@]}" -gt 0 ] || { echo "no tapp applications selected" >&2; exit 1; }
+
+# Runtime engines (crates/runtime/engines/*): Rust dylibs chained on
+# the runtime, each mapped only by the app that uses it, and shipped beside
+# libruntime_dylib.so in the runtime bundle. The bundle must not depend on
+# which apps this run selects, so every engine is built every time, through
+# its `<package>-check` binary: Cargo builds a library only for a target that
+# needs it, and `--lib` would build every app's library too.
+engines=()
+for manifest in "$REPO"/crates/runtime/engines/*/Cargo.toml; do
+    [ -f "$manifest" ] || continue
+    engine="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
+    [ -n "$engine" ] || { echo "could not read the package name of $manifest" >&2; exit 1; }
+    grep -Fq "name = \"$engine-check\"" "$manifest" \
+        || { echo "runtime engine $engine has no $engine-check binary" >&2; exit 1; }
+    engines+=("$engine")
+    packages+=("-p" "$engine")
+    features+=("$engine/thin")
+    binary_crates+=("${engine//-/_}_check")
+    build_targets+=(--bin "$engine-check")
+done
 [ "${#binaries[@]}" -gt 0 ] || { echo "no tapp binaries selected" >&2; exit 1; }
 for requested in $BUILD_PACKAGES; do
     [[ " ${packages[*]} " == *" -p $requested "* ]] || {
@@ -83,6 +103,20 @@ unset CARGO_PROFILE_RELEASE_CODEGEN_UNITS CARGO_PROFILE_RELEASE_LTO \
 # its own allowlist of variables.
 cd "$REPO"
 read -r -a extra_cargo_args <<< "${EXTRA_CARGO_ARGS:-}"
+# sccache must see the real compiler after the workspace wrapper adds its
+# flags. Outside it, sccache 0.17 rejects an absolute compiler as a second
+# input; a literal compiler is cacheable but bypasses the flag-mutating wrapper.
+# Keep Cargo's compiler selection intact and route workspace calls through the
+# size wrapper before caching. The dispatcher retains native compiler caching.
+if [[ ${RUSTC_WRAPPER:-} == */sccache || ${RUSTC_WRAPPER:-} == sccache ]]; then
+    cache_path=$RUSTC_WRAPPER
+    cache_config=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$cache_path")
+    export TILO_THIN_SCCACHE="$cache_path"
+    export RUSTC_WRAPPER="$REPO/tools/ci/thin-app/sccache"
+    extra_cargo_args+=(--config "build.rustc-wrapper=\"$RUSTC_WRAPPER\""
+                      --config "env.TILO_THIN_SCCACHE.value=$cache_config"
+                      --config "env.TILO_THIN_SCCACHE.force=true")
+fi
 if [ -n "${SDK_COMPILER_UNITS:-}" ]; then
     extra_cargo_args+=(--message-format=json-render-diagnostics)
     # Keep the actual unit identities on the producing machine; no runtime bytes change.
@@ -144,8 +178,37 @@ for index in "${!binaries[@]}"; do
     rm -f "$TARGET_DIR/$PROFILE/.${crate}.loader-check.err"
 done
 
-printf 'built %s thin tapp apps with %s\n' \
-    "${#binaries[@]}" "$TARGET_DIR/$PROFILE/libruntime_dylib.so"
+# Each engine must link this runtime through the wrapper and run against it.
+# The list written last is what packaging folds into the runtime bundle
+# (dist/apps/package-apps.sh, os/Containerfile, os/dev/assemble-app-runtime.py):
+# one library file name a line, beside libruntime_dylib.so.
+engine_list="$TARGET_DIR/$PROFILE/runtime-engines"
+rm -f "$engine_list"
+: > "$engine_list.partial"
+engine_count=0
+for engine in ${engines[@]+"${engines[@]}"}; do
+    library="lib${engine//-/_}.so"
+    [ -f "$TARGET_DIR/$PROFILE/$library" ] \
+        || { echo "runtime engine $engine did not produce $library" >&2; exit 1; }
+    readelf -dW "$TARGET_DIR/$PROFILE/$library" | grep -Fq '[libruntime_dylib.so]' || {
+        echo "runtime engine $library does not link libruntime_dylib.so; it would carry its own copy of the shared crates" >&2
+        exit 1
+    }
+    readelf -dW "$TARGET_DIR/$PROFILE/$library" | grep -Fq '(RELR)' || {
+        echo "runtime engine $library was not linked through rustc-thin-app-wrapper.sh (no RELR)" >&2
+        exit 1
+    }
+    LD_LIBRARY_PATH="$TARGET_DIR/$PROFILE:$rust_target_libdir" "$TARGET_DIR/$PROFILE/$engine-check" || {
+        echo "runtime engine $library does not run against this runtime ($engine-check failed)" >&2
+        exit 1
+    }
+    printf '%s\n' "$library" >> "$engine_list.partial"
+    engine_count=$((engine_count + 1))
+done
+mv "$engine_list.partial" "$engine_list"
+
+printf 'built %s thin tapp apps with %s and %s runtime engines\n' \
+    "${#binaries[@]}" "$TARGET_DIR/$PROFILE/libruntime_dylib.so" "$engine_count"
 
 # The producer may capture the unit stream immediately after this script exits.
 # Join its writer rather than exposing a still-being-written inventory.

@@ -1623,6 +1623,29 @@ struct Trailing {
     wrapped: bool,
 }
 
+/// One of a row's own pressable controls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowPart {
+    /// The hover action at this index.
+    Action(usize),
+    /// The leading checkbox.
+    Check,
+}
+
+impl RowPart {
+    /// What names the control across a rebuild: the row's id and which
+    /// control of the row it is.
+    fn key(self, row: &str) -> String {
+        if row.is_empty() {
+            return String::new();
+        }
+        match self {
+            Self::Action(index) => format!("{row}/action/{index}"),
+            Self::Check => format!("{row}/check"),
+        }
+    }
+}
+
 /// A retained list row. Construct with a stable id and a title; press
 /// activates it (pointer, Enter/Space, or assistive technology).
 pub struct ListRow {
@@ -1656,8 +1679,9 @@ pub struct ListRow {
     actions: Vec<OwnedAction>,
     hovered_action: Option<usize>,
     armed_action: Option<usize>,
-    pressed_action: Option<usize>,
-    pressed_leading: bool,
+    /// A press on one of the row's own controls (a hover action, the
+    /// leading checkbox); a press on the row itself is the activation's.
+    pressed_part: crate::pointer_replay::HeldPress<RowPart>,
     swipe: Option<OwnedSwipe>,
     swipe_origin: Option<(u64, f64)>,
     swipe_offset: f64,
@@ -1710,8 +1734,7 @@ impl ListRow {
             actions: Vec::new(),
             hovered_action: None,
             armed_action: None,
-            pressed_action: None,
-            pressed_leading: false,
+            pressed_part: crate::pointer_replay::HeldPress::default(),
             swipe: None,
             swipe_origin: None,
             swipe_offset: 0.0,
@@ -2659,8 +2682,7 @@ impl Widget for ListRow {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let rect = crate::widget::placed(&layout, origin);
+        let rect = crate::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.dirty = true;
         }
@@ -2771,41 +2793,54 @@ impl Widget for ListRow {
             ..
         } = event
         {
+            use crate::pointer_replay::{PressAt, Release};
             let cursor = self.activation.cursor();
-            let over = self.action_rects().iter().position(|r| r.contains(cursor));
-            let on_box = matches!(self.leading, Some(Leading::Checkbox { .. }))
-                && leading.is_some_and(|r| r.contains(cursor));
-            match (state, over, self.pressed_action) {
-                (ElementState::Pressed, Some(index), _) => {
-                    self.pressed_action = Some(index);
-                    *ctx.handled = true;
-                    return;
-                }
-                (ElementState::Released, _, Some(pressed)) => {
-                    self.pressed_action = None;
-                    *ctx.handled = true;
-                    if over == Some(pressed) {
-                        self.run_action(pressed);
-                    }
-                    return;
-                }
-                _ => {}
-            }
+            let rects = self.action_rects();
+            // The row's own control under the pointer, named across a
+            // rebuild by the row's id.
+            let over = rects
+                .iter()
+                .position(|r| r.contains(cursor))
+                .map(|index| (RowPart::Action(index), rects[index]))
+                .or_else(|| {
+                    (matches!(self.leading, Some(Leading::Checkbox { .. }))
+                        && !self.activation.state.disabled)
+                        .then_some(leading)
+                        .flatten()
+                        .filter(|r| r.contains(cursor))
+                        .map(|r| (RowPart::Check, r))
+                });
+            let key = over.map(|(part, _)| part.key(self.activation.id()));
+            let at = over
+                .zip(key.as_deref())
+                .map(|((target, rect), key)| PressAt { target, key, rect });
             match state {
-                ElementState::Pressed if on_box && !self.activation.state.disabled => {
-                    self.pressed_leading = true;
-                    *ctx.handled = true;
-                    return;
-                }
-                ElementState::Released if self.pressed_leading => {
-                    self.pressed_leading = false;
-                    *ctx.handled = true;
-                    if on_box {
-                        self.toggle_checkbox();
+                ElementState::Pressed => {
+                    if let Some(at) = at {
+                        self.pressed_part.press(at);
+                        *ctx.handled = true;
+                        return;
                     }
-                    return;
                 }
-                _ => {}
+                ElementState::Released => match self.pressed_part.release(at) {
+                    Release::NotHeld => {}
+                    Release::Cancelled => {
+                        *ctx.handled = true;
+                        return;
+                    }
+                    Release::Click(part) => {
+                        *ctx.handled = true;
+                        match part {
+                            RowPart::Action(index) => {
+                                self.run_action(index);
+                            }
+                            RowPart::Check => {
+                                self.toggle_checkbox();
+                            }
+                        }
+                        return;
+                    }
+                },
             }
         }
         if self.activation.handle_pointer(event, ctx, outer, &exclude) {

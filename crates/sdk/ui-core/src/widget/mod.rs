@@ -223,24 +223,6 @@ pub(crate) fn draw_gate_and_peer_focus(
     }
 }
 
-/// The whole `draw_with_presence` of a gated, presence-publishing leaf:
-/// culled off-viewport, drawn, then overlaid by [`draw_gate_and_peer_focus`].
-pub(crate) fn draw_gated_leaf(
-    widget: &mut (impl Widget + ?Sized),
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
-    permissions: &crate::permissions::PermissionContext,
-) {
-    if presence.should_cull(widget.get_rect()) {
-        return;
-    }
-    widget.draw(scene, transform, text_renderer, theme, presence);
-    draw_gate_and_peer_focus(widget, scene, transform, theme, presence, permissions);
-}
-
 /// Hand `event` to the widgets a virtualizing container has mounted: the
 /// first one holding pointer capture gets it alone, otherwise each laid-out
 /// widget sees it, topmost first, until one handles it.
@@ -2302,10 +2284,12 @@ pub trait Widget {
         }
     }
 
-    /// Default forwards to `draw`. **Spatial culling**: short-circuits via
-    /// [`PresenceCtx::should_cull`] when the rect misses
-    /// `presence.viewport` — overrides MUST call it first. Off-viewport
-    /// widgets stay dirty so they re-emit when scrolled back in.
+    /// Default forwards to `draw`, then overlays the denied-permission scrim and
+    /// the first peer's focus ring (for gated or presence-publishing widgets).
+    /// **Spatial culling**: short-circuits via [`PresenceCtx::should_cull`]
+    /// when the rect misses `presence.viewport` — overrides MUST call it
+    /// first. Off-viewport widgets stay dirty so they re-emit when scrolled
+    /// back in.
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -2313,12 +2297,13 @@ pub trait Widget {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-        _permissions: &crate::permissions::PermissionContext,
+        permissions: &crate::permissions::PermissionContext,
     ) {
         if presence.should_cull(self.get_rect()) {
             return;
         }
         self.draw(scene, transform, text_renderer, theme, presence);
+        draw_gate_and_peer_focus(self, scene, transform, theme, presence, permissions);
     }
 
     /// **Top-layer pass**, run once after the whole `draw_with_presence`
@@ -2943,15 +2928,8 @@ pub mod floating_surface;
 pub use context_menu::{ContextMenu, MenuButton, MenuItem};
 pub mod context_menu_area;
 pub use context_menu_area::{ContextMenuArea, MenuEntry};
-pub mod data_table;
-mod virtual_table_semantics;
-pub use virtual_table_semantics::{
-    TableSemanticCell, TableSemanticColumn, TableSemanticControl, TableSemanticRow,
-    VirtualTableSemantics,
-};
-mod virtual_list_semantics;
-pub use virtual_list_semantics::{ListSemanticRow, VirtualListSemantics};
 pub(crate) mod block_editor_table;
+pub mod data_table;
 pub mod table {
     pub use super::block_editor_table::*;
 }
@@ -3131,15 +3109,6 @@ pub use list_row::{
     ControlRow, ListRow, ListRowFace, RowAction, RowLeading, RowStatus, RowValue, SwipeAction,
     badge_column_width,
 };
-pub mod keyframe;
-pub use keyframe::{KeyframeFace, KeyframeState};
-pub mod disclosure_header;
-pub use disclosure_header::DisclosureHeaderFace;
-pub mod synthetic_focus;
-pub use synthetic_focus::{
-    adjacent_semantic_target, mark_semantic_focus, paint_semantic_focus, recover_semantic_focus,
-    semantic_focus_order, semantic_target_at_path, semantic_target_bounds,
-};
 pub mod toggle_group;
 pub use toggle_group::{
     Segment, SegmentedFace, SegmentedStyle, SegmentedTouch, SegmentedTouchGroup,
@@ -3208,14 +3177,10 @@ pub mod conflict_banner;
 pub mod conflict_picker;
 pub mod merge_strategy;
 
-// Threshold-identity invite ceremony plus a QR widget; state machine entry
-// point is `identity_flow/mod.rs`.
-pub mod identity_flow;
 pub mod qr;
 pub mod resource_actions;
 pub use conflict_banner::ConflictBanner;
 pub use conflict_picker::{ConflictPicker, PickerOutcome};
-pub use identity_flow::{IdentityFlow, IdentityFlowScreen, ScreenOutcome};
 pub use merge_strategy::{
     Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy, surface_banner,
 };

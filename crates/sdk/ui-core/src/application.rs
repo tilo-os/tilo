@@ -1292,7 +1292,8 @@ impl AppComponent {
 
     /// Sample and deliver only after the caller has released its document loan.
     /// The same checked callback lifetime owns both the sample and the hook.
-    pub(crate) fn project_record_save_status(&mut self) {
+    /// Returns whether the delivered status changed.
+    pub(crate) fn project_record_save_status(&mut self) -> bool {
         let captured = self.callback_binding();
         let sampled = self
             .with_live_component(&captured, |binding, root, _registry| {
@@ -1308,7 +1309,7 @@ impl AppComponent {
             .ok()
             .flatten();
         let Some(status) = sampled else {
-            return;
+            return false;
         };
         let changed = self
             .record_save
@@ -1316,11 +1317,14 @@ impl AppComponent {
             .is_some_and(|(previous, _)| *previous != status);
         self.record_save = Some((status, crate::time::now()));
         if changed {
-            // The root synced before it was handed the new state; a frame of
-            // its own, with a sync of its own, shows it.
+            // The caller syncs the root again with the new state; a frame
+            // shows it. An `App` asks for that frame through
+            // `take_save_status_presentation`; a host that does not ask
+            // presents it as a structure change.
             self.save_status_changed = true;
             self.context.wake_handle().wake();
         }
+        changed
     }
 
     /// When the window must sync again without input: shortly after the
