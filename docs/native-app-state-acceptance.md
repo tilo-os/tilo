@@ -139,7 +139,8 @@ both native devices joined and both explicitly opened apps converged on the
 same channels, concurrent messages, authors and resource-reference access, and
 presented fresh local frames.
 
-Automatic opening remains **unqualified** on the same final source
+Automatic opening was **unqualified** before the namespace and primary-record repairs
+below, on the reconnect-repair source
 (`same-person-automatic-final-source`): the second device's real observation
 has no frames and no admitted window groups. The first device's topology
 namespace requests report `the governor is unavailable: Offline`; the governed
@@ -224,3 +225,46 @@ The complete reconnect receipt above qualifies this private governor-unavailable
 journey on the repaired source. Source regressions alone do not qualify an app
 journey, automatic opening or physical-device UX; each requires its own complete
 receipt, including ordinary terminal success and cleanup.
+
+### Automatic native opening through the host authority
+
+The host governor has no private action subscriber: asking it to claim a
+namespace on that lane returned `Offline` even while its room service was live.
+Host-governed claims now use that existing endpoint-authenticated room service.
+The appended command preserves every previous wire encoding. The governor
+requires the exact currently admitted certificate, current workspace Write,
+its own signing custody and a nonzero unclaimed namespace; retries recheck all
+authority before observing existing ownership, and a namespace never rebinds.
+The existing room lock, atomic persistence and signed publication precede its
+answer. The desktop still waits for the registration in its actual admitted
+owner before publishing any topology. Native-device governors retain their
+ordinary semantic action path. This adds no enrollment or input grant.
+
+That repair alone reproduced a second real blocker: Bob admitted Alice's Chat
+peer-window card but waited forever for a minted window-record binding. Chat's
+existing SDK identity rule uses the room's package-primary document instead.
+The launcher now checks that exact primary through its current native owner,
+using the empty wire record route, then opens through the normal broker/channel.
+It never hydrates the primary into a minted-record profile or creates another
+record. Apps with a minted record still require their explicit tab binding;
+unknown/unreadable primaries remain pending, and the ordinary launch permission
+checks still decide whether an app may open.
+
+The complete remote `same-person-automatic-qualified-final` journey now sets
+`app_state_qualified`, `same_person_devices_qualified` and
+`automatic_peer_app_launch_qualified` true with no error and successful cleanup.
+Bob receives no manual Open invocation. The journey verifies the original early
+channel, concurrent messages exactly once with certified attribution, existing
+resource-reference access, and fresh local primary frames on both desktops.
+It records the actual source/component hashes and uses the same unchanged
+fixture SHA-256 `c622f4971303a6cded8bf38e2720bd62bcdd95148559c8c14c62f98a518c876b`.
+This qualifies native Chat opening and semantic state in the synthetic fixture;
+complete view replication, other apps, physical input/displays and predictive
+resource caching are separate acceptance work.
+
+The same final source also passes `same-person-reconnect-auto-qualified-final`: both
+native apps edit while only the owned governor process is paused, then ordinary
+terminal success, certified exactly-once state convergence and clean shutdown
+complete after resume. This is governor-unavailable recovery, not complete
+network isolation. The automatic and reconnect receipts remain separate modes,
+and neither qualifies physical display/input continuity.
