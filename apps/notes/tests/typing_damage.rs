@@ -394,7 +394,8 @@ fn open_a_new_note(app: &mut App, host: &mut Host, theme: Theme) {
 /// Let the note's record finish saving and show it, with no input, as it
 /// does between a person's keystrokes.
 fn let_the_save_land(app: &mut App, host: &mut Host) {
-    for _ in 0..80 {
+    let deadline = tilo_test_env::hang_deadline();
+    while std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(25));
         host.frame(app);
         if shows_saved(app) {
@@ -1039,6 +1040,12 @@ fn renaming_a_note_damages_its_row_not_the_page_tree() {
             host.click(app, title.center());
             host.frames(app, 3);
             type_text(app, &mut host, "Plan");
+            // A person pauses before Enter: the title's save lands and the
+            // bubble says so, and Enter's own save then changes it. Waiting
+            // for that measures the change whole on any runner; without it,
+            // whether the bubble changes within Enter's frames depends on how
+            // fast the save lands.
+            let_the_save_land(app, &mut host);
             // Naming the note in its title renames its row in the page tree.
             let label = format!("{name}: naming the note in its title");
             let (named, _) = measure(app, &mut host, &theme, &label, |app, host| {
