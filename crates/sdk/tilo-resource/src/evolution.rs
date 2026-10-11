@@ -48,16 +48,19 @@ pub fn write_version(doc: &mut Doc, version: u32) -> Result<(), ModelError> {
 /// Returns why not: written by a newer version of the app, or waiting for
 /// [`migrate`].
 pub fn check_version<R: Resource>(doc: &Doc) -> Result<(), ModelError> {
+    check_version_at(R::VERSION, doc)
+}
+
+/// [`check_version`] of a resource read at `version`.
+fn check_version_at(version: u32, doc: &Doc) -> Result<(), ModelError> {
     let stored = stored_version(doc);
-    match stored.cmp(&R::VERSION) {
+    match stored.cmp(&version) {
         std::cmp::Ordering::Equal => Ok(()),
         std::cmp::Ordering::Greater => Err(ModelError::invalid(format!(
-            "written by a newer version of the app (storage version {stored}, this app reads {})",
-            R::VERSION
+            "written by a newer version of the app (storage version {stored}, this app reads {version})"
         ))),
         std::cmp::Ordering::Less => Err(ModelError::invalid(format!(
-            "stored at version {stored}; it is brought up to version {} when it opens",
-            R::VERSION
+            "stored at version {stored}; it is brought up to version {version} when it opens"
         ))),
     }
 }
@@ -71,8 +74,21 @@ pub fn check_version<R: Resource>(doc: &Doc) -> Result<(), ModelError> {
 /// # Errors
 /// Returns the migration's error; `doc` is left as it was.
 pub fn migrate<R: Resource>(doc: &mut Doc) -> Result<bool, ModelError> {
+    migrate_with(
+        (R::KIND, R::LABEL, R::VERSION),
+        &|doc: &mut Doc, from: u32| R::migrate(doc, from),
+        doc,
+    )
+}
+
+/// [`migrate`] of the resource of the kind, label and storage version
+/// `resource`, whose migration is `migration`.
+fn migrate_with(
+    (kind, label, to): (&str, &str, u32),
+    migration: &dyn Fn(&mut Doc, u32) -> Result<(), ModelError>,
+    doc: &mut Doc,
+) -> Result<bool, ModelError> {
     let from = stored_version(doc);
-    let to = R::VERSION;
     if from >= to {
         return Ok(false);
     }
@@ -80,7 +96,7 @@ pub fn migrate<R: Resource>(doc: &mut Doc) -> Result<bool, ModelError> {
     heads.sort();
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"tilo-resource/migration/v1");
-    hasher.update(R::KIND.as_bytes());
+    hasher.update(kind.as_bytes());
     hasher.update(&from.to_le_bytes());
     hasher.update(&to.to_le_bytes());
     for head in &heads {
@@ -89,11 +105,11 @@ pub fn migrate<R: Resource>(doc: &mut Doc) -> Result<bool, ModelError> {
     let actor =
         automerge::ActorId::from(hasher.finalize().as_bytes().get(..16).unwrap_or_default());
     let mut migrated = doc.fork_at(&heads)?.with_actor(actor);
-    R::migrate(&mut migrated, from)?;
+    migration(&mut migrated, from)?;
     migrated.put(ROOT, VERSION_KEY, ScalarValue::Uint(u64::from(to)))?;
     let context = tilo_actions::ActionContext {
         change: tilo_actions::ChangeKind::Housekeeping,
-        ..tilo_actions::ActionContext::for_resource(R::KIND, R::KIND, R::LABEL).with_described(
+        ..tilo_actions::ActionContext::for_resource(kind, kind, label).with_described(
             tilo_actions::Described::new(tilo_actions::Did::history(
                 tilo_actions::HistoryOp::Migrate { to },
                 0,

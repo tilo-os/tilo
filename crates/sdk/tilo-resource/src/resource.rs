@@ -1036,7 +1036,9 @@ impl tilo_actions::Action for NoAction {
 /// match. Long prose an entry is found by — a book's chapter, a long note —
 /// is its `body`, which the index reads in place rather than the entry
 /// copying it, and whose segments may each be a hit of their own.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+// `Clone` and `PartialEq` are written out: derived, they are inlined into
+// every app that copies or compares an entry.
+#[derive(Debug, Default, Eq)]
 pub struct SearchEntry {
     /// The containing resource scope for a flat anchor.
     pub within: Option<String>,
@@ -1056,6 +1058,44 @@ pub struct SearchEntry {
     pub fields: Vec<(String, SearchWeight)>,
     /// Structured filter values: token key, localized group label, value.
     pub facets: Vec<(String, String, String)>,
+}
+
+impl Clone for SearchEntry {
+    fn clone(&self) -> Self {
+        Self {
+            within: self.within.clone(),
+            row: self.row.clone(),
+            anchor: self.anchor.clone(),
+            title: self.title.clone(),
+            text: self.text.clone(),
+            action: self.action.clone(),
+            group: self.group.clone(),
+            subtitle: self.subtitle.clone(),
+            icon: self.icon.clone(),
+            boost: self.boost,
+            body: self.body.clone(),
+            fields: self.fields.clone(),
+            facets: self.facets.clone(),
+        }
+    }
+}
+
+impl PartialEq for SearchEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.within == other.within
+            && self.row == other.row
+            && self.anchor == other.anchor
+            && self.title == other.title
+            && self.text == other.text
+            && self.action == other.action
+            && self.group == other.group
+            && self.subtitle == other.subtitle
+            && self.icon == other.icon
+            && self.boost == other.boost
+            && self.body == other.body
+            && self.fields == other.fields
+            && self.facets == other.facets
+    }
 }
 
 /// How much a match in one of a [`SearchEntry`]'s fields counts. The title
@@ -1274,8 +1314,8 @@ impl SearchEntry {
 /// Also what an action is told to act at (`#[param(place)] at:
 /// Option<Place>`): it travels as `{"item": id}`, `{"item": id, "at": n}` or
 /// `{"item": id, "start": n, "end": n}`.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(into = "PlaceWire", try_from = "PlaceWire")]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(into = "PlaceWire")]
 pub enum Place {
     /// An item (a paragraph, a clip, a row).
     Item(String),
@@ -1296,6 +1336,25 @@ impl Place {
         match self {
             Self::Item(item) | Self::Caret { item, .. } | Self::Range { item, .. } => item,
         }
+    }
+}
+
+// Decoded through a JSON value whatever the deserializer, by one function.
+impl<'de> serde::Deserialize<'de> for Place {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+        match place_from_json(value) {
+            Ok(place) => Ok(place),
+            Err(error) => Err(serde::de::Error::custom(error)),
+        }
+    }
+}
+
+/// The place in `value`, its JSON form.
+fn place_from_json(value: serde_json::Value) -> Result<Place, String> {
+    match serde_json::from_value::<PlaceWire>(value) {
+        Ok(wire) => Place::try_from(wire),
+        Err(error) => Err(error.to_string()),
     }
 }
 

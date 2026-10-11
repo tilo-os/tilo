@@ -30,10 +30,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use automerge::transaction::Transactable as _;
-use automerge::{ActorId, ChangeHash, ROOT, ReadDoc};
+use automerge::{ActorId, ChangeHash, ReadDoc};
 
 use crate::delta::Delta;
-use crate::model::{Doc, Fields};
+use crate::model::Doc;
 
 /// Above this many changes since the kept version, or operations in them, a
 /// whole read costs about what indexing them would.
@@ -41,36 +41,33 @@ const MAX_CHANGES: usize = 256;
 const MAX_OPS: u64 = 50_000;
 
 thread_local! {
-    static KEPT: RefCell<HashMap<TypeId, Box<dyn Any>>> = RefCell::new(HashMap::new());
+    static KEPT: RefCell<HashMap<TypeId, Kept>> = RefCell::new(HashMap::new());
 }
 
-struct Kept<R> {
+struct Kept {
     /// The record as read at `base`.
-    record: R,
+    record: Box<dyn Any>,
     /// The version `record` was read at, sorted.
     base: Vec<ChangeHash>,
-    /// The change the action that kept `record` wrote on top of `base`: its
-    /// actor and how many operations it holds. Not yet in `record`.
-    wrote: Option<(ActorId, u64)>,
+    /// The change the action that kept `record` wrote on top of `base`. Not
+    /// yet in `record`.
+    wrote: Wrote,
 }
 
-/// A record brought up to the document's current version, and the changes
-/// since it was last written that its own actions did not make.
-pub(crate) struct Warm<R> {
-    pub(crate) record: R,
-    pub(crate) dirty: Delta,
-}
-
-/// The record kept for `R`, brought up to the document as it stands, or
-/// `None` when it must be read whole. Takes it: an action that fails keeps
-/// nothing.
-pub(crate) fn take<R: Fields + 'static>(doc: &Doc) -> Option<Warm<R>> {
-    let kept = KEPT.with(|kept| kept.borrow_mut().remove(&TypeId::of::<R>()))?;
+/// The record kept for the record type `kind`, brought up to the document
+/// as it stands by `refresh`, and the changes since it was last written that
+/// its own actions did not make; `None` when it must be read whole. Takes
+/// it: an action that fails keeps nothing.
+pub(crate) fn take_any(
+    kind: TypeId,
+    doc: &Doc,
+    refresh: &dyn Fn(&mut dyn Any, &Doc, &Delta) -> bool,
+) -> Option<(Box<dyn Any>, Delta)> {
     let Kept {
         mut record,
         base,
         wrote,
-    } = *kept.downcast::<Kept<R>>().ok()?;
+    } = KEPT.with(|kept| kept.borrow_mut().remove(&kind))?;
     if doc.pending_ops() > 0 {
         return None;
     }
@@ -82,10 +79,7 @@ pub(crate) fn take<R: Fields + 'static>(doc: &Doc) -> Option<Warm<R>> {
     }
     heads.sort();
     if heads == base && wrote.is_none() {
-        return Some(Warm {
-            record,
-            dirty: Delta::nothing(),
-        });
+        return Some((record, Delta::nothing()));
     }
     if base
         .iter()
@@ -94,9 +88,10 @@ pub(crate) fn take<R: Fields + 'static>(doc: &Doc) -> Option<Warm<R>> {
         return None;
     }
     let metas = committed.get_changes_meta(&base);
-    let ops = metas.iter().try_fold(0_u64, |total, meta| {
-        total.checked_add(meta.max_op.saturating_add(1).saturating_sub(meta.start_op))
-    })?;
+    let mut ops = 0_u64;
+    for meta in &metas {
+        ops = ops.checked_add(meta.max_op.saturating_add(1).saturating_sub(meta.start_op))?;
+    }
     if metas.len() > MAX_CHANGES || ops > MAX_OPS {
         return None;
     }
@@ -129,25 +124,46 @@ pub(crate) fn take<R: Fields + 'static>(doc: &Doc) -> Option<Warm<R>> {
     if delta.is_everything() {
         return None;
     }
-    record.refresh_fields(doc, &ROOT, &delta).ok()?;
+    if !refresh(record.as_mut(), doc, &delta) {
+        return None;
+    }
     let dirty = match changes.get(..foreign) {
         Some([]) | None => Delta::nothing(),
         Some(foreign) => Delta::from_changes(doc, foreign, &|_| None),
     };
-    Some(Warm { record, dirty })
+    Some((record, dirty))
 }
 
-/// Keep `record`, read at `started`, the version the action began from, for
-/// the next action of its type. The transaction holds what the action just
+/// Keep `record`, of the record type `kind`, read at `started`, the version
+/// the action began from, for the next action of its type. The transaction holds what the action just
 /// wrote: every slot it wrote is as `store` writes it. An action that merged
 /// a change of its own on the way (a deterministic slot made beside it)
 /// moved its base past what `record` holds, so nothing is kept.
-pub(crate) fn keep<R: 'static>(record: R, doc: &Doc, started: &[ChangeHash]) {
+pub(crate) fn keep_any(kind: TypeId, record: Box<dyn Any>, doc: &Doc, started: &[ChangeHash]) {
+    if let Some((base, wrote)) = kept_base(doc, started) {
+        let kept = Kept {
+            record,
+            base,
+            wrote,
+        };
+        KEPT.with(|cell| {
+            cell.borrow_mut().insert(kind, kept);
+        });
+    }
+}
+
+/// The change an action wrote on top of the version it started from: its
+/// actor and how many operations it holds.
+type Wrote = Option<(ActorId, u64)>;
+
+/// The version a record read at `started` is kept at and the change on top
+/// of it the action wrote, or `None` when it cannot be kept.
+fn kept_base(doc: &Doc, started: &[ChangeHash]) -> Option<(Vec<ChangeHash>, Wrote)> {
     if doc.committed_heads() != doc.committed_document().get_heads() {
-        return;
+        return None;
     }
     if doc.base_heads() != started {
-        return;
+        return None;
     }
     let mut base = doc.base_heads();
     base.sort();
@@ -155,19 +171,9 @@ pub(crate) fn keep<R: 'static>(record: R, doc: &Doc, started: &[ChangeHash]) {
     let wrote = if pending == 0 {
         None
     } else {
-        let Ok(count) = u64::try_from(pending) else {
-            return;
-        };
-        Some((doc.get_actor().clone(), count))
+        Some((doc.get_actor().clone(), u64::try_from(pending).ok()?))
     };
-    let kept: Box<dyn Any> = Box::new(Kept {
-        record,
-        base,
-        wrote,
-    });
-    KEPT.with(|cell| {
-        cell.borrow_mut().insert(TypeId::of::<R>(), kept);
-    });
+    Some((base, wrote))
 }
 
 /// Drop every record kept on this thread, so the next action of each type

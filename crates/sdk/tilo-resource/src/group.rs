@@ -138,50 +138,39 @@ impl Drop for MemberScope {
     }
 }
 
+impl<A> ActionGroup<A>
+where
+    A: tilo_actions::Action,
+{
+    /// The members, of whichever type.
+    fn members(&self) -> Vec<&dyn tilo_actions::Action> {
+        let mut members: Vec<&dyn tilo_actions::Action> = Vec::with_capacity(self.actions.len());
+        for action in &self.actions {
+            members.push(action);
+        }
+        members
+    }
+}
+
 impl<A> tilo_actions::Action for ActionGroup<A>
 where
     A: tilo_actions::Action + Serialize,
 {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let payload = serde_json::to_vec(&self.actions).map_err(ActionError::Encode)?;
-        let seed = crate::action::seed(doc, b"tilo-resource/group-seed/v1", &payload);
-        if current_member().is_none() {
-            drop(crate::action::take_minted());
-        }
-        let deferring = Deferring::begin();
-        {
-            let _restore = MemberScope(current_member());
-            for (position, action) in (0_u64..).zip(&self.actions) {
-                MEMBER.with(|member| member.set(Some((seed, position))));
-                action.apply(doc)?;
-            }
-        }
-        deferring.finish(doc)
+        apply_members(doc, &payload, &self.members())
     }
 
     /// A group is as consequential as its most consequential member: one
     /// deletion in a gesture makes the gesture ask for confirmation.
     fn risk(&self) -> RiskLevel {
-        group_risk(self.actions.iter().map(tilo_actions::Action::risk))
+        group_risk(self.members().into_iter().map(tilo_actions::Action::risk))
     }
 
     /// A gesture records each of its members, and the item they share.
     fn describe(&self, doc: &Doc) -> Option<tilo_actions::Described> {
-        let members: Vec<tilo_actions::Described> = self
-            .actions
-            .iter()
-            .map(|action| {
-                action.describe(doc).or_else(|| {
-                    let value = serde_json::to_value(action).ok()?;
-                    tilo_actions::Described::from_value("", &value, None)
-                })
-            })
-            .collect::<Option<_>>()?;
-        let item = members.first().and_then(|first| first.item.clone());
-        let shared = members.iter().all(|member| member.item == item);
-        Some(tilo_actions::Described {
-            what: tilo_actions::Did::group(members.into_iter().map(|member| member.what)),
-            item: if shared { item } else { None },
+        describe_members(doc, &self.members(), &|index| {
+            serde_json::to_value(self.actions.get(index)?).ok()
         })
     }
 
@@ -195,17 +184,68 @@ where
     /// makes it content. Otherwise it is external when any member is, and
     /// housekeeping when every member is.
     fn change_kind(&self) -> tilo_actions::ChangeKind {
-        use tilo_actions::ChangeKind;
-        let mut kinds = self.actions.iter().map(tilo_actions::Action::change_kind);
-        let Some(first) = kinds.next() else {
-            return ChangeKind::Content;
-        };
-        kinds.fold(first, |group, member| match (group, member) {
-            (ChangeKind::Content, _) | (_, ChangeKind::Content) => ChangeKind::Content,
-            (ChangeKind::External, _) | (_, ChangeKind::External) => ChangeKind::External,
-            (ChangeKind::Housekeeping, ChangeKind::Housekeeping) => ChangeKind::Housekeeping,
-        })
+        group_change_kind(&self.members())
     }
+}
+
+/// Apply `members`, a group encoded as `payload`, in order as one.
+fn apply_members(
+    doc: &mut Doc,
+    payload: &[u8],
+    members: &[&dyn tilo_actions::Action],
+) -> Result<(), ActionError> {
+    let seed = crate::action::seed(doc, b"tilo-resource/group-seed/v1", payload);
+    if current_member().is_none() {
+        drop(crate::action::take_minted());
+    }
+    let deferring = Deferring::begin();
+    {
+        let _restore = MemberScope(current_member());
+        let mut position = 0_u64;
+        for action in members {
+            MEMBER.with(|member| member.set(Some((seed, position))));
+            action.apply(doc)?;
+            position = position.saturating_add(1);
+        }
+    }
+    deferring.finish(doc)
+}
+
+/// What a group of `members` did: each member's description, or its JSON
+/// form (`value(index)`) where it has none, and the item they share.
+fn describe_members(
+    doc: &Doc,
+    members: &[&dyn tilo_actions::Action],
+    value: &dyn Fn(usize) -> Option<serde_json::Value>,
+) -> Option<tilo_actions::Described> {
+    let mut described: Vec<tilo_actions::Described> = Vec::with_capacity(members.len());
+    for (index, action) in members.iter().enumerate() {
+        let member = match action.describe(doc) {
+            Some(member) => member,
+            None => tilo_actions::Described::from_value("", &value(index)?, None)?,
+        };
+        described.push(member);
+    }
+    let item = described.first().and_then(|first| first.item.clone());
+    let shared = described.iter().all(|member| member.item == item);
+    Some(tilo_actions::Described {
+        what: tilo_actions::Did::group(described.into_iter().map(|member| member.what)),
+        item: if shared { item } else { None },
+    })
+}
+
+/// The change kind of a group of `members`.
+fn group_change_kind(members: &[&dyn tilo_actions::Action]) -> tilo_actions::ChangeKind {
+    use tilo_actions::ChangeKind;
+    let mut kinds = members.iter().map(|member| member.change_kind());
+    let Some(first) = kinds.next() else {
+        return ChangeKind::Content;
+    };
+    kinds.fold(first, |group, member| match (group, member) {
+        (ChangeKind::Content, _) | (_, ChangeKind::Content) => ChangeKind::Content,
+        (ChangeKind::External, _) | (_, ChangeKind::External) => ChangeKind::External,
+        (ChangeKind::Housekeeping, ChangeKind::Housekeeping) => ChangeKind::Housekeeping,
+    })
 }
 
 /// How consequential a group of actions as consequential as `risks` is: as

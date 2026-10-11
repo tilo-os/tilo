@@ -26,7 +26,7 @@ use automerge::{ObjType, Prop, ROOT, ReadDoc, Value};
 use crate::action::Refusal;
 use crate::collection::{Id, VALUE};
 use crate::model::{Doc, Model};
-use crate::path::{Path, Segment};
+use crate::path::Segment;
 use crate::shape::Shape;
 
 /// The record unit, as footprints and [`units_of`] name it.
@@ -104,8 +104,19 @@ fn unit_name(unit: &[Segment]) -> String {
 /// # Errors
 /// Names the first unit written outside the footprint.
 pub fn check<R: Model>(before: &R, after: &R, writes: &Writes) -> Result<(), Refusal> {
+    let mut edits: Vec<crate::Edit<()>> = Vec::new();
+    before.diff(after, &[], &mut edits);
+    check_edits(R::SHAPE, &edits, writes)
+}
+
+/// [`check`] of the edits `edits` of a record stored as `shape`.
+pub(crate) fn check_edits(
+    shape: Shape,
+    edits: &[crate::Edit<()>],
+    writes: &Writes,
+) -> Result<(), Refusal> {
     use crate::path::EditOp;
-    for edit in Path::<R, R>::root().edits(before, after) {
+    for edit in edits {
         // Adding, removing or moving an item writes the item itself.
         let mut path = edit.path().to_vec();
         match edit.op() {
@@ -114,7 +125,7 @@ pub fn check<R: Model>(before: &R, after: &R, writes: &Writes) -> Result<(), Ref
             | EditOp::MoveTo { id, .. } => path.push(Segment::Item(id.clone())),
             _ => {}
         }
-        let unit = R::SHAPE.unit_of(&path);
+        let unit = shape.unit_of(&path);
         if !writes.allows(&unit) {
             return Err(Refusal::new(format!(
                 "the action wrote `{}`, outside the units it declares; add \

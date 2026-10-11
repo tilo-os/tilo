@@ -7,6 +7,7 @@
 //! changed — so the method is ordinary Rust over ordinary fields and the CRDT
 //! stays invisible.
 
+use std::any::Any;
 use std::marker::PhantomData;
 
 use automerge::ROOT;
@@ -615,17 +616,15 @@ impl<O: Operation> Stamped<O> {
             };
             return tilo_actions::EncodedAction::encode(O::KIND, &undo).ok();
         }
-        let mut restore = Vec::new();
+        let mut restore: Vec<crate::Edit<()>> = Vec::new();
         crate::Model::diff(&after, &before, &[], &mut restore);
-        let mut members = restore
-            .into_iter()
-            .map(|edit| {
-                O::field_edit(edit).map(|operation| Self {
-                    operation,
-                    now_ms: self.now_ms,
-                })
-            })
-            .collect::<Option<Vec<_>>>()?;
+        let mut members = Vec::with_capacity(restore.len());
+        for edit in restore {
+            members.push(Self {
+                operation: O::field_edit(edit.retyped())?,
+                now_ms: self.now_ms,
+            });
+        }
         let restore = match members.len() {
             0 => return None,
             1 => tilo_actions::EncodedAction::encode(O::KIND, &members.pop()?).ok()?,
@@ -753,29 +752,20 @@ fn reverted_change(
 impl<O: Operation> tilo_actions::Action for Reverting<O> {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let change = self.change(doc)?;
-        let deps: Vec<automerge::ChangeHash> = doc
-            .get_change_meta_by_hash(&change)
-            .map(|meta| meta.deps)
-            .unwrap_or_default();
-        let read_at = |heads: &[automerge::ChangeHash]| -> Result<O::Record, ActionError> {
-            let at = doc.committed_fork_at(heads).map_err(automerge_refused)?;
-            O::Record::read_fields(&at, &ROOT).map_err(model_refused)
-        };
-        let before = read_at(&deps)?;
-        let after = read_at(&[change])?;
-        let mut restore: Vec<crate::Edit<O::Record>> = Vec::new();
-        crate::Model::diff(&after, &before, &[], &mut restore);
         let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
-        let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);
-        let current = O::Record::read_fields(doc, &ROOT).map_err(model_refused)?;
-        for edit in &restore {
-            edit.apply(doc, &mut cx).map_err(model_refused)?;
-        }
-        let mut record = O::Record::read_fields(doc, &ROOT).map_err(model_refused)?;
-        let minting = MintScope::enter(&cx);
-        O::queue(&mut record, &current, &mut cx);
-        drop(minting);
-        record.write_fields(doc, &ROOT).map_err(model_refused)
+        revert(
+            &RecordOf::<O::Record>::OPS,
+            &|record, before, cx| {
+                if let (Some(record), Some(before)) = (
+                    record.downcast_mut::<O::Record>(),
+                    before.downcast_ref::<O::Record>(),
+                ) {
+                    O::queue(record, before, cx);
+                }
+            },
+            (change, &payload, self.now_ms),
+            doc,
+        )
     }
 
     fn locus(&self) -> ExecutionLocus {
@@ -783,125 +773,363 @@ impl<O: Operation> tilo_actions::Action for Reverting<O> {
     }
 }
 
-impl<O: Operation> tilo_actions::Action for Stamped<O> {
-    /// Read the record, run the method, write back what changed.
-    ///
-    /// The record the previous action of this type left behind, brought up
-    /// to date with only the changes since,
-    /// stands in for reading the whole record, and the write compares with
-    /// it instead of reading every field back. Either way the action writes
-    /// exactly the operations a whole read and write would, so a replica
-    /// replaying it, warm or cold, makes the identical change.
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
-        // A group's members mint into one list; anything else starts afresh.
-        if crate::group::current_member().is_none() {
-            drop(take_minted());
+/// [`Reverting::apply`] of the change `change`, encoded as `payload` at
+/// `now_ms`, to a record of the type `record` whose `queue` is `queue`.
+fn revert(
+    record: &RecordOps,
+    queue: &dyn Fn(&mut dyn Any, &dyn Any, &mut ActionCx),
+    (change, payload, now_ms): (automerge::ChangeHash, &[u8], i64),
+    doc: &mut Doc,
+) -> Result<(), ActionError> {
+    let deps: Vec<automerge::ChangeHash> = doc
+        .get_change_meta_by_hash(&change)
+        .map(|meta| meta.deps)
+        .unwrap_or_default();
+    let before = {
+        let at = doc.committed_fork_at(&deps).map_err(automerge_refused)?;
+        (record.read)(&at).map_err(model_refused)?
+    };
+    let after = {
+        let at = doc
+            .committed_fork_at(&[change])
+            .map_err(automerge_refused)?;
+        (record.read)(&at).map_err(model_refused)?
+    };
+    let restore = (record.diff)(after.as_ref(), before.as_ref());
+    let mut cx = ActionCx::for_apply(doc, payload, now_ms);
+    let current = (record.read)(doc).map_err(model_refused)?;
+    for edit in &restore {
+        (record.edit)(edit, doc, &mut cx).map_err(model_refused)?;
+    }
+    let mut written = (record.read)(doc).map_err(model_refused)?;
+    let minting = MintScope::enter(&cx);
+    queue(written.as_mut(), current.as_ref(), &mut cx);
+    drop(minting);
+    (record.write)(written.as_ref(), doc).map_err(model_refused)
+}
+
+/// Write the first record over the second, kept, with the changes `dirty`
+/// others made since.
+type WriteChanged =
+    fn(&dyn Any, &dyn Any, &mut Doc, &crate::Delta) -> Result<(), crate::ModelError>;
+
+/// What applying an operation needs of its record's type, with the type
+/// erased: a few functions per record type, so the apply itself is
+/// compiled once rather than for every record.
+pub(crate) struct RecordOps {
+    shape: crate::Shape,
+    name: fn() -> &'static str,
+    kind: fn() -> std::any::TypeId,
+    read: fn(&Doc) -> Result<Box<dyn Any>, crate::ModelError>,
+    write: fn(&dyn Any, &mut Doc) -> Result<(), crate::ModelError>,
+    write_changed: WriteChanged,
+    check: fn(&dyn Any) -> Result<(), Refusal>,
+    refresh: fn(&mut dyn Any, &Doc, &crate::Delta) -> bool,
+    /// The edits that turn the first record into the second.
+    diff: fn(&dyn Any, &dyn Any) -> Vec<crate::Edit<()>>,
+    edit: fn(&crate::Edit<()>, &mut Doc, &mut ActionCx) -> Result<(), crate::ModelError>,
+}
+
+/// The record of `R` a [`RecordOps`] function was handed.
+fn record_of<R: 'static>(record: &dyn Any) -> Result<&R, crate::ModelError> {
+    match record.downcast_ref::<R>() {
+        Some(record) => Ok(record),
+        None => Err(crate::ModelError::invalid("a record of another type")),
+    }
+}
+
+fn read_record<R: Fields + 'static>(doc: &Doc) -> Result<Box<dyn Any>, crate::ModelError> {
+    match R::read_fields(doc, &ROOT) {
+        Ok(record) => Ok(Box::new(record)),
+        Err(error) => Err(error),
+    }
+}
+
+fn write_record<R: Fields + 'static>(
+    record: &dyn Any,
+    doc: &mut Doc,
+) -> Result<(), crate::ModelError> {
+    record_of::<R>(record)?.write_fields(doc, &ROOT)
+}
+
+fn write_changed_record<R: Fields + 'static>(
+    record: &dyn Any,
+    kept: &dyn Any,
+    doc: &mut Doc,
+    dirty: &crate::Delta,
+) -> Result<(), crate::ModelError> {
+    record_of::<R>(record)?.write_changed_fields(record_of::<R>(kept)?, doc, &ROOT, dirty)
+}
+
+fn check_record<R: Fields + 'static>(record: &dyn Any) -> Result<(), Refusal> {
+    match record.downcast_ref::<R>() {
+        Some(record) => crate::Model::check(record),
+        None => Err(Refusal::new("a record of another type")),
+    }
+}
+
+fn refresh_record<R: Fields + 'static>(
+    record: &mut dyn Any,
+    doc: &Doc,
+    delta: &crate::Delta,
+) -> bool {
+    match record.downcast_mut::<R>() {
+        Some(record) => record.refresh_fields(doc, &ROOT, delta).is_ok(),
+        None => false,
+    }
+}
+
+fn diff_records<R: Fields + 'static>(from: &dyn Any, to: &dyn Any) -> Vec<crate::Edit<()>> {
+    let mut edits = Vec::new();
+    if let (Some(from), Some(to)) = (from.downcast_ref::<R>(), to.downcast_ref::<R>()) {
+        crate::Model::diff(from, to, &[], &mut edits);
+    }
+    edits
+}
+
+fn edit_record<R: Fields + 'static>(
+    edit: &crate::Edit<()>,
+    doc: &mut Doc,
+    cx: &mut ActionCx,
+) -> Result<(), crate::ModelError> {
+    R::edit_fields(doc, &ROOT, edit.path(), edit.op(), cx)
+}
+
+pub(crate) struct RecordOf<R>(PhantomData<R>);
+
+impl<R: Fields + 'static> RecordOf<R> {
+    pub(crate) const OPS: RecordOps = RecordOps {
+        shape: <R as crate::Model>::SHAPE,
+        name: std::any::type_name::<R>,
+        kind: std::any::TypeId::of::<R>,
+        read: read_record::<R>,
+        write: write_record::<R>,
+        write_changed: write_changed_record::<R>,
+        check: check_record::<R>,
+        refresh: refresh_record::<R>,
+        diff: diff_records::<R>,
+        edit: edit_record::<R>,
+    };
+}
+
+/// Apply `operation`, a field edit, at its path.
+fn apply_edit(
+    operation: &dyn Performs,
+    doc: &mut Doc,
+    cx: &mut ActionCx,
+) -> Result<(), ActionError> {
+    match operation.apply_edit(doc, cx) {
+        Some(applied) => applied.map_err(model_refused),
+        None => Ok(()),
+    }
+}
+
+/// One operation of a record, as [`apply_operation`] performs it.
+trait Performs {
+    fn is_edit(&self) -> bool;
+    /// Apply it as the field edit it is; `None` when it is a verb.
+    fn apply_edit(&self, doc: &mut Doc, cx: &mut ActionCx)
+    -> Option<Result<(), crate::ModelError>>;
+    fn queues(&self) -> bool;
+    fn perform(&self, record: &mut dyn Any, cx: &mut ActionCx) -> Result<(), Refusal>;
+    fn queue(&self, record: &mut dyn Any, before: &dyn Any, cx: &mut ActionCx);
+    fn perform_item(&self, doc: &mut Doc, cx: &mut ActionCx) -> Option<Result<(), Refusal>>;
+    fn writes(&self) -> crate::footprint::Writes;
+    fn snapshot(&self, record: &dyn Any) -> Option<Box<dyn Any>>;
+}
+
+impl<O: Operation> Performs for O {
+    fn is_edit(&self) -> bool {
+        self.edit().is_some()
+    }
+
+    fn apply_edit(
+        &self,
+        doc: &mut Doc,
+        cx: &mut ActionCx,
+    ) -> Option<Result<(), crate::ModelError>> {
+        let edit = self.edit()?;
+        Some(O::Record::edit_fields(
+            doc,
+            &ROOT,
+            edit.path(),
+            edit.op(),
+            cx,
+        ))
+    }
+
+    fn queues(&self) -> bool {
+        O::QUEUES && !settles(self)
+    }
+
+    fn perform(&self, record: &mut dyn Any, cx: &mut ActionCx) -> Result<(), Refusal> {
+        match record.downcast_mut::<O::Record>() {
+            Some(record) => Operation::perform(self, record, cx),
+            None => Err(Refusal::new("a record of another type")),
         }
-        let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);
-        let shape = <O::Record as crate::Model>::SHAPE;
-        let units = crate::footprint::has_units(shape);
-        // The unit index, kept once something applied: a refused action
-        // writes nothing.
-        let index = |doc: &mut Doc| {
-            if units {
-                crate::footprint::index(doc, shape).map_err(automerge_refused)?;
-            }
-            Ok::<(), ActionError>(())
-        };
-        let queues = O::QUEUES && !settles(&self.operation);
-        if let Some(edit) = self.operation.edit() {
-            if !queues {
-                edit.apply(doc, &mut cx).map_err(model_refused)?;
-                return index(doc);
-            }
-            // The record's `queue` sees the change the edit made.
-            let before = O::Record::read_fields(doc, &ROOT).map_err(model_refused)?;
-            edit.apply(doc, &mut cx).map_err(model_refused)?;
-            let mut record = O::Record::read_fields(doc, &ROOT).map_err(model_refused)?;
-            let minting = MintScope::enter(&cx);
-            O::queue(&mut record, &before, &mut cx);
-            drop(minting);
-            record.write_fields(doc, &ROOT).map_err(model_refused)?;
+    }
+
+    fn queue(&self, record: &mut dyn Any, before: &dyn Any, cx: &mut ActionCx) {
+        if let (Some(record), Some(before)) = (
+            record.downcast_mut::<O::Record>(),
+            before.downcast_ref::<O::Record>(),
+        ) {
+            O::queue(record, before, cx);
+        }
+    }
+
+    fn perform_item(&self, doc: &mut Doc, cx: &mut ActionCx) -> Option<Result<(), Refusal>> {
+        Operation::perform_item(self, doc, cx)
+    }
+
+    fn writes(&self) -> crate::footprint::Writes {
+        Operation::writes(self)
+    }
+
+    fn snapshot(&self, record: &dyn Any) -> Option<Box<dyn Any>> {
+        let record = record.downcast_ref::<O::Record>()?;
+        O::snapshot(record).map(|record| Box::new(record) as Box<dyn Any>)
+    }
+}
+
+/// [`Stamped::apply`] of `operation`, of a record of the type `record`,
+/// encoded as `payload` at `now_ms`.
+///
+/// The record the previous action of this type left behind, brought up to
+/// date with only the changes since, stands in for reading the whole
+/// record, and the write compares with it instead of reading every field
+/// back. Either way the action writes exactly the operations a whole read
+/// and write would, so a replica replaying it, warm or cold, makes the
+/// identical change.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one apply: an edit, an item verb or a record verb, each written and checked"
+)]
+fn apply_operation(
+    record: &'static RecordOps,
+    operation: &dyn Performs,
+    (payload, now_ms): (&[u8], i64),
+    doc: &mut Doc,
+) -> Result<(), ActionError> {
+    // A group's members mint into one list; anything else starts afresh.
+    if crate::group::current_member().is_none() {
+        drop(take_minted());
+    }
+    let mut cx = ActionCx::for_apply(doc, payload, now_ms);
+    let shape = record.shape;
+    let units = crate::footprint::has_units(shape);
+    // The unit index, kept once something applied: a refused action
+    // writes nothing.
+    let index = |doc: &mut Doc| {
+        if units {
+            crate::footprint::index(doc, shape).map_err(automerge_refused)?;
+        }
+        Ok::<(), ActionError>(())
+    };
+    let queues = operation.queues();
+    if operation.is_edit() {
+        if !queues {
+            apply_edit(operation, doc, &mut cx)?;
             return index(doc);
         }
-        // An item method reads and writes its item alone; what it wrote is
-        // its item's, within its footprint.
-        if !queues {
-            let minting = MintScope::enter(&cx);
-            let performed = self.operation.perform_item(doc, &mut cx);
-            drop(minting);
-            if let Some(performed) = performed {
-                performed.map_err(refusal_refused)?;
-                return index(doc);
-            }
-        }
-        // The record the previous action of this type left behind, brought
-        // up to date with only the changes since, stands in for a whole read.
-        let committed = automerge::transaction::Transactable::pending_ops(doc) == 0;
-        let started = automerge::transaction::Transactable::base_heads(doc);
-        let (mut record, dirty) = match crate::apply_cache::take::<O::Record>(doc) {
-            Some(warm) => (warm.record, Some(warm.dirty)),
-            None => (
-                O::Record::read_fields(doc, &ROOT).map_err(model_refused)?,
-                None,
-            ),
-        };
-        // What it was: for the record's `queue`, to hold what the verb
-        // produced against its footprint, and, when it starts from a
-        // committed version, for the next action to start from.
-        let kept = if committed || queues || units {
-            O::snapshot(&record)
-        } else {
-            None
-        };
-        let read_before;
-        let before = match (&kept, queues || units) {
-            (_, false) => None,
-            (Some(kept), true) => Some(kept),
-            (None, true) => {
-                read_before = O::Record::read_fields(doc, &ROOT).map_err(model_refused)?;
-                Some(&read_before)
-            }
-        };
+        // The record's `queue` sees the change the edit made.
+        let before = (record.read)(doc).map_err(model_refused)?;
+        apply_edit(operation, doc, &mut cx)?;
+        let mut after = (record.read)(doc).map_err(model_refused)?;
         let minting = MintScope::enter(&cx);
-        let performed = self.operation.perform(&mut record, &mut cx);
-        if let (Ok(()), Some(before), true) = (&performed, before, queues) {
-            O::queue(&mut record, before, &mut cx);
-        }
+        operation.queue(after.as_mut(), before.as_ref(), &mut cx);
         drop(minting);
-        performed.map_err(refusal_refused)?;
-        if crate::group::grouping() {
-            // The group checks the record once, at its end.
-            crate::group::check_or_defer(
-                format!("{}@root", std::any::type_name::<O::Record>()),
-                doc,
-                |doc| {
-                    O::Record::read_fields(doc, &ROOT)
-                        .map_err(|error| Refusal::new(error.to_string()))
-                        .and_then(|record| crate::Model::check(&record))
-                },
-            )
+        (record.write)(after.as_ref(), doc).map_err(model_refused)?;
+        return index(doc);
+    }
+    // An item method reads and writes its item alone; what it wrote is
+    // its item's, within its footprint.
+    if !queues {
+        let minting = MintScope::enter(&cx);
+        let performed = operation.perform_item(doc, &mut cx);
+        drop(minting);
+        if let Some(performed) = performed {
+            performed.map_err(refusal_refused)?;
+            return index(doc);
+        }
+    }
+    // The record the previous action of this type left behind, brought
+    // up to date with only the changes since, stands in for a whole read.
+    let committed = automerge::transaction::Transactable::pending_ops(doc) == 0;
+    let started = automerge::transaction::Transactable::base_heads(doc);
+    let (mut current, dirty) =
+        match crate::apply_cache::take_any((record.kind)(), doc, &record.refresh) {
+            Some((warm, dirty)) => (warm, Some(dirty)),
+            None => ((record.read)(doc).map_err(model_refused)?, None),
+        };
+    // What it was: for the record's `queue`, to hold what the verb
+    // produced against its footprint, and, when it starts from a
+    // committed version, for the next action to start from.
+    let kept = if committed || queues || units {
+        operation.snapshot(current.as_ref())
+    } else {
+        None
+    };
+    let read_before;
+    let before: Option<&dyn Any> = match (&kept, queues || units) {
+        (_, false) => None,
+        (Some(kept), true) => Some(kept.as_ref()),
+        (None, true) => {
+            read_before = (record.read)(doc).map_err(model_refused)?;
+            Some(read_before.as_ref())
+        }
+    };
+    let minting = MintScope::enter(&cx);
+    let performed = operation.perform(current.as_mut(), &mut cx);
+    if let (Ok(()), Some(before), true) = (&performed, before, queues) {
+        operation.queue(current.as_mut(), before, &mut cx);
+    }
+    drop(minting);
+    performed.map_err(refusal_refused)?;
+    if crate::group::grouping() {
+        // The group checks the record once, at its end.
+        crate::group::check_or_defer(format!("{}@root", (record.name)()), doc, move |doc| {
+            match (record.read)(doc) {
+                Ok(read) => (record.check)(read.as_ref()),
+                Err(error) => Err(Refusal::new(error.to_string())),
+            }
+        })
+        .map_err(refusal_refused)?;
+    } else {
+        (record.check)(current.as_ref()).map_err(refusal_refused)?;
+    }
+    if let (Some(before), true) = (before, units) {
+        let edits = (record.diff)(before, current.as_ref());
+        crate::footprint::check_edits(shape, &edits, &operation.writes())
             .map_err(refusal_refused)?;
-        } else {
-            crate::Model::check(&record).map_err(refusal_refused)?;
+    }
+    match (&kept, &dirty) {
+        (Some(kept), Some(dirty)) => {
+            (record.write_changed)(current.as_ref(), kept.as_ref(), doc, dirty)
         }
-        if let (Some(before), true) = (before, units) {
-            crate::footprint::check(before, &record, &self.operation.writes())
-                .map_err(refusal_refused)?;
-        }
-        match (&kept, &dirty) {
-            (Some(kept), Some(dirty)) => record.write_changed_fields(kept, doc, &ROOT, dirty),
-            _ => record.write_fields(doc, &ROOT),
-        }
-        .map_err(model_refused)?;
-        index(doc)?;
-        // Kept once all it wrote is written: the next action finds this
-        // one's change by its size.
-        if let (Some(kept), true) = (kept, committed) {
-            crate::apply_cache::keep(kept, doc, &started);
-        }
-        Ok(())
+        _ => (record.write)(current.as_ref(), doc),
+    }
+    .map_err(model_refused)?;
+    index(doc)?;
+    // Kept once all it wrote is written: the next action finds this
+    // one's change by its size.
+    if let (Some(kept), true) = (kept, committed) {
+        crate::apply_cache::keep_any((record.kind)(), kept, doc, &started);
+    }
+    Ok(())
+}
+
+impl<O: Operation> tilo_actions::Action for Stamped<O> {
+    /// Read the record, run the method, write back what changed
+    /// ([`apply_operation`]).
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
+        apply_operation(
+            &RecordOf::<O::Record>::OPS,
+            &self.operation,
+            (&payload, self.now_ms),
+            doc,
+        )
     }
 
     fn locus(&self) -> ExecutionLocus {

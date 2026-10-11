@@ -442,10 +442,10 @@ pub mod __private {
         let mut after = T::load(doc, &map, &obj).map_err(refused)?;
         change(&mut after, cx)?;
         crate::Model::check(&after)?;
-        let mut edits: Vec<crate::Edit<R>> = Vec::new();
+        let mut edits: Vec<crate::Edit<()>> = Vec::new();
         before.diff(&after, path, &mut edits);
         for edit in edits {
-            edit.apply(doc, cx).map_err(refused)?;
+            R::edit_fields(doc, &ROOT, edit.path(), edit.op(), cx).map_err(refused)?;
         }
         Ok(())
     }

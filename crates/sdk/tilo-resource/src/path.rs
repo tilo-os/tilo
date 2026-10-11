@@ -186,9 +186,9 @@ impl<R, T> Path<R, T> {
     where
         T: Model,
     {
-        let mut out = Vec::new();
-        before.diff(after, &self.segments, &mut out);
-        out
+        let mut found: Vec<Edit<()>> = Vec::new();
+        before.diff(after, &self.segments, &mut found);
+        retyped_all(found)
     }
 
     /// The edit `op` at this path.
@@ -1079,6 +1079,16 @@ fn edit_schema() -> serde_json::Value {
         },
         "required": ["path", "op"],
     })
+}
+
+/// `edits`, of the record `R`.
+#[must_use]
+pub fn retyped_all<R>(edits: Vec<Edit<()>>) -> Vec<Edit<R>> {
+    let mut out = Vec::with_capacity(edits.len());
+    for edit in edits {
+        out.push(edit.retyped());
+    }
+    out
 }
 
 /// The paths of a type whose values are edited only as a whole or through
