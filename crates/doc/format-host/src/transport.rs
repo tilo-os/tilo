@@ -4,9 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use tokio::net::UnixListener;
-use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use crate::format_router_capnp::format_router;
 use crate::router::Router;
@@ -75,17 +73,8 @@ pub async fn handle_connection(
     stream: tokio::net::UnixStream,
     router: Router,
 ) -> anyhow::Result<()> {
-    let (reader, writer) = stream.into_split();
-    let reader = reader.compat();
-    let writer = tokio_util::compat::TokioAsyncWriteCompatExt::compat_write(writer);
-    let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(reader),
-        futures::io::BufWriter::new(writer),
-        rpc_twoparty_capnp::Side::Server,
-        capnp::message::ReaderOptions::default(),
-    ));
-    let service = FormatRouterService::new(router);
-    let client: format_router::Client = capnp_rpc::new_client(service);
-    let rpc_system = RpcSystem::new(network, Some(client.client));
-    rpc_system.await.map_err(|e| anyhow::anyhow!("{e}"))
+    let client: format_router::Client = capnp_rpc::new_client(FormatRouterService::new(router));
+    runtime_portal::serve_connected_io(stream, client.client)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
