@@ -514,10 +514,11 @@ impl State {
             // The focused app's scope gets the foreground tier and the one it
             // replaces is demoted. Queued to a worker thread: this is the
             // compositor's input path and must never wait on systemd.
-            if let Some(pid) = surface
-                .client()
-                .and_then(|client| client.get_data::<crate::compositor::state::ClientState>().and_then(|state| state.pid))
-            {
+            if let Some(pid) = surface.client().and_then(|client| {
+                client
+                    .get_data::<crate::compositor::state::ClientState>()
+                    .and_then(|state| state.pid)
+            }) {
                 ::launcher::priority::notify_focus(pid);
             }
         }

@@ -972,16 +972,6 @@ fn load_device_fabric(path: &Path) -> crate::shell::device_fabric::DeviceFabric 
         .unwrap_or_default()
 }
 
-fn persist_device_fabric(
-    path: &Path,
-    fabric: &crate::shell::device_fabric::DeviceFabric,
-) -> Result<(), String> {
-    let bytes = fabric
-        .encode_checkpoint()
-        .map_err(|error| format!("encode checkpoint: {error}"))?;
-    write_device_fabric_checkpoint(path, &bytes)
-}
-
 /// Replace the fabric checkpoint with `bytes`, keeping the last readable one
 /// as its backup. Every write is synced, so this waits for the disk.
 fn write_device_fabric_checkpoint(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -9671,7 +9661,10 @@ mod tests {
             fabric_path,
             &state_dir.join("personal-device-fabric.postcard")
         );
-        persist_device_fabric(fabric_path, &network.device_fabric.lock().unwrap()).unwrap();
+        network
+            .persist_device_fabric(fabric_path, &network.device_fabric.lock().unwrap())
+            .unwrap();
+        crate::shell::persist::wait_for_saves();
         assert!(fabric_path.is_file());
         assert_eq!(
             std::fs::metadata(&state_dir).unwrap().permissions().mode() & 0o777,
@@ -9751,7 +9744,11 @@ mod tests {
         saved
             .observe_display_outputs(&owner, &stamp, vec![observation.clone()])
             .unwrap();
-        display_observations::save(&path, &saved, [7; 32]).unwrap();
+        display_observations::write(
+            &path,
+            &display_observations::encode(&saved, [7; 32]).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
@@ -9806,7 +9803,11 @@ mod tests {
                 vec![observation],
             )
             .unwrap();
-        display_observations::save(&path, &saved, [7; 32]).unwrap();
+        display_observations::write(
+            &path,
+            &display_observations::encode(&saved, [7; 32]).unwrap(),
+        )
+        .unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let enrolled = BTreeSet::from([owner.clone()]);
@@ -10043,7 +10044,12 @@ mod tests {
             let owner = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
             let mut expected = crate::shell::device_fabric::DeviceFabric::default();
             expected.upsert(fabric_snapshot(owner, 7)).unwrap();
-            persist_device_fabric(&path, &expected).unwrap();
+            let user = ed25519_dalek::SigningKey::from_bytes(&[0xE6; 32])
+                .verifying_key()
+                .to_bytes();
+            let (net, _commands) = personal_continuity_network_for_test(user);
+            net.persist_device_fabric(&path, &expected).unwrap();
+            crate::shell::persist::wait_for_saves();
             std::fs::write(&path, b"damaged").unwrap();
             assert_eq!(load_device_fabric(&path), expected);
         }

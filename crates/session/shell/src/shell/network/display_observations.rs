@@ -28,10 +28,6 @@ struct Observation {
     outputs: Vec<DisplayOutputObservation>,
 }
 
-pub(super) fn save(path: &Path, fabric: &DeviceFabric, user: [u8; 32]) -> Result<(), String> {
-    write(path, &encode(fabric, user)?)
-}
-
 /// The sidecar's bytes for `fabric`: serialisation only, no file access, so a
 /// thread that must not wait for the disk can take them and hand [`write`] to
 /// one that may.

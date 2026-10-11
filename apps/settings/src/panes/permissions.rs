@@ -17,11 +17,11 @@
 //! nothing. When there are no grants — a fresh session, or one where no app
 //! has been approved for anything — it shows an empty state.
 
-use ui::tokens::{Rhythm, SpacingStep};
+use ui::tokens::Rhythm;
 
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, Item, SettingsSection, StatusTone, caption, card, cards, error_row, gap, note, row, rows,
+    El, Item, SettingsSection, StatusTone, card, cards, error_row, note, row, rows,
     semantic_status_pill, untitled, value_row,
 };
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
@@ -141,17 +141,17 @@ fn secret_apps() -> Result<Vec<SecretApp>, String> {
 /// control that matters: stop it, or let it back, or forget it entirely.
 /// Applications are named by what the system observed of them, never by a
 /// name they chose.
-fn secrets_card(cx: &PaneCx, apps: &Result<Vec<SecretApp>, String>) -> El {
+fn secrets_card(cx: &PaneCx, apps: &Result<Vec<SecretApp>, String>) -> SettingsSection {
     let title = t("perm-secrets-title");
-    let mut body: Vec<El> = vec![caption(&t("perm-secrets-intro"))];
+    let mut body: Vec<Item> = vec![note(&t("perm-secrets-intro"))];
     match apps {
-        Err(_) => body.push(caption(&t("perm-secrets-unavailable"))),
-        Ok(apps) if apps.is_empty() => body.push(caption(&t("perm-secrets-none"))),
+        Err(_) => body.push(note(&t("perm-secrets-unavailable"))),
+        Ok(apps) if apps.is_empty() => body.push(note(&t("perm-secrets-none"))),
         Ok(apps) => {
             for app in apps {
                 let allowed = app.access == "allowed";
-                body.push(Box::new(Text::new(&app.name)));
-                body.push(caption(&t_args(
+                body.push(row(Box::new(Text::new(&app.name))));
+                body.push(note(&t_args(
                     "perm-secrets-detail",
                     &[
                         ("id", ui::i18n::ArgValue::Text(app.id.clone())),
@@ -169,14 +169,14 @@ fn secrets_card(cx: &PaneCx, apps: &Result<Vec<SecretApp>, String>) -> El {
                 } else {
                     t("perm-secrets-allow")
                 };
-                body.push(Box::new(cx.bind_invocation(
+                body.push(row(Box::new(cx.bind_invocation(
                     Button::new(&format!("secrets-access:{}", app.id), &toggle),
                     PermissionsEffect::SetSecretsAccess {
                         app: app.id.clone(),
                         allowed: !allowed,
                     },
-                )));
-                body.push(Box::new(cx.bind_invocation(
+                ))));
+                body.push(row(Box::new(cx.bind_invocation(
                     Button::new(
                         &format!("secrets-forget:{}", app.id),
                         &t("perm-secrets-forget"),
@@ -184,8 +184,7 @@ fn secrets_card(cx: &PaneCx, apps: &Result<Vec<SecretApp>, String>) -> El {
                     PermissionsEffect::ForgetSecrets {
                         app: app.id.clone(),
                     },
-                )));
-                body.push(gap(SpacingStep::S3));
+                ))));
             }
         }
     }
@@ -769,7 +768,7 @@ mod tests {
                 items: 0,
             },
         ];
-        let mut card = secrets_card(&cx(), &Ok(apps));
+        let mut card = cards(vec![secrets_card(&cx(), &Ok(apps))]);
         build_layout_of(&mut card);
         let mut labels = Vec::new();
         button_labels(card.as_ref(), &mut labels);
@@ -783,7 +782,7 @@ mod tests {
             ]
         );
         // A store that cannot be reached is said so, never shown as empty.
-        let mut unreachable = secrets_card(&cx(), &Err("no bus".into()));
+        let mut unreachable = cards(vec![secrets_card(&cx(), &Err("no bus".into()))]);
         build_layout_of(&mut unreachable);
         let mut said = Vec::new();
         text_labels(unreachable.as_ref(), &mut said);

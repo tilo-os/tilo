@@ -3506,7 +3506,6 @@ fn engine_problem_state(
     install: Option<ActionBinding<()>>,
     setup: Option<&crate::engine_setup::Setup>,
 ) -> Box<dyn Widget> {
-    use crate::engine_setup::Setup;
     if let (EngineProblem::NotInstalled, Some(setup)) = (problem, setup) {
         return engine_setup_state(setup, install);
     }

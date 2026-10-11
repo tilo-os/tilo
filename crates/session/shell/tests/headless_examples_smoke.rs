@@ -46,6 +46,18 @@ fn shell_binary() -> PathBuf {
     binary
 }
 
+/// The `tilo-control` client, built by the workspace beside the compositor:
+/// Cargo only exports `CARGO_BIN_EXE_*` for this package's own binaries.
+fn control_binary() -> PathBuf {
+    let binary = shell_binary().with_file_name("tilo-control");
+    assert!(
+        binary.exists(),
+        "expected tilo-control beside the compositor at {}; build the workspace first",
+        binary.display()
+    );
+    binary
+}
+
 fn run_script(script_name: &str) -> std::process::Output {
     run_script_with(script_name, &[])
 }
@@ -125,7 +137,7 @@ fn mcp_live_proof_drives_a_compositor_over_mcp() {
         "mcp-live-proof.py",
         &[(
             "TILO_CONTROL_BINARY",
-            PathBuf::from(env!("CARGO_BIN_EXE_tilo-control")),
+            control_binary(),
         )],
     );
     assert!(

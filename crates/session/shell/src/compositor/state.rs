@@ -1696,7 +1696,8 @@ impl State {
         // Advertised to every client, unfiltered: hiding this global just makes a toolkit decorate itself.
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         // Default `Server`: a client that never states a preference is decorated by the compositor.
-        let kde_decoration_state = KdeDecorationState::new::<Self>(&display_handle, KdeDefaultMode::Server);
+        let kde_decoration_state =
+            KdeDecorationState::new::<Self>(&display_handle, KdeDefaultMode::Server);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let mut seat_state = SeatState::new();
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);

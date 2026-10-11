@@ -80,7 +80,9 @@ impl Export {
     pub(crate) fn publish(self) {
         let mut published = lock(&PUBLISHED);
         published.revisions = self.0.keys().map(|room| (*room, self.1)).collect();
-        published.failures.retain(|_, failure| failure.revision > self.1);
+        published
+            .failures
+            .retain(|_, failure| failure.revision > self.1);
         published.rooms = self.0;
         #[cfg(target_os = "linux")]
         sandbox_revocation::reconcile(&mut published);
@@ -118,7 +120,11 @@ impl FailureHandle {
     pub(crate) fn fail(self, error: &std::io::Error) {
         let mut published = lock(&PUBLISHED);
         for room in self.0 {
-            if published.failures.get(&room).is_none_or(|old| old.revision <= self.1) {
+            if published
+                .failures
+                .get(&room)
+                .is_none_or(|old| old.revision <= self.1)
+            {
                 published.failures.insert(
                     room,
                     SaveFailure {
@@ -965,10 +971,15 @@ mod tests {
         }
         let error = registered.expect_err("a save that failed cannot publish");
         assert!(
-            error.to_string().contains("saving filesystem authority failed"),
+            error
+                .to_string()
+                .contains("saving filesystem authority failed"),
             "{error}"
         );
         assert_ne!(error.kind(), std::io::ErrorKind::PermissionDenied);
-        assert!(waited < PUBLICATION_STALL, "ended by the failure, not the stall");
+        assert!(
+            waited < PUBLICATION_STALL,
+            "ended by the failure, not the stall"
+        );
     }
 }
