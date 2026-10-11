@@ -7479,9 +7479,19 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
                     .is_ok_and(|owner| network.current_personal_route(&owner).is_some());
         }
     }
-    if let Err(error) = snapshot.save() {
-        tracing::debug!(%error, "could not publish device display observations");
-    }
+    // Both files are written through an fsync'd atomic replace, which waits on
+    // the filesystem's journal: on the compositor's loop that is a stall of
+    // however long the disk is busy. The durable writer's thread takes it, the
+    // latest snapshot of each file winning.
+    let writer = crate::shell::durable_writer::global();
+    writer.submit(
+        std::path::PathBuf::from("device-fabric/device-display-state"),
+        move || {
+            if let Err(error) = snapshot.save() {
+                tracing::debug!(%error, "could not publish device display observations");
+            }
+        },
+    );
     let view = settings_store::person_displays::PersonDisplays {
         schema_version: settings_store::person_displays::SCHEMA_VERSION,
         publisher_pid,
@@ -7494,9 +7504,14 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
             .filter(|_| policy.permits(ContinuityCapability::DisplayInput))
             .map_or_else(Vec::new, |local| network.person_display_devices(local)),
     };
-    if let Err(error) = view.save() {
-        tracing::debug!(%error, "could not publish person display observations");
-    }
+    writer.submit(
+        std::path::PathBuf::from("device-fabric/person-displays"),
+        move || {
+            if let Err(error) = view.save() {
+                tracing::debug!(%error, "could not publish person display observations");
+            }
+        },
+    );
 }
 
 fn build_local_snapshot(
