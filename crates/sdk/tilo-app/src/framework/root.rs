@@ -280,6 +280,26 @@ fn read<R: Resource>(
 }
 
 impl<R: Resource> ResourceRoot<R> {
+    /// The window ground is the framework's: an app never fills it, and one
+    /// that paints nothing still stands on it.
+    fn paint_ground(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.native_presentation.track_theme(theme);
+        scene.fill(
+            ui_core::vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &self.content.get_rect(),
+        );
+        self.run.people.follow(presence);
+    }
+
     /// A root over `content`, the view built in `cx`, whose handles the root
     /// keeps; `alive` is the scope `cx`'s bindings are tied to.
     pub(crate) fn new(
@@ -1301,22 +1321,12 @@ impl<R: Resource> RootModel for ResourceRoot<R> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let ground = theme.tokens.colors.surfaces.content;
-        self.native_presentation.track_theme(theme);
-        // The window ground is the framework's: an app never fills it, and
-        // one that paints nothing still stands on it.
-        scene.fill(
-            ui_core::vello::peniko::Fill::NonZero,
-            transform,
-            ground,
-            None,
-            &self.content.get_rect(),
-        );
-        self.run.people.follow(presence);
+        self.paint_ground(scene, transform, theme, presence);
         self.content.draw(scene, transform, text, theme, presence);
     }
 
-    // The host paints through this entry point; paint the background too.
+    // The host paints through this entry point: the ground, then the view
+    // with the presence and permissions the host handed over.
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -1324,12 +1334,14 @@ impl<R: Resource> RootModel for ResourceRoot<R> {
         text: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-        _permissions: &ui_core::permissions::PermissionContext,
+        permissions: &ui_core::permissions::PermissionContext,
     ) {
         if presence.should_cull(self.content.get_rect()) {
             return;
         }
-        RootModel::draw(self, scene, transform, text, theme, presence);
+        self.paint_ground(scene, transform, theme, presence);
+        self.content
+            .draw_with_presence(scene, transform, text, theme, presence, permissions);
     }
 
     fn needs_redraw(&self) -> bool {

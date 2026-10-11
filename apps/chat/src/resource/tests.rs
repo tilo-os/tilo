@@ -800,3 +800,27 @@ fn a_commenter_files_feedback_and_a_viewer_cannot() {
         "a viewer may not file feedback"
     );
 }
+
+#[test]
+fn a_drawn_frame_hands_chat_the_hosts_permissions() {
+    let mut viewer = TestApp::<ChatShell>::with_role(ui::permissions::Role::Viewer).unwrap();
+    viewer.harness().resize((960, 720)).unwrap();
+    assert_eq!(
+        viewer.with_surface::<ChatApp, _>(|surface| surface.perms.can_participate()),
+        Some(false)
+    );
+}
+
+#[test]
+fn stopping_shared_context_wakes_the_native_presentation() {
+    let mut app = TestApp::<ChatShell>::capture(Some("live-context")).unwrap();
+    assert!(app.surface_mut::<crate::ChatApp>().sharing_context);
+    assert!(!app.harness().root_widget().needs_redraw());
+    app.surface_mut::<crate::ChatApp>()
+        .answer_effect(crate::effects::ChatEffect::StopSharingLiveContext)
+        .unwrap();
+    assert!(
+        app.harness().root_widget().needs_redraw(),
+        "semantic Stop must schedule its privacy indicator and withdrawn view frame"
+    );
+}
