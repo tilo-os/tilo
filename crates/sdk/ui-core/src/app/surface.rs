@@ -863,17 +863,13 @@ impl App {
         // A layout pass that recomposed the tree may have replaced widgets.
         let recomposed = self.layout.rebuilds != rebuilds;
         let described = (structure_rebuilt || recomposed) && self.layout.frame_rebuilds_described;
-        let moved = if described {
-            Some(changed_boxes(
-                &boxes_before,
-                &widget_boxes(self.root_widget.as_ref()),
-            ))
-        } else if recomposed {
-            None
-        } else if geometry_changed && !structure_rebuilt {
-            moved_boxes(&boxes_before, &widget_boxes(self.root_widget.as_ref()))
-        } else {
-            Some(Vec::new())
+        let relaid = !described && !recomposed && geometry_changed && !structure_rebuilt;
+        let boxes_after = (described || relaid).then(|| widget_boxes(self.root_widget.as_ref()));
+        let moved = match &boxes_after {
+            Some(after) if described => Some(changed_boxes(&boxes_before, after)),
+            Some(after) => moved_boxes(&boxes_before, after),
+            None if recomposed => None,
+            None => Some(Vec::new()),
         };
         let full = [
             (replaced, "another component"),
@@ -888,6 +884,30 @@ impl App {
         .into_iter()
         .find_map(|(repaint, why)| repaint.then_some(why));
         let drawn = draw_frame_content(self, scene, size.width, size.height, scale_factor, None);
+        // A widget whose own damage this draw covers where its box was and is
+        // (a block editor that grew by a paragraph) leaves its box to that
+        // damage; its children's boxes still count.
+        let moved = match (moved, &boxes_after) {
+            (Some(moved), Some(after)) if !moved.is_empty() => {
+                let covered = boxes_covered_by_own_damage(self.root_widget.as_ref());
+                let uncovered = |boxes: &[(WidgetIdentity, KurboRect)]| -> Vec<_> {
+                    boxes
+                        .iter()
+                        .filter(|(widget, _)| !covered.contains(widget))
+                        .copied()
+                        .collect()
+                };
+                let (before, after) = (uncovered(&boxes_before), uncovered(after));
+                if covered.is_empty() {
+                    Some(moved)
+                } else if described {
+                    Some(changed_boxes(&before, &after))
+                } else {
+                    moved_boxes(&before, &after).or(Some(moved))
+                }
+            }
+            (moved, _) => moved,
+        };
         damage.frame(full, &drawn, f64::from(scale_factor), |regions| {
             collect_submitted_widget_damage(self.root_widget.as_ref(), regions);
             regions.extend(moved.into_iter().flatten());
@@ -918,6 +938,24 @@ fn widget_boxes(root: &dyn Widget) -> Vec<(WidgetIdentity, KurboRect)> {
         widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
     }
     let mut out = Vec::new();
+    walk(root, 0, &mut out);
+    out
+}
+
+/// Every widget whose own damage covers a change to its box this frame
+/// ([`Widget::damage_covers_own_box`]), by identity as [`widget_boxes`] has it.
+fn boxes_covered_by_own_damage(root: &dyn Widget) -> std::collections::HashSet<WidgetIdentity> {
+    fn walk(
+        widget: &dyn Widget,
+        depth: usize,
+        out: &mut std::collections::HashSet<WidgetIdentity>,
+    ) {
+        if widget.damage_covers_own_box() {
+            out.insert((std::ptr::from_ref(widget).cast::<()>(), depth));
+        }
+        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
+    }
+    let mut out = std::collections::HashSet::new();
     walk(root, 0, &mut out);
     out
 }
