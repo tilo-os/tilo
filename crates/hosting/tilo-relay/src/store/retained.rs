@@ -699,14 +699,14 @@ pub(crate) struct RetainBuild {
     survivors: u64,
     written: u64,
     shell_store: Option<WorkspaceStore>,
-    // Boxed: both are tens of kilobytes inline, and the build moves through
-    // the blocking pool on every quantum of the edit that owns it.
+    // Boxed, as `fast` is: inline they made a build 54 KB, and the build
+    // moves through the blocking pool on every quantum of the edit it serves.
     selected_read: Option<Box<super::shell_selection::SelectedRead>>,
     selection: Option<Box<super::shell_selection::Selection>>,
     publication: Option<super::shell_selection::Publication>,
     /// A plain route tail the in-process tail cache can publish without a
     /// selection; `fast_admitted` once the selected snapshot found it safe.
-    fast: Option<super::shell_selection::tail_cache::FastTail>,
+    fast: Option<Box<super::shell_selection::tail_cache::FastTail>>,
     fast_admitted: bool,
     selected_obsolete: bool,
     staged_only: bool,
@@ -1008,7 +1008,7 @@ impl RetainBuild {
                     self.phase = RetainPhase::Done;
                     self.selected_obsolete = true;
                     let fast = self.fast.take().invariant("fast tail missing")?;
-                    self.store.tail_cache.finish(fast);
+                    self.store.tail_cache.finish(*fast);
                 }
                 Admission::Tail => self.fast_admitted = true,
                 Admission::Select => {
@@ -1240,7 +1240,7 @@ impl RetainBuild {
                 {
                     // The selection this skips would publish this tail as an
                     // original and change nothing but its listed tails.
-                    self.store.tail_cache.finish(fast);
+                    self.store.tail_cache.finish(*fast);
                     self.publication = Some(super::shell_selection::Publication::Original);
                 }
                 if self.publication.is_none() {
@@ -1453,7 +1453,7 @@ impl WorkspaceStore {
             },
             selection: None,
             publication: None,
-            fast,
+            fast: fast.map(Box::new),
             fast_admitted: false,
             selected_obsolete: false,
             staged_only: false,
