@@ -14,6 +14,23 @@ SPEC.loader.exec_module(profile)
 
 
 class PolicyProfileTests(unittest.TestCase):
+    def test_failed_test_identifier_is_visible_without_private_failure_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tests = root / 'tools/tests'
+            tests.mkdir(parents=True)
+            (tests / 'test_profile_failure_fixture.py').write_text(
+                'import unittest\nclass Fixture(unittest.TestCase):\n'
+                '    def test_failure(self):\n'
+                '        self.fail("private-failure-marker")\n')
+            status, report = profile.profile_target('policy-tests', root)
+            self.assertEqual(status, 1)
+            self.assertEqual(report['tests_run'], 1)
+            self.assertEqual(report['failed_tests'], [
+                'FAIL: test_failure (test_profile_failure_fixture.Fixture.test_failure)'])
+            self.assertNotIn('private-failure-marker', json.dumps(report))
+            self.assertNotIn(str(root), json.dumps(report))
+
     def test_real_target_execution_preserves_status_and_keeps_only_statistics(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

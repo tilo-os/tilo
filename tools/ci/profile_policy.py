@@ -86,6 +86,10 @@ def profile_target(target, root=ROOT):
     if target == 'policy-tests':
         count = re.search(r'Ran ([0-9]+) tests? in ([0-9.]+)s', captured.getvalue())
         report['tests_run'] = int(count[1]) if count else None
+        report['failed_tests'] = [kind + ': ' + method + ' (' + owner + ')'
+                                  for kind, method, owner in re.findall(
+                                      r'^(FAIL|ERROR): ([A-Za-z0-9_]+) \(([A-Za-z0-9_.]+)\)$',
+                                      captured.getvalue(), re.MULTILINE)]
         if not report['tests_run']:
             report['status'] = status = 1
     if not report['functions']:
