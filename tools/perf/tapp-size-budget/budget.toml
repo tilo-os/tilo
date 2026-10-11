@@ -55,7 +55,7 @@ p90 = 4521984   # 4,447,232 (osk)
 
 [apps."so.tilo.agent"]
 x86_64 = 5242880
-aarch64 = 4718592
+aarch64 = 4915200
 
 [apps."so.tilo.api-tester"]
 x86_64 = 2424832
@@ -70,7 +70,7 @@ x86_64 = 2228224
 aarch64 = 2031616
 
 [apps."so.tilo.calculator"]
-x86_64 = 1245184
+x86_64 = 1179648
 aarch64 = 1114112
 
 [apps."so.tilo.calendar"]
@@ -91,7 +91,7 @@ aarch64 = 4128768
 
 [apps."so.tilo.chip-design"]
 x86_64 = 2359296
-aarch64 = 2162688
+aarch64 = 2097152
 
 [apps."so.tilo.clocks"]
 x86_64 = 2097152
@@ -103,14 +103,14 @@ aarch64 = 2752512
 
 [apps."so.tilo.contacts"]
 x86_64 = 2752512
-aarch64 = 2555904
+aarch64 = 2490368
 
 [apps."so.tilo.containers"]
-x86_64 = 2228224
+x86_64 = 2162688
 aarch64 = 2031616
 
 [apps."so.tilo.db-client"]
-x86_64 = 5242880
+x86_64 = 5177344
 aarch64 = 4849664
 
 [apps."so.tilo.diffmerge"]
@@ -123,7 +123,7 @@ aarch64 = 1048576
 
 [apps."so.tilo.disks"]
 x86_64 = 1835008
-aarch64 = 1769472
+aarch64 = 1703936
 
 [apps."so.tilo.ebook"]
 x86_64 = 3473408
@@ -135,10 +135,10 @@ aarch64 = 2097152
 
 [apps."so.tilo.file-explorer"]
 x86_64 = 4718592
-aarch64 = 4390912
+aarch64 = 4325376
 
 [apps."so.tilo.firewall"]
-x86_64 = 1966080
+x86_64 = 1900544
 aarch64 = 1769472
 
 [apps."so.tilo.git-client"]
@@ -146,7 +146,7 @@ x86_64 = 4456448
 aarch64 = 4063232
 
 [apps."so.tilo.hex-editor"]
-x86_64 = 1179648
+x86_64 = 1114112
 aarch64 = 1048576
 
 [apps."so.tilo.hot-reload-demo"]
@@ -263,7 +263,7 @@ aarch64 = 3735552
 
 [apps."so.tilo.typst-editor"]
 x86_64 = 1441792
-aarch64 = 1376256
+aarch64 = 1310720
 
 [apps."so.tilo.video-editor"]
 x86_64 = 2818048
@@ -287,4 +287,4 @@ aarch64 = 1703936
 
 [apps."so.tilo.word-processor"]
 x86_64 = 3801088
-aarch64 = 3407872
+aarch64 = 3342336

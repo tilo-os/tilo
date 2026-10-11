@@ -654,9 +654,17 @@ pub struct OffscreenRenderer {
 }
 
 impl OffscreenRenderer {
-    /// Current opt-in per-dispatch timestamp diagnostic availability.
-    pub fn gpu_dispatch_timestamp_status(&mut self) -> vello::GpuDispatchTimestampStatus {
-        self.renderer.gpu_dispatch_timestamp_status()
+    /// The Vello renderer underneath, for its feature and diagnostic
+    /// queries.
+    #[doc(hidden)]
+    pub fn vello(&self) -> &Renderer {
+        &self.renderer
+    }
+
+    /// The Vello renderer underneath, for the queries that take samples.
+    #[doc(hidden)]
+    pub fn vello_mut(&mut self) -> &mut Renderer {
+        &mut self.renderer
     }
 
     fn timestamp_submission_id(&self, profiled: bool) -> Option<u64> {
@@ -814,22 +822,10 @@ impl OffscreenRenderer {
         self.renderer.set_compute_pass_batching(enabled);
     }
 
-    /// Whether shared GPU compute-pass batching is active.
-    #[doc(hidden)]
-    pub fn compute_pass_batching_enabled(&self) -> bool {
-        self.renderer.compute_pass_batching_enabled()
-    }
-
     /// Whether geometric retained-damage texture capacity is enabled.
     #[doc(hidden)]
     pub fn damage_geometric_capacity_enabled(&self) -> bool {
         self.damage_geometric_capacity
-    }
-
-    /// Whether direct GPU path count/tiling dispatch is active.
-    #[doc(hidden)]
-    pub fn direct_path_dispatch_enabled(&self) -> bool {
-        self.renderer.direct_path_dispatch_enabled()
     }
 
     /// Overrides direct GPU path count/tiling dispatch for a differential oracle.
@@ -838,138 +834,10 @@ impl OffscreenRenderer {
         self.renderer.set_direct_path_dispatch_enabled(enabled);
     }
 
-    /// Whether the synchronous GPU renderer defers its existing bump readback
-    /// until after fine rasterization for the compute-batching A/B.
-    #[doc(hidden)]
-    pub fn defer_bump_readback_enabled(&self) -> bool {
-        self.renderer.defer_bump_readback_enabled()
-    }
-
     /// Overrides deferred bump-readback ordering for an independent oracle.
     #[doc(hidden)]
     pub fn set_defer_bump_readback_enabled(&mut self, enabled: bool) {
         self.renderer.set_defer_bump_readback_enabled(enabled);
-    }
-
-    /// Whether this renderer can use Vello's opt-in sparse Area-AA fine pass.
-    #[doc(hidden)]
-    pub fn sparse_fine_supported(&self) -> bool {
-        self.renderer.sparse_fine_supported()
-    }
-
-    /// Whether this renderer can select Vello's opt-in sparse coarse pass.
-    #[doc(hidden)]
-    pub fn sparse_coarse_supported(&self) -> bool {
-        self.renderer.sparse_coarse_supported()
-    }
-
-    /// Whether the opt-in native active-bin coarse shader is available for a small sparse
-    /// recording. Individual oversized selectors can still conservatively use legacy coarse.
-    #[doc(hidden)]
-    pub fn sparse_coarse_active_bins_available(&self) -> bool {
-        self.renderer.sparse_coarse_active_bins_available()
-    }
-
-    /// Whether the opt-in adaptive sparse-coarse policy is both requested and available.
-    #[doc(hidden)]
-    pub fn sparse_coarse_adaptive_enabled(&self) -> bool {
-        self.renderer.sparse_coarse_adaptive_enabled()
-    }
-
-    /// Whether Vello was configured to request sparse path-level tile bounds.
-    #[doc(hidden)]
-    pub fn sparse_tile_bounds_requested(&self) -> bool {
-        self.renderer.sparse_tile_bounds_requested()
-    }
-
-    /// Whether Vello can apply sparse path-level tile bounds for this renderer.
-    #[doc(hidden)]
-    pub fn sparse_tile_bounds_available(&self) -> bool {
-        self.renderer.sparse_tile_bounds_available()
-    }
-
-    /// Whether sparse Area fine quad skipping was requested.
-    #[doc(hidden)]
-    pub fn sparse_fine_quad_skip_requested(&self) -> bool {
-        self.renderer.sparse_fine_quad_skip_requested()
-    }
-
-    /// Whether sparse Area fine quad skipping is available.
-    #[doc(hidden)]
-    pub fn sparse_fine_quad_skip_available(&self) -> bool {
-        self.renderer.sparse_fine_quad_skip_available()
-    }
-
-    /// Whether sparse coarse opaque pruning was requested.
-    #[doc(hidden)]
-    pub fn sparse_opaque_prune_requested(&self) -> bool {
-        self.renderer.sparse_opaque_prune_requested()
-    }
-
-    /// Whether sparse coarse opaque pruning can select its shader.
-    #[doc(hidden)]
-    pub fn sparse_opaque_prune_available(&self) -> bool {
-        self.renderer.sparse_opaque_prune_available()
-    }
-
-    /// Whether sparse solid-fuse selection was requested.
-    #[doc(hidden)]
-    pub fn sparse_solid_fuse_requested(&self) -> bool {
-        self.renderer.sparse_solid_fuse_requested()
-    }
-
-    /// Whether sparse solid-fuse selection can be used by this renderer.
-    #[doc(hidden)]
-    pub fn sparse_solid_fuse_available(&self) -> bool {
-        self.renderer.sparse_solid_fuse_available()
-    }
-
-    /// Whether sparse segment-row masking was requested.
-    #[doc(hidden)]
-    pub fn sparse_segment_row_mask_requested(&self) -> bool {
-        self.renderer.sparse_segment_row_mask_requested()
-    }
-
-    /// Whether sparse segment-row masking can be selected by this renderer.
-    #[doc(hidden)]
-    pub fn sparse_segment_row_mask_available(&self) -> bool {
-        self.renderer.sparse_segment_row_mask_available()
-    }
-
-    /// Whether canonical segment ordering was requested.
-    #[doc(hidden)]
-    pub fn canonical_segment_order_requested(&self) -> bool {
-        self.renderer.canonical_segment_order_requested()
-    }
-
-    /// Whether this renderer has canonical segment ordering available.
-    #[doc(hidden)]
-    pub fn canonical_segment_order_available(&self) -> bool {
-        self.renderer.canonical_segment_order_available()
-    }
-
-    /// Whether Area PPT8 was requested.
-    #[doc(hidden)]
-    pub fn area_ppt8_requested(&self) -> bool {
-        self.renderer.area_ppt8_requested()
-    }
-
-    /// Whether Area PPT8 is available for the ordinary synchronous GPU full route.
-    #[doc(hidden)]
-    pub fn area_ppt8_available(&self) -> bool {
-        self.renderer.area_ppt8_available()
-    }
-
-    /// Whether the single-workgroup clip leaf experiment was requested.
-    #[doc(hidden)]
-    pub fn clip_single_group_requested(&self) -> bool {
-        self.renderer.clip_single_group_requested()
-    }
-
-    /// Whether the single-workgroup clip leaf permutation is available.
-    #[doc(hidden)]
-    pub fn clip_single_group_available(&self) -> bool {
-        self.renderer.clip_single_group_available()
     }
 
     /// Reset no-allocation sparse-submission accounting at a measured-workload boundary.
@@ -1028,34 +896,10 @@ impl OffscreenRenderer {
         self.renderer.set_sparse_fine_enabled(enabled);
     }
 
-    /// Whether only Vello's path-tag reduce/scan stages use their opt-in CPU path.
-    #[doc(hidden)]
-    pub fn cpu_pathtag_enabled(&self) -> bool {
-        self.renderer.cpu_pathtag_enabled()
-    }
-
     /// Overrides the opt-in CPU path-tag reduce/scan path for differential tests.
     #[doc(hidden)]
     pub fn set_cpu_pathtag_enabled(&mut self, enabled: bool) {
         self.renderer.set_cpu_pathtag_enabled(enabled);
-    }
-
-    /// Whether selective CPU path-tag host-buffer reuse was configured.
-    #[doc(hidden)]
-    pub fn cpu_pathtag_reuse_enabled(&self) -> bool {
-        self.renderer.cpu_pathtag_reuse_enabled()
-    }
-
-    /// Retained selective CPU path-tag host capacity, excluded from GPU stats.
-    #[doc(hidden)]
-    pub fn cpu_pathtag_pool_retained_bytes(&self) -> u64 {
-        self.renderer.cpu_pathtag_pool_retained_bytes()
-    }
-
-    /// Whether selective CPU bbox-clear and draw-reduce metadata is active.
-    #[doc(hidden)]
-    pub fn cpu_metadata_enabled(&self) -> bool {
-        self.renderer.cpu_metadata_enabled()
     }
 
     /// Overrides selective CPU metadata for differential tests.
@@ -1064,52 +908,16 @@ impl OffscreenRenderer {
         self.renderer.set_cpu_metadata_enabled(enabled);
     }
 
-    /// Retained selective CPU metadata host capacity, excluded from GPU stats.
-    #[doc(hidden)]
-    pub fn cpu_metadata_pool_retained_bytes(&self) -> u64 {
-        self.renderer.cpu_metadata_pool_retained_bytes()
-    }
-
-    /// Whether bounded selective CPU draw-prefix processing is active.
-    #[doc(hidden)]
-    pub fn cpu_draw_prefix_enabled(&self) -> bool {
-        self.renderer.cpu_draw_prefix_enabled()
-    }
-
     /// Overrides bounded selective CPU draw-prefix processing for differential tests.
     #[doc(hidden)]
     pub fn set_cpu_draw_prefix_enabled(&mut self, enabled: bool) {
         self.renderer.set_cpu_draw_prefix_enabled(enabled);
     }
 
-    /// Retained selective CPU draw-prefix host capacity, excluded from GPU stats.
-    #[doc(hidden)]
-    pub fn cpu_draw_prefix_pool_retained_bytes(&self) -> u64 {
-        self.renderer.cpu_draw_prefix_pool_retained_bytes()
-    }
-
     /// Whether a draw-prefix table fits the bounded selective CPU path.
     #[doc(hidden)]
     pub fn cpu_draw_prefix_supported(&self, bytes: u64) -> bool {
         self.renderer.cpu_draw_prefix_supported(bytes)
-    }
-
-    /// Whether this renderer was constructed with sparse tile-upload reuse.
-    #[doc(hidden)]
-    pub fn sparse_upload_reuse_enabled(&self) -> bool {
-        self.renderer.sparse_upload_reuse_enabled()
-    }
-
-    /// GPU timestamp resolve/readback buffers only (not opaque query metadata).
-    #[doc(hidden)]
-    pub fn gpu_timestamp_buffer_bytes(&self) -> u64 {
-        self.renderer.gpu_timestamp_buffer_bytes()
-    }
-
-    /// Per-dispatch GPU timestamp resolve/readback buffers only.
-    #[doc(hidden)]
-    pub fn gpu_dispatch_timestamp_buffer_bytes(&self) -> u64 {
-        self.renderer.gpu_dispatch_timestamp_buffer_bytes()
     }
 
     pub fn memory_stats(&self) -> OffscreenMemoryStats {
@@ -2926,7 +2734,7 @@ mod tests {
             let third = scene_for(&orange, replaced, overlap_b);
             let mut retained = OffscreenRenderer::new(W, H);
             retained.render_rgba_resilient(&first);
-            let sparse_supported = retained.sparse_fine_supported();
+            let sparse_supported = retained.vello().sparse_fine_supported();
             let mut reference = OffscreenRenderer::new(W, H);
             reference.set_compute_pass_batching(false);
             reference.set_direct_path_dispatch_enabled(false);
@@ -3058,7 +2866,7 @@ mod tests {
                     "these small prefix updates must not take the full fallback",
                 );
                 assert_eq!(timing.damage_target_creations, expected_creations);
-                if retained.gpu_timestamp_buffer_bytes() != 0 {
+                if retained.vello().gpu_timestamp_buffer_bytes() != 0 {
                     assert!(
                         timing.gpu_timestamp_expected_submissions > 0,
                         "timestamp-enabled partial render must record its submission",
@@ -3167,7 +2975,7 @@ mod tests {
             const W: u32 = 256;
             const H: u32 = 192;
             let mut retained = OffscreenRenderer::new(64, 64);
-            if !retained.sparse_fine_supported() {
+            if !retained.vello().sparse_fine_supported() {
                 let requested = env_enabled_by_default("VELLO_SPARSE_FINE");
                 assert!(
                     !requested || std::env::var_os("TILO_UI_VELLO_CPU").is_some(),
@@ -3219,7 +3027,7 @@ mod tests {
 
             let far = Rect::new(238.0, 174.0, 250.0, 186.0);
             let mut sparse = OffscreenRenderer::new(W, H);
-            assert!(sparse.sparse_fine_supported());
+            assert!(sparse.vello().sparse_fine_supported());
             sparse.render_rgba_resilient(&Scene::new());
             let mut changed = Scene::new();
             changed.fill(
@@ -3264,7 +3072,7 @@ mod tests {
             const W: u32 = 544;
             const H: u32 = 528;
             let mut retained = OffscreenRenderer::new(W, H);
-            if !retained.sparse_coarse_supported() {
+            if !retained.vello().sparse_coarse_supported() {
                 let sparse_fine_requested = env_enabled_by_default("VELLO_SPARSE_FINE");
                 assert!(
                     !sparse_fine_requested || std::env::var_os("TILO_UI_VELLO_CPU").is_some(),
@@ -3272,7 +3080,7 @@ mod tests {
                 );
                 break 'sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames;
             }
-            assert!(retained.sparse_coarse_supported());
+            assert!(retained.vello().sparse_coarse_supported());
             let mut oracle = OffscreenRenderer::new(W, H);
             oracle.set_compute_pass_batching(false);
             oracle.set_defer_bump_readback_enabled(false);
@@ -3384,7 +3192,7 @@ mod tests {
                 if matches!(
                     std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").as_deref(),
                     Ok("1")
-                ) && retained.gpu_dispatch_timestamp_buffer_bytes() != 0
+                ) && retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0
                 {
                     let coarse_sparse_bit = 1_u32.checked_shl(23).unwrap_or(0);
                     let dense_coarse_bit = 1_u32.checked_shl(16).unwrap_or(0);
@@ -3409,7 +3217,7 @@ mod tests {
                         std::env::var("VELLO_COMPUTE_BATCH").as_deref(),
                         Ok("0" | "1")
                     ) && env_enabled_by_default("VELLO_SPARSE_UPLOAD_REUSE");
-                if batched_reuse_profile && retained.gpu_timestamp_buffer_bytes() != 0 {
+                if batched_reuse_profile && retained.vello().gpu_timestamp_buffer_bytes() != 0 {
                     assert_eq!(timing.sparse_submissions, 1);
                     assert_eq!(timing.full_attempts, 0);
                     assert!(timing.gpu_timestamp_pass_count > 0);
@@ -3621,7 +3429,7 @@ mod tests {
                 if matches!(
                     std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").as_deref(),
                     Ok("1")
-                ) && retained.gpu_dispatch_timestamp_buffer_bytes() != 0
+                ) && retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0
                 {
                     let active_coarse = 1_u32.checked_shl(27).expect("stage id 28 fits mask");
                     assert!(timing.gpu_dispatch_timestamp_expected_submissions > 0);
@@ -3704,7 +3512,9 @@ mod tests {
             const W: u32 = 128;
             const H: u32 = 96;
             let mut retained = OffscreenRenderer::new(W, H);
-            if !retained.sparse_fine_supported() || !retained.sparse_upload_reuse_enabled() {
+            if !retained.vello().sparse_fine_supported()
+                || !retained.vello().sparse_upload_reuse_enabled()
+            {
                 eprintln!("skipping sparse upload reuse test: sparse GPU path is unavailable");
                 break 'sparse_upload_reuse_grows_once_and_matches_an_unbatched_dense_oracle;
             }
@@ -3742,10 +3552,10 @@ mod tests {
                 Color::TRANSPARENT,
                 &[small],
             );
-            let deferred_bump_profile = retained.defer_bump_readback_enabled()
+            let deferred_bump_profile = retained.vello().defer_bump_readback_enabled()
                 && matches!(std::env::var("VELLO_COMPUTE_BATCH").as_deref(), Ok("2"))
-                && retained.cpu_metadata_enabled()
-                && retained.gpu_timestamp_buffer_bytes() != 0;
+                && retained.vello().cpu_metadata_enabled()
+                && retained.vello().gpu_timestamp_buffer_bytes() != 0;
             if deferred_bump_profile {
                 assert_eq!(
                     timing.gpu_timestamp_pass_count, 1,
@@ -3761,7 +3571,7 @@ mod tests {
                 std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").as_deref(),
                 Ok("1")
             );
-            if dispatch_requested && retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+            if dispatch_requested && retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                 assert!(timing.gpu_dispatch_timestamp_expected_submissions > 0);
                 assert_eq!(
                     timing.gpu_dispatch_timestamp_sampled_submissions,
@@ -3778,7 +3588,7 @@ mod tests {
                 assert!(timing.gpu_dispatch_timestamp_stage_dispatch_count[22] > 0);
             } else if dispatch_requested {
                 assert!(matches!(
-                    retained.gpu_dispatch_timestamp_status(),
+                    retained.vello_mut().gpu_dispatch_timestamp_status(),
                     vello::GpuDispatchTimestampStatus::Unsupported
                         | vello::GpuDispatchTimestampStatus::Disabled
                 ));
@@ -3849,7 +3659,7 @@ mod tests {
             return None;
         }
         let renderer = OffscreenRenderer::new(width, height);
-        if !renderer.sparse_coarse_active_bins_available() {
+        if !renderer.vello().sparse_coarse_active_bins_available() {
             eprintln!("skipping {test_name}: active native-bin coarse is unavailable");
             return None;
         }
@@ -3878,7 +3688,7 @@ mod tests {
             return None;
         }
         let renderer = OffscreenRenderer::new(width, height);
-        if !renderer.sparse_coarse_adaptive_enabled() {
+        if !renderer.vello().sparse_coarse_adaptive_enabled() {
             eprintln!("skipping {test_name}: adaptive sparse coarse is unavailable");
             return None;
         }
@@ -3925,9 +3735,9 @@ mod tests {
         ) {
             return;
         }
-        if renderer.gpu_dispatch_timestamp_buffer_bytes() == 0 {
+        if renderer.vello().gpu_dispatch_timestamp_buffer_bytes() == 0 {
             assert!(matches!(
-                renderer.gpu_dispatch_timestamp_status(),
+                renderer.vello_mut().gpu_dispatch_timestamp_status(),
                 vello::GpuDispatchTimestampStatus::Unsupported
                     | vello::GpuDispatchTimestampStatus::Disabled
             ));
@@ -4103,7 +3913,7 @@ mod tests {
             const W: u32 = 384;
             const H: u32 = 256;
             let mut retained = OffscreenRenderer::new(W, H);
-            if !retained.cpu_pathtag_enabled() {
+            if !retained.vello().cpu_pathtag_enabled() {
                 assert!(
                     std::env::var_os("TILO_UI_VELLO_CPU").is_some(),
                     "default selective CPU path tags must activate on a GPU renderer"
@@ -4114,12 +3924,12 @@ mod tests {
             let direct_path_requested = env_enabled_by_default("VELLO_DIRECT_PATH_DISPATCH");
             if direct_path_requested {
                 assert!(
-                    retained.direct_path_dispatch_enabled(),
+                    retained.vello().direct_path_dispatch_enabled(),
                     "default direct GPU path dispatch must activate"
                 );
             }
             if draw_prefix_requested {
-                assert!(retained.cpu_draw_prefix_enabled());
+                assert!(retained.vello().cpu_draw_prefix_enabled());
                 assert!(retained.cpu_draw_prefix_supported(16));
                 assert!(retained.cpu_draw_prefix_supported(1024 * 1024));
                 assert!(!retained.cpu_draw_prefix_supported(1024 * 1024 + 16));
@@ -4188,10 +3998,10 @@ mod tests {
             retained.render_rgba_resilient(&initial);
             let bounded_damage = Rect::new(12.0, 12.0, 184.0, 150.0);
             let reuse_requested = env_enabled_by_default("VELLO_CPU_PATHTAG_REUSE");
-            let deferred_bump_profile = retained.defer_bump_readback_enabled()
+            let deferred_bump_profile = retained.vello().defer_bump_readback_enabled()
                 && matches!(std::env::var("VELLO_COMPUTE_BATCH").as_deref(), Ok("2"))
-                && !retained.sparse_fine_supported()
-                && retained.gpu_timestamp_buffer_bytes() != 0;
+                && !retained.vello().sparse_fine_supported()
+                && retained.vello().gpu_timestamp_buffer_bytes() != 0;
             let mut retained_pool_bytes = 0;
             for next in [scene_for(9.0, false), scene_for(9.0, true)] {
                 let (_, timing) = retained.render_damage_regions_gpu_wait_profiled(
@@ -4207,13 +4017,13 @@ mod tests {
                     0
                 );
                 if reuse_requested {
-                    assert!(retained.cpu_pathtag_reuse_enabled());
-                    let current_pool_bytes = retained.cpu_pathtag_pool_retained_bytes();
+                    assert!(retained.vello().cpu_pathtag_reuse_enabled());
+                    let current_pool_bytes = retained.vello().cpu_pathtag_pool_retained_bytes();
                     assert!(current_pool_bytes > 0);
                     assert!(current_pool_bytes >= retained_pool_bytes);
                     retained_pool_bytes = current_pool_bytes;
                 }
-                if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+                if retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                     assert!(timing.gpu_dispatch_timestamp_expected_submissions > 0);
                     assert_eq!(
                         timing.gpu_dispatch_timestamp_sampled_submissions,
@@ -4230,7 +4040,7 @@ mod tests {
                         .unwrap_or(0);
                     assert_eq!(timing.gpu_dispatch_timestamp_present_stages & reduce, 0);
                     assert_eq!(timing.gpu_dispatch_timestamp_present_stages & scan_small, 0);
-                    if retained.cpu_metadata_enabled() {
+                    if retained.vello().cpu_metadata_enabled() {
                         let bbox_clear = 1_u32.checked_shl(5).unwrap_or(0);
                         let draw_reduce = 1_u32.checked_shl(7).unwrap_or(0);
                         assert_eq!(timing.gpu_dispatch_timestamp_present_stages & bbox_clear, 0);
@@ -4239,7 +4049,7 @@ mod tests {
                             0
                         );
                     }
-                    if retained.cpu_draw_prefix_enabled() {
+                    if retained.vello().cpu_draw_prefix_enabled() {
                         let prefix_leaf = 1_u32.checked_shl(24).unwrap_or(0);
                         let draw_leaf = 1_u32.checked_shl(8).unwrap_or(0);
                         assert_ne!(
@@ -4256,7 +4066,7 @@ mod tests {
                     let path_count = 1_u32.checked_shl(14).unwrap_or(0);
                     let path_tiling_setup = 1_u32.checked_shl(17).unwrap_or(0);
                     let path_tiling = 1_u32.checked_shl(18).unwrap_or(0);
-                    if retained.direct_path_dispatch_enabled() {
+                    if retained.vello().direct_path_dispatch_enabled() {
                         assert_ne!(
                             timing.gpu_dispatch_timestamp_present_stages & path_count_direct,
                             0
@@ -4273,7 +4083,7 @@ mod tests {
                     }
                 }
                 if deferred_bump_profile {
-                    let expected_pass_count = if retained.cpu_metadata_enabled() {
+                    let expected_pass_count = if retained.vello().cpu_metadata_enabled() {
                         1
                     } else {
                         // GPU bbox-clear precedes the bump clear and remains
@@ -4299,7 +4109,7 @@ mod tests {
                     Color::TRANSPARENT,
                     &[bounded_damage],
                 );
-                assert!(!retained.direct_path_dispatch_enabled());
+                assert!(!retained.vello().direct_path_dispatch_enabled());
                 assert_eq!(
                     OffscreenRenderer::pixels_differing_beyond_aa(
                         &retained.readback_current(),
@@ -4307,7 +4117,7 @@ mod tests {
                     ),
                     0
                 );
-                if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+                if retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                     let path_count_direct = 1_u32.checked_shl(25).unwrap_or(0);
                     let path_tiling_direct = 1_u32.checked_shl(26).unwrap_or(0);
                     let path_count_setup = 1_u32.checked_shl(13).unwrap_or(0);
@@ -4337,7 +4147,7 @@ mod tests {
                     Color::TRANSPARENT,
                     &[bounded_damage],
                 );
-                assert!(!retained.defer_bump_readback_enabled());
+                assert!(!retained.vello().defer_bump_readback_enabled());
                 assert_eq!(
                     OffscreenRenderer::pixels_differing_beyond_aa(
                         &retained.readback_current(),
@@ -4357,7 +4167,7 @@ mod tests {
                 retained.set_defer_bump_readback_enabled(true);
             }
             if draw_prefix_requested {
-                let prefix_pool = retained.cpu_draw_prefix_pool_retained_bytes();
+                let prefix_pool = retained.vello().cpu_draw_prefix_pool_retained_bytes();
                 assert!(prefix_pool > 0 && retained.cpu_draw_prefix_supported(prefix_pool));
                 retained.set_cpu_draw_prefix_enabled(false);
                 let prefix_gpu_scene = scene_for(11.0, true);
@@ -4366,9 +4176,9 @@ mod tests {
                     Color::TRANSPARENT,
                     &[bounded_damage],
                 );
-                assert!(retained.cpu_pathtag_enabled());
-                assert!(!retained.cpu_draw_prefix_enabled());
-                assert_eq!(retained.cpu_draw_prefix_pool_retained_bytes(), 0);
+                assert!(retained.vello().cpu_pathtag_enabled());
+                assert!(!retained.vello().cpu_draw_prefix_enabled());
+                assert_eq!(retained.vello().cpu_draw_prefix_pool_retained_bytes(), 0);
                 assert_eq!(
                     OffscreenRenderer::pixels_differing_beyond_aa(
                         &retained.readback_current(),
@@ -4376,7 +4186,7 @@ mod tests {
                     ),
                     0
                 );
-                if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+                if retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                     let prefix_leaf = 1_u32.checked_shl(24).unwrap_or(0);
                     let draw_leaf = 1_u32.checked_shl(8).unwrap_or(0);
                     assert_eq!(
@@ -4389,7 +4199,7 @@ mod tests {
                 }
             }
             if env_enabled_by_default("VELLO_CPU_METADATA") {
-                assert!(retained.cpu_metadata_enabled());
+                assert!(retained.vello().cpu_metadata_enabled());
                 retained.set_cpu_metadata_enabled(false);
                 let metadata_gpu_scene = scene_for(12.0, true);
                 let (_, timing) = retained.render_damage_regions_gpu_wait_profiled(
@@ -4397,9 +4207,9 @@ mod tests {
                     Color::TRANSPARENT,
                     &[bounded_damage],
                 );
-                assert!(retained.cpu_pathtag_enabled());
-                assert!(!retained.cpu_metadata_enabled());
-                assert_eq!(retained.cpu_metadata_pool_retained_bytes(), 0);
+                assert!(retained.vello().cpu_pathtag_enabled());
+                assert!(!retained.vello().cpu_metadata_enabled());
+                assert_eq!(retained.vello().cpu_metadata_pool_retained_bytes(), 0);
                 assert_eq!(
                     OffscreenRenderer::pixels_differing_beyond_aa(
                         &retained.readback_current(),
@@ -4407,7 +4217,7 @@ mod tests {
                     ),
                     0
                 );
-                if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+                if retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                     let bbox_clear = 1_u32.checked_shl(5).unwrap_or(0);
                     let draw_reduce = 1_u32.checked_shl(7).unwrap_or(0);
                     assert_ne!(timing.gpu_dispatch_timestamp_present_stages & bbox_clear, 0);
@@ -4426,9 +4236,9 @@ mod tests {
                 Color::TRANSPARENT,
                 &[bounded_damage],
             );
-            assert!(!retained.cpu_pathtag_enabled());
+            assert!(!retained.vello().cpu_pathtag_enabled());
             if reuse_requested {
-                assert_eq!(retained.cpu_pathtag_pool_retained_bytes(), 0);
+                assert_eq!(retained.vello().cpu_pathtag_pool_retained_bytes(), 0);
             }
             assert_eq!(
                 OffscreenRenderer::pixels_differing_beyond_aa(
@@ -4437,7 +4247,7 @@ mod tests {
                 ),
                 0
             );
-            if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+            if retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                 assert!(timing.gpu_dispatch_timestamp_expected_submissions > 0);
                 assert_eq!(
                     timing.gpu_dispatch_timestamp_sampled_submissions,
@@ -4465,7 +4275,7 @@ mod tests {
             const W: u32 = 384;
             const H: u32 = 256;
             let mut retained = OffscreenRenderer::new(W, H);
-            if !retained.direct_path_dispatch_enabled() {
+            if !retained.vello().direct_path_dispatch_enabled() {
                 assert!(
                     std::env::var_os("TILO_UI_VELLO_CPU").is_some(),
                     "default direct GPU path dispatch must activate"
@@ -4552,7 +4362,7 @@ mod tests {
                 ),
                 0
             );
-            if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+            if retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                 let direct =
                     (1_u32.checked_shl(25).unwrap_or(0)) | (1_u32.checked_shl(26).unwrap_or(0));
                 let indirect = (1_u32.checked_shl(13).unwrap_or(0))
@@ -4579,7 +4389,7 @@ mod tests {
                 Color::TRANSPARENT,
                 &[damage],
             );
-            assert!(!retained.direct_path_dispatch_enabled());
+            assert!(!retained.vello().direct_path_dispatch_enabled());
             assert_eq!(
                 OffscreenRenderer::pixels_differing_beyond_aa(
                     &retained.readback_current(),
@@ -4587,7 +4397,7 @@ mod tests {
                 ),
                 0
             );
-            if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+            if retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                 let direct =
                     (1_u32.checked_shl(25).unwrap_or(0)) | (1_u32.checked_shl(26).unwrap_or(0));
                 let indirect = (1_u32.checked_shl(13).unwrap_or(0))
@@ -4620,16 +4430,18 @@ mod tests {
             const W: u32 = 384;
             const H: u32 = 256;
             let mut retained = OffscreenRenderer::new(W, H);
-            if !retained.defer_bump_readback_enabled() && !retained.direct_path_dispatch_enabled() {
+            if !retained.vello().defer_bump_readback_enabled()
+                && !retained.vello().direct_path_dispatch_enabled()
+            {
                 assert!(std::env::var_os("TILO_UI_VELLO_CPU").is_some());
                 eprintln!("skipping GPU path recovery test: global CPU rendering is active");
                 break 'gpu_path_experiments_keep_overflow_recovery_complete;
             }
             if deferred_bump_requested {
-                assert!(retained.defer_bump_readback_enabled());
+                assert!(retained.vello().defer_bump_readback_enabled());
             }
             if direct_path_requested {
-                assert!(retained.direct_path_dispatch_enabled());
+                assert!(retained.vello().direct_path_dispatch_enabled());
             }
             let mut oracle = OffscreenRenderer::new(W, H);
             oracle.set_compute_pass_batching(false);

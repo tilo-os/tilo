@@ -1067,8 +1067,7 @@ mod tests {
             taffy.widget_leaf(style, nodes, self)
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let layout = taffy.layout(node).unwrap();
-            self.rect = crate::widget::placed(layout, origin);
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
         fn draw(
             &mut self,

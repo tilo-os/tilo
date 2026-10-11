@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -231,6 +233,27 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(result["candidate"]["commit"], self.candidate)
         self.assertIn("improved", (self.repo / "out/summary.md").read_text())
 
+    def test_an_optional_benchmark_runs_only_on_the_side_that_has_it(self):
+        # `harness` exists only after the candidate: on a base that predates it
+        # the optional artifact is skipped, and its KPI is the candidate's alone.
+        def run_with_extra(ctx: ab.RunContext) -> list[record.Record]:
+            records = fake_run(ctx)
+            if "extra" in ctx.bins:
+                env = {name: value for name, value in ctx.env.items() if name != "meta"}
+                records.append(record.from_samples("fake.extra", "s", [1], meta=dict(ctx.env["meta"]), **env))
+            return records
+
+        group = dataclasses.replace(FAKE, run=run_with_extra, optional={
+            "extra": ("harness", ("sh", "-c", "mkdir -p target && cp harness target/extra"), "target/extra")})
+        options = self.options()
+        options.candidate = self.git("rev-parse", "HEAD")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(ab.run(options, self.repo, [group]), 0)
+        self.assertFalse((self.repo / "out/bin/base/fake/extra").exists())
+        self.assertTrue((self.repo / "out/bin/candidate/fake/extra").exists())
+        result = json.loads((self.repo / "out/ab-result.json").read_text())
+        self.assertEqual((result["only_base"], result["only_candidate"]), ([], ["fake.extra"]))
+
     def test_a_dirty_checkout_is_refused(self):
         (self.repo / "cost").write_text("1\n")
         with self.assertRaisesRegex(RuntimeError, "tracked changes"):
@@ -254,6 +277,17 @@ class Groups(unittest.TestCase):
         for name in ab.GROUPS:
             self.assertIn(f"\n  {name}:\n", workflow, f"{name} is a perf-scheduled group")
         self.assertNotIn("footprint", ab.GROUPS)
+
+    def test_every_group_builds_the_benchmarks_its_nightly_job_builds(self):
+        # An A/B group that skips one of its nightly job's benchmarks cannot
+        # pair that benchmark's KPIs (the render group once left out strip pans).
+        workflow = (HERE.parents[1] / ".forgejo/workflows/perf-scheduled.yml").read_text()
+        for name, group in ab.GROUPS.items():
+            job = re.split(r"\n  [a-z][a-z0-9-]*:\n", workflow.split(f"\n  {name}:\n", 1)[1], maxsplit=1)[0]
+            nightly = set(re.findall(r"--example (\S+)", job))
+            commands = [*group.builds, *(command for _, command, _ in group.optional.values())]
+            built = {command[command.index("--example") + 1] for command in commands if "--example" in command}
+            self.assertEqual(nightly - built, set(), f"the A/B {name} group skips nightly benchmarks")
 
     def test_staged_artifacts_are_built(self):
         for group in ab.GROUPS.values():

@@ -170,8 +170,10 @@ run here on every full run instead, on the dev disk under KVM:
   applications <app>`) and timed to the app's own `first-frame-presented` startup mark,
   so the time holds the compositor's dispatch, the launcher and the sandbox as well as
   the app's start; it waits for the app's processes to exit before the next open. The
-  median is held to the app's budget on the session's renderer (`app_startup.budget_ms`);
-  on a GPU the p95 is also held to the KPI document's target (`tools/perf/kpi-budgets.toml`).
+  median is held to the app's warm-open budget on the session's renderer
+  (`app_startup.warm_open_budget_ms`: 1.5 s on a CPU rasterizer, tighter than a launch's
+  3 s, otherwise the app's budget); on a GPU the p95 is also held to the KPI document's
+  target (`tools/perf/kpi-budgets.toml`).
   Each open is split into segments that add up to it (`open_segments`): request to the
   launcher's start, the launcher's own phases (the marks it hands the app in
   `TILO_STARTUP_LAUNCHER_MARKS`), the launcher's hand-off to the app's `main` (bubblewrap,

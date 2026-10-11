@@ -26,7 +26,7 @@ solid surfaces and reduced-motion behavior; no new desktop visual language.
 | Window chrome | DesktopSurface composes toolkit GroupRow/StripView/WindowGroup | Inactive/focused tabs, close/menu states, resizing and shared header controls |
 | Restored app cards | Symbolic LocalApp notices decline scratch-document custody; matching launch failures/timeouts and orphaned exact-tab placements settle without removing saved tabs or record associations. Shared EmptyState recovery controls support keyboard, pointer and the native action door; focused Applications activation reuses the saved window | [Restore-card qualification](evidence/localapp-notice-custody/README.md): original masking, orphaned-opening and missing action-door regressions reproduced; dark/light/high-contrast, 200% text, focus and resize inspected. Exact-record adoption, repeated/stale recovery and Applications reuse pass. Installed repaired-layer acceptance and cold-launch attribution remain |
 | Menus / dialogs | #3110 and #3205 landed: shared ListRowFace/TooltipHost and ContextMenu current-output placement. Exact #3205 merged-main passes three output/capture cases, keyboard, pointer open/dismiss, action parity and shell test compilation; all six capture variants match inspected originals | Additional dialog/long-label/error states and VM hotplug/input coverage remain |
-| Emoji picker | Shared SearchField and ToggleGroup faces; interrupted pointer selection repaired after focus loss/search replacement, with scroll/layout cancellation | [Interruption qualification](evidence/emoji-picker-interruption/README.md); 200% text footer overlap (including 800 px skin-tone hints) and narrow group icon elision remain; installed-device coverage separate |
+| Emoji picker | Shared SearchField and ToggleGroup faces, measured responsive footer/group targets, and interrupted selection handling. Constrained outputs now compose shared ScrollRegion for the body and wrapped tone rows; keyboard/pointer/accessibility bounds and native semantic scrolling share that geometry | [Measured-layout qualification](evidence/emoji-picker-responsive/README.md); [constrained-picker and scroll lifecycle qualification](evidence/emoji-picker-constrained/README.md). Installed-device and still smaller output acceptance remain separate |
 | Status / quick settings | Top bar already uses some ButtonFace controls; portable drill-in uses shared back face. The coherent People increment adopts shared input, measured controls, navigation row and ScrollRegion | [People qualification](evidence/people-panel/README.md); remaining primary-bar indicators/overflow and narrow Devices/Clipboard summaries, plus installed-device states |
 | Workspace controls | Shared desktop model owns intent/state; workspace rename now paints with FieldFace/TextInput, including shaped selection, horizontal scrolling, idle elision and composed scale geometry; Create-invite uses shared primary ButtonFace and the footer reserves measured Caption space | [Shared name-field qualification](evidence/workspace-name-field/README.md); pointer/keyboard cancel, reopen, Unicode commit, held-submit repeat/release ownership, resize and selection captures; nine desktop/six native cases, compile and Clippy pass. Live workspace/device transitions and header states remain |
 | Window switcher | #3159 landed normally at 6476c63a, conflict repaired: stable live identities, selected-close cancellation, moved-address refresh and stale-pointer guard. Fresh 11 desktop/seven native cases, compile and Clippy pass; six inspected variants | Exact merged-main 11 desktop/seven native cases and shell test compilation passed; live multi-workspace/preview/device coverage remains |
@@ -262,3 +262,19 @@ catalogue entries are retained. Editor semantic opening, pointer cancellation
 and focus trapping compose with Toolbar overflow ownership rather than losing
 either original surface. Qualification and historical-source distinctions are
 recorded in [top-bar editor evidence](evidence/topbar-editor/README.md).
+
+## Constrained picker and shared scroll lifecycle (2026-10-11)
+
+The coherent batch reuses ScrollRegion for the short picker body and wrapped tone
+choices, including the existing native semantic scroll surface and bounded fade
+scheduling. Search stays fixed; measured targets remain full-sized. Empty search
+reveals its existing no-results message, and query correction restores visible
+selection. Shared capture ends on Escape, focus loss or changed layout/content
+metrics while identical layout calls preserve a valid drag.
+
+[Qualification](evidence/emoji-picker-constrained/README.md) distinguishes
+exact-base failures from the screenshot-discovered intermediate empty-state
+failure and preserves original regression-test bytes. Actual light/dark/scaled,
+contrast, focused-tone and empty-state captures accompany the PR. Protected
+integration and exact merged-main checks remain independent gates. The other
+remaining-surface rows and installed-device/physical acceptance stay active.

@@ -15,6 +15,7 @@ use ui::permissions::{PermissionContext, PermissionScope};
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::TaffyTreeExt;
 use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
@@ -463,34 +464,20 @@ impl Widget for DesktopBackdrop {
             ..Default::default()
         };
 
-        let node = if let Some(child) = child_node {
-            // `child` was just created in this same tree, so this is not
-            // reachable to fail; if it (impossibly) does, fall back to
-            // the child node itself rather than panicking this
-            // panic=abort process.
-            taffy.new_with_children(style, &[child]).unwrap_or(child)
-        } else {
-            match taffy.new_leaf(style) {
-                Ok(node) => node,
-                Err(err) => {
-                    // `TaffyTree::new_leaf` only ever returns `Ok` for a
-                    // fresh, unattached leaf; this arm exists so a
-                    // future upstream change degrades the backdrop
-                    // instead of aborting the whole session.
-                    tracing::error!("desktop_backdrop: leaf allocation failed: {err}");
-                    NodeId::from(0u64)
-                }
-            }
+        let Some(child) = child_node else {
+            return taffy.widget_leaf(style, node_map, self);
         };
+        // `child` was just created in this same tree, so this is not
+        // reachable to fail; if it (impossibly) does, fall back to
+        // the child node itself rather than panicking this
+        // panic=abort process.
+        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(layout, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
 
         if let Some(child) = &mut self.child {
             let Ok(children) = taffy.children(node) else {

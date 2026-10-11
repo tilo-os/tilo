@@ -64,8 +64,8 @@ const IDLE_CPU_BUDGET: f64 = 1.0;
 
 /// How long a lone desktop runs after it starts before it is measured, so
 /// its endpoint and its room's topic are up, and how long it is measured.
-const LONE_SETTLE: Duration = Duration::from_secs(15);
-const LONE_IDLE: Duration = Duration::from_secs(20);
+pub(super) const LONE_SETTLE: Duration = Duration::from_secs(15);
+pub(super) const LONE_IDLE: Duration = Duration::from_secs(20);
 /// Most times per second a lone desktop's own threads may wake while idle:
 /// one room of its own, no peer, and no frame loop driving it, as on a
 /// desktop nobody touches, whose compositor never ticks the network
@@ -90,16 +90,16 @@ const LONE_IDLE: Duration = Duration::from_secs(20);
 /// `memory.max` 2832 times) preempted the same two `tilo-net-rt` workers
 /// 1.35 times a second on top of the 0.95 times they blocked, and failed the
 /// gate at 2.30/s with nothing in the session changed (TIL-749).
-const LONE_WAKEUP_BUDGET: f64 = 0.6;
+pub(super) const LONE_WAKEUP_BUDGET: f64 = 0.6;
 /// Most CPU a lone idle desktop's threads may use, in percent of one core:
 /// 100 ms over [`LONE_IDLE`]. The wakeup count leaves out preemptions, so
 /// this is what still catches a thread that spins without blocking. Measured
 /// 0.0 % (under one 10 ms tick in the window).
-const LONE_CPU_BUDGET: f64 = 0.5;
+pub(super) const LONE_CPU_BUDGET: f64 = 0.5;
 
 /// Every thread of this process except the one driving the desktops'
 /// frame loops, whose 10 Hz is the simulation's and not the session's.
-fn session_threads(driver: Option<u32>) -> Vec<tilo_test_env::idle::ThreadSample> {
+pub(super) fn session_threads(driver: Option<u32>) -> Vec<tilo_test_env::idle::ThreadSample> {
     let mut threads = tilo_test_env::idle::sample_process(std::process::id())
         .expect("sample this process's threads");
     threads.retain(|thread| Some(thread.tid) != driver);

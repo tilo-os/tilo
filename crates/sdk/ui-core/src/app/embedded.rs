@@ -236,10 +236,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        let rect = crate::widget::placed(layout, origin);
+        let rect = crate::widget::layout_rect(taffy, node, origin);
         if rect.size() != self.rect.size() {
             self.app.layout.layout_dirty = true;
             self.wants_frame.set(true);

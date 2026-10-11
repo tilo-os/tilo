@@ -14,7 +14,7 @@ signal-profile-native-test = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
-test-support = ["tilo-action-broker/test-support", "dep:tilo-net", "ui/test-support"]
+test-support = ["tilo-action-broker/test-support", "dep:tilo-net", "ui/test-support", "tilo-identity-ceremony/test-support"]
 # When set, the hosted-mode compositor (`shell --backend winit`) binds
 # the TILO_TEST_CONTROL Unix socket the same way the headless backend
 # does. A background thread reads JSON commands and injects equivalent
@@ -339,6 +339,9 @@ tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 greeter = { path = "../greeter" }
 # Private native-pair acceptance uses the governed host's real voice relay.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
+# An iroh relay of a test's own, so a desktop's relays can be started and a
+# home relay appear without the public ones.
+iroh-relay = { version = "1.0.3", features = ["server"] }
 # Signs the TPM quotes the disk-unlock auto-approval tests verify.
 p256 = { version = "0.14", features = ["ecdsa"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
@@ -349,6 +352,7 @@ media = { package = "tilo-media", path = "../../platform/tilo-media", features =
 runtime-portal = { path = "../../runtime/runtime-portal" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
+tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony", features = ["test-support"] }
 tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }

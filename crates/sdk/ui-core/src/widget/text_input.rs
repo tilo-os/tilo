@@ -4892,8 +4892,7 @@ impl Widget for TextInput {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.apply_layout_external(crate::widget::placed(&layout, origin));
+        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
     /// Single-line keeps its fixed row height from `build_layout` (ZERO

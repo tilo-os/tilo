@@ -99,7 +99,7 @@ jobs:
           '${{ github.event.before }}'
 
       - name: Repository policy suite
-        run: bash tools/policy/run.sh
+        run: bash tools/ci/measure.sh "repository policy tests" -- bash tools/policy/run.sh
 
       # Release / apps measures each shipped tapp against its budget; this
       # text check, which builds nothing, makes every budget change reviewed:
@@ -124,13 +124,14 @@ jobs:
       # without moving it into a platform crate or declaring itself native
       # fails here. ci-fast already provides /usr/bin/cc (pinned digest).
       - name: Tilo app lints
-        run: cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all
+        run: bash tools/ci/measure.sh "app lint check" -- cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all
 
       - name: cargo deny
-        run: cargo deny --workspace check --hide-inclusion-graph
+        run: bash tools/ci/measure.sh "dependency policy check" -- cargo deny --workspace check --hide-inclusion-graph
 
       - name: cargo machete
         run: >-
+          bash tools/ci/measure.sh "unused dependency check" --
           bash tools/ci/check-unused-dependencies.sh --changed
           '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
