@@ -791,7 +791,7 @@ mod command_path_tests {
         collaborative_search_activation_resolves_the_latest_path_by_record_id();
     }
 
-    /// The 750ms metadata poll is real work, but an unchanged directory
+    /// A metadata poll is real work, but an unchanged directory
     /// must not look like a frame request. The native runner used to turn
     /// any due `next_wake_deadline` into a Wayland commit (~2 paints/s).
     #[cfg(unix)]
@@ -842,9 +842,9 @@ mod command_path_tests {
         ui::widget::Widget::mark_drawn(&mut widget);
         let _ = widget.take_structure_dirty();
 
-        widget.next_metadata_refresh = ui::time::now();
+        widget.next_metadata_refresh = Some(ui::time::now());
         let _ = widget.refresh_metadata_if_due(ui::time::now());
-        widget.next_metadata_refresh = ui::time::now();
+        widget.next_metadata_refresh = Some(ui::time::now());
         assert!(
             !widget.refresh_metadata_if_due(ui::time::now()),
             "an idle Files poll must not keep requesting frames"
@@ -897,6 +897,86 @@ mod command_path_tests {
         );
     }
 
+    /// Point the identity projection and the workspace roots at fixtures,
+    /// so the only refresh sources are the ones the test controls.
+    #[cfg(unix)]
+    fn quiet_refresh_sources(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
+        let identities = tempfile::tempdir().unwrap();
+        env.set(
+            crate::identity_directory::TRUSTED_IDENTITIES_ENV,
+            identities.path().join("trusted-identities.json"),
+        );
+        env.set("TILO_WORKSPACE_ROOTS", "");
+        identities
+    }
+
+    /// An idle window over an unchanged local directory has no metadata
+    /// deadline at all: its watch wakes it on change, so nothing is re-read
+    /// on a timer. Where the watch cannot vouch for every change, the poll
+    /// stays, never faster than the fallback interval.
+    #[cfg(unix)]
+    #[test]
+    fn idle_files_has_no_periodic_deadline_with_a_subscription() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let _identities = quiet_refresh_sources(&mut env);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
+        let mut widget = FileExplorerWidget::new();
+        widget.load(dir.path().to_path_buf());
+        let now = ui::time::now();
+        let _ = widget.refresh_metadata_if_due(now);
+        assert!(!widget.directory_changed, "nothing changed");
+        assert_ne!(
+            widget.directory_watch.coverage(),
+            crate::directory_watch::Coverage::None,
+            "the open directory is watched"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            widget.next_metadata_refresh, None,
+            "a fully watched directory is never polled"
+        );
+        if let Some(due) = widget.next_metadata_refresh {
+            assert!(
+                due >= now + metadata_refresh::LIVE_INTERVAL,
+                "only a partially watched directory keeps its poll"
+            );
+        }
+    }
+
+    /// A file another program creates in the open directory shows, read
+    /// because the watch reported it, before any poll is due.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_created_in_the_open_directory_appears_without_a_poll() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let _identities = quiet_refresh_sources(&mut env);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
+        let mut widget = FileExplorerWidget::new();
+        widget.load(dir.path().to_path_buf());
+        let _ = widget.refresh_metadata_if_due(ui::time::now());
+        let created = ui::time::now();
+        std::fs::write(dir.path().join("b.txt"), b"new").unwrap();
+        let shown =
+            |widget: &FileExplorerWidget| widget.entries.iter().any(|entry| entry.name == "b.txt");
+        while !shown(&widget) && created.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            // The earliest moment a reported change may be read, which is
+            // before any poll is due: only the watch can make this read.
+            let readable = widget.last_directory_read
+                + metadata_refresh::change_read_gap(widget.entries.len());
+            if let Some(due) = widget.next_metadata_refresh {
+                assert!(readable < due, "the change is read before the poll");
+            }
+            let _ = widget.refresh_metadata_if_due(readable);
+        }
+        // How soon is `change_read_gap`'s (under a second); wall time here
+        // would only measure the test machine's load.
+        assert!(shown(&widget), "the new file is listed");
+        assert!(!widget.directory_changed, "the reported change was read");
+    }
+
     fn opaque_hold_deadline_reaches_files_root_before_metadata_refresh() {
         let mut scroll = ui::widget::Scrollable::new_vertical();
         scroll.set_viewport_size(200.0, 300.0);
@@ -907,20 +987,21 @@ mod command_path_tests {
             .expect("opaque hold schedules fade start");
         let mut widget = FileExplorerWidget::new();
         widget.nav.set_content(Box::new(scroll));
-        widget.next_metadata_refresh = deadline + std::time::Duration::from_secs(60);
+        widget.next_metadata_refresh = Some(deadline + std::time::Duration::from_secs(60));
         assert!(
             widget
                 .next_wake_deadline()
                 .is_some_and(|wake| wake <= deadline),
             "the root must not schedule later than its scroll fade"
         );
-        widget.next_metadata_refresh = deadline
+        let refresh = deadline
             .checked_sub(std::time::Duration::from_millis(1))
             .expect("deadline lies in the future");
+        widget.next_metadata_refresh = Some(refresh);
         assert!(
             widget
                 .next_wake_deadline()
-                .is_some_and(|wake| wake <= widget.next_metadata_refresh),
+                .is_some_and(|wake| wake <= refresh),
             "the root must not schedule later than its metadata refresh"
         );
     }
@@ -3074,11 +3155,14 @@ mod command_path_tests {
 
         let mut widget = FileExplorerWidget::new();
         widget.load(dir.path().to_path_buf());
+        // A workspace mount is FUSE: its watch reports local edits only, and
+        // remote ones (renames, sync state) are found by the poll.
+        widget.directory_watch.assume_partial_coverage();
         widget.selection.select_only(0);
         widget.scroll_offset.set((0.0, 137.0));
         std::fs::rename(&before, &after).unwrap();
         xattr::set(&after, crate::model::SYNC_XATTR, b"local").unwrap();
-        widget.next_metadata_refresh = ui::time::now();
+        widget.next_metadata_refresh = Some(ui::time::now());
 
         assert!(widget.refresh_metadata_if_due(ui::time::now()));
         assert_eq!(widget.entries[0].path, after);

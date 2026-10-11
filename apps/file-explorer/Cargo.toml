@@ -65,6 +65,9 @@ tar.workspace = true
 flate2.workspace = true
 # Home, config, cache and the localized user folders.
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
+# Change notification for the open directory (inotify, FSEvents), so an idle
+# window re-reads nothing on a timer.
+tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
@@ -79,6 +82,11 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 workspace-hack = { version = "0.1" }
+
+# `statfs`, to tell a local directory, whose every change a watch reports,
+# from a FUSE or network mount that can change underneath it.
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
