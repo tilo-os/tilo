@@ -288,6 +288,7 @@ impl ChatApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                self.trace_queue_pointer_press();
                 return self.handle_left_press(event, scale, modifiers, doc, handled);
             }
             WindowEvent::MouseInput {
@@ -818,6 +819,17 @@ impl ChatApp {
         true
     }
 
+    fn trace_queue_pointer_press(&self) {
+        if self.direct_agent.is_some()
+            && self.direct_agent_intent() == crate::app::AgentComposerIntent::Queue
+        {
+            ui::agent_task_frontier::trace_queue_pointer_press(
+                matches!(self.hit_at(self.last_mouse), Some(Hit::Send)),
+                self.painted_queue_offer.is_some(),
+            );
+        }
+    }
+
     /// Forward a `CursorMoved` to every text input so hover and drag-select
     /// state stays current regardless of which surface is focused.
     fn forward_move_to_text_inputs(
@@ -951,6 +963,15 @@ impl ChatApp {
     )]
     pub(crate) fn on_hit(&mut self, hit: Hit, doc: &mut ui::widget::Edits<'_>) {
         let painted_queue_submit = matches!(hit, Hit::Send) && self.painted_queue_offer.is_some();
+        if matches!(hit, Hit::Send)
+            && self.direct_agent.is_some()
+            && self.direct_agent_intent() == crate::app::AgentComposerIntent::Queue
+        {
+            ui::agent_task_frontier::trace_queue_submit_hit(
+                self.semantic_hit_is_currently_available(&hit),
+                painted_queue_submit,
+            );
+        }
         if !matches!(hit, Hit::Send) {
             self.painted_queue_offer = None;
         }
@@ -2385,6 +2406,64 @@ mod tests {
             surface_id: request.id,
             requests_before,
         }
+    }
+
+    fn assert_pending_queue_repaint_refuses_submission(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        host: &TaskControlHost,
+    ) {
+        let send = app
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::Send).then_some(*rect))
+            .expect("the disabled Send control retains stable pointer geometry");
+        let target = Hit::Send.semantic_id();
+        assert!(!has_semantic_target(app, &target));
+        let accessibility = ui::Widget::accessibility(app).expect("Chat accessibility tree");
+        assert!(accessibility.children.iter().all(|node| {
+            node.role != ui::a11y::Role::Button
+                || node.name.as_deref() != Some("Queue task")
+                || node.state.disabled
+        }));
+        let requests_before = host
+            .requests()
+            .iter()
+            .filter(|request| request.target.address.action == "queue")
+            .count();
+        for event in [
+            cursor_moved(send.center().x, send.center().y),
+            mouse(ElementState::Pressed, MouseButton::Left),
+            mouse(ElementState::Released, MouseButton::Left),
+        ] {
+            route_root_event(app, doc, &event, Modifiers::default());
+        }
+        assert!(feed_mods_handled(
+            app,
+            doc,
+            &named_key(NamedKey::Enter),
+            Modifiers::default(),
+        ));
+        assert!(!ui::Widget::perform_semantic_action(
+            app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            host.requests()
+                .iter()
+                .filter(|request| request.target.address.action == "queue")
+                .count(),
+            requests_before,
+            "disabled pointer, Enter, and AT activation produce no Queue effect"
+        );
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some("private denied draft")
+        );
+        assert_eq!(app.composer_main.selection(), (2, 9));
     }
 
     fn semantic_hit_index(app: &ChatApp, target: &str) -> Option<usize> {
@@ -6974,6 +7053,7 @@ mod tests {
             app.painted_queue_offer.is_none(),
             "a child repaint withdraws its no-longer-current Queue offer"
         );
+        assert_pending_queue_repaint_refuses_submission(&mut app, &mut doc, &host);
 
         host.revoke_task_controls();
         host.complete_current_reads();

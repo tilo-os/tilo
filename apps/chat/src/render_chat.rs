@@ -2992,7 +2992,7 @@ impl ChatApp {
             };
             self.composer_main.set_placeholder(&placeholder);
         }
-        let send_enabled = interactive && !draft.trim().is_empty();
+        let send_enabled = self.focused_composer_can_submit() && !draft.trim().is_empty();
         self.painted_queue_offer = if send_enabled
             && self.direct_agent_intent() == crate::app::AgentComposerIntent::Queue
         {

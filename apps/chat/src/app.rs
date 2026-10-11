@@ -2270,7 +2270,7 @@ impl ChatApp {
             || (self.direct_agent.is_none() && self.can_participate())
     }
 
-    fn focused_composer_can_submit(&self) -> bool {
+    pub(crate) fn focused_composer_can_submit(&self) -> bool {
         (matches!(self.focus, Focus::Main) && self.main_composer_can_submit())
             || (self.direct_agent.is_none() && self.can_participate())
     }

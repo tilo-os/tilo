@@ -30,6 +30,27 @@ const CONTROL_RESPONSE_WINDOW: Duration = Duration::from_secs(5);
 
 pub use tilo_desktop_model::{WorkspaceTaskExecution, WorkspaceTaskExecutionPhase};
 
+/// Observe an ordinary Queue pointer press without logging coordinates,
+/// actor identities, editor contents, or action arguments.
+pub fn trace_queue_pointer_press(send_hit: bool, painted_offer: bool) {
+    tracing::debug!(
+        target: "tilo_agent_delivery",
+        send_hit,
+        painted_offer,
+        "queue-pointer-press"
+    );
+}
+
+/// Observe a Queue control activation without publishing its private draft.
+pub fn trace_queue_submit_hit(current: bool, painted_offer: bool) {
+    tracing::debug!(
+        target: "tilo_agent_delivery",
+        current,
+        painted_offer,
+        "queue-submit-hit"
+    );
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentTaskFrontier {
     pub task_id: String,
@@ -837,6 +858,32 @@ impl AgentTaskFrontiers {
                 .current
                 .as_ref()
                 .is_some_and(|call| matches!(call.get(), RemoteCall::Pending));
+        tracing::debug!(
+            target: "tilo_agent_delivery",
+            status = if current {
+                "current"
+            } else if now < offer.expires_at && pending {
+                "pending_offer"
+            } else {
+                "not_current"
+            },
+            observation_active = self.observation_active,
+            snapshot_complete = self.snapshot_complete,
+            invalidated = self.invalidated,
+            queue_inflight = self.queue.is_some(),
+            current_consumed = self.current_consumed,
+            same_reader = offer.identity.reader == self.queue_offer_reader,
+            same_context = offer.identity.epoch == self.queue_offer_epoch
+                && offer.identity.workspace == self.workspace
+                && offer.identity.agent == self.agent,
+            same_snapshot = (offer.identity.generation, offer.identity.observed)
+                == (self.snapshot_generation, self.snapshot_observed),
+            retained_offer_matches = self.queue_offer_revalidating.as_ref() == Some(&offer.identity),
+            revalidation_unexpired = self.draft_revalidation_until.is_some_and(|until| now < until),
+            painted_offer_unexpired = now < offer.expires_at,
+            owner_read_pending = self.current.as_ref().is_some_and(|call| matches!(call.get(), RemoteCall::Pending)),
+            "queue-offer-admission"
+        );
         self.queue_with_admission(
             instruction,
             title,
@@ -851,15 +898,19 @@ impl AgentTaskFrontiers {
         offered: bool,
     ) -> Result<InvocationId, String> {
         if instruction.trim().is_empty() {
+            tracing::debug!(target: "tilo_agent_delivery", status = "not_offered", reason = "blank_instruction", "queue-dispatch");
             return Err("task instruction is blank".into());
         }
         if self.workspace.is_empty() || self.agent.is_empty() {
+            tracing::debug!(target: "tilo_agent_delivery", status = "not_offered", reason = "missing_context", "queue-dispatch");
             return Err("refresh tasks for an authenticated agent first".into());
         }
         if self.queue.is_some() {
+            tracing::debug!(target: "tilo_agent_delivery", status = "not_offered", reason = "already_submitting", "queue-dispatch");
             return Err("a task is already being queued".into());
         }
         if !offered {
+            tracing::debug!(target: "tilo_agent_delivery", status = "not_offered", reason = "offer_unavailable", "queue-dispatch");
             return Err("the current caller is not offered task queueing".into());
         }
         // Invalidate every token minted from this offer before dispatch,
@@ -883,6 +934,7 @@ impl AgentTaskFrontiers {
         if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
             argument.insert("title".into(), serde_json::json!(title));
         }
+        tracing::debug!(target: "tilo_agent_delivery", status = "dispatch", "queue-dispatch");
         let call = self.remote.invoke_with_id(
             invocation,
             task_collection_target(&self.workspace, QUEUE_TASK_ACTION),
@@ -1359,7 +1411,25 @@ impl AgentTaskFrontiers {
         if outcome_uncertain {
             self.queue_state = AgentQueueState::Uncertain;
         }
-        match queue.call.get() {
+        let receipt = queue.call.get();
+        // Each terminal receipt retires this call below. Pending/progress
+        // polls must not turn an enabled diagnostic into an unbounded log.
+        let terminal = match &receipt {
+            RemoteCall::Refused(_) => Some("refused"),
+            RemoteCall::Done(InvocationUpdate::Succeeded { .. }) => Some("succeeded"),
+            RemoteCall::Done(InvocationUpdate::Failed { .. }) => Some("failed"),
+            RemoteCall::Done(InvocationUpdate::Cancelled { .. }) => Some("cancelled"),
+            _ => None,
+        };
+        if let Some(status) = terminal {
+            tracing::debug!(
+                target: "tilo_agent_delivery",
+                status,
+                outcome_uncertain,
+                "queue-receipt"
+            );
+        }
+        match receipt {
             RemoteCall::Pending
             | RemoteCall::Done(
                 InvocationUpdate::Accepted { .. }
