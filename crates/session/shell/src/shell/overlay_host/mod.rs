@@ -949,7 +949,8 @@ pub struct ShellOverlayHost {
 /// opaque to damage selection: callers may use it only after exact encoded-scene equality proves
 /// it did not change. The workspace, its overlays and the sections above Quick Settings are
 /// opaque except inside their keyed parts ([`ui::scene_parts`]): outside every part
-/// they too must be proven equal.
+/// they too must be proven equal. Quick Settings is bounded as a whole and has parts too
+/// (the panel, the strip ribbon, the strip rail), which narrow its damage to what changed.
 pub struct ShellSceneSections {
     pub backdrop: Scene,
     pub topbar: Scene,
@@ -1034,6 +1035,7 @@ impl ShellSceneSections {
     pub fn track_damage_parts(&self) {
         ui::scene_parts::track(&self.workspace);
         ui::scene_parts::track(&self.workspace_overlays);
+        ui::scene_parts::track(&self.quick_settings);
         ui::scene_parts::track(&self.above_quick_settings);
     }
 
@@ -1930,8 +1932,19 @@ impl ShellOverlayHost {
         );
         self.prepare_quick_settings_transition(theme, flags);
         let quick_settings_transition_visible = self.qs_transition.is_visible(Instant::now());
-        let quick_settings_bounds =
-            self.draw_quick_settings_dropdown(quick_settings, transform, text_renderer, theme);
+        // The panel, the ribbon and the rail are each a damage part of the
+        // section: a change to one repaints that one.
+        let mut quick_settings_bounds = None;
+        overlay_part(
+            quick_settings,
+            "shell.quick-settings",
+            transform.transform_rect_bbox(self.rect),
+            |scene| {
+                quick_settings_bounds =
+                    self.draw_quick_settings_dropdown(scene, transform, text_renderer, theme);
+                quick_settings_bounds.map(|bounds| vec![transform.transform_rect_bbox(bounds)])
+            },
+        );
         // Keep the strip in the retained QS section even while the dropdown
         // is closed. Opening QS then changes one bounded section rather than
         // removing chrome from the opaque workspace section, which preserves
@@ -20815,6 +20828,18 @@ pub(crate) fn overlay_part(
     });
 }
 
+/// The extent of a strip ribbon's or rail's segments, from its first and
+/// last: strip segments have a centred one-pixel outline, so their recorded
+/// geometry alone can miss an antialiased fringe at an outward-rounded
+/// damage edge.
+fn strip_segments_bounds(segments: [Option<Rect>; 2]) -> Option<Rect> {
+    segments
+        .into_iter()
+        .flatten()
+        .map(|rect| Rect::new(rect.x0 - 1.0, rect.y0 - 1.0, rect.x1 + 1.0, rect.y1 + 1.0))
+        .reduce(|current, rect| current.union(rect))
+}
+
 fn draw_modal_scrim_at(
     scene: &mut Scene,
     transform: Affine,
@@ -21577,17 +21602,31 @@ impl ShellOverlayHost {
         flags: crate::shell::chrome_state::OverlayFlags,
         quick_settings_transition_visible: bool,
     ) {
-        if !flags.overview {
-            // Keep the retained section recording identical to the dense
-            // composition: Quick Settings visually replaces the ribbon for
-            // its complete open/close transition, while the rail remains.
-            if !flags.quick_settings && !quick_settings_transition_visible {
-                let ribbon = self.strip_ribbon();
-                ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
+        if flags.overview {
+            return;
+        }
+        // Each is a damage part of its own, there whether or not it shows:
+        // focus moving to another strip repaints the ribbon and the rail,
+        // not the stretch of desktop between them.
+        let desktop = transform.transform_rect_bbox(self.rect);
+        // Keep the retained section recording identical to the dense
+        // composition: Quick Settings visually replaces the ribbon for its
+        // complete open/close transition, while the rail remains.
+        overlay_part(scene, "shell.strip-ribbon", desktop, |scene| {
+            if flags.quick_settings || quick_settings_transition_visible {
+                return None;
             }
+            let ribbon = self.strip_ribbon();
+            ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
+            self.strip_ribbon_bounds(flags, quick_settings_transition_visible)
+                .map(|bounds| vec![transform.transform_rect_bbox(bounds)])
+        });
+        overlay_part(scene, "shell.strip-rail", desktop, |scene| {
             let rail = self.strip_rail();
             rail.draw(scene, transform, theme, self.strip_rail_hover, 1.0);
-        }
+            self.strip_rail_bounds()
+                .map(|bounds| vec![transform.transform_rect_bbox(bounds)])
+        });
     }
 
     /// Visual extent of the retained strip chrome. It is folded into the
@@ -21601,27 +21640,39 @@ impl ShellOverlayHost {
         if flags.overview {
             return None;
         }
-        let mut bounds = None;
-        let mut include = |rect: Option<Rect>| {
-            if let Some(rect) = rect {
-                // Strip segments have a centred one-pixel outline, so their
-                // recorded geometry alone can miss an antialiased fringe at
-                // an outward-rounded damage edge.
-                let rect = Rect::new(rect.x0 - 1.0, rect.y0 - 1.0, rect.x1 + 1.0, rect.y1 + 1.0);
-                bounds = Some(bounds.map_or(rect, |current: Rect| current.union(rect)));
-            }
-        };
-        if !flags.quick_settings && !quick_settings_transition_visible {
-            let ribbon = self.strip_ribbon();
-            include(ribbon.segment_rect(0));
-            include(ribbon.segment_rect(ribbon.count.saturating_sub(1)));
+        self.strip_ribbon_bounds(flags, quick_settings_transition_visible)
+            .into_iter()
+            .chain(self.strip_rail_bounds())
+            .reduce(|current, rect| current.union(rect))
+    }
+
+    /// Visual extent of the strip ribbon, `None` while Quick Settings
+    /// replaces it (or its transition shows).
+    fn strip_ribbon_bounds(
+        &self,
+        flags: crate::shell::chrome_state::OverlayFlags,
+        quick_settings_transition_visible: bool,
+    ) -> Option<Rect> {
+        if flags.overview || flags.quick_settings || quick_settings_transition_visible {
+            return None;
         }
+        let ribbon = self.strip_ribbon();
+        strip_segments_bounds([
+            ribbon.segment_rect(0),
+            ribbon.segment_rect(ribbon.count.saturating_sub(1)),
+        ])
+    }
+
+    /// Visual extent of the strip rail, `None` when it has nothing to show.
+    fn strip_rail_bounds(&self) -> Option<Rect> {
         let rail = self.strip_rail();
-        if rail.is_meaningful() {
-            include(rail.segment_rect(0));
-            include(rail.segment_rect(rail.count.saturating_sub(1)));
+        if !rail.is_meaningful() {
+            return None;
         }
-        bounds
+        strip_segments_bounds([
+            rail.segment_rect(0),
+            rail.segment_rect(rail.count.saturating_sub(1)),
+        ])
     }
 
     #[allow(
