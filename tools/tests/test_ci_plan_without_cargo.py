@@ -1,7 +1,6 @@
 """Exercise the existing metadata-file selector route without local Cargo."""
 import json
 import os
-import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -82,16 +81,14 @@ class OfflinePlanTests(unittest.TestCase):
             self.assertTrue(plan['security_required'])
             self.assertTrue(plan['rust_required'])
             self.assertFalse(plan['full'])
-            # Exercise the actual command agents are instructed to run, rather
-            # than offering a separate unused alternative. This complete fixture
-            # describes the current worktree's four packages and target paths.
-            invocation = re.search(
-                r'`(python3 tools/ci/affected_packages.py --metadata [^`]+)`',
-                (ROOT / 'AGENTS.md').read_text(),
-            )
-            self.assertIsNotNone(invocation, 'the prescribed caller must pass an explicit metadata file')
+            # Retain compatibility coverage for the direct explicit-file CLI.
+            # The stable, source-bound caller is exercised separately against
+            # actual older entrypoints in test_guarded_affected_plan.py.
+            invocation = ('python3 tools/ci/affected_packages.py --metadata '
+                          '"${TILO_CURRENT_WORKTREE_METADATA:?validated current-worktree export required}" '
+                          '--base origin/main --shards 2')
             prescribed = subprocess.run(
-                ['bash', '-euo', 'pipefail', '-c', invocation[1]], cwd=root,
+                ['bash', '-euo', 'pipefail', '-c', invocation], cwd=root,
                 env=environment | {'TILO_CURRENT_WORKTREE_METADATA': str(metadata)},
                 text=True, capture_output=True,
             )
@@ -104,7 +101,7 @@ class OfflinePlanTests(unittest.TestCase):
                 if export is not None:
                     guarded['TILO_CURRENT_WORKTREE_METADATA'] = export
                 refused = subprocess.run(
-                    ['bash', '-euo', 'pipefail', '-c', invocation[1]], cwd=root,
+                    ['bash', '-euo', 'pipefail', '-c', invocation], cwd=root,
                     env=guarded, text=True, capture_output=True,
                 )
                 self.assertNotEqual(refused.returncode, 0)
@@ -118,11 +115,22 @@ class OfflinePlanTests(unittest.TestCase):
             )
             self.assertNotEqual(missing.returncode, 0)
             self.assertFalse(marker.exists())
-            # Prove the sentinel can observe the unsafe default, without invoking
-            # a real Cargo binary: omitting --metadata reaches only our blocker.
+            # The actual current entrypoint must reject a local default before
+            # Cargo starts, even when a caller misses the updated instructions.
+            local_environment = environment.copy()
+            local_environment.pop('GITHUB_ACTIONS', None)
+            local = subprocess.run(
+                [sys.executable, str(SELECTOR), '--base', base],
+                cwd=root, env=local_environment, text=True, capture_output=True,
+            )
+            self.assertNotEqual(local.returncode, 0)
+            self.assertIn('local planning requires verified metadata', local.stderr)
+            self.assertFalse(marker.exists())
+            # The authorized CI default is still observed by the sentinel;
+            # this uses a fake executable and never invokes a real Cargo.
             default = subprocess.run(
                 [sys.executable, str(SELECTOR), '--base', base],
-                cwd=root, env=environment, text=True, capture_output=True,
+                cwd=root, env=environment | {'GITHUB_ACTIONS': 'true'}, text=True, capture_output=True,
             )
             self.assertNotEqual(default.returncode, 0)
             self.assertEqual(marker.read_text(), 'called')
