@@ -1249,3 +1249,53 @@ mod tests {
         assert_eq!(Arrangement::from_document(&document).displays.len(), 1);
     }
 }
+
+#[cfg(test)]
+mod publication_regressions {
+    use super::*;
+
+    #[test]
+    fn unchanged_live_person_observations_keep_the_published_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("person-displays.json");
+        let (publisher_pid, publisher_start_ticks) =
+            crate::hardware::publisher_identity_in(dir.path()).unwrap();
+        let mut view = PersonDisplays {
+            schema_version: SCHEMA_VERSION,
+            publisher_pid,
+            publisher_start_ticks,
+            local_device: "own-device".into(),
+            devices: Vec::new(),
+        };
+        view.save_at(&path).unwrap();
+        let retained = std::fs::File::open(&path).unwrap();
+        let original = tilo_files::native::atomic::FileIdentity::of(&retained).unwrap();
+        view.save_at(&path).unwrap();
+        let current = std::fs::File::open(&path).unwrap();
+        assert_eq!(
+            original,
+            tilo_files::native::atomic::FileIdentity::of(&current).unwrap(),
+            "an unchanged live observation must not perform durable replacement"
+        );
+        assert_eq!(PersonDisplays::load_at(&path), Some(view.clone()));
+        view.local_device = "changed-device".into();
+        view.save_at(&path).unwrap();
+        assert_eq!(PersonDisplays::load_at(&path), Some(view.clone()));
+        std::fs::write(&path, b"invalid observation").unwrap();
+        view.save_at(&path).unwrap();
+        assert_eq!(PersonDisplays::load_at(&path), Some(view.clone()));
+        std::fs::remove_file(&path).unwrap();
+        view.save_at(&path).unwrap();
+        assert_eq!(PersonDisplays::load_at(&path), Some(view.clone()));
+        let mut stale = view.clone();
+        stale.publisher_start_ticks = stale.publisher_start_ticks.saturating_add(1);
+        stale.save_at(&path).unwrap();
+        assert_eq!(
+            PersonDisplays::load_at(&path),
+            None,
+            "a previous publisher identity never becomes live by saving"
+        );
+        view.save_at(&path).unwrap();
+        assert_eq!(PersonDisplays::load_at(&path), Some(view));
+    }
+}
