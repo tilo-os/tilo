@@ -816,38 +816,37 @@ macro_rules! json_model {
             $crate::leaf_paths!();
             // Its serde form decides; `null` reads as its default.
             const NULLABLE: bool = true;
+            // Run by one set of functions for every value stored as JSON text.
+            const TABLE: &'static $crate::table::ModelTable =
+                &$crate::table::ModelTable::of_json(&$crate::table::JsonOf::<$ty>::PLAIN);
+            #[inline]
             fn to_json(&self) -> $crate::__private::serde_json::Value {
-                $crate::__private::serde_json::to_value(self)
-                    .unwrap_or($crate::__private::serde_json::Value::Null)
+                $crate::table::Run(Self::TABLE).to_json(self)
             }
+            #[inline]
             fn from_json(
                 value: &$crate::__private::serde_json::Value,
             ) -> ::core::result::Result<Self, $crate::ModelError> {
-                if value.is_null() {
-                    return ::core::result::Result::Ok(<Self as ::core::default::Default>::default());
-                }
-                $crate::__private::serde_json::from_value(value.clone())
-                    .map_err(|error| $crate::ModelError::invalid(error.to_string()))
+                $crate::table::Run(Self::TABLE).from_json(value)
             }
+            #[inline]
             fn load(
                 doc: &$crate::Doc,
                 value: &$crate::__private::Value<'_>,
                 id: &$crate::__private::ObjId,
             ) -> ::core::result::Result<Self, $crate::ModelError> {
-                let $crate::Json(inner) = <$crate::Json<Self> as $crate::Model>::load(doc, value, id)?;
-                ::core::result::Result::Ok(inner)
+                $crate::table::Run(Self::TABLE).load(doc, value, id)
             }
             fn missing() -> ::core::result::Result<Self, $crate::ModelError> {
                 ::core::result::Result::Ok(<Self as ::core::default::Default>::default())
             }
+            #[inline]
             fn store(
                 &self,
                 doc: &mut $crate::Doc,
                 slot: $crate::Slot<'_>,
             ) -> ::core::result::Result<(), $crate::ModelError> {
-                let text = $crate::__private::serde_json::to_string(self)
-                    .map_err(|error| $crate::ModelError::invalid(error.to_string()))?;
-                slot.put_scalar(doc, $crate::__private::ScalarValue::Str(text.into()))
+                $crate::table::Run(Self::TABLE).store(self, doc, slot)
             }
         }
     )*};
@@ -1908,34 +1907,27 @@ where
     leaf_paths!();
     /// Any JSON value, `null` among them.
     const NULLABLE: bool = true;
-    #[inline(never)]
+    // Run by one set of functions for every value stored as JSON text.
+    const TABLE: &'static crate::table::ModelTable =
+        &crate::table::ModelTable::of_json(&crate::table::JsonOf::<T>::WRAPPED);
+    #[inline]
     fn to_json(&self) -> serde_json::Value {
-        serde_json::to_value(&self.0).unwrap_or(serde_json::Value::Null)
+        Run(Self::TABLE).to_json(self)
     }
-    #[inline(never)]
+    #[inline]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
-        serde_json::from_value(value.clone())
-            .map(Self)
-            .map_err(|error| ModelError::invalid(error.to_string()))
+        Run(Self::TABLE).from_json(value)
     }
-    #[inline(never)]
-    fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
-        match scalar(value) {
-            Some(ScalarValue::Str(text)) => serde_json::from_str(text)
-                .map(Self)
-                .map_err(|error| ModelError::invalid(error.to_string())),
-            Some(ScalarValue::Null) => Ok(Self::default()),
-            _ => Err(ModelError::shape("a JSON string")),
-        }
+    #[inline]
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        Run(Self::TABLE).load(doc, value, id)
     }
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::default())
     }
-    #[inline(never)]
+    #[inline]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        let text = serde_json::to_string(&self.0)
-            .map_err(|error| ModelError::invalid(error.to_string()))?;
-        slot.put_scalar(doc, ScalarValue::Str(text.into()))
+        Run(Self::TABLE).store(self, doc, slot)
     }
 }
 

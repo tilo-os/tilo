@@ -326,74 +326,138 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 names.push(key);
                 idents.push(variant.ident.clone());
             }
-            let missing = default.map_or_else(
-                || {
-                    quote!(::core::result::Result::Err(#krate::ModelError::Missing {
-                        path: ::std::string::String::new()
-                    }))
+            let table = quote!(#krate::table);
+            let positions: Vec<proc_macro2::Literal> = (0..idents.len())
+                .map(proc_macro2::Literal::usize_unsuffixed)
+                .collect();
+            let default_index = default.map_or_else(
+                || quote!(::core::option::Option::None),
+                |ident| {
+                    let position = idents.iter().position(|candidate| *candidate == ident);
+                    let position = proc_macro2::Literal::usize_unsuffixed(position.unwrap_or(0));
+                    quote!(::core::option::Option::Some(#position))
                 },
-                |ident| quote!(::core::result::Result::Ok(Self::#ident)),
             );
             Ok(quote! {
+                impl #impl_generics #name #type_generics #where_clause {
+                    /// The enum as data: its variants' stored names.
+                    #[doc(hidden)]
+                    pub const __UNIT: #table::UnitDesc = #table::UnitDesc {
+                        names: &[#(#names),*],
+                        default: #default_index,
+                        index: Self::__index,
+                        make: Self::__make,
+                        set: Self::__set,
+                        staged: (#table::empty_of::<Self>, #table::unwrap_of::<Self>),
+                    };
+
+                    fn __index(value: &dyn ::core::any::Any) -> ::core::option::Option<usize> {
+                        match value.downcast_ref::<Self>()? {
+                            #(Self::#idents => ::core::option::Option::Some(#positions),)*
+                        }
+                    }
+
+                    fn __variant(index: usize) -> ::core::option::Option<Self> {
+                        match index {
+                            #(#positions => ::core::option::Option::Some(Self::#idents),)*
+                            _ => ::core::option::Option::None,
+                        }
+                    }
+
+                    fn __make(
+                        index: usize,
+                        out: &mut dyn ::core::any::Any,
+                    ) -> ::core::result::Result<(), #krate::ModelError> {
+                        #table::put_variant(Self::__variant(index), out)
+                    }
+
+                    fn __set(
+                        index: usize,
+                        target: &mut dyn ::core::any::Any,
+                    ) -> ::core::result::Result<(), #krate::ModelError> {
+                        #table::set_variant(Self::__variant(index), target)
+                    }
+                }
+
                 impl #impl_generics #krate::Settable for #name #type_generics #where_clause {}
 
                 impl #impl_generics #krate::Model for #name #type_generics #where_clause {
+                    // Run by one set of functions for every such enum.
+                    const TABLE: &'static #table::ModelTable = &#table::ModelTable::of_unit(&Self::__UNIT);
                     type Paths<__R> = #krate::Path<__R, Self>;
 
                     fn paths_at<__R>(path: #krate::Path<__R, Self>) -> #krate::Path<__R, Self> {
                         path
                     }
+                    #[inline]
                     fn to_json(&self) -> #krate::__private::serde_json::Value {
-                        let text = match self { #(Self::#idents => #names,)* };
-                        #krate::__private::serde_json::Value::String(::std::string::String::from(text))
+                        #table::Run(Self::TABLE).to_json(self)
                     }
+                    #[inline]
                     fn from_json(
                         value: &#krate::__private::serde_json::Value,
                     ) -> ::core::result::Result<Self, #krate::ModelError> {
-                        match value {
-                            #krate::__private::serde_json::Value::String(text) => match text.as_str() {
-                                #(#names => ::core::result::Result::Ok(Self::#idents),)*
-                                other => ::core::result::Result::Err(#krate::ModelError::invalid(
-                                    ::std::format!("unknown variant `{other}`"),
-                                )),
-                            },
-                            #krate::__private::serde_json::Value::Null => <Self as #krate::Model>::missing(),
-                            _ => ::core::result::Result::Err(#krate::ModelError::shape("a variant name")),
-                        }
+                        #table::Run(Self::TABLE).from_json(value)
                     }
+                    #[inline]
+                    fn edit(
+                        doc: &mut #krate::Doc,
+                        slot: #krate::Slot<'_>,
+                        path: &[#krate::Segment],
+                        op: &#krate::EditOp,
+                        cx: &mut #krate::ActionCx,
+                    ) -> ::core::result::Result<(), #krate::ModelError> {
+                        #table::Run(Self::TABLE).edit(doc, slot, path, op, cx)
+                    }
+                    #[inline]
+                    fn diff<__E>(
+                        &self,
+                        after: &Self,
+                        path: &[#krate::Segment],
+                        out: &mut ::std::vec::Vec<#krate::Edit<__E>>,
+                    ) {
+                        #table::Run(Self::TABLE).diff(self, after, path, out);
+                    }
+                    #[inline]
                     fn load(
                         doc: &#krate::Doc,
                         value: &#krate::__private::Value<'_>,
                         id: &#krate::__private::ObjId,
                     ) -> ::core::result::Result<Self, #krate::ModelError> {
-                        let #krate::Atom(text) = <#krate::Atom as #krate::Model>::load(doc, value, id)?;
-                        match text.as_str() {
-                            #(#names => ::core::result::Result::Ok(Self::#idents),)*
-                            other => ::core::result::Result::Err(#krate::ModelError::invalid(
-                                ::std::format!("unknown variant `{other}`"),
-                            )),
-                        }
+                        #table::Run(Self::TABLE).load(doc, value, id)
                     }
                     fn value_schema() -> #krate::__private::serde_json::Value {
-                        #krate::__private::serde_json::json!({"type": "string", "enum": [#(#names),*]})
+                        #table::unit_schema(Self::__UNIT.names)
                     }
+                    #[inline]
                     fn missing() -> ::core::result::Result<Self, #krate::ModelError> {
-                        #missing
+                        #table::Run(Self::TABLE).missing()
                     }
+                    #[inline]
                     fn store(
                         &self,
                         doc: &mut #krate::Doc,
                         slot: #krate::Slot<'_>,
                     ) -> ::core::result::Result<(), #krate::ModelError> {
-                        let text = match self { #(Self::#idents => #names,)* };
-                        slot.put_scalar(doc, #krate::__private::ScalarValue::Str(text.into()))
+                        #table::Run(Self::TABLE).store(self, doc, slot)
                     }
+                    #[inline]
                     fn collect_text(&self, out: &mut ::std::vec::Vec<::std::string::String>) {
-                        let text = match self { #(Self::#idents => #names,)* };
-                        out.push(::std::string::String::from(text));
+                        #table::Run(Self::TABLE).collect_text(self, out);
                     }
+                    #[inline]
                     fn stores_as(&self, before: &Self) -> bool {
-                        ::core::mem::discriminant(self) == ::core::mem::discriminant(before)
+                        #table::Run(Self::TABLE).stores_as(self, before)
+                    }
+                    #[inline]
+                    fn refresh(
+                        &mut self,
+                        doc: &#krate::Doc,
+                        value: &#krate::__private::Value<'_>,
+                        id: &#krate::__private::ObjId,
+                        delta: &#krate::Delta,
+                    ) -> ::core::result::Result<(), #krate::ModelError> {
+                        #table::Run(Self::TABLE).refresh(self, doc, value, id, delta)
                     }
                 }
             })

@@ -91,6 +91,10 @@ enum Desc {
     Option(&'static OptionDesc),
     /// A collection of items.
     Collection(&'static crate::collection::CollectionDesc),
+    /// An enum of unit variants.
+    Unit(&'static UnitDesc),
+    /// A value stored whole as JSON text.
+    Json(&'static JsonDesc),
 }
 
 impl ModelTable {
@@ -2047,3 +2051,365 @@ impl Run<'_> {
         (self.0.ops.op_schemas)(self.0, prefix, out);
     }
 }
+
+// --- Enums of unit variants -----------------------------------------------
+
+/// A `#[derive(Model)]` enum of unit variants, each stored as its name.
+pub struct UnitDesc {
+    /// The variants' stored names, in declaration order.
+    pub names: &'static [&'static str],
+    /// The `#[default]` variant's position.
+    pub default: Option<usize>,
+    /// The position of a value's variant.
+    pub index: fn(&dyn Any) -> Option<usize>,
+    /// Put the variant at a position into `out`, an `Option` of the enum.
+    pub make: fn(usize, &mut dyn Any) -> Result<(), ModelError>,
+    /// Set a value to the variant at a position.
+    pub set: fn(usize, &mut dyn Any) -> Result<(), ModelError>,
+    /// An empty `Option` of the enum and the enum in a filled one.
+    pub staged: (fn() -> Box<dyn Any>, Unstage),
+}
+
+impl ModelTable {
+    /// The table of an enum of unit variants.
+    #[must_use]
+    pub const fn of_unit(unit: &'static UnitDesc) -> Self {
+        Self {
+            ops: &UNIT_OPS,
+            desc: Desc::Unit(unit),
+            checks: false,
+            has_ops: false,
+        }
+    }
+
+    const fn unit(&self) -> Option<&'static UnitDesc> {
+        match self.desc {
+            Desc::Unit(unit) => Some(unit),
+            _ => None,
+        }
+    }
+}
+
+fn units(table: &ModelTable) -> Result<&'static UnitDesc, ModelError> {
+    table.unit().ok_or_else(mismatch)
+}
+
+/// The stored name of `value`'s variant.
+fn unit_name(table: &ModelTable, value: &dyn Any) -> Option<&'static str> {
+    let unit = table.unit()?;
+    unit.names.get((unit.index)(value)?).copied()
+}
+
+/// The position of the variant named `text`.
+fn unit_named(unit: &UnitDesc, text: &str) -> Result<usize, ModelError> {
+    unit.names
+        .iter()
+        .position(|name| *name == text)
+        .ok_or_else(|| ModelError::invalid(format!("unknown variant `{text}`")))
+}
+
+/// [`Model::value_schema`] of an enum of the variants `names`.
+#[must_use]
+pub fn unit_schema(names: &[&str]) -> serde_json::Value {
+    serde_json::json!({"type": "string", "enum": names})
+}
+
+/// The functions of every enum of unit variants.
+pub static UNIT_OPS: ModelOps = ModelOps {
+    to_json: |table, value| {
+        unit_name(table, value).map_or(serde_json::Value::Null, |name| {
+            serde_json::Value::String(name.to_owned())
+        })
+    },
+    from_json: |table, value, out| {
+        let unit = units(table)?;
+        match value {
+            serde_json::Value::String(text) => (unit.make)(unit_named(unit, text)?, out),
+            serde_json::Value::Null => (UNIT_OPS.missing)(table, out),
+            _ => Err(ModelError::shape("a variant name")),
+        }
+    },
+    load: |table, doc, value, id, out| {
+        let unit = units(table)?;
+        let crate::Atom(text) = crate::Atom::load(doc, value, id)?;
+        (unit.make)(unit_named(unit, &text)?, out)
+    },
+    missing: |table, out| {
+        let unit = units(table)?;
+        match unit.default {
+            Some(default) => (unit.make)(default, out),
+            None => Err(ModelError::Missing {
+                path: String::new(),
+            }),
+        }
+    },
+    reload: |table, target, doc, slot| {
+        let unit = units(table)?;
+        let index = match slot {
+            Some((value, id)) => {
+                let crate::Atom(text) = crate::Atom::load(doc, value, id)?;
+                unit_named(unit, &text)?
+            }
+            None => unit.default.ok_or_else(|| ModelError::Missing {
+                path: String::new(),
+            })?,
+        };
+        (unit.set)(index, target)
+    },
+    store: |table, value, doc, slot| {
+        let name = unit_name(table, value).ok_or_else(mismatch)?;
+        slot.put_scalar(doc, automerge::ScalarValue::Str(name.into()))
+    },
+    stores_as: |table, value, before| {
+        table.unit().is_some_and(|unit| {
+            (unit.index)(value).is_some() && (unit.index)(value) == (unit.index)(before)
+        })
+    },
+    store_changed: |table, value, _, doc, slot, _| (UNIT_OPS.store)(table, value, doc, slot),
+    refresh: |table, target, doc, value, id, _| {
+        (UNIT_OPS.reload)(table, target, doc, Some((value, id)))
+    },
+    read_whole: |_, _, _| Ok(()),
+    edit: |table, doc, slot, path, op, _| {
+        let unit = units(table)?;
+        edit_whole(
+            table,
+            ((unit.staged.0)(), unit.staged.1),
+            false,
+            doc,
+            slot,
+            path,
+            op,
+        )
+    },
+    diff: |table, before, after, path, out| {
+        let value = (UNIT_OPS.to_json)(table, after);
+        if (UNIT_OPS.to_json)(table, before) != value {
+            out.push(Edit::new(path.to_vec(), EditOp::Set { value }));
+        }
+    },
+    collect_text: |table, value, out| {
+        if let Some(name) = unit_name(table, value) {
+            out.push(name.to_owned());
+        }
+    },
+    check: |_, _| Ok(()),
+    get_at: |_, value, path| path.is_empty().then_some(value),
+    op_coalesces: no_coalesces,
+    op_continuable: no_continuable,
+    op_describe: no_describe,
+    op_lands: no_lands,
+    op_schemas: no_schemas,
+};
+
+/// Put `variant` into `out`, an `Option` of its enum.
+///
+/// # Errors
+/// When there is no such variant or `out` is of another type.
+pub fn put_variant<T: 'static>(variant: Option<T>, out: &mut dyn Any) -> Result<(), ModelError> {
+    put(out, variant.ok_or_else(mismatch)?)
+}
+
+/// Set `target` to `variant`.
+///
+/// # Errors
+/// When there is no such variant or `target` is of another type.
+pub fn set_variant<T: 'static>(variant: Option<T>, target: &mut dyn Any) -> Result<(), ModelError> {
+    *target.downcast_mut::<T>().ok_or_else(mismatch)? = variant.ok_or_else(mismatch)?;
+    Ok(())
+}
+
+// --- Values stored whole as JSON text -----------------------------------------
+
+/// A type stored whole as one JSON string, last writer winning
+/// ([`Json`](crate::Json), [`json_model!`](crate::json_model)).
+#[allow(
+    clippy::type_complexity,
+    reason = "each field converts the value one way"
+)]
+pub struct JsonDesc {
+    /// The value's JSON form.
+    pub to_value: fn(&dyn Any) -> serde_json::Value,
+    /// The value as the JSON text it is stored as.
+    pub to_text: fn(&dyn Any) -> Result<String, ModelError>,
+    /// Put the value of a JSON form into `out`, an `Option` of the type.
+    pub from_value: fn(&serde_json::Value, &mut dyn Any) -> Result<(), ModelError>,
+    /// Put the value of stored JSON text into `out`.
+    pub from_text: fn(&str, &mut dyn Any) -> Result<(), ModelError>,
+    /// Put the type's default into `out`.
+    pub default: fn(&mut dyn Any) -> Result<(), ModelError>,
+    /// `null` reads as the default rather than through serde.
+    pub null_default: bool,
+    /// An empty `Option` of the type, the value in a filled one, and moving
+    /// it out over another.
+    pub staged: (fn() -> Box<dyn Any>, Unstage),
+    pub replace: fn(&mut dyn Any, &mut dyn Any) -> Result<(), ModelError>,
+}
+
+impl ModelTable {
+    /// The table of a type stored as JSON text.
+    #[must_use]
+    pub const fn of_json(json: &'static JsonDesc) -> Self {
+        Self {
+            ops: &JSON_OPS,
+            desc: Desc::Json(json),
+            checks: false,
+            has_ops: false,
+        }
+    }
+
+    const fn json(&self) -> Option<&'static JsonDesc> {
+        match self.desc {
+            Desc::Json(json) => Some(json),
+            _ => None,
+        }
+    }
+}
+
+fn jsons(table: &ModelTable) -> Result<&'static JsonDesc, ModelError> {
+    table.json().ok_or_else(mismatch)
+}
+
+/// An error of serde as a model error.
+#[allow(clippy::needless_pass_by_value, reason = "what `map_err` hands it")]
+fn serde_invalid(error: serde_json::Error) -> ModelError {
+    ModelError::invalid(error.to_string())
+}
+
+/// The serde functions of a type stored as JSON text, `json(value)` being
+/// how the type wraps its serde value (`Json(inner)`, or the value itself).
+pub struct JsonOf<T>(PhantomData<T>);
+
+impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> JsonOf<T> {
+    /// A [`json_model!`](crate::json_model) type: the value itself.
+    pub const PLAIN: JsonDesc = JsonDesc {
+        to_value: |value| {
+            value
+                .downcast_ref::<T>()
+                .and_then(|value| serde_json::to_value(value).ok())
+                .unwrap_or(serde_json::Value::Null)
+        },
+        to_text: |value| {
+            serde_json::to_string(value.downcast_ref::<T>().ok_or_else(mismatch)?)
+                .map_err(serde_invalid)
+        },
+        from_value: |value, out| {
+            put::<T>(
+                out,
+                serde_json::from_value(value.clone()).map_err(serde_invalid)?,
+            )
+        },
+        from_text: |text, out| put::<T>(out, serde_json::from_str(text).map_err(serde_invalid)?),
+        default: |out| put(out, T::default()),
+        null_default: true,
+        staged: (empty_of::<T>, unwrap_of::<T>),
+        replace: replace_of::<T>,
+    };
+
+    /// [`Json`](crate::Json) of the type.
+    pub const WRAPPED: JsonDesc = JsonDesc {
+        to_value: |value| {
+            value
+                .downcast_ref::<crate::Json<T>>()
+                .and_then(|value| serde_json::to_value(&value.0).ok())
+                .unwrap_or(serde_json::Value::Null)
+        },
+        to_text: |value| {
+            serde_json::to_string(
+                &value
+                    .downcast_ref::<crate::Json<T>>()
+                    .ok_or_else(mismatch)?
+                    .0,
+            )
+            .map_err(serde_invalid)
+        },
+        from_value: |value, out| {
+            put(
+                out,
+                crate::Json::<T>(serde_json::from_value(value.clone()).map_err(serde_invalid)?),
+            )
+        },
+        from_text: |text, out| {
+            put(
+                out,
+                crate::Json::<T>(serde_json::from_str(text).map_err(serde_invalid)?),
+            )
+        },
+        default: |out| put(out, crate::Json(T::default())),
+        null_default: false,
+        staged: (empty_of::<crate::Json<T>>, unwrap_of::<crate::Json<T>>),
+        replace: replace_of::<crate::Json<T>>,
+    };
+}
+
+/// The functions of every type stored as JSON text.
+pub static JSON_OPS: ModelOps = ModelOps {
+    to_json: |table, value| match table.json() {
+        Some(json) => (json.to_value)(value),
+        None => serde_json::Value::Null,
+    },
+    from_json: |table, value, out| {
+        let json = jsons(table)?;
+        if json.null_default && value.is_null() {
+            return (json.default)(out);
+        }
+        (json.from_value)(value, out)
+    },
+    load: |table, _, value, _, out| {
+        let json = jsons(table)?;
+        match value {
+            Value::Scalar(scalar) => match scalar.as_ref() {
+                automerge::ScalarValue::Str(text) => (json.from_text)(text, out),
+                automerge::ScalarValue::Null => (json.default)(out),
+                _ => Err(ModelError::shape("a JSON string")),
+            },
+            Value::Object(_) => Err(ModelError::shape("a JSON string")),
+        }
+    },
+    missing: |table, out| (jsons(table)?.default)(out),
+    reload: |table, target, doc, slot| {
+        let json = jsons(table)?;
+        let mut staged = (json.staged.0)();
+        match slot {
+            Some((value, id)) => (JSON_OPS.load)(table, doc, value, id, staged.as_mut())?,
+            None => (json.default)(staged.as_mut())?,
+        }
+        (json.replace)(target, staged.as_mut())
+    },
+    store: |table, value, doc, slot| {
+        let text = (jsons(table)?.to_text)(value)?;
+        slot.put_scalar(doc, automerge::ScalarValue::Str(text.into()))
+    },
+    stores_as: |_, _, _| false,
+    store_changed: |table, value, _, doc, slot, _| (JSON_OPS.store)(table, value, doc, slot),
+    refresh: |table, target, doc, value, id, _| {
+        (JSON_OPS.reload)(table, target, doc, Some((value, id)))
+    },
+    read_whole: |_, _, _| Ok(()),
+    edit: |table, doc, slot, path, op, _| {
+        let json = jsons(table)?;
+        edit_whole(
+            table,
+            ((json.staged.0)(), json.staged.1),
+            true,
+            doc,
+            slot,
+            path,
+            op,
+        )
+    },
+    diff: |table, before, after, path, out| {
+        let value = (JSON_OPS.to_json)(table, after);
+        if (JSON_OPS.to_json)(table, before) != value {
+            out.push(Edit::new(path.to_vec(), EditOp::Set { value }));
+        }
+    },
+    collect_text: |_, _, _| {},
+    check: |_, _| Ok(()),
+    get_at: |_, value, path| path.is_empty().then_some(value),
+    op_coalesces: no_coalesces,
+    op_continuable: no_continuable,
+    op_describe: no_describe,
+    op_lands: no_lands,
+    op_schemas: no_schemas,
+};
