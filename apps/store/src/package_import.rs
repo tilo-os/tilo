@@ -125,6 +125,7 @@ pub fn review_local(
             download_url: None,
             root_hash_hex: Some(checked.root.clone()),
             size_bytes: bytes.len() as u64,
+            runtime: None,
         }],
         publisher_pubkey_hex: Some(checked.publisher.clone()),
         installed: checked.installed_version.as_ref().map_or(
@@ -318,6 +319,7 @@ type = "gui"
                 download_url: Some("https://packages.test/import.tapp".into()),
                 root_hash_hex: Some(packed.id().to_hex()),
                 size_bytes: thin.len() as u64,
+                runtime: None,
             }],
             publisher_pubkey_hex: Some(hex::encode(key.public_key_bytes())),
             installed: crate::InstalledState::Not,

@@ -20,12 +20,11 @@ class EngineRuntimeNameTests(unittest.TestCase):
         built = re.findall(r"^ARG CHROMIUM_RUNTIME_VERSION=(\S+)$", containerfile, re.MULTILINE)
         self.assertEqual(built, [rust_const("RUNTIME_VERSION")])
 
-    def test_the_browser_install_link_uses_the_published_runtime_identity(self):
+    def test_the_browser_install_link_requests_the_exact_declared_runtime(self):
         source = (ROOT / "apps/browser/src/browser_widget.rs").read_text()
-        match = re.search(r'const ENGINE_INSTALL_URI: &str = "tilo-store:app/([^"\s]+)";', source)
+        match = re.search(r'const ENGINE_INSTALL_URI: &str = "tilo-store:runtime/([^"\s]+)";', source)
         self.assertIsNotNone(match)
-        publication = (ROOT / "tools/apps/publish-browser-runtime.sh").read_text()
-        self.assertIn(f'"$arch" {match.group(1)} tilo-app-runtime-chromium', publication)
+        self.assertEqual(match.group(1), rust_const("RUNTIME_REF"))
 
     def test_the_browser_manifest_asks_for_that_runtime(self):
         manifest = (ROOT / "apps/browser/tilo-app.toml").read_text()

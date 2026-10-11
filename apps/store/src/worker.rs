@@ -42,6 +42,11 @@ pub enum Request {
     Search(String),
     BrowseRemote(String),
     Detail(String),
+    /// Review a precise runtime through the trusted host.
+    RuntimeDetails {
+        runtime: String,
+        registry: Option<String>,
+    },
     /// Show the app a `.flatpakref` describes, ready to install: the file at
     /// `path`, or the reference's `contents` handed over without one.
     OpenReference {
@@ -542,6 +547,90 @@ fn poll_refresh(
         })
 }
 
+/// Resolve only enabled repositories through the launcher-issued host capability.
+fn runtime_details(
+    runtime: &str,
+    selected_registry: Option<&str>,
+    state: &State,
+) -> Result<StoreItem, String> {
+    let host = state
+        .host
+        .as_ref()
+        .ok_or_else(|| ui::i18n!("store-runtime-service-unavailable"))?;
+    let repositories = crate::config::repositories(Some(host))?;
+    if selected_registry
+        .is_some_and(|name| !repositories.enabled().any(|registry| registry.name == name))
+    {
+        return Err(ui::i18n!("store-runtime-unavailable"));
+    }
+    let mut selected = None;
+    for registry in repositories
+        .enabled()
+        .filter(|registry| selected_registry.is_none_or(|name| registry.name == name))
+    {
+        let offer = host.runtime_offer(&registry.name, runtime)?;
+        let Some(offer) = serde_json::from_str::<Option<app_cli::CatalogueApp>>(&offer)
+            .map_err(|error| error.to_string())?
+        else {
+            continue;
+        };
+        if offer.runtime.as_deref() != Some(runtime)
+            || offer.registry != registry.name
+            || offer.trust != "publisher-signed"
+            || !registry_types::is_runtime_package_id(&offer.package_id)
+            || offer.version.is_empty()
+            || offer.publisher_pubkey_hex.len() != 64
+            || !offer
+                .publisher_pubkey_hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            || offer.tapp_size_bytes == 0
+            || offer.tapp_root_hash_hex.len() != 64
+            || !offer
+                .tapp_root_hash_hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(ui::i18n!("store-runtime-offer-mismatch"));
+        }
+        if selected.is_some() {
+            return Err(ui::i18n!("store-runtime-offer-ambiguous"));
+        }
+        selected = Some(runtime_item(offer));
+    }
+    selected.ok_or_else(|| ui::i18n!("store-runtime-unavailable"))
+}
+
+fn runtime_item(offer: app_cli::CatalogueApp) -> StoreItem {
+    StoreItem {
+        id: offer.package_id,
+        name: offer.display_name,
+        description: offer.description,
+        tagline: offer.tagline,
+        supported_languages: offer.supported_languages,
+        categories: offer.category.into_iter().collect(),
+        icon_url: None,
+        screenshot_urls: Vec::new(),
+        homepage_url: None,
+        source_url: None,
+        install_ref_path: None,
+        source: StoreSource::Tilo {
+            registry_name: offer.registry,
+        },
+        trust: crate::model::StoreTrust::PublisherSigned,
+        versions: vec![crate::model::StoreItemVersion {
+            version: offer.version,
+            released_at_unix: 0,
+            download_url: Some(offer.download_url),
+            root_hash_hex: Some(offer.tapp_root_hash_hex),
+            size_bytes: offer.tapp_size_bytes,
+            runtime: offer.runtime,
+        }],
+        publisher_pubkey_hex: Some(offer.publisher_pubkey_hex),
+        installed: crate::model::InstalledState::Not,
+    }
+}
+
 /// Carry out `request`: whether the UI is still there, and how it ended
 /// for whoever waits on it.
 #[allow(
@@ -571,6 +660,30 @@ fn handle(
         Request::BrowseRemote(id) => browse_remote(&id, state, snapshots),
         Request::Search(query) => (search(&query, state, snapshots), None),
         Request::Detail(id) => (detail(&id, state, snapshots), None),
+        Request::RuntimeDetails { runtime, registry } => {
+            let opened = runtime_details(&runtime, registry.as_deref(), state);
+            let (label, detail, error) = match &opened {
+                Ok(item) => (
+                    ui::i18n::I18nManager::format(
+                        "store-runtime-reviewed",
+                        &[("name", ui::i18n::ArgValue::Text(item.name.clone()))],
+                    ),
+                    Some(DetailUpdate::OpenedReference(item.clone())),
+                    None,
+                ),
+                Err(error) => (error.clone(), None, Some(error.clone())),
+            };
+            let alive = send_tracked(
+                snapshots,
+                state,
+                state.base_items.clone(),
+                &label,
+                None,
+                detail,
+                error,
+            );
+            (alive, Some(opened.map(|_| Finished::status(label))))
+        }
         Request::OpenReference { path, contents } => {
             let opened = open_reference(path, contents, state);
             let (label, detail, error) = match &opened {
@@ -1364,6 +1477,7 @@ mod tests {
                 download_url: None,
                 root_hash_hex: None,
                 size_bytes: 0,
+                runtime: None,
             }],
             publisher_pubkey_hex: None,
             installed: InstalledState::Not,
@@ -1395,9 +1509,48 @@ mod tests {
         registry: String,
         expected: app_host::install::InstallExpectation,
         installs: Arc<AtomicUsize>,
+        offer: Option<app_cli::CatalogueApp>,
     }
 
     impl app_host::app_host_capnp::app_host::Server for ImportOfferHost {
+        fn repositories(
+            self: capnp::capability::Rc<Self>,
+            _: app_host::app_host_capnp::app_host::RepositoriesParams,
+            mut results: app_host::app_host_capnp::app_host::RepositoriesResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            results.get().set_json(
+                serde_json::to_string(&crate::config::RegistriesFile {
+                    registries: vec![crate::config::RegistryConfig {
+                        name: self.registry.clone(),
+                        base_url: "https://example.invalid".into(),
+                        owner_pubkey_hex: "55".repeat(32),
+                        enabled: true,
+                        channel: app_cli::ReleaseChannel::Stable,
+                    }],
+                })
+                .unwrap(),
+            );
+            std::future::ready(Ok(()))
+        }
+        fn runtime_offer(
+            self: capnp::capability::Rc<Self>,
+            params: app_host::app_host_capnp::app_host::RuntimeOfferParams,
+            mut results: app_host::app_host_capnp::app_host::RuntimeOfferResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let params = params.get().unwrap();
+            assert_eq!(
+                params.get_registry().unwrap().to_str().unwrap(),
+                self.registry
+            );
+            assert_eq!(
+                params.get_runtime().unwrap().to_str().unwrap(),
+                "tilo-runtime/2026.10.4-chromium"
+            );
+            results
+                .get()
+                .set_offer(serde_json::to_string(&self.offer).unwrap());
+            std::future::ready(Ok(()))
+        }
         fn install_offer(
             self: capnp::capability::Rc<Self>,
             params: app_host::app_host_capnp::app_host::InstallOfferParams,
@@ -1432,6 +1585,137 @@ mod tests {
     }
 
     #[test]
+    fn runtime_review_capability_preserves_exact_offer_and_installs_without_launch() {
+        let offer: app_cli::CatalogueApp = serde_json::from_value(serde_json::json!({
+            "package_id":"so.tilo.runtime.chromium", "display_name":"Chromium", "version":"4.0.0",
+            "registry":"main", "download_url":"https://example.invalid/engine.tapp",
+            "tapp_root_hash_hex":"11".repeat(32), "tapp_size_bytes":6656,
+            "publisher_pubkey_hex":"22".repeat(32), "runtime":"tilo-runtime/2026.10.4-chromium",
+            "trust":"publisher-signed"
+        }))
+        .unwrap();
+        let installs = Arc::new(AtomicUsize::new(0));
+        let expected = app_host::install::InstallExpectation {
+            package_root: format!("tapp:{}", offer.tapp_root_hash_hex)
+                .parse()
+                .unwrap(),
+            publisher: [0x22; 32],
+            app_id: offer.package_id.clone(),
+            version: offer.version.clone(),
+            size_bytes: offer.tapp_size_bytes,
+        };
+        let (service, connection) = app_host::testing::ConnectedService::start(ImportOfferHost {
+            registry: "main".into(),
+            expected,
+            installs: installs.clone(),
+            offer: Some(offer),
+        })
+        .unwrap();
+        let mut state = state_with_items(Vec::new(), StoreDirectory::default());
+        state.host = Some(app_host::client::BlockingClient::from_connected_fd(connection).unwrap());
+        let (sender, received) = mpsc::channel();
+        let snapshots = Snapshots {
+            sender,
+            wake: WakeHandle::new(),
+            pending: Arc::new(AtomicUsize::new(0)),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (_, result) = handle(
+            Request::RuntimeDetails {
+                runtime: "tilo-runtime/2026.10.4-chromium".into(),
+                registry: None,
+            },
+            &mut state,
+            &snapshots,
+            dir.path(),
+        );
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            installs.load(Ordering::SeqCst),
+            0,
+            "review installs nothing"
+        );
+        let DetailUpdate::OpenedReference(item) = received.recv().unwrap().detail.unwrap() else {
+            panic!("runtime details missing")
+        };
+        assert_eq!(
+            item.versions[0].runtime.as_deref(),
+            Some("tilo-runtime/2026.10.4-chromium")
+        );
+        assert_eq!(item.action_kind(true), ActionKind::RuntimeInstall);
+        let outcome = crate::actions::execute_with_host(
+            state.host.as_ref(),
+            &item,
+            ActionKind::RuntimeInstall,
+            dir.path(),
+        );
+        assert!(outcome.ok);
+        assert!(
+            outcome.launch.is_none(),
+            "a runtime must never launch as an application"
+        );
+        assert_eq!(installs.load(Ordering::SeqCst), 1);
+        drop(state);
+        service.shutdown().unwrap();
+    }
+
+    #[test]
+    fn runtime_review_capability_refuses_missing_foreign_or_malformed_offers() {
+        let valid: app_cli::CatalogueApp = serde_json::from_value(serde_json::json!({
+            "package_id":"so.tilo.runtime.chromium", "display_name":"Chromium", "version":"4.0.0",
+            "registry":"main", "download_url":"https://example.invalid/engine.tapp",
+            "tapp_root_hash_hex":"11".repeat(32), "tapp_size_bytes":6656,
+            "publisher_pubkey_hex":"22".repeat(32), "runtime":"tilo-runtime/2026.10.4-chromium",
+            "trust":"publisher-signed"
+        }))
+        .unwrap();
+        let mut wrong_runtime = valid.clone();
+        wrong_runtime.runtime = Some("tilo-runtime/2026.10.5-chromium".into());
+        let mut untrusted = valid.clone();
+        untrusted.trust = "untrusted".into();
+        let mut wrong_registry = valid.clone();
+        wrong_registry.registry = "foreign".into();
+        let mut zero_size = valid.clone();
+        zero_size.tapp_size_bytes = 0;
+        let mut malformed_root = valid.clone();
+        malformed_root.tapp_root_hash_hex = "xx".repeat(32);
+        let mut malformed_publisher = valid;
+        malformed_publisher.publisher_pubkey_hex = "x".into();
+        for offer in [
+            None,
+            Some(wrong_runtime),
+            Some(untrusted),
+            Some(wrong_registry),
+            Some(zero_size),
+            Some(malformed_root),
+            Some(malformed_publisher),
+        ] {
+            let installs = Arc::new(AtomicUsize::new(0));
+            let (service, connection) =
+                app_host::testing::ConnectedService::start(ImportOfferHost {
+                    registry: "main".into(),
+                    expected: app_host::install::InstallExpectation {
+                        package_root: format!("tapp:{}", "11".repeat(32)).parse().unwrap(),
+                        publisher: [0x22; 32],
+                        app_id: "so.tilo.runtime.chromium".into(),
+                        version: "4.0.0".into(),
+                        size_bytes: 6656,
+                    },
+                    installs: installs.clone(),
+                    offer,
+                })
+                .unwrap();
+            let mut state = state_with_items(Vec::new(), StoreDirectory::default());
+            state.host =
+                Some(app_host::client::BlockingClient::from_connected_fd(connection).unwrap());
+            assert!(runtime_details("tilo-runtime/2026.10.4-chromium", None, &state).is_err());
+            assert_eq!(installs.load(Ordering::SeqCst), 0);
+            drop(state);
+            service.shutdown().unwrap();
+        }
+    }
+
+    #[test]
     fn package_import_worker_reviews_before_exact_owned_offer_install() {
         check_import_worker(crate::package_import::tests::signed_fixture());
     }
@@ -1450,6 +1734,7 @@ mod tests {
             registry: reviewed.registry.clone(),
             expected: reviewed.expected.clone(),
             installs: installs.clone(),
+            offer: None,
         })
         .unwrap();
         let mut state = state_with_items(vec![item.clone()], StoreDirectory::default());

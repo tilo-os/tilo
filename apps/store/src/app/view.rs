@@ -1007,6 +1007,9 @@ fn package_properties(item: &StoreItem) -> Vec<Property> {
         rows.push(
             Property::new("Latest version", visible_version(item)).with_kind(TextKind::Numeric),
         );
+        if let Some(runtime) = &version.runtime {
+            rows.push(Property::new(ui::i18n!("store-runtime-reference"), runtime));
+        }
         if version.size_bytes > 0 {
             rows.push(
                 Property::new("Download size", format_size(version.size_bytes))

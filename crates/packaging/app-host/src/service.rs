@@ -1160,6 +1160,46 @@ impl app_host::Server for AppHostServer {
             Ok(())
         }
     }
+    async fn runtime_offer(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::RuntimeOfferParams,
+        mut results: app_host::RuntimeOfferResults,
+    ) -> Result<(), Error> {
+        let parameters = params.get().map_err(failed)?;
+        let registry = parameters
+            .get_registry()
+            .map_err(failed)?
+            .to_string()
+            .map_err(failed)?;
+        let runtime = parameters
+            .get_runtime()
+            .map_err(failed)?
+            .to_string()
+            .map_err(failed)?;
+        if registry.is_empty()
+            || registry.len() > 256
+            || registry.chars().any(char::is_control)
+            || runtime.is_empty()
+            || runtime.len() > 256
+            || runtime.chars().any(char::is_control)
+        {
+            return Err(Error::failed("invalid runtime offer request".into()));
+        }
+        let json = tokio::task::spawn_blocking(move || {
+            let offer = app_cli::runtime_offer(&runtime, &registry).map_err(failed)?;
+            serde_json::to_string(&offer).map_err(failed)
+        })
+        .await
+        .map_err(failed)??;
+        if json.len() > 256 * 1024 {
+            return Err(Error::failed(
+                "runtime offer exceeds the response limit".into(),
+            ));
+        }
+        results.get().set_offer(&json);
+        Ok(())
+    }
+
     #[allow(
         clippy::manual_async_fn,
         reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"

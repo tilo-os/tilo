@@ -94,6 +94,7 @@ pub struct ReportEnvelope {
 
 fn action_code(action: ActionKind) -> &'static str {
     match action {
+        ActionKind::RuntimeInstall => "install-runtime",
         ActionKind::Open => "open",
         ActionKind::Remove => "remove",
         ActionKind::Update => "update",
@@ -320,7 +321,7 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
         .chain(item.pin_action())
         .chain(item.remove_action());
     for action in actions {
-        let spec = StoreEffect::package(action, item.id.clone()).bound();
+        let spec = StoreEffect::package(action, item).bound();
         let spec = if let Some((code, reason)) = item.unavailable_action(action) {
             spec.unavailable(code, reason)
         } else {
@@ -1496,6 +1497,15 @@ impl StoreApp {
         if let Some((app, action)) = effect.as_package() {
             let app = app.to_owned();
             let item = self.package_operation(&app, action)?;
+            if let StoreEffect::InstallRuntime { root, .. } = &effect
+                && item
+                    .versions
+                    .first()
+                    .and_then(|version| version.root_hash_hex.as_deref())
+                    != Some(root.as_str())
+            {
+                return Err(ui::i18n!("store-runtime-changed"));
+            }
             self.active_operation = Some((item.id.clone(), action));
             self.operation_error = None;
             self.status_line = format!("{} {}…", action.progress_label(), item.name);
@@ -1578,6 +1588,19 @@ impl StoreApp {
                 );
                 self.focus_detail(&app);
                 self.pending_detail = Some(app);
+            }
+            StoreEffect::ShowRuntimeDetails { runtime, registry } => {
+                self.reserve_job()?;
+                if runtime.is_empty()
+                    || runtime.len() > 256
+                    || runtime.chars().any(char::is_control)
+                {
+                    return Err("invalid runtime reference".into());
+                }
+                return Ok(Job::admitted(
+                    Request::RuntimeDetails { runtime, registry },
+                    Finish::Status,
+                ));
             }
             StoreEffect::ImportPackage {
                 path,
@@ -1774,7 +1797,8 @@ impl StoreApp {
                 let item = self.items.iter().find(|item| item.id == report.app_id);
                 return Ok(Admitted::Export(report_envelope(&report, item)));
             }
-            StoreEffect::Open { .. }
+            StoreEffect::InstallRuntime { .. }
+            | StoreEffect::Open { .. }
             | StoreEffect::Update { .. }
             | StoreEffect::Remove { .. }
             | StoreEffect::Pin { .. }
@@ -2405,7 +2429,9 @@ fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
 }
 
 fn package_action_label(action: ActionKind, error: Option<&str>) -> String {
-    if action == ActionKind::NeedsFlatpakHost && error.is_some() {
+    if action == ActionKind::RuntimeInstall {
+        ui::i18n!("store-runtime-install")
+    } else if action == ActionKind::NeedsFlatpakHost && error.is_some() {
         ui::i18n!("store-flatpak-unavailable")
     } else {
         action.label().to_owned()
@@ -2426,6 +2452,8 @@ fn inspect_item(
         "repository": resource_detail_excerpt(item.source.distribution_name()),
         "trust": item.trust,
         "latest_version": resource_detail_excerpt(item.latest_version()),
+        "runtime": item.versions.first().and_then(|version| version.runtime.as_deref()),
+        "package_root": item.versions.first().and_then(|version| version.root_hash_hex.as_deref()),
         "installed": !matches!(item.installed, crate::InstalledState::Not),
         "primary_action": package_action_label(item.action_kind(flatpak_available), error),
     })
@@ -2435,6 +2463,25 @@ fn inspect_item(
 mod tests {
     use super::*;
     use crate::bindings;
+
+    #[test]
+    fn runtime_install_action_is_bound_to_the_reviewed_root() {
+        let mut item = crate::fixture::fixture_catalog().remove(0);
+        item.id = "so.tilo.runtime.chromium".into();
+        item.versions[0].root_hash_hex = Some("11".repeat(32));
+        item.versions[0].runtime = Some("tilo-runtime/2026.10.4-chromium".into());
+        let action = StoreEffect::package(ActionKind::RuntimeInstall, &item);
+        let mut app = StoreApp::new();
+        app.set_items(vec![item.clone()]);
+        assert_eq!(
+            app.inspect_catalogue(Some(&item.id)).unwrap()["detail"]["runtime"],
+            "tilo-runtime/2026.10.4-chromium"
+        );
+        item.versions[0].root_hash_hex = Some("33".repeat(32));
+        app.set_items(vec![item]);
+        assert!(app.admit(action).err().unwrap().contains("changed"));
+        assert!(app.active_operation.is_none());
+    }
 
     #[test]
     fn late_detail_metadata_preserves_the_declared_navigation_destination() {
@@ -3386,6 +3433,7 @@ mod tests {
                 download_url: None,
                 root_hash_hex: None,
                 size_bytes: 0,
+                runtime: None,
             }],
             publisher_pubkey_hex: None,
             installed,
