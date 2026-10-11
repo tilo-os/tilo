@@ -20,7 +20,7 @@ use ui::widget::{ButtonRole, Element, NavShell, Spacer};
 use crate::actions::{
     TOTP_ACTION_TYPE, TotpAction, account_label, account_resource_id, add_account_action, register,
 };
-use crate::app::AuthenticatorApp;
+use crate::app::{AuthenticatorApp, Notice};
 use crate::doc::AuthDoc;
 use crate::model::{Account, demo_accounts};
 
@@ -146,10 +146,12 @@ impl ResourceApp for TotpShell {
         // the empty state asks for the first one and the header stays quiet.
         let has_accounts = cx.local(true);
         let count = cx.local(0usize);
+        let notice = cx.local(None);
         let content = cx.surface(
             AuthenticatorApp::new()
                 .with_account_signal(has_accounts.clone())
-                .with_count_signal(count.clone()),
+                .with_count_signal(count.clone())
+                .with_notice_signal(notice.clone()),
         );
         let search = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
             if *has_accounts {
@@ -177,6 +179,7 @@ impl ResourceApp for TotpShell {
                 .content(content)
                 .content_header("Accounts", vec![search, add]),
             count,
+            notice,
         })
     }
 
@@ -214,10 +217,12 @@ impl ResourceApp for TotpShell {
     }
 }
 
-/// The navigation shell whose header says how many accounts the vault holds.
+/// The navigation shell whose header says how many accounts the vault holds,
+/// and whose toast shows the surface's notices.
 struct CountedShell {
     shell: NavShell,
     count: ui::LocalState<usize>,
+    notice: ui::LocalState<Option<Notice>>,
 }
 
 impl ui::widget::Decorator for CountedShell {
@@ -234,7 +239,16 @@ impl ui::widget::Decorator for CountedShell {
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         let count = self.count.get();
         self.shell.set_content_count((count > 0).then_some(count));
-        ui::widget::Widget::update(&mut self.shell, state, path)
+        let changed = ui::widget::Widget::update(&mut self.shell, state, path);
+        let Some(notice) = self.notice.with(Clone::clone) else {
+            return changed;
+        };
+        self.notice.set(None);
+        match notice {
+            Notice::Show(text, kind) => self.shell.toast(text, kind),
+            Notice::Clear => self.shell.dismiss_toast(),
+        }
+        true
     }
 }
 
@@ -780,9 +794,14 @@ mod tests {
         assert_eq!(app.state().len(), 1, "nothing was added");
         app.harness().key("Enter");
         app.harness().relayout();
-        let copied = names(&mut app);
+        let copied: Vec<_> = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| node.value().map(str::to_owned))
+            .collect();
         assert!(
-            copied.iter().any(|(_, name)| name == "Copied GitHub code"),
+            copied.iter().any(|value| value == "Copied GitHub code"),
             "Enter copies the selected account and says so: {copied:?}"
         );
     }

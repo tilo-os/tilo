@@ -1131,6 +1131,17 @@ fn a_toast_floats_over_the_bottom_corner_and_a_click_dismisses_it() {
         "the notice sits inside the window's bottom trailing corner: {card:?}"
     );
     assert_eq!(h.root::<NavShell>().toast_text(), Some("Saved"));
+    let announced = h
+        .root::<NavShell>()
+        .children()
+        .last()
+        .and_then(|child| child.accessibility())
+        .and_then(|node| node.value);
+    assert_eq!(
+        announced.as_deref(),
+        Some("Saved"),
+        "a live region announces it"
+    );
     h.click_at(card.center().x, card.center().y);
     assert_eq!(h.root::<NavShell>().toast_text(), None);
 }

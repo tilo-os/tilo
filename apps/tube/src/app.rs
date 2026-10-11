@@ -30,7 +30,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::toast::{ToastKind, ToastStack};
+use ui::widget::toast::ToastKind;
 use ui::widget::{
     FullscreenProvider, NavItem, NavList, NavMode, NavSection, NavShell, VideoPlayer, Widget,
 };
@@ -96,9 +96,8 @@ pub struct TubeApp {
     /// Resource invocations raised by controls that report through a closure
     /// (the navigation rail, the watch toolbar), handed to the host.
     invocations: Invocations,
-    /// Transient notices ("Link copied", a skipped segment) as toasts.
-    toasts: ToastStack,
-    /// `model.notice_count` already shown as toasts.
+    /// The transient notice ("Link copied", a skipped segment) last shown
+    /// as the shell's toast.
     toasted: u64,
     /// Live `YouTube` search answers handed to the platform search.
     /// A structural change the host took from `take_structure_dirty` that
@@ -224,7 +223,6 @@ impl TubeApp {
             can_go_back,
             shell_built: false,
             invocations: action::new_invocations(),
-            toasts: ToastStack::new(),
             toasted: 0,
             shell_stale: true,
             shell_key: None,
@@ -1445,8 +1443,7 @@ impl TubeApp {
         }
     }
 
-    /// Show each notice pushed since the last frame as a toast, oldest first,
-    /// and let the toasts that have been read expire.
+    /// Show a notice pushed since the last frame as the shell's toast.
     fn show_new_notices(&mut self) {
         use std::hash::{Hash, Hasher};
         let mut identity = std::collections::hash_map::DefaultHasher::new();
@@ -1454,16 +1451,10 @@ impl TubeApp {
         let current = identity.finish();
         if current != self.toasted {
             if let Some(notice) = self.model.notices.first() {
-                self.toasts.push(notice.clone(), ToastKind::Info);
-                tracing::debug!(target: "tube::share", at = ?ui::time::now(), count = self.toasts.len(), "notice toast created");
+                self.shell.toast(notice.clone(), ToastKind::Info);
+                tracing::debug!(target: "tube::share", at = ?ui::time::now(), "notice toast created");
             }
             self.toasted = current;
-        }
-        let before = self.toasts.len();
-        let now = ui::time::now();
-        self.toasts.advance(now);
-        if self.toasts.len() < before {
-            tracing::debug!(target: "tube::share", at = ?now, before, remaining = self.toasts.len(), "notice toast expired");
         }
     }
 
@@ -2198,12 +2189,6 @@ impl Widget for TubeApp {
     ) {
         self.shell
             .draw_overlay(scene, transform, text_renderer, theme, presence);
-        if !self.toasts.is_empty() {
-            self.toasts
-                .place_bottom_right(self.rect, f64::from(theme.tokens.spacing.s4));
-            self.toasts
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
     }
 
     fn draw_with_presence(
@@ -2284,12 +2269,7 @@ impl Widget for TubeApp {
             _ => {}
         }
 
-        if !self.toasts.is_empty() {
-            self.toasts.handle_event(event, ctx);
-        }
-        if !*ctx.handled {
-            self.shell.handle_event(event, ctx);
-        }
+        self.shell.handle_event(event, ctx);
 
         // Esc goes back, unless a control inside used it.
         if !*ctx.handled
@@ -2353,7 +2333,6 @@ impl Widget for TubeApp {
     fn needs_redraw(&self) -> bool {
         self.structure_dirty
             || self.images_pending()
-            || !self.toasts.is_empty()
             || !self.shell_built
             || self.shell.needs_redraw()
     }
@@ -2388,10 +2367,7 @@ impl Widget for TubeApp {
             && matches!(&self.model.route, Route::Watch(id)
                 if self.playing_id.as_deref() == Some(id.as_str())
                     && self.player_video.as_deref() != Some(id.as_str()));
-        resolving
-            || self.images_pending()
-            || !self.toasts.is_empty()
-            || self.shell.needs_animation_frame()
+        resolving || self.images_pending() || self.shell.needs_animation_frame()
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -2425,15 +2401,11 @@ impl Widget for TubeApp {
             Route::Settings => "Settings".to_string(),
             Route::Search(query) => format!("Search: {query}"),
         };
-        let mut node = AccessNode::new(Role::Window)
-            .with_name(format!("Tube — {route}"))
-            .with_state(AccessState::new().busy(self.model.feed_loading));
-        if !self.toasts.is_empty()
-            && let Some(announcement) = self.toasts.accessibility()
-        {
-            node.children.push(announcement);
-        }
-        Some(node)
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name(format!("Tube — {route}"))
+                .with_state(AccessState::new().busy(self.model.feed_loading)),
+        )
     }
 
     fn name(&self) -> &'static str {
@@ -2501,35 +2473,20 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_share_notice_survives_a_delayed_previous_toast_frame() {
+    fn a_fresh_share_notice_replaces_the_previous_toast() {
         let (mut app, _doc) = fresh();
         app.model.route = Route::Watch("vid_donut".into());
-        app.toasts.push("Previous notice", ToastKind::Info);
-        // A frame can resume after the old toast's lifetime elapsed. The new
-        // share notice must not inherit the time before its own creation.
-        let earlier = ui::time::now()
-            .checked_sub(app.toasts.default_ttl() + ui::time::Duration::from_secs(1))
-            .expect("the fixture can represent the previous toast frame");
-        app.toasts.advance(earlier);
+        app.shell.toast("Previous notice", ToastKind::Info);
         app.perform(TubeEffect::Share {
             video: "vid_donut".into(),
         })
         .unwrap();
         app.show_new_notices();
-        let published = app.accessibility().unwrap();
         assert!(
-            published.children.iter().any(|node| {
-                node.name.as_deref() == Some("Notifications")
-                    && node.value.as_deref().is_some_and(|value| {
-                        value.contains("Link copied") && value.contains("vid_donut")
-                    })
-            }),
-            "the fresh share notice must reach accessibility after an old frame stalls"
-        );
-        assert_eq!(
-            app.toasts.len(),
-            1,
-            "creating a new share notice must not renew the expired previous notice"
+            app.shell
+                .toast_text()
+                .is_some_and(|text| text.contains("Link copied") && text.contains("vid_donut")),
+            "the fresh share notice replaces the previous one"
         );
     }
 
@@ -2924,9 +2881,13 @@ mod tests {
             );
             assert!(app.model.playhead >= 1570.0, "Skip jumps past the segment");
             app.show_new_notices();
-            assert_eq!(app.toasts.len(), 1, "the skip is confirmed by one toast");
+            assert!(
+                app.shell.toast_text().is_some(),
+                "the skip is confirmed by a toast"
+            );
+            app.shell.dismiss_toast();
             app.show_new_notices();
-            assert_eq!(app.toasts.len(), 1, "a notice is toasted once");
+            assert!(app.shell.toast_text().is_none(), "a notice is toasted once");
             let _ = app.build_screen(&theme);
             assert!(
                 app.player.borrow().setting(screens::SKIP_SETTING).is_none(),
