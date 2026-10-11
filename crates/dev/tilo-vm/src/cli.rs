@@ -588,6 +588,7 @@ pub enum InputCommand {
         combo: String,
     },
     /// Release what `hold` pressed.
+    #[command(after_help = "Examples:\n  tilo-vm input release shift")]
     Release {
         /// The combo given to `hold`.
         combo: String,
@@ -648,6 +649,7 @@ pub enum TouchpadCommand {
         duration: u32,
     },
     /// Press the clickpad's physical button.
+    #[command(after_help = "Examples:\n  tilo-vm input touchpad click")]
     Click,
 }
 
