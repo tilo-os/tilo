@@ -8716,7 +8716,6 @@ mod tests {
         eprintln!("phase first_frame_defers_text_extraction");
         'phase: {
             use std::collections::HashMap;
-            use ui::permissions::PermissionContext;
             use ui::presence::PresenceCtx;
             use ui::text_render::TextRenderer;
             use ui::theme::Theme;
@@ -8770,13 +8769,12 @@ mod tests {
                     .unwrap();
                 app.apply_layout(&taffy, child, Point::ORIGIN);
                 let mut scene = Scene::new();
-                app.draw_with_presence(
+                app.draw(
                     &mut scene,
                     Affine::IDENTITY,
                     tr,
                     &theme,
                     &PresenceCtx::empty(),
-                    &PermissionContext::permissive(),
                 );
             };
 
@@ -8813,7 +8811,6 @@ mod tests {
         eprintln!("phase open_rasterises_only_the_budgeted_pages_on_the_first_frame");
         'phase: {
             use std::collections::HashMap;
-            use ui::permissions::PermissionContext;
             use ui::presence::PresenceCtx;
             use ui::text_render::TextRenderer;
             use ui::theme::Theme;
@@ -8863,13 +8860,12 @@ mod tests {
                     .unwrap();
                 app.apply_layout(&taffy, child, Point::ORIGIN);
                 let mut scene = Scene::new();
-                app.draw_with_presence(
+                app.draw(
                     &mut scene,
                     Affine::IDENTITY,
                     tr,
                     &theme,
                     &PresenceCtx::empty(),
-                    &PermissionContext::permissive(),
                 );
             };
 

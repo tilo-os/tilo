@@ -30,7 +30,7 @@ use collab_types::CommitNamed as _;
 
 use tilo_ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::{PermissionContext, UserId};
+use tilo_ui::permissions::UserId;
 use tilo_ui::presence::{PathSegment, PresenceCtx, PresenceKey};
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -164,7 +164,6 @@ fn drawn_of(scene: &Scene) -> Drawn {
 )]
 fn render_widget(mut input: TextInput, doc: &AutoCommit, presence: &PresenceCtx) -> LocalRender {
     let theme = Theme::dark();
-    let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
 
     // The real sync pass: widget visual state is pulled from the CRDT.
@@ -208,14 +207,7 @@ fn render_widget(mut input: TextInput, doc: &AutoCommit, presence: &PresenceCtx)
     (&mut input as &mut dyn Widget).apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    (&mut input as &mut dyn Widget).draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut tr,
-        &theme,
-        presence,
-        &permission,
-    );
+    (&mut input as &mut dyn Widget).draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence);
     let mut renderer = OffscreenRenderer::new(W, H);
     LocalRender {
         drawn: drawn_of(&scene),

@@ -9933,7 +9933,7 @@ impl ShellOverlayHost {
                     true
                 }
                 "projection.open" => {
-                    st.overlays.projection = true;
+                    st.open_projection();
                     true
                 }
                 "capture.open" => {
@@ -11728,7 +11728,15 @@ impl ShellOverlayHost {
         if outcome.close_requested
             && let Some(chrome) = self.chrome.as_ref()
         {
-            chrome.borrow_mut().overlays.projection = false;
+            chrome.borrow_mut().close_projection();
+        } else if outcome.consumed
+            && is_press(event)
+            && let Some(chrome) = self.chrome.as_ref()
+        {
+            // Once the person presses a key or a button in the sheet, it is
+            // theirs: it no longer closes when the change it followed settles.
+            chrome.borrow_mut().projection_follow =
+                crate::shell::chrome_state::ProjectionFollow::Person;
         }
         if outcome.invalidate
             && let Some(chrome) = self.chrome.as_ref()
@@ -11737,6 +11745,60 @@ impl ShellOverlayHost {
         }
         outcome.consumed
     }
+
+    /// Close the display sheet a `display.layout.*` action opened once the
+    /// change it shows is kept, reverted, refused or replaced, so an agent
+    /// or script that answered it leaves no modal sheet holding the
+    /// keyboard. A sheet the person opened or used is left alone. Returns
+    /// whether the sheet closed.
+    fn close_settled_projection(&mut self) -> bool {
+        use crate::shell::chrome_state::ProjectionFollow;
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let (open, follow) = {
+            let state = chrome.borrow();
+            (state.overlays.projection, state.projection_follow)
+        };
+        match follow {
+            ProjectionFollow::Transaction(id) if open => {
+                if !self
+                    .projection_overlay
+                    .followed_change_settled(id, Instant::now())
+                {
+                    return false;
+                }
+                let mut state = chrome.borrow_mut();
+                state.close_projection();
+                state.bump();
+                true
+            }
+            ProjectionFollow::Person => false,
+            // Closed some other way: nothing is followed any more.
+            _ if !open => {
+                chrome.borrow_mut().projection_follow = ProjectionFollow::Person;
+                false
+            }
+            _ => false,
+        }
+    }
+}
+
+/// A key or button pressed: the person acting, not a pointer passing over.
+fn is_press(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput {
+            event: winit::event::KeyEvent {
+                state: winit::event::ElementState::Pressed,
+                ..
+            },
+            ..
+        } | WindowEvent::MouseInput {
+            state: winit::event::ElementState::Pressed,
+            ..
+        }
+    )
 }
 
 // `handle_event` was one 1591-line function — the single largest
@@ -13737,7 +13799,7 @@ impl ShellOverlayHost {
         {
             if !repeat {
                 let mut st = chrome.borrow_mut();
-                st.overlays.projection = true;
+                st.open_projection();
                 st.bump();
             }
             *handled = true;
@@ -14007,7 +14069,7 @@ impl ShellOverlayHost {
             return true;
         }
         if st.overlays.projection {
-            st.overlays.projection = false;
+            st.close_projection();
             st.bump();
             *handled = true;
             return true;
@@ -17883,7 +17945,8 @@ impl Widget for ShellOverlayHost {
         let pairing_dirty = self.pairing.pump(doc, path);
         let radio_dirty = self.poll_quick_settings_radio();
         let quick_settings_dirty = self.apply_quick_settings_readings();
-        let display_storage_dirty = self.projection_overlay.poll_storage();
+        let display_storage_dirty =
+            self.projection_overlay.poll_storage() | self.close_settled_projection();
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();

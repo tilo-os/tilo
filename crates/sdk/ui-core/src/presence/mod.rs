@@ -574,6 +574,11 @@ pub struct PresenceCtx {
     /// `Cell` so containers (Scrollable) can scope-push a tighter inner
     /// viewport without needing `&mut PresenceCtx` everywhere.
     pub viewport: std::cell::Cell<Option<vello::kurbo::Rect>>,
+    /// The authority the subtree being drawn holds, scoped by whoever hands
+    /// it one (a host, a bound component) through [`Self::with_permissions`]
+    /// and read by gated widgets through [`Self::permits`]. `None` gates
+    /// nothing.
+    permissions: std::cell::RefCell<Option<crate::permissions::PermissionContext>>,
     /// Each peer's last broadcast [`ViewSubset`](crate::view::ViewSubset) —
     /// where they're looking, distinct from their cursor. Read by
     /// **attach/follow** to bind the local viewport to a chosen peer.
@@ -615,6 +620,33 @@ impl PresenceCtx {
 
     pub fn pop_viewport(&self, prev: Option<vello::kurbo::Rect>) {
         self.viewport.set(prev);
+    }
+
+    /// Draw with `permissions` as the authority gated widgets check, then
+    /// restore the outer one.
+    pub fn with_permissions<R>(
+        &self,
+        permissions: crate::permissions::PermissionContext,
+        draw: impl FnOnce() -> R,
+    ) -> R {
+        let outer = self.permissions.replace(Some(permissions));
+        let out = draw();
+        self.permissions.replace(outer);
+        out
+    }
+
+    /// Whether the authority of the subtree being drawn covers `scope`.
+    /// Outside any [`Self::with_permissions`] everything is allowed.
+    pub fn permits(&self, scope: &crate::permissions::PermissionScope) -> bool {
+        self.permissions
+            .borrow()
+            .as_ref()
+            .is_none_or(|permissions| permissions.check(scope))
+    }
+
+    /// The authority of the subtree being drawn, if anyone scoped one.
+    pub fn permission_context(&self) -> Option<crate::permissions::PermissionContext> {
+        self.permissions.borrow().clone()
     }
 }
 

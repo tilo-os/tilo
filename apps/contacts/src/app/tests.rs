@@ -13,7 +13,6 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use taffy::{AvailableSpace, Dimension, Size, Style};
 use ui::a11y::{AccessNode, Role};
-use ui::permissions::PermissionContext;
 use ui::tilo_resource::{Invoke, Replica};
 use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 use vello::kurbo::Point;
@@ -867,7 +866,6 @@ fn drive_frame(app: &mut ContactsApp, w: u32, h: u32) {
 
 fn drive_frame_with_theme(app: &mut ContactsApp, w: u32, h: u32, theme: &Theme) {
     let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
     tr.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -911,14 +909,7 @@ fn drive_frame_with_theme(app: &mut ContactsApp, w: u32, h: u32, theme: &Theme) 
     app.apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    app.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut tr,
-        theme,
-        &presence,
-        &permission,
-    );
+    app.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     // Encoding the scene is enough to exercise every draw path; the
     // GPU blit is covered by the `--shots` harness.
     let _ = &scene;

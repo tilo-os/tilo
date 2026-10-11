@@ -37,7 +37,6 @@ use winit::event::WindowEvent;
 
 use ui::framework::{EffectCx, EffectStatus, Effected, LiveRow, RunMode, SurfaceCx};
 use ui::icons::Icon;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -610,27 +609,6 @@ impl ui::widget::Decorator for WeatherApp {
         self.tick_network();
         self.nav
             .draw(scene, transform, text_renderer, theme, presence);
-        self.stage_pending_scenario();
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        self.tick_network();
-        self.nav.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
         self.stage_pending_scenario();
     }
 

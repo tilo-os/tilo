@@ -926,29 +926,6 @@ impl Widget for SettingsApp {
         self.area_reads.wake();
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        if let Some(shell) = &mut self.shell {
-            shell.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
-        }
-        self.area_reads.presented();
-        self.area_reads.wake();
-    }
-
     fn observe_physical_input(&mut self, input: ui::widget::PhysicalInput) {
         fn observe_map(widget: &mut dyn Widget, input: ui::widget::PhysicalInput) -> bool {
             if let Some(map) = widget

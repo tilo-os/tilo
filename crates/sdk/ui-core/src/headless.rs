@@ -3342,14 +3342,16 @@ impl FrameHarness {
             && self.history_layout.is_none_or(|layout| layout.app_visible)
         {
             crate::widget::native_view_frame_start(self.root.as_mut());
-            self.root.draw_with_presence(
-                &mut self.scene,
-                transform,
-                &mut self.text,
-                &self.theme,
-                &self.presence,
-                &self.permissions,
-            );
+            self.presence
+                .with_permissions(self.permissions.clone(), || {
+                    self.root.draw(
+                        &mut self.scene,
+                        transform,
+                        &mut self.text,
+                        &self.theme,
+                        &self.presence,
+                    )
+                });
         }
         if self.history_chrome_enabled {
             let context = crate::standalone_history::HistoryReadContext {

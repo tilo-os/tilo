@@ -47,15 +47,6 @@ pub(crate) trait RootModel:
         theme: &Theme,
         presence: &PresenceCtx,
     );
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui_core::permissions::PermissionContext,
-    );
     fn needs_redraw(&self) -> bool;
     fn resource_operation_handlers(&self) -> HashSet<String>;
     fn poll_resource_operation(
@@ -233,19 +224,6 @@ impl Decorator for RootWidget {
         presence: &PresenceCtx,
     ) {
         self.0.draw(scene, transform, text, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui_core::permissions::PermissionContext,
-    ) {
-        self.0
-            .draw_with_presence(scene, transform, text, theme, presence, permissions);
     }
 
     fn needs_redraw(&self) -> bool {

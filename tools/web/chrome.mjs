@@ -192,12 +192,17 @@ export async function launch({args = []} = {}) {
       const deadline = new Promise(resolve => {
         timer = setTimeout(() => resolve(false), 10_000);
       });
+      // A wedged CDP close must not consume the supervisor's cleanup budget.
+      // Request bounded termination while the original ten-second deadline
+      // still covers reaping every owned writer. Never kill the subreaper.
+      const stopOwned = supervised ? setTimeout(() => child.kill('SIGTERM'), 2_000) : null;
       let closed;
       try {
         await Promise.race([send('Browser.close'), exited, deadline]);
         closed = await Promise.race([exited.then(() => true), deadline]);
       } finally {
         clearTimeout(timer);
+        clearTimeout(stopOwned);
         ws.close();
       }
       if (!closed) {

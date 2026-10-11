@@ -1802,19 +1802,6 @@ impl Widget for ContactsApp {
         self.shell.draw(scene, transform, tr, theme, presence);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.shell
-            .draw_with_presence(scene, transform, tr, theme, presence, permissions);
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,

@@ -4338,15 +4338,13 @@ mod responsive_body_tests {
         fn draw(&mut self) {
             let theme = Theme::dark();
             let presence = ui::presence::PresenceCtx::empty();
-            let permissions = ui::permissions::PermissionContext::permissive();
             let mut scene = vello::Scene::new();
-            self.w.draw_with_presence(
+            self.w.draw(
                 &mut scene,
                 vello::kurbo::Affine::IDENTITY,
                 &mut self.tr,
                 &theme,
                 &presence,
-                &permissions,
             );
         }
 

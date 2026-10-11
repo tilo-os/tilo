@@ -23,11 +23,12 @@ starter-clear = Leeren\n";
     /// names those after the app it makes, and two templates' verbs share
     /// names, so the combined catalog would hold them twice.
     fn en_us() -> String {
-        EN_US
-            .lines()
-            .filter(|line| !line.starts_with("generated-"))
-            .map(|line| format!("{line}\n"))
-            .collect()
+        let mut catalog = String::with_capacity(EN_US.len());
+        for line in EN_US.lines().filter(|line| !line.starts_with("generated-")) {
+            catalog.push_str(line);
+            catalog.push('\n');
+        }
+        catalog
     }
 
     pub fn install() {

@@ -229,20 +229,6 @@ impl ui::widget::Decorator for SliceChart {
         self.chart.draw(scene, transform, text, theme, presence);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.prepare(theme);
-        self.chart
-            .draw_with_presence(scene, transform, text, theme, presence, permissions);
-    }
-
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         let mut node = self.chart.accessibility()?;
         for (child, row) in node

@@ -36,7 +36,7 @@ use ui::framework::{Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, 
 use ui::tilo_actions::{ActionSpec, ResourcePresentation};
 use ui::tilo_resource::Effect as _;
 use ui::widget::Widget;
-use ui::{Theme, permissions::PermissionContext, presence::PresenceCtx, text_render::TextRenderer};
+use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -1122,27 +1122,6 @@ impl Widget for StoreApp {
     ) {
         if let Some(root) = self.root.as_mut() {
             root.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        if let Some(root) = self.root.as_mut() {
-            root.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
         }
     }
 

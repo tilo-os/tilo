@@ -1513,25 +1513,6 @@ impl Widget for MonitorApp {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.shell.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -1748,12 +1729,14 @@ mod tests {
 
     /// The centre of the first widget whose test id or accessible name is
     /// `name`, or of the first accessible node naming it or holding it as
-    /// its value (a table cell).
+    /// its value (a table cell), among those on screen.
     fn center_of(harness: &FrameHarness, name: &str) -> Option<(f64, f64)> {
         fn number(value: &serde_json::Value, key: &str) -> Option<f64> {
             value.get(key)?.as_f64()
         }
-        fn find(value: &serde_json::Value, name: &str) -> Option<(f64, f64)> {
+        fn find(value: &serde_json::Value, name: &str, window: Rect) -> Option<(f64, f64)> {
+            let on_screen =
+                |(x, y): (f64, f64)| window.contains(Point::new(x, y)).then_some((x, y));
             let text = |node: &serde_json::Value, key: &str| {
                 node.get(key)
                     .and_then(serde_json::Value::as_str)
@@ -1766,26 +1749,33 @@ mod tests {
                     let r: Vec<f64> = r.iter().filter_map(serde_json::Value::as_f64).collect();
                     <[f64; 4]>::try_from(r).ok()
                 })
+                && let Some(center) = on_screen((x + w / 2.0, y + h / 2.0))
             {
-                return Some((x + w / 2.0, y + h / 2.0));
+                return Some(center);
             }
             if (text(value, "name").as_deref() == Some(name)
                 || text(value, "value").as_deref() == Some(name))
                 && let Some(bounds) = value.get("bounds").filter(|b| !b.is_null())
-            {
-                return Some((
+                && let Some(center) = on_screen((
                     f64::midpoint(number(bounds, "x0")?, number(bounds, "x1")?),
                     f64::midpoint(number(bounds, "y0")?, number(bounds, "y1")?),
-                ));
+                ))
+            {
+                return Some(center);
             }
             match value {
-                serde_json::Value::Array(values) => values.iter().find_map(|v| find(v, name)),
-                serde_json::Value::Object(values) => values.values().find_map(|v| find(v, name)),
+                serde_json::Value::Array(values) => {
+                    values.iter().find_map(|v| find(v, name, window))
+                }
+                serde_json::Value::Object(values) => {
+                    values.values().find_map(|v| find(v, name, window))
+                }
                 _ => None,
             }
         }
         let inspection = harness.inspection_json().ok()?;
-        find(&serde_json::from_str(&inspection).ok()?, name)
+        let window = harness.root::<MonitorApp>().get_rect();
+        find(&serde_json::from_str(&inspection).ok()?, name, window)
     }
 
     fn click(harness: &mut FrameHarness, name: &str) {

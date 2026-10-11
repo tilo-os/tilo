@@ -7,7 +7,6 @@ fn seed_text(wp: &mut WordProcessorWidget, state: &mut ui::State, text: &str) {
 }
 use std::fmt::Write as _;
 use ui::headless::Framed;
-use ui::permissions::PermissionContext;
 use ui::testing::Dispatch;
 
 /// Minimal, valid 2×3 RGB PNG shared by image layout, accessibility, portal,
@@ -7724,8 +7723,8 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
         );
     }
 
-    // Phase: draw_with_presence_renders_remote_caret_through_production_path.
-    // The full `draw_with_presence` path consumes a populated `PresenceCtx`
+    // Phase: draw_renders_remote_caret_through_production_path.
+    // The full `draw` path consumes a populated `PresenceCtx`
     // without panicking AND the resolver agrees — i.e. the production draw and
     // the asserted helper are the same path, not a parallel re-implementation.
     {
@@ -8480,7 +8479,6 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
     let mut renderer = ui::offscreen::OffscreenRenderer::new(w, h);
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
     for (scroll, zoom) in [(0.0, 1.0), (932.25, 0.87), (5000.5, 1.25)] {
         wp.zoom.set(zoom);
         wp.scroll_y = scroll;
@@ -8489,14 +8487,7 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
         for reference in [true, false] {
             wp.reference_text_rendering = reference;
             let mut scene = Scene::new();
-            wp.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            wp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             wp.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             geometry.push(
                 wp.laid

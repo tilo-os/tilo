@@ -12,7 +12,6 @@ use tilo_ui::permissions::{
     Access, ActionKind, Answer, AppKind, CapDecision, CapOverride, Denial, PermissionContext,
     PermissionScope, ResourceRef, Role, Scope, Subject, TreePath, UserId, policy,
 };
-use tilo_ui::widget::Widget as _;
 
 /// A viewer in the room: role only, no individual capabilities.
 fn viewer_ctx(user: &str) -> PermissionContext {
@@ -175,7 +174,7 @@ impl tilo_ui::widget::Widget for NoOpWidget {
     #[allow(
         clippy::unimplemented,
         reason = "test-only Widget stub; build_layout is never invoked by these tests (they \
-                  exercise presence_key/permission_scope/draw_with_presence default delegation)"
+                  exercise the presence_key/permission_scope defaults)"
     )]
     fn build_layout(
         &mut self,
@@ -210,33 +209,10 @@ impl tilo_ui::widget::Widget for NoOpWidget {
 }
 
 #[test]
-fn widget_defaults_carry_no_presence_or_permission_and_delegate_draw() {
-    // Case `widget_default_presence_and_permission_are_none`.
-    {
-        let w = NoOpWidget;
-        assert!(tilo_ui::presence::capability::presence_key(&w).is_none());
-        assert!(tilo_ui::permissions::capability::permission_scope(&w).is_none());
-    }
-
-    // Case `draw_with_presence_default_delegates_to_draw`.
-    {
-        // If this compiles and runs without panic, the default
-        // `draw_with_presence` implementation exists and forwards to `draw`.
-        let mut w = NoOpWidget;
-        let mut scene = vello::Scene::new();
-        let mut tr = tilo_ui::text_render::TextRenderer::new();
-        let theme = tilo_ui::theme::Theme::dark();
-        let presence = tilo_ui::presence::PresenceCtx::empty();
-        let perms = PermissionContext::permissive();
-        w.draw_with_presence(
-            &mut scene,
-            vello::kurbo::Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-            &perms,
-        );
-    }
+fn widget_defaults_carry_no_presence_or_permission() {
+    let w = NoOpWidget;
+    assert!(tilo_ui::presence::capability::presence_key(&w).is_none());
+    assert!(tilo_ui::permissions::capability::permission_scope(&w).is_none());
 }
 
 use tilo_ui::permissions::PermissionScope as PS;

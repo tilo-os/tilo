@@ -749,7 +749,7 @@ impl Widget for Slider {
         transform: Affine,
         _text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
         Slider::paint(
             scene,
@@ -761,6 +761,7 @@ impl Widget for Slider {
                 .focused(self.is_focused)
                 .disabled(!self.effectively_enabled()),
         );
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

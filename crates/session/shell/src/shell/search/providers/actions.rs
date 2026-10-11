@@ -182,6 +182,7 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "quick-settings.clipboard",
     "quick-settings.devices",
     "projection.open",
+    "projection.close",
     "capture.open",
     "collaborators.open",
     "room.activity.open",
@@ -1516,7 +1517,16 @@ impl Action {
             "search-action-projection-open",
             "search-action-projection-open-subtitle",
             |st, _| {
-                st.overlays.projection = true;
+                st.open_projection();
+                Ok(())
+            },
+        ),
+        chrome(
+            "projection.close",
+            "search-action-projection-close",
+            "search-action-projection-close-subtitle",
+            |st, _| {
+                st.close_projection();
                 Ok(())
             },
         ),
@@ -3333,21 +3343,27 @@ impl ActionsProvider {
                                 .map_err(|error| ActionError::Refused(error.to_string()))?;
                             {
                                 let mut state = chrome.borrow_mut();
-                                state.overlays.projection = true;
+                                state.open_projection_for_action();
                                 state.bump();
                             }
                             let chrome = chrome.clone();
+                            // The sheet this opened follows the stored change
+                            // and closes once it settles; a refused layout
+                            // leaves nothing to answer, so it closes at once.
                             let ticket: crate::shell::search::PendingInvocation =
-                                Rc::new(move || {
-                                    pending
-                                        .poll()
-                                        .map(|done| {
-                                            done.map(|_| {
-                                                chrome.borrow_mut().bump();
-                                                crate::shell::search::ActionReceipt::completed()
-                                            })
-                                        })
-                                        .map_err(|error| ActionError::Refused(error.to_string()))
+                                Rc::new(move || match pending.poll() {
+                                    Ok(done) => Ok(done.map(|transaction| {
+                                        let mut state = chrome.borrow_mut();
+                                        state.projection_staged(transaction.id);
+                                        state.bump();
+                                        crate::shell::search::ActionReceipt::completed()
+                                    })),
+                                    Err(error) => {
+                                        let mut state = chrome.borrow_mut();
+                                        state.projection_refused();
+                                        state.bump();
+                                        Err(ActionError::Refused(error.to_string()))
+                                    }
                                 });
                             Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
                         },

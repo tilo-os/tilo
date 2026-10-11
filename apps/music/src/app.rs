@@ -26,7 +26,6 @@ use vello::peniko::{Color, Fill};
 use std::cell::Cell;
 use std::rc::Rc;
 use ui::ImageStore;
-use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle};
