@@ -1893,20 +1893,11 @@ pub async fn serve_notifications(
     use futures_util::StreamExt;
     // Subscribe before admitting ongoing notifications. A missing bus observer
     // must fail registration rather than leave persistent orphaned notices.
-    let proxy = zbus::fdo::DBusProxy::new(&connection).await?;
-    let mut owners = proxy.receive_name_owner_changed().await?;
+    let mut gone = crate::portal::lifecycle::disconnected_peers(&connection).await?;
     let bridge = service.bridge.clone();
     tokio::spawn(async move {
-        while let Some(event) = owners.next().await {
-            let Ok(args) = event.args() else {
-                continue;
-            };
-            if args.name().as_str().starts_with(':')
-                && args.new_owner().as_ref().is_none()
-                && let Some(owner) = args.old_owner().as_ref()
-            {
-                bridge.close_ongoing_owner(owner.as_str());
-            }
+        while let Some(owner) = gone.next().await {
+            bridge.close_ongoing_owner(&owner);
         }
     });
     connection.object_server().at(OBJECT_PATH, service).await?;

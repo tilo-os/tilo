@@ -18,7 +18,10 @@ max <= 6 MB, ratcheted per app. Three gates hold it:
   request affects CI / affected packages packages (tools/ci/select.sh): the
   ones closest to a budget in the registry, at most `PULL_REQUEST_APPS`, so a
   toolkit change does not package the whole collection. Its `tapps` job
-  packages them on each architecture and runs `measure` (TIL-765).
+  packages them on each architecture and runs `measure`. A pull
+  request runs its own head's workflow file, so `--workflow` names it, and
+  `select` fails when that file has no `tapps` job: the branch predates the
+  gate and would land the apps unmeasured.
 
 `check-budget --base REV` runs in CI / fast quality without building
 anything. It fails when a budget is larger than at REV beyond what the raise
@@ -48,6 +51,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tomllib
@@ -71,6 +75,8 @@ REGISTRY = "https://apps.tilo.so/entries"
 # code grows every app by about the same bytes, so the apps closest to a
 # budget are the ones a toolkit change pushes over first.
 PULL_REQUEST_APPS = 8
+# The job of .forgejo/workflows/check.yml that packages what `select` picks.
+TAPPS_JOB = re.compile(r"^  tapps:[ \t]*(?:#.*)?$", re.MULTILINE)
 
 
 def ints(table: Any) -> dict[str, int]:
@@ -484,21 +490,42 @@ def emit(status: int, lines: list[str], summary: pathlib.Path | None) -> int:
     return status
 
 
+def runs_tapps_job(workflow: str) -> bool:
+    """Whether a check.yml defines the `tapps` job, which packages and
+    measures what `select` picks."""
+    return TAPPS_JOB.search(workflow) is not None
+
+
+def stale_workflow(chosen: list[str], workflow: pathlib.Path | None) -> str | None:
+    """Why a pull request must not run with `workflow`, its own check.yml:
+    it affects apps to measure and has no job that would measure them."""
+    if not chosen or workflow is None or runs_tapps_job(workflow.read_text(encoding="utf-8")):
+        return None
+    return ("error: this pull request affects apps whose tapps CI holds to their size budgets "
+            f"({' '.join(chosen)}), but its own .forgejo/workflows/check.yml has no `tapps` job, "
+            "so it would land them unmeasured. Merge main into the branch, or rebase it "
+            "onto main, and push.")
+
+
 def select_command(args: argparse.Namespace, budget: Budget) -> int:
     """`select`: print the apps to measure, and write them as `tapp_apps` and
-    `tapp_required` to a GitHub output file."""
+    `tapp_required` to a GitHub output file. Fails when `--workflow`, the
+    workflow file the run follows, cannot measure them."""
     try:
         published = newest_tapps(read_entries(args.entries))
     except (OSError, ValueError, KeyError) as error:
         print(f"warning: registry index {args.entries} unreadable: {error}", file=sys.stderr)
         published = None
     chosen, lines = select_apps(args.apps.split(), app_ids(), budget, published, args.limit)
-    emit(0, lines, None)
+    stale = stale_workflow(chosen, args.workflow)
+    if stale is not None:
+        lines.append(stale)
+    emit(0 if stale is None else 1, lines, None)
     if args.github_output is not None:
         with args.github_output.open("a", encoding="utf-8") as output:
             output.write(f"tapp_apps={' '.join(chosen)}\n")
             output.write(f"tapp_required={'true' if chosen else 'false'}\n")
-    return 0
+    return 0 if stale is None else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -513,6 +540,8 @@ def main(argv: list[str] | None = None) -> int:
     selected.add_argument("--limit", type=int, default=PULL_REQUEST_APPS)
     selected.add_argument("--entries", default=REGISTRY, help="registry index (https URL or file)")
     selected.add_argument("--github-output", type=pathlib.Path)
+    selected.add_argument("--workflow", type=pathlib.Path,
+                          help="the check.yml the run follows; fail when it has no tapps job")
     fleet_parser = commands.add_parser("fleet", help="the registry index against the budgets and fleet ceilings")
     fleet_parser.add_argument("entries", type=pathlib.Path)
     fleet_parser.add_argument("--summary", type=pathlib.Path)
