@@ -1150,6 +1150,13 @@ fn spawn_document_media(
     }
 }
 
+/// An owner-only socket at `path` for the tokio runtime, replacing a stale one.
+fn bind_private_socket(path: &Path) -> std::io::Result<tokio::net::UnixListener> {
+    let listener = tilo_files::native::private::bind_socket(path)?;
+    listener.set_nonblocking(true)?;
+    tokio::net::UnixListener::from_std(listener)
+}
+
 /// Bind and serve the document control socket (best-effort), using the same ACL/identity as the mount.
 fn spawn_control(
     sock: &Path,
@@ -1157,12 +1164,9 @@ fn spawn_control(
     sync: Arc<SyncHandle>,
     enforcement: fs::control::Enforcement,
 ) -> tokio::task::JoinHandle<()> {
-    let _ = std::fs::remove_file(sock); // clear a stale socket
-    match tokio::net::UnixListener::bind(sock) {
+    // The socket can read and edit every document — restrict to the owner.
+    match bind_private_socket(sock) {
         Ok(listener) => {
-            // The socket can read and edit every document — restrict to the owner.
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(sock, std::fs::Permissions::from_mode(0o600));
             println!("Document control socket at {}", sock.display());
             tokio::spawn(fs::control::serve(
                 listener,
@@ -1182,15 +1186,8 @@ fn spawn_share_control(
     socket: &Path,
     server: Arc<ShareControlServer>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    use std::os::unix::fs::PermissionsExt;
-
-    if socket.exists() {
-        std::fs::remove_file(socket)
-            .with_context(|| format!("removing stale share socket {}", socket.display()))?;
-    }
-    let listener = tokio::net::UnixListener::bind(socket)
+    let listener = bind_private_socket(socket)
         .with_context(|| format!("binding share socket {}", socket.display()))?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
     println!("Files share control socket at {}", socket.display());
     Ok(tokio::spawn(async move {
         if let Err(error) = server.serve(listener).await {
