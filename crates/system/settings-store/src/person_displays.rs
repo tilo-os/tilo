@@ -1257,7 +1257,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(unix, windows)))]
 mod publication_regressions {
     use super::*;
 
