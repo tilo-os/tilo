@@ -49,8 +49,8 @@
 //!   `let mut all = mine; all.extend(self.inner().resources(doc)); all`.
 //! * **Override the host's entry point.** Some [`Widget`] defaults are
 //!   derived from another method (`draw_with_presence` calls `draw`,
-//!   `perform_action_at` calls `perform_action`, `tooltip_target_at` calls
-//!   `tooltip`, `collect_damage` calls `needs_redraw`). Here each forwards to the inner
+//!   `tooltip_target_at` calls `tooltip`, `collect_damage` calls
+//!   `needs_redraw`). Here each forwards to the inner
 //!   widget's own method, so an override of the derived-from method alone is
 //!   not what the host calls: override the entry point the host uses
 //!   (`draw_with_presence` for painting in a live frame, and `draw` for
@@ -456,21 +456,12 @@ pub trait Decorator: Sized + 'static {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        self.inner_mut().perform_action(action, state, path)
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.inner_mut()
-            .perform_action_at(action, key_path, state, path)
+            .perform_action(action, key_path, state, path)
     }
 
     fn perform_semantic_action(
@@ -638,6 +629,14 @@ pub trait Decorator: Sized + 'static {
 
     fn take_structure_dirty(&mut self) -> bool {
         self.inner_mut().take_structure_dirty()
+    }
+
+    /// A decorator's structure flag is its own [`Decorator::take_structure_dirty`]
+    /// (which may add flags of its own), so by default it says
+    /// [`super::StructureChange::Rebuild`]; one that adds no flags forwards
+    /// its inner widget's change by overriding this.
+    fn take_structure_change(&mut self) -> super::StructureChange {
+        super::StructureChange::of(Decorator::take_structure_dirty(self))
     }
 
     fn has_pending_visual_work(&self) -> bool {
@@ -1102,20 +1101,11 @@ impl<T: Decorator> Widget for T {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        Decorator::perform_action(self, action, state, path)
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        Decorator::perform_action_at(self, action, key_path, state, path)
+        Decorator::perform_action(self, action, key_path, state, path)
     }
 
     fn perform_semantic_action(
@@ -1281,6 +1271,10 @@ impl<T: Decorator> Widget for T {
 
     fn take_structure_dirty(&mut self) -> bool {
         Decorator::take_structure_dirty(self)
+    }
+
+    fn take_structure_change(&mut self) -> super::StructureChange {
+        Decorator::take_structure_change(self)
     }
 
     fn has_pending_visual_work(&self) -> bool {

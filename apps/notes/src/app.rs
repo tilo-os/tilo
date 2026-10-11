@@ -2452,9 +2452,15 @@ impl Widget for NotesApp {
         // this the new block gets no taffy node and isn't laid out. The
         // shell's flag too: a drawer opening or the window crossing the
         // breakpoint changes which columns exist.
-        let editor = self.main.take_structure_dirty();
-        let shell = self.shell.take_structure_dirty();
-        editor || shell
+        self.take_structure_change().rebuilds()
+    }
+
+    /// The main panel says whether its change is described (a header that
+    /// rebuilt its widgets); the shell's columns changing is a rebuild.
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        let main = self.main.take_structure_change();
+        let shell = self.shell.take_structure_change();
+        main.join(shell)
     }
 
     fn build_layout(
@@ -3859,6 +3865,7 @@ mod tests {
             );
             assert!(app.main.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));

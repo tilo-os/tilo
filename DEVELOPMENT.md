@@ -491,7 +491,8 @@ out.
 
 An engine one app uses moves out of the runtime into an engine library of its
 own: a crate under `crates/runtime/engines/<name>/` that is a Rust
-`dylib` chained on the runtime (Typst: `libtilo_typst_engine.so`). It is signed
+`dylib` chained on the runtime (Typst: `libtilo_typst_engine.so` for Typst
+Editor; Spotify playback: `libtilo_spotify_engine.so` for Music). It is signed
 into the runtime bundle beside `libruntime_dylib.so`, so the runtime's id,
 signature and verity cover it, but only its app names it `DT_NEEDED`; every
 other app no longer maps or relocates it. The conventions the build relies on:
@@ -506,8 +507,8 @@ other app no longer maps or relocates it. The conventions the build relies on:
 - `tools/ci/rustc-thin-app-wrapper.sh` gives `tilo_*_engine` crates the
   runtime's link flags (`-C prefer-dynamic` is what lets one Rust dylib link
   another);
-- the app links the engine under a feature of its own (Typst Editor's
-  `runtime-engine`), named in `dist/apps/app-collections.toml`, the
+- the app links the engine under a feature of its own (`runtime-engine` in
+  Typst Editor and Music), named in `dist/apps/app-collections.toml`, the
   Containerfile's `APP_FEATURES` and `os/components.toml`; without it the app
   links the engine's crates statically, as `tilo-app dev` does;
 - the engine's crates go into the surface check's `ENGINES`. They must also
@@ -518,8 +519,10 @@ other app no longer maps or relocates it. The conventions the build relies on:
   `.config/hakari.toml` instead fails `cargo hakari verify`.
 
 Release / apps reports each engine's bytes, relocations and dirtied pages
-beside the runtime's, fails when an app of `apps_without_media` loads one, and
-renders Typst Editor through its engine.
+beside the runtime's, fails when an app of `apps_without_media` loads one,
+renders Typst Editor through its engine and runs Music's Spotify engine
+(`music --probe-spotify-engine`, librespot's code without an account,
+network or audio device).
 
 ## OS image size
 

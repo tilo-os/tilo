@@ -71,6 +71,7 @@ impl AppNoticeCard {
         let path = automerge::ROOT;
         self.perform_action(
             &ui::a11y::Action::Activate,
+            &[],
             &mut ui::widget::Edits::lend(&mut state),
             &path,
         );
@@ -140,10 +141,11 @@ impl Widget for AppNoticeCard {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let performed = self.card.perform_action(action, state, path);
+        let performed = self.card.perform_action(action, &[], state, path);
         self.forward_action();
         performed
     }

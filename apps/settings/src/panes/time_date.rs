@@ -523,6 +523,7 @@ impl Widget for TimeZoneMap {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         _state: &mut ui::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -1197,12 +1198,14 @@ mod tests {
             let root = ui::automerge::ROOT;
             assert!(map.perform_action(
                 &ui::a11y::Action::SetValue("Europe/Berlin".to_string()),
+                &[],
                 &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             ));
             assert_eq!(map.selected, "Europe/Berlin");
             assert!(!map.perform_action(
                 &ui::a11y::Action::SetValue("Mars/Olympus_Mons".to_string()),
+                &[],
                 &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             ));

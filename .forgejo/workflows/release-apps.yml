@@ -789,6 +789,41 @@ jobs:
             || { echo "typst-editor typeset without loading libtilo_typst_engine.so itself: ${arrival:-not loaded}" >&2; exit 1; }
           printf 'typst-editor typeset its first document through %s\n' "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
           rm -rf "$runtime"
+      # Spotify playback lives in its own engine library beside the runtime.
+      # Music's --probe-spotify-engine runs librespot's code without an
+      # account, network or audio device; the loader's trace says that Music,
+      # not the runtime, brought the engine in.
+      - name: Music runs Spotify playback from its engine library
+        # Each measurement below gates on its own subject: a tapp over its
+        # budget must not hide the runtime's numbers, or the reverse.
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -x target/thin-app/music ]]; then
+            echo "music is not among this run's apps; no Spotify engine to run" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          grep -Fxq libtilo_spotify_engine.so target/thin-app/runtime-engines \
+            || { echo "build-thin-apps.sh did not list libtilo_spotify_engine.so" >&2; exit 1; }
+          libdir=$(rustc --print target-libdir)
+          runtime=$(mktemp -d)
+          chmod 700 "$runtime"
+          status=0
+          XDG_RUNTIME_DIR=$runtime LD_LIBRARY_PATH="target/thin-app:$libdir" LD_DEBUG=files \
+            timeout 120 target/thin-app/music --probe-spotify-engine check \
+            >"$runtime/out.log" 2>"$runtime/loader.log" </dev/null || status=$?
+          if (( status != 0 )); then
+            grep -v -e 'file=' -e 'calling' "$runtime/loader.log" | tail -40 >&2 || true
+            echo "music could not run its Spotify engine (exit $status)" >&2
+            exit 1
+          fi
+          arrival=$(grep -Eo 'file=libtilo_spotify_engine\.so \[0\];  needed by [^ ]*' \
+            "$runtime/loader.log" | head -1 || true)
+          [[ $arrival == *music* ]] \
+            || { echo "music ran Spotify playback without loading libtilo_spotify_engine.so itself: ${arrival:-not loaded}" >&2; exit 1; }
+          printf '%s\nthrough %s\n' "$(cat "$runtime/out.log")" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
+          rm -rf "$runtime"
       - name: Generate unpublished receipt with canonical verifiers
         # Runs for publish=false too. Uses tools compiled by package-apps.sh;
         # adds no build, credentials, registry write or channel promotion.

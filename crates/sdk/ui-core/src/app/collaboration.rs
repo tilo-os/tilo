@@ -1199,7 +1199,7 @@ impl App {
                 Some(crate::permissions::UserId(from_user_id.to_string())),
             );
             self.needs_sync = true;
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         }
     }
 

@@ -438,16 +438,6 @@ impl Widget for SpeedTestApp {
         None
     }
 
-    fn perform_action_at(
-        &mut self,
-        _action: &ui::a11y::Action,
-        _path: &[u64],
-        _state: &mut ui::widget::Edits<'_>,
-        _model: &ui::widget::ModelPath,
-    ) -> bool {
-        false
-    }
-
     fn name(&self) -> &'static str {
         "SpeedTestApp"
     }

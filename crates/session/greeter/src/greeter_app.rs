@@ -2444,6 +2444,7 @@ mod tests {
         assert!(
             control.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut ui::widget::Edits::lend(doc),
                 &automerge::ROOT
             ),

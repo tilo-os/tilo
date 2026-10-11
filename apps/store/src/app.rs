@@ -4521,6 +4521,7 @@ mod tests {
                     assert_eq!(
                         primary.perform_action(
                             &ui::a11y::Action::Activate,
+                            &[],
                             &mut ui::widget::Edits::lend(&mut doc),
                             &automerge::ROOT
                         ),
@@ -4635,6 +4636,7 @@ mod tests {
                 .expect("failure offers the real catalogue refresh control");
             assert!(retry.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut ui::widget::Edits::lend(&mut state),
                 &automerge::ROOT,
             ));

@@ -1863,6 +1863,7 @@ impl Widget for Dropdown {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
@@ -1917,7 +1918,7 @@ impl Widget for Dropdown {
         self.action.is_none()
             && self.on_change.is_none()
             && target == self.test_id().unwrap_or("dropdown")
-            && self.perform_action(action, state, root)
+            && self.perform_action(action, &[], state, root)
     }
 
     // An open selector is a foreground query/list, so navigation containers
@@ -2544,6 +2545,7 @@ mod tests {
         assert!(Widget::perform_action(
             &mut dropdown,
             &crate::a11y::Action::SetValue("second".into()),
+            &[],
             &mut crate::widget::Edits::lend(&mut document),
             &root
         ));
@@ -2551,6 +2553,7 @@ mod tests {
         assert!(!Widget::perform_action(
             &mut dropdown,
             &crate::a11y::Action::SetValue("foreign".into()),
+            &[],
             &mut crate::widget::Edits::lend(&mut document),
             &root
         ));
@@ -2676,6 +2679,7 @@ mod tests {
         assert!(Widget::perform_action(
             &mut dropdown,
             &crate::a11y::Action::Expand,
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
@@ -3314,6 +3318,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &crate::a11y::Action::SetValue(String::from("Europe/Amsterdam")),
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
@@ -3404,6 +3409,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &Action::Expand,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
@@ -3411,6 +3417,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &Action::Collapse,
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
@@ -3418,6 +3425,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut dropdown,
                 &Action::SetValue(String::from("not an option")),
+                &[],
                 &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
@@ -3524,6 +3532,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &crate::a11y::Action::SetValue("Asia/Tokyo".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

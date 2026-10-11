@@ -211,7 +211,7 @@ pub struct WindowGroup {
     strip_usable_px: f64,
     rect: Rect,
     /// `(press-time cursor x, press-time resolved width in px)`.
-    resize_origin: Option<(f32, f64)>,
+    resize_origin: Option<(f32, f64, WindowWidth)>,
     pub hover_resize: bool,
     /// The pointer entered or left the resize band since the last frame,
     /// which shows or hides the grip.
@@ -661,11 +661,12 @@ impl WindowGroup {
         } else {
             self.layout_width_px()
         };
+        let width = self.width;
         self.set_width_px(visible_width);
-        self.resize_origin = Some((pointer_x, visible_width));
+        self.resize_origin = Some((pointer_x, visible_width, width));
     }
     pub fn update_resize(&mut self, pointer_x: f32) {
-        if let Some((origin_x, origin_w)) = self.resize_origin {
+        if let Some((origin_x, origin_w, _)) = self.resize_origin {
             let delta = f64::from(pointer_x - origin_x);
             let usable = self.strip_usable_px;
             let clamped = (origin_w + delta).clamp(min_group_px(usable), max_group_px(usable));
@@ -675,6 +676,15 @@ impl WindowGroup {
     pub fn end_resize(&mut self) {
         self.resize_origin = None;
         self.pending_width_change = Some(self.width.permille());
+    }
+
+    /// An interrupted edge drag is a preview, not a committed view change.
+    fn cancel_resize(&mut self) {
+        if let Some((_, _, width)) = self.resize_origin.take() {
+            self.set_width(width);
+            self.hover_resize = false;
+            self.grip_dirty = true;
+        }
     }
 
     /// Does NOT touch `resize_origin` — the inter-group handle owns its
@@ -1395,6 +1405,20 @@ impl WindowGroup {
         handle_rect: Rect,
     ) -> bool {
         match event {
+            WindowEvent::Focused(false) if self.resize_origin.is_some() => {
+                self.cancel_resize();
+                // Focus loss must still reach the tab and application so
+                // their own pending input is cancelled too.
+                false
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if self.resize_origin.is_some()
+                    && event.state == ElementState::Pressed
+                    && event.logical_key == Key::Named(winit::keyboard::NamedKey::Escape) =>
+            {
+                self.cancel_resize();
+                true
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = pt;
@@ -3972,6 +3996,121 @@ mod tests {
                 "restore must invalidate the cached maximized geometry",
             );
         }
+    }
+
+    struct EdgeResizeJourney {
+        row: crate::widget::GroupRow,
+        tree: TaffyTree<()>,
+        node: NodeId,
+        pointer: Point,
+    }
+
+    impl EdgeResizeJourney {
+        fn new() -> Self {
+            use taffy::prelude::TaffyMaxContent;
+
+            let mut row = crate::widget::GroupRow::new(vec![make_group()]);
+            let mut tree = TaffyTree::new();
+            let node = row.build_layout(
+                &mut tree,
+                &Theme::dark().with_reduce_motion(true),
+                &mut Default::default(),
+            );
+            let root = tree.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(900.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            );
+            tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+            row.apply_layout(&tree, node, Point::ZERO);
+            let rect = row.groups[0].get_rect();
+            assert!(rect.height() > 0.0);
+            Self {
+                row,
+                tree,
+                node,
+                pointer: Point::new(rect.x1 - 3.0, rect.center().y),
+            }
+        }
+
+        fn send(&mut self, event: &WindowEvent) -> bool {
+            Dispatch::new()
+                .layout(&self.tree, self.node)
+                .send(&mut self.row, event)
+                .handled
+        }
+
+        fn move_pointer(&mut self, dx: f64) {
+            self.send(&WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(self.pointer.x + dx, self.pointer.y),
+            });
+        }
+
+        fn mouse(&mut self, state: ElementState) {
+            self.send(&WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state,
+                button: MouseButton::Left,
+            });
+        }
+
+        fn begin(&mut self) {
+            self.move_pointer(0.0);
+            self.mouse(ElementState::Pressed);
+            assert!(self.row.wants_pointer_capture());
+            self.move_pointer(100.0);
+            assert_ne!(self.row.groups[0].width(), WindowWidth::Normal);
+            assert!(self.row.groups[0].take_pending_width_change().is_none());
+        }
+
+        fn assert_cancelled_and_restart(&mut self) {
+            assert!(
+                !self.row.wants_pointer_capture(),
+                "interruption must release capture"
+            );
+            assert_eq!(self.row.groups[0].width(), WindowWidth::Normal);
+            self.move_pointer(250.0);
+            self.mouse(ElementState::Released);
+            assert_eq!(self.row.groups[0].width(), WindowWidth::Normal);
+            assert!(self.row.groups[0].take_pending_width_change().is_none());
+            self.begin();
+            self.mouse(ElementState::Released);
+            assert!(!self.row.wants_pointer_capture());
+            assert!(self.row.groups[0].take_pending_width_change().is_some());
+            assert!(self.row.groups[0].take_pending_width_change().is_none());
+        }
+    }
+
+    #[test]
+    fn window_edge_resize_focus_loss_cancels_preview_and_allows_a_fresh_drag() {
+        let mut journey = EdgeResizeJourney::new();
+        journey.begin();
+        journey.send(&WindowEvent::Focused(false));
+        journey.assert_cancelled_and_restart();
+    }
+
+    #[test]
+    fn window_edge_resize_escape_cancels_preview_before_a_late_release() {
+        let mut journey = EdgeResizeJourney::new();
+        journey.begin();
+        let escape = WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: crate::synthetic_input::key_event(
+                Key::Named(winit::keyboard::NamedKey::Escape),
+                None,
+                ElementState::Pressed,
+            ),
+            is_synthetic: true,
+        };
+        assert!(journey.send(&escape));
+        journey.send(&escape);
+        journey.assert_cancelled_and_restart();
     }
 
     #[test]

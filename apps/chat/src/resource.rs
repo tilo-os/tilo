@@ -1060,6 +1060,20 @@ mod tests {
     }
 
     #[test]
+    fn stopping_shared_context_wakes_the_native_presentation() {
+        let mut app = TestApp::<ChatShell>::capture(Some("live-context")).unwrap();
+        assert!(app.surface_mut::<crate::ChatApp>().sharing_context);
+        assert!(!app.harness().root_widget().needs_redraw());
+        app.surface_mut::<crate::ChatApp>()
+            .answer_effect(crate::effects::ChatEffect::StopSharingLiveContext)
+            .unwrap();
+        assert!(
+            app.harness().root_widget().needs_redraw(),
+            "semantic Stop must schedule its privacy indicator and withdrawn view frame"
+        );
+    }
+
+    #[test]
     fn shared_space_context_consent_is_local_and_relaunch_starts_private() {
         let mut app = TestApp::<ChatShell>::new().unwrap();
         app.call("share-live-context", serde_json::json!({}))

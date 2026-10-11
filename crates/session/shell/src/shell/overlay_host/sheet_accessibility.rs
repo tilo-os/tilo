@@ -296,7 +296,7 @@ impl ShellOverlayHost {
             };
             return Some(match action {
                 Action::ScrollIntoView => true,
-                _ => ui::widget::Widget::perform_action_at(picker, action, &keys, state, path),
+                _ => ui::widget::Widget::perform_action(picker, action, &keys, state, path),
             });
         }
         let rest = target.strip_prefix(WIFI_PASSWORD_PREFIX)?;

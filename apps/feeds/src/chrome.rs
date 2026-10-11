@@ -163,10 +163,11 @@ impl ui::widget::Decorator for ScaleField {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let handled = Widget::perform_action(&mut self.input, action, state, path);
+        let handled = Widget::perform_action(&mut self.input, action, &[], state, path);
         self.report();
         handled
     }
