@@ -881,13 +881,28 @@ pub fn apply_tab_move(
     dst_strip: StripId,
     moved: &TabMove,
 ) -> bool {
-    let before = doc.clone();
-    if try_apply_tab_move(doc, src_strip, dst_strip, moved).is_some() {
-        true
-    } else {
-        *doc = before;
-        false
+    all_or_nothing(doc, |doc| {
+        try_apply_tab_move(doc, src_strip, dst_strip, moved)
+    })
+}
+
+/// Run `edit`, leaving `doc` as it was when it gives up: its operations are
+/// rolled back when they are the only uncommitted ones, else `doc` is
+/// restored from a copy.
+fn all_or_nothing(doc: &mut AutoCommit, edit: impl FnOnce(&mut AutoCommit) -> Option<()>) -> bool {
+    if doc.pending_ops() == 0 {
+        let done = edit(doc).is_some();
+        if !done {
+            doc.rollback();
+        }
+        return done;
     }
+    let before = doc.clone();
+    let done = edit(doc).is_some();
+    if !done {
+        *doc = before;
+    }
+    done
 }
 
 fn try_apply_tab_move(
@@ -961,8 +976,7 @@ pub fn move_group(
     group: &WindowGroup,
     index: usize,
 ) -> bool {
-    let before = doc.clone();
-    let moved = (|| {
+    all_or_nothing(doc, |doc| {
         let (_, strip_entry, _) = strip_entries(doc)
             .into_iter()
             .find(|(id, _, _)| *id == strip_id.raw())?;
@@ -972,11 +986,7 @@ pub fn move_group(
         let index = index.min(doc.length(&groups));
         insert_group(doc, &groups, index, group);
         Some(())
-    })();
-    if moved.is_none() {
-        *doc = before;
-    }
-    moved.is_some()
+    })
 }
 
 /// Replace one strip's group list with `groups`, leaving the rest of the
