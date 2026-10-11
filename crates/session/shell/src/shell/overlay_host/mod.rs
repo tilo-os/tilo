@@ -1068,9 +1068,6 @@ pub enum PeerSyncAction {
         request_id: u64,
         action: Box<PeerSyncAction>,
     },
-    /// User invoked `/invite`. The compositor calls
-    /// `ShellNetwork::issue_invite` and puts the token on the clipboard.
-    IssueInvite,
     /// Mint an invite for `name`, copying it to the clipboard when
     /// `copy`. The name is written into the room document once the
     /// invitee turns up — it never rides inside the token itself.
@@ -1203,31 +1200,6 @@ fn instant_capture(
         recording_command: None,
         replay_command: None,
         screenshot_command: None,
-    }
-}
-
-fn icon_for_kind(kind: &crate::shell::search::ResourceKind) -> ui::icons::Icon {
-    use crate::shell::search::ResourceKind as K;
-    use ui::icons::Icon;
-    match kind {
-        K::Action => Icon::Settings2,
-        K::Application => Icon::LayoutGrid,
-        // Deliberately *not* the applications glyph. A host app is not
-        // one of Tilo's — it runs unconfined, outside everything the
-        // grid stands for — and the row has to look different at a
-        // glance, not only read differently.
-        K::HostApplication => Icon::ExternalLink,
-        K::Note => Icon::FileText,
-        // A record is one document several rooms can reach — the stacked
-        // plates say "this is the same thing in more than one place",
-        // which is exactly what a reference is.
-        K::Record => Icon::Layers,
-        K::File => Icon::File,
-        K::Folder => Icon::Folder,
-        K::Creator => Icon::Star,
-        K::Video => Icon::Film,
-        K::Playlist => Icon::List,
-        K::Tab | K::WindowGroup | K::Custom(_) => Icon::Search,
     }
 }
 
@@ -3818,11 +3790,6 @@ impl ShellOverlayHost {
                 action => (None, action),
             };
             let result = match action {
-                PeerSyncAction::IssueInvite => {
-                    let request = self.peer_sync_overlay.issue_invite_request();
-                    self.run_peer_sync_request(&request, false);
-                    Ok(serde_json::Value::Null)
-                }
                 PeerSyncAction::IssueInviteFor { name, copy } => {
                     let _ = copy;
                     self.open_invite_manager();
@@ -3902,9 +3869,7 @@ impl ShellOverlayHost {
             .finish_typed_request(request, outcome, copy_result);
         if matches!(
             request,
-            PeerSyncRequest::IssueInvite
-                | PeerSyncRequest::IssueInviteFor { .. }
-                | PeerSyncRequest::CancelInvitation(_)
+            PeerSyncRequest::IssueInviteFor { .. } | PeerSyncRequest::CancelInvitation(_)
         ) {
             self.refresh_pending_invitations();
         }
@@ -8234,7 +8199,7 @@ impl ShellOverlayHost {
                 let mut e = CommandEntry::new(format!("result:{idx}"), r.title.clone())
                     .group(label.clone())
                     .group_total(group.total)
-                    .icon(icon_for_kind(&r.kind));
+                    .icon(ui::search::system::icon_for_kind(&r.kind));
                 // The unconfined-host glyph stays the fallback; the app's own
                 // artwork is what a person recognises it by. Window rows wear
                 // the same tile face as the tab strip, not the magnifier.
@@ -9019,30 +8984,6 @@ impl ShellOverlayHost {
                     self.palette_visible = true;
                     return;
                 }
-            }
-            self.palette_visible = false;
-            self.palette.close();
-            return;
-        }
-        // Legacy id-based dispatch for peer-sync rows, which enqueue an
-        // action drained by `take_peer_sync_actions`.
-        if id.starts_with("peer:") {
-            match id.as_str() {
-                "peer:invite" => {
-                    if let Some(chrome) = &self.chrome {
-                        chrome
-                            .borrow_mut()
-                            .push_peer_sync_request(PeerSyncAction::IssueInvite);
-                    }
-                }
-                "peer:connect" => {
-                    if let Some(chrome) = &self.chrome {
-                        chrome
-                            .borrow_mut()
-                            .push_peer_sync_request(PeerSyncAction::PromptConnect);
-                    }
-                }
-                _ => {}
             }
             self.palette_visible = false;
             self.palette.close();
@@ -9875,90 +9816,6 @@ impl ShellOverlayHost {
     /// theme's typography token.
     pub fn overview_header_font_size(&self, theme: &Theme) -> f32 {
         Self::overview_header_font_size_for(&theme.tokens)
-    }
-
-    /// Dispatches the shell action for a palette command id, then closes
-    /// the palette (even on an unknown id, to avoid a stale overlay).
-    // No production caller routes a selection here, so `/invite` and
-    // `/connect` are inert even under --enable-peer-sync. Kept as the
-    // only definition of what those commands do; tests pin the contract.
-    #[allow(
-        dead_code,
-        reason = "Tests exercise this palette command contract while production palette selection has no caller for this dispatcher."
-    )]
-    pub(crate) fn dispatch_palette_command(&mut self, id: &str) -> bool {
-        // Peer-sync rows enqueue an action for the compositor to drain
-        // (Iroh stays on the runtime thread) rather than mutating
-        // chrome directly. Ignored when the flag is off, in case a stale
-        // palette row survives a toggle.
-        if self.peer_sync_enabled {
-            match id {
-                "peer.invite" => {
-                    if let Some(chrome) = &self.chrome {
-                        chrome
-                            .borrow_mut()
-                            .push_peer_sync_request(PeerSyncAction::IssueInvite);
-                    }
-                    self.palette_visible = false;
-                    self.palette.close();
-                    return true;
-                }
-                "peer.connect" => {
-                    if let Some(chrome) = &self.chrome {
-                        chrome
-                            .borrow_mut()
-                            .push_peer_sync_request(PeerSyncAction::PromptConnect);
-                    }
-                    self.palette_visible = false;
-                    self.palette.close();
-                    return true;
-                }
-                _ => {}
-            }
-        }
-
-        let matched = if let Some(chrome) = self.chrome.clone() {
-            let mut st = chrome.borrow_mut();
-            let hit = match id {
-                "overview.toggle" => {
-                    st.overlays.overview = !st.overlays.overview;
-                    true
-                }
-                "settings.open" => {
-                    st.overlays.ws_settings = true;
-                    true
-                }
-                "quick-settings.open" => {
-                    st.overlays.quick_settings = true;
-                    true
-                }
-                "projection.open" => {
-                    st.open_projection();
-                    true
-                }
-                "capture.open" => {
-                    st.overlays.capture = true;
-                    true
-                }
-                // `search.open` is a no-op: the palette is already open
-                // when the user reaches this row. We close it below like
-                // the other commands so behaviour is consistent.
-                "search.open" => true,
-                _ => false,
-            };
-            if hit {
-                st.bump();
-            }
-            hit
-        } else {
-            false
-        };
-        if matched && id == "overview.toggle" {
-            self.latch_overview_transition();
-        }
-        self.palette_visible = false;
-        self.palette.close();
-        matched
     }
 
     fn overview_header_font_size_for(tokens: &ui::tokens::Tokens) -> f32 {

@@ -162,9 +162,12 @@ fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> String {
     zone.parse::<chrono_tz::Tz>().map_or_else(
         |_| "Time unavailable".into(),
         |z| {
-            now.with_timezone(&z)
-                .format("%H:%M on %a %-d %b (%Z, UTC%:z)")
-                .to_string()
+            let there = now.with_timezone(&z);
+            format!(
+                "{} on {}",
+                ui::clock::time_of_day(&there),
+                there.format("%a %-d %b (%Z, UTC%:z)")
+            )
         },
     )
 }
@@ -286,7 +289,7 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
                                     .with_intrinsic_height()
                                     .with_rhythm(ui::tokens::Rhythm::Tight)
                                     .push(Box::new(
-                                        Text::new(&here.format("%H:%M").to_string())
+                                        Text::new(&ui::clock::time_of_day(&here))
                                             .with_role(ui::TextRole::Display),
                                     ))
                                     .push(Box::new(
@@ -348,7 +351,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
             let repeat = repeat_summary(&alarm.weekdays());
             let row = Row::new()
                 .push(Box::new(
-                    Text::new(&alarm.local_time().format("%H:%M").to_string())
+                    Text::new(&ui::clock::time_of_day(&alarm.local_time()))
                         .with_role(ui::TextRole::LargeTitle),
                 ))
                 .push(Box::new(

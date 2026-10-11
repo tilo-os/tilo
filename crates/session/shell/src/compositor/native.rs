@@ -730,9 +730,9 @@ struct LockClock {
 
 impl LockClock {
     fn now() -> Self {
-        let now = chrono::Local::now();
+        let now = ui::clock::local_now();
         Self {
-            clock: now.format("%H:%M").to_string(),
+            clock: ui::clock::time_of_day(&now),
             date: now.format("%A, %B %-d").to_string(),
         }
     }
@@ -4518,9 +4518,16 @@ fn write_snapshot_png(
                 }
             }
         }
-        let Some(rgba) = slot.as_mut().map(|renderer| renderer.render_rgba(&scene)) else {
+        // A shot is one render with no next frame to repair it, so it waits
+        // out Vello growing its buffers: one that did not fit drops the paths
+        // encoded last, and the scene draws every display in turn, so the
+        // second display came back empty while the first looked whole.
+        let Some(rendered) = slot.as_mut().map(|renderer| {
+            renderer.try_render_resilient(&scene, vello::peniko::Color::TRANSPARENT)
+        }) else {
             return Err("no offscreen renderer".to_string());
         };
+        let rgba = rendered?;
         // `rgba` is now an owned buffer with no tie to the renderer, so the
         // mutex guard can go before the encode/write work below.
         drop(slot);
@@ -7264,9 +7271,6 @@ fn install_session_peer_sync(
             let active = tree_handle.read().desktop.active;
             match req {
                 PeerSyncRequest::PrepareInvitation => Ok(bridge_net.prepare_invitation()),
-                PeerSyncRequest::IssueInvite => bridge_net
-                    .issue_invite(active, INVITE_EXPIRY_SECONDS)
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
                 PeerSyncRequest::ExportIdentity => bridge_net
                     .person_identity_card(active)
                     .map(crate::shell::overlay_host::PeerSyncResponse::Message),

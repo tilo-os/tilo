@@ -325,6 +325,27 @@ pub fn published_search_providers(
     crate::bound_dispatch::search_providers(widget)
 }
 
+/// The first widget of `root`'s subtree, `root` included, whose
+/// [`Widget::test_id`] is `id`.
+pub fn find_test_id<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+    if root.test_id() == Some(id) {
+        return Some(root);
+    }
+    root.children()
+        .into_iter()
+        .find_map(|child| find_test_id(child, id))
+}
+
+/// [`find_test_id`] for a widget to change.
+pub fn find_test_id_mut<'a>(root: &'a mut dyn Widget, id: &str) -> Option<&'a mut dyn Widget> {
+    if root.test_id() == Some(id) {
+        return Some(root);
+    }
+    root.children_mut()
+        .into_iter()
+        .find_map(|child| find_test_id_mut(child, id))
+}
+
 /// Test traversal probe; production callers retain bound provenance.
 #[cfg(test)]
 pub(crate) fn resolve_widget_resource(
@@ -2260,6 +2281,17 @@ pub trait Widget {
         if self.needs_redraw() {
             regions.push(self.get_rect());
         }
+    }
+
+    /// Whether, after this frame's draw, this widget's own
+    /// [`Self::collect_damage`] covers every pixel a relayout changed by
+    /// moving or resizing its layout box: a host that repaints where moved
+    /// widgets were and are may then leave this widget's box to it (its
+    /// children's boxes still count). A block editor that grew by a
+    /// paragraph says where its blocks were and are; the default does not
+    /// claim it.
+    fn damage_covers_own_box(&self) -> bool {
+        false
     }
 
     /// Called after this widget's scene lands in the composed frame, to

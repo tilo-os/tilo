@@ -1931,16 +1931,6 @@ fn manager_run(args: &[&str], timeout: Duration) -> Result<bounded_command::Outp
     })
 }
 
-fn manager_diagnostic(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
-        .take(512)
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
 #[derive(Clone)]
 struct HostedFieldBuffers {
     label: Arc<Mutex<String>>,
@@ -2193,7 +2183,7 @@ impl LocalModelControl for ModelManagerCli {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
         let output = manager_run(&["snapshot", "--format", "json"], Duration::from_secs(10))?;
         if !output.status.success() {
-            return Err(manager_diagnostic(&output.stderr));
+            return Err(output.stderr_diagnostic());
         }
         serde_json::from_slice(&output.stdout)
             .map_err(|error| format!("model service returned invalid status: {error}"))

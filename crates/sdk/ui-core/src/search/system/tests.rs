@@ -335,3 +335,37 @@ fn a_narrow_band_keeps_one_row_and_a_more_chip() {
         assert!(rect.area() > 0.0, "overflow kind {idx} is clickable");
     }
 }
+
+#[test]
+fn exact_title_outranks_prefix_across_kinds() {
+    let exact = lexical_strength("sheets", &ResourceKind::Note, "Sheets", None);
+    let prefix = lexical_strength("sheets", &ResourceKind::Note, "Sheets budget", None);
+    let subtitle = lexical_strength("sheets", &ResourceKind::Note, "Budget", Some("Sheets"));
+    assert!(exact > prefix && prefix > subtitle && subtitle > 0.0);
+}
+
+#[test]
+fn launch_verb_does_not_weaken_an_application_title() {
+    assert!(
+        (lexical_strength("sheets", &ResourceKind::Application, "Open Sheets", None) - 4.0).abs()
+            < f32::EPSILON
+    );
+}
+
+#[test]
+fn perfect_application_match_beats_an_exact_note_of_the_same_word() {
+    let strength = |kind, title| {
+        merged_strength(
+            "sheets",
+            &kind,
+            title,
+            None,
+            MAX_PROVIDER_SCORE,
+            MAX_PROVIDER_SCORE,
+            0.0,
+        )
+    };
+    assert!(
+        strength(ResourceKind::Application, "Open Sheets") > strength(ResourceKind::Note, "Sheets")
+    );
+}

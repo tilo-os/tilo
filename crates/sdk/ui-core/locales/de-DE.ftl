@@ -476,3 +476,12 @@ display-arrangement-excluded = Nicht im Layout
 display-arrangement-offline-excluded = Offline · Nicht im Layout
 display-arrangement-item-status = { $position }; { $status }
 display-arrangement-caption-status = { $status } · { $name }
+
+# Suche: Einstiegsgruppen in der leeren Anwendungsliste
+search-apps-group-start-here = Zum Einstieg
+search-apps-group-everyday = Alltag
+search-apps-group-work = Arbeit
+search-apps-group-media = Medien
+search-apps-group-system-tools = Systemwerkzeuge
+search-apps-group-more-apps = Weitere Apps
+search-apps-group-developer-tools = Entwicklerwerkzeuge

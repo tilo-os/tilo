@@ -19,6 +19,7 @@ pub(super) struct Reads(
 /// at its next poll.
 #[derive(Default)]
 struct Progress {
+    closed: AtomicBool,
     changes: std::sync::Mutex<u64>,
     changed: std::sync::Condvar,
 }
@@ -37,6 +38,44 @@ pub(super) struct ReadinessDiagnostic {
     pub(super) refresh_requested: bool,
 }
 impl Reads {
+    /// Terminal closure retains native requirements and private binding, while
+    /// withdrawing every generation before disconnected health is published.
+    pub(super) fn close(&self) {
+        self.5.closed.store(true, Ordering::Release);
+        if let Ok(rows) = self.0.lock() {
+            for gate in rows.values() {
+                if let Gate::Required(ready, _) = gate {
+                    ready.store(false, Ordering::Release);
+                }
+            }
+        }
+        if let Ok(mut rows) = self.1.lock() {
+            for read in rows.values() {
+                read.valid.store(false, Ordering::Release);
+            }
+            rows.clear();
+        }
+        if let Ok(mut requests) = self.2.lock() {
+            requests.clear();
+        }
+        self.progressed();
+    }
+    fn closed(&self) -> bool {
+        self.5.closed.load(Ordering::Acquire)
+    }
+    fn set_ready(&self, ready: &AtomicBool, value: bool) -> bool {
+        if !value {
+            return ready.swap(false, Ordering::AcqRel);
+        }
+        let Ok(rows) = self.0.lock() else {
+            return ready.swap(false, Ordering::AcqRel);
+        };
+        let current = !self.closed() && rows.values().any(|gate| {
+            matches!(gate, Gate::Required(candidate, _) if std::ptr::eq(candidate.as_ref(), ready))
+        });
+        // Serialize a positive publication with close's gate withdrawal.
+        ready.swap(current, Ordering::AcqRel) != current
+    }
     /// How many readiness changes happened so far; pass it to
     /// [`Self::wait_progress`] after checking the state it guards.
     pub(super) fn progress(&self) -> u64 {
@@ -58,7 +97,7 @@ impl Reads {
             .changed
             .wait_timeout_while(changes, bound, |changes| *changes == seen);
     }
-    fn progressed(&self) {
+    pub(super) fn progressed(&self) {
         let mut changes = self
             .5
             .changes
@@ -133,6 +172,9 @@ impl Reads {
         self.stage_for_test(key, read);
     }
     pub(super) fn publishable(&self, key: &str) -> bool {
+        if self.closed() {
+            return false;
+        }
         self.0
             .lock()
             .ok()
@@ -173,7 +215,7 @@ impl Reads {
         let Ok(mut rows) = self.0.lock() else {
             return false;
         };
-        if rows.contains_key(key) || rows.len() >= 64 {
+        if self.closed() || rows.contains_key(key) || rows.len() >= 64 {
             return false;
         }
         rows.insert(key.into(), Gate::Joining);
@@ -211,7 +253,8 @@ impl Reads {
         read: CommittedDocument,
     ) -> Result<(), String> {
         let gates = self.0.lock().map_err(|_| "document reads poisoned")?;
-        if !matches!(gates.get(key),Some(Gate::Required(current, _)) if Arc::ptr_eq(current,ready))
+        if self.closed()
+            || !matches!(gates.get(key),Some(Gate::Required(current, _)) if Arc::ptr_eq(current,ready))
         {
             return Err("committed route replaced".into());
         }
@@ -238,6 +281,9 @@ impl Reads {
         }
     }
     pub(super) fn current(&self, key: &str, ready: &Arc<AtomicBool>) -> bool {
+        if self.closed() {
+            return false;
+        }
         self.0.lock().is_ok_and(|rows|matches!(rows.get(key),Some(Gate::Required(current, _)) if Arc::ptr_eq(current,ready)))
     }
     fn discard_stage(&self, key: &str) {
@@ -254,15 +300,20 @@ impl Reads {
         self.2.lock().is_ok_and(|mut requests| requests.remove(key))
     }
     fn legacy(&self, key: &str) -> Result<(), String> {
-        self.0
-            .lock()
-            .map_err(|_| "document reads poisoned")?
-            .insert(key.into(), Gate::Legacy);
+        let mut rows = self.0.lock().map_err(|_| "document reads poisoned")?;
+        if self.closed() {
+            return Err("committed document reader closed".into());
+        }
+        rows.insert(key.into(), Gate::Legacy);
+        drop(rows);
         self.progressed();
         Ok(())
     }
     fn pending(&self, key: &str) -> Result<Arc<AtomicBool>, String> {
         let mut rows = self.0.lock().map_err(|_| "document reads poisoned")?;
+        if self.closed() {
+            return Err("committed document reader closed".into());
+        }
         if let Some(Gate::Required(old, _)) = rows.get(key) {
             old.store(false, Ordering::Release);
         }
@@ -444,6 +495,46 @@ impl Assembly {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn terminal_reads_cannot_be_republished_or_renewed() {
+        let reads = Reads::default();
+        let ready = reads.pending("original-native-route").unwrap();
+        reads
+            .bind_private_window("original-native-route", Some(42))
+            .unwrap();
+        let read = one_chunk_capture(&ByteBudget::new()).await;
+        reads
+            .stage("original-native-route", &ready, read.clone())
+            .unwrap();
+        assert!(read.is_current());
+        assert!(reads.set_ready(&ready, true));
+        assert!(reads.publishable("original-native-route"));
+        reads.close();
+        assert!(!read.is_current(), "closure invalidates retained captures");
+        assert!(reads.initial("original-native-route").is_none());
+        assert!(reads.stage("original-native-route", &ready, read).is_err());
+        assert!(
+            !reads.set_ready(&ready, true),
+            "a late unchanged reply cannot revive readiness"
+        );
+        assert!(!ready.load(Ordering::Acquire));
+        assert!(!reads.publishable("original-native-route"));
+        assert!(!reads.current("original-native-route", &ready));
+        assert!(
+            reads.required("original-native-route"),
+            "closure must retain the native requirement"
+        );
+        assert_eq!(
+            reads.private_window("original-native-route"),
+            Some(42),
+            "closure does not acquire a new private instance"
+        );
+        assert!(
+            reads.pending("original-native-route").is_err(),
+            "the terminal reader cannot admit a new generation"
+        );
+    }
+
     async fn one_chunk_capture(budget: &ByteBudget) -> CommittedDocument {
         read_capture_using(
             Reply::Chunk {
@@ -1106,7 +1197,7 @@ async fn capture_using(
 }
 // A parked owner must observe both publication readiness and its withdrawal.
 fn set_read_ready(inbound: &InboundBridge, ready: &AtomicBool, value: bool) {
-    if ready.swap(value, Ordering::AcqRel) != value {
+    if inbound.state.document_reads.set_ready(ready, value) {
         inbound.state.document_reads.progressed();
         inbound.state.notify_events();
     }

@@ -351,7 +351,7 @@ impl BlockEditor {
             self.formula_chrome.clear();
             self.visual_formulas.clear();
             self.visual_formula_focus = None;
-            self.structure_dirty = true;
+            self.restack();
         }
         self.reconcile_block_selection();
         self.dirty = true;
@@ -446,7 +446,7 @@ impl BlockEditor {
             self.formula_chrome.clear();
             self.visual_formulas.clear();
             self.visual_formula_focus = None;
-            self.structure_dirty = true;
+            self.restack();
         }
         self.reconcile_block_selection();
         self.dirty = true;

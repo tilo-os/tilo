@@ -110,10 +110,10 @@ fn minute() -> i64 {
 
 /// The page's wall clock as the bar shows it.
 fn clock_snapshot() -> ClockSnapshot {
-    let now = chrono::Local::now();
+    let now = ui::clock::local_now();
     ClockSnapshot {
         unix_seconds: now.timestamp(),
-        clock: now.format("%H:%M").to_string(),
+        clock: ui::clock::time_of_day(&now),
         weekday: now.format("%a").to_string(),
         date: now.format("%-d %B").to_string(),
     }
