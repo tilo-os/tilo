@@ -95,7 +95,8 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
         self.assertTrue(seen['wrapper'].endswith('/tools/ci/thin-app/sccache'))
         self.assertTrue(seen['cache'].endswith('/bin/sccache'))
         self.assertNotEqual(seen['wrapper'], seen['cache'])
-        self.assertIn('env.TILO_THIN_SCCACHE=', ' '.join(seen['args']))
+        self.assertIn('env.TILO_THIN_SCCACHE.value=', ' '.join(seen['args']))
+        self.assertIn('env.TILO_THIN_SCCACHE.force=true', seen['args'])
         self.assertIsNone(seen['compiler'])
 
     def test_cache_sees_the_effective_compiler_arguments(self):
