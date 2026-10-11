@@ -82,6 +82,45 @@
     )
 )]
 
+/// Serde for a JSON-only type whose reading goes through one
+/// `serde_json::Value`.
+///
+/// The type derives with `#[serde(remote = "Self")]`, which makes its
+/// derived code inherent functions. Writing runs them as derived, so the
+/// bytes stay what the derive writes. Reading runs them once, against a
+/// `Value`, in this crate: every format and every crate that reads the type
+/// then shares that one copy instead of compiling the type's whole
+/// deserializer (and, for an internally tagged enum, its buffered copy)
+/// again for each deserializer it meets. Only for types every encoding of
+/// which is JSON: a `Value` needs a self-describing format. `custom` leaves
+/// `from_json_value` to the type.
+macro_rules! read_through_json_value {
+    ($ty:ty) => {
+        read_through_json_value!($ty, custom);
+
+        impl $ty {
+            #[inline(never)]
+            fn from_json_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+                Self::deserialize(value)
+            }
+        }
+    };
+    ($ty:ty, custom) => {
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                Self::serialize(self, serializer)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+                Self::from_json_value(value).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
 pub mod action;
 pub mod content;
 pub mod context;

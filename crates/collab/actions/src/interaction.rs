@@ -113,7 +113,7 @@ pub struct InteractionGridRange {
 /// receivers turn it into their current geometry and may fall back to the
 /// enclosing resource when an anchor is off-screen or no longer exists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(remote = "Self", tag = "kind", rename_all = "snake_case")]
 pub enum InteractionAnchor {
     /// The whole resource is the narrowest truthful target available.
     Resource,
@@ -141,10 +141,12 @@ pub enum InteractionAnchor {
     },
 }
 
+read_through_json_value!(InteractionAnchor);
+
 /// What the invocation is visibly doing.  Terminal details complement the
 /// durable invocation result; they do not replace it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "phase", rename_all = "snake_case")]
+#[serde(remote = "Self", tag = "phase", rename_all = "snake_case")]
 pub enum InteractionPhase {
     Locating,
     Applying,
@@ -170,6 +172,8 @@ pub enum InteractionPhase {
         message: Option<String>,
     },
 }
+
+read_through_json_value!(InteractionPhase);
 
 impl InteractionPhase {
     pub fn is_terminal(&self) -> bool {

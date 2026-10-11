@@ -28,8 +28,8 @@ pub const CHANGE_MESSAGE_PREFIX: &str = "tilo.entry/2 ";
 /// ([`ActionContext::continued`]).
 pub const CONTINUATION_PREFIX: &str = "tilo.cont/1 ";
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self", default)]
 pub struct ActionContext {
     /// Publishing app, when the host knows it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,6 +92,31 @@ pub struct ActionContext {
     /// by the context it is applied with.
     #[serde(skip_serializing_if = "ChangeKind::is_content")]
     pub change: ChangeKind,
+}
+
+read_through_json_value!(ActionContext);
+
+// Written out rather than derived: a derived clone is inlined into every
+// crate that clones a context.
+impl Clone for ActionContext {
+    fn clone(&self) -> Self {
+        Self {
+            app: self.app.clone(),
+            resource: self.resource.clone(),
+            item: self.item.clone(),
+            what: self.what.clone(),
+            kind: self.kind,
+            purpose: self.purpose.clone(),
+            group: self.group.clone(),
+            facets: self.facets.clone(),
+            invoker: self.invoker.clone(),
+            source_invocation: self.source_invocation,
+            action: self.action.clone(),
+            compensation: self.compensation.clone(),
+            gesture: self.gesture,
+            change: self.change,
+        }
+    }
 }
 
 /// The most an entry's [`compensation`](ActionContext::compensation) may
