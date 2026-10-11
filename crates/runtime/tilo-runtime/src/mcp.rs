@@ -389,6 +389,20 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Self::from_caller(host, room, actor, caller)
     }
 
+    /// One session of agent `agent_id`, which the host admitted itself into
+    /// `room` (a desktop's agent door, after the person said so). It acts as
+    /// that agent and nobody else: an agent holds no role of its own, so the
+    /// host's gate offers and runs only what the workspace grants it, and a
+    /// revoked membership ends both at once. Each session is its own fresh
+    /// execution, retired when the session drops.
+    #[must_use]
+    pub fn for_agent(host: H, room: String, agent_id: &str) -> Self {
+        let caller = Caller::local_agent(agent_id)
+            .in_room(room.clone())
+            .in_new_execution();
+        Self::from_caller(host, room, format!("agent:{agent_id}"), caller)
+    }
+
     /// The host has already bound this exact authenticated run to its action
     /// door. This constructor does not mint or replace the execution identity.
     pub(crate) fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {

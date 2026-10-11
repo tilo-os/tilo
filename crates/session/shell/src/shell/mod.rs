@@ -8,6 +8,7 @@
 //! in a window inside an existing X11/Wayland session.
 
 pub mod actions;
+pub mod agent_admission;
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
 pub mod app_action_consent;

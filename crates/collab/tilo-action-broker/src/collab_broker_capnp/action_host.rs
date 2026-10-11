@@ -514,7 +514,16 @@ impl CapnpBrokerState {
     /// member.
     fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
         match caller.room() {
-            Some(confined) => confined == workspace.room.to_string(),
+            // Confinement says which room a connection was admitted to, not
+            // that an agent still belongs to it: an agent whose membership
+            // was removed must lose its catalogue and authority at once.
+            Some(confined) => {
+                confined == workspace.room.to_string()
+                    && match caller.principal() {
+                        CallerPrincipal::Agent(id) => workspace.role_of_agent_at(id, now).is_some(),
+                        CallerPrincipal::Person(_) | CallerPrincipal::App(_) => true,
+                    }
+            }
             None => match caller.principal() {
                 CallerPrincipal::Person(id) => workspace.role_of_at(id, now).is_some(),
                 CallerPrincipal::Agent(id) => workspace.role_of_agent_at(id, now).is_some(),

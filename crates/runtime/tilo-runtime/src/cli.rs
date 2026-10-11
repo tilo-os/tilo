@@ -68,7 +68,7 @@ fn run<S: RuntimeServices>() -> io::Result<()> {
         .try_init();
     match args.mode {
         daemon::Mode::Daemon => daemon::serve::<S>(&args.profile, args.dev),
-        daemon::Mode::Connect => daemon::connect(&args.profile),
+        daemon::Mode::Connect => daemon::connect(&args.profile, args.standalone),
         daemon::Mode::Join { invitation } => daemon::join(&args.profile, &invitation),
         daemon::Mode::RunApp {
             app_id,

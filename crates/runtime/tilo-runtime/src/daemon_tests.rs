@@ -386,6 +386,22 @@ fn dev_mode_is_an_explicit_daemon_flag() {
     assert!(args(&["--profile", "/tmp/profile", "--daemon", "--dev", "--dev"]).is_err());
 }
 
+/// A client that names a profile chose a standalone runtime itself; one that
+/// names none is routed by its login (`session_door::route`).
+#[test]
+fn standalone_is_the_clients_own_explicit_choice_for_connect() {
+    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+    assert!(args(&["--connect", "--standalone"]).unwrap().standalone);
+    assert!(
+        args(&["--profile", "/tmp/profile", "--connect"])
+            .unwrap()
+            .standalone,
+        "a named profile is a standalone runtime's"
+    );
+    assert!(args(&["--profile", "/tmp/profile", "--daemon", "--standalone"]).is_err());
+    assert!(args(&["--connect", "--standalone", "--standalone"]).is_err());
+}
+
 /// One page resource with an `open` view action, offered by publisher `7`,
 /// and every invocation the host was asked to run.
 #[derive(Clone, Default)]

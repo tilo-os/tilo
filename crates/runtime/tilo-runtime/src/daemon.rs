@@ -49,6 +49,11 @@ pub struct Args {
     /// `--dev`, for `--daemon` only: serve builds under development, which
     /// are not installed.
     pub dev: bool,
+    /// The client chose a standalone profile itself (`--standalone`,
+    /// `--profile` or `TILO_RUNTIME_PROFILE`), so `--connect` attaches to
+    /// that profile even inside a Tilo login, where it otherwise relays to
+    /// the desktop's agent door ([`crate::session_door`]).
+    pub standalone: bool,
 }
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
@@ -93,9 +98,11 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     let mut profile = None;
     let mut mode = None;
     let mut dev = false;
+    let mut standalone = false;
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
             Some("--dev") if !dev => dev = true,
+            Some("--standalone") if !standalone => standalone = true,
             Some("--profile") if profile.is_none() => {
                 profile = Some(PathBuf::from(
                     arguments
@@ -157,6 +164,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
             }
         }
     }
+    let explicit_profile = profile.is_some() || std::env::var_os("TILO_RUNTIME_PROFILE").is_some();
     let profile = match profile {
         Some(path) => path,
         None => default_profile()?,
@@ -164,11 +172,21 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     if !profile.is_absolute() {
         return Err(invalid("runtime profile must be absolute"));
     }
-    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect, --join INVITATION, --run-app APP_ID [--room ROOM] -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
+    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect [--standalone], --join INVITATION, --run-app APP_ID [--room ROOM] -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
     if dev && mode != Mode::Daemon {
         return Err(invalid("--dev starts a daemon: use it with --daemon"));
     }
-    Ok(Args { profile, mode, dev })
+    if standalone && mode != Mode::Connect {
+        return Err(invalid(
+            "--standalone chooses where --connect goes: use it with --connect",
+        ));
+    }
+    Ok(Args {
+        profile,
+        mode,
+        dev,
+        standalone: standalone || explicit_profile,
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -924,13 +942,34 @@ pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
     }
 }
 
-/// Bridge this process's stdio to the persistent daemon. EOF closes only this
-/// client's connection; neither applications nor the daemon are owned here.
+/// Bridge this process's stdio to the MCP host it belongs to: inside a Tilo
+/// login, the desktop's agent door, which is never replaced by a standalone
+/// runtime; elsewhere, or when `standalone`, the persistent daemon of
+/// `profile`, started when none runs. EOF closes only this client's
+/// connection; neither applications nor the daemon are owned here.
 /// # Errors
-/// Returns bounded startup, transport, thread-spawn or stdio errors.
-pub fn connect(profile: &Path) -> io::Result<()> {
-    ensure_running(profile)?;
-    let mut stream = UnixStream::connect(profile.join("native.sock"))?;
+/// Returns bounded startup, transport, thread-spawn or stdio errors, and a
+/// Tilo login's missing or silent agent door.
+pub fn connect(profile: &Path, standalone: bool) -> io::Result<()> {
+    let route = crate::session_door::route(
+        standalone,
+        crate::session_door::is_tilo_login(),
+        crate::session_door::agent_socket_path(std::env::var_os("XDG_RUNTIME_DIR")),
+        Path::exists,
+    )?;
+    let stream = match route {
+        crate::session_door::Route::Session(door) => UnixStream::connect(&door)
+            .map_err(|error| crate::session_door::unreachable_door(&door, &error))?,
+        crate::session_door::Route::Standalone => {
+            ensure_running(profile)?;
+            UnixStream::connect(profile.join("native.sock"))?
+        }
+    };
+    bridge_stdio(stream)
+}
+
+/// Relay this process's stdin to `stream` and `stream` to its stdout.
+fn bridge_stdio(mut stream: UnixStream) -> io::Result<()> {
     let mut writer = stream.try_clone()?;
     std::thread::Builder::new()
         .name("tilo-mcp-proxy-stdin".into())

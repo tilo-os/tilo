@@ -114,14 +114,25 @@ fn notification_unix_ms() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
 }
 
+/// What a [`PendingPrompt`] asks the person.
+#[derive(Debug)]
+pub enum PromptRequest {
+    /// An app asks for a capability.
+    Capability(Capability),
+    /// A client in this login asks to work in a workspace as an agent
+    /// (the session's agent door).
+    AgentAdmission(crate::shell::agent_admission::AgentAdmission),
+}
+
 /// One capability request waiting for the user to answer it. Dropping
 /// without answering drops the `reply` sender, which the portal side
 /// reads as deny — refusal, not a hang.
 pub struct PendingPrompt {
     /// Session-local identity; a stale answer must never consume another request.
     pub id: uuid::Uuid,
+    /// Who asks: an app id, or an agent door client's description.
     pub app_id: AppId,
-    pub capability: Capability,
+    pub request: PromptRequest,
     /// Reply channel to a blocked portal request; `None` for
     /// shell-originated prompts nobody is waiting on.
     pub reply: Option<tokio::sync::oneshot::Sender<crate::portal::PromptOutcome>>,
@@ -133,7 +144,7 @@ impl PendingPrompt {
         Self {
             id: uuid::Uuid::new_v4(),
             app_id,
-            capability,
+            request: PromptRequest::Capability(capability),
             reply: None,
         }
     }
@@ -146,15 +157,54 @@ impl PendingPrompt {
         Self {
             id: uuid::Uuid::new_v4(),
             app_id,
-            capability,
+            request: PromptRequest::Capability(capability),
             reply: Some(reply),
         }
     }
 
+    /// An agent door client waiting to be admitted.
+    pub fn agent_admission(admission: crate::shell::agent_admission::AgentAdmission) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4(),
+            app_id: admission.facts.subject(),
+            request: PromptRequest::AgentAdmission(admission),
+            reply: None,
+        }
+    }
+
+    /// The capability asked for, when an app asks for one.
+    pub fn capability(&self) -> Option<&Capability> {
+        match &self.request {
+            PromptRequest::Capability(capability) => Some(capability),
+            PromptRequest::AgentAdmission(_) => None,
+        }
+    }
+
     pub fn answer(&mut self, outcome: crate::portal::PromptOutcome) {
+        self.answer_as(outcome, None);
+    }
+
+    /// Answer, admitting an agent door client as `member` when the person
+    /// named one; other prompts ignore it.
+    pub fn answer_as(
+        &mut self,
+        outcome: crate::portal::PromptOutcome,
+        member: Option<crate::shell::agent_admission::MemberChoice>,
+    ) {
         if let Some(tx) = self.reply.take() {
             let _ = tx.send(outcome);
         }
+        if let PromptRequest::AgentAdmission(admission) = &mut self.request {
+            admission.answer(outcome, member);
+        }
+    }
+
+    /// Whether whoever asked has stopped waiting: the prompt is withdrawn.
+    pub fn is_retired(&self) -> bool {
+        self.reply
+            .as_ref()
+            .is_some_and(tokio::sync::oneshot::Sender::is_closed)
+            || matches!(&self.request, PromptRequest::AgentAdmission(admission) if admission.is_retired())
     }
 }
 
@@ -163,7 +213,7 @@ impl std::fmt::Debug for PendingPrompt {
         f.debug_struct("PendingPrompt")
             .field("id", &self.id)
             .field("app_id", &self.app_id)
-            .field("capability", &self.capability)
+            .field("request", &self.request)
             .field("awaiting_portal_reply", &self.reply.is_some())
             .finish()
     }

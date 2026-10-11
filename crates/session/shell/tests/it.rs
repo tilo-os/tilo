@@ -27,6 +27,8 @@ mod support;
 mod active_group_wireup_test;
 #[path = "advertised_globals.rs"]
 mod advertised_globals;
+#[path = "agent_door_e2e.rs"]
+mod agent_door_e2e;
 #[path = "argb_opaque_region.rs"]
 mod argb_opaque_region;
 #[path = "blend_layer_cost.rs"]
