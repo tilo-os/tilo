@@ -947,9 +947,20 @@ impl ChannelKeyAccess {
     ///
     /// # Errors
     ///
-    /// As [`Self::open_new_write`], except that an older epoch opens.
+    /// Refuses unavailable existing channel keys or epochs and invalid ciphertext.
+    /// This read never creates a channel, requests access or rejoins a group.
     pub fn open_history_write(&self, room: RoomId, envelope: &SignedOp) -> Result<Vec<u8>, String> {
-        let (keys, metadata, ciphertext) = self.sealed_parts(room, envelope)?;
+        let metadata = envelope.encryption.ok_or("the write is not sealed")?;
+        let ciphertext =
+            collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
+        let service = self
+            .inner
+            .lock()
+            .map_err(|_| "channel service unavailable")?;
+        let keys = service
+            .existing_keys(room, metadata.channel)
+            .ok_or("this device holds no existing key for the history's channel")?;
+        drop(service);
         keys.open_content(envelope.artifact, &metadata, &ciphertext)
             .map(|plaintext| plaintext.to_vec())
             .map_err(|error| error.to_string())
@@ -2434,5 +2445,68 @@ mod tests {
             waiting.renew_sealed(room_id, &write).is_err(),
             "a device still waiting for access renews nothing"
         );
+    }
+
+    #[test]
+    fn opening_history_never_creates_a_channel_without_an_existing_key() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let artifact = ArtifactId::new();
+        let owner_dir = tempfile::tempdir().unwrap();
+        let owner = device(
+            &room,
+            room_id,
+            0,
+            (1, 1),
+            &Policy::default(),
+            owner_dir.path(),
+        );
+        let keys = ChannelKeyAccess::new(owner.service);
+        let (ChannelAccess::Ready(held), _) = keys.access(room_id, channel) else {
+            panic!("explicit fixture admission provides the original key");
+        };
+        let sealed = sealed_op(
+            artifact,
+            held.seal_content(artifact, ContentRetention::Delta, b"existing history")
+                .unwrap(),
+            collab_types::OpClass::Splice,
+        );
+        let generation = keys.generation();
+        assert_eq!(
+            keys.open_history_write(room_id, &sealed).unwrap(),
+            b"existing history"
+        );
+        assert_eq!(keys.generation(), generation);
+        assert!(keys.open_history_write(RoomId::new(), &sealed).is_err());
+        assert_eq!(keys.generation(), generation);
+
+        let fresh_dir = tempfile::tempdir().unwrap();
+        let fresh = device(
+            &room,
+            room_id,
+            0,
+            (1, 1),
+            &Policy::default(),
+            fresh_dir.path(),
+        );
+        let fresh = ChannelKeyAccess::new(fresh.service);
+        let generation = fresh.generation();
+        assert!(fresh.open_history_write(room_id, &sealed).is_err());
+        let state = fresh.inner.lock().unwrap();
+        assert!(
+            state.stewards.is_empty(),
+            "reading history must not mint replacement keys"
+        );
+        assert!(
+            state.members.is_empty(),
+            "reading history must not request access"
+        );
+        assert!(
+            !state.queued,
+            "reading history must not enqueue channel governance"
+        );
+        assert_eq!(state.generation(), generation);
+        drop(state);
     }
 }

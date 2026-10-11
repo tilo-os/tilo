@@ -7,8 +7,8 @@ pub use super::backend::member::PeerMember;
 use super::{DeviceCert, PeerCore, RevocationList, Route, SystemTime, backend, room};
 use crate::resources::{OuterLimits, PeerResourceError};
 pub use domain::{
-    PeerDeliveryPolicy, PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError,
-    PeerMediaCall, PeerPolicyBasis, PeerRead, PeerRoomAccess,
+    PeerDeliveryPolicy, PeerDeliveryPolicyError, PeerDocumentCapture, PeerDocumentRead,
+    PeerDocumentReadError, PeerMediaCall, PeerPolicyBasis, PeerRead, PeerRoomAccess,
 };
 pub use revocations::PeerRevocations;
 
@@ -61,6 +61,7 @@ pub enum BoundedPeerInvalid {
     Governance,
     AuthorityRevoked,
     ExactFloor,
+    Sealed,
     Document,
 }
 #[derive(Debug, PartialEq, Eq)]

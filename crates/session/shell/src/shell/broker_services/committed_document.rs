@@ -155,15 +155,22 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             .as_ref()
             .ok_or("native document owner unavailable")?;
         let read = owner.with_current(room, |view| {
-            view.read_document(
+            view.read_document_with_history(
                 context.certificate().device_public_key,
-                &route.app_id,
-                &route.record_id,
+                (&route.app_id, &route.record_id),
                 known_revision,
                 maximum,
                 std::time::SystemTime::now(),
+                &mut |envelope| {
+                    self.history_keys
+                        .as_ref()
+                        .and_then(|keys| keys.get())
+                        .ok_or("committed history keys unavailable")?
+                        .open_history_write(room, envelope)
+                },
             )
         })?;
+        self.authorize(context)?;
         Ok(match read {
             DocumentRead::Unchanged(revision) => NativeDocumentRead::Unchanged(revision),
             DocumentRead::Captured(document) => NativeDocumentRead::Captured {
