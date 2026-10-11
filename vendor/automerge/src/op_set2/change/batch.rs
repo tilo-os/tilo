@@ -341,6 +341,143 @@ struct MapWalker<'a, 'b> {
     doc_op: Option<Op<'a>>,
     conflicts: &'b mut Vec<Adjust>,
     top: Top,
+    // TILO(map-apply-skip)
+    skip: Option<MapSkip<'a>>,
+}
+
+// TILO(map-apply-skip): a map walk visits only the doc ops a batch can affect
+// and seeks over the rest (vendor/automerge/TILO-PATCH.md).
+//
+// Walking a doc op does something only if the batch overwrites it (it is in
+// the pred cache) or if it is visible in a key the batch writes: `process_pred`
+// needs the first, `ValueState::process_doc_op` and `Top::process_doc_op` act
+// on visible ops only (the mark state it also keeps is read by sequences, not
+// maps), and a key whose ops are all untouched flushes no patch and leaves
+// `Top` as it found it. Every other op is inert. Seeking over inert
+// ops leaves the walk with the same state, the same patches and the same
+// insert position for every change op as stepping over them one by one: the
+// flush of the previous key that the first inert op of a new key would have
+// done happens at the next op the walk does visit, which is in a later key.
+struct MapSkip<'a> {
+    op_set: &'a OpSet,
+    /// End of the object's ops.
+    end: usize,
+    /// Sorted ranges of the keys a change op writes or a pred target is in.
+    hot: Vec<Range<usize>>,
+    /// Sorted positions of the object's doc ops in the pred cache.
+    preds: Vec<usize>,
+}
+
+impl<'a> MapSkip<'a> {
+    /// Below this many doc ops per change op, stepping over all of them
+    /// costs no more than seeking.
+    const MIN_OPS_PER_CHANGE_OP: usize = 32;
+
+    fn new(
+        op_set: &'a OpSet,
+        obj: Range<usize>,
+        change_ops: &[ChangeOp],
+        preds: &[usize],
+    ) -> Option<Self> {
+        if change_ops.len().saturating_mul(Self::MIN_OPS_PER_CHANGE_OP) > obj.len() {
+            return None;
+        }
+        let first = preds.partition_point(|&p| p < obj.start);
+        let last = preds.partition_point(|&p| p < obj.end);
+        let preds = preds[first..last].to_vec();
+        let mut hot = Vec::new();
+        let mut last_key = None;
+        for op in change_ops {
+            let KeyRef::Map(key) = op.key() else {
+                return None;
+            };
+            if last_key != Some(key) {
+                hot.push(op_set.key_range(key, obj.clone()));
+                last_key = Some(key);
+            }
+        }
+        for &pos in &preds {
+            let (key, _) = op_set.key_and_id_at(pos)?;
+            hot.push(op_set.key_range(&key?, obj.clone()));
+        }
+        hot.retain(|range| !range.is_empty());
+        hot.sort_by_key(|range| (range.start, range.end));
+        hot.dedup();
+        Some(Self {
+            op_set,
+            end: obj.end,
+            hot,
+            preds,
+        })
+    }
+
+    /// The first op in `from..bound` the walk must visit, else `bound`.
+    fn next_stop(&self, from: usize, bound: usize) -> usize {
+        let mut stop = bound;
+        if let Some(&pos) = self.preds.get(self.preds.partition_point(|&p| p < from)) {
+            stop = stop.min(pos);
+        }
+        let first = self.hot.partition_point(|range| range.end <= from);
+        for range in &self.hot[first..] {
+            if range.start >= stop {
+                break;
+            }
+            let scan = range.start.max(from)..range.end.min(stop);
+            if let Some(pos) = self.op_set.next_visible(scan) {
+                stop = pos;
+            }
+        }
+        stop
+    }
+
+    /// Where the full walk stops for change op `(key, id)` starting at
+    /// `from`: the first op that sorts after it.
+    fn insertion_point(&self, from: usize, key: &str, id: OpId) -> Option<usize> {
+        let keyed = self.op_set.key_range(key, from..self.end);
+        let id_at = |pos| self.op_set.key_and_id_at(pos).map(|(_, id)| id);
+        let (mut lo, mut hi) = (keyed.start, keyed.end);
+        // Usually the change op is the newest of its key.
+        if lo < hi && id_at(hi - 1)? <= id {
+            lo = hi;
+        }
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if id_at(mid)? <= id {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        self.checked(from, lo, |k, i| k < key || (k == key && i <= id))
+    }
+
+    /// Where `finish`'s walk of the key `key` starting at `from` stops.
+    fn key_end(&self, from: usize, key: &str) -> Option<usize> {
+        let keyed = self.op_set.key_range(key, from..self.end);
+        let end = if keyed.is_empty() { from } else { keyed.end };
+        self.checked(from, end, |k, _| k == key)
+    }
+
+    /// `bound` if the op before it is still one the walk takes and the op
+    /// at it is not; `None` (walk op by op) if the columns say otherwise.
+    fn checked(
+        &self,
+        from: usize,
+        bound: usize,
+        takes: impl Fn(&str, OpId) -> bool,
+    ) -> Option<usize> {
+        let takes_at = |pos| match self.op_set.key_and_id_at(pos) {
+            Some((Some(key), id)) => Some(takes(&key, id)),
+            _ => None,
+        };
+        if bound > from && !takes_at(bound - 1)? {
+            return None;
+        }
+        if bound < self.end && takes_at(bound)? {
+            return None;
+        }
+        Some(bound)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -401,6 +538,7 @@ impl<'a, 'b> MapWalker<'a, 'b> {
         succ: &'b mut Vec<SuccInsert>,
         log: &'b mut PatchLog,
         conflicts: &'b mut Vec<Adjust>,
+        skip: Option<MapSkip<'a>>,
     ) -> Self {
         let pos = ops.pos();
         let doc_op = ops.next();
@@ -416,12 +554,42 @@ impl<'a, 'b> MapWalker<'a, 'b> {
             value,
             conflicts,
             top,
+            skip,
         }
     }
 
     fn next_doc_op(&mut self) {
         self.pos = self.ops.pos();
         self.doc_op = self.ops.next();
+    }
+
+    // TILO(map-apply-skip): the full walk stops at `bound`; seek to the
+    // first op before it the walk must visit.
+    fn skip_inert(&mut self, bound: Option<usize>) {
+        let (Some(skip), Some(bound), Some(_)) = (&self.skip, bound, &self.doc_op) else {
+            return;
+        };
+        let stop = skip.next_stop(self.pos, bound);
+        if stop > self.pos {
+            self.ops = skip.op_set.iter_range(&(stop..skip.end));
+            self.next_doc_op();
+        }
+    }
+
+    // TILO(map-apply-skip): `bound` as `find` computes it from the walk's
+    // position; without one the walk goes op by op from here on.
+    fn skip_bound(
+        &mut self,
+        find: impl FnOnce(&MapSkip<'a>, usize) -> Option<usize>,
+    ) -> Option<usize> {
+        let bound = match (&self.skip, &self.doc_op) {
+            (Some(skip), Some(_)) => find(skip, self.pos),
+            _ => None,
+        };
+        if bound.is_none() {
+            self.skip = None;
+        }
+        bound
     }
 
     fn change_op(&mut self, ops: &mut [ChangeOp], pos: usize) {
@@ -446,6 +614,12 @@ impl<'a, 'b> MapWalker<'a, 'b> {
     }
 
     fn advance_doc_op(&mut self, pos: usize, ops: &mut [ChangeOp]) {
+        // TILO(map-apply-skip)
+        let bound = self.skip_bound(|skip, from| match ops[pos].key() {
+            KeyRef::Map(key) => skip.insertion_point(from, key, ops[pos].id()),
+            KeyRef::Seq(_) => None,
+        });
+        self.skip_inert(bound);
         while let Some(d) = self.doc_op.as_ref() {
             // TODO - sometimes we can fast forward to the next property
             match d.key.partial_cmp(ops[pos].key()) {
@@ -463,16 +637,25 @@ impl<'a, 'b> MapWalker<'a, 'b> {
                 }
             }
             self.next_doc_op();
+            self.skip_inert(bound); // TILO(map-apply-skip)
         }
     }
 
     fn finish(&mut self, ops: &mut [ChangeOp]) {
+        // TILO(map-apply-skip)
+        let key = match &self.value.key {
+            Some(PropRef::Map(key)) => Some(key.clone()),
+            _ => None,
+        };
+        let bound = self.skip_bound(|skip, from| skip.key_end(from, key.as_deref()?));
+        self.skip_inert(bound);
         while let Some(d) = self.doc_op.as_ref() {
             let deleted = process_pred(self.doc_op.as_ref(), self.pred, self.succ);
             if d.prop() == self.value.key {
                 self.top.process_doc_op(ops, d, deleted);
                 self.value.process_doc_op(d, deleted);
                 self.next_doc_op();
+                self.skip_inert(bound); // TILO(map-apply-skip)
             } else {
                 break;
             }
@@ -873,7 +1056,9 @@ impl BatchApply {
 
         self.import_ops(doc);
 
-        let mut obj_info = doc.ops().obj_info.clone();
+        // TILO(map-apply-skip): the objects this batch makes, looked up before
+        // the document's own, rather than a copy of every object's info.
+        let mut obj_info = ObjIndex::default();
 
         self.order_ops_for_doc(&mut obj_info);
 
@@ -883,11 +1068,40 @@ impl BatchApply {
 
         let mut conflicts = vec![];
 
+        // TILO(map-apply-skip): where the doc ops this batch overwrites are,
+        // found once if any map walk can skip.
+        let may_skip = self
+            .ops
+            .len()
+            .saturating_mul(MapSkip::MIN_OPS_PER_CHANGE_OP)
+            <= doc.ops().len();
+        let mut pred_pos: Option<Vec<usize>> = None;
+
         for os in &self.obj_spans {
             let obj_range = walker.seek_to_obj(os.obj);
             let doc_ops = doc.ops().iter_range(&obj_range);
-            match obj_info.object_type(&os.obj) {
+            let obj_type = obj_info
+                .object_type(&os.obj)
+                .or_else(|| doc.ops().obj_info.object_type(&os.obj));
+            match obj_type {
                 Some(ObjType::Map) => {
+                    let skip = if may_skip {
+                        let preds = pred_pos.get_or_insert_with(|| {
+                            let mut pos = (self.pred.keys())
+                                .filter_map(|id| doc.ops().op_id_pos(*id))
+                                .collect::<Vec<_>>();
+                            pos.sort_unstable();
+                            pos
+                        });
+                        MapSkip::new(
+                            doc.ops(),
+                            obj_range.clone(),
+                            &self.ops[os.span.clone()],
+                            preds,
+                        )
+                    } else {
+                        None
+                    };
                     let mut walker = MapWalker::new(
                         os.obj,
                         doc_ops,
@@ -896,6 +1110,7 @@ impl BatchApply {
                         &mut succ,
                         log,
                         &mut conflicts,
+                        skip,
                     );
                     let change_ops = &mut self.ops[os.span.clone()];
                     walk_map(&mut walker, change_ops);

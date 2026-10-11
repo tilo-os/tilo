@@ -15,6 +15,7 @@ use crate::{
 
 const REPORTS: &str = "feedback_reports";
 
+pub(crate) mod destination_read;
 pub(crate) mod receipt_read;
 pub(crate) mod status_read;
 

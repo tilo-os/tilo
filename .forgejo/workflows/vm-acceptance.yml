@@ -9,9 +9,10 @@ name: Dev / VM acceptance
 # (tilo-vm-disk/<tag>) or, more often, the dev image (tilo-vm:<tag>-x86_64,
 # which Build / OS dev pushes per main commit) of the newest main commit at or
 # before the ref, installed here exactly as Release / Dev VM disk installs it.
-# The ref's own code reaches the VM through `tilo-vm swap --builder host`,
-# built here in the CI builder (the dev image's Fedora, with the CI sccache):
-# by default the shell plus the apps the ref changed. P01
+# The ref's own code builds here in the native immutable CI builder. Paired
+# apps/runtime cohorts cross the pinned same-run artifact service and enter
+# through verified swap-artifact; other requests retain the host swap path:
+# the artifact route is explicitly opt-in; default swap planning is unchanged. P01
 # states the result as "base <commit> + <components> swapped from <ref>".
 #
 # The run also measures the installed desktop's performance KPIs (boot to the
@@ -33,6 +34,10 @@ on:
         description: "What to build from the ref and swap in: default (shell plus the apps the ref changed: a branch against main, a main commit against the base), none, all (every userspace component in os/components.toml), or a comma-separated list (components, app:<dir>)."
         required: false
         default: "default"
+      prebuilt_cohort:
+        description: "Use the verified same-run signed cohort artifact route (requires the swap-artifact CLI in the exact ref)."
+        required: false
+        default: "false"
       only:
         description: "Comma-separated check ids or areas (run.py --only); empty runs every check."
         required: false
@@ -57,7 +62,7 @@ concurrency:
   # A pull request's newest commit replaces its older run; dispatched and
   # nightly runs only queue behind an identical request. (github.run_id is
   # not available here: it collapsed every dispatch into one queue.)
-  group: vm-acceptance-${{ github.event_name }}-${{ github.ref }}-${{ github.event.inputs.ref }}-${{ github.event.inputs.swap }}-${{ github.event.inputs.only }}
+  group: vm-acceptance-${{ github.event_name }}-${{ github.ref }}-${{ github.event.inputs.ref }}-${{ github.event.inputs.swap }}-${{ github.event.inputs.only }}-${{ github.event.inputs.prebuilt_cohort }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -233,6 +238,55 @@ jobs:
           (cd "$WORK/src" && cargo build --locked -p tilo-vm)
           install -m 0755 "$WORK/src/target/debug/tilo-vm" /usr/local/bin/tilo-vm
 
+      # Root is the existing native CI build identity. The later acceptance
+      # user receives only full signed layers, never builder access or keys.
+      - name: Produce exact-source signed cohort layers
+        id: cohort
+        if: github.event.inputs.prebuilt_cohort == 'true' && contains(format(',{0},', steps.plan.outputs.swap), ',apps+runtime,')
+        timeout-minutes: 100
+        env:
+          SOURCE: ${{ steps.plan.outputs.target }}
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+          COMPONENTS: ${{ steps.plan.outputs.swap }}
+        run: |
+          set -euo pipefail
+          /usr/local/bin/tilo-vm swap-artifact --help >/dev/null
+          digest=$(python3 scripts/vm-acceptance/layer_artifacts.py produce \
+            --repo "$WORK/src" --directory "$WORK/cohort-produced" \
+            --source "$SOURCE" --builder-image "$BUILDER_IMAGE" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --components "$COMPONENTS")
+          echo "receipt-sha256=$digest" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: github.event.inputs.prebuilt_cohort == 'true' && contains(format(',{0},', steps.plan.outputs.swap), ',apps+runtime,')
+        with:
+          name: vm-cohort-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.plan.outputs.target }}
+          path: /var/tmp/vm-acceptance/cohort-produced/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 2
+
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        if: github.event.inputs.prebuilt_cohort == 'true' && contains(format(',{0},', steps.plan.outputs.swap), ',apps+runtime,')
+        with:
+          name: vm-cohort-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.plan.outputs.target }}
+          path: /var/tmp/vm-acceptance/cohort
+
+      - name: Verify the same-run cohort handoff
+        if: github.event.inputs.prebuilt_cohort == 'true' && contains(format(',{0},', steps.plan.outputs.swap), ',apps+runtime,')
+        env:
+          SOURCE: ${{ steps.plan.outputs.target }}
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+          COMPONENTS: ${{ steps.plan.outputs.swap }}
+          RECEIPT_SHA256: ${{ steps.cohort.outputs.receipt-sha256 }}
+        run: |
+          set -euo pipefail
+          python3 scripts/vm-acceptance/layer_artifacts.py verify \
+            --directory "$WORK/cohort" --source "$SOURCE" --builder-image "$BUILDER_IMAGE" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --components "$COMPONENTS" --receipt-sha256 "$RECEIPT_SHA256"
+
       - name: Build the fixture-matching management client
         if: steps.plan.outputs.bridge == 'true'
         env:
@@ -371,6 +425,10 @@ jobs:
           OUTPUTS: ${{ steps.plan.outputs.outputs }}
           GL: ${{ steps.plan.outputs.gl }}
           BRIDGE: ${{ steps.plan.outputs.bridge }}
+          PREBUILT_COHORT: ${{ github.event.inputs.prebuilt_cohort }}
+          SOURCE: ${{ steps.plan.outputs.target }}
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+          RECEIPT_SHA256: ${{ steps.cohort.outputs.receipt-sha256 }}
         run: |
           set -euo pipefail
           args=(--disk "$DISK" --commit "$COMMIT" --outputs "$OUTPUTS" --out "$WORK/report"
@@ -378,6 +436,11 @@ jobs:
                 --records "$WORK/report/records.jsonl" --runner runner-disk-100g)
           [[ $BRIDGE != true ]] || args+=(--bootstrap-tilo-vm /usr/local/bin/tilo-vm-base --bootstrap-from "$WORK/src" --swap-ref "$REF")
           [[ -z $SWAP ]] || args+=(--swap "$SWAP" --swap-from "$WORK/src" --swap-ref "$REF")
+          if [[ $PREBUILT_COHORT == true && ,$SWAP, == *,apps+runtime,* ]]; then
+            args+=(--artifact-receipt "$WORK/cohort/manifest.json" --artifact-source "$SOURCE"
+                   --artifact-builder-image "$BUILDER_IMAGE" --artifact-run-id "$GITHUB_RUN_ID"
+                   --artifact-run-attempt "$GITHUB_RUN_ATTEMPT" --artifact-receipt-sha256 "$RECEIPT_SHA256")
+          fi
           [[ -z $ONLY ]] || args+=(--only "$ONLY")
           [[ $GL != on ]] || args+=(--gl)
           # The checkout is root's; git reads it for the run's commit names.

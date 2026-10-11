@@ -1,13 +1,16 @@
 """Essential 5: idle CPU, wakeups, frames and RAM; memory per app cgroup; frame work
-during interactions; boot to a usable greeter; the render-path gate. Software
-rendering in a VM skews GPU-bound numbers, so every result carries the renderer it
-was measured on, and so does every performance record (acceptance/records.py)."""
+during interactions; boot to a usable greeter; greeter sign-in to a usable desktop; the
+render-path gate. Software rendering in a VM skews GPU-bound numbers, so every result
+carries the renderer it was measured on, and so does every performance record
+(acceptance/records.py)."""
 
 from __future__ import annotations
 
 import json
 import re
+import shlex
 import time
+from pathlib import Path
 
 from .. import core
 from ..core import check, expect
@@ -478,6 +481,69 @@ def write_footprint(ctx, name: str, fp: dict, ram_mib: float, variant: str = "")
     record_footprint(ctx, fp, ram_mib, variant)
 
 
+# Mapping classes that hold no memory of their own: address space reserved by
+# guards and glibc's arena tails, and the kernel's vdso/vvar pages.
+SHELL_UNCOUNTED = ("reserved", "kernel_pages")
+
+
+def parse_shell_memory_map(answer) -> dict:
+    """The compositor's `process_memory` answer -> the report, checked: Unobservable
+    unless it names its RSS and at least one class of mapping with resident memory."""
+    if not isinstance(answer, dict):
+        raise core.Unobservable(f"process_memory gave no answer: {str(answer)[:200]!r}")
+    classes = (answer.get("mappings") or {}).get("classes") or {}
+    if not answer.get("status_kib", {}).get("RssAnon") or not any(
+            c.get("resident_kib") for name, c in classes.items() if name not in SHELL_UNCOUNTED):
+        raise core.Unobservable(f"process_memory named no resident mappings: {str(answer)[:200]!r}")
+    return answer
+
+
+def shell_memory_map(ctx) -> dict:
+    """The compositor's own breakdown of its memory by kind of mapping (mincore over
+    /proc/self/maps, in-process, as Tilo's kernel has no smaps), glibc's heap split and
+    its threads by name: `tilo-control raw '{"op":"process_memory"}'`."""
+    try:
+        reply = ctx.vm.raw({"op": "process_memory"})
+    except Exception as e:  # noqa: BLE001 - any failure to ask is an unobserved subject
+        raise core.Unobservable(f"process_memory: {e}") from e
+    return parse_shell_memory_map((reply or {}).get("answer"))
+
+
+def shell_parts_mib(report: dict) -> dict:
+    """Resident MiB per mapping class, largest first, plus glibc's heap in use and free."""
+    classes = report["mappings"]["classes"]
+    parts = {name: round(c["resident_kib"] / 1024, 1)
+             for name, c in sorted(classes.items(), key=lambda kv: -kv[1]["resident_kib"])
+             if name not in SHELL_UNCOUNTED}
+    malloc = report.get("malloc") or {}
+    if "in_use_kib" in malloc:
+        parts["malloc_in_use"] = round(malloc["in_use_kib"] / 1024, 1)
+        parts["malloc_free"] = round(malloc["free_kib"] / 1024, 1)
+    return parts
+
+
+def record_shell_parts(ctx, report: dict, variant: str = "") -> None:
+    """`memory.shell_parts_mib.<class>`: the compositor's resident memory per mapping
+    class; `memory.shell_parts_mib.malloc_{in_use,free}`: glibc's heap split;
+    `memory.shell_threads`: its thread count. `variant` is a suffix."""
+    suffix = f".{variant}" if variant else ""
+    for name, value in shell_parts_mib(report).items():
+        ctx.record(f"memory.shell_parts_mib.{name}{suffix}", "MiB", [value],
+                   what="compositor resident memory by mapping class (resources.py shell_memory_map)")
+    threads = report["status_kib"].get("Threads")
+    if threads is not None:
+        ctx.record(f"memory.shell_threads{suffix}", "count", [threads], what="compositor threads")
+
+
+def shell_idle_anon_problems(anon_mib: float, budgets: dict) -> list[str]:
+    """The idle compositor's anonymous RSS against `shell_idle_anon_mb`."""
+    budget = budgets["shell_idle_anon_mb"]
+    if anon_mib > budget:
+        return [f"idle compositor anonymous RSS {anon_mib} MB > {budget} MB "
+                "(R01-shell-memory-map.json names its mappings)"]
+    return []
+
+
 def shell_anon_mib(table: dict, slot_uid: int) -> float | None:
     """The compositor's anonymous RSS in a `core.parse_processes` table."""
     slot = {p["pid"]: p for p in table["procs"].values() if p["uid"] == slot_uid}
@@ -664,6 +730,8 @@ def idle_empty(ctx, res):
         ctx.write("R01-shell-smaps.json", json.dumps(smaps, indent=1))
         res.metrics["shell_anon_rss_mib"] = smaps["anon_rss_mib"]
         ctx.record("memory.shell_anon_mib.empty", "MiB", [smaps["anon_rss_mib"]])
+        _record_shell_shm(ctx, res, smaps)
+        problems += shell_idle_anon_problems(smaps["anon_rss_mib"], ctx.config["budgets"])
     # What the idle RAM is made of, every user's processes and cgroups.
     try:
         fp = footprint(ctx)
@@ -672,7 +740,28 @@ def idle_empty(ctx, res):
     else:
         write_footprint(ctx, "R01-footprint.json", fp, m["guest_ram_used_mib"])
         res.metrics["footprint_mib"] = _footprint_summary(fp, m["guest_ram_used_mib"])
+    # What the compositor's own memory is: heap, stacks, GPU driver memory, fonts.
+    try:
+        report = shell_memory_map(ctx)
+    except core.Unobservable as e:
+        problems.append(f"compositor memory map: {e}")
+    else:
+        ctx.write("R01-shell-memory-map.json", json.dumps(report, indent=1))
+        record_shell_parts(ctx, report)
+        res.metrics["shell_parts_mib"] = shell_parts_mib(report)
     expect(not problems, "; ".join(problems))
+
+
+def _record_shell_shm(ctx, res, smaps: dict, variant: str = "") -> None:
+    """`memory.compositor_memfd_mib{.variant}`: shmem allocated to the memfds the
+    compositor holds open, mapped or not, with the per-name split in the metrics."""
+    suffix = f".{variant}" if variant else ""
+    by_name = smaps["shm_by_name"]
+    res.metrics[f"shell_shm_by_name{suffix}"] = by_name
+    ctx.record(f"memory.compositor_memfd_mib{suffix}", "MiB",
+               [round(sum(v["allocated_mib"] for v in by_name.values()), 1)],
+               what="shmem allocated to the compositor's open memfds and /dev/shm files",
+               largest=next(iter(by_name), None))
 
 
 def _footprint_summary(fp: dict, ram_mib: float) -> dict:
@@ -742,9 +831,12 @@ def mem(ctx, res):
     expect(m["shell"], "no compositor process found")
     problems, unobserved = [], []
     try:
-        ctx.write("R03-shell-smaps.json", json.dumps(core.shell_memory(ctx, m["shell"]["pid"]), indent=1))
+        smaps = core.shell_memory(ctx, m["shell"]["pid"])
     except core.Unobservable as e:
         unobserved.append(str(e))
+    else:
+        ctx.write("R03-shell-smaps.json", json.dumps(smaps, indent=1))
+        _record_shell_shm(ctx, res, smaps, "four_apps")
     if m["shell"]["anon_rss_mb"] > b["shell_anon_mb"]:
         problems.append(f"compositor anonymous RSS {m['shell']['anon_rss_mb']} MB > {b['shell_anon_mb']} MB")
     big = [p for p in m["procs"] if p["comm"] != "shell" and (p["anon_rss_mb"] or 0) > b["process_anon_mb"]]
@@ -783,12 +875,76 @@ def mem(ctx, res):
         write_footprint(ctx, "R03-footprint-after-close.json", after, ram, "after_close")
         ctx.record("idle.ram_mib.after_close", "MiB", [ram], what="guest MemTotal - MemAvailable")
         res.metrics["after_close_mib"] = _footprint_summary(after, ram)
+        try:
+            smaps = core.shell_memory(ctx, m["shell"]["pid"])
+        except core.Unobservable as e:
+            unobserved.append(f"the compositor's memory after the apps closed: {e}")
+        else:
+            ctx.write("R03-shell-smaps-after-close.json", json.dumps(smaps, indent=1))
+            _record_shell_shm(ctx, res, smaps, "after_close")
+        # The renderer's own account: its atlas and buffers as they grew and shrank, and
+        # each trim's release of freed device memory.
+        ctx.write("R03-renderer-memory.log", ctx.vm.exec(
+            f'grep -a -E "RENDERER-MEMORY|DEVICE-MEMORY" "{core.SESSION_LOG}"; true', check=False))
+        try:
+            report = shell_memory_map(ctx)
+        except core.Unobservable as e:
+            unobserved.append(f"compositor memory map after the apps closed: {e}")
+        else:
+            ctx.write("R03-shell-memory-map-after-close.json", json.dumps(report, indent=1))
+            record_shell_parts(ctx, report, "after_close")
+    try:
+        res.metrics["disk"] = record_disk(ctx)
+    except core.Unobservable as e:
+        unobserved.append(f"per-user disk use: {e}")
     expect(not problems, "; ".join(problems + unobserved))
     if unobserved:
         raise core.Unobservable("; ".join(unobserved))
 
 
 AFTER_CLOSE_SETTLE_S = 5
+
+# The slot user's per-user runtime builds and app store, in bytes: what downloaded
+# runtimes and apps hold on disk once collection after each change ran (TIL-748,
+# TIL-753). A build is a directory under tilo-runtime whose name has no leading dot.
+DISK = r"""
+data=${XDG_DATA_HOME:-$HOME/.local/share}
+for d in tilo-runtime tilo-apps; do
+  if [ -d "$data/$d" ]; then echo "$d $(du -sb "$data/$d" | cut -f1)"; else echo "$d 0"; fi
+done
+if [ -d "$data/tilo-runtime" ]; then
+  echo "builds $(find "$data/tilo-runtime" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | wc -l)"
+else
+  echo "builds 0"
+fi
+"""
+
+
+def parse_disk(text: str) -> dict:
+    """`DISK` output -> {"runtime_bytes", "app_store_bytes", "runtime_builds"}."""
+    values = {}
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) == 2 and f[1].isdigit():
+            values[f[0]] = int(f[1])
+    missing = {"tilo-runtime", "tilo-apps", "builds"} - values.keys()
+    if missing:
+        raise core.Unobservable(f"per-user disk use not reported for {sorted(missing)}: {text[-200:]!r}")
+    return {"runtime_bytes": values["tilo-runtime"], "app_store_bytes": values["tilo-apps"],
+            "runtime_builds": values["builds"]}
+
+
+def record_disk(ctx) -> dict:
+    """`disk.runtime_mib.per_user`, `disk.app_store_mib.per_user` and
+    `disk.runtime_builds.per_user`: the slot user's downloaded runtimes and apps."""
+    disk = parse_disk(ctx.vm.exec(DISK))
+    ctx.record("disk.runtime_mib.per_user", "MiB", [round(disk["runtime_bytes"] / 2**20, 1)],
+               what="du of $XDG_DATA_HOME/tilo-runtime", builds=disk["runtime_builds"])
+    ctx.record("disk.app_store_mib.per_user", "MiB", [round(disk["app_store_bytes"] / 2**20, 1)],
+               what="du of $XDG_DATA_HOME/tilo-apps")
+    ctx.record("disk.runtime_builds.per_user", "count", [disk["runtime_builds"]],
+               what="runtime builds under $XDG_DATA_HOME/tilo-runtime")
+    return disk
 
 
 def _footprint_after_close(ctx) -> dict:
@@ -889,7 +1045,76 @@ def boot(ctx, res):
     ctx.record("boot.to_greeter_s", "s", [gate["to_greeter_s"]], what="kernel+userspace, firmware excluded")
     for phase in ("kernel", "initrd", "userspace"):
         ctx.record(f"boot.{phase}_s", "s", [gate.get(f"{phase}_s")])
-    expect(gate["exit"] == 0, f"the boot gate failed: {said}")
+    problems = [] if gate["exit"] == 0 else [f"the boot gate failed: {said}"]
+    problems += boot_attribution(ctx, res)
+    expect(not problems, "; ".join(problems))
+
+
+# Where a passing boot's time went, written on every run (the gate names it only on a
+# failing or slow boot): systemd's own phases, the greeter's critical chain, the units that
+# took longest and the whole boot as a plot (TIL-767).
+BOOT_ANALYSIS = r"""
+exec 2>&1
+echo "== time"; systemd-analyze time --no-pager
+echo "== critical-chain greetd.service"; systemd-analyze critical-chain greetd.service --no-pager
+echo "== critical-chain graphical.target"; systemd-analyze critical-chain graphical.target --no-pager
+echo "== blame"; systemd-analyze blame --no-pager | grep -v '\.device$' | head -40
+echo "== stamps"
+echo "userspace_us=$(systemctl show -p UserspaceTimestampMonotonic --value)"
+echo "greetd_us=$(systemctl show greetd.service -p ActiveEnterTimestampMonotonic --value)"
+echo "== end"
+"""
+CHAIN_UNIT = re.compile(r"([A-Za-z0-9_@:.\\-]+\.(?:service|target|mount|socket|device|swap|path|timer|slice))[ @]")
+STAMP = re.compile(r"^(userspace|greetd)_us=(\d+)$", re.M)
+# Nothing the greeter needs comes from the network: greetd waits for
+# systemd-user-sessions.service, which upstream orders After=network.target, so a network
+# start job queued before logins are allowed holds the greeter until NetworkManager is up.
+GREETER_NEEDS_NO = ("NetworkManager.service", "network.target", "network-online.target",
+                    "firewalld.service", "NetworkManager-wait-online.service")
+
+
+def parse_boot_analysis(text: str) -> dict:
+    """The units on greetd's critical chain, in chain order, and greetd's start in seconds
+    since kernel start and since userspace started."""
+    sections: dict[str, list[str]] = {}
+    name = None
+    for line in text.splitlines():
+        if line.startswith("== "):
+            name = line[3:].strip()
+            sections[name] = []
+        elif name is not None:
+            sections[name].append(line)
+    chain = [m.group(1) for line in sections.get("critical-chain greetd.service", [])
+             if (m := CHAIN_UNIT.search(line + " "))]
+    stamps = {k: int(v) for k, v in STAMP.findall(text)}
+    out = {"greeter_chain": chain}
+    if stamps.get("greetd"):
+        out["greeter_s"] = round(stamps["greetd"] / 1e6, 3)
+        if stamps.get("userspace"):
+            out["userspace_to_greeter_s"] = round((stamps["greetd"] - stamps["userspace"]) / 1e6, 3)
+    return out
+
+
+def boot_attribution(ctx, res) -> list[str]:
+    """Write the boot's attribution as evidence, record greetd's start, and name what has no
+    business on the greeter's critical chain or holds the greeter past its userspace budget."""
+    text = ctx.vm.root_exec(BOOT_ANALYSIS, timeout=120)
+    ctx.write("R06-boot-analysis.txt", text)
+    ctx.write("R06-boot-plot.svg", ctx.vm.root_exec("systemd-analyze plot", timeout=120))
+    analysis = parse_boot_analysis(text)
+    res.metrics.update(analysis)
+    if "greeter_s" not in analysis or not analysis["greeter_chain"]:
+        raise core.Unobservable(f"systemd named no critical chain or start time for greetd: {text.strip()[-300:]}")
+    ctx.record("boot.greeter_s", "s", [analysis["greeter_s"]], what="kernel start to greetd.service active")
+    ctx.record("boot.userspace_to_greeter_s", "s", [analysis.get("userspace_to_greeter_s")],
+               what="userspace start to greetd.service active")
+    budget = ctx.config["budgets"]["userspace_to_greeter_s"]
+    problems = [f"{unit} is on the greeter's critical chain" for unit in analysis["greeter_chain"]
+                if unit in GREETER_NEEDS_NO]
+    if analysis.get("userspace_to_greeter_s", 0) > budget:
+        problems.append(f"userspace took {analysis['userspace_to_greeter_s']} s to the greeter > {budget} s "
+                        f"(chain: {' <- '.join(analysis['greeter_chain'][:6])})")
+    return problems
 
 
 RENDER_REPORT = "/usr/libexec/tilo-session-report"
@@ -915,3 +1140,121 @@ def render_gate(ctx, res):
     if unobserved:
         raise core.Unobservable("; ".join(unobserved))
     expect(not failures, "; ".join(failures) + f" [renderer: {ctx.facts.get('renderer')}]")
+
+
+# -- greeter sign-in to the desktop (TIL-767) ---------------------------------------
+
+# One sh script, so ssh latency never lands inside the measured window: sign in at the
+# seat0 greeter through its console action, then poll every 20 ms for each step of the
+# session's start. Times are CLOCK_MONOTONIC seconds (/proc/timer_list's `now at`), the
+# clock of the compositor's `FRAME-LIFECYCLE ... monotonic_us=` line.
+SIGN_IN = r"""
+user=__USER__; uid=$(id -u "$user"); home=$(getent passwd "$user" | cut -d: -f6)
+gsock=$(ls /run/user/$(id -u greetd)/tilo-console/*.sock 2>/dev/null | head -1)
+log="$home/.local/state/tilo/session-logs/latest.log"
+ctl=/run/user/$uid/tilo-session/test-control.sock
+now() { awk '/^now at/ { printf "%.3f", $3 / 1e9; exit }' /proc/timer_list; }
+[ -S "$gsock" ] || { echo "SIGNIN error=no-greeter-socket"; exit 0; }
+rm -f "$log"
+t0=$(now)
+printf '%s' __SECRET__ | tilo-control --socket "$gsock" actions invoke greeter sign-in@greeter --args-stdin >/tmp/acc-signin.out 2>&1
+um= sess= shell= frame= usable=
+i=0
+while [ $i -lt 1500 ]; do
+  i=$((i + 1)); t=$(now)
+  [ -n "$um" ] || { systemctl is-active -q "user@$uid.service" && um=$t; }
+  [ -n "$sess" ] || { pgrep -u "$uid" -f '^/bin/bash /usr/libexec/tilo-session' >/dev/null && sess=$t; }
+  [ -n "$shell" ] || { pgrep -u "$uid" -x shell >/dev/null && shell=$t; }
+  [ -n "$frame" ] || frame=$(sed -n 's/^FRAME-LIFECYCLE serial=1 event=render-retired .* monotonic_us=\([0-9]*\).*/\1/p' "$log" 2>/dev/null | head -1)
+  if [ -z "$usable" ] && [ -S "$ctl" ] && timeout 3 tilo-control --socket "$ctl" state-dump >/dev/null 2>&1; then usable=$(now); fi
+  [ -n "$um" ] && [ -n "$sess" ] && [ -n "$shell" ] && [ -n "$usable" ] \
+    && grep -q '^FRAME-LIFECYCLE serial=1 ' "$log" 2>/dev/null && break
+  sleep 0.02
+done
+grep -m1 '^FRAME-LIFECYCLE serial=1 ' "$log" 2>/dev/null
+echo "SIGNIN t0=$t0 user_manager=$um session=$sess shell=$shell first_frame_us=$frame usable=$usable"
+cut -c1-300 /tmp/acc-signin.out
+"""
+SIGN_OUT = r"""
+loginctl terminate-user __USER__ 2>&1 || true
+i=0
+while [ $i -lt 300 ]; do
+  i=$((i + 1))
+  ! pgrep -u __USER__ -x shell >/dev/null && ls /run/user/$(id -u greetd)/tilo-console/*.sock >/dev/null 2>&1 && break
+  sleep 0.2
+done
+sleep 3
+echo "SIGNED-OUT shell=$(pgrep -u __USER__ -x shell | head -1)"
+"""
+SIGNIN_LINE = re.compile(r"^SIGNIN (.*)$", re.M)
+
+
+def dev_account() -> tuple[str, str]:
+    """The account a dev disk is built with (os/account.env: a development and test
+    credential that never reaches a published image)."""
+    env = (Path(__file__).resolve().parents[4] / "os" / "account.env").read_text()
+    match = re.search(r'TILO_ACCOUNT="\$\{TILO_ACCOUNT:-([^:"]+):([^:"]+):', env)
+    if not match:
+        raise core.Unobservable("os/account.env names no dev account")
+    return match.group(1), match.group(2)
+
+
+def parse_sign_in(text: str) -> dict:
+    """Seconds from the sign-in request to each step of the session's start; a step the
+    probe never saw is absent. Usable is the later of the first presented frame and the
+    compositor's control socket answering."""
+    line = SIGNIN_LINE.search(text)
+    if not line:
+        return {}
+    fields = dict(f.split("=", 1) for f in line.group(1).split() if "=" in f)
+    try:
+        t0 = float(fields["t0"])
+    except (KeyError, ValueError):
+        return {"error": fields.get("error", "no start time")}
+    out = {}
+    for key, name in (("user_manager", "user_manager_s"), ("session", "session_s"),
+                      ("shell", "shell_s"), ("usable", "control_s")):
+        if fields.get(key):
+            out[name] = round(float(fields[key]) - t0, 3)
+    if fields.get("first_frame_us"):
+        out["first_frame_s"] = round(int(fields["first_frame_us"]) / 1e6 - t0, 3)
+    if "first_frame_s" in out and "control_s" in out:
+        out["usable_s"] = max(out["first_frame_s"], out["control_s"])
+    return out
+
+
+def sign_in(ctx, user: str, secret: str, label: str) -> dict:
+    script = SIGN_IN.replace("__USER__", shlex.quote(user)).replace(
+        "__SECRET__", shlex.quote(json.dumps({"password": secret})))
+    text = ctx.vm.root_exec(script, timeout=120)
+    ctx.write(f"R08-sign-in-{label}.txt", text)
+    return parse_sign_in(text)
+
+
+@check("R08", AREA, "Signing in at the greeter reaches a drawn, answering desktop within budget")
+def sign_in_to_desktop(ctx, res):
+    """Sign the dev account in at the seat0 greeter through its console action, as a
+    person's passcode does, and time each step to a usable desktop: the user manager, the
+    session wrapper, the compositor process, its first presented frame and its control
+    socket answering. Twice: the account's first sign-in (cold caches, first-login setup),
+    then again after signing out, which is what every later sign-in costs."""
+    user, secret = dev_account()
+    budgets = ctx.config["budgets"]
+    problems = []
+    for label in ("first", "again"):
+        if label == "again":
+            ctx.write("R08-sign-out.txt",
+                      ctx.vm.root_exec(SIGN_OUT.replace("__USER__", shlex.quote(user)), timeout=120))
+        steps = sign_in(ctx, user, secret, label)
+        res.metrics[label] = steps
+        if "usable_s" not in steps:
+            raise core.Unobservable(f"{label} sign-in: no first presented frame with a time, or no "
+                                    f"answering control socket: {steps}")
+        for step in ("shell", "first_frame", "usable"):
+            ctx.record(f"session.sign_in_{label}.{step}_s", "s", [steps.get(f"{step}_s")],
+                       what=f"greeter sign-in request to {step.replace('_', ' ')}")
+        budget = budgets[f"sign_in_{label}_usable_s"]
+        if steps["usable_s"] > budget:
+            problems.append(f"{label} sign-in took {steps['usable_s']} s to a usable desktop > {budget} s "
+                            f"({steps})")
+    expect(not problems, "; ".join(problems) + f" [renderer: {ctx.facts.get('renderer')}]")

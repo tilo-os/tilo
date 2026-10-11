@@ -10,6 +10,14 @@
 //! and the registry row is replaced atomically; that replacement is the
 //! commit point. The tree of a replaced version is removed afterwards and
 //! every blob no remaining package references is evicted.
+//!
+//! A tree a running app has mounted ([`crate::mounts`]), or that a launch
+//! holds ([`crate::lease`]) because it chose the tree and has not mounted it
+//! yet, is never removed: retiring it leaves it in place, and
+//! [`PackageStore::collect_orphans`] removes it once nothing holds it. The
+//! size sweep never evicts a running app. A tree leaves `pkgs/` in one
+//! rename into `tmp/` before any of its files is deleted, so a removal
+//! stopped halfway never leaves a partial tree where a launch looks.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -24,7 +32,28 @@ use crate::StoreError;
 use crate::content::{self, Content};
 use crate::integrity;
 use crate::layout::{COLLECTION_FILE, Layout, MANIFEST_FILE, SIGNED_ROOT_FILE};
+use crate::lease;
+use crate::mounts::InUse;
 use crate::registry::{InstalledPackage, Registry};
+
+/// The store's size cap when nothing configures one: the app host's
+/// `--max-store-bytes` default, and what `tilo-install gc` applies.
+pub const DEFAULT_MAX_STORE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// What [`PackageStore::collect_orphans`] removed and kept.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Orphans {
+    /// Payload trees and records no row or image names, now removed.
+    pub removed: Vec<PathBuf>,
+    /// Bytes those held.
+    pub removed_bytes: u64,
+    /// Unnamed trees kept because a running app has them mounted or a
+    /// launch holds them.
+    pub kept_in_use: Vec<PathBuf>,
+    /// Bytes of install staging under `tmp/` that crashed installs left,
+    /// removed.
+    pub staging_bytes: u64,
+}
 
 /// Payload blobs read back from the content store.
 struct StoredBlobs<'a, 'b> {
@@ -238,14 +267,32 @@ fn remove_tree(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Remove a directory tree, a file or a link, never following a link.
+fn remove_entry(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => remove_tree(path),
+        Ok(_) => match std::fs::remove_file(path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// The staging name `materialise` gives a same-id tree it replaced.
+const RETIRED_TREE: &str = "retired-tree";
+
 /// Unique name for a staging path under `tmp/`.
 fn staging_name(id: PackageId, what: &str) -> String {
     let nanos = tilo_clock::unix_now_ns() % 1_000_000_000;
     format!("{}.{what}.{}.{nanos}", id.to_hex(), std::process::id())
 }
 
-/// Replace `live` with the fully written `staged` directory.
-fn swap_in(staged: &Path, live: &Path, retired: &Path) -> std::io::Result<()> {
+/// Replace `live` with the fully written `staged` directory, moving what
+/// was there to `retired`. Returns whether anything was; the caller removes
+/// it.
+fn swap_in(staged: &Path, live: &Path, retired: &Path) -> std::io::Result<bool> {
     let had_live = std::fs::symlink_metadata(live).is_ok();
     if had_live {
         std::fs::rename(live, retired)?;
@@ -256,10 +303,7 @@ fn swap_in(staged: &Path, live: &Path, retired: &Path) -> std::io::Result<()> {
         }
         return Err(error);
     }
-    if had_live {
-        remove_tree(retired)?;
-    }
-    Ok(())
+    Ok(had_live)
 }
 
 #[cfg(unix)]
@@ -717,16 +761,19 @@ impl PackageStore {
                 &record.join(COLLECTION_FILE),
                 &meta.collection_bytes,
             )?;
-            swap_in(
-                &tree,
-                &layout.payload(meta.id),
-                &tmp.join(staging_name(meta.id, "retired-tree")),
-            )?;
-            swap_in(
-                &record,
-                &layout.meta_dir(meta.id),
-                &tmp.join(staging_name(meta.id, "retired-pkg")),
-            )?;
+            let retired_tree = tmp.join(staging_name(meta.id, RETIRED_TREE));
+            // A launch holding or running the replaced copy keeps it: the
+            // staging sweep removes it once nothing does.
+            if swap_in(&tree, &layout.payload(meta.id), &retired_tree)?
+                && !lease::busy(layout, meta.id)?
+                && !InUse::now().holds(&retired_tree)
+            {
+                remove_tree(&retired_tree)?;
+            }
+            let retired_record = tmp.join(staging_name(meta.id, "retired-pkg"));
+            if swap_in(&record, &layout.meta_dir(meta.id), &retired_record)? {
+                remove_tree(&retired_record)?;
+            }
             Ok(())
         })();
         if result.is_err() {
@@ -840,12 +887,21 @@ impl PackageStore {
             .fold(0u64, u64::saturating_add)
     }
 
-    /// Remove the files of a row that is no longer in the registry.
+    /// Remove the files of a row that is no longer in the registry. A tree
+    /// a running app has mounted or a launch holds stays, with its record,
+    /// until [`Self::collect_orphans`] finds it free.
     pub(crate) fn retire_tree(&self, row: &InstalledPackage) -> Result<(), StoreError> {
         let layout = &self.layout;
         if let Some(id) = layout.materialised_id(&row.payload_root) {
-            remove_tree(&layout.payload(id))?;
-            remove_tree(&layout.meta_dir(id))?;
+            let Some(taken) = lease::take(layout, id)? else {
+                return Ok(());
+            };
+            if InUse::now().holds(&layout.payload(id)) {
+                return Ok(());
+            }
+            self.discard(&layout.payload(id), id, "discarded-tree")?;
+            self.discard(&layout.meta_dir(id), id, "discarded-pkg")?;
+            lease::forget(layout, id, taken)?;
         } else if row.payload_root.starts_with(layout.root().join("payloads")) {
             // A tree from before payloads were content addressed.
             remove_tree(&row.payload_root)?;
@@ -890,6 +946,179 @@ impl PackageStore {
         registry
             .remove(app_id)
             .ok_or_else(|| StoreError::NotInstalled(app_id.to_string()))
+    }
+
+    /// Move `path` (`id`'s tree or record) out of `pkgs/` into `tmp/` in one
+    /// rename, then delete it: a deletion stopped halfway leaves nothing a
+    /// launch looks up, and the staging sweep finishes it.
+    fn discard(&self, path: &Path, id: PackageId, what: &str) -> Result<(), StoreError> {
+        if !std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) {
+            return Ok(());
+        }
+        let tmp = self.layout.tmp();
+        std::fs::create_dir_all(&tmp)?;
+        let gone = tmp.join(staging_name(id, what));
+        std::fs::rename(path, &gone)?;
+        remove_tree(&gone)?;
+        Ok(())
+    }
+
+    /// Remove every payload tree and record under `pkgs/` that no registry
+    /// row and no image names: left by a crash between a commit and retiring
+    /// the replaced tree, or kept by [`Self::retire_tree`] while a running
+    /// app had it mounted or a launch held it. A tree `in_use` holds or a
+    /// launch holds stays. Then empty `tmp/` of the staging crashed
+    /// installs left.
+    ///
+    /// Nothing selects such a tree — an install materialises its tree afresh
+    /// — and a launch that named one by path takes its lease first, which
+    /// this holds while it removes the tree, so the launch finds the tree
+    /// whole or gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the registry cannot be read or a removal fails.
+    pub fn collect_orphans(&self, in_use: &InUse) -> Result<Orphans, StoreError> {
+        let packages = self.layout.packages();
+        if !packages.is_dir() && !self.layout.tmp().is_dir() {
+            return Ok(Orphans::default());
+        }
+        let _lock = self.lock()?;
+        let mut out = Orphans {
+            staging_bytes: self.sweep_staging_locked(in_use)?,
+            ..Orphans::default()
+        };
+        if !packages.is_dir() {
+            return Ok(out);
+        }
+        let named: BTreeSet<PackageId> = self
+            .registry()?
+            .entries()
+            .iter()
+            .filter_map(|row| self.layout.materialised_id(&row.payload_root))
+            .collect();
+        let mut found = BTreeSet::new();
+        for entry in std::fs::read_dir(&packages)? {
+            let entry = entry?;
+            // Only directories directly under `pkgs/`; a link is never followed.
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            if let Some(id) = name
+                .to_str()
+                .map(|name| name.strip_suffix(".pkg").unwrap_or(name))
+                .and_then(crate::layout::parse_id_hex)
+            {
+                found.insert(id);
+            }
+        }
+        for id in found.difference(&named) {
+            let orphan = match crate::image::read_image(&self.layout, *id) {
+                Ok(None) | Err(StoreError::CorruptPackage(..)) => true,
+                Err(StoreError::Io(error)) => error.kind() == std::io::ErrorKind::NotFound,
+                // An image has no row and stays until `remove_image`; a
+                // record unreadable for another reason cannot be told apart.
+                Ok(Some(_)) | Err(_) => false,
+            };
+            if !orphan {
+                continue;
+            }
+            let tree = self.layout.payload(*id);
+            let Some(taken) = lease::take(&self.layout, *id)? else {
+                out.kept_in_use.push(tree);
+                continue;
+            };
+            if in_use.holds(&tree) {
+                out.kept_in_use.push(tree);
+                continue;
+            }
+            for (path, what) in [
+                (tree, "orphan-tree"),
+                (self.layout.meta_dir(*id), "orphan-pkg"),
+            ] {
+                if !path.is_dir() {
+                    continue;
+                }
+                let bytes = crate::tree_size(&path);
+                self.discard(&path, *id, what)?;
+                out.removed_bytes = out.removed_bytes.saturating_add(bytes);
+                out.removed.push(path);
+            }
+            lease::forget(&self.layout, *id, taken)?;
+        }
+        self.forget_idle_leases()?;
+        Ok(out)
+    }
+
+    /// Drop the lease file of every tree that is gone and that no launch
+    /// holds: a launch that found its tree removed leaves one behind.
+    fn forget_idle_leases(&self) -> Result<(), StoreError> {
+        let leases = self.layout.root().join(crate::layout::LEASES_DIR);
+        if !std::fs::symlink_metadata(&leases).is_ok_and(|meta| meta.is_dir()) {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(&leases)? {
+            let entry = entry?;
+            let Some(id) = entry
+                .file_name()
+                .to_str()
+                .and_then(crate::layout::parse_id_hex)
+            else {
+                continue;
+            };
+            if self.layout.payload(id).exists() {
+                continue;
+            }
+            if let Some(taken) = lease::take(&self.layout, id)? {
+                lease::forget(&self.layout, id, taken)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove what crashed installs left in `tmp/`, returning its bytes.
+    /// Every install stages there only while it holds the store lock, which
+    /// the caller holds, so all of it is abandoned — except a same-id tree
+    /// an install replaced while a launch held it or a running app had it
+    /// mounted, which stays until neither does.
+    fn sweep_staging_locked(&self, in_use: &InUse) -> Result<u64, StoreError> {
+        let tmp = self.layout.tmp();
+        if !std::fs::symlink_metadata(&tmp).is_ok_and(|meta| meta.is_dir()) {
+            return Ok(0);
+        }
+        let mut bytes = 0u64;
+        for entry in std::fs::read_dir(&tmp)? {
+            let path = entry?.path();
+            let replaced = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.split_once('.'))
+                .filter(|(_, rest)| rest.starts_with(RETIRED_TREE))
+                .and_then(|(hex, _)| crate::layout::parse_id_hex(hex));
+            let taken = match replaced {
+                Some(id) => match lease::take(&self.layout, id)? {
+                    Some(taken) => Some((id, taken)),
+                    None => continue,
+                },
+                None => None,
+            };
+            if taken.is_some() && in_use.holds(&path) {
+                continue;
+            }
+            let size = match std::fs::symlink_metadata(&path) {
+                Ok(meta) if meta.is_file() => meta.len(),
+                _ => crate::tree_size(&path),
+            };
+            remove_entry(&path)?;
+            bytes = bytes.saturating_add(size);
+            if let Some((id, taken)) = taken
+                && !self.layout.payload(id).exists()
+            {
+                lease::forget(&self.layout, id, taken)?;
+            }
+        }
+        Ok(bytes)
     }
 
     /// Set the pin of `app_id`.
@@ -1044,7 +1273,8 @@ impl PackageStore {
 
     /// Evict unpinned packages, least recently used first, until the
     /// store's distinct payload bytes are at most `max_bytes`. `0` disables
-    /// the sweep. Returns the app ids removed.
+    /// the sweep. A package a running app has mounted is never evicted.
+    /// Returns the app ids removed.
     ///
     /// The whole sweep runs under the store's lock: usage is measured once,
     /// the evictions are planned from it, the registry is rewritten once and
@@ -1059,7 +1289,14 @@ impl PackageStore {
         }
         let _lock = self.lock()?;
         let mut registry = self.registry()?;
-        let plan = plan_eviction(&Self::usage_index(&registry), max_bytes);
+        let in_use = InUse::now();
+        let running: BTreeSet<String> = registry
+            .entries()
+            .iter()
+            .filter(|row| in_use.holds(&row.payload_root))
+            .map(|row| row.id.clone())
+            .collect();
+        let plan = plan_eviction(&Self::usage_index(&registry), max_bytes, &running);
         if plan.is_empty() {
             return Ok(plan);
         }
@@ -1141,14 +1378,18 @@ impl UsageIndex {
 /// distinct bytes left are at most `max_bytes`. Evicting a row frees its
 /// loose bytes and every blob no remaining row references; a blob another
 /// row still shares frees nothing. `0` plans nothing.
-fn plan_eviction(index: &UsageIndex, max_bytes: u64) -> Vec<String> {
+fn plan_eviction(index: &UsageIndex, max_bytes: u64, running: &BTreeSet<String>) -> Vec<String> {
     let mut plan = Vec::new();
     if max_bytes == 0 {
         return plan;
     }
     let mut total = index.disk_usage().total_bytes;
     let mut refcount = index.refcount.clone();
-    let mut candidates: Vec<&UsageRow> = index.rows.iter().filter(|row| !row.pinned).collect();
+    let mut candidates: Vec<&UsageRow> = index
+        .rows
+        .iter()
+        .filter(|row| !row.pinned && !running.contains(&row.id))
+        .collect();
     candidates.sort_by_key(|row| row.last_used);
     for row in candidates {
         if total <= max_bytes {
@@ -1199,9 +1440,28 @@ impl From<TappError> for StoreError {
 #[cfg(test)]
 mod eviction_plan_tests {
     use super::{BlobHash, UsageIndex, UsageRow, plan_eviction};
+    use std::collections::BTreeSet;
 
     fn blob(seed: u8) -> BlobHash {
         BlobHash::of(&[seed])
+    }
+
+    fn none() -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+
+    #[test]
+    fn plan_eviction_never_picks_a_running_app() {
+        let index = UsageIndex::new(vec![
+            row("so.tilo.running", 1, false, &[(1, 1_000)]),
+            row("so.tilo.idle", 5, false, &[(2, 1_000)]),
+        ]);
+        let running = BTreeSet::from(["so.tilo.running".to_string()]);
+        assert_eq!(
+            plan_eviction(&index, 1, &running),
+            vec!["so.tilo.idle"],
+            "the least recently used app is running, so it stays over the cap"
+        );
     }
 
     fn row(id: &str, last_used: u64, pinned: bool, blobs: &[(u8, u64)]) -> UsageRow {
@@ -1231,15 +1491,21 @@ mod eviction_plan_tests {
         );
         assert_eq!(index.disk_usage().tried_bytes, 800, "each row's own bytes");
         // Evicting a frees only its own 100 bytes: b still holds the library.
-        assert_eq!(plan_eviction(&index, 450), vec!["so.tilo.a"]);
-        assert_eq!(plan_eviction(&index, 400), vec!["so.tilo.a"]);
+        assert_eq!(plan_eviction(&index, 450, &none()), vec!["so.tilo.a"]);
+        assert_eq!(plan_eviction(&index, 400, &none()), vec!["so.tilo.a"]);
         // 400 left after a is still over 399, and b then frees 400.
-        assert_eq!(plan_eviction(&index, 399), vec!["so.tilo.a", "so.tilo.b"]);
+        assert_eq!(
+            plan_eviction(&index, 399, &none()),
+            vec!["so.tilo.a", "so.tilo.b"]
+        );
         assert!(
-            plan_eviction(&index, 500).is_empty(),
+            plan_eviction(&index, 500, &none()).is_empty(),
             "already under the cap"
         );
-        assert!(plan_eviction(&index, 0).is_empty(), "0 disables the sweep");
+        assert!(
+            plan_eviction(&index, 0, &none()).is_empty(),
+            "0 disables the sweep"
+        );
     }
 
     #[test]
@@ -1249,7 +1515,7 @@ mod eviction_plan_tests {
             row("so.tilo.tried", 5, false, &[(2, 1_000)]),
         ]);
         assert_eq!(
-            plan_eviction(&index, 1),
+            plan_eviction(&index, 1, &none()),
             vec!["so.tilo.tried"],
             "the oldest row is pinned, and the cap is never met, yet it stays"
         );
@@ -1265,14 +1531,14 @@ mod eviction_plan_tests {
             loose,
         ]);
         assert_eq!(index.disk_usage().total_bytes, 250);
-        assert_eq!(plan_eviction(&index, 150), vec!["so.tilo.oldest"]);
+        assert_eq!(plan_eviction(&index, 150, &none()), vec!["so.tilo.oldest"]);
         assert_eq!(
-            plan_eviction(&index, 100),
+            plan_eviction(&index, 100, &none()),
             vec!["so.tilo.oldest", "so.tilo.legacy"],
             "a row without a record frees its whole tree"
         );
         assert_eq!(
-            plan_eviction(&index, 1),
+            plan_eviction(&index, 1, &none()),
             vec!["so.tilo.oldest", "so.tilo.legacy", "so.tilo.newest"]
         );
     }

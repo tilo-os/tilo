@@ -168,6 +168,32 @@ fn dedicated_contract(id: &str) -> Option<tilo_actions::ActionContract> {
     collaboration_contract(id)
 }
 
+/// Actions that only open, inspect or dismiss shell views.
+const VIEW_ACTION_IDS: &[&str] = &[
+    "desktop-tour.open",
+    "topbar.editor.open",
+    "settings.open",
+    "settings.members.open",
+    "settings.privacy.open",
+    "settings.apps.open",
+    "quick-settings.open",
+    "quick-settings.clipboard",
+    "quick-settings.devices",
+    "projection.open",
+    "capture.open",
+    "collaborators.open",
+    "room.activity.open",
+    "room.activity.explore",
+    "room.activity.replay",
+    "room.activity.acknowledge",
+    "room.activity.tasks",
+    "tab.menu",
+    "tab.drag.cancel",
+    "history.compare",
+    "history.undo",
+    "history.restore",
+];
+
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
         ActionContract, ConfirmationPolicy, PermissionRequirement, RetryPolicy, RiskLevel,
@@ -183,29 +209,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
         }
-        "desktop-tour.open"
-        | "settings.open"
-        | "settings.members.open"
-        | "settings.privacy.open"
-        | "settings.apps.open"
-        | "quick-settings.open"
-        | "quick-settings.clipboard"
-        | "quick-settings.devices"
-        | "projection.open"
-        | "capture.open"
-        | "collaborators.open"
-        | "room.activity.open"
-        | "room.activity.explore"
-        | "room.activity.replay"
-        | "room.activity.acknowledge"
-        | "room.activity.tasks"
-        | "tab.menu"
-        | "tab.drag.cancel"
-        | "history.compare"
-        | "history.undo"
-        | "history.restore" => {
-            contract = ActionContract::view();
-        }
+        id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
             contract.permission = PermissionRequirement::Admin;
             contract.risk = RiskLevel::Privileged;
@@ -277,31 +281,10 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
 
 pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
     match id {
-        "shortcut-help.toggle"
-        | "desktop-tour.open"
-        | "overview.toggle"
-        | "settings.open"
-        | "settings.members.open"
-        | "settings.privacy.open"
-        | "settings.apps.open"
-        | "quick-settings.open"
-        | "quick-settings.clipboard"
-        | "quick-settings.devices"
-        | "projection.open"
-        | "capture.open"
-        | "collaborators.open"
-        | "room.activity.open"
-        | "room.activity.explore"
-        | "room.activity.replay"
-        | "room.activity.acknowledge"
-        | "room.activity.tasks"
-        | "tab.menu"
-        | "tab.drag.cancel"
-        | "history.compare"
-        | "history.undo"
-        | "history.restore"
-        | "peer.invite"
-        | "peer.connect" => tilo_actions::OperationKind::View,
+        "shortcut-help.toggle" | "overview.toggle" | "peer.invite" | "peer.connect" => {
+            tilo_actions::OperationKind::View
+        }
+        id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
         "record.bring" | "peer.invite.named" | "agent.invite" => {
             tilo_actions::OperationKind::Document
         }
@@ -1278,6 +1261,15 @@ impl Action {
                 }
                 active_workspace_id(st)?;
                 st.request_axis_gather();
+                Ok(())
+            },
+        ),
+        chrome(
+            "topbar.editor.open",
+            "search-action-topbar-editor",
+            "search-action-topbar-editor-subtitle",
+            |st, _| {
+                st.request_topbar_editor();
                 Ok(())
             },
         ),
@@ -3164,6 +3156,12 @@ impl ActionsProvider {
         // together to keep the matches and score them.
         let mut candidates = ActionCandidates::default();
         for action in Action::ALL {
+            if action.id == "topbar.editor.open"
+                && ctx.chrome.fullscreen_group().is_some()
+                && ctx.chrome.is_fullscreen()
+            {
+                continue;
+            }
             // A session not running peer sync has nothing to invite into.
             if (action.id.starts_with("peer.") || INVITATION_ACTION_IDS.contains(&action.id))
                 && !ctx.chrome.peer_sync_enabled
@@ -4055,6 +4053,33 @@ mod tests {
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
     use std::sync::Arc;
+
+    #[test]
+    fn topbar_editor_catalogue_opens_the_native_request_and_hides_in_fullscreen() {
+        let chrome = chrome_with_room();
+        let provider = ActionsProvider::new();
+        let results = action_results(&provider, &chrome);
+        let editor = results
+            .iter()
+            .find(|row| row.id == "topbar.editor.open")
+            .expect("public editor action");
+        assert_eq!(editor.operation_kind, tilo_actions::OperationKind::View);
+        assert_eq!(editor.contract, Some(tilo_actions::ActionContract::view()));
+        invoke_action(&results, "topbar.editor.open", &chrome);
+        assert!(chrome.borrow_mut().take_topbar_editor_request());
+        assert!(!chrome.borrow_mut().take_topbar_editor_request());
+        {
+            let mut state = chrome.borrow_mut();
+            state.set_fullscreen_group(Some(1));
+            state.set_fullscreen_presentation(true);
+        }
+        assert!(
+            !action_results(&provider, &chrome)
+                .iter()
+                .any(|row| row.id == "topbar.editor.open")
+        );
+        assert!(!chrome.borrow_mut().take_topbar_editor_request());
+    }
 
     fn chrome_rc() -> crate::shell::chrome_state::Chrome {
         let handle: WorkspaceTreeHandle =
@@ -5659,13 +5684,38 @@ mod tests {
     /// cannot see through the table; every one must resolve in every locale.
     #[test]
     fn every_action_row_resolves_to_real_copy() {
-        for action in Action::ALL {
-            for key in [action.label, action.subtitle] {
-                let copy = t(key);
-                assert_ne!(copy, key, "{key} has no entry in the catalogue");
-                assert!(!copy.trim().is_empty(), "{key} resolves to nothing");
+        crate::shell::i18n::ensure();
+        for (locale, title, subtitle) in [
+            (
+                "en-US",
+                "Edit top bar",
+                "Reorder, add or remove top-bar widgets",
+            ),
+            (
+                "de-DE",
+                "Obere Leiste bearbeiten",
+                "Widgets der oberen Leiste neu anordnen, hinzufügen oder entfernen",
+            ),
+        ] {
+            ui::i18n::I18nManager::set_locale(locale);
+            let editor = Action::ALL
+                .iter()
+                .find(|action| action.id == "topbar.editor.open")
+                .expect("top-bar editor action");
+            assert_eq!(t(editor.label), title);
+            assert_eq!(t(editor.subtitle), subtitle);
+            for action in Action::ALL {
+                for key in [action.label, action.subtitle] {
+                    let copy = t(key);
+                    assert_ne!(copy, key, "{locale}: {key} has no entry in the catalogue");
+                    assert!(
+                        !copy.trim().is_empty(),
+                        "{locale}: {key} resolves to nothing"
+                    );
+                }
             }
         }
+        ui::i18n::I18nManager::set_locale("en-US");
     }
 
     #[test]

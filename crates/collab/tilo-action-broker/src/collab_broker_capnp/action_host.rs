@@ -421,12 +421,14 @@ impl CapnpBrokerState {
             }
             // Records are read device to device by the shell; an application
             // does not reach another device's records through this door.
-            RemoteActionMessage::RecordRequest { .. } => None,
+            RemoteActionMessage::RecordRequest { .. }
+            | RemoteActionMessage::FeedbackRequest { .. } => None,
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::RecordResponse { .. } => Some(person.clone()),
+            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::FeedbackResponse { .. } => Some(person.clone()),
         };
         permitted.ok_or_else(|| {
             Box::new(refuse(message, ActionHostError::NotPermitted).unwrap_or(

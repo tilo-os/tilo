@@ -1093,6 +1093,7 @@ fn publish_channel(
         );
         channel = channel.with_action(share_resource_spec(&ch.id));
         channel = channel.with_action(crate::feedback::submit_spec(&ch.id));
+        channel = channel.with_action(crate::feedback::destination_read::spec(&ch.id));
         channel = channel.with_action(ActionSpec::prompted(
             "post",
             "Post message",

@@ -46,7 +46,7 @@ fn slash_menu_converts_the_focused_block_or_leaves_it_on_escape() {
             "filter `h2` should isolate Heading 2"
         );
         assert_eq!(
-            editor.slash_menu().highlighted_kind(),
+            editor.slash_menu().highlighted(),
             Some(&BlockKind::Heading(2)),
         );
 

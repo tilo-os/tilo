@@ -17,6 +17,20 @@
 //!    owner's own devices are admitted, and enrolled where the plane enrols.
 //! 7. Anything else is not a member.
 //!
+//! One plane is not a room membership at all:
+//! [`RoomOperation::StewardedChannelKeys`], the relay's own application
+//! endpoint (its room actions) taking the content keys of the channels the
+//! relay stewards. The relay's device is the steward of every channel of a
+//! room it governs: it is already a member of each channel's group and holds
+//! its keys. Its room actions are an application endpoint of that same device
+//! and key, so they cannot be admitted as a second member of the group; the
+//! device hands them the keys it holds, the way a device's session service
+//! hands its apps their keys ([`channel_crypto::ChannelContentKeys`]). The
+//! rule, after steps 1 and 3: the keys go to the device that governs this
+//! room on this relay, in a room whose admission governance owns, and to no
+//! other device, ever. Every other device is admitted to a channel by its
+//! steward over the channel itself.
+//!
 //! The room's admission mode is one value, so a governed room can never be
 //! left auto-enrolling by a writer that updated one flag and not the other.
 
@@ -66,13 +80,7 @@ pub(crate) enum RoomOperation {
     /// Replaying retained state to a subscriber.
     Replay,
     /// A browser live-plane grant or its observation.
-    #[cfg_attr(
-        not(feature = "web"),
-        allow(
-            dead_code,
-            reason = "only the browser plane asks, and it is behind `web`"
-        )
-    )]
+    #[cfg(any(test, feature = "web"))]
     Live,
     /// Discovering the room's content endpoints.
     ContentDiscovery,
@@ -82,6 +90,10 @@ pub(crate) enum RoomOperation {
     Environment,
     /// Originating or receiving a remote (directed) action.
     RemoteAction,
+    /// The relay's own room actions taking the content keys of a channel the
+    /// relay stewards (see the module documentation).
+    #[cfg(any(test, feature = "agents"))]
+    StewardedChannelKeys,
 }
 
 /// What a same-owner room does with one of its owner's devices it does not
@@ -111,8 +123,12 @@ impl RoomOperation {
     const fn owner_device(self) -> OwnerDevice {
         match self {
             Self::Subscribe | Self::Compute => OwnerDevice::Enrol,
-            Self::Live | Self::ContentDiscovery | Self::Environment => OwnerDevice::Admit,
+            #[cfg(any(test, feature = "web"))]
+            Self::Live => OwnerDevice::Admit,
+            Self::ContentDiscovery | Self::Environment => OwnerDevice::Admit,
             Self::State | Self::Replay | Self::RemoteAction => OwnerDevice::Refuse,
+            #[cfg(any(test, feature = "agents"))]
+            Self::StewardedChannelKeys => OwnerDevice::Refuse,
         }
     }
 }
@@ -155,6 +171,10 @@ pub(crate) enum DenyReason {
     AgentOutOfScope,
     /// Not a member of the room.
     NotAMember,
+    /// Channel keys asked for by a device other than the one governing and
+    /// stewarding the room on this relay.
+    #[cfg(any(test, feature = "agents"))]
+    NotTheSteward,
 }
 
 impl DenyReason {
@@ -169,6 +189,10 @@ impl DenyReason {
             Self::AgentExpired => "the agent's delegation expired",
             Self::AgentOutOfScope => "the agent is not delegated this room",
             Self::NotAMember => "device not in workspace membership",
+            #[cfg(any(test, feature = "agents"))]
+            Self::NotTheSteward => {
+                "only the device that stewards this room's channels holds their keys"
+            }
         }
     }
 }
@@ -295,6 +319,19 @@ impl<'a> Room<'a> {
             .is_none_or(|ceiling| ceiling.contains(device))
     }
 
+    /// Whether `device` governs this room on this relay, and so stewards its
+    /// channels: governance owns the room's admission and the relay's room
+    /// authority, bound to this room, names `device` as its governor.
+    #[cfg(any(test, feature = "agents"))]
+    fn governed_by(&self, device: &[u8; 32]) -> bool {
+        self.runtime.admission == AdmissionMode::Governed
+            && self
+                .runtime
+                .room_authority
+                .as_ref()
+                .is_some_and(|authority| authority.governor() == device)
+    }
+
     fn lists(&self, device: &[u8; 32]) -> bool {
         let listed = self.listed.map_or_else(
             || self.runtime.membership.contains(device),
@@ -349,6 +386,15 @@ pub(crate) fn decide_in(
     let own_user = &peer.user_public_key == trust.own_user;
     if peer.role == PeerRole::PeerRelay && !own_user {
         return Decision::Deny(DenyReason::CrossUserFederation);
+    }
+    #[cfg(any(test, feature = "agents"))]
+    if op == RoomOperation::StewardedChannelKeys {
+        // Never by membership, enrolment or federation: only the steward.
+        return if room.governed_by(&peer.device_public_key) {
+            Decision::Admit
+        } else {
+            Decision::Deny(DenyReason::NotTheSteward)
+        };
     }
     if listed(room, peer, op) {
         return Decision::Admit;

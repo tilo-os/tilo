@@ -4,10 +4,13 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use automerge::transaction::Transactable;
-use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value, ValueRef};
 
 use crate::delta::{Delta, Touch};
-use crate::model::{Doc, Model, ModelError, Slot, read_key, refresh_key, write_key_changed};
+use crate::model::{
+    Doc, MapSlot, Model, ModelError, Slot, load_slot, read_key, read_slots, refresh_key,
+    write_key_changed,
+};
 use crate::order;
 
 /// A stable identity for an item in a resource. Minted deterministically by
@@ -78,6 +81,26 @@ pub(crate) const VALUE: &str = "v";
 #[derive(Clone, Debug)]
 pub struct Collection<T> {
     items: Vec<Entry<T>>,
+    membership: Membership,
+}
+
+/// Which ids a [`Collection`] holds, in which order, as one value to
+/// compare: two collections (or one collection at two times) with the same
+/// membership hold the same ids in the same order. A list view keeps it to
+/// tell that a change left its rows as they were without comparing every
+/// id. Different memberships say nothing: the ids may still be the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Membership(u64);
+
+impl Membership {
+    /// The membership of every empty collection never changed since.
+    const EMPTY: Self = Self(0);
+
+    /// A membership no collection had before.
+    fn fresh() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -114,7 +137,10 @@ impl<T: PartialEq> PartialEq for Collection<T> {
 
 impl<T> Default for Collection<T> {
     fn default() -> Self {
-        Self { items: Vec::new() }
+        Self {
+            items: Vec::new(),
+            membership: Membership::EMPTY,
+        }
     }
 }
 
@@ -130,6 +156,17 @@ impl<T> Collection<T> {
 
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
+    }
+
+    /// Which ids the collection holds, in which order ([`Membership`]).
+    /// Editing an item keeps it; adding, removing or moving one changes it.
+    pub fn membership(&self) -> Membership {
+        self.membership
+    }
+
+    /// The ids or their order may have changed.
+    fn moved(&mut self) {
+        self.membership = Membership::fresh();
     }
 
     /// Items in collection order.
@@ -190,6 +227,7 @@ impl<T> Collection<T> {
     /// Append an item. Returns its id for chaining.
     pub fn push(&mut self, id: Id, item: T) -> Id {
         self.items.push(Entry::new(id.clone(), item));
+        self.moved();
         id
     }
 
@@ -197,11 +235,13 @@ impl<T> Collection<T> {
     pub fn insert(&mut self, index: usize, id: Id, item: T) -> Id {
         let index = index.min(self.items.len());
         self.items.insert(index, Entry::new(id.clone(), item));
+        self.moved();
         id
     }
 
     pub fn remove(&mut self, id: &Id) -> Option<T> {
         let index = self.position(id)?;
+        self.moved();
         Some(self.items.remove(index).item)
     }
 
@@ -214,11 +254,17 @@ impl<T> Collection<T> {
         entry.key = None;
         let index = index.min(self.items.len());
         self.items.insert(index, entry);
+        self.moved();
         true
     }
 
     pub fn retain(&mut self, mut keep: impl FnMut(&Id, &T) -> bool) {
+        let before = self.items.len();
         self.items.retain(|entry| keep(&entry.id, &entry.item));
+        // Retaining only removes: the same length is the same ids.
+        if self.items.len() != before {
+            self.moved();
+        }
     }
 
     pub fn sort_by(&mut self, mut compare: impl FnMut(&T, &T) -> std::cmp::Ordering) {
@@ -226,6 +272,7 @@ impl<T> Collection<T> {
         for entry in &mut self.items {
             entry.key = None;
         }
+        self.moved();
     }
 }
 
@@ -304,6 +351,7 @@ impl<T> FromIterator<(Id, T)> for Collection<T> {
                 .into_iter()
                 .map(|(id, item)| Entry::new(id, item))
                 .collect(),
+            membership: Membership::fresh(),
         }
     }
 }
@@ -311,23 +359,30 @@ impl<T> FromIterator<(Id, T)> for Collection<T> {
 struct Stored {
     id: Id,
     key: String,
-    entry: ObjId,
+    /// What the entry's value slot holds, for reading the item.
+    value: MapSlot,
 }
 
+/// The stored entries of the collection map `map`, in order. One walk of the
+/// map lists the entries and one walk of each entry reads its order key and
+/// value slot: a lookup per key would open each map again (TIL-758).
 fn stored_entries(doc: &Doc, map: &ObjId) -> Result<Vec<Stored>, ModelError> {
     let mut entries = Vec::new();
-    for key in doc.keys(map) {
-        let Some((Value::Object(ObjType::Map), entry)) = doc.get(map, key.as_str())? else {
+    for item in doc.map_range(map, ..) {
+        if item.value != ValueRef::Object(ObjType::Map) {
             continue;
-        };
-        let order: crate::Atom = read_key(doc, &entry, ORDER)?;
+        }
+        let entry = item.id();
+        let [order, value] = read_slots(doc, &entry, [ORDER, VALUE]);
+        let order: crate::Atom = load_slot(doc, order, ORDER)?;
         entries.push(Stored {
-            id: Id(key),
+            id: Id(item.key.into_owned()),
             key: order.0,
-            entry,
+            value,
         });
     }
-    entries.sort_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
+    // `(order key, id)` is unique, so an unstable sort orders as a stable one.
+    entries.sort_unstable_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
     Ok(entries)
 }
 
@@ -371,7 +426,7 @@ impl<T: Model> Model for Collection<T> {
         stored_entries(doc, id)?
             .into_iter()
             .map(|stored| {
-                read_key::<T>(doc, &stored.entry, VALUE)
+                load_slot::<T>(doc, stored.value, VALUE)
                     .map(|item| Entry {
                         id: stored.id.clone(),
                         key: Some(stored.key),
@@ -380,7 +435,10 @@ impl<T: Model> Model for Collection<T> {
                     .map_err(|error| error.at(stored.id.as_str()))
             })
             .collect::<Result<Vec<_>, _>>()
-            .map(|items| Self { items })
+            .map(|items| Self {
+                items,
+                membership: Membership::fresh(),
+            })
     }
 
     fn refresh(
@@ -404,6 +462,7 @@ impl<T: Model> Model for Collection<T> {
             let Some((Value::Object(ObjType::Map), entry)) = doc.get(id, key)? else {
                 if let Some(position) = position {
                     self.items.remove(position);
+                    self.moved();
                 }
                 continue;
             };
@@ -426,13 +485,17 @@ impl<T: Model> Model for Collection<T> {
                 key: Some(order(doc).map_err(|error| error.at(key))?),
                 item: read_key::<T>(doc, &entry, VALUE).map_err(|error| error.at(key))?,
             };
-            match position.and_then(|position| self.items.get_mut(position)) {
-                Some(existing) => *existing = fresh,
-                None => self.items.push(fresh),
+            if let Some(existing) = position.and_then(|position| self.items.get_mut(position)) {
+                *existing = fresh;
+            } else {
+                self.items.push(fresh);
+                self.moved();
             }
             reorder = true;
         }
+        // A moved order key or a new entry: sorting may move items.
         if reorder {
+            self.moved();
             self.items
                 .sort_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
         }
@@ -548,6 +611,103 @@ mod tests {
 
     fn ids(collection: &Collection<String>) -> Vec<String> {
         collection.values().cloned().collect()
+    }
+
+    /// The collection read key by key, as it was read before TIL-758: the
+    /// oracle the one-walk read must equal, order keys included.
+    fn read_key_by_key<T: Model>(doc: &Doc, map: &ObjId) -> Vec<(Id, Option<String>, T)> {
+        let mut entries = Vec::new();
+        for key in doc.keys(map) {
+            let Some((Value::Object(ObjType::Map), entry)) = doc.get(map, key.as_str()).unwrap()
+            else {
+                continue;
+            };
+            let order: crate::Atom = read_key(doc, &entry, ORDER).unwrap();
+            let item: T = read_key(doc, &entry, VALUE).unwrap();
+            entries.push((Id(key), Some(order.0), item));
+        }
+        entries.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        entries
+    }
+
+    #[test]
+    fn appended_items_keep_short_order_keys() {
+        // One push per action, as a list someone adds to item by item, and a
+        // bulk push: either way the stored keys stay a few characters long
+        // (TIL-758: they grew by one character every ~6 items).
+        let mut doc = Doc::new();
+        let mut list: Collection<u32> = Collection::new();
+        for n in 0..300_u32 {
+            list.push(Id::from_raw(format!("one{n:05}")), n);
+            write_key(&mut doc, &ROOT, "items", &list).unwrap();
+            list = read_key(&doc, &ROOT, "items").unwrap();
+        }
+        for n in 0..10_000_u32 {
+            list.push(Id::from_raw(format!("bulk{n:05}")), n);
+        }
+        write_key(&mut doc, &ROOT, "items", &list).unwrap();
+        let Some((_, map)) = doc.get(&ROOT, "items").unwrap() else {
+            panic!("the collection is stored");
+        };
+        let stored = stored_entries(&doc, &map).unwrap();
+        assert_eq!(stored.len(), 10_300);
+        let longest = stored.iter().map(|entry| entry.key.len()).max().unwrap();
+        assert!(longest <= 5, "longest order key: {longest} characters");
+        let read: Collection<u32> = read_key(&doc, &ROOT, "items").unwrap();
+        assert!(read.values().copied().eq((0..300).chain(0..10_000)));
+    }
+
+    #[test]
+    fn one_walk_reads_what_key_by_key_reads() {
+        let mut doc = Doc::new();
+        let mut list: Collection<Vec<i64>> = Collection::new();
+        for n in 0..40 {
+            list.push(Id::from_raw(format!("i{n:02}")), vec![n]);
+        }
+        write_key(&mut doc, &ROOT, "items", &list).unwrap();
+        doc.commit();
+        // History under every key: moved order keys, rewritten values, a
+        // removed item, and a stray non-entry value beside the entries.
+        for round in 0..3_i64 {
+            list.move_to(&Id::from_raw(format!("i{:02}", 39 - round)), 0);
+            if let Some(item) = list.get_mut(&Id::from_raw("i05")) {
+                item.push(round);
+            }
+            write_key(&mut doc, &ROOT, "items", &list).unwrap();
+            doc.commit();
+        }
+        list.remove(&Id::from_raw("i07"));
+        write_key(&mut doc, &ROOT, "items", &list).unwrap();
+        let Some((_, map)) = doc.get(&ROOT, "items").unwrap() else {
+            panic!("the collection is stored");
+        };
+        doc.put(&map, "stray", 1_i64).unwrap();
+        doc.commit();
+        // Concurrent moves and inserts from two actors: conflicting order keys.
+        let mut left = doc.fork();
+        let mut right = doc.fork();
+        let read: Collection<Vec<i64>> = read_key(&doc, &ROOT, "items").unwrap();
+        let mut l = read.clone();
+        l.move_to(&Id::from_raw("i10"), 2);
+        l.insert(3, Id::from_raw("left"), vec![-1]);
+        write_key(&mut left, &ROOT, "items", &l).unwrap();
+        let mut r = read;
+        r.move_to(&Id::from_raw("i10"), 30);
+        r.insert(3, Id::from_raw("right"), vec![-2]);
+        write_key(&mut right, &ROOT, "items", &r).unwrap();
+        left.merge_incoming(&mut right).unwrap();
+
+        let Some((value, map)) = left.get(&ROOT, "items").unwrap() else {
+            panic!("the collection is stored");
+        };
+        let read = Collection::<Vec<i64>>::load(&left, &value, &map).unwrap();
+        let walked: Vec<_> = read
+            .items
+            .into_iter()
+            .map(|entry| (entry.id, entry.key, entry.item))
+            .collect();
+        assert_eq!(walked, read_key_by_key::<Vec<i64>>(&left, &map));
+        assert_eq!(walked.len(), 41);
     }
 
     #[test]

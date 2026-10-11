@@ -3379,19 +3379,8 @@ impl CalendarApp {
             self.invite_input.set_focus(false);
             self.notes_editor.set_focus(false);
             self.title_input.set_focus(true);
-            self.title_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.title_input
+                .handle_event(input.event, &mut input.event_ctx());
             *input.handled = true;
             self.dirty = true;
             return true;
@@ -3401,19 +3390,8 @@ impl CalendarApp {
             self.invite_input.set_focus(false);
             self.notes_editor.set_focus(false);
             self.location_input.set_focus(true);
-            self.location_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.location_input
+                .handle_event(input.event, &mut input.event_ctx());
             *input.handled = true;
             self.dirty = true;
             return true;
@@ -3423,19 +3401,8 @@ impl CalendarApp {
             self.location_input.set_focus(false);
             self.notes_editor.set_focus(false);
             self.invite_input.set_focus(true);
-            self.invite_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.invite_input
+                .handle_event(input.event, &mut input.event_ctx());
             *input.handled = true;
             self.dirty = true;
             return true;
@@ -3449,14 +3416,8 @@ impl CalendarApp {
                 self.notes_editor.handle_event(
                     input.event,
                     &mut ui::widget::EventCtx {
-                        scale_factor: input.scale_factor,
-                        modifiers: &input.modifiers,
-                        state: input.state.reborrow(),
-                        path: input.path,
-                        handled: input.handled,
-                        focus_target: input.focus_target,
                         node_id: n,
-                        taffy: input.taffy,
+                        ..input.event_ctx()
                     },
                 );
             }
@@ -3482,53 +3443,20 @@ impl CalendarApp {
     /// Returns `true` if the caller should stop dispatching.
     fn handle_form_field_input(&mut self, input: &mut InputContext<'_>) -> bool {
         if self.title_input.is_focused() {
-            self.title_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.title_input
+                .handle_event(input.event, &mut input.event_ctx());
             self.flush_form_edits(&mut input.state);
             self.dirty = true;
             return *input.handled;
         } else if self.location_input.is_focused() {
-            self.location_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.location_input
+                .handle_event(input.event, &mut input.event_ctx());
             self.flush_form_edits(&mut input.state);
             self.dirty = true;
             return *input.handled;
         } else if self.invite_input.is_focused() {
-            self.invite_input.handle_event(
-                input.event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: input.scale_factor,
-                    modifiers: &input.modifiers,
-                    state: input.state.reborrow(),
-                    path: input.path,
-                    handled: input.handled,
-                    focus_target: input.focus_target,
-                    node_id: input.node_id,
-                    taffy: input.taffy,
-                },
-            );
+            self.invite_input
+                .handle_event(input.event, &mut input.event_ctx());
             self.submit_invite(&mut input.state);
             self.dirty = true;
             return *input.handled;

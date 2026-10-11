@@ -736,3 +736,241 @@ fn spatial_revocation_policy_disable_cleans_target_without_delivery_or_new_autho
     assert!(grant_input_control(&fixture.network, &fixture.controller).is_err());
     drop(fixture);
 }
+
+#[test]
+fn display_canvas_identity_uses_only_current_certified_output_metadata() {
+    let fixture = Fixture::new();
+    Fixture::policy(false);
+    let local = fixture.network.local_device_fabric_identity().unwrap().0;
+    let mut fabric = fixture.network.device_fabric();
+    let expected = fabric.display_outputs(&fixture.controller).unwrap()[0]
+        .output
+        .id
+        .clone();
+    let screens =
+        crate::shell::device_fabric_runtime::observed_device_displays(&fabric, Some(&local));
+    let peer = screens
+        .iter()
+        .find(|screen| screen.device == fixture.controller.as_str())
+        .unwrap();
+    assert_eq!(peer.output_id.as_deref(), Some(expected.as_str()));
+    let mut snapshot = fabric.snapshots().get(&fixture.controller).unwrap().clone();
+    snapshot.presence.stamp.counter = snapshot.presence.stamp.counter.saturating_add(1);
+    snapshot.display.as_mut().unwrap().stamp.counter = snapshot.presence.stamp.counter;
+    fabric.upsert(snapshot).unwrap();
+    assert!(fabric.display_outputs(&fixture.controller).is_none());
+    let screens =
+        crate::shell::device_fabric_runtime::observed_device_displays(&fabric, Some(&local));
+    let peer = screens
+        .iter()
+        .find(|screen| screen.device == fixture.controller.as_str())
+        .unwrap();
+    assert_eq!(
+        peer.output_id, None,
+        "stale metadata must not assign another topology's stable identity"
+    );
+    drop(fixture);
+}
+
+fn receive_controller_lease(fixture: &Fixture) -> InputLease {
+    use crate::shell::device_fabric_runtime::handle_spatial_action;
+    let local = fixture.network.local_device_fabric_identity().unwrap().0;
+    let route = fixture
+        .network
+        .current_personal_route(&fixture.controller)
+        .unwrap();
+    let now = tilo_clock::unix_now_ms();
+    let lease = InputLease {
+        controller: local.clone(),
+        target: fixture.controller.clone(),
+        issued_unix_ms: now,
+        expires_unix_ms: now.saturating_add(60_000),
+        nonce: [5; 16],
+        allow_keyboard: true,
+        allow_pointer: true,
+    };
+    handle_spatial_action(
+        &fixture.network,
+        &route,
+        &local,
+        PersonalFabricAction::InputLeaseGranted {
+            lease: lease.clone(),
+        },
+    );
+    lease
+}
+
+#[test]
+fn spatial_controller_withdrawal_retries_terminal_after_policy_off_and_transport_full() {
+    use crate::shell::device_fabric_runtime::{
+        DeviceFabricRuntime, flush_spatial_input, send_spatial_input_bound,
+    };
+    let mut fixture = Fixture::new();
+    Fixture::policy(false);
+    let lease = receive_controller_lease(&fixture);
+    let mut runtime = DeviceFabricRuntime::new(
+        &fixture.network,
+        crate::notifications::NotificationBridge::new(),
+    );
+    let selection = crate::compositor::selection::SharedSelection::default();
+    runtime.enforce_policy_for_test(
+        &fixture.network,
+        &selection,
+        ContinuityPolicySnapshot::load(),
+    );
+    send_spatial_input_bound(
+        &fixture.network,
+        &lease.target,
+        lease.nonce,
+        spatial_key(30, true),
+    )
+    .unwrap();
+    fill_transport(&fixture);
+    settings_store::update_section(
+        "continuity",
+        serde_json::json!({"enabled":true,"display_input":false})
+            .as_object()
+            .unwrap()
+            .clone(),
+    )
+    .unwrap();
+    runtime.enforce_policy_for_test(
+        &fixture.network,
+        &selection,
+        ContinuityPolicySnapshot::load(),
+    );
+    assert!(
+        send_spatial_input_bound(
+            &fixture.network,
+            &lease.target,
+            lease.nonce,
+            spatial_key(30, false)
+        )
+        .is_err()
+    );
+    assert!(
+        crate::shell::device_fabric_runtime::queue_spatial_input_cleanup_bound(
+            &fixture.network,
+            &lease.target,
+            lease.nonce,
+            vec![spatial_key(30, false)]
+        )
+        .is_err()
+    );
+    assert!(
+        fixture.actions().is_empty(),
+        "full transport cannot report terminal delivery"
+    );
+    runtime.pump(
+        &fixture.network,
+        &selection,
+        crate::shell::device_fabric_runtime::LocalFabricCapabilities {
+            display: None,
+            pointer: false,
+            keyboard: false,
+            audio_output: false,
+        },
+    );
+    assert_eq!(
+        fixture.actions(),
+        vec![PersonalFabricAction::InputLeaseRevoked { nonce: lease.nonce }]
+    );
+    flush_spatial_input(&fixture.network);
+    assert!(
+        fixture.actions().is_empty(),
+        "terminal delivery is idempotent and creates no grant or input"
+    );
+    Fixture::policy(false);
+    assert!(
+        send_spatial_input_bound(
+            &fixture.network,
+            &lease.target,
+            lease.nonce,
+            spatial_key(30, true)
+        )
+        .is_err(),
+        "reenabling policy does not restore withdrawn authority"
+    );
+    drop(fixture);
+}
+
+#[test]
+fn spatial_controller_withdrawal_clears_target_and_fences_late_edges_and_renewal() {
+    use crate::shell::device_fabric_runtime::handle_spatial_action;
+    let mut fixture = Fixture::new();
+    Fixture::policy(true);
+    let mut seat = SpatialSeat::new();
+    fixture.refresh();
+    let grants = fixture.grants();
+    assert_eq!(grants.len(), 1);
+    let lease = grants[0].clone();
+    let local = fixture.network.local_device_fabric_identity().unwrap().0;
+    let route = fixture
+        .network
+        .current_personal_route(&fixture.controller)
+        .unwrap();
+    let wrong_route =
+        super::AuthenticatedPersonalRoute::for_test_epoch(fixture.controller.clone(), 99);
+    admit_spatial(&fixture, lease.nonce, spatial_key(30, true));
+    admit_spatial(&fixture, lease.nonce, spatial_button(0x110, true));
+    seat.pump();
+    handle_spatial_action(
+        &fixture.network,
+        &wrong_route,
+        &local,
+        PersonalFabricAction::InputLeaseRevoked { nonce: lease.nonce },
+    );
+    seat.pump();
+    assert_eq!(
+        seat.keys(),
+        BTreeSet::from([30]),
+        "wrong route cannot release held input"
+    );
+    admit_spatial(&fixture, lease.nonce, spatial_key(31, true));
+    handle_spatial_action(
+        &fixture.network,
+        &route,
+        &local,
+        PersonalFabricAction::InputLeaseRevoked { nonce: lease.nonce },
+    );
+    admit_spatial(&fixture, lease.nonce, spatial_key(32, true));
+    seat.pump();
+    assert!(
+        seat.keys().is_empty(),
+        "withdrawal removes held and queued old input"
+    );
+    assert_eq!(seat.state.release_all_personal_fabric_input(), 0);
+    fixture.refresh();
+    assert!(
+        fixture.grants().is_empty(),
+        "same-route automatic renewal must respect controller withdrawal"
+    );
+    let fresh = grant_input_control(&fixture.network, &fixture.controller).unwrap();
+    admit_spatial(&fixture, fresh.nonce, spatial_key(33, true));
+    handle_spatial_action(
+        &fixture.network,
+        &route,
+        &local,
+        PersonalFabricAction::InputLeaseRevoked { nonce: lease.nonce },
+    );
+    seat.pump();
+    assert_eq!(
+        seat.keys(),
+        BTreeSet::from([33]),
+        "late terminal cannot erase replacement authority"
+    );
+    assert_eq!(fixture.grants(), vec![fresh]);
+    drop(fixture);
+}
+
+#[test]
+fn spatial_controller_withdrawal_preserves_original_revoke_wire_bytes() {
+    let action = PersonalFabricAction::InputLeaseRevoked { nonce: [7; 16] };
+    let mut original = vec![4];
+    original.extend_from_slice(&[7; 16]);
+    assert_eq!(postcard::to_allocvec(&action).unwrap(), original);
+    assert_eq!(
+        postcard::from_bytes::<PersonalFabricAction>(&original).unwrap(),
+        action
+    );
+}

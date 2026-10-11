@@ -256,6 +256,44 @@ class Report(unittest.TestCase):
         self.assertEqual(status, 1)
 
 
+class Update(unittest.TestCase):
+    """What a device downloads moving between two builds: the layers with new digests."""
+
+    def setUp(self) -> None:
+        self.directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.directory, ignore_errors=True))
+        self.base = layer([("file", "usr/lib/libbase.so", b"B" * 5000)])
+        self.app_v1 = layer([("file", "usr/share/tilo-apps/imager.tapp", b"1" * 3000)])
+        self.app_v2 = layer([("file", "usr/share/tilo-apps/imager.tapp", b"2" * 3000)])
+        Layout(self.directory / "old").image([self.base, self.app_v1], ["base", "apps"])
+        Layout(self.directory / "new").image([self.base, self.app_v2], ["base", "apps"])
+
+    def test_only_new_layer_digests_are_downloaded(self) -> None:
+        out = self.directory / "update.json"
+        status = image_size.main(["--oci-layout", str(self.directory / "new"), "--quiet", "--json", str(out),
+                                  "--update-from", f"oci:{self.directory / 'old'}", "--update-only"])
+        self.assertEqual(status, 0)
+        moved = json.loads(out.read_text())["update"]
+        self.assertEqual(moved["layers"], 2)
+        self.assertEqual(moved["new_layers"], 1)
+        self.assertEqual(moved["bytes"], len(self.app_v2))
+        self.assertEqual(moved["compressed"], len(self.base) + len(self.app_v2))
+        self.assertEqual(moved["from_revision"], REVISION)
+
+    def test_the_full_report_carries_the_update(self) -> None:
+        out = self.directory / "report.json"
+        status = image_size.main(["--oci-layout", str(self.directory / "new"), "--quiet", "--json", str(out),
+                                  "--update-from", f"oci:{self.directory / 'new'}"])
+        self.assertEqual(status, 0)
+        data = json.loads(out.read_text())
+        self.assertEqual(data["update"]["bytes"], 0)
+        self.assertEqual(data["totals"]["layers"], 2)
+
+    def test_update_only_needs_an_old_image(self) -> None:
+        self.assertEqual(image_size.main(["--oci-layout", str(self.directory / "new"), "--quiet",
+                                          "--update-only"]), 1)
+
+
 class Resuming(unittest.TestCase):
     def test_a_dropped_download_resumes_at_its_offset(self) -> None:
         data = bytes(range(256)) * 64

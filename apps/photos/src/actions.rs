@@ -71,7 +71,7 @@ pub const TIMELINE_MONTH_KIND: &str = "photos.timeline.month";
 pub const TIMELINE_DAY_KIND: &str = "photos.timeline.day";
 pub const EXPORT_EDITED_CONTENT_ACTION_ID: &str = "export-edited-content";
 /// Contextual enumeration is intentionally small; callers resolve any stable
-/// id outside this window through `ResourceProvider::resource`.
+/// id outside this window through `PublishesResources::resource`.
 const LIBRARY_CONTEXT_LIMIT: usize = 48;
 const ALBUM_CONTEXT_LIMIT: usize = 24;
 const FOLDER_CONTEXT_LIMIT: usize = 24;

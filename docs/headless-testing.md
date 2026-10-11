@@ -324,6 +324,11 @@ concurrent clients and the same no-op through the MCP server. Give it
 compositor through `spawn-headless.sh`. A spawned compositor is removed on
 exit. `spawn-headless.sh` runs `$TILO_HEADLESS_BINARY` when that is set. A
 release build serves the socket only with `--features dev-overrides`.
+`scripts/perf/agent_task.py` times a whole task the same way: a scripted,
+streamed fake model creates a note in Notes, writes its body and finds it by
+search, and the record splits the time between Tilo, the model and the
+agent loop. Its `--spawn` desktop is seeded by the `agent_task_desktop`
+example of `shell`.
 
 Configure the headless viewport via env var (defaults to 1600×900):
 ```bash
@@ -460,6 +465,7 @@ scripts/perf/frame-loop-bench.py --resummarize target/frame-bench/run.csv
 | `TILO_RUN_SECONDS` | exit cleanly after N seconds, flushing both |
 | `TILO_REFRESH_HZ` | force the presentation rate (diagnostic) |
 | `TILO_PAINT_STATS=1` | 2-second painted-vs-idled counter on stderr |
+| `TILO_PAINT_STATS=ticks` | the same, plus a `paint-tick: painted=… woke=…` line per loop iteration |
 | `TILO_LOOP_TIMING=1` | log any tick over 100 ms with a phase breakdown |
 
 `TILO_RUN_SECONDS` matters for a scripted run: the trace and summary are
@@ -502,8 +508,12 @@ An idle desktop should leave the CPU asleep. `idle_wakeups::` in the shell's
 a signed-in desktop, restores a Notes tab, opens a Terminal through
 `window.new.terminal`, waits out startup work and 5 s more, then samples every thread of the
 compositor's process tree from `/proc` for 10 s and fails above
-`IDLE_WAKEUP_BUDGET` context switches per second, or if the compositor painted
-while nobody touched it.
+`IDLE_WAKEUP_BUDGET` wakeups per second (voluntary context switches: how often
+a thread blocked again), above `IDLE_CPU_BUDGET` percent of a core, or if the
+compositor painted while nobody touched it. It also holds the in-process apps'
+collaboration shovel and the identity service's client thread to
+`KEY_ASK_BUDGET` together, so a route asking for its channel keys on a 1 s
+timer again (TIL-754) fails by name.
 
 ```bash
 cargo test --locked -p shell --test it idle_wakeups:: -- --nocapture
@@ -517,7 +527,7 @@ idle wakeups over 10.0 s: 60.27/s and 2.1 % of a core across 1 processes
       20.79       1.20     0.6        2  shell / tilo-collab-bro
       19.89       0.00     0.4        1  shell / tilo-audio-outp
        ...
-compositor frame loop: 0.0 ticks/s, 0 frames painted; its paint-stats in the window:
+compositor frame loop: 0.0 ticks/s (0 ticks, woken by: ), 0 frames painted (after: ), 0 clock minute(s) turned; its paint-stats in the window:
 ```
 
 `wakeups/s` counts every context switch (voluntary: the thread blocked again;
@@ -525,8 +535,12 @@ involuntary: it was preempted), `preempt/s` the involuntary share, `cpu %` its
 CPU time, `threads` how many threads of that name were seen (names are the
 kernel's 15-byte truncation). A loop that spins without blocking shows in
 `cpu %` and in the frame loop's tick rate rather than in wakeups, so the gate
-also holds the loop to `LOOP_TICK_BUDGET` and to zero painted frames; the
-`paint-stats: wakes` lines name what woke it. Pull requests run it whenever
+also holds the loop to `LOOP_TICK_BUDGET` and to no painted frames but the top
+bar's clock repaint when a minute turns in the window. It counts the
+compositor's `paint-tick` lines (`TILO_PAINT_STATS=ticks`), one per loop
+iteration with what woke it, read inside the window: a 2-second `paint-stats`
+summary counts every tick since the previous one, so the first one printed in
+the window can carry startup's ticks (TIL-756). Pull requests run it whenever
 `shell` changes; the scheduled lane (`kpis=wakeups`) runs it with a 60 s window
 (`TILO_IDLE_WAKEUP_WINDOW_SECS`) and records `wakeups.*`. When a change
 removes a waker, lower `IDLE_WAKEUP_BUDGET` in the same pull request to the new
@@ -539,6 +553,35 @@ for one service thread of a unit test, `idle_wakeups(pid, settle, window)` for
 a process tree, and `sample_process` with `Wakeups::between` for a stretch the
 test drives itself (`shell::network::idle_quiet_tests` uses it for the
 collaboration plane of two converged desktops).
+
+A gate that runs inside the pull-request test shard shares the runner with
+other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
+counts only voluntary switches, one per wakeup. Both gates in
+`idle_quiet_tests`, the lone desktop and the converged pair, use it, each
+together with a CPU bound that catches a thread spinning without blocking
+(TIL-749, TIL-752).
+
+## Idle memory
+
+An idle desktop should hold little memory. `idle_memory::` in the shell's `it`
+target starts the production binary headless with a signed-in, empty desktop,
+watched so frames rasterise, waits past the trim that returns startup's freed
+heap (`heap_trim::STARTUP_SETTLED`), and fails when the compositor's anonymous
+RSS is above `IDLE_ANON_BUDGET_MIB`.
+
+```bash
+cargo test --locked -p shell --test it idle_memory:: -- --nocapture
+```
+
+It prints two breakdowns. The compositor's own, `raw '{"op":"process_memory"}'`
+on the control socket, sums `mincore` over `/proc/self/maps` per kind of
+mapping (`heap_main`, `heap_arenas`, `thread_stacks`, `anon_other`,
+`gpu_memfd` for lavapipe's device memory, `fonts`, `binary`, `libraries`, …),
+with glibc's in-use and free bytes and the threads by name. It is the one that
+works on Tilo's kernel, which has no smaps (`CONFIG_PROC_PAGE_MONITOR=n`), so
+vm-acceptance R01 records the same report (`memory.shell_parts_mib.*`). The
+test then reads `/proc/<pid>/smaps` beside it for RSS, PSS and private dirty
+pages per mapping, which CI's kernel has.
 
 ## Where to look in source
 
