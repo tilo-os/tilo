@@ -265,10 +265,16 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
                 std::os::unix::net::UnixStream::pair().expect("socket pair");
             terminal_end.set_read_timeout(bound).unwrap();
             let supervisor = std::thread::spawn(move || {
-                let mut request = String::new();
-                std::io::BufReader::new(&supervisor_end)
-                    .read_line(&mut request)
+                let mut reader = std::io::BufReader::new(&supervisor_end);
+                // The persistent-control handshake precedes every open.
+                let mut hello = String::new();
+                reader.read_line(&mut hello).unwrap();
+                assert!(hello.contains("\"op\":\"hello\""), "{hello}");
+                (&supervisor_end)
+                    .write_all(b"{\"result\":\"ready\",\"protocol\":2}\n")
                     .unwrap();
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
                 std::thread::sleep(delay);
                 (&supervisor_end)
                     .write_all(b"{\"result\":\"no-runtime\",\"reason\":\"checked\"}\n")
@@ -362,11 +368,17 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         let runtime = tempfile::tempdir().unwrap();
         let listener = private_ush_listener(runtime.path());
         let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut request = String::new();
-            BufReader::new(stream.try_clone().unwrap())
-                .read_line(&mut request)
+            use std::io::Write;
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut hello = String::new();
+            reader.read_line(&mut hello).unwrap();
+            assert!(hello.contains("\"op\":\"hello\""), "{hello}");
+            stream
+                .write_all(b"{\"result\":\"ready\",\"protocol\":2}\n")
                 .unwrap();
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
             assert!(request.contains("\"op\":\"open-session\""), "{request}");
             assert!(
                 request.contains("\"target\":{\"kind\":\"environment\"}"),
@@ -375,10 +387,12 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
             let pair = portable_pty::native_pty_system()
                 .openpty(portable_pty::PtySize::default())
                 .unwrap();
-            runtime_portal::fd_transport::send_with_fd(
+            let (_supervisor_lease, terminal_lease) =
+                std::os::unix::net::UnixStream::pair().unwrap();
+            runtime_portal::fd_transport::send_with_fds(
                 stream.as_raw_fd(),
-                b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\"}\n",
-                pair.master.as_raw_fd().unwrap(),
+                b"{\"result\":\"session\",\"protocol\":2,\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\"}\n",
+                &[pair.master.as_raw_fd().unwrap(), terminal_lease.as_raw_fd()],
             )
             .unwrap();
         });

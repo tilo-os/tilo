@@ -257,6 +257,8 @@ impl TerminalWidget {
         requested_by: Requester,
         attach: Option<&str>,
     ) {
+        #[cfg(unix)]
+        drop(self.service_lifetime.take());
         self.sessions.target = Some(target.clone());
         // Dropping the platform lifetime also shuts down reader-held clones.
         self.service_lifetime = None;

@@ -473,3 +473,10 @@ device-display-session-disconnected = The Tilo session disconnected.
 
 app-activate-window = Show this window
 app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.
+
+terminal-service-control-unavailable = The shell connection is unavailable.
+terminal-service-protocol-unavailable = Update the shell service before opening a session in this window.
+terminal-service-invalid-session = The shell service returned an invalid session.
+terminal-service-missing-lease = The shell session did not provide its lifetime connection.
+terminal-service-missing-terminal = The shell session did not provide a terminal.
+terminal-service-invalid-lease = The shell session connection could not be validated.

@@ -164,7 +164,27 @@ crosses the boundary is a terminal, not a namespace.
 
 ## The service protocol
 
-One line of JSON out, one line plus a descriptor back:
+The launcher authenticates the caller once with the existing `QUS1` handoff.
+Terminal then negotiates persistent control before opening a session:
+
+```json
+{"op":"hello","protocol":2}
+{"result":"ready","protocol":2}
+```
+
+An unsupported supervisor is refused before Terminal sends an open request.
+This control connection retains the same authenticated caller for every request;
+each Host request still checks the current owner grant and original requester.
+A successful version-two session reply includes `"protocol":2` and exactly two
+close-on-exec descriptors, in order: the PTY master and a private session lease;
+a session that negotiated `editor_protocol` appends the editor capability as a
+third, last descriptor.
+The control connection remains available for subsequent targets. Requests are
+bounded to 4096 bytes and eight active leases. Malformed requests close control;
+completed sequential sessions do not exhaust a lifetime request counter.
+Legacy clients retain the original one-descriptor, single-session protocol.
+
+One line of JSON out, one line plus the session descriptors back:
 
 ```json
 {"op":"open-session","target":{"kind":"environment"},"cols":80,"rows":24}
@@ -220,8 +240,12 @@ session are added to the record as `pkg install` here would.
 answer `{"result":"environments","environments":[{"key","name","tools",
 "grants"}…]}` — what Terminal's target picker and environments panel show.
 
-The request connection is the session's lifetime in both directions: Terminal
-closing it ends the guest, and the guest exiting closes it.
+The private lease is the session's lifetime in both directions: replacing or
+closing the Terminal session shuts down that lease and reaps its exact guest;
+guest exit closes the lease without closing persistent control. PTY reader
+clones cannot extend this lifetime. A legacy client's request connection remains
+its lease. No client reconnects through a global socket to recover a consumed
+launcher capability.
 
 ## Installing tools
 

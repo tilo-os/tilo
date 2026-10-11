@@ -470,3 +470,10 @@ device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getr
 
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.
+
+terminal-service-control-unavailable = Die Shell-Verbindung ist nicht verfügbar.
+terminal-service-protocol-unavailable = Aktualisiere den Shell-Dienst, bevor du in diesem Fenster eine Sitzung öffnest.
+terminal-service-invalid-session = Der Shell-Dienst hat eine ungültige Sitzung zurückgegeben.
+terminal-service-missing-lease = Die Shell-Sitzung hat keine Verbindung für ihre Laufzeit bereitgestellt.
+terminal-service-missing-terminal = Die Shell-Sitzung hat kein Terminal bereitgestellt.
+terminal-service-invalid-lease = Die Verbindung der Shell-Sitzung konnte nicht überprüft werden.

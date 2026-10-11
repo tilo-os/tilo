@@ -12,16 +12,16 @@ pub fn send_with_fd(sock: RawFd, payload: &[u8], fd: RawFd) -> io::Result<()> {
 
 /// Send one payload with a bounded descriptor bundle, preserving its order.
 ///
-/// The second descriptor permits an explicitly negotiated editor capability;
-/// it is not accepted by the existing single-descriptor receive operation.
+/// The extra descriptors carry explicitly negotiated capabilities (a session
+/// lease, an editor socket); they are not accepted by the existing single-descriptor receive operation.
 ///
 /// # Errors
 /// Rejects empty payloads, empty or oversized bundles, and partial sends.
 pub fn send_with_fds(sock: RawFd, payload: &[u8], fds: &[RawFd]) -> io::Result<()> {
-    if payload.is_empty() || fds.is_empty() || fds.len() > 2 {
+    if payload.is_empty() || fds.is_empty() || fds.len() > 3 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "descriptor bundle needs a payload and one or two descriptors",
+            "descriptor bundle needs a payload and one to three descriptors",
         ));
     }
     let mut iov = libc::iovec {
@@ -33,7 +33,7 @@ pub fn send_with_fds(sock: RawFd, payload: &[u8], fds: &[RawFd]) -> io::Result<(
     let rights_bytes = u32::try_from(std::mem::size_of_val(fds))
         .map_err(|_| io::Error::other("invalid descriptor bundle length"))?;
     // SAFETY: each pointer is aligned, initialized and live for sendmsg; CMSG_SPACE
-    // for two descriptors fits the control buffer on supported Unix targets.
+    // for three descriptors fits the control buffer on supported Unix targets.
     let sent = unsafe {
         let mut msg: libc::msghdr = std::mem::zeroed();
         msg.msg_iov = &raw mut iov;
@@ -81,7 +81,7 @@ pub fn recv_with_owned_fd(sock: RawFd) -> io::Result<(Vec<u8>, Option<OwnedFd>)>
     recv_into(sock, &mut buf)
 }
 
-/// Receive an explicitly negotiated bundle of at most two owned descriptors.
+/// Receive an explicitly negotiated bundle of at most three owned descriptors.
 ///
 /// The caller must validate the message's declared roles and exact count before
 /// using any descriptor. Malformed/truncated messages close every received FD.
@@ -89,7 +89,7 @@ pub fn recv_with_owned_fd(sock: RawFd) -> io::Result<(Vec<u8>, Option<OwnedFd>)>
 /// # Errors
 /// Returns transport errors or rejects an oversized/truncated descriptor bundle.
 pub fn recv_with_owned_fds(sock: RawFd) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
-    recv_bundle(sock, &mut [0u8; 4096], 2)
+    recv_bundle(sock, &mut [0u8; 4096], 3)
 }
 
 /// Receive bounded data, refusing and closing every ancillary descriptor.
@@ -252,7 +252,7 @@ mod tests {
         let (sender, receiver) = UnixDatagram::pair().unwrap();
         let (mut reader, writer) = UnixStream::pair().unwrap();
         reader.set_nonblocking(true).unwrap();
-        send_many(&sender, b"invalid", &[writer.as_raw_fd(); 3]);
+        send_many(&sender, b"invalid", &[writer.as_raw_fd(); 4]);
         drop(writer);
         assert!(recv_with_owned_fds(receiver.as_raw_fd()).is_err());
         assert_eq!(reader.read(&mut [0]).unwrap(), 0);
