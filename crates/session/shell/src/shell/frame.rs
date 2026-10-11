@@ -3134,7 +3134,7 @@ impl FrameBuilder {
         }
         self.visual_accessibility = VisualAccessibility::load();
         self.narrator
-            .set_enabled(crate::shell::shell_narrator::screen_reader_setting());
+            .set_enabled(settings_store::screen_reader::ScreenReaderSettings::load().enabled);
     }
 
     /// Speak what changed in the chrome since the last frame (focus moves in

@@ -744,7 +744,7 @@ impl AppConstructionInputs {
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
                 if crate::host::environment().accessibility.screen_reader
-                    || App::persisted_accessibility_bool("screen_reader")
+                    || settings_store::screen_reader::ScreenReaderSettings::load().enabled
                 {
                     Some(App::configured_screen_reader())
                 } else {
@@ -2112,11 +2112,12 @@ impl App {
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
-        let configured_reader = Self::persisted_accessibility_bool("screen_reader")
-            || crate::host::environment().accessibility.screen_reader;
-        self.set_screen_reader_enabled(configured_reader);
+        let settings = settings_store::screen_reader::ScreenReaderSettings::load();
+        self.set_screen_reader_enabled(
+            settings.enabled || crate::host::environment().accessibility.screen_reader,
+        );
         if let Some(reader) = self.accessibility.screen_reader.as_mut() {
-            Self::configure_screen_reader(reader);
+            reader.configure(&settings);
         }
         self.accessibility.a11y.screen_reader = self.accessibility.screen_reader.is_some();
     }

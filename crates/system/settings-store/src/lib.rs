@@ -74,6 +74,7 @@ pub mod notification_policy;
 pub mod person_displays;
 pub mod personal_dictionary;
 pub mod roaming_provenance;
+pub mod screen_reader;
 mod section_digest;
 mod session;
 mod source;
