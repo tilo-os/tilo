@@ -481,6 +481,27 @@ async fn run(
     Ok(())
 }
 
+/// Runs native playback's own code with no account, network or audio device:
+/// parses a track identity and builds the session and player configuration a
+/// session starts from. Proves that the library carrying librespot (Music's
+/// engine library in a thin build) loads and runs; the report holds no
+/// account or device data.
+///
+/// # Errors
+/// librespot rejected a well-formed track identity.
+pub fn self_check() -> Result<String, String> {
+    let uri = SpotifyUri::from_uri("spotify:track:4uLU6hMCjMI75M1A2tKUQC")
+        .map_err(|error| format!("librespot rejected a track identity: {error}"))?;
+    let session = SessionConfig::default();
+    let player = playback_config();
+    Ok(format!(
+        "librespot {} parsed {uri}; a session starts with autoplay {:?} and plays at {:?}",
+        librespot::core::version::SEMVER,
+        session.autoplay,
+        player.bitrate,
+    ))
+}
+
 fn playback_config() -> PlayerConfig {
     PlayerConfig {
         bitrate: Bitrate::Bitrate320,
