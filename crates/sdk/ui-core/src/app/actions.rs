@@ -759,6 +759,7 @@ impl App {
         retry.attempts = 0;
     }
 
+    #[cfg(any(feature = "native", test))]
     pub(super) fn action_surface_retry_deadline(&self) -> Option<crate::time::Instant> {
         self.actions
             .action_surface_retry
@@ -776,6 +777,7 @@ impl App {
     /// Retry only when the bounded backoff is due. The native runner includes
     /// this deadline in its ordinary wait; hosted owners reach it through
     /// their existing pumps. No redraw or document mutation is manufactured.
+    #[cfg(any(feature = "native", test))]
     pub(super) fn service_action_surface_retry(&mut self) -> bool {
         let due = self
             .actions

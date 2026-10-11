@@ -286,6 +286,7 @@ impl super::App {
     /// will synchronize its filtered resource tree. Publication is consumed
     /// only after that sync, so an authority-only wake cannot leave the broker
     /// on the prior successful (possibly empty) surface.
+    #[cfg(any(feature = "native", test))]
     pub(super) fn observe_native_action_authority_change(&mut self) -> bool {
         if !self.refresh_hosted_authority() {
             return false;
@@ -304,6 +305,7 @@ impl super::App {
     /// A disconnected owner retains the demand for its real Ready transition;
     /// discovery/transport failures hand responsibility to the existing
     /// bounded fail-closed retry path.
+    #[cfg(any(feature = "native", test))]
     pub(super) fn publish_pending_native_action_authority(&mut self) -> bool {
         if !self.actions.authority_publication_pending
             || !self.collaboration.manager.is_connected()
