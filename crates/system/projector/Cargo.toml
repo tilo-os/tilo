@@ -8,7 +8,6 @@ publish = false
 [dependencies]
 hex.workspace = true
 bounded-command = { path = "../bounded-command" }
-libc.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
