@@ -1493,6 +1493,57 @@ fn an_app_and_its_resources_are_named_as_an_agent_sees_them() {
     assert_eq!(saves[0].1, DOC, "the kind named the document");
 }
 
+#[test]
+fn an_edit_and_history_named_by_kind_reach_the_same_discovered_record() {
+    let host = Writer::new(Some("history"));
+    *host.running.lock().unwrap() = true;
+    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    run(async {
+        let page = call(&server, "tilo_query", json!({"app_id": APP}))
+            .await
+            .unwrap();
+        let handle = resource(&page, "word_processor.document")["resource"].clone();
+        let details = call(
+            &server,
+            "tilo_query",
+            json!({"app_id": APP, "parent_resource": handle}),
+        )
+        .await
+        .unwrap();
+        assert!(resource(&details, "word_processor.document")["actions"]["history"].is_string());
+        for action in ["save-as", "history"] {
+            let reply = call(
+                &server,
+                "tilo_invoke",
+                json!({
+                    "app_id": APP, "resource": "word_processor.document", "action": action
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
+        }
+        let reply = call(
+            &server,
+            "tilo_invoke",
+            json!({
+                "app_id": APP, "resource": handle, "action": "history"
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
+    });
+    let invoked = host.invoked();
+    assert_eq!(invoked.len(), 3, "{invoked:?}");
+    for (_, record, _, _) in invoked {
+        assert_eq!(
+            record, DOC,
+            "edits and history share the actual discovered record"
+        );
+    }
+}
+
 /// Whether `asked` is a question about which instances run: providers
 /// only, so a host builds no rows for it.
 fn lists_instances(asked: &Asked) -> bool {
