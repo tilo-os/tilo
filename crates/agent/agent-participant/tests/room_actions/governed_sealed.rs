@@ -233,6 +233,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
             context: None,
             confirmation: None,
             revision: None,
+            fresh_binding: None,
             wait_ms: None,
         })
         .await;

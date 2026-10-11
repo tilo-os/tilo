@@ -1410,11 +1410,11 @@ impl Widget for TypstApp {
     }
 }
 
-impl ui::widget::controls::ActionControls for TypstApp {
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        ui::widget::semantic_action_bindings(self.accessibility())
-    }
-}
+// Typst's custom-painted source and preview contribute semantic bindings,
+// while the retained chrome owns the toolbar and injected History emitters.
+// The shared subtree default combines both and forwards custody, availability,
+// and invocation delivery through those real child controls.
+impl ui::widget::controls::ActionControls for TypstApp {}
 
 /// The bar is the window's header row: it holds the History control the
 /// host offers, and the window draws no History bar above the editor.

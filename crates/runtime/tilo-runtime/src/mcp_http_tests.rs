@@ -1311,9 +1311,8 @@ fn an_omitted_revision_acts_on_the_current_directory_but_an_empty_one_is_refused
     let invoked = invoked.lock().unwrap().clone();
     assert_eq!(invoked.len(), 1);
     assert_eq!(
-        invoked[0].revision,
-        Some("1".into()),
-        "MCP pins the current directory without inventing an owner-authored binding"
+        invoked[0].revision, None,
+        "an omitted revision remains Current so the owner resolves it in the admission turn"
     );
     assert!(invoked[0].fresh_binding.is_none());
 }
