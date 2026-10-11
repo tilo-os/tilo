@@ -3287,7 +3287,7 @@ impl ShellOverlayHost {
         {
             return;
         }
-        let alpha = osd.alpha_at(now);
+        let alpha = osd.alpha_in(theme, now);
         if alpha <= 0.0 {
             return;
         }
