@@ -10,7 +10,7 @@
 
 use std::io::Cursor;
 
-use agent_provider_config::{EndpointLocation, ProviderConfig, ProviderProtocol};
+use agent_provider_config::{ModelDescriptor, ProviderConfig};
 use base64::Engine as _;
 use image::{DynamicImage, GenericImageView, ImageEncoder};
 use serde::{Deserialize, Serialize};
@@ -79,25 +79,13 @@ pub struct FaceCluster {
 /// model. A generic vision model cannot enter this path.
 #[must_use]
 pub fn discover_local_face_capability(config: &ProviderConfig) -> Option<LocalFaceCapability> {
-    let profile = config.active_profile()?;
-    if !profile.enabled
-        || profile.location != EndpointLocation::ThisDevice
-        || profile.protocol != ProviderProtocol::OpenAiCompatible
-        || !loopback_endpoint(&profile.endpoint)
-    {
-        return None;
-    }
-    let model_id = profile.default_model.as_ref()?;
-    let model = profile.models.iter().find(|model| &model.id == model_id)?;
-    let revision = model.revision.as_ref()?.trim();
-    if !model.face_recognition || !pinned_revision(revision) {
-        return None;
-    }
+    let (profile_id, model_id, model_label, revision) =
+        discover_local_model(config, |model| model.face_recognition)?;
     Some(LocalFaceCapability {
-        profile_id: profile.id.clone(),
-        model_id: model.id.clone(),
-        model_label: model.display_label().to_owned(),
-        revision: revision.to_owned(),
+        profile_id,
+        model_id,
+        model_label,
+        revision,
     })
 }
 
@@ -167,26 +155,39 @@ impl Error {
 /// substituted.
 #[must_use]
 pub fn discover_local_capability(config: &ProviderConfig) -> Option<LocalVisionCapability> {
+    let (profile_id, model_id, model_label, revision) =
+        discover_local_model(config, |model| model.vision)?;
+    Some(LocalVisionCapability {
+        profile_id,
+        model_id,
+        model_label,
+        revision,
+    })
+}
+
+/// The active profile's default model when the gateway would admit it for a
+/// device-local operation and it `declares` the needed capability: profile,
+/// model, display label and pinned revision.
+fn discover_local_model(
+    config: &ProviderConfig,
+    declares: impl Fn(&ModelDescriptor) -> bool,
+) -> Option<(String, String, String, String)> {
     let profile = config.active_profile()?;
-    if !profile.enabled
-        || profile.location != EndpointLocation::ThisDevice
-        || profile.protocol != ProviderProtocol::OpenAiCompatible
-        || !loopback_endpoint(&profile.endpoint)
-    {
+    if !profile.enabled || !tilo_model_gateway::is_supervised_loopback(profile) {
         return None;
     }
     let model_id = profile.default_model.as_ref()?;
     let model = profile.models.iter().find(|model| &model.id == model_id)?;
-    let revision = model.revision.as_ref()?.trim();
-    if !model.vision || !pinned_revision(revision) {
+    let revision = model.revision.as_ref()?;
+    if !declares(model) || !tilo_model_gateway::is_pinned_revision(revision) {
         return None;
     }
-    Some(LocalVisionCapability {
-        profile_id: profile.id.clone(),
-        model_id: model.id.clone(),
-        model_label: model.display_label().to_string(),
-        revision: revision.to_string(),
-    })
+    Some((
+        profile.id.clone(),
+        model.id.clone(),
+        model.display_label().to_owned(),
+        revision.clone(),
+    ))
 }
 
 /// Produce an adaptive JPEG preview from already decoded pixels. This function
@@ -471,30 +472,6 @@ fn bounded_text(value: &str, limit: usize) -> String {
         .collect::<String>()
         .trim()
         .to_string()
-}
-
-fn loopback_endpoint(endpoint: &str) -> bool {
-    let Ok(url) = url::Url::parse(endpoint) else {
-        return false;
-    };
-    if !matches!(url.scheme(), "http" | "https") || url.username() != "" || url.password().is_some()
-    {
-        return false;
-    }
-    match url.host() {
-        Some(url::Host::Domain("localhost")) => true,
-        Some(url::Host::Ipv4(address)) => address.is_loopback(),
-        Some(url::Host::Ipv6(address)) => address.is_loopback(),
-        _ => false,
-    }
-}
-
-fn pinned_revision(revision: &str) -> bool {
-    matches!(revision.len(), 40 | 64)
-        && revision
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
