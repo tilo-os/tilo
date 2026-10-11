@@ -2074,14 +2074,16 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
                     },
                 );
             }
-            let idle = app.harness_mut().frame_schedule();
-            assert!(
-                !idle.needs_animation_frame && idle.next_wake_deadline.is_none(),
-                "with the toast gone the loop can settle back to idle; requesters {:?}; observed clock {:?}, last polled clock {:?}",
-                app.harness_mut().frame_requesters(),
-                ui::time::now(),
-                expired + Duration::from_millis(1600)
-            );
+            // Inspect the settled host at the last polled instant: restoring
+            // the outer clock first would move time backwards by 4.65 seconds.
+            ui::time::testing::with_monotonic_time(expired + Duration::from_millis(1600), || {
+                let idle = app.harness_mut().frame_schedule();
+                assert!(
+                    !idle.needs_animation_frame && idle.next_wake_deadline.is_none(),
+                    "with the toast gone the loop can settle back to idle; requesters {:?}",
+                    app.harness_mut().frame_requesters()
+                );
+            });
         });
     }
 }
