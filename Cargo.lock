@@ -13066,6 +13066,7 @@ dependencies = [
  "tilo-app",
  "tilo-bluez",
  "tilo-cli-kit",
+ "tilo-contact-directory",
  "tilo-dav",
  "tilo-desktop-entry",
  "tilo-doc-codecs",

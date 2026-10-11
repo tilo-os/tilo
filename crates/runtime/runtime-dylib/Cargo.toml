@@ -73,6 +73,8 @@ tilo-wet-media = { path = "../../media/wet-media" }
 tilo-subject = { path = "../../platform/tilo-subject" }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 tilo-files = { path = "../../platform/tilo-files" }
+# The person's contact directory: Contacts, Mail and Messages each read it.
+tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
 # Versioned format/network engines used by system apps. Keeping these in the
 # runtime bundle lets tapps contain policy and UI while the replaceable engine
 # implementations are stored once per runtime generation.
