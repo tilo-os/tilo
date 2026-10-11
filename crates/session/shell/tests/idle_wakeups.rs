@@ -120,7 +120,7 @@ const CLOCK_REPAINT_LATE: Duration = Duration::from_secs(1);
 
 /// How long the desktop is left alone after both apps are drawn, so startup
 /// work (font caches, record flushes, the first save) is behind it.
-const SETTLE: Duration = Duration::from_secs(5);
+pub(crate) const SETTLE: Duration = Duration::from_secs(5);
 
 /// The measured window. `TILO_IDLE_WAKEUP_WINDOW_SECS` lengthens it for the
 /// scheduled performance lane; the pull-request gate keeps the default.
@@ -144,7 +144,7 @@ static STARTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new
 /// A line the compositor printed, with when the test read it.
 type Log = Arc<Mutex<Vec<(Instant, String)>>>;
 
-struct Desktop {
+pub(crate) struct Desktop {
     child: Child,
     control: PathBuf,
     runtime_dir: PathBuf,
@@ -156,6 +156,12 @@ impl Desktop {
     /// Notes tab saved in its session; returns once its control socket
     /// answers with a laid-out frame.
     fn start() -> Self {
+        Self::start_with(&notes_desktop())
+    }
+
+    /// The same with `tree` as the saved session (`idle_memory` starts an
+    /// empty desktop).
+    pub(crate) fn start_with(tree: &shell::shell::state::WorkspaceTree) -> Self {
         tilo_test_env::require_isolated_desktop();
         // SUN_LEN caps a unix socket path, so the runtime dir stays short.
         // One per desktop: this module's tests run beside each other.
@@ -168,9 +174,8 @@ impl Desktop {
         let _ = std::fs::remove_dir_all(&runtime_dir);
         std::fs::create_dir_all(&runtime_dir).expect("create the private runtime dir");
         let state_path = runtime_dir.join("state.json");
-        let tree = notes_desktop();
-        shell::shell::persist::save_tree_to(&tree, &state_path).expect("seed the saved session");
-        seed_tab_records(&runtime_dir, &tree);
+        shell::shell::persist::save_tree_to(tree, &state_path).expect("seed the saved session");
+        seed_tab_records(&runtime_dir, tree);
         let identity_root = seed_identity(&runtime_dir);
         let control = runtime_dir.join("ctl");
 
@@ -248,7 +253,7 @@ impl Desktop {
         desktop
     }
 
-    fn pid(&self) -> u32 {
+    pub(crate) fn pid(&self) -> u32 {
         self.child.id()
     }
 
@@ -268,7 +273,7 @@ impl Desktop {
 
     /// The last lines the compositor printed, leaving out its per-iteration
     /// `paint-tick` lines, which the report summarises.
-    fn log_tail(&self) -> String {
+    pub(crate) fn log_tail(&self) -> String {
         self.log
             .lock()
             .map(|log| {
@@ -299,7 +304,7 @@ impl Desktop {
         serde_json::from_str(&response).ok()
     }
 
-    fn control(&self, request: &serde_json::Value) -> serde_json::Value {
+    pub(crate) fn control(&self, request: &serde_json::Value) -> serde_json::Value {
         self.try_control(request).unwrap_or_else(|| {
             panic!(
                 "the compositor did not answer {request}. Log:\n{}",
@@ -319,7 +324,7 @@ impl Desktop {
 
     /// Wait until the laid-out targets satisfy `done`, failing with the log
     /// if the compositor exits or the hang bound runs out.
-    fn wait_for(&self, what: &str, done: impl Fn(&[String]) -> bool) {
+    pub(crate) fn wait_for(&self, what: &str, done: impl Fn(&[String]) -> bool) {
         let deadline = tilo_test_env::hang_deadline();
         loop {
             let targets = self.target_names();
@@ -545,7 +550,7 @@ fn key_rounds(lines: &[(Instant, String)]) -> usize {
 }
 
 /// Whether a process named `name` runs in the compositor's tree.
-fn running(desktop: &Desktop, name: &str) -> bool {
+pub(crate) fn running(desktop: &Desktop, name: &str) -> bool {
     tilo_test_env::idle::process_tree(desktop.pid())
         .expect("list the compositor's process tree")
         .into_iter()
@@ -556,7 +561,7 @@ fn running(desktop: &Desktop, name: &str) -> bool {
 }
 
 /// Wait until no process named `name` runs in the compositor's tree.
-fn wait_until_gone(desktop: &Desktop, name: &str) {
+pub(crate) fn wait_until_gone(desktop: &Desktop, name: &str) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         if !running(desktop, name) {

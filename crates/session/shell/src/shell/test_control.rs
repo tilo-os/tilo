@@ -56,6 +56,8 @@ pub enum Command {
     },
     /// Per-surface frame counters for every tracked foreign toplevel. Read-only; lets a harness tell a painted app from one still showing the first-frame placeholder.
     ForeignFrames,
+    /// The compositor process's own memory by kind of mapping (heap, stacks, GPU driver memory, fonts, files), glibc's heap split and its threads by name, in KiB ([`crate::shell::memory_report`]). Read-only; vm-acceptance R01 records it because Tilo's kernel has no smaps.
+    ProcessMemory,
     /// Inject a key press + release. `key` is a winit-style name or a single character; unknown names return `parse_error`.
     Key { key: String },
     /// Press `key` and hold it (pairs with [`Command::KeyUp`]). Also accepts the bare modifiers `"Shift"`, `"Control"`, `"Alt"`, `"Super"` — holding a real modifier keycode across another keystroke is the only way to drive xkb modifier state like hardware does.
@@ -1014,6 +1016,10 @@ pub fn dispatch_command<S: ControlState>(
         }),
         Command::Snapshot { path } => snapshot(path),
         Command::ForeignFrames => foreign_frames(state),
+        Command::ProcessMemory => (
+            Response::Answer(crate::shell::memory_report::report()),
+            Vec::new(),
+        ),
         Command::StateDump { include_history } => state_dump(state, *include_history),
         Command::Windows => (
             answer_or_err(

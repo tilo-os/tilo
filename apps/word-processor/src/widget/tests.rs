@@ -1108,7 +1108,7 @@ fn character_marks_shape_their_spans() {
             .iter()
             .find(|b| b.text == "hello world")
             .expect("block present");
-        let (runs, _, _) = block_runs(b);
+        let (runs, _, _) = block_runs(b, false);
         // The first run ("hello") carries the highlight as a background band.
         let first = &runs[0];
         assert_eq!(first.text, "hello");
@@ -1139,7 +1139,7 @@ fn character_marks_shape_their_spans() {
             .iter()
             .find(|b| b.text == "x2")
             .expect("block present");
-        let (runs, _, _) = block_runs(b);
+        let (runs, _, _) = block_runs(b, false);
         let sup = runs.iter().find(|r| r.text == "2").expect("the '2' run");
         assert_eq!(
             sup.baseline,
@@ -5507,10 +5507,10 @@ fn tracked_changes_render_and_accept_individually() {
             "deletion strike has geometry"
         );
 
-        // Glyph tinting: `block_runs_markup` colours the ins run green and the del
+        // Glyph tinting: `block_runs` colours the ins run green and the del
         // run red (the standard review styling). With markup OFF those runs are
         // plain (no review colour).
-        let (runs_on, _, _) = block_runs_markup(b, true);
+        let (runs_on, _, _) = block_runs(b, true);
         assert!(
             runs_on
                 .iter()
@@ -5523,7 +5523,7 @@ fn tracked_changes_render_and_accept_individually() {
                 .any(|r| r.text.contains("gone") && r.color == Some(DELETION_RGB)),
             "the deleted run is tinted with the deletion review colour"
         );
-        let (runs_off, _, _) = block_runs_markup(b, false);
+        let (runs_off, _, _) = block_runs(b, false);
         assert!(
             runs_off
                 .iter()
@@ -5869,7 +5869,7 @@ fn review_markup_registers_card_hits_and_toggles_off() {
         // draw path suppresses tracked-change styling.
         wp.toggle_markup();
         assert!(!wp.markup_enabled(), "toggle flips the flag");
-        let (runs_off, _, _) = block_runs_markup(&b, wp.review.is_visible());
+        let (runs_off, _, _) = block_runs(&b, wp.review.is_visible());
         assert!(
             runs_off.iter().all(|r| r.color != Some(INSERTION_RGB)),
             "no review colour is applied while markup is hidden"
