@@ -3083,9 +3083,8 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
         }
         RichTextAction::InsertBlocks { at, .. } | RichTextAction::InsertMarkdown { at, .. } => {
             match at {
-                tilo_document::block_edit::Placement::After(id) => object_anchor(id),
-                tilo_document::block_edit::Placement::Start
-                | tilo_document::block_edit::Placement::End => {
+                wp::Placement::After(id) => object_anchor(id),
+                wp::Placement::Start | wp::Placement::End => {
                     tilo_actions::InteractionAnchor::Resource
                 }
             }
