@@ -79,16 +79,6 @@ tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
 # Calendar, Ebook and PDF Viewer each carried a copy of about 300 KB.
 tilo-document = { path = "../../doc/tilo-document" }
 tilo-rich-text = { path = "../../sdk/tilo-rich-text" }
-# Smaller crates two or three apps share, each a copy per app before.
-# Address/contact line parsing: Calendar, Contacts and Mail. Locale settings:
-# Settings, Sheets and Weather. Keyboard map: Settings and the on-screen
-# keyboard. PDF export: Word Processor, Camera and Print Centre. OCR: Photos,
-# Camera and Print Centre.
-pim-lines = { path = "../../text/pim-lines" }
-tilo-locale = { path = "../../platform/tilo-locale" }
-tilo-keyboard-map = { path = "../../platform/tilo-keyboard-map" }
-tilo-doc-pdf = { path = "../../doc/tilo-doc-pdf" }
-tilo-ocr = { path = "../../media/ocr" }
 # Versioned format/network engines used by system apps. Keeping these in the
 # runtime bundle lets tapps contain policy and UI while the replaceable engine
 # implementations are stored once per runtime generation.
