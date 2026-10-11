@@ -48,8 +48,46 @@ fn press_key(frame: &mut FrameBuilder, key: &Key) {
     }
 }
 
+/// Hand the Notes tile `event` in its own logical pixels, as the shell
+/// routes a pointer event to the tile under the pointer, and let it run a
+/// frame for it.
+fn notes_input(frame: &mut FrameBuilder, event: &WindowEvent) {
+    let tile = frame.node_map.values().find_map(|&widget| {
+        // SAFETY: node_map pointers are owned by the live widget tree and
+        // remain valid while the frame is exclusively borrowed.
+        let widget = unsafe { &mut *widget };
+        let app = widget
+            .as_any_mut()?
+            .downcast_mut::<ui::app::EmbeddedApp>()?;
+        let notes = app.component_root_mut().and_then(|root| {
+            tilo_app::framework::testing::surface_in_root::<notes::NotesShell, notes::NotesApp>(
+                root,
+            )
+        });
+        notes.is_some().then(|| std::ptr::from_mut(app))
+    });
+    let tile = tile.expect("the desktop shows a Notes tile");
+    // SAFETY: the tile lives in the widget tree `frame` borrows exclusively.
+    unsafe { &mut *tile }.input_for_test(event.clone());
+}
+
+/// The pointer resting at `at` (layout pixels) over the Notes tile, in the
+/// tile's own pixels.
+fn rest_over_notes(frame: &mut FrameBuilder, at: Point) {
+    point_at(frame, at);
+    let origin = with_notes_on_screen(&*frame, |rect, _| rect.origin());
+    notes_input(
+        frame,
+        &WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(at.x - origin.x, at.y - origin.y),
+        },
+    );
+}
+
+/// A touchpad scroll of `dy` over the Notes tile.
 fn wheel(frame: &mut FrameBuilder, dy: f64) {
-    dispatch(
+    notes_input(
         frame,
         &WindowEvent::MouseWheel {
             device_id: winit::event::DeviceId::dummy(),
@@ -105,7 +143,7 @@ fn write_a_long_note(frame: &mut FrameBuilder, label: &str, paragraphs: usize) -
     let rest = with_notes_on_screen(&*frame, |rect, _| {
         Point::new(rect.center().x, rect.y0 + rect.height() * 0.6)
     });
-    point_at(frame, rest);
+    rest_over_notes(frame, rest);
     wheel(frame, 100_000.0);
     settle(frame, 6);
     settle_notes(frame);
