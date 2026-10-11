@@ -1,64 +1,91 @@
 //! Strip pans composited from retained layers.
 //!
-//! While a strip pans, the frame producer draws the desktop as three layers
-//! ([`FrameLayers`]): what is behind every window, the strips in canvas
-//! coordinates, and every piece of chrome above them. A pan then changes only
-//! where each strip reads the canvas ([`StripBlit::scroll_x`]); the layers'
-//! scenes stay byte for byte the same.
+//! While a strip pans, the frame producer draws the desktop as layers
+//! ([`FrameLayers`]): what is behind every window, each strip on its own in
+//! canvas coordinates, the docked wheel on its own, and every piece of chrome
+//! above them, all in scene (device) pixels. A pan then changes only where
+//! each strip reads its canvas ([`StripBlit::scroll_x`]) and where the wheel
+//! sits; the layers' scenes stay byte for byte the same.
 //!
-//! [`StripLayers`] keeps each layer rasterised in a texture of the output's
-//! size. The workspace texture holds the strips as the screen shows them
-//! ([`append_panned`]): on a pure pan, the part of each strip still on screen
-//! is copied to where it moved, and only the columns the pan uncovered are
-//! rasterised. The output is then composited from the three textures (source
-//! over, premultiplied, as vello blends), over the strips that moved. The
-//! backdrop and the chrome are rasterised again only when their scenes change.
+//! [`StripLayers`] keeps the backdrop, the strips and the chrome rasterised in
+//! textures of the output's size, and the wheel in a texture of its own size.
+//! The strips texture holds the strips as the screen shows them
+//! ([`append_panned`]). On a pure pan, a pixel whose strips all moved by the
+//! same distance is copied from where it was, and only the rest is
+//! rasterised: the columns the pan uncovered, and the bands where a moving
+//! strip's drawing meets a strip that moved otherwise (each strip draws its
+//! shadows past its row, into its neighbour's). The output is then composited
+//! from the four textures (source over, premultiplied, as vello blends), over
+//! what changed. The backdrop, the chrome and the wheel are rasterised again
+//! only when their scenes change; a moving wheel is only composited at its new
+//! place.
 //!
 //! The composite stores straight alpha, as vello's fine stage does, so a
 //! composited output matches a single render of the same frame within a
 //! channel step of rounding.
 
-use vello::kurbo::{Affine, Rect, Shape as _};
+use vello::kurbo::{Affine, Rect};
 use vello::peniko::Fill;
 use vello::{FineDamageRect, Scene, wgpu};
 
-use crate::shell::frame::{FrameCache, StripBlit};
+use crate::shell::frame::{FrameCache, FrameLayers, StripBlit, WheelSprite};
 
-/// More strips than this, or more uncovered bands than vello's sparse pass
-/// takes, and the workspace layer is rasterised whole.
-const MAX_BANDS: usize = 16;
+/// More uncovered bands than this and the strips layer is rasterised whole:
+/// a sparse render of that many rects costs about what a whole one does.
+const MAX_BANDS: usize = 32;
 
-/// The workspace layer as the screen shows it: inside each panned strip,
-/// read `scroll_x` pixels to the right; everywhere else in place.
-pub fn append_panned(scene: &mut Scene, workspace: &Scene, strips: &[StripBlit], size: (f64, f64)) {
-    if strips.is_empty() {
-        scene.append(workspace, None);
-        return;
-    }
-    let dest = |strip: &StripBlit| {
-        Rect::new(
-            f64::from(strip.dest_x),
-            f64::from(strip.dest_y),
-            f64::from(strip.dest_x) + f64::from(strip.dest_w),
-            f64::from(strip.dest_y) + f64::from(strip.dest_h),
-        )
-    };
-    for strip in strips {
-        scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &dest(strip));
+/// `strip`'s destination as a rect in scene pixels.
+fn dest_rect(strip: &StripBlit) -> Rect {
+    Rect::new(
+        f64::from(strip.dest_x),
+        f64::from(strip.dest_y),
+        f64::from(strip.dest_x) + f64::from(strip.dest_w),
+        f64::from(strip.dest_y) + f64::from(strip.dest_h),
+    )
+}
+
+/// The strips layer as the screen shows it: what no strip carries in place,
+/// then each strip, top to bottom, inside its destination read `scroll_x`
+/// pixels to the right of it.
+pub fn append_panned(scene: &mut Scene, layers: &FrameLayers, strips: &[StripBlit]) {
+    scene.append(&layers.workspace, None);
+    for (strip, drawn) in strips.iter().zip(&layers.strips) {
+        scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &dest_rect(strip));
         scene.append(
-            workspace,
+            drawn,
             Some(Affine::translate((-f64::from(strip.scroll_x), 0.0))),
         );
         scene.pop_layer();
     }
-    let (w, h) = size;
-    let mut rest = Rect::new(0.0, 0.0, w, h).to_path(0.1);
-    for strip in strips {
-        rest.extend(dest(strip).path_elements(0.1));
-    }
-    scene.push_clip_layer(Fill::EvenOdd, Affine::IDENTITY, &rest);
-    scene.append(workspace, None);
+}
+
+/// The wheel where it sits this frame, clipped to what its texture holds.
+pub fn append_wheel(scene: &mut Scene, wheel: &WheelSprite) {
+    let (x, y) = (f64::from(wheel.x), f64::from(wheel.y));
+    scene.push_clip_layer(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        &Rect::new(
+            x,
+            y,
+            x + f64::from(wheel.width),
+            y + f64::from(wheel.height),
+        ),
+    );
+    scene.append(&wheel.scene, Some(Affine::translate((x, y))));
     scene.pop_layer();
+}
+
+/// The frame `cache` holds as one scene: its layers over each other, as
+/// [`StripLayers`] composites them.
+pub fn compose(cache: &FrameCache) -> Scene {
+    let mut scene = cache.layers.backdrop.clone();
+    append_panned(&mut scene, &cache.layers, &cache.strips);
+    if let Some(wheel) = &cache.layers.wheel {
+        append_wheel(&mut scene, wheel);
+    }
+    scene.append(&cache.layers.chrome, None);
+    scene
 }
 
 /// What a set of layer textures shows: the layers of the frame last
@@ -66,6 +93,8 @@ pub fn append_panned(scene: &mut Scene, workspace: &Scene, strips: &[StripBlit],
 pub(crate) struct Shown {
     backdrop: Scene,
     workspace: Scene,
+    strips_drawn: Vec<Scene>,
+    wheel: Option<WheelSprite>,
     chrome: Scene,
     width: u32,
     strips: Vec<StripBlit>,
@@ -78,6 +107,8 @@ impl Shown {
         Self {
             backdrop: cache.layers.backdrop.clone(),
             workspace: cache.layers.workspace.clone(),
+            strips_drawn: cache.layers.strips.clone(),
+            wheel: cache.layers.wheel.clone(),
             chrome: cache.layers.chrome.clone(),
             width: cache.width,
             strips: cache.strips.clone(),
@@ -86,7 +117,7 @@ impl Shown {
     }
 }
 
-/// Part of the workspace layer that a pan moves: `width × height` pixels at
+/// Part of the strips layer that a pan moves: `width × height` pixels at
 /// `(src_x, y)` go to `(dst_x, y)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BandCopy {
@@ -97,13 +128,13 @@ pub(crate) struct BandCopy {
     pub(crate) height: u32,
 }
 
-/// What the workspace layer needs for a frame.
+/// What the strips layer needs for a frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum WorkspaceWork {
     /// It already shows the frame.
     Unchanged,
-    /// The strips only panned: copy what stays on screen, then rasterise
-    /// what the pans uncovered.
+    /// The strips only panned, or one changed: copy what stays on screen,
+    /// then rasterise what the pans uncovered and what changed.
     Pan {
         copies: Vec<BandCopy>,
         uncovered: Vec<FineDamageRect>,
@@ -119,6 +150,8 @@ pub(crate) struct LayerWork {
     pub(crate) backdrop: bool,
     pub(crate) chrome: bool,
     pub(crate) workspace: WorkspaceWork,
+    /// Rasterise the wheel's texture (of this many pixels) again.
+    pub(crate) wheel: Option<u64>,
     /// The output rect to composite again; `None` when the output already
     /// shows the frame.
     pub(crate) composite: Option<FineDamageRect>,
@@ -126,11 +159,12 @@ pub(crate) struct LayerWork {
 
 impl LayerWork {
     /// Every layer and the whole output.
-    fn whole(size: (u32, u32)) -> Self {
+    fn whole(cache: &FrameCache, size: (u32, u32)) -> Self {
         Self {
             backdrop: true,
             chrome: true,
             workspace: WorkspaceWork::Whole,
+            wheel: cache.layers.wheel.as_ref().map(wheel_area),
             composite: Some(full_rect(size)),
         }
     }
@@ -148,7 +182,10 @@ impl LayerWork {
                 .fold(0, u64::saturating_add),
             WorkspaceWork::Whole => whole,
         };
-        whole.saturating_mul(layers).saturating_add(workspace)
+        whole
+            .saturating_mul(layers)
+            .saturating_add(workspace)
+            .saturating_add(self.wheel.unwrap_or(0))
     }
 
     /// Pixels this frame composites.
@@ -168,6 +205,10 @@ fn full_rect(size: (u32, u32)) -> FineDamageRect {
 
 fn area(rect: FineDamageRect) -> u64 {
     u64::from(rect.width).saturating_mul(u64::from(rect.height))
+}
+
+fn wheel_area(wheel: &WheelSprite) -> u64 {
+    u64::from(wheel.width).saturating_mul(u64::from(wheel.height))
 }
 
 fn union(a: Option<FineDamageRect>, b: FineDamageRect) -> FineDamageRect {
@@ -195,8 +236,24 @@ fn band(strip: &StripBlit, size: (u32, u32)) -> (u32, u32, u32, u32) {
     (x0, y0, x1, y1)
 }
 
-fn overlaps(a: (u32, u32, u32, u32), b: (u32, u32, u32, u32)) -> bool {
-    a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
+/// The output pixels the wheel covers, clamped to an output of `size`;
+/// `None` when it is off screen.
+fn wheel_on_screen(wheel: &WheelSprite, size: (u32, u32)) -> Option<FineDamageRect> {
+    let clamp = |value: i64, limit: u32| -> u32 {
+        u32::try_from(value.clamp(0, i64::from(limit))).unwrap_or(limit)
+    };
+    let x0 = i64::from(wheel.x);
+    let y0 = i64::from(wheel.y);
+    let x1 = x0.saturating_add(i64::from(wheel.width));
+    let y1 = y0.saturating_add(i64::from(wheel.height));
+    let (x0, x1) = (clamp(x0, size.0), clamp(x1, size.0));
+    let (y0, y1) = (clamp(y0, size.1), clamp(y1, size.1));
+    (x1 > x0 && y1 > y0).then(|| FineDamageRect {
+        x: x0,
+        y: y0,
+        width: x1.saturating_sub(x0),
+        height: y1.saturating_sub(y0),
+    })
 }
 
 /// The work that brings layer textures showing `shown` to `cache`, on an
@@ -209,25 +266,30 @@ pub(crate) fn plan(
     output_current: bool,
 ) -> LayerWork {
     let Some(shown) = shown else {
-        return LayerWork::whole(size);
+        return LayerWork::whole(cache, size);
     };
     let backdrop = !shown.backdrop.encoding_eq(&cache.layers.backdrop);
     let chrome = !shown.chrome.encoding_eq(&cache.layers.chrome);
     let workspace = workspace_work(shown, cache, size);
+    let (wheel, wheel_rects) = wheel_work(shown.wheel.as_ref(), cache.layers.wheel.as_ref(), size);
     let mut composite = None;
     if backdrop || chrome || workspace == WorkspaceWork::Whole || !output_current {
         composite = Some(full_rect(size));
-    } else if let WorkspaceWork::Pan { copies, uncovered } = &workspace {
-        for rect in copies
-            .iter()
-            .map(|copy| FineDamageRect {
-                x: copy.src_x.min(copy.dst_x),
-                y: copy.y,
-                width: copy.width.saturating_add(copy.src_x.abs_diff(copy.dst_x)),
-                height: copy.height,
-            })
-            .chain(uncovered.iter().copied())
-        {
+    } else {
+        let moved = match &workspace {
+            WorkspaceWork::Pan { copies, uncovered } => copies
+                .iter()
+                .map(|copy| FineDamageRect {
+                    x: copy.src_x.min(copy.dst_x),
+                    y: copy.y,
+                    width: copy.width.saturating_add(copy.src_x.abs_diff(copy.dst_x)),
+                    height: copy.height,
+                })
+                .chain(uncovered.iter().copied())
+                .collect(),
+            WorkspaceWork::Unchanged | WorkspaceWork::Whole => Vec::new(),
+        };
+        for rect in moved.into_iter().chain(wheel_rects) {
             composite = Some(union(composite, rect));
         }
     }
@@ -235,88 +297,228 @@ pub(crate) fn plan(
         backdrop,
         chrome,
         workspace,
+        wheel,
         composite,
     }
 }
 
+/// Whether the wheel's texture is rasterised again (its pixel count), and
+/// the output rects it leaves and covers when it moved, appeared or went.
+fn wheel_work(
+    shown: Option<&WheelSprite>,
+    wheel: Option<&WheelSprite>,
+    size: (u32, u32),
+) -> (Option<u64>, Vec<FineDamageRect>) {
+    let same_pixels = |a: &WheelSprite, b: &WheelSprite| {
+        a.width == b.width && a.height == b.height && a.scene.encoding_eq(&b.scene)
+    };
+    match (shown, wheel) {
+        (None, None) => (None, Vec::new()),
+        (Some(old), Some(new)) if same_pixels(old, new) && (old.x, old.y) == (new.x, new.y) => {
+            (None, Vec::new())
+        }
+        (old, new) => {
+            let raster = new
+                .filter(|new| old.is_none_or(|old| !same_pixels(old, new)))
+                .map(wheel_area);
+            let rects = old
+                .into_iter()
+                .chain(new)
+                .filter_map(|sprite| wheel_on_screen(sprite, size))
+                .collect();
+            (raster, rects)
+        }
+    }
+}
+
+/// One strip as the planner sees it: where it is shown, how far it moved
+/// since the shown frame (positive: its content moved left), and whether its
+/// drawing changed.
+#[derive(Clone, Copy)]
+struct Piece {
+    band: (u32, u32, u32, u32),
+    delta: i64,
+    changed: bool,
+}
+
 fn workspace_work(shown: &Shown, cache: &FrameCache, size: (u32, u32)) -> WorkspaceWork {
     let same_strips = shown.strips.len() == cache.strips.len()
+        && shown.strips_drawn.len() == cache.layers.strips.len()
+        && cache.strips.len() == cache.layers.strips.len()
         && shown.strips.iter().zip(&cache.strips).all(|(old, new)| {
             (old.dest_x, old.dest_y, old.dest_w, old.dest_h)
                 == (new.dest_x, new.dest_y, new.dest_w, new.dest_h)
         });
     if shown.width != cache.width
         || !same_strips
-        || cache.strips.len() > MAX_BANDS
         || !shown.workspace.encoding_eq(&cache.layers.workspace)
     {
         return WorkspaceWork::Whole;
     }
-    let mut copies = Vec::new();
-    let mut uncovered = Vec::new();
-    for (index, (old, new)) in shown.strips.iter().zip(&cache.strips).enumerate() {
-        if old.scroll_x == new.scroll_x {
-            continue;
-        }
-        let (x0, y0, x1, y1) = band(new, size);
-        let (width, height) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
-        if width == 0 || height == 0 {
-            continue;
-        }
-        // Where two strips' destinations meet, the screen shows both reads
-        // of the canvas: a copy cannot move one of them alone.
-        if cache
-            .strips
-            .iter()
-            .enumerate()
-            .any(|(other, strip)| other != index && overlaps(band(strip, size), (x0, y0, x1, y1)))
-        {
-            return WorkspaceWork::Whole;
-        }
-        // A pixel at x shows the canvas at x + scroll_x: after the pan it
-        // shows what x + (new - old) showed before.
-        let forward = new.scroll_x > old.scroll_x;
-        let shift = new.scroll_x.abs_diff(old.scroll_x);
-        if shift >= width {
-            uncovered.push(FineDamageRect {
-                x: x0,
-                y: y0,
-                width,
-                height,
-            });
-            continue;
-        }
-        let kept = width.saturating_sub(shift);
-        let (src_x, dst_x, gap_x) = if forward {
-            (x0.saturating_add(shift), x0, x0.saturating_add(kept))
-        } else {
-            (x0, x0.saturating_add(shift), x0)
-        };
-        copies.push(BandCopy {
-            src_x,
-            dst_x,
-            y: y0,
-            width: kept,
-            height,
-        });
-        uncovered.push(FineDamageRect {
-            x: gap_x,
-            y: y0,
-            width: shift,
-            height,
-        });
-    }
-    if copies.is_empty() && uncovered.is_empty() {
+    let pieces: Vec<Piece> = shown
+        .strips
+        .iter()
+        .zip(&cache.strips)
+        .zip(shown.strips_drawn.iter().zip(&cache.layers.strips))
+        .map(|((old, new), (old_drawn, new_drawn))| Piece {
+            band: band(new, size),
+            delta: i64::from(new.scroll_x).saturating_sub(i64::from(old.scroll_x)),
+            changed: !old_drawn.encoding_eq(new_drawn),
+        })
+        .collect();
+    // What no strip carries is drawn in place under the strips: where it
+    // draws, a strip's pixels cannot be moved without it.
+    let in_place_drawn = !cache.layers.workspace.encoding().is_empty();
+    let (copies, uncovered) = pan_work(&pieces, in_place_drawn);
+    if uncovered.len() > MAX_BANDS {
+        WorkspaceWork::Whole
+    } else if copies.is_empty() && uncovered.is_empty() {
         WorkspaceWork::Unchanged
     } else {
         WorkspaceWork::Pan { copies, uncovered }
     }
 }
 
+/// What a frame copies and what it rasterises on the strips layer.
+///
+/// The screen is cut into rows at every strip's top and bottom edge, and
+/// each row into runs of pixels covered by the same strips. A run whose
+/// strips all moved by `d` shows what the pixels `d` to its right showed,
+/// which the same strips covered: those are copied, the `d` columns the move
+/// uncovered are rasterised. A run whose strips moved by different distances
+/// (where two strips' drawings meet), or one with a changed strip, is
+/// rasterised whole; a run nothing moved in is left as it is.
+fn pan_work(pieces: &[Piece], in_place_drawn: bool) -> (Vec<BandCopy>, Vec<FineDamageRect>) {
+    let mut ys: Vec<u32> = pieces
+        .iter()
+        .flat_map(|piece| [piece.band.1, piece.band.3])
+        .collect();
+    ys.sort_unstable();
+    ys.dedup();
+    let mut copies: Vec<BandCopy> = Vec::new();
+    let mut uncovered: Vec<FineDamageRect> = Vec::new();
+    for (y0, y1) in ys.iter().copied().zip(ys.iter().copied().skip(1)) {
+        if y1 <= y0 {
+            continue;
+        }
+        let height = y1.saturating_sub(y0);
+        for (x0, x1, cover) in runs(pieces, y0, y1) {
+            let width = x1.saturating_sub(x0);
+            let Some((first, rest)) = cover.split_first() else {
+                continue;
+            };
+            let delta = first.delta;
+            let uniform = rest.iter().all(|piece| piece.delta == delta);
+            let changed = cover.iter().any(|piece| piece.changed);
+            if !changed && uniform && delta == 0 {
+                continue;
+            }
+            let shift = u32::try_from(delta.unsigned_abs()).unwrap_or(u32::MAX);
+            if changed || !uniform || in_place_drawn || shift >= width {
+                push_rect(&mut uncovered, x0, y0, width, height);
+                continue;
+            }
+            let kept = width.saturating_sub(shift);
+            let (src_x, dst_x, gap_x) = if delta > 0 {
+                (x0.saturating_add(shift), x0, x0.saturating_add(kept))
+            } else {
+                (x0, x0.saturating_add(shift), x0)
+            };
+            push_copy(
+                &mut copies,
+                BandCopy {
+                    src_x,
+                    dst_x,
+                    y: y0,
+                    width: kept,
+                    height,
+                },
+            );
+            push_rect(&mut uncovered, gap_x, y0, shift, height);
+        }
+    }
+    (copies, uncovered)
+}
+
+/// The runs of the row `y0..y1` covered by the same strips, left to right,
+/// with those strips; pixels no strip covers are left out.
+fn runs(pieces: &[Piece], y0: u32, y1: u32) -> Vec<(u32, u32, Vec<Piece>)> {
+    let in_row: Vec<Piece> = pieces
+        .iter()
+        .copied()
+        .filter(|piece| piece.band.1 <= y0 && piece.band.3 >= y1 && piece.band.0 < piece.band.2)
+        .collect();
+    let mut xs: Vec<u32> = in_row
+        .iter()
+        .flat_map(|piece| [piece.band.0, piece.band.2])
+        .collect();
+    xs.sort_unstable();
+    xs.dedup();
+    let mut runs: Vec<(u32, u32, Vec<usize>)> = Vec::new();
+    for (x0, x1) in xs.iter().copied().zip(xs.iter().copied().skip(1)) {
+        let cover: Vec<usize> = in_row
+            .iter()
+            .enumerate()
+            .filter(|(_, piece)| piece.band.0 <= x0 && piece.band.2 >= x1)
+            .map(|(index, _)| index)
+            .collect();
+        match runs.last_mut() {
+            Some(last) if last.1 == x0 && last.2 == cover => last.1 = x1,
+            _ => runs.push((x0, x1, cover)),
+        }
+    }
+    runs.into_iter()
+        .map(|(x0, x1, cover)| {
+            let pieces = cover
+                .into_iter()
+                .filter_map(|index| in_row.get(index).copied())
+                .collect();
+            (x0, x1, pieces)
+        })
+        .collect()
+}
+
+/// Add a rect to rasterise, joining it to the one above when they line up.
+fn push_rect(rects: &mut Vec<FineDamageRect>, x: u32, y: u32, width: u32, height: u32) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    if let Some(above) = rects.iter_mut().rev().find(|above| {
+        above.x == x && above.width == width && above.y.saturating_add(above.height) == y
+    }) {
+        above.height = above.height.saturating_add(height);
+        return;
+    }
+    rects.push(FineDamageRect {
+        x,
+        y,
+        width,
+        height,
+    });
+}
+
+/// Add a band copy, joining it to the one above when they line up.
+fn push_copy(copies: &mut Vec<BandCopy>, copy: BandCopy) {
+    if copy.width == 0 || copy.height == 0 {
+        return;
+    }
+    if let Some(above) = copies.iter_mut().rev().find(|above| {
+        above.src_x == copy.src_x
+            && above.dst_x == copy.dst_x
+            && above.width == copy.width
+            && above.y.saturating_add(above.height) == copy.y
+    }) {
+        above.height = above.height.saturating_add(copy.height);
+        return;
+    }
+    copies.push(copy);
+}
+
 /// One layer's texture: what vello rasterises into and the composite reads.
 pub(crate) struct LayerTexture {
     pub(crate) texture: wgpu::Texture,
     pub(crate) view: wgpu::TextureView,
+    pub(crate) size: (u32, u32),
 }
 
 impl LayerTexture {
@@ -324,8 +526,8 @@ impl LayerTexture {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
-                width: size.0,
-                height: size.1,
+                width: size.0.max(1),
+                height: size.1.max(1),
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -339,7 +541,11 @@ impl LayerTexture {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        Self { texture, view }
+        Self {
+            texture,
+            view,
+            size,
+        }
     }
 }
 
@@ -348,6 +554,7 @@ impl LayerTexture {
 pub(crate) enum Layer {
     Backdrop,
     Workspace,
+    Wheel,
     Chrome,
 }
 
@@ -356,6 +563,8 @@ pub(crate) struct StripLayers {
     pub(crate) size: (u32, u32),
     backdrop: LayerTexture,
     workspace: LayerTexture,
+    /// The docked wheel at its own size; one pixel, unused, without it.
+    wheel: LayerTexture,
     chrome: LayerTexture,
     /// Where a moving band is staged: a texture cannot be copied onto itself.
     scratch: Option<(LayerTexture, (u32, u32))>,
@@ -369,6 +578,7 @@ impl StripLayers {
             size,
             backdrop: LayerTexture::new(device, size, "tilo-strip-layer-backdrop"),
             workspace: LayerTexture::new(device, size, "tilo-strip-layer-workspace"),
+            wheel: LayerTexture::new(device, (1, 1), "tilo-strip-layer-wheel"),
             chrome: LayerTexture::new(device, size, "tilo-strip-layer-chrome"),
             scratch: None,
             composite: CompositePass::new(device),
@@ -380,11 +590,20 @@ impl StripLayers {
         match layer {
             Layer::Backdrop => &mut self.backdrop,
             Layer::Workspace => &mut self.workspace,
+            Layer::Wheel => &mut self.wheel,
             Layer::Chrome => &mut self.chrome,
         }
     }
 
-    /// Move the workspace bands `copies` names, through the scratch texture.
+    /// Give the wheel's texture `size`, keeping it when it already has it.
+    pub(crate) fn size_wheel(&mut self, device: &wgpu::Device, size: (u32, u32)) {
+        if self.wheel.size != size {
+            self.wheel = LayerTexture::new(device, size, "tilo-strip-layer-wheel");
+        }
+    }
+
+    /// Move the strips layer's bands `copies` names, through the scratch
+    /// texture.
     pub(crate) fn encode_copies(
         &mut self,
         device: &wgpu::Device,
@@ -429,28 +648,37 @@ impl StripLayers {
         }
     }
 
-    /// Composite `rect` of `output` from the three layers.
+    /// Composite `rect` of `output` from the layers, the wheel where `wheel`
+    /// puts it.
     pub(crate) fn encode_composite(
         &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        output: &wgpu::TextureView,
+        target: CompositeTarget<'_>,
+        wheel: Option<&WheelSprite>,
         rect: FineDamageRect,
     ) {
+        let wheel = wheel.map_or(([0, 0], [0, 0]), |wheel| {
+            ([wheel.x, wheel.y], [wheel.width, wheel.height])
+        });
         self.composite.encode(
-            device,
-            queue,
-            encoder,
+            target,
             [
                 &self.backdrop.view,
                 &self.workspace.view,
+                &self.wheel.view,
                 &self.chrome.view,
-                output,
             ],
+            wheel,
             rect,
         );
     }
+}
+
+/// Where a composite is encoded and what it writes.
+pub(crate) struct CompositeTarget<'a> {
+    pub(crate) device: &'a wgpu::Device,
+    pub(crate) queue: &'a wgpu::Queue,
+    pub(crate) encoder: &'a mut wgpu::CommandEncoder,
+    pub(crate) output: &'a wgpu::TextureView,
 }
 
 /// The texel at `(x, y)` of `texture`, as a copy's corner.
@@ -467,13 +695,16 @@ const COMPOSITE_SHADER: &str = r"
 struct Params {
     origin: vec2<u32>,
     extent: vec2<u32>,
+    wheel_origin: vec2<i32>,
+    wheel_extent: vec2<u32>,
 };
 
 @group(0) @binding(0) var backdrop: texture_2d<f32>;
 @group(0) @binding(1) var workspace: texture_2d<f32>;
-@group(0) @binding(2) var chrome: texture_2d<f32>;
-@group(0) @binding(3) var output: texture_storage_2d<rgba8unorm, write>;
-@group(0) @binding(4) var<uniform> params: Params;
+@group(0) @binding(2) var wheel: texture_2d<f32>;
+@group(0) @binding(3) var chrome: texture_2d<f32>;
+@group(0) @binding(4) var output: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(5) var<uniform> params: Params;
 
 fn premultiplied(c: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(c.rgb * c.a, c.a);
@@ -487,9 +718,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let p = vec2<i32>(params.origin + id.xy);
     let below = premultiplied(textureLoad(backdrop, p, 0));
     let strips = premultiplied(textureLoad(workspace, p, 0));
+    let q = p - params.wheel_origin;
+    var rider = vec4<f32>(0.0);
+    if (q.x >= 0 && q.y >= 0
+        && u32(q.x) < params.wheel_extent.x && u32(q.y) < params.wheel_extent.y) {
+        rider = premultiplied(textureLoad(wheel, q, 0));
+    }
     let above = premultiplied(textureLoad(chrome, p, 0));
     let under = strips + below * (1.0 - strips.a);
-    let out = above + under * (1.0 - above.a);
+    let middle = rider + under * (1.0 - rider.a);
+    let out = above + middle * (1.0 - above.a);
     // Straight alpha, as vello's fine stage stores it.
     let a_inv = 1.0 / max(out.a, 1e-6);
     textureStore(output, p, vec4<f32>(out.rgb * a_inv, out.a));
@@ -497,7 +735,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 ";
 
 /// Bytes of the composite shader's `Params` uniform.
-const PARAMS_BYTES: u64 = 16;
+const PARAMS_BYTES: u64 = 32;
 
 struct CompositePass {
     pipeline: wgpu::ComputePipeline,
@@ -527,8 +765,9 @@ impl CompositePass {
                 read(0),
                 read(1),
                 read(2),
+                read(3),
                 wgpu::BindGroupLayoutEntry {
-                    binding: 3,
+                    binding: 4,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
@@ -538,7 +777,7 @@ impl CompositePass {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 4,
+                    binding: 5,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -577,46 +816,50 @@ impl CompositePass {
 
     fn encode(
         &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        [backdrop, workspace, chrome, output]: [&wgpu::TextureView; 4],
+        target: CompositeTarget<'_>,
+        [backdrop, workspace, wheel, chrome]: [&wgpu::TextureView; 4],
+        ([wheel_x, wheel_y], [wheel_width, wheel_height]): ([i32; 2], [u32; 2]),
         rect: FineDamageRect,
     ) {
+        let CompositeTarget {
+            device,
+            queue,
+            encoder,
+            output,
+        } = target;
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        let mut bytes = [0_u8; 16];
-        for (slot, value) in
-            bytes
-                .chunks_exact_mut(4)
-                .zip([rect.x, rect.y, rect.width, rect.height])
-        {
-            slot.copy_from_slice(&value.to_le_bytes());
+        let mut bytes = [0_u8; 32];
+        let words = [
+            rect.x.to_le_bytes(),
+            rect.y.to_le_bytes(),
+            rect.width.to_le_bytes(),
+            rect.height.to_le_bytes(),
+            wheel_x.to_le_bytes(),
+            wheel_y.to_le_bytes(),
+            wheel_width.to_le_bytes(),
+            wheel_height.to_le_bytes(),
+        ];
+        for (slot, value) in bytes.chunks_exact_mut(4).zip(words) {
+            slot.copy_from_slice(&value);
         }
         queue.write_buffer(&self.params, 0, &bytes);
+        let texture = |binding, view| wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::TextureView(view),
+        };
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("tilo-strip-layer-composite"),
             layout: &self.layout,
             entries: &[
+                texture(0, backdrop),
+                texture(1, workspace),
+                texture(2, wheel),
+                texture(3, chrome),
+                texture(4, output),
                 wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(backdrop),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(workspace),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(chrome),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(output),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
+                    binding: 5,
                     resource: self.params.as_entire_binding(),
                 },
             ],
@@ -634,7 +877,6 @@ impl CompositePass {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::frame::FrameLayers;
     use vello::peniko::Color;
 
     const SIZE: (u32, u32) = (1000, 600);
@@ -661,22 +903,35 @@ mod tests {
         }
     }
 
-    fn cache(workspace: Color, strips: Vec<StripBlit>) -> FrameCache {
+    fn cache(drawn: Color, strips: Vec<StripBlit>) -> FrameCache {
+        let strips_drawn = strips.iter().map(|_| scene(drawn)).collect();
         FrameCache {
             width: 3000,
             strips,
             layers: FrameLayers {
                 backdrop: scene(Color::BLACK),
-                workspace: scene(workspace),
+                workspace: Scene::new(),
+                strips: strips_drawn,
+                wheel: None,
                 chrome: scene(Color::WHITE),
             },
+        }
+    }
+
+    fn wheel(x: i32, color: Color) -> WheelSprite {
+        WheelSprite {
+            scene: scene(color),
+            width: 120,
+            height: 500,
+            x,
+            y: 40,
         }
     }
 
     #[test]
     fn nothing_shown_renders_every_layer_and_the_whole_output() {
         let work = plan(None, &cache(Color::BLACK, vec![strip(40)]), SIZE, true);
-        assert_eq!(work, LayerWork::whole(SIZE));
+        assert_eq!(work, LayerWork::whole(&cache(Color::BLACK, vec![]), SIZE));
         assert_eq!(work.raster_pixels(SIZE), 1_800_000);
     }
 
@@ -689,7 +944,7 @@ mod tests {
             SIZE,
             true,
         );
-        assert!(!work.backdrop && !work.chrome);
+        assert!(!work.backdrop && !work.chrome && work.wheel.is_none());
         assert_eq!(
             work.workspace,
             WorkspaceWork::Pan {
@@ -773,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_strip_content_or_geometry_rasterises_the_workspace_whole() {
+    fn a_changed_strip_rasterises_its_destination_and_geometry_the_layer() {
         let shown = Shown::of(&cache(Color::BLACK, vec![strip(40)]), 1);
         let content = plan(
             Some(&shown),
@@ -781,18 +1036,34 @@ mod tests {
             SIZE,
             true,
         );
-        assert_eq!(content.workspace, WorkspaceWork::Whole);
-        assert_eq!(content.composite, Some(full_rect(SIZE)));
+        assert_eq!(
+            content.workspace,
+            WorkspaceWork::Pan {
+                copies: Vec::new(),
+                uncovered: vec![FineDamageRect {
+                    x: 100,
+                    y: 50,
+                    width: 800,
+                    height: 400,
+                }],
+            }
+        );
         let mut taller = strip(52);
         taller.dest_h = 420;
         let geometry = plan(Some(&shown), &cache(Color::BLACK, vec![taller]), SIZE, true);
         assert_eq!(geometry.workspace, WorkspaceWork::Whole);
+        assert_eq!(geometry.composite, Some(full_rect(SIZE)));
     }
 
+    /// Two strips whose destinations meet (each draws its shadows past its
+    /// row): the upper one pans. Its own rows are copied; the band both
+    /// cover, where the lower strip's drawing stays put, is rasterised; the
+    /// lower strip's own rows are left alone.
     #[test]
-    fn overlapping_strips_are_never_moved_by_copy() {
+    fn where_a_panning_strip_meets_a_still_one_the_shared_band_is_rasterised() {
         let mut lower = strip(0);
-        lower.dest_y = 440;
+        lower.dest_y = 430;
+        lower.dest_h = 150;
         let shown = Shown::of(&cache(Color::BLACK, vec![strip(40), lower]), 1);
         let work = plan(
             Some(&shown),
@@ -800,7 +1071,115 @@ mod tests {
             SIZE,
             true,
         );
-        assert_eq!(work.workspace, WorkspaceWork::Whole);
+        let WorkspaceWork::Pan { copies, uncovered } = &work.workspace else {
+            panic!("a pan: {work:?}");
+        };
+        assert_eq!(
+            copies,
+            &vec![BandCopy {
+                src_x: 112,
+                dst_x: 100,
+                y: 50,
+                width: 788,
+                height: 380,
+            }]
+        );
+        assert_eq!(
+            uncovered,
+            &vec![
+                FineDamageRect {
+                    x: 888,
+                    y: 50,
+                    width: 12,
+                    height: 380,
+                },
+                FineDamageRect {
+                    x: 100,
+                    y: 430,
+                    width: 800,
+                    height: 20,
+                },
+            ]
+        );
+        assert_eq!(work.raster_pixels(SIZE), 12 * 380 + 800 * 20);
+        let both = plan(
+            Some(&shown),
+            &cache(
+                Color::BLACK,
+                vec![strip(52), {
+                    let mut moved = lower;
+                    moved.scroll_x = 12;
+                    moved
+                }],
+            ),
+            SIZE,
+            true,
+        );
+        let WorkspaceWork::Pan { copies, .. } = &both.workspace else {
+            panic!("a pan: {both:?}");
+        };
+        assert_eq!(
+            copies.iter().map(|copy| copy.height).sum::<u32>(),
+            530,
+            "strips moving together are copied through the band they share: {copies:?}"
+        );
+    }
+
+    #[test]
+    fn what_no_strip_carries_drawn_in_place_keeps_strip_pixels_from_moving() {
+        let shown_cache = {
+            let mut cache = cache(Color::BLACK, vec![strip(40)]);
+            cache.layers.workspace = scene(Color::WHITE);
+            cache
+        };
+        let shown = Shown::of(&shown_cache, 1);
+        let mut next = cache(Color::BLACK, vec![strip(52)]);
+        next.layers.workspace = scene(Color::WHITE);
+        let work = plan(Some(&shown), &next, SIZE, true);
+        let WorkspaceWork::Pan { copies, uncovered } = work.workspace else {
+            panic!("a pan: {work:?}");
+        };
+        assert!(copies.is_empty());
+        assert_eq!(uncovered.len(), 1);
+    }
+
+    #[test]
+    fn a_wheel_that_moves_is_composited_without_being_rasterised() {
+        let mut before = cache(Color::BLACK, vec![strip(40)]);
+        before.layers.wheel = Some(wheel(30, Color::WHITE));
+        let shown = Shown::of(&before, 1);
+        let mut moved = cache(Color::BLACK, vec![strip(52)]);
+        moved.layers.wheel = Some(wheel(18, Color::WHITE));
+        let work = plan(Some(&shown), &moved, SIZE, true);
+        assert_eq!(work.wheel, None, "the wheel's pixels are kept");
+        assert_eq!(
+            work.composite,
+            Some(FineDamageRect {
+                x: 18,
+                y: 40,
+                width: 882,
+                height: 500,
+            }),
+            "the wheel's old and new places are composited with the strip"
+        );
+        let mut redrawn = cache(Color::BLACK, vec![strip(40)]);
+        redrawn.layers.wheel = Some(wheel(30, Color::BLACK));
+        let work = plan(Some(&shown), &redrawn, SIZE, true);
+        assert_eq!(work.wheel, Some(120 * 500));
+        let mut gone = cache(Color::BLACK, vec![strip(40)]);
+        gone.layers.wheel = Some(wheel(-200, Color::WHITE));
+        let work = plan(Some(&shown), &gone, SIZE, true);
+        assert_eq!(work.wheel, None);
+        assert_eq!(
+            work.composite,
+            Some(FineDamageRect {
+                x: 30,
+                y: 40,
+                width: 120,
+                height: 500,
+            }),
+            "a wheel panned off screen leaves its old place"
+        );
     }
 
     #[test]
@@ -825,5 +1204,18 @@ mod tests {
         assert!(work.chrome && !work.backdrop);
         assert_eq!(work.composite, Some(full_rect(SIZE)));
         assert!(matches!(work.workspace, WorkspaceWork::Pan { .. }));
+    }
+
+    #[test]
+    fn a_composed_frame_draws_the_layers_in_order() {
+        let mut frame = cache(Color::BLACK, vec![strip(40)]);
+        frame.layers.wheel = Some(wheel(30, Color::WHITE));
+        let mut expected = frame.layers.backdrop.clone();
+        append_panned(&mut expected, &frame.layers, &frame.strips);
+        if let Some(wheel) = &frame.layers.wheel {
+            append_wheel(&mut expected, wheel);
+        }
+        expected.append(&frame.layers.chrome, None);
+        assert!(compose(&frame).encoding_eq(&expected));
     }
 }
