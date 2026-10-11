@@ -700,6 +700,17 @@ impl HostContext {
     pub fn record(&self) -> &RecordCheckout {
         &self.record
     }
+    /// The per-window records this app's windows kept in this room before it
+    /// [kept one record per room](ApplicationDefinition::keeps_room_record),
+    /// read-only and sorted by id ([`RecordStore::window_records`]). Only a
+    /// context of the room's own record answers: what the app adopts into
+    /// it when it creates it. Any other context has none.
+    pub fn window_records(&self) -> Vec<(RecordId, AutoCommit)> {
+        if !self.record.id.is_package_primary() {
+            return Vec::new();
+        }
+        self.records.window_records(&self.record.kind)
+    }
     /// The application this context was prepared for.
     pub fn app_id(&self) -> &str {
         &self.app_id

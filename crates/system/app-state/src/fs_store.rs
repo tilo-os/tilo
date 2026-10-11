@@ -576,6 +576,39 @@ impl DurableStore for FsStore {
         Ok(claim_marker(&marker, claimant)?)
     }
 
+    /// Records whose document file holds committed bytes. A write still in
+    /// its debounce window is not listed until it commits.
+    fn records(&self, package: &str, workspace: &str) -> Result<Vec<String>, SeamError> {
+        validate_record_key(workspace)?;
+        let directory = self
+            .package_dir(package)?
+            .join(ROOMS_DIR)
+            .join(workspace)
+            .join(RECORDS_DIR);
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(io_err(format!("listing {}", directory.display()), error).into());
+            }
+        };
+        let mut records = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| io_err(format!("listing {}", directory.display()), e))?;
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if validate_record_key(&name).is_err() {
+                continue;
+            }
+            if fs::metadata(entry.path().join(DOCUMENT_FILE)).is_ok_and(|m| m.len() > 0) {
+                records.push(name);
+            }
+        }
+        records.sort();
+        Ok(records)
+    }
+
     fn local_path(&self, key: &StorageKey) -> Option<PathBuf> {
         match self.target(key).ok()? {
             Target::Document(directory) => Some(directory.join(DOCUMENT_FILE)),
@@ -996,6 +1029,31 @@ mod tests {
 
     fn record(name: &str) -> StorageKey {
         StorageKey::record("so.tilo.test", "room-a", name)
+    }
+
+    #[test]
+    fn records_lists_one_rooms_committed_documents_sorted() {
+        let tmp = TempDir::new().unwrap();
+        let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
+        assert!(store.records("so.tilo.test", "room-a").unwrap().is_empty());
+        for (room, name, bytes) in [
+            ("room-a", "b-rec", b"doc".as_slice()),
+            ("room-a", "a-rec", b"doc"),
+            ("room-a", "empty", b""),
+            ("room-b", "elsewhere", b"doc"),
+        ] {
+            let key = StorageKey::record("so.tilo.test", room, name);
+            let _lease = store.lease(&key).unwrap();
+            store
+                .write(&key, WriteOp::Replace(bytes.to_vec()), None)
+                .unwrap();
+            store.flush(Some(&key)).unwrap();
+        }
+        assert_eq!(
+            store.records("so.tilo.test", "room-a").unwrap(),
+            ["a-rec", "b-rec"]
+        );
+        assert!(store.records("so.tilo.test", "../room-a").is_err());
     }
 
     #[test]

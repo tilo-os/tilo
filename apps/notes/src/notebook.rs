@@ -507,6 +507,75 @@ fn write_reference(
     doc.put(&reference, "mime", mime).map_err(|e| e.to_string())
 }
 
+/// Every asset the notebook holds, as it holds it, by digest in key order:
+/// what a copy of the notebook carries over without needing the bytes of a
+/// reference (they stay in the device's content store under the digest).
+///
+/// # Errors
+/// Returns an error when the asset map is malformed.
+pub(crate) fn stored_assets(doc: &AutoCommit) -> Result<Vec<(String, StoredAsset)>, String> {
+    let Some(assets) = assets_map(doc)? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for key in doc.keys(&assets) {
+        let digest = asset_digest(&key).ok_or_else(|| format!("invalid asset digest {key}"))?;
+        out.push((digest.to_owned(), stored_asset(doc, &assets, &key)?));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+/// Record `asset` under `digest` unless the notebook already holds that
+/// digest (which names the same bytes). Inline bytes are verified first.
+///
+/// # Errors
+/// Refuses an invalid digest, payload or reference, or a malformed asset map.
+pub(crate) fn adopt_asset(
+    doc: &mut AutoCommit,
+    digest: &str,
+    asset: &StoredAsset,
+) -> Result<(), String> {
+    if asset_digest(digest) != Some(digest) {
+        return Err("image asset digest is invalid".into());
+    }
+    let assets = match assets_map(doc)? {
+        Some(assets) => assets,
+        None => doc
+            .put_object(ROOT, "assets", ObjType::Map)
+            .map_err(|e| e.to_string())?,
+    };
+    if !doc
+        .get_all(&assets, digest)
+        .map_err(|e| e.to_string())?
+        .is_empty()
+    {
+        return Ok(());
+    }
+    match asset {
+        StoredAsset::Inline(bytes) => {
+            validate_asset_payload(digest, bytes)?;
+            doc.put(&assets, digest, ScalarValue::Bytes(bytes.clone()))
+                .map_err(|e| e.to_string())
+        }
+        StoredAsset::Reference { len, mime } => {
+            if *len == 0
+                || *len > MAX_ASSET_BYTES as u64
+                || !REFERENCE_MIMES.contains(&mime.as_str())
+            {
+                return Err(format!("asset {digest} has an invalid reference"));
+            }
+            let reference = doc
+                .put_object(&assets, digest, ObjType::Map)
+                .map_err(|e| e.to_string())?;
+            doc.put(&reference, "len", *len)
+                .map_err(|e| e.to_string())?;
+            doc.put(&reference, "mime", mime.as_str())
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
 /// Snapshot the image assets whose bytes are readable now, using their
 /// canonical `asset:` keys. A referenced image a collaborator added may still
 /// be on its way from their device; it is absent until it arrives.

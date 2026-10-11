@@ -274,6 +274,19 @@ pub trait DurableStore {
     /// A key the store cannot claim, or a failure recording the claim.
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, StoreError>;
 
+    /// The `record` component of every [`StorageKey::Record`] of `package`
+    /// in `workspace` that holds stored bytes, sorted. Lets a host find
+    /// records it can no longer name: an app that used to keep a record per
+    /// window and now keeps one per room adopts its windows' records. A
+    /// store that cannot enumerate its keys answers with none.
+    ///
+    /// # Errors
+    /// Invalid identifiers or a failure reading the backing storage.
+    fn records(&self, package: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
+        let _ = (package, workspace);
+        Ok(Vec::new())
+    }
+
     /// Where a host that keeps the key in a local file keeps it. Only for
     /// diagnostics and tools that work on that file; `None` elsewhere.
     fn local_path(&self, _key: &StorageKey) -> Option<PathBuf> {
