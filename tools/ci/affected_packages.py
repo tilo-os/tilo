@@ -103,6 +103,19 @@ QUALITY_ONLY_HELPERS = {
 # file in the mandatory repository-policy suite. A file missing from this exact
 # map retains native Rust checks.
 QUALITY_ONLY_CONTROL_INPUTS = {
+    # These wrappers select/request the existing image workflow; they change
+    # no compiler, app source or packaging inputs. Mandatory policy tests
+    # observe their request gate, paths, architecture selection and delegation.
+    ".forgejo/workflows/os-dev.yml": (
+        "tools/tests/test_os_dev_arches.py",
+        "tools/tests/test_os_release_matrix.py",
+    ),
+    ".forgejo/workflows/os-dev-x86.yml": (
+        "tools/tests/test_os_dev_arches.py",
+    ),
+    ".forgejo/workflows/os-dev-arm.yml": (
+        "tools/tests/test_os_dev_arches.py",
+    ),
     "os/dev/rpm-snapshot-fingerprint.py": (
         "os/tests/test_rpm_snapshot_fingerprint.py",
         "tools/tests/test_rpm_pin_contract.py",

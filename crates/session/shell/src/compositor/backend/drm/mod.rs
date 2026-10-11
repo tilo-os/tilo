@@ -18,6 +18,7 @@ mod direct_retry;
 pub mod gestures;
 pub mod hotplug;
 pub mod input_config;
+mod kms_flip;
 mod output_signal;
 pub mod outputs;
 pub mod paint;
@@ -156,6 +157,7 @@ impl DrmBackend {
             None,
         );
         report_signal_status(&mut self.inner.scanouts, self.signal_reports.as_ref());
+        publish_client_planes(&mut self.inner.scanouts, &self.inner.dispatch.client_planes);
     }
 }
 
@@ -202,6 +204,8 @@ pub struct DrmPresenter {
     phase_window: PhaseWindow,
     /// Signalling facts learned while presenting, for the loop thread.
     signal_reports: Option<Sender<SignalReport>>,
+    /// What each output offers fullscreen clients, for the loop thread.
+    client_planes: client_scanout::ClientPlanes,
     /// Vblanks of the page flips retired during the current frame, by card and CRTC.
     flip_vblanks: Vec<FlipVblank>,
     /// [`Presenter::display_timing`] of the frame just presented.
@@ -248,6 +252,7 @@ struct PresenterParts {
     present_gate: Option<Arc<Mutex<()>>>,
     profile_phases: bool,
     signal_reports: Option<Sender<SignalReport>>,
+    client_planes: client_scanout::ClientPlanes,
 }
 
 impl DrmPresenter {
@@ -266,6 +271,7 @@ impl DrmPresenter {
             present_gate,
             profile_phases,
             signal_reports,
+            client_planes,
         } = parts;
         Self {
             scanouts,
@@ -283,6 +289,7 @@ impl DrmPresenter {
             frame_phases: None,
             phase_window: PhaseWindow::default(),
             signal_reports,
+            client_planes,
             flip_vblanks: Vec::new(),
             display_timing: crate::shell::present::DisplayTiming::default(),
             paced_queue_depth: usize::from(
@@ -1084,6 +1091,7 @@ impl DrmPresenter {
             let _ = bridge.take_phase_timing();
         }
         report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
+        publish_client_planes(&mut self.scanouts, &self.client_planes);
         physical
     }
 
@@ -1470,6 +1478,9 @@ struct ScanoutFrame<'a> {
     /// The client buffer on top of everything on one output, which that
     /// output may scan out instead of rendering `scene`.
     scanout: Option<&'a crate::shell::scanout_candidate::ScanoutCandidate>,
+    /// The frame as layers, which an output that is the whole scene
+    /// composites a strip pan from.
+    layers: Option<&'a crate::shell::frame::FrameCache>,
 }
 
 // These two constructors are the only places a frame is translated for the scanouts, so a field
@@ -1483,6 +1494,7 @@ impl<'a> ScanoutFrame<'a> {
             hdr_layers: &[],
             backdrop: None,
             scanout: None,
+            layers: None,
         }
     }
 }
@@ -1501,6 +1513,7 @@ impl<'a> From<&'a FramePaint> for ScanoutFrame<'a> {
             hdr_layers: &frame.hdr_layers,
             backdrop: frame.backdrop.as_ref(),
             scanout: frame.scanout_candidate(),
+            layers: frame.cache.as_ref(),
         }
     }
 }
@@ -1644,9 +1657,13 @@ fn paint_scanouts(
     frame: ScanoutFrame<'_>,
     phase_window: Option<&mut PhaseWindow>,
 ) -> PaintScanoutSample {
-    let had_renderer = paint.is_some();
     let sample = paint_scanouts_with(scanouts, outputs, paint, cpu, pointer, frame, phase_window);
-    if !had_renderer && paint.is_some() {
+    // The presenter usually builds the renderer before its first frame (`prepare`), so this
+    // asks the renderer rather than whether this call built it.
+    if paint
+        .as_mut()
+        .is_some_and(paint::VelloDrmBridge::take_first_frame)
+    {
         // A new renderer has compiled its pipelines and drawn its first frame. The driver's
         // compile scratch is free now, but glibc would keep it (TIL-705).
         crate::shell::heap_trim::request();
@@ -2254,6 +2271,7 @@ fn present_direct(
             sdr_white_nits,
             hdr_layers: frame.hdr_layers,
             color_lut: entry.color_lut.as_ref(),
+            layers: frame.layers,
         },
     );
     let stats = match painted {
@@ -2336,6 +2354,9 @@ fn present_client(
             .note_client_scanout(output, client_scanout::ClientStatus::Idle);
         return None;
     };
+    if candidate.covers(entry.position, view.size) {
+        refresh_client_offer(entry, view, frame);
+    }
     let client = crate::shell::gpu_frames::client_frame(&candidate.image);
     let dmabuf = client.as_ref().and_then(|frame| frame.dmabuf().cloned());
     let opaque = client.as_ref().is_some_and(|frame| frame.opaque());
@@ -2354,7 +2375,10 @@ fn present_client(
         opaque,
         sdr: !targets.format().is_hdr() && !entry.hdr_wanted(),
         no_hdr_layers: frame.hdr_layers.is_empty(),
-        same_format: fourcc == Some(targets.format().fourcc()),
+        // A legacy flip keeps the targets' format; an atomic one may change it, and the
+        // plane's `IN_FORMATS` and a `TEST_ONLY` commit decide per buffer.
+        format_reachable: entry.scanout.flips_change_format()
+            || fourcc == Some(targets.format().fourcc()),
     };
     let refused = client_scanout::client_scanout_rejection(eligibility);
     let (Some(client), Some(dmabuf), Some(fourcc), None) = (client, dmabuf, fourcc, refused) else {
@@ -2423,6 +2447,47 @@ fn present_client(
                 .note_client_scanout(output, client_scanout::ClientStatus::Refused(reason));
             None
         }
+    }
+}
+
+/// Refresh what this output offers the fullscreen client covering it, told
+/// to the client through its dma-buf feedback
+/// ([`crate::compositor::scanout_feedback`]): the buffers its primary plane
+/// would scan out, or nothing when the output itself refuses client scanout
+/// whatever the buffer — the same rules [`present_client`] applies, with every
+/// fact about the buffer granted.
+fn refresh_client_offer(
+    entry: &mut ScanoutEntry,
+    view: &paint::OutputView,
+    frame: &ScanoutFrame<'_>,
+) {
+    let target = entry
+        .direct_targets
+        .as_ref()
+        .map(scanout::DirectScanoutTargets::format)
+        .filter(|format| {
+            client_scanout::client_scanout_rejection(client_scanout::ClientEligibility {
+                enabled: client_scanout::client_scanout_enabled(),
+                upright: view.orientation == settings_store::hardware::OutputTransform::Normal,
+                uncalibrated: entry.color_lut.is_none(),
+                covers_output: true,
+                client_buffer: true,
+                opaque: true,
+                sdr: !format.is_hdr() && !entry.hdr_wanted(),
+                no_hdr_layers: frame.hdr_layers.is_empty(),
+                format_reachable: true,
+            })
+            .is_none()
+        })
+        .map(scanout::ScanoutFormat::fourcc);
+    entry.scanout.offer_client_plane(entry.device_id, target);
+}
+
+/// Hand the loop thread every output's changed offer to fullscreen clients
+/// ([`client_scanout::ClientPlanes`]).
+fn publish_client_planes(scanouts: &mut [ScanoutEntry], planes: &client_scanout::ClientPlanes) {
+    for entry in scanouts {
+        entry.scanout.publish_client_plane(entry.id, planes);
     }
 }
 
@@ -2626,6 +2691,7 @@ fn render_combined_readback(
         hdr_layers,
         backdrop: _,
         scanout: _,
+        layers: _,
     } = frame;
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
@@ -3194,6 +3260,12 @@ impl Backend for DrmBackend {
         cpu_present::cpu_render_reason().is_some()
     }
 
+    /// The GPU presenter composites a lone unmagnified output's strip pans
+    /// from retained layers (`RetainedGpuTarget::render_layers_until`).
+    fn composites_strip_layers(&self) -> bool {
+        cpu_present::cpu_render_reason().is_none()
+    }
+
     /// Inline presentation, reached only when the presenter hasn't been split off yet — kept so a caller that never splits still paints.
     fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
         self.submit_inline(ScanoutFrame::scene_only(scene));
@@ -3274,6 +3346,7 @@ impl Backend for DrmBackend {
             profile_phases: std::env::var_os("TILO_DRM_PHASE_TRACE").is_some()
                 || std::env::var_os("TILO_PROFILE_GPU_STAGES").is_some_and(|value| value == "1"),
             signal_reports: self.signal_reports.take(),
+            client_planes: self.inner.dispatch.client_planes.clone(),
         })))
     }
 
@@ -3302,6 +3375,13 @@ impl Backend for DrmBackend {
 
     fn adaptive_sync_active(&self) -> bool {
         self.inner.dispatch.adaptive_sync_engaged()
+    }
+
+    fn scanout_plane(
+        &self,
+        output: OutputId,
+    ) -> Option<Arc<crate::compositor::scanout_feedback::ScanoutPlane>> {
+        self.inner.dispatch.client_planes.get(output)
     }
 
     fn output_hdr(&self, output: OutputId) -> Option<super::OutputHdr> {
@@ -3603,6 +3683,7 @@ mod tests {
             present_gate: Some(Arc::new(Mutex::new(()))),
             profile_phases: false,
             signal_reports: None,
+            client_planes: client_scanout::ClientPlanes::default(),
         });
         assert!(
             presenter.paint.is_none(),
@@ -3634,6 +3715,7 @@ mod tests {
                 present_gate: Some(Arc::new(Mutex::new(()))),
                 profile_phases: false,
                 signal_reports: None,
+                client_planes: client_scanout::ClientPlanes::default(),
             });
             assert!(!presenter.vblank_paced());
             let proof =
@@ -3681,6 +3763,7 @@ mod tests {
                 present_gate: Some(Arc::clone(&gate)),
                 profile_phases: false,
                 signal_reports: None,
+                client_planes: client_scanout::ClientPlanes::default(),
             });
             commands
                 .send(ScanoutCommand::Pause)
@@ -4127,6 +4210,7 @@ mod lone_output_tests {
                     sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                     hdr_layers: &[],
                     color_lut: None,
+                    layers: None,
                 },
             )
             .expect("the output's frame renders")

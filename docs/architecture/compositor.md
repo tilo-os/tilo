@@ -258,11 +258,11 @@ pub struct State {
     pub shm_state:            ShmState,
     pub seat_state:           SeatState<Self>,
     pub output_manager_state: OutputManagerState,
-    // … per-workspace bridge sockets, shell chrome handle, frame builder, …
+    // … shell chrome handle, frame builder, …
 }
 ```
 
-Each protocol handler attaches via `delegate_compositor!`, `delegate_xdg_shell!`, `delegate_shm!`, `delegate_seat!`, `delegate_output!`. The main socket is registered via `ListeningSocketSource`; per-workspace bridge sockets register additional sources on the same loop (see `docs/architecture/security.md`).
+Each protocol handler attaches via `delegate_compositor!`, `delegate_xdg_shell!`, `delegate_shm!`, `delegate_seat!`, `delegate_output!`. The main socket is registered via `ListeningSocketSource`; each accepted client is attributed from its peer credentials (see `docs/architecture/security.md`).
 
 The Wayland state is decoupled from the graphical backend so the compositor's logic can run in the headless integration test harness (`crates/session/shell/tests/interaction_test.rs`, `compositor_test.rs`) without a GPU.
 
@@ -318,8 +318,17 @@ its tile. A tile's edge and the tab list's focus ring are parts too. Foreign
 buffer swaps keep their
 client-reported damage, from `wl_surface.damage_buffer` as from
 `wl_surface.damage` (scaled to buffer pixels unless a viewport crops or
-scales the buffer). Strip pans still repaint every pixel of the strip: no
-presenter composites the retained strip layer (`FrameCache`). Night light and the
+scales the buffer). A strip pan moves pixels instead of repainting them:
+while a strip pans, the producer draws the desktop as three layers
+(`FramePaint::cache`: what is behind the windows, the strips in canvas
+coordinates, the chrome above), pans land on whole pixels, and the DRM GPU
+presenter keeps each layer in a texture of the output's size
+(`render/strip_layers.rs`). A pure pan copies the part of each strip still on
+screen to where it moved, rasterises only the columns it uncovered, and
+composites the moved strip from the three textures; a layer is rasterised
+again only when its scene changes. Frames at rest keep the screen-space damage
+above, and a scaled, rotated, calibrated, HDR, blurred or multi-display output
+renders the scene as before. Night light and the
 colour filters are per-pixel tints drawn into the same scene, so frames under
 them stay sparse while the tint is unchanged; the magnifier and the
 crosshair, which follow the pointer, keep every frame dense.
@@ -429,10 +438,11 @@ frame it appears in:
   upright (a rotated scanout would show the buffer unturned), it has no ICC
   profile (the buffer would skip the calibration the final pass applies),
   the candidate covers exactly this output, it is a
-  client dma-buf (`gpu_frames::client_frame`), the buffer is opaque and
-  scans out as `XRGB8888` (the format the output's 8-bit targets have — a
-  legacy flip cannot change formats), the output is SDR and the frame
-  composites no HDR layer (`client_scanout_rejection`).
+  client dma-buf (`gpu_frames::client_frame`), the buffer is opaque, a flip
+  can reach its format from the output's `XRGB8888` targets — any format on
+  atomic flips, only `XRGB8888` on legacy flips, which cannot change format
+  (see "Page flips" below) — the output is SDR and the frame composites no
+  HDR layer (`client_scanout_rejection`).
 - An `ARGB8888` buffer counts as opaque when the commit's
   `wl_surface.set_opaque_region` covers the whole surface — what browsers
   and GPU toolkits send for an opaque window, since they allocate `ARGB`
@@ -442,17 +452,17 @@ frame it appears in:
   buffer (`foreign::DmabufCommit::opaque`) to `GpuFrame::opaque`. Such a
   frame is drawn ignoring its alpha on every route, exactly as an `X`
   format is, and the presenter makes its framebuffer as `XRGB8888`
-  (`client_scanout::scanout_fourcc`): the same bytes, alpha ignored. A
-  partial region — rounded corners, a shadow — or none keeps the buffer
-  composited.
-- KMS is asked before anything changes. The primary plane's `IN_FORMATS`
-  must list the buffer's format and modifier; the buffer becomes a
-  framebuffer (`ADDFB2` with modifiers) and a `TEST_ONLY` atomic commit
-  of it on the primary plane must pass. The verdict is remembered per
-  buffer, a refusal included, and forgotten when the CRTC is set up again.
-  The flips themselves stay legacy page flips, so atomic is enabled on the
-  card only for that test (mode aspect-ratio flags, which atomic would
-  turn on, are switched back off).
+  (`client_scanout::scanout_fourcc`; an `ABGR8888` one as `XBGR8888`): the
+  same bytes, alpha ignored. A partial region — rounded corners, a shadow —
+  or none keeps the buffer composited.
+- KMS is asked before anything changes. The buffer must be the mode's size,
+  and the primary plane's `IN_FORMATS` must list its format and modifier;
+  the buffer becomes a framebuffer (`ADDFB2` with modifiers) and a
+  `TEST_ONLY` atomic commit of the very request its flip would make must
+  pass (`kms_flip::test_on_plane`). The verdict is remembered per buffer, a
+  refusal included, and forgotten when the CRTC is set up again. On legacy
+  flips atomic is enabled on the card for that test only (mode
+  aspect-ratio flags, which atomic would turn on, are switched back off).
 
 Captures, screencasts and peer streams never read the presenter's output:
 they render the scene themselves (`FrameBuilder::capture_scene`), so
@@ -478,6 +488,31 @@ front first; the holds go with the targets after that. Scanout flips go
 through the same present gate, retirement and vblank pacing as composited
 direct frames.
 
+**Page flips.** Every flip the DRM backend makes — the readback ring's dumb
+buffers, the direct targets, a client's buffer — goes through one function,
+`kms_flip::KmsFlip::queue`, under the presenter's one gated submit body.
+When an output is brought up (`DrmScanout::from_card`, after the legacy
+modeset) its flips are chosen once: where the driver accepts
+`DRM_CLIENT_CAP_ATOMIC` and the CRTC's primary plane and its properties are
+found, a flip is a `NONBLOCK | PAGE_FLIP_EVENT` atomic commit of the primary
+plane (`FB_ID`, `CRTC_ID`, and `SRC_*`/`CRTC_*` covering the whole mode —
+the state the modeset left), never `ALLOW_MODESET` and never `ASYNC`;
+otherwise it is a legacy `drmModePageFlip`. Both complete with the same
+page-flip event on the card's event stream, so retirement, the present gate
+and vblank pacing are the same. What atomic adds is that a flip may change
+the framebuffer's format: a fullscreen client's `XBGR8888` buffer (or an
+`ABGR8888` one declared opaque) can follow the output's `XRGB8888` targets
+and the targets can follow it back, which a legacy flip refuses. The
+session log says `kms_flip_api=atomic connector=…` or
+`kms_flip_api=legacy reason=… connector=…` once per output.
+`TILO_KMS_ATOMIC=0` keeps every flip legacy without touching the cap: the
+flips Tilo made before. An atomic flip that fails for anything but a busy
+CRTC or lost DRM master logs `kms_flip_api=legacy reason="an atomic flip
+failed: …"`, turns that output to legacy flips for good and retries the
+frame legacy. Modesets, HDR binding, DPMS, adaptive sync and the cursor
+plane stay on their legacy ioctls (`set_crtc`, `SETPROPERTY`,
+`set_cursor2`), which the kernel runs as atomic commits on atomic drivers.
+
 The session log says `client_scanout_status=active` when an output starts
 scanning a client out and `client_scanout_status=inactive reason=…` when it
 stops or a candidate is refused, once per change. The `DRM render phase
@@ -485,10 +520,51 @@ summary` counts `client_scanout_frames` beside `direct_frames`.
 `TILO_CLIENT_SCANOUT=0` composites every frame, for A/B measurement or a
 driver that misbehaves.
 
-**Not yet:** clients that allocate `ARGB8888` (an opaque region covering the
-surface would let them qualify), linux-dmabuf v4 feedback with a scanout
-tranche (so clients allocate a modifier the plane takes), and windowed
-video on overlay planes, which needs atomic presentation.
+**Telling the client (dma-buf feedback).** Whether a client's buffer can be
+flipped depends on how it was allocated — format, modifier, and whether the
+driver placed it for scanout, which Mesa only does when the compositor's
+linux-dmabuf v4 feedback names a tranche flagged `scanout`. Every surface
+starts on the default feedback (the render node, the formats the compositor
+composites). After each frame is final, the loop hands
+`State::update_scanout_feedback` the frame's candidate with the plane of the
+output it covers (`compositor::scanout_feedback::offer`, the plane from
+`Backend::scanout_plane`). While the candidate is the fullscreen surface and
+its latest buffer is opaque (an 8-bit `X` format, or `ARGB`/`ABGR` with a
+covering opaque region: `ScanoutOpacity`, recorded by the pre-commit hook),
+its feedback gains a tranche flagged `scanout` on the output's KMS device,
+before the default tranche. The tranche lists only what the plane scans out
+*and* the compositor can import (`scanout_tranche`), so a buffer allocated
+from it is still drawn when a popup opens over it. The frame the candidate
+is voided — chrome, a popup, the on-screen keyboard, night light — or the
+buffer turns translucent, the output has no plane, or the client leaves
+fullscreen, the surface is sent the default again; unchanged frames resend
+nothing, and a surface that asks for feedback while offered a plane gets it
+in its first batch (`DmabufHandler::new_surface_feedback`). The feedback only
+steers allocation: each frame's scanout is still the presenter's decision.
+
+The plane comes from the presenter. On every frame whose candidate covers
+an output, `refresh_client_offer` (`backend/drm/mod.rs`) checks the
+output's own facts with `client_scanout_rejection` (every buffer fact
+granted) and, when they allow client scanout, probes the primary plane —
+the probe the first client buffer would have made anyway, already made on
+atomic flips — and lists the client formats and modifiers a flip can reach
+(`client_scanout::client_formats`): on legacy flips those that scan out as
+the targets' format (`XRGB8888`, and `ARGB8888` shown as it, on `XRGB8888`
+targets), on atomic flips every one the plane scans out (`XBGR8888` and
+`ABGR8888` as well, where the plane lists `XBGR8888`). Changed offers are published per output into
+`ClientPlanes`, which the loop thread reads; a replugged output starts
+without one. The CPU renderer, the readback path, a rotated, calibrated or
+HDR output and `TILO_CLIENT_SCANOUT=0` publish none, so headless and
+lavapipe sessions keep the default feedback everywhere. The importer accepts
+linear buffers only, so the tranche offers linear today.
+
+**Not yet:** windowed video on overlay planes — flips are atomic now, but
+assigning a client buffer to an overlay plane also needs a `TEST_ONLY`
+commit of the plane assignment every frame, with a fallback to compositing,
+and the frame builder to name a windowed candidate. On legacy flips
+(`TILO_KMS_ATOMIC=0`, or a driver without atomic) `XBGR8888`/`ABGR8888`
+still composite on `XRGB8888` targets. Tiled and compressed modifiers in the
+scanout tranche need the importer to accept them first.
 
 **Verifying on hardware.** CI's llvmpipe cannot exercise KMS planes; the
 decision logic is unit-tested (`scanout_candidate`, `client_scanout`, the
@@ -496,7 +572,12 @@ fullscreen phases in `shell::frame`). On a `tilo-vm` slot with a real GPU —
 a `device` target (`tilo-vm vm add`) or a VM with the GPU passed through:
 
 1. `tilo-vm swap shell` from the branch, then play a 4K60 video fullscreen
-   in an opaque client (`mpv --fs`, or `vkcube` made fullscreen).
+   in an opaque client (`mpv --fs`, or `vkcube` made fullscreen). With
+   `WAYLAND_DEBUG=1` the client's log shows a second
+   `zwp_linux_dmabuf_feedback_v1` batch once it is fullscreen, whose first
+   tranche has `tranche_flags 1` (scanout) and the card's `dev_t` as
+   `tranche_target_device`; it gets a batch without it when an overlay
+   appears.
 2. `tilo-vm logs -n 400` shows `client_scanout_status=active`, and the
    phase summaries count `client_scanout_frames` at the refresh rate while
    `direct_frames` stays near zero. `intel_gpu_top` (or `radeontop`) shows
@@ -509,6 +590,34 @@ a `device` target (`tilo-vm vm add`) or a VM with the GPU passed through:
 5. `CLIENT-BUFFER-RELEASE` lines keep p50 within about one refresh
    interval: buffers go back as their replacing flip retires.
 6. Repeat with `TILO_CLIENT_SCANOUT=0` for the composited baseline.
+
+Atomic page flips need the same GPU slot: a headful slot's vkms card has a
+`Virtual` connector, which presents without page flips, so its log says
+`kms_flip_api=legacy reason="the connector presents without page flips"`
+and proves nothing about flips.
+
+1. `tilo-vm logs -n 400 | grep kms_flip_api` shows
+   `kms_flip_api=atomic connector=…` once per output, and no
+   `an atomic flip failed` line during the session.
+2. Animate the desktop (open the overview, switch workspaces back and
+   forth): no tearing, no flash, and the `DRM render phase summary` and
+   `FRAME-LIFECYCLE` lines show the same `direct_frames` rate and
+   `kms_retirement_us` as on `main`; `scripts/perf/frame-loop-bench.py
+   --backend drm` and `scripts/perf/device_latency_bench.py`
+   (`hw.workspace_switch.*`) do not regress.
+3. A fullscreen client allocating the `B` order — `vkcube` made fullscreen
+   on a driver whose swapchain is `B8G8R8A8`, or `mpv --gpu-api=vulkan
+   --fs` — reaches `client_scanout_status=active` (on `main` it is refused
+   with `the client's buffer format differs from the output's`); its
+   `WAYLAND_DEBUG=1` scanout tranche lists `XBGR8888`/`ABGR8888`. Raising
+   the volume OSD over it flips back to the `XRGB8888` targets on that frame
+   without a flash, and scanout resumes when it is gone.
+4. Switch VT away and back with the client fullscreen: no page-flip
+   `EACCES`, still `kms_flip_api=atomic` (a lost master never demotes).
+5. Restart the session with `TILO_KMS_ATOMIC=0`: the log says
+   `kms_flip_api=legacy reason="forced by TILO_KMS_ATOMIC=0"`, the `B`-order
+   client is refused as on `main`, and everything else behaves as in steps
+   1–4: the switch-off a driver problem needs, without a rebuild.
 
 The same `FrameBuilder` is used by `cargo run --bin shots -- --mode offscreen|recording` — that's how scenario screenshots and recordings stay byte-identical to the live binary. See `docs/architecture/overview.md` for the e2e infrastructure overview.
 
@@ -622,7 +731,7 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 
 ## What's not here
 
-- **Sandboxing protocol details and the per-workspace Wayland bridge socket** — `docs/architecture/security.md`.
+- **Sandboxing protocol details and Wayland client attribution** — `docs/architecture/security.md`.
 - **Peer sync, foreign-surface streaming, remote input replay** — `docs/architecture/collaboration.md`.
 - **xdg-desktop-portal backend** — `docs/architecture/security.md` and `crates/session/shell/src/portal/`.
 - **WorkspaceTree CRDT shape** — `docs/architecture/overview.md` plus `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`.

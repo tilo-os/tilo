@@ -25,7 +25,9 @@
 //! Per window the parent asks the relay process for its CPU time, resident
 //! memory, egress counters and the bytes its iroh endpoint put on UDP, and
 //! divides by collaborators and hours. Fan-out latency is publish to receipt
-//! by each other member of the room. Store fsyncs per edit divides the file
+//! by each other member of the room; pointer and caret latency are the same
+//! for each pointer move and caret the relay forwarded (one it coalesced
+//! away under a later one is never received, and not counted). Store fsyncs per edit divides the file
 //! and directory barriers the relay's workspace stores issued by the deltas
 //! it committed; listed entries per edit divides the directory entries they
 //! listed to retain them the same way. Compaction's own CPU time and the
@@ -273,6 +275,9 @@ struct Report {
     idle_rss_bytes: u64,
     windows: Vec<Window>,
     fanout_ms: Vec<f64>,
+    /// Pointer moves and carets, publish to receipt by each other member.
+    pointer_ms: Vec<f64>,
+    caret_ms: Vec<f64>,
     edits: u64,
     presence: u64,
     undelivered: usize,
@@ -291,6 +296,13 @@ impl Report {
             "no collaborator received another's edit while measuring; nothing was fanned out"
         );
         fanout_ms.sort_by(f64::total_cmp);
+        let (mut pointer_ms, mut caret_ms) = fleet.take_presence_latencies();
+        anyhow::ensure!(
+            !pointer_ms.is_empty() && !caret_ms.is_empty(),
+            "no collaborator received another's pointer move and caret while measuring"
+        );
+        pointer_ms.sort_by(f64::total_cmp);
+        caret_ms.sort_by(f64::total_cmp);
         Ok(Self {
             collaborators: args.collaborators,
             rooms: fleet.rooms(),
@@ -298,6 +310,8 @@ impl Report {
             idle_rss_bytes: idle.rss_bytes,
             windows,
             fanout_ms,
+            pointer_ms,
+            caret_ms,
             edits: fleet.edits.load(Ordering::SeqCst),
             presence: fleet.presence.load(Ordering::SeqCst),
             undelivered: fleet.undelivered(),
@@ -389,6 +403,8 @@ impl Report {
                 "hosting.relay.egress_bytes_per_collab_hour": kpi("bytes", self.transport_bytes()),
                 "hosting.relay.frame_bytes_per_collab_hour": kpi("bytes", self.app_bytes()),
                 "hosting.relay.fanout_ms": kpi("ms", self.fanout_ms.clone()),
+                "hosting.relay.presence_pointer_ms": kpi("ms", self.pointer_ms.clone()),
+                "hosting.relay.presence_caret_ms": kpi("ms", self.caret_ms.clone()),
                 "hosting.relay.store_fsyncs_per_edit": kpi("count", self.store_fsyncs_per_edit()),
                 "hosting.relay.store_listed_entries_per_edit": kpi("count", self.store_listed_entries_per_edit()),
                 "hosting.relay.compaction_cpu_ms_per_collab_hour": kpi("ms", self.compaction_cpu_ms()),
@@ -403,6 +419,8 @@ impl Report {
              undelivered_edits={} cpu_s_per_collab_hour_p50={:.3} rss_mib_per_collab_p50={:.3} \
              egress_mb_per_collab_hour_p50={:.3} frame_mb_per_collab_hour_p50={:.3} \
              live_frame_mb_per_collab_hour_p50={:.3} fanout_ms_p50={:.1} fanout_ms_p99={:.1} \
+             presence_pointer_ms_p50={:.1} presence_pointer_ms_p99={:.1} \
+             presence_caret_ms_p50={:.1} presence_caret_ms_p99={:.1} \
              store_fsyncs_per_edit_p50={:.3} store_listed_entries_per_edit_p50={:.3} \
              compaction_cpu_ms_per_collab_hour_p50={:.1} \
              compaction_signature_checks_per_edit_p50={:.3}",
@@ -419,6 +437,10 @@ impl Report {
             median(self.live_bytes()) / 1e6,
             nearest_rank(&self.fanout_ms, 50),
             nearest_rank(&self.fanout_ms, 99),
+            nearest_rank(&self.pointer_ms, 50),
+            nearest_rank(&self.pointer_ms, 99),
+            nearest_rank(&self.caret_ms, 50),
+            nearest_rank(&self.caret_ms, 99),
             median(self.store_fsyncs_per_edit()),
             median(self.store_listed_entries_per_edit()),
             median(self.compaction_cpu_ms()),

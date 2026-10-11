@@ -790,7 +790,10 @@ inputs = [
   "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json",
   "tools/test-assets.py", "tools/test-assets-build.rs",
 ]
-readers = ["crates/system/fs/src/main.rs", "crates/system/fs/build.rs"]
+readers = [
+  "crates/system/fs/src/main.rs", "crates/system/fs/build.rs",
+  "crates/system/fs/tests/exact_share_process_fuse.rs",
+]
 
 [[cargo]]
 package = "system-extension"
