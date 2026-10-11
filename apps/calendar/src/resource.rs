@@ -43,6 +43,16 @@ pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.
 static CATALOG: EmbeddedCatalog =
     EmbeddedCatalog::new("en-US", LOCALES, "calendar-new-event").with_system_locale();
 
+/// The message `key` of the calendar's catalog, in the person's language.
+pub(crate) fn t(key: &str) -> String {
+    CATALOG.t(key)
+}
+
+/// [`t`] with arguments.
+pub(crate) fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
+    CATALOG.t_args(key, args)
+}
+
 /// The most items one import or one task delete takes.
 pub(crate) const MAX_ITEMS_PER_ACTION: usize = 4096;
 
@@ -786,7 +796,7 @@ pub enum CalendarEffect {
     /// Show calendar view
     #[effect(view, idempotent)]
     ShowView {
-        #[param("Calendar view to show", choices = ["month", "week", "day", "agenda"])]
+        #[param("Calendar view to show", choices = ["month", "week", "day", "agenda", "tasks"])]
         view: String,
     },
     /// Show all calendars
@@ -804,6 +814,11 @@ pub enum CalendarEffect {
     /// Show agenda
     #[effect(view, idempotent)]
     ShowAgenda,
+    /// Show tasks
+    ///
+    /// Opens this workspace's Inbox task list without changing its content.
+    #[effect(view, idempotent)]
+    ShowTasks,
     /// Open
     ///
     /// Shows an event, one occurrence of it, a task, a project's tasks or
@@ -818,7 +833,7 @@ pub enum CalendarEffect {
 /// Framework app: the calendar widget is the surface over [`Calendar`].
 pub struct CalendarShell;
 
-/// Every screenshot scenario: the four views with the editor closed, the
+/// Every screenshot scenario: the five views with the editor closed, the
 /// event editor and each of its popovers, the task detail and its pickers,
 /// the empty and transport states, and the two narrow presentations.
 const SCENARIOS: &[&str] = &[
@@ -826,6 +841,7 @@ const SCENARIOS: &[&str] = &[
     "week",
     "day",
     "agenda",
+    "tasks",
     "event_editor",
     "new_event",
     "date_popover",
@@ -838,6 +854,7 @@ const SCENARIOS: &[&str] = &[
     "empty",
     "empty_week",
     "empty_agenda",
+    "empty_tasks",
     "sync_error",
     "sync_offline",
     "sync_syncing",
