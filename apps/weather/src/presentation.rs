@@ -99,13 +99,8 @@ pub(crate) fn morning_preview(
     units: Units,
     notice: Option<crate::core::ForecastNotice>,
 ) -> ui::tilo_actions::ResourcePresentation {
-    use ui::i18n::{ArgValue, EmbeddedCatalog};
-    const CATALOGS: &[(&str, &str)] = &[
-        ("en-US", include_str!("../locales/en-US.ftl")),
-        ("de-DE", include_str!("../locales/de-DE.ftl")),
-    ];
-    static CATALOG: EmbeddedCatalog =
-        EmbeddedCatalog::new("en-US", CATALOGS, "weather-morning-summary").with_system_locale();
+    use ui::i18n::ArgValue;
+    ui::embedded_catalog!(static CATALOG, "weather-morning-summary", ["en-US", "de-DE"]);
     let temperature = format!(
         "{:.0}{}",
         snapshot.temp_in(snapshot.current.temperature, units),
