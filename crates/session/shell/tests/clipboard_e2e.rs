@@ -4247,17 +4247,9 @@ fn client_text_drag_on_a_tiled_edge_opens_a_new_group() {
     let mut target = TestClient::new(compositor.connect(), "org.tilo.test.dnd-target");
     target.assert_is_tilo_compositor();
     target.map_window(&compositor);
+    fit_tiled_drag_clients(&compositor, &mut source, &mut target);
 
-    // Click the source once before measuring anything — clicking raises its
-    // window group, which scrolls the strip, so a position measured before
-    // the click is stale afterward.
-    let settle_point = source.pointer_target_with_peer(&compositor, &mut target);
-    compositor.pointer_move(settle_point.0, settle_point.1);
-    compositor.pointer_button(true);
-    compositor.pointer_button(false);
-
-    let target_point = target.pointer_target_with_peer(&compositor, &mut source);
-    let source_point = source.pointer_target_with_peer(&compositor, &mut target);
+    let (target_point, source_point) = tiled_drag_points(&compositor, &mut source, &mut target);
     let before = tree_shape(&compositor.workspace_tree());
 
     // Press inside the source tile for a real implicit grab; the serial must
@@ -4350,6 +4342,79 @@ fn client_text_drag_on_a_tiled_edge_opens_a_new_group() {
         opened_group_titles,
         [opened_title.as_str()],
         "the outer edge creates a singleton sibling group"
+    );
+}
+
+/// Measure both clients only after source focus has applied its strip scroll.
+fn tiled_drag_points(
+    compositor: &Compositor,
+    source: &mut TestClient,
+    target: &mut TestClient,
+) -> ((f64, f64), (f64, f64)) {
+    // Click the source once before measuring anything — clicking raises its
+    // window group, which scrolls the strip, so a position measured before
+    // the click is stale afterward.
+    let settle_point = source.pointer_target_with_peer(compositor, target);
+    compositor.pointer_move(settle_point.0, settle_point.1);
+    compositor.pointer_button(true);
+    compositor.pointer_button(false);
+
+    assert_tiled_drag_clients_visible(compositor);
+    let target_point = target.pointer_target_with_peer(compositor, source);
+    let source_point = source.pointer_target_with_peer(compositor, target);
+    (target_point, source_point)
+}
+
+/// Separate groups are not enough: two normal widths consume more than one
+/// strip, so focusing the source can scroll the target's client pixels away.
+/// Use the production persisted resize path, then answer its real configures.
+fn fit_tiled_drag_clients(
+    compositor: &Compositor,
+    source: &mut TestClient,
+    target: &mut TestClient,
+) {
+    compositor.set_group_width(250);
+    let source_id = wait_for_foreign_surface_count(
+        compositor,
+        &source.app_id,
+        1,
+        "the drag source must occupy exactly one live surface",
+    )[0];
+    let target_id = wait_for_foreign_surface_count(
+        compositor,
+        &target.app_id,
+        1,
+        "the drag target must occupy exactly one live surface",
+    )[0];
+    source.present(compositor, source_id);
+    target.present(compositor, target_id);
+    compositor.wait_for_layout_to_settle(
+        |name| name.starts_with("foreign-surface-"),
+        "both resized drag clients",
+    );
+    assert_tiled_drag_clients_visible(compositor);
+}
+
+fn assert_tiled_drag_clients_visible(compositor: &Compositor) {
+    let rects = ["org.tilo.test.dnd-source", "org.tilo.test.dnd-target"].map(|app_id| {
+        let id = wait_for_foreign_surface_count(
+            compositor,
+            app_id,
+            1,
+            "each drag client must have exactly one live surface",
+        )[0];
+        compositor
+            .named_rect(&format!("foreign-surface-{id}"))
+            .expect("each drag client's own surface must have a laid-out rect")
+    });
+    let (width, height) = compositor.size;
+    assert!(
+        rects.iter().all(|[x, y, w, h]| {
+            *x >= 0.0 && *y >= 0.0 && x + w <= f64::from(width) && y + h <= f64::from(height)
+        }),
+        "both drag clients must remain fully on screen, including after source focus: \
+         {rects:?}.\n{}",
+        compositor.debug_state(),
     );
 }
 

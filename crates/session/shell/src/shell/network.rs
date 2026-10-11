@@ -8,6 +8,8 @@ use crate::shell::state::WorkspaceAuthority as _;
 mod boot_join;
 #[cfg(test)]
 mod display_input_tests;
+#[cfg(test)]
+mod display_observation_refresh_tests;
 mod display_observations;
 mod governor_actions;
 mod hosted_topology;
