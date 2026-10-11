@@ -272,6 +272,48 @@ fn retained_paragraph_typing_damage_matches_full_gpu_pixels() {
     );
 }
 
+#[test]
+fn retained_heading_list_and_quote_typing_damages_its_row_and_matches_gpu_pixels() {
+    let blocks = || {
+        vec![
+            Block::heading(1, "Plan"),
+            Block::paragraph("An ordinary paragraph under the heading."),
+            Block::bullet(0, "A bullet"),
+            Block::numbered(0, "A numbered step"),
+            Block::checklist(0, false, "A task"),
+            Block::quote("A quotation"),
+            Block::divider(),
+            Block::paragraph("The last paragraph."),
+        ]
+    };
+    for (index, before_text) in [
+        (0, "Plan"),
+        (2, "A bullet"),
+        (3, "A numbered step"),
+        (4, "A task"),
+        (5, "A quotation"),
+    ] {
+        let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks());
+        fixture.editor.focus_block(index, CursorPlacement::End);
+        fixture.frame();
+        fixture.frame();
+        let before = fixture.scene.clone();
+        fixture.key(Key::Character("x".into()), Modifiers::default());
+        assert_eq!(
+            fixture.editor.blocks[index].text(),
+            format!("{before_text}x"),
+            "the key reached block {index}"
+        );
+        let area: f64 = fixture.damage.iter().map(Rect::area).sum();
+        assert!(
+            area < fixture.editor.get_rect().area() / 2.0,
+            "typing in block {index} must damage its row, not the document: {:?}",
+            fixture.damage
+        );
+        assert_damage_pixels(&before, &fixture, true);
+    }
+}
+
 fn assert_damage_pixels(before: &Scene, fixture: &RetainedEditor, sparse: bool) {
     let background = fixture.theme.tokens.colors.surfaces.content;
     let mut retained = crate::offscreen::OffscreenRenderer::new(1200, 1100);

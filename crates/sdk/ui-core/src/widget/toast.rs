@@ -788,8 +788,7 @@ fn paint_card_surface(scene: &mut Scene, transform: Affine, rect: Rect, alpha: f
     let radius = card_radius(theme);
     let faded = alpha < 0.999;
     if faded {
-        let reach = f64::from(theme.tokens.elevation.floating.blur) * 2.0
-            + f64::from(theme.tokens.elevation.floating.offset_y).abs();
+        let reach = crate::widget::floating_surface::shadow_reach(theme);
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
