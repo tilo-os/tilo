@@ -67,7 +67,7 @@ mod tests {
                 "mail-setup-auth-password",
                 "mail-setup-auth-oauth",
                 "mail-setup-tls",
-                "mail-setup-hint-verified",
+                "mail-setup-advanced",
                 "mail-setup-save",
                 "mail-setup-cancel",
                 "mail-setup-remove",
@@ -84,7 +84,6 @@ mod tests {
                 "mail-compose-prompt-add",
                 "mail-compose-prompt-cancel",
                 "mail-setup-oauth-provider-fallback",
-                "mail-setup-oauth-note-available",
                 "mail-setup-oauth-note-unavailable",
             ] {
                 let s = t(key);
