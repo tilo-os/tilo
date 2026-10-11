@@ -6229,18 +6229,24 @@ mod tests {
         use vello::kurbo::{Circle, Rect};
         let (w, h) = (f64::from(size.0), f64::from(size.1));
         let mut strip = Scene::new();
-        for (index, x) in (0_u8..).zip([4.0, 37.0, 81.0, 122.0, 160.0]) {
+        for (x, green, blue) in [
+            (4.0, 0, 255),
+            (37.0, 40, 225),
+            (81.0, 80, 195),
+            (122.0, 120, 165),
+            (160.0, 160, 135),
+        ] {
             strip.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
-                Color::from_rgba8(200, index * 40, 255 - index * 30, 230),
+                Color::from_rgba8(200, green, blue, 230),
                 None,
                 &Rect::new(x, 6.0, x + 29.5, h * 0.55),
             );
             strip.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
-                Color::from_rgb8(20, 20, index * 50),
+                Color::from_rgb8(20, 20, green),
                 None,
                 &Circle::new((x + 14.0, h * 0.3), 6.5),
             );
@@ -6254,12 +6260,12 @@ mod tests {
             &Rect::new(w * 0.7, 2.0, w - 3.0, 9.0),
         );
         crate::shell::frame::FrameCache {
-            width: size.0 * 2,
+            width: size.0.saturating_mul(2),
             strips: vec![crate::shell::frame::StripBlit {
                 dest_x: 0,
                 dest_y: 0,
                 dest_w: size.0,
-                dest_h: size.1 * 2 / 3,
+                dest_h: size.1.saturating_mul(2).checked_div(3).unwrap_or(0),
                 scroll_x,
             }],
             layers: crate::shell::frame::FrameLayers {
