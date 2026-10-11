@@ -488,6 +488,42 @@ p99_tolerance = 2.0
 min_delta = 1000.0
 source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
 
+# Strip pans at native 4K: strip_pan_bench drives a continuous
+# three-finger pan of a six-window strip, and strip-to-strip moves, through
+# FrameBuilder and the DRM direct path's GPU target, with the presenter
+# compositing pans from retained strip layers. Frame time takes the render
+# group's rules (lavapipe: reported, never enforced). The pixels a pan frame
+# rasterises do not depend on the runner, so their median is enforced: a pan
+# frame rasterises the columns it uncovered (35,904 px measured, 0.4 % of the
+# output, run 95313), and one that goes back to repainting the strip
+# (8,294,400 px) fails the run at once. The p99 is a frame whose chrome or
+# strips changed during the pan, rasterised whole, and is not budgeted.
+
+[kpi."render.shell.pan_us.4k"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.pan_pixels.4k"]
+unit = "pixels"
+p50 = 100000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window pan frame rasterises"
+
+[kpi."render.shell.strip_move_us.4k"]
+unit = "us"
+p99 = 16700.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI document: Frame time p99 at 4K/144 Hz, full repaint (lavapipe; reported only)"
+
 # Opening a framework app over a long list (TIL-758): the framework-scaling
 # example (crates/sdk/tilo-app/examples/framework-scaling.rs, `open` mode)
 # reopens a checklist holding 5,000 and 50,000 items five times, to its first
@@ -692,11 +728,26 @@ max = 250.0
 min_delta = 32.0
 source = "KPI document: shell anon at most 250 MiB (run.py shell_anon_mb holds 500)"
 
+# The compositor with no app open (vm-acceptance R01, lavapipe): 238.7 MiB
+# on main (run 94055) and 159-167 MiB once startup's and every quiet moment's freed heap is
+# trimmed and the presenting renderer runs on Vulkan alone (runs 94419, 94637). Of what
+# remains, ~70 MiB is lavapipe's retained NIR (mtrace attribution, headless gate), which a
+# hardware GPU does not hold.
 [kpi."memory.shell_anon_mib.empty"]
 unit = "MiB"
-max = 250.0
-min_delta = 32.0
-source = "vm-acceptance R01: the compositor's anonymous RSS with no app open; no target of its own yet, so the four-app KPI caps it"
+max = 200.0
+enforce = true
+min_delta = 24.0
+source = "vm-acceptance R01: the compositor's anonymous RSS with no app open (run.py shell_idle_anon_mb holds the same)"
+
+# The idle compositor's threads (R01, the process_memory report). 86 on main, 73 once the
+# presenting renderer stopped initialising GL beside Vulkan: a second llvmpipe
+# rasteriser pool on a machine without a GPU.
+[kpi."memory.shell_threads"]
+unit = "count"
+max = 80.0
+min_delta = 4.0
+source = "vm-acceptance R01: compositor threads with no app open"
 
 # What one warm open and close of an app leaves in the compositor (A15, least-squares
 # slope over its 33 cycles): it should return to where it was.
@@ -825,6 +876,34 @@ p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 10.0
 source = "relay_load: one edit, publish to receipt by each other member of the room"
+
+# Presence delivery (TIL-776): publish to receipt of each pointer move and
+# caret the relay forwarded. The relay paces a pointer to 20 Hz, so a move
+# waits up to 50 ms; carets wait 5 ms, or up to 20 ms for the delta they
+# follow. Measured in Perf / scheduled A/B run 94883: pointer 18.2 ms p50 and
+# 39.5 ms p99, caret 5.2 and 28.3 ms (a 5-minute run, 94831: pointer 18.8 and
+# 48.0, caret 9.0 and 39.7). The pointer's p99 ceiling is the 100 ms cursor
+# bound the issue set; the rest sit about twice the measurement, with the
+# fan-out's tolerances for the shared runner.
+[kpi."hosting.relay.presence_pointer_ms.n100"]
+unit = "ms"
+p50 = 40.0
+p99 = 100.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10.0
+source = "relay_load: one forwarded pointer move, publish to receipt by each other member of the room"
+
+[kpi."hosting.relay.presence_caret_ms.n100"]
+unit = "ms"
+p50 = 25.0
+p99 = 80.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10.0
+source = "relay_load: one forwarded caret, publish to receipt by each other member of the room"
 
 # File and directory barriers per committed edit (TIL-732): two are the floor
 # of the one-file-per-record store (the record, then its directory). Measured

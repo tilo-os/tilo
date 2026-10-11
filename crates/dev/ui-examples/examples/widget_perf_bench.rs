@@ -1,8 +1,7 @@
-//! Headless redraw-cycle benchmark for the widget showcase.
+//! Headless redraw-cycle benchmark over a representative widget tree.
 //!
-//! Builds the same widget tree as `widget_showcase` (minus overlays /
-//! percent-height widgets that don't compose into a bare Column),
-//! then runs N synthetic click → redraw cycles on the
+//! Builds a Column of common widgets (no overlays or percent-height
+//! widgets, which don't compose into a bare Column), then runs N synthetic click → redraw cycles on the
 //! Day/Week/Month `ToggleGroup`. Each cycle measures the cost of:
 //!
 //!   - `handle_event` (click + hover)

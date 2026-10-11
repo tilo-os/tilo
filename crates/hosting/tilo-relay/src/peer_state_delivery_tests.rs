@@ -169,7 +169,8 @@ async fn writer_boundary(
             delivery,
             &recipient,
             &session,
-            &mut tilo_delivery_protocol::transport_v2::DeltaEncoder::default(),
+            &mut SessionCoding::default(),
+            &crate::presence_mailbox::PresenceMailbox::default(),
             &mut wire,
         )
         .await
@@ -225,7 +226,8 @@ async fn writer_boundary(
         delivery,
         &recipient,
         &session,
-        &mut tilo_delivery_protocol::transport_v2::DeltaEncoder::default(),
+        &mut SessionCoding::default(),
+        &crate::presence_mailbox::PresenceMailbox::default(),
         &mut wire,
     )
     .await
@@ -262,7 +264,8 @@ async fn writer_boundary(
             current_delivery,
             &recipient,
             &session,
-            &mut tilo_delivery_protocol::transport_v2::DeltaEncoder::default(),
+            &mut SessionCoding::default(),
+            &crate::presence_mailbox::PresenceMailbox::default(),
             &mut wire,
         )
         .await
