@@ -217,6 +217,9 @@ struct Repainted {
     largest: f64,
     /// A frame could not say where it changed and repainted the app whole.
     whole: bool,
+    /// The largest frame's pixels within the region a test watches
+    /// ([`measure_within`]).
+    largest_within: f64,
 }
 
 /// Present `frames` over `before` as the host does, each only where its
@@ -226,6 +229,7 @@ fn present_and_compare(
     frames: &[Presented],
     theme: &Theme,
     label: &str,
+    within: Option<Rect>,
 ) -> Repainted {
     let background = theme.tokens.colors.surfaces.content;
     let mut retained = ui::offscreen::OffscreenRenderer::new(WIDTH, HEIGHT);
@@ -242,6 +246,7 @@ fn present_and_compare(
                 let _ = retained.render(scene, background);
                 repainted.total += app_area();
                 repainted.largest = app_area();
+                repainted.largest_within = within.map_or(app_area(), |region| region.area());
                 repainted.whole = true;
                 continue;
             }
@@ -259,6 +264,10 @@ fn present_and_compare(
         );
         repainted.total += pixels;
         repainted.largest = repainted.largest.max(pixels);
+        if let Some(region) = within {
+            let inside: Vec<_> = damage.iter().map(|rect| rect.intersect(region)).collect();
+            repainted.largest_within = repainted.largest_within.max(area(&inside));
+        }
     }
     let Some((last, _)) = frames.last() else {
         return repainted;
@@ -312,7 +321,28 @@ fn measure(
     change(app, host);
     let elapsed = started.elapsed();
     let frames = std::mem::take(&mut host.presented);
-    (present_and_compare(&before, &frames, theme, label), elapsed)
+    (
+        present_and_compare(&before, &frames, theme, label, None),
+        elapsed,
+    )
+}
+
+/// [`measure`], also counting what the change repainted within `region`.
+fn measure_within(
+    app: &mut App,
+    host: &mut Host,
+    (theme, label): (&Theme, &str),
+    region: Rect,
+    change: impl FnOnce(&mut App, &mut Host),
+) -> (Repainted, std::time::Duration) {
+    let before = host.scene.clone();
+    host.presented.clear();
+    let started = std::time::Instant::now();
+    change(app, host);
+    let elapsed = started.elapsed();
+    let frames = std::mem::take(&mut host.presented);
+    let repainted = present_and_compare(&before, &frames, theme, label, Some(region));
+    (repainted, elapsed)
 }
 
 /// Begin a test: these share the toolkit's frozen wall clock (one test's
@@ -848,18 +878,28 @@ fn renaming_a_note_damages_its_row_not_the_page_tree() {
             // first.
             let_it_rest(app, &mut host);
             let mut field: f64 = 0.0;
+            // What the page tree repaints, apart from the save bubble that
+            // may come and go meanwhile.
+            let tree = app
+                .semantic_tree()
+                .iter()
+                .find(|node| node.role == ui::a11y::Role::Tree)
+                .and_then(|node| node.bounds)
+                .expect("the page tree is on screen");
             // The field opens with the caret after the name.
             for letter in [" ", "v", "2"] {
                 let label = format!("{name}: renaming in the page tree, {letter:?}");
-                let (typed, elapsed) = measure(app, &mut host, &theme, &label, |app, host| {
-                    host.key(app, &character(letter));
-                });
+                let (typed, elapsed) =
+                    measure_within(app, &mut host, (&theme, &label), tree, |app, host| {
+                        host.key(app, &character(letter));
+                    });
                 eprintln!(
-                    "notes-damage {name} rename-field key={letter:?} frame_px={:.0} of {:.0} keystroke_to_frame={elapsed:?}",
+                    "notes-damage {name} rename-field key={letter:?} frame_px={:.0} tree_px={:.0} of {:.0} keystroke_to_frame={elapsed:?}",
                     typed.largest,
+                    typed.largest_within,
                     app_area()
                 );
-                field = field.max(typed.largest);
+                field = field.max(typed.largest_within);
             }
             let label = format!("{name}: committing the rename");
             let (renamed, _) = measure(app, &mut host, &theme, &label, |app, host| {
@@ -876,7 +916,7 @@ fn renaming_a_note_damages_its_row_not_the_page_tree() {
             // The field's row, not the tree's column.
             assert!(
                 field < app_area() * 0.015,
-                "{name}: a key in the rename field repainted {field:.0} px, over 1.5 % of the app"
+                "{name}: a key in the rename field repainted {field:.0} px of the page tree, over 1.5 % of the app"
             );
             // The title, the row, the line the caret goes back to and the
             // save bubble: not the page tree.
