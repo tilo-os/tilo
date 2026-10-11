@@ -730,9 +730,9 @@ struct LockClock {
 
 impl LockClock {
     fn now() -> Self {
-        let now = chrono::Local::now();
+        let now = ui::clock::local_now();
         Self {
-            clock: now.format("%H:%M").to_string(),
+            clock: ui::clock::time_of_day(&now),
             date: now.format("%A, %B %-d").to_string(),
         }
     }
