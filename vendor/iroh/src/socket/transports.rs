@@ -674,6 +674,14 @@ impl NetworkChangeSender {
         }
     }
 
+    /// TILO PATCH: drops the home relay designation, after the relay map was
+    /// emptied, so its connection closes once it has been inactive.
+    pub(crate) fn release_home_relay(&self) {
+        for relay in &self.relay {
+            relay.release_home_relay();
+        }
+    }
+
     /// Triggers an immediate relay connection health check after a network change.
     ///
     /// Uses RTT-based timeout for faster detection of broken connections.

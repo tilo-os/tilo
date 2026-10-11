@@ -373,8 +373,10 @@ pub struct State<PI> {
     /// Whether a [`Timer::DispatchLazyPush`] has been scheduled.
     dispatch_timer_scheduled: bool,
 
-    /// Set to false after the first message is received. Used for initial timer scheduling.
-    init: bool,
+    /// TILO PATCH: whether a [`Timer::EvictCache`] is pending. The sweep runs
+    /// only while a cache holds entries, instead of from the first event on
+    /// for the life of the topic.
+    evict_scheduled: bool,
 
     /// [`Stats`] of this plumtree.
     pub(crate) stats: Stats,
@@ -396,7 +398,7 @@ impl<PI: PeerIdentity> State<PI> {
             graft_timer_scheduled: Default::default(),
             dispatch_timer_scheduled: false,
             cache: Default::default(),
-            init: false,
+            evict_scheduled: false,
             stats: Default::default(),
             max_message_size,
         }
@@ -404,10 +406,6 @@ impl<PI: PeerIdentity> State<PI> {
 
     /// Handle an [`InEvent`].
     pub fn handle(&mut self, event: InEvent<PI>, now: Instant, io: &mut impl IO<PI>) {
-        if !self.init {
-            self.init = true;
-            self.on_evict_cache_timer(now, io)
-        }
         match event {
             InEvent::RecvMessage(from, message) => self.handle_message(from, message, now, io),
             InEvent::Broadcast(data, scope) => self.broadcast(data, scope, now, io),
@@ -480,6 +478,7 @@ impl<PI: PeerIdentity> State<PI> {
                 message.clone(),
                 now + self.config.message_cache_retention,
             );
+            self.schedule_evict(io);
             self.lazy_push(message.clone(), &me, io);
         }
 
@@ -513,6 +512,7 @@ impl<PI: PeerIdentity> State<PI> {
                     (),
                     now + self.config.message_id_retention,
                 );
+                self.schedule_evict(io);
                 // increase the round for forwarding the message, and add to cache
                 // to reply to Graft messages later
                 // TODO: add callback/event to application to get missing messages that were received before?
@@ -681,10 +681,23 @@ impl<PI: PeerIdentity> State<PI> {
     fn on_evict_cache_timer(&mut self, now: Instant, io: &mut impl IO<PI>) {
         self.cache.expire_until(now);
         self.received_messages.expire_until(now);
-        io.push(OutEvent::ScheduleTimer(
-            self.config.cache_evict_interval,
-            Timer::EvictCache,
-        ));
+        // TILO PATCH: sweep again only while something is left to expire.
+        self.evict_scheduled = false;
+        if !self.cache.is_empty() || !self.received_messages.is_empty() {
+            self.schedule_evict(io);
+        }
+    }
+
+    /// TILO PATCH: arms the sweep after an entry went into a cache, unless
+    /// it is already pending.
+    fn schedule_evict(&mut self, io: &mut impl IO<PI>) {
+        if !self.evict_scheduled {
+            self.evict_scheduled = true;
+            io.push(OutEvent::ScheduleTimer(
+                self.config.cache_evict_interval,
+                Timer::EvictCache,
+            ));
+        }
     }
 
     /// Moves peer into eager set.
@@ -906,5 +919,56 @@ mod test {
         let now = now + config.message_cache_retention;
         state.handle(InEvent::TimerExpired(Timer::EvictCache), now, &mut io);
         assert_eq!(state.cache.len(), 0);
+    }
+
+    /// TILO PATCH: the sweep is armed by the first cached message, stops once
+    /// both caches are empty, and is armed once again by the next message.
+    #[test]
+    fn cache_sweep_runs_only_while_something_is_cached() {
+        let config: Config = Default::default();
+        let mut state = State::new(1, config.clone(), 1024);
+        let evict = OutEvent::ScheduleTimer(config.cache_evict_interval, Timer::EvictCache);
+        let sweeps = |io: &VecDeque<OutEvent<i32>>| io.iter().filter(|e| **e == evict).count();
+        let start = Instant::now();
+        let mut now = start;
+
+        let mut io = VecDeque::new();
+        state.handle(InEvent::NeighborUp(2), now, &mut io);
+        assert_eq!(sweeps(&io), 0, "a neighbour alone arms no sweep");
+
+        let mut io = VecDeque::new();
+        state.handle(
+            InEvent::Broadcast(b"one".to_vec().into(), Scope::Swarm),
+            now,
+            &mut io,
+        );
+        state.handle(
+            InEvent::Broadcast(b"two".to_vec().into(), Scope::Swarm),
+            now,
+            &mut io,
+        );
+        assert_eq!(sweeps(&io), 1, "one pending sweep however many messages");
+
+        let retention = config
+            .message_id_retention
+            .max(config.message_cache_retention);
+        loop {
+            now += config.cache_evict_interval;
+            let mut io = VecDeque::new();
+            state.handle(InEvent::TimerExpired(Timer::EvictCache), now, &mut io);
+            if sweeps(&io) == 0 {
+                break;
+            }
+            assert!(now - start <= retention + config.cache_evict_interval);
+        }
+        assert!(state.cache.is_empty() && state.received_messages.is_empty());
+
+        let mut io = VecDeque::new();
+        state.handle(
+            InEvent::Broadcast(b"three".to_vec().into(), Scope::Swarm),
+            now,
+            &mut io,
+        );
+        assert_eq!(sweeps(&io), 1, "the next message arms the sweep again");
     }
 }

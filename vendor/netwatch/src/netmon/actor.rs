@@ -5,7 +5,9 @@ use os::RouteMonitor;
 #[cfg(not(any(posix_minimal, wasm_browser)))]
 pub(crate) use os::is_interesting_interface;
 use tokio::sync::mpsc;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
+
+use super::clock_change::ClockChange;
 
 #[cfg(target_os = "android")]
 use super::android as os;
@@ -97,6 +99,15 @@ impl Actor {
         let debounce = time::sleep(DEBOUNCE);
         tokio::pin!(debounce);
         let mut wall_time_interval = time::interval(POLL_WALL_TIME_INTERVAL);
+        // TILO PATCH: where the kernel reports resumes, wait for one instead
+        // of polling the clock (see `clock_change`); poll where it does not.
+        let mut clock_change = match ClockChange::new() {
+            Ok(clock_change) => Some(clock_change),
+            Err(err) => {
+                debug!("polling the clock for sleeps: {err}");
+                None
+            }
+        };
 
         loop {
             tokio::select! {
@@ -105,11 +116,26 @@ impl Actor {
                     pending_change = false;
                     pending_time_jump = false;
                 }
-                _ = wall_time_interval.tick() => {
+                _ = wall_time_interval.tick(), if clock_change.is_none() => {
                     trace!("tick: wall_time_interval");
                     if self.check_wall_time_advance() {
                         pending_time_jump = true;
                         debounce.as_mut().reset(Instant::now() + DEBOUNCE);
+                    }
+                }
+                changed = next_clock_change(&mut clock_change) => {
+                    match changed {
+                        Ok(true) => {
+                            trace!("resumed from sleep");
+                            pending_time_jump = true;
+                            debounce.as_mut().reset(Instant::now() + DEBOUNCE);
+                        }
+                        Ok(false) => trace!("realtime clock set"),
+                        Err(err) => {
+                            warn!("lost the clock change source, polling instead: {err}");
+                            clock_change = None;
+                            self.wall_time = Instant::now();
+                        }
                     }
                 }
                 event = self.mon_receiver.recv() => {
@@ -171,5 +197,13 @@ impl Actor {
 
         self.wall_time = now;
         jumped
+    }
+}
+
+/// TILO PATCH: the next resume or clock step, or never without a source.
+async fn next_clock_change(clock_change: &mut Option<ClockChange>) -> std::io::Result<bool> {
+    match clock_change {
+        Some(clock_change) => clock_change.changed().await,
+        None => std::future::pending().await,
     }
 }
