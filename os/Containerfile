@@ -393,6 +393,7 @@ COPY \
     os/scripts/cargo-timings-summary.py \
     os/scripts/verify-elf-hardening.sh \
     os/scripts/pack-apps.sh \
+    os/scripts/check-shipped-runtimes.sh \
     os/scripts/stamp-runtime.sh \
     os/scripts/install-env-runtime.sh \
     /build/os/scripts/

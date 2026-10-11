@@ -176,6 +176,7 @@ suites = [
   "os/tests/test_oci_rechunk.py",
   "os/tests/test_pack_apps_cleanup.py",
   "os/tests/test_shipped_runtimes.py",
+  "os/tests/test_image_build_script_copies.py",
   "os/tests/test_prepare_windows_direct_source.py",
   "os/tests/test_read_fat32_efi.py",
   "os/tests/test_private_disk_image.py",
