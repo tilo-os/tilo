@@ -9,7 +9,7 @@ use tilo_seal::{Label, PublicKey, SecretKey};
 use crate::attest::Quote;
 use crate::cert::BootKeyCert;
 use crate::half::{HALF_LEN, Half};
-use crate::{BootId, MAX_FRAME_BYTES, PROTOCOL_VERSION, SlotId, bytes64, digest};
+use crate::{BootId, MAX_FRAME_BYTES, PROTOCOL_VERSION, SlotId, digest};
 
 const REQUEST_CONTEXT: &str = "tilo-unlock request v1";
 const RELEASE_VERSION: u8 = 1;
@@ -57,7 +57,7 @@ pub struct UnlockRequest {
     /// has a TPM. Required for auto-approval, optional otherwise.
     pub attestation: Option<Quote>,
     /// Boot key signature over [`UnlockRequest::digest`].
-    #[serde(with = "bytes64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 

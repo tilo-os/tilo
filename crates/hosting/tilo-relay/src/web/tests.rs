@@ -315,6 +315,7 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
     sessions
         .context()
         .relay
+        .identity
         .revocations
         .write()
         .unwrap()

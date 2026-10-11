@@ -56,7 +56,6 @@ serial_test.workspace = true
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
-tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [[test]]
 name = "it"
