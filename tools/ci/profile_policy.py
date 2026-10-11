@@ -9,6 +9,7 @@ from pathlib import Path
 import pstats
 import re
 import runpy
+import subprocess
 import sys
 import time
 
@@ -50,17 +51,30 @@ def summarize(profiler, root):
 
 
 def profile_target(target, root=ROOT):
+    # Python 3.14's cProfile uses monitoring tool 2 rather than sys.getprofile.
+    # Profiling the diagnostic's own tests must not steal that outer tool.
+    monitoring = getattr(sys, 'monitoring', None)
+    if monitoring is not None and monitoring.get_tool(monitoring.PROFILER_ID) is not None:
+        child = subprocess.run([sys.executable, __file__, '--target', target, '--root', str(root)],
+                               text=True, capture_output=True)
+        return child.returncode, json.loads(child.stdout)
     previous_profile = sys.getprofile()
+    if isinstance(previous_profile, cProfile.Profile):
+        previous_profile.disable()
     profiler = cProfile.Profile()
     captured = io.StringIO()
     status = 0
     started = time.monotonic()
     old_arguments = sys.argv
+    old_import_paths = sys.path[:]
     try:
         with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
             profiler.enable()
             try:
                 if target == 'policy-tests':
+                    # Match `python -m unittest`: repository namespace imports
+                    # must resolve even though this script lives in tools/ci.
+                    sys.path.insert(0, str(root))
                     sys.argv = ['unittest', 'discover', '-s', str(root / 'tools/tests'),
                                 '-p', 'test_*.py', '--durations', '20']
                     runpy.run_module('unittest', run_name='__main__')
@@ -80,6 +94,7 @@ def profile_target(target, root=ROOT):
                     previous_profile.enable()
     finally:
         sys.argv = old_arguments
+        sys.path[:] = old_import_paths
     report = {'target': target, 'status': status,
               'profiled_wall_seconds': round(time.monotonic() - started, 6),
               'functions': summarize(profiler, root)}
@@ -100,8 +115,9 @@ def profile_target(target, root=ROOT):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--target', choices=TARGETS, required=True)
+    parser.add_argument('--root', type=Path, default=ROOT)
     arguments = parser.parse_args()
-    status, report = profile_target(arguments.target)
+    status, report = profile_target(arguments.target, arguments.root.resolve())
     print(json.dumps(report, indent=2))
     return status
 
