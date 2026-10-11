@@ -181,10 +181,10 @@ fn every_client_is_given_server_side_decorations() {
 /// those clients draw a second title bar.
 #[test]
 fn a_kde_server_decoration_client_is_given_server_mode() {
+    use wayland_client::WEnum;
     use wayland_protocols_misc::server_decoration::client::{
         org_kde_kwin_server_decoration, org_kde_kwin_server_decoration_manager as manager,
     };
-    use wayland_client::WEnum;
 
     #[derive(Default)]
     struct Kde {
@@ -200,7 +200,10 @@ fn a_kde_server_decoration_client_is_given_server_mode() {
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
-            if let org_kde_kwin_server_decoration::Event::Mode { mode: WEnum::Value(m) } = event {
+            if let org_kde_kwin_server_decoration::Event::Mode {
+                mode: WEnum::Value(m),
+            } = event
+            {
                 state.modes.push(m);
             }
         }
@@ -228,7 +231,9 @@ fn a_kde_server_decoration_client_is_given_server_mode() {
     let modes = &h.client.modes;
     assert!(!modes.is_empty(), "no mode was sent");
     assert!(
-        modes.iter().all(|m| *m == org_kde_kwin_server_decoration::Mode::Server),
+        modes
+            .iter()
+            .all(|m| *m == org_kde_kwin_server_decoration::Mode::Server),
         "a KDE-protocol client was told {modes:?}; the OS owns the chrome"
     );
 }

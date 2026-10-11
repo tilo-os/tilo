@@ -71,7 +71,13 @@ fn assert_xrgb_pixels_eq(actual: &[u8], expected: &[u8], label: &str) {
         let mut list = Vec::new();
         for (index, (&a, &e)) in actual.iter().zip(expected).enumerate() {
             if a != e && list.len() < 40 {
-                list.push((index / 4 % NATIVE_WIDTH as usize, index / xrgb_pitch(), index % 4, a, e));
+                list.push((
+                    index / 4 % NATIVE_WIDTH as usize,
+                    index / xrgb_pitch(),
+                    index % 4,
+                    a,
+                    e,
+                ));
             }
         }
         eprintln!("TEMP-DEBUG {label} mismatches {list:?}");

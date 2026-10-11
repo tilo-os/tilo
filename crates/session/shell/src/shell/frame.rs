@@ -5850,7 +5850,7 @@ mod tests {
         assert_eq!(candidate.origin, (0, 0));
         assert!(candidate.covers((0, 0), SIZE), "it fills the output");
         assert_eq!(
-            store.surface_origin(FULLSCREEN, output),
+            store.surface_origin(FULLSCREEN, output, (0.0, 0.0)),
             (0.0, 0.0),
             "input addresses the output's corner"
         );

@@ -1486,11 +1486,8 @@ mod tests {
         tree.desktop.workspaces = vec![workspace];
         let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         let chrome = ChromeState::new_with_handle(handle);
-        let rows = ApplicationsProvider::new().results_for(
-            "terminal",
-            vec![app("so.tilo.terminal", "Terminal")],
-            OpenTarget::Here(group_id),
-        );
+        let rows = ApplicationsProvider::new()
+            .results_for("terminal", vec![app("so.tilo.terminal", "Terminal")]);
         chrome.borrow_mut().open_target = OpenTarget::Here(group_id);
         let mut doc = AutoCommit::new();
         let _ = (rows[0].on_open)(
