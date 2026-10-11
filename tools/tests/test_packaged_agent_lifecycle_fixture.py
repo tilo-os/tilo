@@ -2190,13 +2190,14 @@ class PresentedEditorTargetTests(unittest.TestCase):
         # Execute the actual bootstrap entry point and its persisted verdict.
         # Native startup is stubbed here; its boundary is exercised separately
         # by the real packaged proof, not by spawning services in a unit test.
-        for count, activated, accessible, status, expected in (
-                (3, True, True, "done", True),
-                (1, True, True, "done", False),
-                (4, True, True, "done", False),
-                (3, False, True, "done", False),
-                (3, True, False, "done", False),
-                (3, True, True, "cancelled", False)):
+        for count, activated, accessible, status, interaction, expected in (
+                (3, True, True, "done", True, True),
+                (1, True, True, "done", True, False),
+                (4, True, True, "done", True, False),
+                (3, False, True, "done", True, False),
+                (3, True, False, "done", True, False),
+                (3, True, True, "cancelled", True, False),
+                (3, True, True, "done", False, False)):
             with self.subTest(count=count, activated=activated,
                               accessible=accessible, status=status), \
                     tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
@@ -2212,7 +2213,11 @@ class PresentedEditorTargetTests(unittest.TestCase):
                             "marker_activated": activated,
                             "marker_pointer_activated": activated,
                             "quick_composer_accessible": accessible,
-                            "terminal_status": status}
+                            "terminal_status": status,
+                            "quick_composer_interaction": {
+                                "queue_submission_proven": interaction,
+                                "queue_owned_task_cancelled": interaction,
+                                "intent_selections_restored": interaction}}
 
                 def wait(label, _predicate, *_args):
                     if label == "bounded signed native governor fixture":
@@ -4428,8 +4433,12 @@ class PresentedEditorTargetTests(unittest.TestCase):
             self.assertEqual(PROOF.owned_agent_identities(100, proc), [(300, "777")])
 
     def test_final_lifecycle_requires_structured_float_return_success(self):
-        self.assertTrue(PROOF.float_return_evidence_proven({"proven": True}))
-        for evidence in (True, {"proven": 1}, {"proven": False}, {}, {"frame_seq": 9}):
+        complete = {"proven": True, "two_agent_drafts_restored": True,
+                    "two_agent_selections_restored": True}
+        self.assertTrue(PROOF.float_return_evidence_proven(complete))
+        for evidence in (True, {"proven": True}, {"proven": 1}, {"proven": False}, {},
+                         {"frame_seq": 9}, {**complete, "two_agent_drafts_restored": False},
+                         {**complete, "two_agent_selections_restored": False}):
             with self.subTest(evidence=evidence):
                 self.assertFalse(PROOF.float_return_evidence_proven(evidence))
         source = inspect.getsource(PROOF.bootstrap)
@@ -5602,11 +5611,93 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 'revision > before_revision', '"ui_invocation_uuid_observable": False',
                 'task.get("applied_revision")', 'applied_revision == receipt_revision',
                 '"owner_direction_applied": True',
-                '"message_submission_proven": False', '"queue_submission_proven": False',
+                '"message_submission_proven": False', 'exercise_quick_queue(',
+                'wait_for_private_selection(', '"intent_selections_restored": True',
                 '"independent_permission_gates_proven": False'):
             self.assertIn(required, source)
         for forbidden in ("SetText", "open_agent_quick_composer_for_shots", "invoke(socket"):
             self.assertNotIn(forbidden, source)
+
+    def test_quick_queue_requires_one_exact_pending_owned_task(self):
+        row = {"task_id": "new", "title": "PRIVATE-FIXTURE", "assigned_agent": "tide",
+               "route": "model", "status": "queued"}
+        def projection(rows):
+            return {"complete": True, "pending_complete": True, "tasks": [], "pending": rows}
+        self.assertIs(PROOF.quick_queue_owner_task(
+            projection([row]), {"old"}, "PRIVATE-FIXTURE", "Tide"), row)
+        self.assertIsNone(PROOF.quick_queue_owner_task(
+            projection([]), {"old"}, "PRIVATE-FIXTURE", "Tide"))
+        for changed in ({"title": "wrong"}, {"assigned_agent": "reed"},
+                        {"route": "manual"}, {"status": "in_progress"}):
+            with self.subTest(changed=changed), self.assertRaises(RuntimeError):
+                PROOF.quick_queue_owner_task(projection([{**row, **changed}]),
+                                            {"old"}, "PRIVATE-FIXTURE", "Tide")
+        for invalid in (projection([row, {**row, "task_id": "other"}]),
+                        {**projection([row]), "pending_complete": False}):
+            with self.subTest(invalid=invalid), self.assertRaises(RuntimeError):
+                PROOF.quick_queue_owner_task(invalid, {"old"}, "PRIVATE-FIXTURE", "Tide")
+
+    def test_native_isolation_observes_restoration_without_repairing_selection(self):
+        source = inspect.getsource(PROOF.native_agent_draft_isolation)
+        self.assertIn('"open-agent-conversation"', source)
+        self.assertIn('for agent in ("Tide", "Reed", "Tide")', source)
+        restoration = source[source.index('for agent in ("Tide", "Reed", "Tide")'):]
+        self.assertIn("wait_for_private_selection(", restoration)
+        for forbidden in ("click", "select_private_suffix", "SetSelection", "SetText"):
+            self.assertNotIn(forbidden, restoration.replace(
+                "# No pointer click or selection-setting call may repair restoration.", ""))
+        source = inspect.getsource(PROOF.exercise_quick_queue)
+        for required in ('"agent-quick-send"', "quick_queue_owner_task(current_tasks()",
+                         '"read-pending-task"', 'pending.get("instruction") != instruction',
+                         "cancel-pending/0/", 'current.get("status") == "cancelled"'):
+            self.assertIn(required, source)
+
+    def test_quick_queue_physically_submits_then_cancels_exact_pending_frontier(self):
+        row = {"task_id": "new", "title": "PRIVATE-CANARY", "assigned_agent": "tide",
+               "route": "model", "status": "queued"}
+        baseline = {"complete": True, "pending_complete": True, "tasks": [], "pending": []}
+        queued = {**baseline, "pending": [row]}
+        pending = {"task_id": "new", "instruction": "PRIVATE-CANARY",
+                   "frontier": {"status": "queued", "run_epoch": 0, "revision": 7}}
+        cancel = {"provider": "task-review", "id": "room/task/new/cancel-pending/0/7"}
+
+        def waited(_label, predicate, *_args):
+            result = predicate()
+            if not result:
+                raise PROOF.ProofTimeout("closed observation unavailable")
+            return result
+
+        for matching in (True, False):
+            with self.subTest(matching=matching), \
+                    patch.object(PROOF, "wait_for", side_effect=waited), \
+                    patch.object(PROOF, "call", return_value={}) as physical, \
+                    patch.object(PROOF, "require_ok"), \
+                    patch.object(PROOF, "read_task", side_effect=[
+                        {**row, "run_epoch": 0, "execution": None},
+                        {**row, "run_epoch": 0, "status": "cancelled"}]), \
+                    patch.object(PROOF, "offered_desktop_action", return_value={"id": "read"}), \
+                    patch.object(PROOF, "invoke", return_value={}) as invoked, \
+                    patch.object(PROOF, "wait_terminal", return_value={}), \
+                    patch.object(PROOF, "terminal_value", return_value=pending), \
+                    patch.object(PROOF, "agent_quick_composer_status", return_value="confirmed"), \
+                    patch.object(PROOF, "private_editor_value_matches", return_value=True), \
+                    patch.object(PROOF, "actions", return_value=[
+                        cancel if matching else {**cancel, "id": "room/task/new/cancel-pending/0/8"}]), \
+                    patch.object(PROOF, "current_agent_tasks", side_effect=[baseline, queued]) as owner:
+                run = lambda: PROOF.exercise_quick_queue(
+                    "socket", "room", "Tide", "PRIVATE-CANARY", owner,
+                    lambda: {"composer": "owned"}, None)
+                if matching:
+                    result = run()
+                    self.assertTrue(result["queue_owned_task_cancelled"])
+                    self.assertEqual(invoked.call_args_list[-1], call("socket", cancel))
+                    self.assertNotIn("PRIVATE-CANARY", json.dumps(result))
+                else:
+                    with self.assertRaises(PROOF.ProofTimeout):
+                        run()
+                    self.assertEqual(invoked.call_count, 1)  # Only read; never stale cancel.
+                physical.assert_called_once_with("socket", {
+                    "op": "click_named", "name": "agent-quick-send"})
 
     def test_fourth_response_does_not_release_the_original_third_turn(self):
         provider = object.__new__(PROOF.HeldProvider)

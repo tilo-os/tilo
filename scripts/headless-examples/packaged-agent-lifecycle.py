@@ -2521,7 +2521,9 @@ def wait_for_return_editor_continuity(socket, output, primary, child, expected, 
 
 def float_return_evidence_proven(evidence):
     """Require the structured success field, not arbitrary container truthiness."""
-    return isinstance(evidence, dict) and evidence.get("proven") is True
+    return isinstance(evidence, dict) and evidence.get("proven") is True \
+        and evidence.get("two_agent_drafts_restored") is True \
+        and evidence.get("two_agent_selections_restored") is True
 
 
 def floating_surface_presenting(response, app_id, floating_id):
@@ -2971,6 +2973,54 @@ def wait_for_return_input_route(socket, output, primary, child, same_chat, fcitx
     return wait_for("Return's exact active preedit input adoption", observe, process)
 
 
+def select_private_suffix(socket, access, draft, count, process, output):
+    """Select through the real seat, then observe the actual private editor."""
+    require_ok(call(socket, {"op": "key", "key": "End"}))
+    with hold_physical_modifiers(socket, shift=True):
+        for _ in range(count):
+            require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
+    return wait_for_private_selection(
+        socket, access, draft, [len(draft) - count, len(draft)], process, output,
+        expected_caret=len(draft) - count)
+
+
+def native_agent_draft_isolation(socket, room, record, draft, process, output):
+    """Switch actual normal Chat agents; never manufacture an Agent marker."""
+    drafts = {"Tide": draft, "Reed": "Keep this separate private Reed draft."}
+    selections = {}
+
+    def open_agent(agent):
+        action = wait_for("published conversation switch", lambda: offered_agent_action(
+            socket, room, record, agent.casefold(), "open-agent-conversation"), process)
+        wait_terminal(socket, invoke(socket, action), process)
+        return wait_for("switched agent's actual editor", lambda:
+                        agent_conversation_accessibility(agent), process)
+
+    for agent, count in (("Tide", 2), ("Reed", 5)):
+        access = open_agent(agent)
+        if not private_editor_value_matches(access, draft if agent == "Tide" else ""):
+            raise RuntimeError("conversation switch exposed another Agent's private draft")
+        primary = wait_for("conversation switch's native Chat frame", lambda:
+            presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat"), process)
+        physically_click_editor(socket, access, presented_content_geometry(primary))
+        require_chat_keyboard_focus_after_click(socket, output)
+        if agent == "Reed":
+            require_ok(call(socket, {"op": "type", "text": drafts[agent]}))
+            wait_for("physical separate Agent draft", lambda:
+                     private_editor_value_matches(access, drafts[agent]), process)
+        selections[agent] = select_private_suffix(
+            socket, access, drafts[agent], count, process, output)
+
+    for agent in ("Tide", "Reed", "Tide"):
+        access = open_agent(agent)
+        expected = selections[agent]
+        # No pointer click or selection-setting call may repair restoration.
+        wait_for_private_selection(socket, access, drafts[agent], expected["selection"],
+                                   process, output, expected_caret=expected["caret"])
+    return {"two_agent_drafts_restored": True, "two_agent_selections_restored": True,
+            "private_content_recorded": False}
+
+
 def native_float_return(socket, room, record, output, size, process):
     """Exercise the actual seat, IME and native surface handoff end to end."""
     draft = "Keep this private Tide draft"
@@ -3207,8 +3257,10 @@ def native_float_return(socket, room, record, output, size, process):
         raise RuntimeError("keyboard Float/Return changed private editor state")
     semantic = native_semantic_float_return(
         socket, room, record, draft, keyboard_frame, process, output)
+    isolation = native_agent_draft_isolation(socket, room, record, draft, process, output)
     (output / "float-return.json").write_text(json.dumps({
         **semantic,
+        **isolation,
         "physical_typing": True, "physical_selection": True, "physical_undo": True,
         "undo_history_crossed_float": True, "undo_history_crossed_return": True,
         "input_method_commit": True, "pointer_drag_detach": True,
@@ -3223,6 +3275,7 @@ def native_float_return(socket, room, record, output, size, process):
     }, indent=2) + "\n")
     return {
         "proven": True,
+        **isolation,
         "floating_id": frame["floating_id"],
         "surface_id": native_surface_id(frame),
         "frame_seq": frame["frame_seq"],
@@ -6074,7 +6127,75 @@ def capture_steer_receipt_failure(socket, agent, last_owner, before, output, siz
     (output / "agent-steer-receipt-failed.json").write_text(json.dumps(observed, indent=2))
 
 
-def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
+def quick_queue_owner_task(projection, original_ids, instruction, agent):
+    """Correlate one new durable task; private instruction stays in memory."""
+    if projection.get("complete") is not True or projection.get("pending_complete") is not True:
+        raise RuntimeError("quick Queue owner projection is incomplete")
+    rows = [row for field in ("tasks", "pending") for row in projection[field]
+            if row["task_id"] not in original_ids]
+    if len(rows) > 1:
+        raise RuntimeError("quick Queue admitted more than one new owner task")
+    if not rows:
+        return None
+    row = rows[0]
+    if row.get("title") != instruction or row.get("assigned_agent") != agent.casefold() \
+            or row.get("route") != "model" or row.get("status") not in ("queued", "waiting"):
+        raise RuntimeError("quick Queue did not name its exact pending owned instruction")
+    return row
+
+
+def exercise_quick_queue(socket, room, agent, instruction, current_tasks, composer,
+                         process):
+    baseline = current_tasks()
+    if baseline.get("complete") is not True or baseline.get("pending_complete") is not True:
+        raise RuntimeError("quick Queue has no complete baseline owner projection")
+    original_ids = {row["task_id"] for field in ("tasks", "pending") for row in baseline[field]}
+    require_ok(call(socket, {"op": "click_named", "name": "agent-quick-send"}))
+    row = wait_for("quick Queue's exact durable pending task", lambda:
+        quick_queue_owner_task(current_tasks(), original_ids, instruction, agent), process)
+    task_id = row["task_id"]
+    task = read_task(socket, room, task_id, process)
+    if task.get("task_id") != task_id or task.get("status") not in ("queued", "waiting") \
+            or task.get("run_epoch") != 0 or task.get("execution") is not None:
+        raise RuntimeError("quick Queue unexpectedly started or changed its exact task")
+    pending_read = wait_for("quick Queue's owned pending instruction read", lambda:
+        offered_desktop_action(socket, room, "tasks", f"desktop:task:{task_id}",
+                               "read-pending-task"), process)
+    pending = terminal_value(wait_terminal(socket, invoke(socket, pending_read), process))
+    frontier = pending.get("frontier", {})
+    if pending.get("task_id") != task_id or pending.get("instruction") != instruction \
+            or frontier.get("status") != task["status"] or frontier.get("run_epoch") != 0 \
+            or type(frontier.get("revision")) is not int:
+        raise RuntimeError("quick Queue's exact durable instruction frontier changed")
+    wait_for("quick Queue's visible confirmation", lambda:
+        agent_quick_composer_status(agent, {"Earlier work was queued in Task Center."}), process)
+    wait_for("confirmed quick Queue clears only its draft", lambda:
+        (access := composer()) is not None and private_editor_value_matches(access, ""), process)
+
+    def pending_cancel():
+        matches = [action for action in actions(socket)
+                   if action.get("provider") == "task-review"
+                   and action.get("id") == (
+                       f"{room}/task/{task_id}/cancel-pending/0/{frontier['revision']}")]
+        if len(matches) > 1:
+            raise RuntimeError("quick Queue cancellation has ambiguous owner frontiers")
+        return matches[0] if matches else None
+
+    cancellation = wait_for("exact owned public pending cancellation", pending_cancel, process)
+    wait_terminal(socket, invoke(socket, cancellation), process)
+
+    def cancelled():
+        current = read_task(socket, room, task_id, process)
+        if current.get("task_id") != task_id or current.get("run_epoch") != 0:
+            raise RuntimeError("quick Queue cancellation crossed its exact pending owner")
+        return current.get("status") == "cancelled"
+
+    wait_for("quick Queue's exact owner cancellation", cancelled, process)
+    return {"queue_submission_proven": True, "queue_owned_task_cancelled": True,
+            "queue_draft_cleared": True, "private_content_recorded": False}
+
+
+def exercise_agent_quick_composer(socket, agent, exact_task, process, *, room=None,
                                  reopened_message_draft=None, current_tasks=None,
                                  output=None, size=None):
     """Use the actual shell controls while one genuine Agent run is current."""
@@ -6095,11 +6216,15 @@ def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
     if reopened_message_draft != fixture_drafts["message"]:
         raise RuntimeError("the marker's initial Message close and reopen was not proven")
     quick_composer_targets(call(socket, {"op": "list_targets"}))
+    selections = {}
 
     for intent in ("message", "queue", "steer"):
         if intent == "message":
             if not private_editor_value_matches(access, reopened_message_draft):
                 raise RuntimeError("the reopened marker Message draft changed")
+            require_ok(call(socket, {"op": "click_named", "name": "agent-quick-editor"}))
+            selections[intent] = select_private_suffix(
+                socket, access, fixture_drafts[intent], 2, process, output)
             continue
         if intent != "message":
             activate_agent_quick_composer_control(access, intent)
@@ -6113,16 +6238,26 @@ def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
             lambda intent=intent: draft_matches(fixture_drafts[intent]),
             process,
         )
+        access = wait_for("edited quick composer", composer, process)
+        selections[intent] = select_private_suffix(
+            socket, access, fixture_drafts[intent], 3 if intent == "queue" else 5,
+            process, output)
 
     activate_agent_quick_composer_control(access, "message")
     access = wait_for("restored Message composer", composer, process)
     wait_for("exact Message draft restoration", lambda: draft_matches(fixture_drafts["message"]),
              process)
+    wait_for_private_selection(socket, access, fixture_drafts["message"],
+        selections["message"]["selection"], process, output,
+        expected_caret=selections["message"]["caret"])
 
     activate_agent_quick_composer_control(access, "steer")
     access = wait_for("reopened Steer composer", composer, process)
     wait_for("Steer draft retained across close and reopen", lambda:
              draft_matches(fixture_drafts["steer"]), process)
+    wait_for_private_selection(socket, access, fixture_drafts["steer"],
+        selections["steer"]["selection"], process, output,
+        expected_caret=selections["steer"]["caret"])
     before = exact_task()
     if not isinstance(before, dict) or before.get("status") != "in_progress":
         raise RuntimeError("the genuine marker task is not current before physical Steer")
@@ -6196,9 +6331,27 @@ def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
     )
     wait_for("confirmed Steer clears only its fixture draft", lambda: draft_matches(""),
              process)
+    if room is None:
+        raise RuntimeError("quick Queue has no exact owned workspace route")
+    access = wait_for("confirmed Steer composer", composer, process)
+    activate_agent_quick_composer_control(access, "queue")
+    access = wait_for("restored Queue composer", composer, process)
+    wait_for_private_selection(socket, access, fixture_drafts["queue"],
+        selections["queue"]["selection"], process, output,
+        expected_caret=selections["queue"]["caret"])
+    queue = exercise_quick_queue(socket, room, agent, fixture_drafts["queue"],
+                                current_tasks, composer, process)
+    access = wait_for("confirmed Queue composer", composer, process)
+    activate_agent_quick_composer_control(access, "message")
+    access = wait_for("Message after Queue confirmation", composer, process)
+    wait_for_private_selection(socket, access, fixture_drafts["message"],
+        selections["message"]["selection"], process, output,
+        expected_caret=selections["message"]["caret"])
     return {
+        **queue,
         "physical_input": True,
         "intent_drafts_restored": True,
+        "intent_selections_restored": True,
         "close_reopen_retained_draft": True,
         "task_id": received.get("task_id"),
         "run_epoch": run_epoch,
@@ -6210,7 +6363,6 @@ def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
         "visible_outcome": "applied" if receipt_label.startswith("The agent") else "saved",
         "ui_invocation_uuid_observable": False,
         "message_submission_proven": False,
-        "queue_submission_proven": False,
         "independent_permission_gates_proven": False,
         "private_fixture_content_recorded": False,
     }
@@ -6646,7 +6798,7 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
         output / f"agent-quick-composer-after-{size}.png"
     )}))
     interaction = exercise_agent_quick_composer(
-        socket, agent, exact_task, process,
+        socket, agent, exact_task, process, room=room,
         reopened_message_draft=reopened_message_draft,
         current_tasks=lambda: current_agent_tasks(socket, room, agent, process),
         output=output, size=size,
@@ -9661,6 +9813,12 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
                     and marker_evidence.get("marker_pointer_activated") is True
                     and marker_evidence.get("quick_composer_accessible") is True
                     and marker_evidence.get("terminal_status") == "done"
+                    and marker_evidence.get("quick_composer_interaction", {}).get(
+                        "queue_submission_proven") is True
+                    and marker_evidence.get("quick_composer_interaction", {}).get(
+                        "queue_owned_task_cancelled") is True
+                    and marker_evidence.get("quick_composer_interaction", {}).get(
+                        "intent_selections_restored") is True
                 )
                 (output / "bootstrap.json").write_text(json.dumps({
                     "stage": "native-marker",
