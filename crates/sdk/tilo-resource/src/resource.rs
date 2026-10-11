@@ -187,11 +187,7 @@ pub trait Resource: Sized + 'static {
     /// change of its `comments` for a resource someone who may only comment
     /// can still reply in.
     fn least_need() -> ActionNeed {
-        let mut needs = Vec::new();
-        for decl in Self::declarations() {
-            needs.push((decl.kind, decl.field));
-        }
-        least_need_of(&needs)
+        least_need_declared(&(vocabulary::<Self>().declarations)())
     }
 
     /// Mutations offered by name. The generic [`APPLY`] action is always
@@ -261,12 +257,10 @@ pub trait Resource: Sized + 'static {
     /// items each collection holds. The default builds the children and
     /// looks.
     fn children_offer_bound(state: &Self::State) -> Vec<&'static str> {
-        let children = Self::children(state);
-        Self::declarations()
-            .iter()
-            .filter(|decl| crate::items::offered_bound(&children, decl))
-            .map(|decl| decl.id)
-            .collect()
+        offered_bound_ids(
+            &Self::children(state),
+            &(vocabulary::<Self>().declarations)(),
+        )
     }
 
     /// The nested resource `id`, when [`children`](Self::children) leaves it
@@ -1781,6 +1775,29 @@ pub(crate) fn refused(reason: &str) -> EncodedAction {
         type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
         payload: reason.as_bytes().to_vec(),
     }
+}
+
+/// The ids of `declarations` some child among `children` offers bound.
+fn offered_bound_ids(
+    children: &[tilo_actions::Resource],
+    declarations: &[Declaration],
+) -> Vec<&'static str> {
+    let mut ids = Vec::new();
+    for decl in declarations {
+        if crate::items::offered_bound(children, decl) {
+            ids.push(decl.id);
+        }
+    }
+    ids
+}
+
+/// The least a caller needs to take any of `declarations`.
+fn least_need_declared(declarations: &[Declaration]) -> ActionNeed {
+    let mut needs = Vec::with_capacity(declarations.len());
+    for decl in declarations {
+        needs.push((decl.kind, decl.field));
+    }
+    least_need_of(&needs)
 }
 
 /// The least a caller needs to take any of the actions `needs` (kind and

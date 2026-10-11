@@ -492,12 +492,29 @@ fn refusal_refused(refusal: Refusal) -> ActionError {
 
 /// A record operation with the origin's time attached: the replayable action
 /// of a `#[resource]` record.
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone)]
 pub struct Stamped<O> {
     #[serde(rename = "op")]
     pub operation: O,
     #[serde(rename = "at", default)]
     pub now_ms: i64,
+}
+
+impl<O: std::fmt::Debug> std::fmt::Debug for Stamped<O> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt_stamped(&self.operation, self.now_ms, f)
+    }
+}
+
+fn fmt_stamped(
+    operation: &dyn std::fmt::Debug,
+    now_ms: i64,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    f.debug_struct("Stamped")
+        .field("operation", operation)
+        .field("now_ms", &now_ms)
+        .finish()
 }
 
 // Decoded through a JSON value whatever the deserializer: the operation's
