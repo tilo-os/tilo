@@ -574,6 +574,102 @@ class PermissionSnapshotTests(unittest.TestCase):
                     "socket", "room", "record", scope))
 
 
+class PresentedPermissionWindowTests(unittest.TestCase):
+    @staticmethod
+    def frame(sequence, *, width=800, height=600, x=20):
+        return {
+            "app_id": "so.tilo.chat", "floating_id": None,
+            "presented": True, "last_error": None, "frame_seq": sequence,
+            "keyboard_focused": True,
+            "rect": {"x": x, "y": 30, "w": width, "h": height},
+            "content_rect": {"x": x, "y": 30, "w": width, "h": height},
+            "content_origin": {"x": x, "y": 30},
+        }
+
+    def test_restricted_window_must_fill_the_presented_primary_and_keep_nodes_visible(self):
+        client = PROOF.atspi.AtspiClient("address", "owned")
+        rects = {
+            "/window": (0, 0, 800, 600),
+            "/heading": (20, 20, 100, 30),
+            "/notice": (20, 500, 500, 30),
+            "/draft": (20, 535, 500, 30),
+        }
+        with patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(client, "call", side_effect=lambda path, *_args: rects[path]), \
+                patch.object(PROOF.atspi, "extents_reply", side_effect=lambda rect: rect):
+            access = {"bus": "owned", "window": "/window"}
+            nodes = ("/heading", "/notice", "/draft")
+            self.assertTrue(PROOF.accessibility_window_matches_presented_frame(
+                access, self.frame(2), nodes,
+            ))
+            rects["/window"] = (0, 0, 420, 320)
+            self.assertFalse(PROOF.accessibility_window_matches_presented_frame(
+                access, self.frame(2), nodes,
+            ))
+            rects["/window"] = (0, 0, 800, 600)
+            rects["/notice"] = (20, 590, 500, 30)
+            self.assertFalse(PROOF.accessibility_window_matches_presented_frame(
+                access, self.frame(2), nodes,
+            ))
+
+    def test_primary_permission_binding_requires_new_and_stable_frame_geometry(self):
+        access = {"bus": "owned", "window": "/window"}
+        baseline = self.frame(4)
+        for frames, accepted in (
+                ([self.frame(4), self.frame(4)], False),
+                ([self.frame(3), self.frame(3)], False),
+                ([self.frame(5), self.frame(5)], True),
+                ([self.frame(5), self.frame(6)], True),
+                ([self.frame(5), self.frame(6, x=21)], False)):
+            with self.subTest(frames=frames, accepted=accepted), \
+                    patch.object(PROOF, "call", side_effect=[{}, {}]), \
+                    patch.object(PROOF, "presented_primary_frame", side_effect=frames), \
+                    patch.object(PROOF, "accessibility_window_matches_presented_frame",
+                                 return_value=True):
+                current = PROOF.presented_primary_accessibility(
+                    "socket", access, ("/notice",), after=baseline,
+                )
+                self.assertEqual(current is not None, accepted)
+
+    def test_permission_capture_rechecks_restriction_after_refusal_before_snapshot(self):
+        for flow, observer in (
+                (PROOF.native_chat_write_downgrade,
+                 "agent_write_restricted_accessibility"),
+                (PROOF.native_task_write_downgrade,
+                 "restricted_task_read_only_sample")):
+            source = inspect.getsource(flow)
+            refusal = source.index("require_stale_action_refused")
+            recheck = source.index(observer, refusal)
+            qualification = source.index("qualify_hidden_permission_offer", recheck)
+            capture = source.index('"op": "snapshot"', qualification)
+            self.assertLess(refusal, recheck)
+            self.assertLess(recheck, qualification)
+            self.assertLess(qualification, capture)
+            self.assertIn("expires_unix=", source[qualification:capture])
+            self.assertIn("requalify_presented_permission", source[recheck:capture])
+
+    def test_restoration_before_capture_refuses_the_presented_permission_gate(self):
+        expired = RuntimeError("restriction expired before exact Read qualification")
+        with patch.object(PROOF, "presented_primary_accessibility",
+                          return_value=self.frame(8)) as presented, \
+                self.assertRaisesRegex(RuntimeError, "expired before exact Read"):
+            PROOF.requalify_presented_permission(
+                "socket", {"bus": "owned", "window": "/window"},
+                ("/notice", "/draft"), self.frame(7),
+                unittest.mock.Mock(side_effect=expired),
+            )
+        presented.assert_called_once()
+
+        qualify = unittest.mock.Mock(return_value=True)
+        with patch.object(PROOF, "presented_primary_accessibility", return_value=None):
+            self.assertIsNone(PROOF.requalify_presented_permission(
+                "socket", {"bus": "owned", "window": "/window"},
+                ("/notice", "/draft"), self.frame(7), qualify,
+            ))
+        qualify.assert_not_called()
+
+
 class RestrictedQueueRoleTests(unittest.TestCase):
     def observe(self, role, *, revoked=False, editable=False, forbidden=None, queue_button=False,
                 observation=None, heading_options=None):
@@ -1611,6 +1707,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 "/float": "(<'Float conversation'>,)",
                 "/drag": "(<'Drag conversation'>,)",
                 "/draft": "(<'PRIVATE'>,)"}
+        restricted = {**access, "presentation_nodes": ("/heading", "/draft")}
         stale = PROOF.atspi.GateError("org.freedesktop.DBus.Error.UnknownObject retired-node")
         samples = [{}, {}]
         with patch.object(PROOF, "chat_accessibility_windows",
@@ -1623,7 +1720,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 (access, (7, "start")), "PRIVATE", samples[0]))
             self.assertEqual(PROOF.restricted_task_read_only_sample(
                 (access, (7, "start")), "PRIVATE", samples[1]),
-                (access, {"draft_matches": True}, False))
+                (restricted, {"draft_matches": True}, False))
         self.assertEqual(trees.call_count, 2)
         self.assertTrue(samples[0]["at_unknown_object"])
         self.assertTrue(samples[0]["at_known_stale_transport"])
@@ -1697,6 +1794,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                  "/other": PROOF.AT_SPI_ROLE_LIST_ITEM}
         client.role.side_effect = roles.__getitem__
         sample = {}
+        restricted = {**access, "presentation_nodes": ("/heading", "/draft")}
         with patch.object(PROOF, "chat_accessibility_windows",
                           return_value=[("owned", 7, client, "/window")]), \
                 patch.object(PROOF, "chat_process_identity", return_value=(7, "start")), \
@@ -1705,7 +1803,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                              side_effect=[True, False]):
             result = PROOF.restricted_task_read_only_sample(
                 (access, (7, "start")), "PRIVATE", sample)
-        self.assertEqual(result, (access, {"draft_matches": True}, True))
+        self.assertEqual(result, (restricted, {"draft_matches": True}, True))
         self.assertEqual(sample["queue_tabs"], 1)
         self.assertEqual(sample["queue_buttons"], 1)
         self.assertEqual(sample["queue_other_controls"], 1)
@@ -1729,7 +1827,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 patch.object(PROOF, "accessible_subtree", return_value=other_tree):
             result = PROOF.restricted_task_read_only_sample(
                 (access, (7, "start")), "PRIVATE", other_sample)
-        self.assertEqual(result, (access, {"draft_matches": True}, False))
+        self.assertEqual(result, (restricted, {"draft_matches": True}, False))
         self.assertEqual(other_sample["queue_other_controls"], 1)
         restricted = inspect.getsource(PROOF.native_task_write_downgrade)
         self.assertIn("if queue_control_present:\n                    return None", restricted)
@@ -1761,12 +1859,13 @@ class PresentedEditorTargetTests(unittest.TestCase):
                  "/float": PROOF.AT_SPI_ROLE_BUTTON,
                  "/drag": PROOF.AT_SPI_ROLE_BUTTON,
                  "/draft": PROOF.AT_SPI_ROLE_LABEL}
+        restricted = {**access, "presentation_nodes": ("/heading", "/draft")}
         self.assertEqual(sample(base, roles),
-                         (access, {"draft_matches": True}, False))
+                         (restricted, {"draft_matches": True}, False))
         roster = {**base, "/roster": "(<'Tide, agent'>,)"}
         self.assertEqual(
             sample(roster, {**roles, "/roster": PROOF.AT_SPI_ROLE_LIST_ITEM}),
-            (access, {"draft_matches": True}, False),
+            (restricted, {"draft_matches": True}, False),
         )
         same_name_button = {**base, "/button-alias": "(<'Tide, agent'>,)"}
         with self.assertRaisesRegex(RuntimeError, "invalid Agent heading"):
@@ -4809,6 +4908,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         client = unittest.mock.Mock()
         client.named.return_value = ["/queue-tab", "/queue-send"]
         client.role.side_effect = lambda path: 37 if path == "/queue-tab" else 43
+        client.property.return_value = "(<'Queue task'>,)"
         target = {"client_rect": {"x": 40, "y": 240, "w": 100, "h": 30},
                   "global_center": {"x": 106, "y": 425}}
         observation = {}
@@ -4832,6 +4932,8 @@ class PresentedEditorTargetTests(unittest.TestCase):
             "button_count": 1,
             "other_role_count": 0,
             "expected_role_count": 1,
+            "observed_roles": [37, 43],
+            "names_consistent": True,
             "expected_enabled_observed": True,
             "expected_enabled": True,
         })
@@ -4866,6 +4968,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         client = unittest.mock.Mock()
         client.named.return_value = ["/queue-tab", "/queue-send"]
         client.role.side_effect = lambda path: 37 if path == "/queue-tab" else 43
+        client.property.return_value = "(<'Queue task'>,)"
         target = {"global_center": {"x": 50, "y": 50}}
         observation = {}
         with patch.object(PROOF, "call", return_value={"answer": {"frames": [child]}}), \
@@ -4894,10 +4997,11 @@ class PresentedEditorTargetTests(unittest.TestCase):
                  "presented": True, "pixels_ready": True, "keyboard_focused": True,
                  "suspended": False, "transferring": False, "last_error": None,
                  "input_route": None, "input_source_surface_id": None}
-        for roles in ((37,), (43, 43)):
+        for roles in ((37,), (43, 43), (29,), (116,)):
             client = unittest.mock.Mock()
             client.named.return_value = [f"/control-{index}" for index in range(len(roles))]
             client.role.side_effect = roles
+            client.property.return_value = "(<'Queue task'>,)"
             with self.subTest(roles=roles), \
                     patch.object(PROOF, "call", return_value={"answer": {"frames": [child]}}), \
                     patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
@@ -4909,6 +5013,65 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 PROOF.current_detached_task_target(
                     "socket", owner, child, "Task instruction composer", "Queue task", 43)
             enabled.assert_not_called()
+
+    def test_detached_task_target_name_drift_waits_without_interpreting_replacement_role(self):
+        owner = {"bus": "private-bus", "process": 9975, "agent": "Tide", "detached": True,
+                 "window": "/private-window"}
+        child = {"app_id": "so.tilo.chat", "surface_id": 9974,
+                 "floating_id": "private-child", "frame_seq": 12,
+                 "presented": True, "pixels_ready": True, "keyboard_focused": True,
+                 "suspended": False, "transferring": False, "last_error": None,
+                 "input_route": None, "input_source_surface_id": None}
+        for replacement_role in (29, 37):
+            client = unittest.mock.Mock()
+            client.named.return_value = ["/private-control"]
+            client.role.return_value = replacement_role
+            client.property.return_value = "(<'private replacement label'>,)"
+            observation = {}
+            with self.subTest(replacement_role=replacement_role), \
+                    patch.object(PROOF, "call", return_value={"answer": {"frames": [child]}}), \
+                    patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
+                    patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                    patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                    patch.object(PROOF, "accessible_subtree", return_value={}), \
+                    patch.object(PROOF, "accessibility_control_enabled") as enabled, \
+                    patch.object(PROOF, "component_global_target") as component:
+                self.assertIsNone(PROOF.current_detached_task_target(
+                    "socket", owner, child, "Task instruction composer", "Steer current task", 37,
+                    observation))
+            enabled.assert_not_called()
+            component.assert_not_called()
+            self.assertFalse(observation["names_consistent"])
+            self.assertEqual(observation["observed_roles"], [replacement_role])
+            self.assertNotIn("private", json.dumps(observation))
+
+    def test_detached_task_target_stable_wrong_role_is_fatal_with_closed_exact_role(self):
+        owner = {"bus": "private-bus", "process": 9975, "agent": "Tide", "detached": True,
+                 "window": "/private-window"}
+        child = {"app_id": "so.tilo.chat", "surface_id": 9974,
+                 "floating_id": "private-child", "frame_seq": 12,
+                 "presented": True, "pixels_ready": True, "keyboard_focused": True,
+                 "suspended": False, "transferring": False, "last_error": None,
+                 "input_route": None, "input_source_surface_id": None}
+        client = unittest.mock.Mock()
+        client.named.return_value = ["/private-control"]
+        client.role.return_value = 29
+        client.property.return_value = "(<'Steer current task'>,)"
+        observation = {}
+        with patch.object(PROOF, "call", return_value={"answer": {"frames": [child]}}), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
+                patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(PROOF, "accessible_subtree", return_value={}), \
+                patch.object(PROOF, "accessibility_control_enabled") as enabled, \
+                self.assertRaisesRegex(RuntimeError, '"observed_roles": \\[29\\]') as error:
+            PROOF.current_detached_task_target(
+                "socket", owner, child, "Task instruction composer", "Steer current task", 37,
+                observation)
+        enabled.assert_not_called()
+        self.assertTrue(observation["names_consistent"])
+        self.assertEqual(observation["expected_role_count"], 0)
+        self.assertNotIn("private", str(error.exception))
 
     def test_physical_detached_task_control_retries_disabled_without_replaying_click(self):
         frame, access = {"frame_seq": 4}, {"composer": "/editor"}

@@ -1905,6 +1905,8 @@ def agent_write_restricted_accessibility(agent_name, expected, *, observation=No
                     key = (headings[0], notices[0], retained[0])
                     matches.setdefault(key, {
                         "bus": bus, "process": pid, "window": window,
+                        "heading": headings[0], "notice": notices[0],
+                        "retained": retained[0],
                         "notice_present": True, "draft_matches": True,
                         "mutable_controls": len(mutable),
                         "editable_composers": len(editable),
@@ -2086,6 +2088,68 @@ def presented_primary_frame(response, app_id):
     if len(rows) > 1:
         raise RuntimeError("ambiguous presented primary application window")
     return rows[0] if rows else None
+
+
+def accessibility_window_matches_presented_frame(access, frame, nodes=()):
+    """Bind one client-local AT window to the compositor's presented content."""
+    geometry = presented_content_geometry(frame)
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    try:
+        window_rect = atspi.extents_reply(client.call(
+            access["window"], "org.a11y.atspi.Component.GetExtents", "1",
+        ))
+        if window_rect is None or min(window_rect[2:]) <= 2:
+            return False
+        window_x, window_y, window_w, window_h = window_rect
+        content = geometry["content"]
+        if abs(window_w - content["w"]) > 1 or abs(window_h - content["h"]) > 1:
+            return False
+        for path in nodes:
+            rect = atspi.extents_reply(client.call(
+                path, "org.a11y.atspi.Component.GetExtents", "1",
+            ))
+            if rect is None or min(rect[2:]) <= 2:
+                return False
+            x, y, width, height = rect
+            if x < window_x or y < window_y \
+                    or x + width > window_x + window_w \
+                    or y + height > window_y + window_h:
+                return False
+        return True
+    except atspi.GateError:
+        return False
+
+
+def presented_primary_accessibility(socket, access, nodes=(), *, after=None, at_least=None):
+    """Require `access` on one current, optionally newer, primary Chat frame."""
+    current = presented_primary_frame(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+    )
+    if current is None or after is not None \
+            and current["frame_seq"] <= after["frame_seq"]:
+        return None
+    if at_least is not None and current["frame_seq"] < at_least["frame_seq"]:
+        return None
+    if not accessibility_window_matches_presented_frame(access, current, nodes):
+        return None
+    confirmed = presented_primary_frame(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+    )
+    if confirmed is None or confirmed["frame_seq"] < current["frame_seq"] \
+            or presented_content_geometry(confirmed) != presented_content_geometry(current) \
+            or not accessibility_window_matches_presented_frame(access, confirmed, nodes):
+        return None
+    return confirmed
+
+
+def requalify_presented_permission(socket, access, nodes, at_least, qualify):
+    """Keep a visible restriction only while its current authority still denies."""
+    primary = presented_primary_accessibility(
+        socket, access, nodes, at_least=at_least,
+    )
+    if primary is None or qualify() is None:
+        return None
+    return primary
 
 
 def presented_floating_frame(response, app_id):
@@ -7651,7 +7715,8 @@ def restricted_task_read_only_sample(custody, draft, observation):
             permission_count(
                 observation, "queue_action_controls", int("'click'" in actions)
             )
-        current = {**original, "bus": bus, "process": process, "window": window}
+        current = {**original, "bus": bus, "process": process, "window": window,
+                   "presentation_nodes": (headings[0], retained[0])}
         return current, {"draft_matches": True}, bool(mutations)
     except atspi.GateError as error:
         text = str(error)
@@ -7673,6 +7738,12 @@ def native_chat_write_downgrade(socket, room, record, person, output, size, proc
     initial_identity = chat_process_identity(message_access)
     message_before = prepare_private_permission_draft(
         socket, message_access, message_draft, 8, output, process
+    )
+    message_primary = wait_for(
+        "presented primary Message editor before Chat restriction",
+        lambda: presented_primary_accessibility(
+            socket, message_access, (message_access["heading"], message_access["composer"]),
+        ), process,
     )
     stale_message, opposite = wait_for("fresh exact Message, Open Read and Queue offers before Chat restriction", lambda:
                                       initial_permission_offer_pair(
@@ -7698,17 +7769,49 @@ def native_chat_write_downgrade(socket, room, record, person, output, size, proc
                 sample["at_matched"] = restricted is not None
                 if restricted is None:
                     return None
+                restricted_primary = presented_primary_accessibility(
+                    socket, restricted,
+                    (restricted["heading"], restricted["notice"], restricted["retained"]),
+                    after=message_primary,
+                )
+                if restricted_primary is None:
+                    return None
                 qualified = qualify_hidden_permission_offer(
                     socket, stale_message, opposite, "open-agent-conversation",
                     (message_access, restricted, initial_identity), observation=sample,
                     expires_unix=chat_profile["expires_unix"])
-                return (restricted, qualified) if qualified is not None else None
+                return (restricted, restricted_primary, qualified) \
+                    if qualified is not None else None
             finally:
                 permission_phase_checkpoint(phase_observation, sample, "at")
 
-    restricted_chat, observation = wait_for("mounted Chat.Write restriction", chat_restricted, process)
+    restricted_chat, restricted_primary, observation = wait_for(
+        "visible primary Chat.Write restriction", chat_restricted, process
+    )
     message_refusal = require_stale_action_refused(
         socket, stale_message, {"value": message_draft}, process, observation=observation
+    )
+
+    def visible_chat_restriction_remains():
+        current = agent_write_restricted_accessibility("Tide", message_draft)
+        if current is None or any(current.get(field) != restricted_chat.get(field)
+                                  for field in ("bus", "process", "window")):
+            return None
+        primary = requalify_presented_permission(
+            socket, current,
+            (current["heading"], current["notice"], current["retained"]),
+            restricted_primary,
+            lambda: qualify_hidden_permission_offer(
+                socket, stale_message, opposite, "open-agent-conversation",
+                (message_access, current, initial_identity),
+                expires_unix=chat_profile["expires_unix"],
+            ),
+        )
+        return (current, primary) if primary is not None else None
+
+    restricted_chat, restricted_primary = wait_for(
+        "visible primary Chat.Write restriction remains presented",
+        visible_chat_restriction_remains, process,
     )
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"person-chat-write-restricted-{size}.png"
@@ -7764,6 +7867,12 @@ def native_task_write_downgrade(socket, room, record, person, output, size, proc
     queue_before = prepare_private_permission_draft(
         socket, queue_access, queue_draft, 8, output, process
     )
+    queue_primary = wait_for(
+        "presented primary Queue editor before Task restriction",
+        lambda: presented_primary_accessibility(
+            socket, queue_access, (queue_access["heading"], queue_access["composer"]),
+        ), process,
+    )
     opposite, stale_queue = wait_for("fresh independent offers before Task restriction", lambda:
                                     initial_permission_offer_pair(socket, room, record), process)
     task_profile = assign_expiring_app_write_restriction(
@@ -7796,22 +7905,54 @@ def native_task_write_downgrade(socket, room, record, person, output, size, proc
                     return None
                 if observed.get("draft_matches") is not True:
                     return None
+                restricted_primary = presented_primary_accessibility(
+                    socket, access, access["presentation_nodes"], after=queue_primary,
+                )
+                if restricted_primary is None:
+                    return None
                 qualified = qualify_hidden_permission_offer(
                     socket, stale_queue, opposite, "read-current-tasks",
                     (queue_access, access, initial_identity), observation=sample,
                     expires_unix=task_profile["expires_unix"])
-                return (access, observed, qualified) if qualified is not None else None
+                return (access, observed, restricted_primary, qualified) \
+                    if qualified is not None else None
             finally:
                 permission_phase_checkpoint(phase_observation, sample, "at")
 
-    restricted_access, queue_restricted, observation = wait_for(
-        "mounted Task.Write restriction", task_restricted, process)
+    restricted_access, queue_restricted, restricted_primary, observation = wait_for(
+        "visible primary Task.Write restriction", task_restricted, process)
     queue_refusal = require_stale_action_refused(socket, stale_queue, {
         "instruction": queue_draft,
         "title": "Permission proof task",
         "agent": "tide",
         "route": "model",
     }, process, observation=observation)
+
+    def visible_task_restriction_remains():
+        current = restricted_task_read_only_sample(
+            (queue_access, initial_identity), queue_draft, {}
+        )
+        if current is None:
+            return None
+        access, observed, queue_control_present = current
+        if queue_control_present or observed.get("draft_matches") is not True \
+                or any(access.get(field) != restricted_access.get(field)
+                       for field in ("bus", "process", "window")):
+            return None
+        primary = requalify_presented_permission(
+            socket, access, access["presentation_nodes"], restricted_primary,
+            lambda: qualify_hidden_permission_offer(
+                socket, stale_queue, opposite, "read-current-tasks",
+                (queue_access, access, initial_identity),
+                expires_unix=task_profile["expires_unix"],
+            ),
+        )
+        return (access, observed, primary) if primary is not None else None
+
+    restricted_access, queue_restricted, restricted_primary = wait_for(
+        "visible primary Task.Write restriction remains presented",
+        visible_task_restriction_remains, process,
+    )
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"person-task-write-restricted-{size}.png"
     )}))
@@ -8676,6 +8817,13 @@ def current_detached_task_target(
     tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
     named = client.named(tree, label)
     roles = {path: client.role(path) for path in named}
+    # Names were collected by the bounded walk before these role queries.
+    # A redraw can retire a control or rebind an ordinal-based node meanwhile;
+    # never interpret that replacement node's role as the named control's.
+    current_names = decoded_accessible_names({
+        path: client.property(path, "Name") for path in named
+    })
+    names_consistent = all(name == label for name in current_names.values())
     matches = [path for path, observed_role in roles.items() if observed_role == role]
     control_state = {
         "named_count": min(len(named), 64),
@@ -8685,12 +8833,16 @@ def current_detached_task_target(
             value not in (AT_SPI_ROLE_TAB, AT_SPI_ROLE_BUTTON) for value in roles.values()
         ), 64),
         "expected_role_count": min(len(matches), 64),
+        "observed_roles": sorted(roles.values())[:64],
+        "names_consistent": names_consistent,
         "expected_enabled_observed": False,
         "expected_enabled": False,
     }
     if observation is not None:
         observation.clear()
         observation.update(control_state)
+    if not names_consistent:
+        return None
     if len(matches) != 1:
         raise RuntimeError(
             "detached task has no unique actual intent/Send control: "
