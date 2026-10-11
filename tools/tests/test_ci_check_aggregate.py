@@ -49,6 +49,27 @@ class CheckAggregateTests(unittest.TestCase):
         self.bash = ("C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash"))
         self.assertTrue(self.bash, "bash is required to observe the production aggregate")
 
+    def test_compiler_cache_proxy_detection_cannot_download_an_unused_toolchain(self):
+        package_env = section(section(self.workflow, "tapps", 2), "env", 4)
+        self.assertRegex(package_env, r'(?m)^      RUSTUP_AUTO_INSTALL: "0"$')
+        environment = section(self.workflow, "env", 0)
+        # Preserve exact pinned-image compilation and all warning gates.
+        self.assertIn('CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"', environment)
+        self.assertIn('CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"', environment)
+
+    def test_package_timings_observe_the_existing_build_without_a_second_build(self):
+        tapps = section(self.workflow, "tapps", 2)
+        package = tapps.split("      - name: Package the selected tapps\n", 1)[1].split("\n      - ", 1)[0]
+        self.assertIn("EXTRA_CARGO_ARGS: --timings", package)
+        clear = "rm -f target/cargo-timings/cargo-timing.html"
+        self.assertLess(package.index(clear), package.index("tools/ci/measure.sh"))
+        report = tapps.split("      - name: Save package compiler timings\n", 1)[1]
+        self.assertIn("if: always()", report)
+        self.assertIn("path: target/cargo-timings/cargo-timing.html", report)
+        self.assertIn("if-no-files-found: error", report)
+        self.assertNotIn("continue-on-error:", report)
+        self.assertEqual(tapps.count("tools/ci/measure.sh"), 1)
+
     def aggregate(self, builder="success", select="success", security="success", affected="success",
                   required="true", security_required="true", count="4",
                   event="pull_request",

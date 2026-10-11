@@ -13,6 +13,8 @@ use futures_util::StreamExt;
 use tilo_power_mgmt::{InhibitRegistry, InhibitToken};
 use zbus::interface;
 
+use super::lifecycle::disconnected_peers;
+
 /// Well-known name the service claims; freedesktop clients call it directly.
 pub const BUS_NAME: &str = "org.freedesktop.ScreenSaver";
 /// Both object paths clients use in the wild.
@@ -112,20 +114,11 @@ impl ScreenSaverService {
             .executor()
             .spawn(
                 async move {
-                    let Ok(proxy) = zbus::fdo::DBusProxy::new(&task_connection).await else {
+                    let Ok(mut gone) = disconnected_peers(&task_connection).await else {
                         return;
                     };
-                    let Ok(mut events) = proxy.receive_name_owner_changed().await else {
-                        return;
-                    };
-                    while let Some(event) = events.next().await {
-                        let Ok(args) = event.args() else {
-                            continue;
-                        };
-                        if !args.name().as_str().starts_with(':') || args.new_owner().is_some() {
-                            continue;
-                        }
-                        service.release_owner(args.name().as_str());
+                    while let Some(owner) = gone.next().await {
+                        service.release_owner(&owner);
                     }
                 },
                 "screensaver inhibitor disconnect cleanup",
