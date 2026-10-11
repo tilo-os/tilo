@@ -182,7 +182,20 @@ impl App {
         component: &Component,
         builder: &[String],
     ) -> Result<String, CliError> {
-        self.build_layer_remote_cached(remote, vm, component, builder, true)
+        self.build_layer_remote_cached(remote, vm, component, builder, "remote", true)
+    }
+
+    /// The same assembly run by this host's own cargo (`--builder host` for
+    /// `apps+runtime` on a machine of the device's architecture): the layer
+    /// still comes out of `layer-pack`, so it is byte-for-byte what a remote
+    /// builder sends, but its provenance says `host`.
+    pub(super) fn build_layer_local_pack(
+        &mut self,
+        remote: &mut Remote,
+        vm: &Resolved,
+        component: &Component,
+    ) -> Result<String, CliError> {
+        self.build_layer_remote_cached(remote, vm, component, &[], "host", true)
     }
 
     fn build_layer_remote_cached(
@@ -191,13 +204,14 @@ impl App {
         vm: &Resolved,
         component: &Component,
         builder: &[String],
+        label: &str,
         reuse: bool,
     ) -> Result<String, CliError> {
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         self.runner.cwd = Some(worktree.root.clone());
         let metadata = self.cargo_metadata()?;
         let extra = build::dev_features(&metadata, &component.packages);
-        let mut provenance = build::source_provenance(&worktree, &component.name, "remote");
+        let mut provenance = build::source_provenance(&worktree, &component.name, label);
         let inputs = crate::source_inputs::Snapshot::create(&worktree, &component.name)?;
         let inventory = inputs
             .file
@@ -218,8 +232,13 @@ impl App {
         }
         if !self.json {
             eprintln!(
-                "tilo-vm: building {} on the remote builder ({}); the layer streams to {} without touching this disk",
+                "tilo-vm: building {} with {} ({}); the layer streams to {} without touching this disk",
                 component.name,
+                if label == "host" {
+                    "this host's cargo"
+                } else {
+                    "the remote builder"
+                },
                 line.display(),
                 vm.name
             );
@@ -267,7 +286,8 @@ impl App {
             Delivery::Invalidated => {
                 self.receipt.set("remote_cache", "invalidated");
                 drop(inputs);
-                return self.build_layer_remote_cached(remote, vm, component, builder, false);
+                return self
+                    .build_layer_remote_cached(remote, vm, component, builder, label, false);
             }
             Delivery::Uploaded(upload) => upload,
         };

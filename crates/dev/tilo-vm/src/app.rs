@@ -4093,6 +4093,24 @@ impl App {
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect_for_swap(&vm)?;
         self.check_vm_space(&mut remote, &vm)?;
+        let apps_build = if cohort_inputs.is_some() {
+            let configured = self
+                .registry()?
+                .remote_builders
+                .get(&remote.hello.arch)
+                .is_some_and(|line| !line.is_empty());
+            let plan = plan_apps_runtime_build(
+                builder,
+                &remote.hello.arch,
+                std::env::consts::ARCH,
+                cfg!(target_os = "linux"),
+                configured,
+            )?;
+            self.receipt.set("apps_runtime_build", plan.as_str());
+            Some(plan)
+        } else {
+            None
+        };
         let layer = if let ci::Source::Layer(hash) = source {
             hash
         } else {
@@ -4107,11 +4125,17 @@ impl App {
             if let ci::Source::Ci { tag, commit } = source {
                 self.ci_layer(&mut remote, &vm, entry, &tag, commit)?
             } else {
-                self.worktree_component_layer(&mut remote, &vm, entry, builder, profile)?
+                self.worktree_component_layer(
+                    &mut remote,
+                    &vm,
+                    entry,
+                    (builder, apps_build),
+                    profile,
+                )?
             }
         };
         if let Some(inputs) = &cohort_inputs {
-            self.cohort_prerequisites(&slot, &component, inputs)?;
+            self.cohort_prerequisites(&slot, &component, inputs, apps_build)?;
         }
         self.receipt.set("layer", &layer);
         // Building or pulling the layer can outlast the idle connection.
@@ -4165,15 +4189,18 @@ impl App {
         remote: &mut Remote,
         vm: &Resolved,
         entry: &Component,
-        builder: Option<Builder>,
+        (builder, apps_build): (Option<Builder>, Option<AppsRuntimeBuild>),
         profile: Option<&str>,
     ) -> Result<String, CliError> {
         let selected = if entry.image_assembled && entry.name == "apps+runtime" {
-            if matches!(builder, Some(Builder::Host | Builder::Vm)) {
-                return Err(CliError::Unsupported {
-                    what: "a host/VM-only cargo build for the paired apps+runtime assembly".into(),
-                    alternative: "tilo-vm swap apps+runtime --builder remote".into(),
-                });
+            if apps_build == Some(AppsRuntimeBuild::Local) {
+                // This host builds the whole cohort itself, then uploads it.
+                self.receipt.set("builder", "host");
+                return self.build_layer_local_pack(
+                    remote,
+                    vm,
+                    &entry.clone().with_profile(profile),
+                );
             }
             Some(Builder::Remote)
         } else {
@@ -4189,7 +4216,13 @@ impl App {
         slot: &str,
         component: &str,
         inputs: &crate::source_inputs::Snapshot,
+        apps_build: Option<AppsRuntimeBuild>,
     ) -> Result<(), CliError> {
+        let prerequisite_builder = if apps_build == Some(AppsRuntimeBuild::Local) {
+            Builder::Host
+        } else {
+            Builder::Remote
+        };
         let root = self
             .worktree
             .as_ref()
@@ -4201,7 +4234,11 @@ impl App {
             build::source_provenance(
                 self.worktree.as_ref().ok_or(CliError::NotInWorktree)?,
                 component,
-                "remote",
+                if prerequisite_builder == Builder::Host {
+                    "host"
+                } else {
+                    "remote"
+                },
             ),
         );
         let mut outcomes = Vec::new();
@@ -4211,7 +4248,7 @@ impl App {
                 Some(slot.into()),
                 component.into(),
                 "worktree",
-                Some(Builder::Remote),
+                Some(prerequisite_builder),
                 None,
                 false,
                 KernelFlags::default(),
@@ -4549,6 +4586,13 @@ impl App {
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect(&vm)?;
         let arch = remote.hello.arch.clone();
+        let lock = std::fs::read(worktree.root.join("Cargo.lock"))
+            .ok()
+            .map(|bytes| build::sha256_hex(&bytes));
+        check_app_lock(
+            lock.as_deref(),
+            remote.hello.base.cargo_lock_hash.as_deref(),
+        )?;
         let configured = self.registry()?.remote_builders.get(&arch).cloned();
         let builder = match builder {
             None if vm.entry.hypervisor == hypervisor::DEVICE => Some(Builder::Remote),
@@ -5580,11 +5624,94 @@ pub fn worktree_buildable(component: &Component) -> Result<(), CliError> {
             component.name
         ),
         alternative: format!(
-            "one app from this worktree: tilo-vm swap app:<dir>; the published set: \
+            "one app from this worktree: tilo-vm swap app:<dir>; \
+             apps with their matching runtime: tilo-vm swap apps+runtime; the published set: \
              tilo-vm swap {} --from ci:<tag>; this worktree's image: tilo-vm vm upgrade --from local",
             component.name
         ),
     })
+}
+
+/// Where the paired `apps+runtime` cohort is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppsRuntimeBuild {
+    /// The configured remote builder for the device's architecture.
+    Remote,
+    /// This host's own cargo, which must be a Linux machine of the device's
+    /// architecture so the thin graph, runtime ABI and loader closure match.
+    Local,
+}
+
+impl AppsRuntimeBuild {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Remote => "remote",
+            Self::Local => "host",
+        }
+    }
+}
+
+/// Choose the builder for `swap apps+runtime --from worktree`.
+///
+/// The cohort is signed with an ephemeral key that never leaves the build and
+/// is re-verified by tilo-vmd (publisher pins, runtime ABI, closure, every
+/// package), so the builder choice only decides where cargo runs: `--builder
+/// host` is accepted on a Linux host of the device's own architecture, and is
+/// the default when no remote builder is configured.
+///
+/// # Errors
+/// `--builder vm`, and `--builder host` where this host cannot build for the
+/// device.
+pub fn plan_apps_runtime_build(
+    builder: Option<Builder>,
+    device_arch: &str,
+    host_arch: &str,
+    linux_host: bool,
+    remote_configured: bool,
+) -> Result<AppsRuntimeBuild, CliError> {
+    let local_possible = linux_host && host_arch == device_arch;
+    match builder {
+        Some(Builder::Vm) => Err(CliError::Unsupported {
+            what: "a VM-only cargo build for the paired apps+runtime assembly".into(),
+            alternative: "tilo-vm swap apps+runtime --builder host (a Linux host of the device's architecture) or --builder remote".into(),
+        }),
+        Some(Builder::Remote) => Ok(AppsRuntimeBuild::Remote),
+        Some(Builder::Host) if local_possible => Ok(AppsRuntimeBuild::Local),
+        Some(Builder::Host) => Err(CliError::Unsupported {
+            what: format!(
+                "building apps+runtime on this {} host for a {device_arch} device",
+                if linux_host { host_arch } else { "non-Linux" }
+            ),
+            alternative: "the cohort must be built on a Linux machine of the device's architecture: tilo-vm swap apps+runtime --builder remote".into(),
+        }),
+        None if remote_configured => Ok(AppsRuntimeBuild::Remote),
+        None if local_possible => Ok(AppsRuntimeBuild::Local),
+        None => Ok(AppsRuntimeBuild::Remote),
+    }
+}
+
+/// `swap app:<dir>` links the image's own `libruntime_dylib.so`, whose symbols
+/// carry crate hashes, so a worktree whose `Cargo.lock` is not the image's
+/// would install an app that cannot start.
+///
+/// # Errors
+/// [`CliError::Unsupported`] when both locks are known and differ.
+pub fn check_app_lock(
+    worktree_lock: Option<&str>,
+    image_lock: Option<&str>,
+) -> Result<(), CliError> {
+    match (worktree_lock, image_lock) {
+        (Some(mine), Some(image)) if mine != image => Err(CliError::Unsupported {
+            what: format!(
+                "app:<dir> from a worktree whose Cargo.lock ({}) is not the image's ({}): the app would link the image's libruntime_dylib.so, whose symbols carry crate hashes",
+                short(mine),
+                short(image)
+            ),
+            alternative: "build the apps with their matching runtime as one cohort: tilo-vm swap apps+runtime (it is a generation, so tilo-vm rollback undoes it); never regenerate Cargo.lock to match".into(),
+        }),
+        _ => Ok(()),
+    }
 }
 
 /// Which builder `swap --from worktree` uses.
@@ -7224,6 +7351,50 @@ mod tests {
             assert!(alternative.contains("swap app:"), "{alternative}");
             assert!(alternative.contains("--from ci:"), "{alternative}");
             worktree_buildable(manifest.get("fs").unwrap()).unwrap();
+        }
+
+        // Phase: apps_runtime_builds_where_the_device_architecture_matches.
+        {
+            use AppsRuntimeBuild::{Local, Remote};
+            let plan = |b, dev, host, linux, cfg| plan_apps_runtime_build(b, dev, host, linux, cfg);
+            assert_eq!(
+                plan(Some(Builder::Host), "x86_64", "x86_64", true, false).unwrap(),
+                Local
+            );
+            assert_eq!(plan(None, "x86_64", "x86_64", true, false).unwrap(), Local);
+            assert_eq!(plan(None, "x86_64", "x86_64", true, true).unwrap(), Remote);
+            assert_eq!(
+                plan(Some(Builder::Remote), "x86_64", "x86_64", true, false).unwrap(),
+                Remote
+            );
+            assert_eq!(
+                plan(None, "aarch64", "x86_64", true, false).unwrap(),
+                Remote
+            );
+            for refused in [
+                plan(Some(Builder::Host), "aarch64", "x86_64", true, true),
+                plan(Some(Builder::Host), "x86_64", "x86_64", false, true),
+                plan(Some(Builder::Vm), "x86_64", "x86_64", true, true),
+            ] {
+                assert!(
+                    matches!(refused, Err(CliError::Unsupported { .. })),
+                    "{refused:?}"
+                );
+            }
+        }
+
+        // Phase: app_swap_refuses_another_cargo_lock_with_the_cohort_hint.
+        {
+            check_app_lock(Some("aaaa"), Some("aaaa")).unwrap();
+            check_app_lock(None, Some("aaaa")).unwrap();
+            check_app_lock(Some("aaaa"), None).unwrap();
+            let error = check_app_lock(Some("aaaa"), Some("bbbb")).unwrap_err();
+            let CliError::Unsupported { what, alternative } = &error else {
+                panic!("{error:?}");
+            };
+            assert!(what.contains("Cargo.lock"), "{what}");
+            assert!(alternative.contains("swap apps+runtime"), "{alternative}");
+            assert!(alternative.contains("rollback"), "{alternative}");
         }
 
         // Phase: builder_choice_prefers_the_vm_and_explains_fallbacks.

@@ -137,6 +137,12 @@ an older one may lack arm64.
 the image's copy, so it is live the next time the app launches; nothing
 restarts. App installs are not generations: `rollback` does not undo them.
 
+The app links the image's own `libruntime_dylib.so`, so the worktree's
+`Cargo.lock` must be the image's. When it is not (your branch is newer than
+the image), `swap app:<dir>` refuses before building and names
+`tilo-vm swap apps+runtime`, which builds the apps with their matching runtime
+and, being a generation, can be rolled back.
+
 ## What restarts
 
 | Component scope | Goes into | What happens |
@@ -218,6 +224,21 @@ resets account identity or application data. Kernel changes retain their separat
 boot-confirmation lifecycle.
 
 ### Worktree apps and their matching runtime
+
+`tilo-vm swap --slot device apps+runtime` is the loop for unpushed app or
+toolkit changes on a real board laptop, whose sealed image only CI produces.
+With no remote builder configured it builds on this host when the host is a
+Linux machine of the device's architecture (`--builder host` asks for that
+explicitly); otherwise it uses the `[remote_builders]` entry (`--builder remote`).
+`--builder vm` is refused. The same `layer-pack` assembly runs either way, so
+the layer is identical and its provenance records `builder = host` or `remote`.
+Trust is never widened: the cohort is signed with an ephemeral key that is not
+exported, and tilo-vmd accepts it only after verifying the key pins carried in
+the layer, every signed package, the runtime ABI and the loader closure. Nothing
+is added to `/etc/tilo/runtime-bundle-trusted-publishers.txt`, and
+`launcher`/`app-host` keep ignoring `TILO_RUNTIME_BUNDLE_DIR` unless built with
+`dev-overrides`. `tilo-vm rollback` returns to the previous apps and runtime
+unless the user packages it installed require the newer SDK (it says so).
 
 `tilo-vm swap apps+runtime --builder remote` builds every packaged native app and
 its toolkit in one Cargo graph on the configured builder for the slot's actual
