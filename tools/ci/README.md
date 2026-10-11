@@ -118,3 +118,28 @@ Jobs that need more than an unprivileged container:
 | `dev-disk.yml`, `build-legacy-guest.yml` | `/dev/fuse`, loop devices and, for speed, `/dev/kvm` |
 | `release-imager.yml` | `/dev/kvm` |
 | Image, kernel and buildroot builds | Docker with Buildx |
+
+## Planning without local Cargo
+
+`affected_packages.py` invokes local `cargo metadata` by default. On a machine
+where local Cargo is prohibited, pass an existing metadata export explicitly:
+
+```sh
+python3 tools/ci/affected_packages.py --metadata /tmp/workspace-metadata.json \
+  --base origin/main --shards 2
+```
+
+Use a complete `cargo metadata --locked --no-deps --format-version 1` export
+from the existing remote builder or CI, verified against this checkout's
+workspace manifest, lockfile and every member manifest. Package manifest,
+dependency and target paths in the export must refer to this checkout; a
+remote absolute path cannot be consumed unchanged. A stale or incomplete
+export is not selection evidence. Do not substitute a hand-written partial
+graph. Missing JSON fails rather than invoking Cargo.
+
+`rcargo metadata` executes Cargo locally because metadata is a noncompiling
+subcommand; it does not produce a remote export. Until a verified export is
+available, leave the affected plan to the normal CI selector. The regression
+`tools/tests/test_ci_plan_without_cargo.py` exercises the real metadata-file
+CLI with a Cargo blocker and retains target, optional and build dependency
+selection plus the security gate.
