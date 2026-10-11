@@ -3132,7 +3132,11 @@ mod tests {
         let model = AgentModelsModel::from_read(cx.clone(), control.clone(), read);
         assert!(model.manager_available);
         assert_eq!(
-            model.snapshot.recommendation.map(|package| package.id),
+            model
+                .snapshot
+                .recommendation
+                .as_ref()
+                .map(|package| package.id.clone()),
             Some(package().id)
         );
         let down = AgentModelsRead {

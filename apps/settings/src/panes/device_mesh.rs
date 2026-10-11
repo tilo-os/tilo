@@ -357,13 +357,11 @@ impl DeviceMeshArea {
     /// else read here.
     pub fn model(&self) -> &Shared<DeviceMeshModel> {
         self.model.get_or_init(|| {
-            let model = match self.read.take() {
-                Some(read) => DeviceMeshModel::from_read(self.cx.clone(), read),
-                None => {
-                    let (path, devices) = self.source();
-                    DeviceMeshModel::from_path(self.cx.clone(), path, devices)
-                }
-            };
+            let read = self.read.take().unwrap_or_else(|| {
+                let (path, devices) = self.source();
+                MeshRead::of(path, devices, ui::time::wall())
+            });
+            let model = DeviceMeshModel::from_read(self.cx.clone(), read);
             Rc::new(std::cell::RefCell::new(model))
         })
     }
@@ -893,6 +891,7 @@ impl DeviceMeshModel {
     /// Load the relay configuration at `config_path` here
     /// ([`MeshRead::of`]). Without `devices`, nothing paired or discovered
     /// is read.
+    #[cfg(test)]
     fn from_path(cx: PaneCx, config_path: PathBuf, devices: bool) -> Self {
         Self::from_read(cx, MeshRead::of(config_path, devices, ui::time::wall()))
     }
