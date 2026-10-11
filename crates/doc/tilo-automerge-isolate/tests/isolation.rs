@@ -540,7 +540,7 @@ fn exact_change_hashes_retain_external_dependencies_and_redundant_changes() {
     let all = doc
         .get_changes(&[])
         .iter()
-        .map(|change| change.hash())
+        .map(automerge::Change::hash)
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
