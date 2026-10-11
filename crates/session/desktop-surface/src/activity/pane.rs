@@ -1,5 +1,5 @@
 use super::morning::{
-    MORNING_OPEN, MORNING_REMOVE, MORNING_SOURCE, MorningPreferences, MorningSource,
+    MORNING_OPEN, MORNING_REMOVE, MORNING_SOURCE, MorningCommand, MorningPreferences, MorningSource,
 };
 mod morning_sources;
 mod task_review_view;
@@ -201,6 +201,7 @@ enum ActivityFocus {
     MorePeople,
     Resume,
     Morning(String, bool),
+    MorningCommand(String, MorningCommand),
     Brief(usize),
     WorkSessionBoundary(WorkSessionBoundary),
     MoreBriefs,
@@ -798,6 +799,9 @@ pub struct RoomActivityPane {
     morning_sources: HashMap<u64, MorningPreferences>,
     morning_workspace: u64,
     morning_rects: Vec<((String, bool), Rect)>,
+    morning_command_rects: Vec<((String, MorningCommand), Rect)>,
+    morning_command_message: Option<String>,
+    morning_source_offset: usize,
     brief_more_advance: usize,
     brief_offset: usize,
     brief_expansion_started: Option<(usize, Instant)>,
@@ -1025,6 +1029,9 @@ impl RoomActivityPane {
             morning_sources: HashMap::new(),
             morning_workspace: 0,
             morning_rects: Vec::new(),
+            morning_command_rects: Vec::new(),
+            morning_command_message: None,
+            morning_source_offset: 0,
             brief_more_advance: 0,
             brief_offset: 0,
             expanded_brief: None,
@@ -1554,7 +1561,7 @@ impl RoomActivityPane {
             }
             return RoomActivityOutcome {
                 handled: true,
-                open_target: self.morning_target(key),
+                open_target: self.activate_morning_source(key, false),
                 ..Default::default()
             };
         }
@@ -1564,6 +1571,18 @@ impl RoomActivityPane {
             }
             self.remove_morning_source(key);
             return handled_outcome();
+        }
+        for command in [
+            MorningCommand::Refresh,
+            MorningCommand::DraftRefresh,
+            MorningCommand::NextSource,
+        ] {
+            if let Some((room, key)) = super::morning::decode_action(id, command.prefix()) {
+                if room == self.task_room {
+                    self.submit_morning_command(key, command);
+                }
+                return handled_outcome();
+            }
         }
         if id == ACTIVITY_TASKS {
             self.set_view(ActivityView::Tasks);
@@ -2253,10 +2272,15 @@ impl RoomActivityPane {
         if name != self.room_name {
             self.room_name = name;
         }
-        self.task_room = tree
+        let room = tree
             .active_workspace()
             .map(|workspace| workspace.room.to_string())
             .unwrap_or_default();
+        if self.task_room != room || self.morning_workspace != tree.active.raw() {
+            self.morning_command_message = None;
+            self.morning_source_offset = 0;
+        }
+        self.task_room = room;
         self.morning_workspace = tree.active.raw();
         let origin = self.refresh_task_review();
         let tree_tasks = tree
@@ -4160,6 +4184,7 @@ impl RoomActivityPane {
         self.brief_more_rect = None;
         self.brief_more_advance = 0;
         self.morning_rects.clear();
+        self.morning_command_rects.clear();
         self.resume_rect = Rect::ZERO;
         self.resume_target = None;
         let mut y = self.sheet.y0 + self.chrome_height() + 8.0;
@@ -5863,6 +5888,10 @@ impl RoomActivityPane {
             self.finish_view(tree.active.raw());
             return Some(handled_outcome());
         }
+        if let Some((key, command)) = hit_value(&self.morning_command_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::MorningCommand(key, command));
+            return Some(self.activate_focus(tree, None));
+        }
         if let Some((key, remove)) = hit_value(&self.morning_rects, point) {
             self.keyboard_focus = Some(ActivityFocus::Morning(key, remove));
             return Some(self.activate_focus(tree, None));
@@ -6286,6 +6315,13 @@ impl RoomActivityPane {
                         .iter()
                         .map(|((key, remove), _)| ActivityFocus::Morning(key.clone(), *remove)),
                 );
+                order.extend(
+                    self.morning_command_rects
+                        .iter()
+                        .map(|((key, command), _)| {
+                            ActivityFocus::MorningCommand(key.clone(), *command)
+                        }),
+                );
                 if self.resume_target.is_some() && self.resume_rect.area() > 0.0 {
                     order.push(ActivityFocus::Resume);
                 }
@@ -6402,6 +6438,10 @@ impl RoomActivityPane {
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::MorePeople => self.author_more_rect,
+            ActivityFocus::MorningCommand(key, command) => self
+                .morning_command_rects
+                .iter()
+                .find_map(|((id, item), rect)| (id == key && item == command).then_some(*rect)),
             ActivityFocus::Morning(key, remove) => {
                 self.morning_rects
                     .iter()
@@ -6488,6 +6528,15 @@ impl RoomActivityPane {
             .set_focus(self.keyboard_focus == Some(ActivityFocus::Timeline));
     }
 
+    fn activate_brief(&mut self, index: usize) {
+        if self.expanded_brief == Some(index) {
+            self.open_brief_in_explorer(index);
+        } else {
+            self.expanded_brief = Some(index);
+            self.brief_expansion_started = Some((index, Instant::now()));
+        }
+    }
+
     fn activate_focus(
         &mut self,
         tree: &mut impl ActivityTree,
@@ -6506,18 +6555,14 @@ impl RoomActivityPane {
             ActivityFocus::Period(value) => self.set_period(value),
             ActivityFocus::Author(value) => self.set_author_filter(value),
             ActivityFocus::MorePeople => self.advance_people(),
+            ActivityFocus::MorningCommand(key, command) => {
+                self.submit_morning_command(&key, command);
+            }
             ActivityFocus::Morning(key, remove) => {
                 outcome.open_target = self.activate_morning_source(&key, remove);
             }
             ActivityFocus::Resume => outcome.open_target.clone_from(&self.resume_target),
-            ActivityFocus::Brief(index) => {
-                if self.expanded_brief == Some(index) {
-                    self.open_brief_in_explorer(index);
-                } else {
-                    self.expanded_brief = Some(index);
-                    self.brief_expansion_started = Some((index, Instant::now()));
-                }
-            }
+            ActivityFocus::Brief(index) => self.activate_brief(index),
             ActivityFocus::WorkSessionBoundary(boundary) => {
                 outcome.named = self.move_work_session_boundary(tree, boundary);
             }
@@ -6650,6 +6695,7 @@ impl RoomActivityPane {
             ) => Some(value.clone()),
             ActivityFocus::Author(None) => Some(t("a11y-shell-activity-everyone")),
             ActivityFocus::MorePeople => Some(t("a11y-shell-activity-more-people")),
+            ActivityFocus::MorningCommand(_, command) => Some(t(command.label_key())),
             ActivityFocus::Morning(key, remove) => Some(if *remove {
                 t("activity-morning-remove")
             } else {
@@ -6766,11 +6812,25 @@ impl RoomActivityPane {
                 None,
                 t("a11y-shell-activity-more-people-description"),
             ),
+            ActivityFocus::MorningCommand(_, command) => control(
+                Role::Button,
+                false,
+                None,
+                t(if *command == MorningCommand::DraftRefresh {
+                    "activity-morning-draft-description"
+                } else {
+                    command.label_key()
+                }),
+            ),
             ActivityFocus::Morning(key, _) => control(
                 Role::Button,
                 false,
                 None,
-                self.morning_source_label(self.morning_evidence(key).as_ref()),
+                format!(
+                    "{}\n{}",
+                    self.morning_display_label(key, self.morning_evidence(key).as_ref()),
+                    self.morning_payload_text(key)
+                ),
             ),
             ActivityFocus::Resume => {
                 let target = self.resume_target.as_ref()?;
@@ -7171,6 +7231,10 @@ impl RoomActivityPane {
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::MorePeople => self.author_more_rect,
+            ActivityFocus::MorningCommand(key, command) => self
+                .morning_command_rects
+                .iter()
+                .find_map(|((id, item), rect)| (id == key && item == command).then_some(*rect)),
             ActivityFocus::Morning(key, remove) => {
                 self.morning_rects
                     .iter()
