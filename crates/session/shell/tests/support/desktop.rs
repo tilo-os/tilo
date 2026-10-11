@@ -601,16 +601,31 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                             top.join("\n")
                         ));
                     }
-                    let limit = u64::try_from(BUSY_LIMIT.as_millis()).unwrap_or(5000);
-                    let request = format!("{{\"op\":\"heartbeat\",\"budget_ms\":{limit}}}\n");
-                    if writer.write_all(request.as_bytes()).is_err() {
-                        return;
+                    // Keep asking: it still working is fine, its turning blocked
+                    // (a lock, I/O) fails at once, and working past the limit is
+                    // a spin.
+                    let mut waited = HEARTBEAT_BUDGET;
+                    while waited < BUSY_LIMIT {
+                        let request =
+                            format!("{{\"op\":\"heartbeat\",\"budget_ms\":{budget}}}\n");
+                        if writer.write_all(request.as_bytes()).is_err() {
+                            return;
+                        }
+                        line.clear();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        answer = serde_json::from_str::<Answer>(&line);
+                        let still_working = matches!(
+                            &answer,
+                            Ok(Answer::Stalled { main_thread_cpu_ms, budget_ms, .. })
+                                if *main_thread_cpu_ms >= budget_ms / 4
+                        );
+                        if !still_working {
+                            break;
+                        }
+                        waited = waited.saturating_add(HEARTBEAT_BUDGET);
                     }
-                    line.clear();
-                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                        return;
-                    }
-                    answer = serde_json::from_str::<Answer>(&line);
                 }
                 match answer {
                     Ok(Answer::Alive { latency_ms, .. }) => {

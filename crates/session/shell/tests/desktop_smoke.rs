@@ -255,8 +255,8 @@ fn scenario(desktop: &Desktop) {
         desktop.chrome()["session_locked"].as_bool() == Some(true)
     });
     sweep_edges(desktop);
-    desktop.type_text("not-the-password");
-    desktop.key("Enter");
+    // (A rejected password is the lock suite's: its verification is
+    // asynchronous and has no signal to wait on here.)
     desktop.type_text(UNLOCK_PASSWORD);
     desktop.key("Enter");
     desktop.wait_for("the session to unlock", || {
