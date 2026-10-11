@@ -9,6 +9,7 @@ import {createReadStream, existsSync, mkdtempSync, readdirSync, rmSync, statSync
 import {createServer} from 'node:http';
 import {homedir, tmpdir} from 'node:os';
 import {extname, join, normalize} from 'node:path';
+import {fileURLToPath} from 'node:url';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -69,7 +70,9 @@ function chromeBinary() {
 /** A headless browser on a fresh profile. */
 export async function launch({args = []} = {}) {
   const profile = mkdtempSync(join(tmpdir(), 'tilo-chrome-'));
-  const child = spawn(chromeBinary(), [
+  const supervised = process.platform === 'linux';
+  const browser = chromeBinary();
+  const browserArgs = [
     '--headless=new',
     '--remote-debugging-port=0',
     `--user-data-dir=${profile}`,
@@ -82,7 +85,12 @@ export async function launch({args = []} = {}) {
     '--disable-backgrounding-occluded-windows',
     ...args,
     'about:blank',
-  ], {stdio: ['ignore', 'ignore', 'pipe']});
+  ];
+  // The existing subreaper owns even detached utility processes. Chromium's
+  // root exiting alone does not prove that its profile has stopped changing.
+  const child = spawn(supervised ? 'python3' : browser, supervised
+    ? [fileURLToPath(new URL('./owned_browser.py', import.meta.url)), browser, ...browserArgs]
+    : browserArgs, {stdio: ['ignore', 'ignore', 'pipe']});
   const endpoint = await new Promise((resolve, reject) => {
     let buffered = '';
     child.stderr.on('data', chunk => {
@@ -177,20 +185,36 @@ export async function launch({args = []} = {}) {
     tab,
     send,
     close: async () => {
-      // A browser told to close waits for its helper processes, which
-      // still write into the profile; a killed one leaves them running.
       const exited = child.exitCode === null
         ? new Promise(resolve => child.once('exit', resolve))
         : Promise.resolve();
-      await Promise.race([send('Browser.close'), exited]);
-      const closed = await Promise.race([exited.then(() => true), sleep(10_000).then(() => false)]);
+      let timer;
+      const deadline = new Promise(resolve => {
+        timer = setTimeout(() => resolve(false), 10_000);
+      });
+      let closed;
+      try {
+        await Promise.race([send('Browser.close'), exited, deadline]);
+        closed = await Promise.race([exited.then(() => true), deadline]);
+      } finally {
+        clearTimeout(timer);
+        ws.close();
+      }
       if (!closed) {
+        if (supervised) {
+          // Keep the subreaper alive to stop its own descendants; killing it
+          // would orphan precisely the writers whose exit we need to prove.
+          child.kill('SIGTERM');
+          throw new Error('owned browser shutdown timed out; profile retained');
+        }
         child.kill('SIGKILL');
         await exited;
       }
-      ws.close();
-      // Exited Chrome helpers can leave a final directory update racing with
-      // removal. Bound Node's retries; a persistent cleanup error still fails.
+      if (supervised && child.exitCode !== 0) {
+        throw new Error(`owned browser shutdown failed (${child.exitCode}); profile retained`);
+      }
+      // Only the supervisor's successful exit proves every owned writer was
+      // reaped. Keep filesystem retries bounded and report persistent errors.
       rmSync(profile, {recursive: true, force: true, maxRetries: 5, retryDelay: 100});
     },
   };
