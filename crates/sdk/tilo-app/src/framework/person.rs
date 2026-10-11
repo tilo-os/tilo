@@ -9,10 +9,10 @@ use std::rc::Rc;
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
 
 use tilo_resource::Fields;
-use ui_core::storage::{ChangeOrigin, Scope, Settings, SettingsRevision, SettingsSchema};
+use ui_core::storage::{Scope, Settings, SettingsRevision, SettingsSchema};
 
 use super::live::Live;
-use super::record::{Held, RecordDoor};
+use super::record::{Held, RecordDoor, SectionValue};
 use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::history_mode::HistoryOwner;
@@ -444,16 +444,11 @@ impl PersonState {
         if let Some(open) = self.opened.borrow().get(&key) {
             return Rc::clone(open).downcast::<Held<T>>().ok();
         }
-        let current = settings.get();
-        let record = open_record(&self.records, kind, T::KIND, &|doc| {
-            T::initialize(doc).map_err(|error| error.to_string())?;
-            current
-                .write_fields(doc, &tilo_resource::__private::ROOT)
-                .map_err(|error| error.to_string())
-        })?;
+        let value = SectionValue::of(settings);
+        let record = open_record(&self.records, kind, T::KIND, &|doc| value.fill(doc))?;
         let shared = self.shared_of::<T>(record, None)?;
         let section = Rc::new(Section {
-            settings,
+            value,
             seen: Cell::new(None),
         });
         // The section's record lives as long as the section is held.
@@ -472,7 +467,7 @@ impl PersonState {
                         let stepped = if undo { record.undo() } else { record.redo() };
                         if stepped {
                             let action = if undo { "undo" } else { "redo" };
-                            section.write(&record.shared, action, by);
+                            section.write(&record.shared.record, action, by);
                         }
                         stepped
                     })
@@ -655,67 +650,52 @@ fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Held<P> {
 
 /// A settings section kept as a record: the section it writes, and the
 /// version of the settings document the record last followed.
-struct Section<T> {
-    settings: Settings<T>,
+struct Section {
+    value: Rc<SectionValue>,
     seen: Cell<Option<SettingsRevision>>,
 }
 
-impl<T> Section<T>
-where
-    T: Resource<State = T> + Fields + SettingsSchema,
-{
+impl Section {
     /// Write the record's value to the settings document, as `action` by
     /// `by`.
-    fn write(&self, shared: &Shared<T>, action: &str, by: &str) {
-        let Some(Ok(value)) = shared
-            .record
-            .read(|doc| T::read_fields(doc, &tilo_resource::__private::ROOT))
-        else {
+    fn write(&self, record: &StoredRecord, action: &str, by: &str) {
+        let Some(written) = record.read(|doc| self.value.store(doc, action, by)) else {
             return;
         };
-        let origin = ChangeOrigin::action(format!("{}/{action}", T::KIND)).by(by.to_owned());
-        if let Err(error) = self.settings.set_by(&value, Some(&origin)) {
-            tracing::warn!(kind = T::KIND, %error, "settings section not written");
+        if let Err(error) = written {
+            tracing::warn!(kind = self.value.kind, %error, "settings section not written");
         }
-        self.seen.set(Some(self.settings.revision()));
+        self.seen.set(Some(self.value.revision()));
     }
 
     /// Take into the record what was written to the settings document
     /// elsewhere (another window, the Settings app, another device): content
     /// from outside, nobody's step.
-    fn follow(&self, shared: &Shared<T>) {
-        let revision = self.settings.revision();
+    fn follow(&self, record: &StoredRecord) {
+        let revision = self.value.revision();
         if self.seen.get() == Some(revision) {
             return;
         }
         self.seen.set(Some(revision));
-        let stored = self.settings.get();
-        let held = shared
-            .record
-            .read(|doc| T::read_fields(doc, &tilo_resource::__private::ROOT).ok())
-            .flatten();
-        if held.is_some_and(|held| {
-            tilo_resource::Model::to_json(&held) == tilo_resource::Model::to_json(&stored)
-        }) {
+        if record
+            .read(|doc| self.value.holds_stored(doc))
+            .unwrap_or(false)
+        {
             return;
         }
-        if let Err(error) = shared.record.edit(false, |doc| {
-            stored
-                .write_fields(doc, &tilo_resource::__private::ROOT)
-                .map_err(|error| error.to_string())
-        }) {
-            tracing::warn!(kind = T::KIND, %error, "settings record did not follow the section");
+        if let Err(error) = record.edit(false, |doc| self.value.write(doc)) {
+            tracing::warn!(kind = self.value.kind, %error, "settings record did not follow the section");
         }
     }
 }
 
 /// The settings section `section`, kept in the record `shared`, as views
 /// and the door edit it.
-fn section_held<T>(shared: &Rc<Shared<T>>, section: &Rc<Section<T>>) -> Held<T>
+fn section_held<T>(shared: &Rc<Shared<T>>, section: &Rc<Section>) -> Held<T>
 where
     T: Resource<State = T> + Fields + SettingsSchema,
 {
-    section.follow(shared);
+    section.follow(&shared.record);
     shared.refresh();
     let (following, following_section) = (Rc::clone(shared), Rc::clone(section));
     let (applying, applying_section) = (Rc::clone(shared), Rc::clone(section));
@@ -725,7 +705,7 @@ where
         true,
         shared.live.clone(),
         move |_: &Live<T>| {
-            following_section.follow(&following);
+            following_section.follow(&following.record);
             following.refresh();
         },
         move |action: &T::Action, invoker: &ActionInvoker| {
@@ -733,7 +713,11 @@ where
                 shared: Rc::clone(&applying),
             }
             .apply_as(action, invoker)?;
-            applying_section.write(&applying, &super::record::action_id(action), &invoker.actor);
+            applying_section.write(
+                &applying.record,
+                &super::record::action_id(action),
+                &invoker.actor,
+            );
             Ok(())
         },
     )

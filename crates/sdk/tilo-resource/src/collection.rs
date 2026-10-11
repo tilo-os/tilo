@@ -11,11 +11,11 @@ use std::sync::OnceLock;
 use crate::action::{ActionCx, Refusal};
 use crate::delta::{Delta, Touch};
 use crate::model::LocatedAt as _;
-use crate::model::{
-    Doc, Model, ModelError, Slot, Stores, edit_whole, read_key, refresh_key, write_key_changed,
-};
+use crate::model::{Doc, Model, ModelError, Slot, Stores, read_key};
 use crate::order;
 use crate::path::{EditOp, Segment, Settable};
+use crate::table::{ModelOps, ModelTable, Run};
+use std::any::Any;
 
 /// A stable identity for an item in a resource. Minted deterministically by
 /// [`ActionCx::id`](crate::ActionCx::id), so replaying an action on another
@@ -386,24 +386,6 @@ impl<T> Collection<T> {
         self.index.reset();
         self.moved();
     }
-}
-
-/// Whether every item of a collection read from a document has a stored
-/// order key, each above the one before: the keys a write keeps all of.
-fn strictly_ordered<T>(collection: &Collection<T>) -> bool {
-    let mut previous: Option<&str> = None;
-    for entry in &collection.items {
-        let Some(key) = entry.key.as_deref() else {
-            return false;
-        };
-        if let Some(previous) = previous
-            && previous >= key
-        {
-            return false;
-        }
-        previous = Some(key);
-    }
-    true
 }
 
 // Named iterators rather than closures over entries: one small set of
@@ -919,16 +901,6 @@ fn longest_increasing(keys: &[Option<&str>]) -> Vec<usize> {
 }
 
 impl<T> Collection<T> {
-    /// Whether an item lost its stored order key (moved in memory).
-    fn any_unkeyed(&self) -> bool {
-        for entry in &self.items {
-            if entry.key.is_none() {
-                return true;
-            }
-        }
-        false
-    }
-
     /// Sort the items as stored: by order key, ties by id.
     fn reorder_by_keys(&mut self) {
         let mut keys = Vec::with_capacity(self.items.len());
@@ -988,66 +960,43 @@ impl<T: Model> Model for Collection<T> {
     const SHAPE: crate::Shape = crate::Shape::Collection(&T::SHAPE);
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
+    // Run by one set of functions for every collection, over `T`'s table.
+    const TABLE: &'static ModelTable = &CollectionOf::<T>::TABLE;
     crate::model::leaf_paths!();
+    #[inline]
     fn op_coalesces(
         path: &[Segment],
         previous: &serde_json::Value,
         next: &serde_json::Value,
     ) -> Option<bool> {
-        match path.split_first() {
-            Some((Segment::Item(_), rest)) if T::OPS => T::op_coalesces(rest, previous, next),
-            _ => None,
-        }
+        Run(Self::TABLE).op_coalesces(path, previous, next)
     }
+    #[inline]
     fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
-        match path.split_first() {
-            Some((Segment::Item(_), rest)) if T::OPS => T::op_continuable(rest, op),
-            _ => None,
-        }
+        Run(Self::TABLE).op_continuable(path, op)
     }
+    #[inline]
     fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
-        match path.split_first() {
-            Some((Segment::Item(_), rest)) if T::OPS => T::op_describe(rest, op),
-            _ => None,
-        }
+        Run(Self::TABLE).op_describe(path, op)
     }
+    #[inline]
     fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
-        match path.split_first() {
-            Some((Segment::Item(id), rest)) if T::OPS => self.get(id)?.op_lands(rest, op),
-            _ => None,
-        }
+        Run(Self::TABLE).op_lands(self, path, op)
     }
+    #[inline]
     fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
-        if T::OPS {
-            T::op_schemas(&format!("{prefix}*."), out);
-        }
+        Run(Self::TABLE).op_schemas(prefix, out);
     }
-
     /// `[{ "id": .., "value": .. }, ..]` in collection order.
-    #[inline(never)]
+    #[inline]
     fn to_json(&self) -> serde_json::Value {
-        let mut entries = Vec::with_capacity(self.items.len());
-        for entry in &self.items {
-            entries.push(entry_json(&entry.id, entry.item.to_json()));
-        }
-        serde_json::Value::Array(entries)
+        Run(Self::TABLE).to_json(self)
     }
-
-    #[inline(never)]
+    #[inline]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
-        let serde_json::Value::Array(entries) = value else {
-            return Err(ModelError::shape("a list of items"));
-        };
-        let mut collection = Self::default();
-        for (index, entry) in entries.iter().enumerate() {
-            let (id, value) = entry_parts(index, entry)?;
-            let item = T::from_json(value).located(id.as_str())?;
-            collection.push(id, item);
-        }
-        Ok(collection)
+        Run(Self::TABLE).from_json(value)
     }
-
-    #[inline(never)]
+    #[inline]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -1055,6 +1004,449 @@ impl<T: Model> Model for Collection<T> {
         op: &EditOp,
         cx: &mut ActionCx,
     ) -> Result<(), ModelError> {
+        Run(Self::TABLE).edit(doc, slot, path, op, cx)
+    }
+    #[inline]
+    fn check(&self) -> Result<(), Refusal> {
+        Run(Self::TABLE).check(self)
+    }
+    #[inline]
+    fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any> {
+        Run(Self::TABLE).get_at(self, path)
+    }
+    #[inline]
+    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
+        Run(Self::TABLE).diff(self, after, path, out);
+    }
+    #[inline]
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        Run(Self::TABLE).load(doc, value, id)
+    }
+    /// Only the entries `delta` touched are read again
+    /// ([`COLLECTION_OPS`]).
+    #[inline]
+    fn refresh(
+        &mut self,
+        doc: &Doc,
+        value: &Value<'_>,
+        id: &ObjId,
+        delta: &Delta,
+    ) -> Result<(), ModelError> {
+        Run(Self::TABLE).refresh(self, doc, value, id, delta)
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(Self::default())
+    }
+    #[inline]
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        Run(Self::TABLE).store(self, doc, slot)
+    }
+    /// Equal ids in equal order, each item storing as before, over order
+    /// keys a write would keep.
+    #[inline]
+    fn stores_as(&self, before: &Self) -> bool {
+        Run(Self::TABLE).stores_as(self, before)
+    }
+    /// What [`store`](Model::store) writes, from `before` (which knows every
+    /// stored entry and order key) instead of listing the stored entries:
+    /// only new, moved and changed items are visited, and an item someone
+    /// else touched (`dirty`) is written as `store` writes it.
+    #[inline]
+    fn store_changed(
+        &self,
+        before: &Self,
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        Run(Self::TABLE).store_changed(self, before, doc, slot, dirty)
+    }
+    #[inline]
+    fn collect_text(&self, out: &mut Vec<String>) {
+        Run(Self::TABLE).collect_text(self, out);
+    }
+}
+
+// --- A collection through its item type's table -----------------------------
+
+/// A collection's entries, whatever its item type: what the collection
+/// functions below reach into one with.
+pub(crate) trait Entries {
+    fn count(&self) -> usize;
+    fn id_at(&self, at: usize) -> Option<&Id>;
+    fn order_at(&self, at: usize) -> Option<&str>;
+    fn item_at(&self, at: usize) -> Option<&dyn Any>;
+    fn item_at_mut(&mut self, at: usize) -> Option<&mut dyn Any>;
+    fn find(&self, id: &Id) -> Option<usize>;
+    /// Append an entry (with `replace`, replace the item of an id already
+    /// present), its item put by `fill` into an `Option` of the item type.
+    fn push_filled(
+        &mut self,
+        entry: (Id, Option<String>, bool),
+        fill: &mut dyn FnMut(&mut dyn Any) -> Result<(), ModelError>,
+    ) -> Result<(), ModelError>;
+    /// Replace the entry at `at`, as [`Self::push_filled`].
+    fn replace_filled(
+        &mut self,
+        at: usize,
+        order: Option<String>,
+        fill: &mut dyn FnMut(&mut dyn Any) -> Result<(), ModelError>,
+    ) -> Result<(), ModelError>;
+    fn remove_at(&mut self, at: usize);
+    fn set_order(&mut self, at: usize, order: Option<String>);
+    /// Sort the entries by their order keys; the ids may have moved.
+    fn reorder(&mut self);
+    /// The ids changed.
+    fn changed(&mut self);
+}
+
+impl<T: 'static> Entries for Collection<T> {
+    fn count(&self) -> usize {
+        self.items.len()
+    }
+
+    fn id_at(&self, at: usize) -> Option<&Id> {
+        self.items.get(at).map(|entry| &entry.id)
+    }
+
+    fn order_at(&self, at: usize) -> Option<&str> {
+        self.items.get(at)?.key.as_deref()
+    }
+
+    fn item_at(&self, at: usize) -> Option<&dyn Any> {
+        self.items.get(at).map(|entry| &entry.item as &dyn Any)
+    }
+
+    fn item_at_mut(&mut self, at: usize) -> Option<&mut dyn Any> {
+        self.items
+            .get_mut(at)
+            .map(|entry| &mut entry.item as &mut dyn Any)
+    }
+
+    fn find(&self, id: &Id) -> Option<usize> {
+        self.position(id)
+    }
+
+    fn push_filled(
+        &mut self,
+        (id, order, replace): (Id, Option<String>, bool),
+        fill: &mut dyn FnMut(&mut dyn Any) -> Result<(), ModelError>,
+    ) -> Result<(), ModelError> {
+        let mut slot: Option<T> = None;
+        fill(&mut slot)?;
+        let item = crate::table::filled(slot)?;
+        if replace {
+            self.push(id, item);
+        } else {
+            self.items.push(Entry {
+                id,
+                key: order,
+                item,
+            });
+            self.index.reset();
+        }
+        Ok(())
+    }
+
+    fn replace_filled(
+        &mut self,
+        at: usize,
+        order: Option<String>,
+        fill: &mut dyn FnMut(&mut dyn Any) -> Result<(), ModelError>,
+    ) -> Result<(), ModelError> {
+        let mut slot: Option<T> = None;
+        fill(&mut slot)?;
+        let item = crate::table::filled(slot)?;
+        if let Some(entry) = self.items.get_mut(at) {
+            entry.item = item;
+            entry.key = order;
+        }
+        Ok(())
+    }
+
+    fn remove_at(&mut self, at: usize) {
+        if at < self.items.len() {
+            self.items.remove(at);
+        }
+    }
+
+    fn set_order(&mut self, at: usize, order: Option<String>) {
+        if let Some(entry) = self.items.get_mut(at) {
+            entry.key = order;
+        }
+    }
+
+    fn reorder(&mut self) {
+        self.reorder_by_keys();
+        self.index.reset();
+        self.moved();
+    }
+
+    fn changed(&mut self) {
+        self.index.reset();
+        self.moved();
+    }
+}
+
+/// What `Collection<T>`'s table reaches into one with.
+#[allow(
+    clippy::type_complexity,
+    reason = "each field reaches into the collection one way"
+)]
+pub struct CollectionDesc {
+    /// `T`'s table.
+    item: &'static ModelTable,
+    entries: for<'a> fn(&'a dyn Any) -> Option<&'a dyn Entries>,
+    entries_mut: for<'a> fn(&'a mut dyn Any) -> Option<&'a mut dyn Entries>,
+    /// Put an empty collection into `out` (an `Option` of it), and hand it
+    /// back.
+    fresh: for<'a> fn(&'a mut dyn Any) -> Option<&'a mut dyn Entries>,
+    /// An empty `Option` of a collection, the collection in a filled one,
+    /// and moving it out over another.
+    staged: (fn() -> Box<dyn Any>, crate::table::Unstage),
+    replace: fn(&mut dyn Any, &mut dyn Any) -> Result<(), ModelError>,
+    /// An empty `Option` of an item and the item in a filled one.
+    item_staged: (fn() -> Box<dyn Any>, crate::table::Unstage),
+}
+
+/// The [`CollectionDesc`] of `Collection<T>`.
+pub struct CollectionOf<T>(std::marker::PhantomData<T>);
+
+impl<T: Model> CollectionOf<T> {
+    pub const DESC: CollectionDesc = CollectionDesc {
+        item: T::TABLE,
+        entries: entries_of::<T>,
+        entries_mut: entries_mut_of::<T>,
+        fresh: fresh_of::<T>,
+        staged: (
+            crate::table::empty_of::<Collection<T>>,
+            crate::table::unwrap_of::<Collection<T>>,
+        ),
+        replace: crate::table::replace_of::<Collection<T>>,
+        item_staged: (crate::table::empty_of::<T>, crate::table::unwrap_of::<T>),
+    };
+
+    pub const TABLE: ModelTable = ModelTable::of_collection(&Self::DESC, T::CHECKS, T::OPS);
+}
+
+fn entries_of<T: 'static>(value: &dyn Any) -> Option<&dyn Entries> {
+    Some(value.downcast_ref::<Collection<T>>()? as &dyn Entries)
+}
+
+fn entries_mut_of<T: 'static>(value: &mut dyn Any) -> Option<&mut dyn Entries> {
+    Some(value.downcast_mut::<Collection<T>>()? as &mut dyn Entries)
+}
+
+fn fresh_of<T: 'static>(out: &mut dyn Any) -> Option<&mut dyn Entries> {
+    let out = out.downcast_mut::<Option<Collection<T>>>()?;
+    let collection = out.insert(Collection::default());
+    Some(collection as &mut dyn Entries)
+}
+
+fn listed(table: &ModelTable) -> Result<&'static CollectionDesc, ModelError> {
+    table.collection().ok_or_else(crate::table::mismatch)
+}
+
+/// An item as [`store_in_order`] writes it, through its table.
+struct TableItem<'a> {
+    table: &'static ModelTable,
+    value: &'a dyn Any,
+}
+
+impl Stores for TableItem<'_> {
+    fn store_to(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        (self.table.ops.store)(self.table, self.value, doc, slot)
+    }
+}
+
+/// An item made from its JSON form, staged in an `Option` of its type.
+struct StagedItem {
+    table: &'static ModelTable,
+    staged: Box<dyn Any>,
+    unstage: crate::table::Unstage,
+}
+
+impl Stores for StagedItem {
+    fn store_to(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        let value = (self.unstage)(self.staged.as_ref()).ok_or_else(crate::table::mismatch)?;
+        (self.table.ops.store)(self.table, value, doc, slot)
+    }
+}
+
+/// Read a collection stored in the map `id` into `out`, a fresh one.
+fn load_into(
+    desc: &CollectionDesc,
+    doc: &Doc,
+    value: &Value<'_>,
+    id: &ObjId,
+    out: &mut dyn Entries,
+) -> Result<(), ModelError> {
+    let item = desc.item;
+    load_entries(doc, value, id, &mut |stored| {
+        let slot = stored.value;
+        out.push_filled((stored.id, Some(stored.key), false), &mut |into| {
+            crate::table::load_slot(item, doc, slot.as_ref().map(|(v, i)| (v, i)), into)
+                .located(VALUE)
+        })
+    })?;
+    // What was read is a membership of its own.
+    out.changed();
+    Ok(())
+}
+
+/// The functions of every [`Collection`], over its item type's table.
+pub static COLLECTION_OPS: ModelOps = ModelOps {
+    to_json: |table, value| {
+        let (Ok(desc), Some(entries)) = (
+            listed(table),
+            table.collection().and_then(|desc| (desc.entries)(value)),
+        ) else {
+            return serde_json::Value::Null;
+        };
+        let mut out = Vec::with_capacity(entries.count());
+        for at in 0..entries.count() {
+            if let (Some(id), Some(item)) = (entries.id_at(at), entries.item_at(at)) {
+                out.push(entry_json(id, (desc.item.ops.to_json)(desc.item, item)));
+            }
+        }
+        serde_json::Value::Array(out)
+    },
+    from_json: |table, value, out| {
+        let desc = listed(table)?;
+        let serde_json::Value::Array(items) = value else {
+            return Err(ModelError::shape("a list of items"));
+        };
+        let collection = (desc.fresh)(out).ok_or_else(crate::table::mismatch)?;
+        for (index, entry) in items.iter().enumerate() {
+            let (id, value) = entry_parts(index, entry)?;
+            let at = id.clone();
+            collection.push_filled((id, None, true), &mut |into| {
+                (desc.item.ops.from_json)(desc.item, value, into).located(at.as_str())
+            })?;
+        }
+        Ok(())
+    },
+    load: |table, doc, value, id, out| {
+        let desc = listed(table)?;
+        let collection = (desc.fresh)(out).ok_or_else(crate::table::mismatch)?;
+        load_into(desc, doc, value, id, collection)
+    },
+    missing: |table, out| {
+        let desc = listed(table)?;
+        (desc.fresh)(out).ok_or_else(crate::table::mismatch)?;
+        Ok(())
+    },
+    reload: |table, target, doc, slot| {
+        let desc = listed(table)?;
+        let mut staged = (desc.staged.0)();
+        match slot {
+            Some((value, id)) => (COLLECTION_OPS.load)(table, doc, value, id, staged.as_mut())?,
+            None => (COLLECTION_OPS.missing)(table, staged.as_mut())?,
+        }
+        (desc.replace)(target, staged.as_mut())
+    },
+    store: |table, value, doc, slot| {
+        let desc = listed(table)?;
+        let entries = (desc.entries)(value).ok_or_else(crate::table::mismatch)?;
+        let mut held: Vec<(&Id, TableItem<'_>)> = Vec::with_capacity(entries.count());
+        for at in 0..entries.count() {
+            if let (Some(id), Some(item)) = (entries.id_at(at), entries.item_at(at)) {
+                held.push((
+                    id,
+                    TableItem {
+                        table: desc.item,
+                        value: item,
+                    },
+                ));
+            }
+        }
+        let mut items: Vec<(&Id, &dyn Stores)> = Vec::with_capacity(held.len());
+        for (id, item) in &held {
+            items.push((*id, item as &dyn Stores));
+        }
+        store_in_order(doc, slot, &items)
+    },
+    stores_as: |table, value, before| {
+        let Some(desc) = table.collection() else {
+            return false;
+        };
+        let (Some(now), Some(was)) = ((desc.entries)(value), (desc.entries)(before)) else {
+            return false;
+        };
+        if now.count() != was.count() || !strictly_ordered_entries(was) {
+            return false;
+        }
+        for at in 0..now.count() {
+            match (
+                now.id_at(at),
+                was.id_at(at),
+                now.item_at(at),
+                was.item_at(at),
+            ) {
+                (Some(id), Some(was_id), Some(item), Some(was_item))
+                    if id == was_id && (desc.item.ops.stores_as)(desc.item, item, was_item) => {}
+                _ => return false,
+            }
+        }
+        true
+    },
+    store_changed: |table, value, before, doc, slot, dirty| {
+        let desc = listed(table)?;
+        let now = (desc.entries)(value).ok_or_else(crate::table::mismatch)?;
+        let was = (desc.entries)(before).ok_or_else(crate::table::mismatch)?;
+        let mut ids: Vec<&Id> = Vec::with_capacity(now.count());
+        for at in 0..now.count() {
+            if let Some(id) = now.id_at(at) {
+                ids.push(id);
+            }
+        }
+        let mut stored: Vec<(&Id, Option<&str>)> = Vec::with_capacity(was.count());
+        for at in 0..was.count() {
+            if let Some(id) = was.id_at(at) {
+                stored.push((id, was.order_at(at)));
+            }
+        }
+        let item = desc.item;
+        store_entries_changed(
+            doc,
+            slot,
+            &ids,
+            &stored,
+            dirty,
+            &EntryWrites {
+                same: &|at_now, at_was| match (now.item_at(at_now), was.item_at(at_was)) {
+                    (Some(now), Some(was)) => (item.ops.stores_as)(item, now, was),
+                    _ => false,
+                },
+                store: &|at_now, doc, slot| match now.item_at(at_now) {
+                    Some(value) => (item.ops.store)(item, value, doc, slot),
+                    None => Ok(()),
+                },
+                changed: &|at_now, at_was, doc, entry, dirty| match (
+                    now.item_at(at_now),
+                    was.item_at(at_was),
+                ) {
+                    (Some(value), Some(before)) => crate::table::write_key_changed(
+                        item,
+                        (value, before),
+                        doc,
+                        entry,
+                        VALUE,
+                        dirty,
+                    ),
+                    _ => Ok(()),
+                },
+                whole: &|doc, slot| (COLLECTION_OPS.store)(table, value, doc, slot),
+            },
+        )
+    },
+    refresh: |table, target, doc, value, id, delta| {
+        refresh_entries(listed(table)?, table, target, doc, (value, id), delta)
+    },
+    read_whole: |_, _, _| Ok(()),
+    edit: |table, doc, slot, path, op, cx| {
+        let desc = listed(table)?;
+        let item = desc.item;
         edit_entries(
             doc,
             slot,
@@ -1062,57 +1454,162 @@ impl<T: Model> Model for Collection<T> {
             op,
             cx,
             &EntryEdits {
-                item: &T::edit,
+                item: &|doc, slot, path, op, cx| (item.ops.edit)(item, doc, slot, path, op, cx),
                 parse: &|value| {
-                    let item = T::from_json(value)?;
-                    item.check().map_err(ModelError::refused)?;
-                    Ok((None, Box::new(item) as Box<dyn Stores + '_>))
+                    let mut staged = (desc.item_staged.0)();
+                    (item.ops.from_json)(item, value, staged.as_mut())?;
+                    let made =
+                        (desc.item_staged.1)(staged.as_ref()).ok_or_else(crate::table::mismatch)?;
+                    (item.ops.check)(item, made).map_err(ModelError::refused)?;
+                    Ok((
+                        None,
+                        Box::new(StagedItem {
+                            table: item,
+                            staged,
+                            unstage: desc.item_staged.1,
+                        }) as Box<dyn Stores + '_>,
+                    ))
                 },
-                whole: &edit_whole::<Self>,
+                whole: &|doc, slot, path, op| {
+                    let staged = ((desc.staged.0)(), desc.staged.1);
+                    crate::table::edit_whole(table, staged, false, doc, slot, path, op)
+                },
             },
         )
-    }
-
-    fn check(&self) -> Result<(), Refusal> {
-        if T::CHECKS {
-            self.values().try_for_each(Model::check)?;
-        }
-        Ok(())
-    }
-
-    fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any>
-    where
-        Self: 'static,
-    {
-        match path.split_first() {
-            None => Some(self),
-            Some((Segment::Item(id), rest)) => self.get(id)?.get_at(rest),
-            Some(_) => None,
-        }
-    }
-
-    #[inline(never)]
-    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
-        for (id, before) in self.iter() {
-            match after.get(id) {
-                Some(next) => {
-                    let mut at = path.to_vec();
-                    at.push(Segment::Item(id.clone()));
-                    before.diff(next, &at, out);
+    },
+    diff: |table, before, after, path, out| {
+        let Some(desc) = table.collection() else {
+            return;
+        };
+        let (Some(was), Some(now)) = ((desc.entries)(before), (desc.entries)(after)) else {
+            return;
+        };
+        diff_entries(desc.item, (was, now), path, out);
+    },
+    collect_text: |table, value, out| {
+        if let Some(desc) = table.collection()
+            && let Some(entries) = (desc.entries)(value)
+        {
+            for at in 0..entries.count() {
+                if let Some(item) = entries.item_at(at) {
+                    (desc.item.ops.collect_text)(desc.item, item, out);
                 }
-                None => out.push(crate::Edit::new(
-                    path.to_vec(),
-                    EditOp::RemoveItem { id: id.clone() },
-                )),
             }
         }
-        for index in 0..after.items.len() {
-            let Some(entry) = after.items.get(index) else {
-                continue;
-            };
-            let (id, next) = (&entry.id, &entry.item);
-            if self.contains(id) {
-                if self.position(id) != Some(index) {
+    },
+    check: |table, value| {
+        let Some(desc) = table.collection() else {
+            return Ok(());
+        };
+        if !desc.item.checks {
+            return Ok(());
+        }
+        if let Some(entries) = (desc.entries)(value) {
+            for at in 0..entries.count() {
+                if let Some(item) = entries.item_at(at) {
+                    (desc.item.ops.check)(desc.item, item)?;
+                }
+            }
+        }
+        Ok(())
+    },
+    get_at: |table, value, path| match path.split_first() {
+        None => Some(value),
+        Some((Segment::Item(id), rest)) => {
+            let desc = table.collection()?;
+            let entries = (desc.entries)(value)?;
+            let item = entries.item_at(entries.find(id)?)?;
+            (desc.item.ops.get_at)(desc.item, item, rest)
+        }
+        Some(_) => None,
+    },
+    op_coalesces: |table, path, previous, next| match path.split_first() {
+        Some((Segment::Item(_), rest)) if table.has_ops => {
+            let item = table.collection()?.item;
+            (item.ops.op_coalesces)(item, rest, previous, next)
+        }
+        _ => None,
+    },
+    op_continuable: |table, path, op| match path.split_first() {
+        Some((Segment::Item(_), rest)) if table.has_ops => {
+            let item = table.collection()?.item;
+            (item.ops.op_continuable)(item, rest, op)
+        }
+        _ => None,
+    },
+    op_describe: |table, path, op| match path.split_first() {
+        Some((Segment::Item(_), rest)) if table.has_ops => {
+            let item = table.collection()?.item;
+            (item.ops.op_describe)(item, rest, op)
+        }
+        _ => None,
+    },
+    op_lands: |table, value, path, op| match path.split_first() {
+        Some((Segment::Item(id), rest)) if table.has_ops => {
+            let desc = table.collection()?;
+            let entries = (desc.entries)(value)?;
+            let item = entries.item_at(entries.find(id)?)?;
+            (desc.item.ops.op_lands)(desc.item, item, rest, op)
+        }
+        _ => None,
+    },
+    op_schemas: |table, prefix, out| {
+        if table.has_ops
+            && let Some(desc) = table.collection()
+        {
+            (desc.item.ops.op_schemas)(desc.item, &format!("{prefix}*."), out);
+        }
+    },
+};
+
+/// Whether every entry has a stored order key, each above the one before:
+/// the keys a write keeps all of.
+fn strictly_ordered_entries(entries: &dyn Entries) -> bool {
+    let mut previous: Option<&str> = None;
+    for at in 0..entries.count() {
+        let Some(key) = entries.order_at(at) else {
+            return false;
+        };
+        if let Some(previous) = previous
+            && previous >= key
+        {
+            return false;
+        }
+        previous = Some(key);
+    }
+    true
+}
+
+/// The field edits that turn the entries `was` into `now` at `path`.
+fn diff_entries(
+    item: &ModelTable,
+    (was, now): (&dyn Entries, &dyn Entries),
+    path: &[Segment],
+    out: &mut Vec<crate::Edit<()>>,
+) {
+    for at in 0..was.count() {
+        let (Some(id), Some(before)) = (was.id_at(at), was.item_at(at)) else {
+            continue;
+        };
+        match now.find(id).and_then(|position| now.item_at(position)) {
+            Some(next) => {
+                let mut path = path.to_vec();
+                path.push(Segment::Item(id.clone()));
+                (item.ops.diff)(item, before, next, &path, out);
+            }
+            None => out.push(crate::Edit::new(
+                path.to_vec(),
+                EditOp::RemoveItem { id: id.clone() },
+            )),
+        }
+    }
+    for index in 0..now.count() {
+        let (Some(id), Some(next)) = (now.id_at(index), now.item_at(index)) else {
+            continue;
+        };
+        match was.find(id) {
+            Some(position) => {
+                if position != index {
                     out.push(crate::Edit::new(
                         path.to_vec(),
                         EditOp::MoveTo {
@@ -1121,197 +1618,90 @@ impl<T: Model> Model for Collection<T> {
                         },
                     ));
                 }
-            } else {
-                out.push(crate::Edit::new(
-                    path.to_vec(),
-                    EditOp::InsertItem {
-                        id: Some(id.clone()),
-                        at: index,
-                        value: next.to_json(),
-                    },
-                ));
+            }
+            None => out.push(crate::Edit::new(
+                path.to_vec(),
+                EditOp::InsertItem {
+                    id: Some(id.clone()),
+                    at: index,
+                    value: (item.ops.to_json)(item, next),
+                },
+            )),
+        }
+    }
+}
+
+/// [`Model::refresh`] of a collection: read anew when changed all over or
+/// edited in memory since it was read, else only the entries `delta`
+/// touched.
+fn refresh_entries(
+    desc: &CollectionDesc,
+    table: &ModelTable,
+    target: &mut dyn Any,
+    doc: &Doc,
+    (value, id): (&Value<'_>, &ObjId),
+    delta: &Delta,
+) -> Result<(), ModelError> {
+    let touched = delta.under(id);
+    let unkeyed = {
+        let entries = (desc.entries)(target).ok_or_else(crate::table::mismatch)?;
+        (0..entries.count()).any(|at| entries.order_at(at).is_none())
+    };
+    // A collection edited in memory since it was read no longer knows
+    // every stored order key; read it again rather than guess.
+    if touched.is_all() || unkeyed {
+        return (COLLECTION_OPS.reload)(table, target, doc, Some((value, id)));
+    }
+    let item = desc.item;
+    let entries = (desc.entries_mut)(target).ok_or_else(crate::table::mismatch)?;
+    let mut reorder = false;
+    for key in touched.keys() {
+        let item_id = Id(key.to_owned());
+        let position = entries.find(&item_id);
+        let below = touched.key(key) == Touch::Below && position.is_some();
+        match touched_entry(doc, id, key, delta, below)? {
+            Touched::Gone => {
+                if let Some(position) = position {
+                    entries.remove_at(position);
+                    entries.changed();
+                }
+            }
+            // Something inside an item already read: its order key, its value.
+            Touched::Below { entry, order } => {
+                if let Some(position) = position {
+                    if order.is_some() {
+                        entries.set_order(position, order);
+                        reorder = true;
+                    }
+                    if let Some(existing) = entries.item_at_mut(position) {
+                        crate::table::refresh_slot(item, existing, doc, &entry, VALUE, delta)
+                            .located(key)?;
+                    }
+                }
+            }
+            // A new item, or one whose entry was replaced.
+            Touched::Fresh { entry, order } => {
+                let slot = crate::model::get_slot(doc, &entry, VALUE).located(key)?;
+                let mut fill = |into: &mut dyn Any| {
+                    crate::table::load_slot(item, doc, slot.as_ref().map(|(v, i)| (v, i)), into)
+                        .located(VALUE)
+                        .located(key)
+                };
+                if let Some(position) = position {
+                    entries.replace_filled(position, Some(order), &mut fill)?;
+                } else {
+                    entries.push_filled((item_id, Some(order), false), &mut fill)?;
+                    entries.changed();
+                }
+                reorder = true;
             }
         }
     }
-
-    #[inline(never)]
-    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
-        let mut items = Vec::new();
-        load_entries(doc, value, id, &mut |stored| {
-            items.push(Entry {
-                item: crate::model::load_slot::<T>(doc, stored.value, VALUE)?,
-                id: stored.id,
-                key: Some(stored.key),
-            });
-            Ok(())
-        })?;
-        Ok(Self {
-            membership: Membership::fresh(),
-            items,
-            index: Index::default(),
-        })
+    // A moved order key or a new entry: sorting may move items.
+    if reorder {
+        entries.reorder();
     }
-
-    #[inline(never)]
-    fn refresh(
-        &mut self,
-        doc: &Doc,
-        value: &Value<'_>,
-        id: &ObjId,
-        delta: &Delta,
-    ) -> Result<(), ModelError> {
-        let touched = delta.under(id);
-        // A collection edited in memory since it was read no longer knows
-        // every stored order key; read it again rather than guess.
-        if touched.is_all() || self.any_unkeyed() {
-            *self = Self::load(doc, value, id)?;
-            return Ok(());
-        }
-        let mut reorder = false;
-        for key in touched.keys() {
-            let item_id = Id(key.to_owned());
-            let position = self.position(&item_id);
-            let below = touched.key(key) == Touch::Below && position.is_some();
-            match touched_entry(doc, id, key, delta, below)? {
-                Touched::Gone => {
-                    if let Some(position) = position {
-                        self.items.remove(position);
-                        self.index.reset();
-                        self.moved();
-                    }
-                }
-                // Something inside an item already read: its order key, its value.
-                Touched::Below { entry, order } => {
-                    if let Some(existing) =
-                        position.and_then(|position| self.items.get_mut(position))
-                    {
-                        if order.is_some() {
-                            existing.key = order;
-                            reorder = true;
-                        }
-                        refresh_key(&mut existing.item, doc, &entry, VALUE, delta).located(key)?;
-                    }
-                }
-                // A new item, or one whose entry was replaced.
-                Touched::Fresh { entry, order } => {
-                    let fresh = Entry {
-                        id: item_id,
-                        key: Some(order),
-                        item: read_key::<T>(doc, &entry, VALUE).located(key)?,
-                    };
-                    if let Some(existing) =
-                        position.and_then(|position| self.items.get_mut(position))
-                    {
-                        *existing = fresh;
-                    } else {
-                        self.items.push(fresh);
-                        self.index.reset();
-                        self.moved();
-                    }
-                    reorder = true;
-                }
-            }
-        }
-        // A moved order key or a new entry: sorting may move items.
-        if reorder {
-            self.reorder_by_keys();
-            self.index.reset();
-            self.moved();
-        }
-        Ok(())
-    }
-
-    fn missing() -> Result<Self, ModelError> {
-        Ok(Self::default())
-    }
-
-    #[inline(never)]
-    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        let mut items: Vec<(&Id, &dyn Stores)> = Vec::with_capacity(self.items.len());
-        for entry in &self.items {
-            items.push((&entry.id, &entry.item as &dyn Stores));
-        }
-        store_in_order(doc, slot, &items)
-    }
-
-    /// Equal ids in equal order, each item storing as before, over order
-    /// keys a write would keep.
-    #[inline(never)]
-    fn stores_as(&self, before: &Self) -> bool {
-        if self.items.len() != before.items.len() || !strictly_ordered(before) {
-            return false;
-        }
-        for at in 0..self.items.len() {
-            match (self.items.get(at), before.items.get(at)) {
-                (Some(entry), Some(was))
-                    if entry.id == was.id && entry.item.stores_as(&was.item) => {}
-                _ => return false,
-            }
-        }
-        true
-    }
-
-    /// What [`store`](Model::store) writes, from `before` (which knows every
-    /// stored entry and order key) instead of listing the stored entries:
-    /// only new, moved and changed items are visited, and an item someone
-    /// else touched (`dirty`) is written as `store` writes it.
-    #[inline(never)]
-    fn store_changed(
-        &self,
-        before: &Self,
-        doc: &mut Doc,
-        slot: Slot<'_>,
-        dirty: &Delta,
-    ) -> Result<(), ModelError> {
-        let mut ids: Vec<&Id> = Vec::with_capacity(self.items.len());
-        for entry in &self.items {
-            ids.push(&entry.id);
-        }
-        let mut stored: Vec<(&Id, Option<&str>)> = Vec::with_capacity(before.items.len());
-        for entry in &before.items {
-            stored.push((&entry.id, entry.key.as_deref()));
-        }
-        store_entries_changed(
-            doc,
-            slot,
-            &ids,
-            &stored,
-            dirty,
-            &EntryWrites {
-                same: &|now, was| {
-                    matches!(
-                        (self.items.get(now), before.items.get(was)),
-                        (Some(entry), Some(was)) if entry.item.stores_as(&was.item)
-                    )
-                },
-                store: &|now, doc, slot| match self.items.get(now) {
-                    Some(entry) => entry.item.store(doc, slot),
-                    None => Ok(()),
-                },
-                changed: &|now, was, doc, entry, dirty| match (
-                    self.items.get(now),
-                    before.items.get(was),
-                ) {
-                    (Some(entry_now), Some(entry_was)) => write_key_changed(
-                        doc,
-                        entry,
-                        VALUE,
-                        &entry_now.item,
-                        &entry_was.item,
-                        dirty,
-                    ),
-                    _ => Ok(()),
-                },
-                whole: &|doc, slot| self.store(doc, slot),
-            },
-        )
-    }
-
-    fn collect_text(&self, out: &mut Vec<String>) {
-        for item in self.values() {
-            item.collect_text(out);
-        }
-    }
+    Ok(())
 }
 
 #[cfg(test)]
