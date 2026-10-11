@@ -1173,6 +1173,23 @@ impl MainPanel {
         true
     }
 
+    /// Test hook: why a wheel over the body might not scroll it: the
+    /// offset and how far it can go, where the panel last saw the pointer
+    /// against the body's viewport, and what holds the input instead.
+    #[doc(hidden)]
+    pub fn scroll_state_for_test(&self) -> String {
+        format!(
+            "scroll_y={} max={} pointer={:?} viewport={:?} popup={} title_editing={} rect={:?}",
+            self.scroll_y,
+            self.scroll_metrics().max_scroll(),
+            self.last_pointer,
+            self.scroll_viewport(),
+            self.has_editor_popup(),
+            self.title_label.is_editing(),
+            self.rect,
+        )
+    }
+
     /// Test hook: the panel's current vertical scroll offset in px.
     /// Lets integration tests assert wheel scrolling + the
     /// `apply_layout` overflow clamp through the real event path.
