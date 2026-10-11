@@ -24,12 +24,91 @@ use crate::{
 };
 use vello_shaders::cpu::CpuBinding;
 
-#[cfg(not(target_arch = "wasm32"))]
 struct UninitialisedShader {
     wgsl: Cow<'static, str>,
     label: &'static str,
     entries: Vec<wgpu::BindGroupLayoutEntry>,
     shader_id: ShaderId,
+}
+
+/// What a compute pipeline is created from, created before the pipeline.
+struct ComputePipelineParts {
+    shader_module: wgpu::ShaderModule,
+    bind_group_layout: BindGroupLayout,
+    pipeline_layout: wgpu::PipelineLayout,
+    #[cfg(not(target_arch = "wasm32"))]
+    entries: Vec<wgpu::BindGroupLayoutEntry>,
+    #[cfg(not(target_arch = "wasm32"))]
+    source_len: usize,
+}
+
+impl ComputePipelineParts {
+    fn new(
+        device: &Device,
+        label: &str,
+        wgsl: Cow<'_, str>,
+        entries: Vec<wgpu::BindGroupLayoutEntry>,
+    ) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let source_len = wgsl.len();
+        // SAFETY: We only call this with trusted shaders (written by Vello developers)
+        let shader_module = unsafe {
+            device.create_shader_module_trusted(
+                wgpu::ShaderModuleDescriptor {
+                    label: Some(label),
+                    source: wgpu::ShaderSource::Wgsl(wgsl),
+                },
+                wgpu::ShaderRuntimeChecks::unchecked(),
+            )
+        };
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &entries,
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+        Self {
+            shader_module,
+            bind_group_layout,
+            pipeline_layout,
+            #[cfg(not(target_arch = "wasm32"))]
+            entries,
+            #[cfg(not(target_arch = "wasm32"))]
+            source_len,
+        }
+    }
+
+    fn descriptor<'a>(
+        &'a self,
+        label: &'a str,
+        cache: Option<&'a PipelineCache>,
+    ) -> wgpu::ComputePipelineDescriptor<'a> {
+        wgpu::ComputePipelineDescriptor {
+            label: Some(label),
+            layout: Some(&self.pipeline_layout),
+            module: &self.shader_module,
+            entry_point: None,
+            compilation_options: PipelineCompilationOptions {
+                zero_initialize_workgroup_memory: false,
+                ..Default::default()
+            },
+            cache,
+        }
+    }
+
+    fn into_shader(self, pipeline: ComputePipeline) -> WgpuShader {
+        WgpuShader {
+            pipeline: PipelineState::Compute(pipeline),
+            bind_group_layout: self.bind_group_layout,
+            #[cfg(not(target_arch = "wasm32"))]
+            entries: self.entries,
+            #[cfg(not(target_arch = "wasm32"))]
+            source_len: self.source_len,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -39,7 +118,9 @@ pub(crate) struct WgpuEngine {
     bind_map: BindMap,
     downloads: HashMap<ResourceId, Buffer>,
     bind_group_cache: HashMap<BindGroupKey, BindGroup>,
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Shaders registered but not yet compiled, while compilation is
+    /// deferred to [`Self::build_shaders_if_needed`] or
+    /// [`Self::build_shaders_async`].
     shaders_to_initialise: Option<Vec<UninitialisedShader>>,
     pub(crate) use_cpu: bool,
     /// Overrides from a specific `Image::data`'s [`id`](peniko::Blob::id) to a wgpu `Texture`.
@@ -1658,10 +1739,41 @@ impl WgpuEngine {
     /// Enable creating any remaining shaders in parallel
     #[cfg(not(target_arch = "wasm32"))]
     pub fn use_parallel_initialisation(&mut self) {
+        self.defer_shader_initialisation();
+    }
+
+    /// Register shaders without compiling them until a later build.
+    pub fn defer_shader_initialisation(&mut self) {
         if self.shaders_to_initialise.is_some() {
             return;
         }
         self.shaders_to_initialise = Some(Vec::new());
+    }
+
+    /// Compile every deferred shader through the device's asynchronous
+    /// pipeline creation (Tilo patch): every compile starts before the first
+    /// is awaited, so a WebGPU browser compiles them in parallel off its GPU
+    /// process's main thread. Elsewhere each is created synchronously.
+    pub async fn build_shaders_async(&mut self, device: &Device) {
+        let Some(new_shaders) = self.shaders_to_initialise.take() else {
+            return;
+        };
+        let pending = new_shaders
+            .into_iter()
+            .map(|it| {
+                let pipeline = Self::start_compute_pipeline(
+                    device,
+                    it.label,
+                    it.wgsl,
+                    it.entries,
+                    self.pipeline_cache.as_ref(),
+                );
+                (it.shader_id, pipeline)
+            })
+            .collect::<Vec<_>>();
+        for (id, pipeline) in pending {
+            self.shaders[id.0].wgpu = Some(pipeline.await);
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1810,7 +1922,6 @@ impl WgpuEngine {
         let entries = Self::create_bind_group_layout_entries(
             layout.iter().map(|b| (*b, wgpu::ShaderStages::COMPUTE)),
         );
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(uninit) = self.shaders_to_initialise.as_mut() {
             let id = add(Shader {
                 label,
@@ -3055,47 +3166,24 @@ impl WgpuEngine {
         entries: Vec<wgpu::BindGroupLayoutEntry>,
         cache: Option<&PipelineCache>,
     ) -> WgpuShader {
-        #[cfg(not(target_arch = "wasm32"))]
-        let source_len = wgsl.len();
-        // SAFETY: We only call this with trusted shaders (written by Vello developers)
-        let shader_module = unsafe {
-            device.create_shader_module_trusted(
-                wgpu::ShaderModuleDescriptor {
-                    label: Some(label),
-                    source: wgpu::ShaderSource::Wgsl(wgsl),
-                },
-                wgpu::ShaderRuntimeChecks::unchecked(),
-            )
-        };
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &entries,
-        });
-        let compute_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[Some(&bind_group_layout)],
-                immediate_size: 0,
-            });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(label),
-            layout: Some(&compute_pipeline_layout),
-            module: &shader_module,
-            entry_point: None,
-            compilation_options: PipelineCompilationOptions {
-                zero_initialize_workgroup_memory: false,
-                ..Default::default()
-            },
-            cache,
-        });
-        WgpuShader {
-            pipeline: PipelineState::Compute(pipeline),
-            bind_group_layout,
-            #[cfg(not(target_arch = "wasm32"))]
-            entries,
-            #[cfg(not(target_arch = "wasm32"))]
-            source_len,
-        }
+        let parts = ComputePipelineParts::new(device, label, wgsl, entries);
+        let pipeline = device.create_compute_pipeline(&parts.descriptor(label, cache));
+        parts.into_shader(pipeline)
+    }
+
+    /// [`Self::create_compute_pipeline`] through the device's asynchronous
+    /// pipeline creation. The compile starts now, before the future is
+    /// polled.
+    fn start_compute_pipeline(
+        device: &Device,
+        label: &str,
+        wgsl: Cow<'_, str>,
+        entries: Vec<wgpu::BindGroupLayoutEntry>,
+        cache: Option<&PipelineCache>,
+    ) -> impl Future<Output = WgpuShader> + 'static {
+        let parts = ComputePipelineParts::new(device, label, wgsl, entries);
+        let pipeline = device.create_compute_pipeline_async(&parts.descriptor(label, cache));
+        async move { parts.into_shader(pipeline.await) }
     }
 
     /// The compute shaders [`Self::dispatch_empty`] can run, largest source first, so that

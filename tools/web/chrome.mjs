@@ -184,6 +184,8 @@ export async function launch({args = []} = {}) {
   return {
     tab,
     send,
+    /** Observe every protocol event; returns the unsubscribe function. */
+    on: listener => { listeners.add(listener); return () => listeners.delete(listener); },
     close: async () => {
       const exited = child.exitCode === null
         ? new Promise(resolve => child.once('exit', resolve))
