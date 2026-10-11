@@ -4686,6 +4686,13 @@ mod morning_source_tests {
                         pane.focus_order().contains(&focus),
                         "command visible at {name}/{size}"
                     );
+                    if command == super::MorningCommand::Refresh {
+                        assert_eq!(
+                            pane.access_control(&focus).unwrap().description,
+                            t("activity-morning-refresh"),
+                            "an immediate refresh must not be described as an inert draft"
+                        );
+                    }
                     pane.keyboard_focus = Some(focus);
                     pane.activate_focus(&mut tree, None);
                 }
