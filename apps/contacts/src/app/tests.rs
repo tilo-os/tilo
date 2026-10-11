@@ -2048,7 +2048,9 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
                 );
                 assert!(
                     toast(&app).is_none(),
-                    "the toast auto-dismisses once its lifetime elapses"
+                    "the toast auto-dismisses once its lifetime elapses; first host wake {:?}, shared notice lifetime {:?}",
+                    deadline.duration_since(shown),
+                    ui::widget::toast::DEFAULT_TTL
                 );
             });
             // Allow the real host to finish any action animation; never force
