@@ -1023,6 +1023,13 @@ pub struct State {
     /// only as [`crate::compositor::pointer_lock`] allows.
     pub pointer_constraints_state: PointerConstraintsState,
     pub pointer_lock: crate::compositor::pointer_lock::PointerLock,
+    /// Where the seat's pointer is, kept here as well as in the seat. Smithay
+    /// holds the pointer's lock while it delivers a motion, and that delivery
+    /// calls [`SeatHandler::cursor_image`] when the focus leaves a client;
+    /// asking the seat for its location from there would wait on that same
+    /// lock forever. Written by [`State::move_seat_pointer`] before every
+    /// motion.
+    pointer_at: (f64, f64),
     /// `zwp_tablet_manager_v2`: pens with pressure and tilt.
     pub tablet_manager_state: TabletManagerState,
     pub tablet_clients: crate::compositor::tablet::TabletClients,
@@ -1696,6 +1703,7 @@ impl State {
             relative_pointer_state,
             pointer_constraints_state,
             pointer_lock: crate::compositor::pointer_lock::PointerLock::default(),
+            pointer_at: (0.0, 0.0),
             tablet_manager_state,
             tablet_clients: crate::compositor::tablet::TabletClients::default(),
             keyboard_shortcuts_inhibit_state,
@@ -2292,11 +2300,34 @@ impl State {
 
     /// The scale of the output under the pointer, which a client's cursor
     /// surface is drawn at.
+    ///
+    /// Read from [`Self::pointer_at`], never from the seat: this runs inside
+    /// smithay's pointer motion, which holds the seat pointer's lock.
     fn pointer_output_scale(&self) -> f64 {
-        self.seat.get_pointer().map_or(self.scale, |pointer| {
-            let location = pointer.current_location();
-            self.scale_for_origin((location.x, location.y))
-        })
+        self.scale_for_origin(self.pointer_at)
+    }
+
+    /// Move the seat's pointer to `location` over `focus`, which delivers
+    /// the enter, motion or leave to clients. The one way the seat pointer
+    /// is moved, so [`Self::pointer_at`] is current whatever that delivery
+    /// asks of the compositor.
+    pub(crate) fn move_seat_pointer(
+        &mut self,
+        pointer: &smithay::input::pointer::PointerHandle<Self>,
+        focus: Option<(WlSurface, smithay::utils::Point<f64, Logical>)>,
+        location: (f64, f64),
+        (serial, time): (Serial, u32),
+    ) {
+        self.pointer_at = location;
+        pointer.motion(
+            self,
+            focus,
+            &MotionEvent {
+                location: location.into(),
+                serial,
+                time,
+            },
+        );
     }
 
     /// The preferred scale for one client surface: its output's scale, or the session-wide value if not yet placed.
@@ -3708,15 +3739,7 @@ impl State {
         let Some(pointer) = self.seat.get_pointer() else {
             return false;
         };
-        pointer.motion(
-            self,
-            None,
-            &MotionEvent {
-                location: (x, y).into(),
-                serial,
-                time,
-            },
-        );
+        self.move_seat_pointer(&pointer, None, (x, y), (serial, time));
         pointer.frame(self);
         true
     }
@@ -3732,15 +3755,7 @@ impl State {
             return false;
         };
         let loc = pointer.current_location();
-        pointer.motion(
-            self,
-            None,
-            &MotionEvent {
-                location: (loc.x + dx, loc.y + dy).into(),
-                serial,
-                time,
-            },
-        );
+        self.move_seat_pointer(&pointer, None, (loc.x + dx, loc.y + dy), (serial, time));
         // Also surface the raw delta for clients consuming `wp_relative_pointer` (games, pointer-locked apps).
         pointer.relative_motion(
             self,
@@ -3926,15 +3941,7 @@ impl RemoteInputSink for State {
                                     (wl_surface, origin.into())
                                 })
                             });
-                    pointer.motion(
-                        self,
-                        focus,
-                        &MotionEvent {
-                            location: (x, y).into(),
-                            serial,
-                            time,
-                        },
-                    );
+                    self.move_seat_pointer(&pointer, focus, (x, y), (serial, time));
                     if let Some(pointer) = self.seat.get_pointer() {
                         pointer.frame(self);
                     }
@@ -4188,15 +4195,7 @@ impl State {
                     (wl_surface, origin.into())
                 })
             });
-        pointer.motion(
-            self,
-            focus,
-            &MotionEvent {
-                location: (x, y).into(),
-                serial,
-                time,
-            },
-        );
+        self.move_seat_pointer(&pointer, focus, (x, y), (serial, time));
         if let Some(pointer) = self.seat.get_pointer() {
             pointer.frame(self);
         }
