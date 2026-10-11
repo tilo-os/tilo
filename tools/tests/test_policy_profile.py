@@ -1,5 +1,6 @@
 """The diagnostic must preserve failures and discard arbitrary captured data."""
 import importlib.util
+import subprocess
 import json
 from pathlib import Path
 import sys
@@ -14,6 +15,33 @@ SPEC.loader.exec_module(profile)
 
 
 class PolicyProfileTests(unittest.TestCase):
+    def test_nested_profile_preserves_the_outer_profiler_and_real_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / profile.TARGETS['app-resource-action']
+            target.parent.mkdir(parents=True)
+            target.write_text('def work():\n    return 7\nraise SystemExit(work())\n')
+            code = """import cProfile, importlib.util, sys
++spec = importlib.util.spec_from_file_location('profile', sys.argv[1])
++module = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(module)
++from pathlib import Path
++outer = cProfile.Profile()
++outer.enable()
++try:
++    status, report = module.profile_target('app-resource-action', Path(sys.argv[2]))
++    assert status == 7 and report['status'] == 7
++    assert any(row['function'] == 'work' for row in report['functions'])
++    monitoring = getattr(sys, 'monitoring', None)
++    if monitoring is not None:
++        assert monitoring.get_tool(monitoring.PROFILER_ID) is not None
++finally:
++    outer.disable()
++""".replace('\n+', '\n')
+            result = subprocess.run([sys.executable, '-c', code, str(profile.__file__), str(root)],
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_failed_test_identifier_is_visible_without_private_failure_text(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
