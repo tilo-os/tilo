@@ -697,6 +697,38 @@ jobs:
           fi
           wait "$pid" || true
           rm -rf "$runtime"
+      # The runtime's link keeps only code that something exported reaches
+      # (tools/ci/runtime-dylib-lazy-link.py). An app that needed a symbol
+      # nothing else did would fail to load or draw, so every windowed app
+      # built in this run draws its first frame against this exact runtime,
+      # with every symbol bound at exec.
+      - name: Every app draws its first frame against the runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          libdir=$(rustc --print target-libdir)
+          driver=$(find /usr/share/vulkan/icd.d -name 'lvp_icd.*.json' -print -quit 2>/dev/null || true)
+          [[ -z $driver ]] || export VK_DRIVER_FILES=$driver WGPU_BACKEND=vulkan WGPU_ADAPTER_NAME=llvmpipe
+          export LD_LIBRARY_PATH="target/thin-app:$libdir" LD_BIND_NOW=1
+          runtime=$(mktemp -d)
+          chmod 700 "$runtime"
+          drawn=0 failed=()
+          for manifest in apps/*/tilo-app.toml examples/apps/*/tilo-app.toml; do
+            binary=$(sed -n 's/^bin  *= *"bin\/\([^"]*\)".*/\1/p' "$manifest" | head -1)
+            [[ -x target/thin-app/$binary ]] || continue
+            grep -Eq '^kind *= *"service"' "$manifest" && continue
+            shot="$runtime/$binary.png"
+            if XDG_RUNTIME_DIR=$runtime timeout 180 "target/thin-app/$binary" --shots="$shot" \
+                 >"$runtime/$binary.log" 2>&1 </dev/null && [[ -s $shot ]]; then
+              drawn=$((drawn + 1))
+            else
+              tail -20 "$runtime/$binary.log" >&2 || true
+              failed+=("$binary")
+            fi
+          done
+          printf '%s apps drew their first frame against the runtime\n' "$drawn" | tee -a "$GITHUB_STEP_SUMMARY"
+          rm -rf "$runtime"
+          (( ${#failed[@]} == 0 )) || { echo "no first frame from: ${failed[*]}" >&2; exit 1; }
       # A real media path through the runtime's lazily loaded GStreamer
       # (TIL-713): Video Player decodes its H.264 fixture into a capture, which
       # refuses to save without a decoded picture; the decoder (tilo-media) is
