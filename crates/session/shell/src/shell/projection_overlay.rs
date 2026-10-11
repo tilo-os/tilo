@@ -144,6 +144,16 @@ fn layout_for_wireless(mode: ProjectionMode) -> DisplayLayoutMode {
     }
 }
 
+/// A display change still waiting to be applied, kept or reverted.
+fn waiting(transaction: &DisplayTransaction) -> bool {
+    matches!(
+        transaction.state,
+        DisplayTransactionState::Requested
+            | DisplayTransactionState::AwaitingConfirmation
+            | DisplayTransactionState::ConfirmRequested
+    )
+}
+
 /// Attached displays, the committed layout and the transaction this
 /// session staged, as the compositor published them.
 #[derive(Default)]
@@ -155,6 +165,9 @@ pub(crate) struct DisplayLayouts {
     /// Id of the transaction this sheet staged, so an old rejection left in
     /// settings is never reported as the answer to a new choice.
     staged: Option<u64>,
+    /// Id of the change an action opened the sheet for, once it was first
+    /// read for [`Self::settled`].
+    followed: Option<u64>,
     notice: Option<String>,
     answer: Option<crate::shell::display_persistence::PendingAnswer>,
     staging: Option<crate::shell::display_persistence::PendingLayout>,
@@ -296,14 +309,31 @@ impl DisplayLayouts {
 
     /// The staged transaction while it still waits for Keep or Revert.
     fn pending(&self) -> Option<&DisplayTransaction> {
-        self.transaction.as_ref().filter(|transaction| {
-            matches!(
-                transaction.state,
-                DisplayTransactionState::Requested
-                    | DisplayTransactionState::AwaitingConfirmation
-                    | DisplayTransactionState::ConfirmRequested
-            )
-        })
+        self.transaction
+            .as_ref()
+            .filter(|transaction| waiting(transaction))
+    }
+
+    /// Whether display change `id` is over: kept, reverted, refused, or
+    /// replaced by another. Storage is re-read at most every
+    /// [`DISPLAY_POLL`], and at once when a new change is first followed.
+    fn settled(&mut self, id: u64, now: Instant) -> bool {
+        if self.followed != Some(id) {
+            self.followed = Some(id);
+            self.polled_at = None;
+        }
+        self.poll(now);
+        self.read_as_settled(id)
+    }
+
+    /// Whether `id` is settled as last read, or not read since it was
+    /// first followed. Never reads storage.
+    fn read_as_settled(&self, id: u64) -> bool {
+        self.followed != Some(id)
+            || self
+                .transaction
+                .as_ref()
+                .is_none_or(|transaction| transaction.id != id || !waiting(transaction))
     }
 
     fn effective(&self) -> &DisplayConfig {
@@ -558,6 +588,12 @@ impl ProjectionOverlay {
         self.displays.poll_completions(Instant::now())
     }
 
+    /// Whether the display change an action opened this sheet for, `id`,
+    /// has settled, so the sheet that only showed it can close.
+    pub(crate) fn followed_change_settled(&mut self, id: u64, now: Instant) -> bool {
+        self.displays.settled(id, now)
+    }
+
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
         self.transition.is_animating(now)
             || matches!(
@@ -568,6 +604,24 @@ impl ProjectionOverlay {
                 self.remote_scroll.needs_animation_frame(theme)))
             // The Keep/Revert countdown ticks while the sheet is open.
             || (self.was_open && self.displays.pending().is_some())
+            // The change an action opened the sheet for read as settled: one
+            // more host update closes the sheet.
+            || self.followed_change_read_as_settled()
+    }
+
+    fn followed_change_read_as_settled(&self) -> bool {
+        let Some(state) = self
+            .authority
+            .as_ref()
+            .and_then(|chrome| chrome.try_borrow().ok())
+        else {
+            return false;
+        };
+        let crate::shell::chrome_state::ProjectionFollow::Transaction(id) = state.projection_follow
+        else {
+            return false;
+        };
+        state.overlays.projection && self.displays.read_as_settled(id)
     }
 
     /// The layout the sheet highlights as current: the physical layout when
