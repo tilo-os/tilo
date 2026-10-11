@@ -13,6 +13,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::pointer_replay::{HeldPress, PressAt, Release};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 
 /// Hover, press and focus of one pressable surface. Faces take this so an
@@ -117,7 +118,11 @@ pub(crate) struct Activation {
     action: Option<ActionEmitter<()>>,
     on_activate: Option<Box<dyn FnMut()>>,
     native: Option<NativeControl>,
+    /// What the surface shows. `state.pressed` mirrors `held`, which is
+    /// the press itself: [`Self::press`], [`Self::release`] and
+    /// [`Self::cancel_press`] keep the two in step.
     pub(crate) state: Interaction,
+    held: HeldPress,
     cursor: Point,
 }
 
@@ -238,7 +243,7 @@ impl Activation {
             }
             WindowEvent::CursorLeft { .. } => {
                 self.state.hovered = false;
-                self.state.pressed = false;
+                self.cancel_press();
             }
             WindowEvent::MouseInput {
                 state,
@@ -249,23 +254,47 @@ impl Activation {
                     && !exclude.iter().any(|inner| inner.contains(self.cursor));
                 match state {
                     ElementState::Pressed if inside => {
-                        self.state.pressed = true;
+                        self.press(rect);
                         *ctx.focus_target = Some(ctx.node_id);
                         *ctx.handled = true;
                     }
-                    ElementState::Released if self.state.pressed => {
-                        self.state.pressed = false;
-                        *ctx.handled = true;
-                        if inside {
+                    ElementState::Released => {
+                        let release = self.release(rect, inside);
+                        *ctx.handled |= release.ended();
+                        if release == Release::Click(()) {
                             self.activate();
                         }
                     }
-                    _ => {}
+                    ElementState::Pressed => {}
                 }
             }
             _ => {}
         }
         before != self.state
+    }
+
+    /// A press landed on the surface at `rect`.
+    pub(crate) fn press(&mut self, rect: Rect) {
+        self.held.press(PressAt::one(&self.id, rect));
+        self.state.pressed = true;
+    }
+
+    /// A left-button release, `over` the surface at `rect` or not: the
+    /// press this surface took, or the one a surface it replaced took at
+    /// this place, ends. Does not activate.
+    pub(crate) fn release(&mut self, rect: Rect, over: bool) -> Release {
+        let release = self
+            .held
+            .release(over.then_some(PressAt::one(&self.id, rect)));
+        self.state.pressed = false;
+        release
+    }
+
+    /// Forget the press without a click (the pointer left, a control
+    /// inside took the gesture).
+    pub(crate) fn cancel_press(&mut self) {
+        self.held.cancel();
+        self.state.pressed = false;
     }
 
     pub(crate) fn install_custody(
@@ -339,6 +368,8 @@ pub struct PaintedTargets {
     targets: Vec<PaintedTarget>,
     hovered: Option<String>,
     pressed: Option<String>,
+    /// `pressed`, as a host rebuilt in this one's place sees it.
+    carried: HeldPress,
     armed_rect: Option<Rect>,
     cancelled_release_pending: bool,
     focused: Option<String>,
@@ -446,6 +477,7 @@ impl PaintedTargets {
     /// Cancel the gesture while retaining ownership of its eventual release.
     pub fn cancel_pointer_press(&mut self) {
         self.cancelled_release_pending |= self.pressed.take().is_some();
+        self.carried.cancel();
         self.armed_rect = None;
     }
 
@@ -503,6 +535,7 @@ impl PaintedTargets {
                 // A fresh press starts a new gesture even outside our targets:
                 // an absent old release must not capture the new click.
                 self.pressed = None;
+                self.carried = HeldPress::default();
                 self.armed_rect = None;
                 self.cancelled_release_pending = false;
                 if let Some(id) = under.filter(|id| !self.interaction(id).disabled) {
@@ -512,6 +545,9 @@ impl PaintedTargets {
                         .iter()
                         .find(|target| target.id == id)
                         .map(|target| target.rect);
+                    if let Some(rect) = self.armed_rect {
+                        self.carried.press(PressAt::one(&id, rect));
+                    }
                     self.cancelled_release_pending = false;
                     self.pressed = Some(id);
                     *handled = true;
@@ -520,12 +556,31 @@ impl PaintedTargets {
             ElementState::Released => {
                 self.armed_rect = None;
                 if std::mem::take(&mut self.cancelled_release_pending) {
+                    self.carried.cancel();
                     *handled = true;
                 } else if let Some(pressed) = self.pressed.take() {
+                    self.carried.cancel();
                     *handled = true;
                     if under.as_deref() == Some(pressed.as_str()) {
                         self.activate(&pressed);
                     }
+                } else if let Some(target) = self
+                    .targets
+                    .iter()
+                    .rev()
+                    .find(|target| target.rect.contains(self.cursor))
+                    .filter(|target| !target.disabled)
+                    // A host rebuilt while the button was held: the target
+                    // pressed in its predecessor, at the same place,
+                    // completes here.
+                    && self
+                        .carried
+                        .release(Some(PressAt::one(&target.id, target.rect)))
+                        == Release::Click(())
+                {
+                    let id = target.id.clone();
+                    *handled = true;
+                    self.activate(&id);
                 }
             }
         }
