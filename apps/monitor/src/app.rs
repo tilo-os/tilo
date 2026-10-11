@@ -30,7 +30,7 @@ use ui::theme::Theme;
 use ui::tilo_actions::ActionAddress;
 use ui::time::{Duration, Instant};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     AppModel, Button, ButtonRole, ControlSize, Element, InspectorPlacement, ModelPath, NavShell,
@@ -123,9 +123,6 @@ impl SortKey {
 
 /// The header's cadence button, by its test id.
 const CADENCE_BUTTON_ID: &str = "monitor.cadence";
-
-/// How long the "PID copied" toast stays up after a Copy PID action.
-const TOAST_MS: u64 = 2200;
 
 /// A process table can contain thousands of kernel entries. Keep the
 /// contextual resource projection small; exact process resources remain
@@ -290,9 +287,6 @@ pub struct MonitorApp {
     context: ContextMenu,
     context_pid: Option<u32>,
     context_choices: Vec<Option<MenuChoice>>,
-    /// The pid most recently copied, for the transient toast.
-    copied_pid: Option<u32>,
-    copied_at: Option<Instant>,
 
     // ---- sampling ----
     last_refresh: Instant,
@@ -407,8 +401,6 @@ impl MonitorApp {
             context: ContextMenu::new(),
             context_pid: None,
             context_choices: Vec::new(),
-            copied_pid: None,
-            copied_at: None,
             last_refresh,
             sample_only: false,
             rect: Rect::ZERO,
@@ -975,15 +967,10 @@ impl MonitorApp {
     /// the current process resource and its availability contract.
     fn copy_pid(&mut self, pid: u32) {
         ui::clipboard_copy(&pid.to_string());
-        self.copied_pid = Some(pid);
-        self.copied_at = Some(ui::time::now());
+        self.shell
+            .toast(format!("Copied PID {pid}"), ToastKind::Success);
         self.selected_pid = Some(pid);
         self.stale = true;
-    }
-
-    fn copy_toast_active(&self) -> bool {
-        self.copied_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(TOAST_MS))
     }
 
     // ---- the cadence menu -------------------------------------------------
@@ -1552,20 +1539,6 @@ impl Widget for MonitorApp {
             self.context
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        if self.copy_toast_active()
-            && let Some(pid) = self.copied_pid
-        {
-            let label = format!("Copied PID {pid}");
-            paint_transient(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                self.rect,
-                ToastAnchor::BottomCenter,
-                &ToastCard::new(&label, ToastKind::Success),
-            );
-        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1650,7 +1623,7 @@ impl Widget for MonitorApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.copy_toast_active() || self.shell.needs_animation_frame()
+        self.shell.needs_animation_frame()
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -1662,15 +1635,6 @@ impl Widget for MonitorApp {
             consider(
                 self.last_refresh
                     .checked_add(Duration::from_millis(self.prefs.interval_ms))
-                    .unwrap_or_else(Instant::now),
-            );
-        }
-        if let Some(copied_at) = self.copied_at
-            && self.copy_toast_active()
-        {
-            consider(
-                copied_at
-                    .checked_add(Duration::from_millis(TOAST_MS))
                     .unwrap_or_else(Instant::now),
             );
         }
@@ -2107,7 +2071,7 @@ mod tests {
             assert!(a.model.processes.iter().any(|p| p.pid == process.pid));
         }
 
-        // Phase `copy_pid_records_the_copy_and_its_toast_expires`.
+        // Phase `copy_pid_selects_the_process_and_shows_a_toast`.
         {
             let mut a = app();
             let process = a.model.processes[3].clone();
@@ -2115,10 +2079,9 @@ mod tests {
                 process: process_resource_id(process.pid, process.started_at),
             })
             .unwrap();
-            assert_eq!(a.copied_pid, Some(process.pid));
-            assert!(a.copy_toast_active());
-            a.copied_at = ui::time::now().checked_sub(Duration::from_millis(TOAST_MS + 100));
-            assert!(!a.copy_toast_active());
+            assert_eq!(a.selected_pid, Some(process.pid));
+            let copied = format!("Copied PID {}", process.pid);
+            assert_eq!(a.shell.toast_text(), Some(copied.as_str()));
         }
 
         // Phase `inspect_selects_the_process_and_an_unknown_tab_is_refused`.

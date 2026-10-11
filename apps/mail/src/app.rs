@@ -14,8 +14,8 @@
 //! reach past their own column.
 //!
 //! On top of the shell the app layers the transient overlays it owns directly:
-//! the movable [`ComposeWindow`], the row context menu, the account-setup
-//! sheet, and a status toast.
+//! the movable [`ComposeWindow`], the row context menu and the account-setup
+//! sheet. Status messages show as the shell's toast.
 //!
 //! A live window loads the [`AccountStore`] of its host's profile and drives
 //! the account [`crate::engine`] worker (IMAP fetch / SMTP submit). It does
@@ -48,7 +48,7 @@ use ui::presence::PresenceCtx;
 use ui::search::{ScopeDecl, SearchOpener, SearchRequest};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::ToastKind;
 use ui::widget::{
     Button, ContextMenu, EmptyState, MenuItem, ModalDialog, NavPane, NavShell, SidebarPlacement,
     TaffyTreeExt, Text, Widget,
@@ -78,9 +78,6 @@ use crate::util::format_absolute;
 /// use. Checked each active frame; a manual refresh (the `r` shortcut) forces
 /// one immediately regardless.
 const AUTO_REFRESH_MIN: i64 = 5;
-/// How long a status toast ("Synced N messages", "Account saved", …) stays on
-/// screen before it fades out on its own, like any normal transient toast.
-const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(3500);
 /// A loaded mail body can be huge, but Mail refuses to turn a resource action
 /// into an unbounded filesystem write. Larger attachments can be downloaded
 /// through Files after Mail exposes a proper streamed handoff.
@@ -365,14 +362,6 @@ pub struct MailApp {
     /// fires at most once per [`AUTO_REFRESH_MIN`] while the app is in use.
     last_auto_refresh_min: i64,
 
-    /// The status text currently being shown as a toast, and the instant it
-    /// should auto-dismiss. Any code path may set `shared.status`; the app
-    /// notices the change each frame, (re)arms the deadline, and clears the
-    /// status once [`TOAST_TTL`] elapses — so a "Synced N messages" toast fades
-    /// on its own instead of lingering forever.
-    toast_text: Option<String>,
-    toast_deadline: Option<ui::time::Instant>,
-
     rect: Rect,
     /// The host theme captured during layout, for the overlays laid out
     /// outside the taffy tree.
@@ -552,8 +541,6 @@ impl MailApp {
             reveals: Vec::new(),
             effect_replies: Vec::new(),
             last_auto_refresh_min: 0,
-            toast_text: None,
-            toast_deadline: None,
             rect: Rect::ZERO,
             layout_theme: Theme::dark(),
             first_layout: true,
@@ -2109,31 +2096,34 @@ impl MailApp {
 
     // ---- transient status toast ------------------------------------------
 
-    /// Notice a newly-set status toast, arm its dismiss deadline, and clear the
-    /// status once the deadline passes. Parameterised on `now` so the timing is
-    /// unit-testable without a real sleep.
-    fn expire_toast_at(&mut self, now: ui::time::Instant) {
-        let current = self.shared.borrow().status.clone();
-        if current != self.toast_text {
-            // The status changed (or was cleared): (re)arm the timer.
-            self.toast_text.clone_from(&current);
-            self.toast_deadline = current.as_ref().map(|_| now + TOAST_TTL);
-        }
-        if let Some(deadline) = self.toast_deadline
-            && now >= deadline
-        {
-            let mut st = self.shared.borrow_mut();
-            st.status = None;
-            st.dirty = true;
-            self.toast_text = None;
-            self.toast_deadline = None;
-        }
+    /// Hand a newly-set status to the shell, which shows it as a toast and
+    /// lets it fade on its own.
+    fn show_status(&mut self) {
+        let Some(msg) = self.shared.borrow_mut().status.take() else {
+            return;
+        };
+        let kind = Self::status_kind(&msg);
+        self.nav.toast(msg, kind);
     }
 
-    /// Whether a toast is currently on screen and still counting down — used to
-    /// keep the frame pump alive so the auto-dismiss fires even with no input.
-    fn toast_pending(&self) -> bool {
-        self.toast_deadline.is_some()
+    fn status_kind(msg: &str) -> ToastKind {
+        let lower = msg.to_ascii_lowercase();
+        if lower.contains("failed")
+            || lower.contains("couldn’t")
+            || lower.contains("couldn't")
+            || lower.contains("error")
+        {
+            ToastKind::Error
+        } else if lower.contains("offline") || lower.contains("isn't available") {
+            ToastKind::Warning
+        } else if lower.contains("sync")
+            || lower.contains("connecting")
+            || lower.contains("opening")
+        {
+            ToastKind::Info
+        } else {
+            ToastKind::Success
+        }
     }
 
     // ---- engine drain -----------------------------------------------------
@@ -2736,39 +2726,6 @@ impl MailApp {
                 .map(crate::actions::message_row)
                 .collect(),
         ))
-    }
-
-    // ---- drawing the app-owned overlays ----------------------------------
-
-    fn draw_status(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let st = self.shared.borrow();
-        let Some(msg) = &st.status else { return };
-        let lower = msg.to_ascii_lowercase();
-        let kind = if lower.contains("failed")
-            || lower.contains("couldn’t")
-            || lower.contains("couldn't")
-            || lower.contains("error")
-        {
-            ToastKind::Error
-        } else if lower.contains("offline") || lower.contains("isn't available") {
-            ToastKind::Warning
-        } else if lower.contains("sync")
-            || lower.contains("connecting")
-            || lower.contains("opening")
-        {
-            ToastKind::Info
-        } else {
-            ToastKind::Success
-        };
-        paint_transient(
-            scene,
-            t,
-            tr,
-            theme,
-            self.rect,
-            ToastAnchor::BottomRight,
-            &ToastCard::new(msg, kind),
-        );
     }
 
     // ---- test / probe accessors ------------------------------------------
@@ -3397,8 +3354,7 @@ impl Widget for MailApp {
         // before the chosen file is actually written.
         self.drain_compose_attachment();
         self.compose.sync(state, path);
-        // Fade out a transient status toast once its lifetime elapses.
-        self.expire_toast_at(ui::time::now());
+        self.show_status();
 
         let mem_seeded = self.shared.borrow().seeded;
         if !mem_seeded {
@@ -3577,8 +3533,7 @@ impl Widget for MailApp {
 
     /// The window's top layer: the shell's own floating parts and the
     /// confirmation dialog, then the composer, the account sheet, the row
-    /// menu, the status toast and the shortcut list, over the window's
-    /// chrome.
+    /// menu and the shortcut list, over the window's chrome.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -3605,7 +3560,6 @@ impl Widget for MailApp {
         if self.menu.is_open() {
             self.menu.draw_overlay(scene, t, tr, theme, presence);
         }
-        self.draw_status(scene, t, tr, theme);
         self.shortcuts.draw(scene, t, tr, theme);
     }
 
@@ -3774,10 +3728,10 @@ impl Widget for MailApp {
                     .with_state(AccessState::new().busy(true)),
             );
         }
-        if let Some(status) = &st.status {
+        if let Some(status) = self.nav.toast_text() {
             children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name(status.clone())
+                    .with_name(status.to_owned())
                     .with_live(Politeness::Polite),
             );
         }
@@ -3896,23 +3850,25 @@ impl Widget for MailApp {
             self.background_poll_deadline.set(Some(deadline));
             deadline
         });
-        background.into_iter().chain(self.toast_deadline).min()
+        background
+            .into_iter()
+            .chain(self.nav.next_wake_deadline())
+            .min()
     }
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the event loop pumping frames while a worker request is in
         // flight so its result (a fetched batch, a send ack, an error) drains
-        // and surfaces promptly instead of waiting for unrelated input, and
-        // while a toast is counting down so it fades on time. Drops back to
-        // idle the moment the reply settles and the toast clears.
-        self.awaiting_engine || self.toast_pending() || self.nav.needs_animation_frame()
+        // and surfaces promptly instead of waiting for unrelated input. Drops
+        // back to idle the moment the reply settles.
+        self.awaiting_engine || self.nav.needs_animation_frame()
     }
 
     fn needs_idle_sync(&self) -> bool {
-        // Keep syncing while a connect/fetch reply is outstanding or a toast is
-        // still on screen (so `sync` can expire it), then idle rather than
-        // busy-loop once results have arrived and the toast has cleared.
-        self.awaiting_engine || self.toast_pending() || self.nav.needs_idle_sync()
+        // Keep syncing while a connect/fetch reply is outstanding or a status
+        // waits for `sync` to show it, then idle rather than busy-loop once
+        // results have arrived.
+        self.awaiting_engine || self.shared.borrow().status.is_some() || self.nav.needs_idle_sync()
     }
 
     fn mark_drawn(&mut self) {
@@ -6204,9 +6160,8 @@ mod tests {
                 app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
                 app.sync(&doc, &automerge::ROOT);
                 assert!(app.compose_attachment_rx.is_none());
-                assert_eq!(app.shared.borrow().status.as_deref(), Some(expected));
-                assert_eq!(app.next_wake_deadline(), app.toast_deadline);
-                app.expire_toast_at(app.toast_deadline.unwrap());
+                assert_eq!(app.nav.toast_text(), Some(expected));
+                app.nav.dismiss_toast();
                 assert!(app.next_wake_deadline().is_none());
             }
         }
@@ -6499,7 +6454,10 @@ mod tests {
             fixture.drain();
             assert!(fixture.app.pending_send.is_empty());
             assert!(!fixture.app.awaiting_engine);
-            assert_eq!(fixture.app.next_wake_deadline(), fixture.app.toast_deadline);
+            assert_eq!(
+                fixture.app.next_wake_deadline(),
+                fixture.app.nav.next_wake_deadline()
+            );
         }
 
         // Phase `completed_refresh_cannot_be_replaced_before_its_owner_polls`.
@@ -6799,31 +6757,16 @@ mod tests {
             );
         }
 
-        // Phase `status_toast_auto_dismisses_after_its_lifetime`.
+        // Phase `status_shows_as_the_shell_toast`.
         {
-            // A "Synced N messages" toast must fade on its own, not linger forever.
             let (mut app, _doc) = app();
-            let t0 = ui::time::now();
             app.shared.borrow_mut().status = Some("Synced 3 messages".into());
-            app.expire_toast_at(t0); // first observation arms the deadline
-            assert!(
-                app.shared.borrow().status.is_some(),
-                "toast shows immediately"
-            );
-            assert!(app.toast_pending(), "a dismiss deadline is armed");
-            assert_eq!(app.next_wake_deadline(), Some(t0 + TOAST_TTL));
-            app.expire_toast_at(t0 + std::time::Duration::from_secs(1));
-            assert!(
-                app.shared.borrow().status.is_some(),
-                "still visible within its lifetime"
-            );
-            app.expire_toast_at(t0 + std::time::Duration::from_secs(5));
+            app.show_status();
+            assert_eq!(app.nav.toast_text(), Some("Synced 3 messages"));
             assert!(
                 app.shared.borrow().status.is_none(),
-                "toast auto-dismissed past its deadline"
+                "the shell owns it now"
             );
-            assert!(!app.toast_pending(), "the deadline cleared once dismissed");
-            assert!(app.next_wake_deadline().is_none());
         }
     }
 
@@ -7365,7 +7308,7 @@ mod tests {
             app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.shared.borrow().accounts.accounts.len(), accounts_before);
             assert!(app.setup_validation.is_none());
-            assert_eq!(app.next_wake_deadline(), app.toast_deadline);
+            assert_eq!(app.next_wake_deadline(), app.nav.next_wake_deadline());
         }
 
         // Phase `edited_setup_cannot_persist_an_earlier_successful_verification`.
@@ -7579,7 +7522,7 @@ mod tests {
             assert_eq!(app.setup_value(3), "user-entered-secret");
             assert_eq!(app.setup_value(6), discovered.smtp_host);
             assert!(app.setup_discovery.is_none());
-            assert_eq!(app.next_wake_deadline(), app.toast_deadline);
+            assert_eq!(app.next_wake_deadline(), app.nav.next_wake_deadline());
         }
 
         // Phase `discovery_for_a_previous_address_cannot_fill_the_current_sheet`.

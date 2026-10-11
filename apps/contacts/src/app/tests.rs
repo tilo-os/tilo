@@ -15,6 +15,7 @@ use taffy::{AvailableSpace, Dimension, Size, Style};
 use tilo_automerge::ApplyIncoming;
 use ui::a11y::{AccessNode, Role};
 use ui::permissions::PermissionContext;
+use ui::time::Duration;
 use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 use vello::kurbo::Point;
 
@@ -262,20 +263,17 @@ fn named(harness: &Live, name: &str) -> bool {
     contains(&**harness, name)
 }
 
-fn live_message<'a>(
-    node: &'a ui::a11y::AccessNode,
-    message: &str,
-) -> Option<&'a ui::a11y::AccessNode> {
-    if node.name.as_deref() == Some(message) && node.live.is_some() {
-        return Some(node);
-    }
-    node.children
-        .iter()
-        .find_map(|child| live_message(child, message))
+fn announced(app: &ContactsApp, message: &str) -> bool {
+    let node = app
+        .shell
+        .children()
+        .last()
+        .and_then(|child| child.accessibility());
+    node.is_some_and(|node| node.live.is_some() && node.value.as_deref() == Some(message))
 }
 
 fn toast(app: &ContactsApp) -> Option<&str> {
-    app.toast.as_ref().map(|(message, _)| message.as_str())
+    app.shell.toast_text()
 }
 
 /// The window is the shell: groups beside the people beside the person,
@@ -1097,15 +1095,10 @@ fn saves_persist_and_refusals_never_claim_success() {
             app.store.get(contact.id).is_none(),
             "the store follows the document"
         );
-        let message = app
-            .toast
-            .as_ref()
-            .map(|(message, _)| message.clone())
-            .unwrap();
+        let message = toast(&app).unwrap().to_owned();
         assert!(message.starts_with("Couldn't save contact:"), "{message}");
-        let tree = app.accessibility().unwrap();
         assert!(
-            live_message(&tree, &message).is_some(),
+            announced(&app, &message),
             "the refusal is announced through the retained live region"
         );
     }
@@ -1140,13 +1133,13 @@ fn saves_persist_and_refusals_never_claim_success() {
             app.store.get(contact.id).is_none(),
             "favorite refusal reconciles"
         );
-        let favorite_error = app.toast.as_ref().unwrap().0.clone();
+        let favorite_error = toast(&app).unwrap().to_owned();
         assert!(
             favorite_error.starts_with("Couldn't change the address book:"),
             "{favorite_error}"
         );
         assert!(
-            live_message(&app.accessibility().unwrap(), &favorite_error).is_some(),
+            announced(&app, &favorite_error),
             "the favorite refusal is announced"
         );
 
@@ -1161,11 +1154,11 @@ fn saves_persist_and_refusals_never_claim_success() {
             app.store.get(contact.id).is_none(),
             "delete refusal reconciles"
         );
-        let delete_error = app.toast.as_ref().unwrap().0.clone();
+        let delete_error = toast(&app).unwrap().to_owned();
         assert!(delete_error.starts_with("Couldn't change the address book:"));
         assert_ne!(delete_error, "Contact deleted", "no false success toast");
         assert!(
-            live_message(&app.accessibility().unwrap(), &delete_error).is_some(),
+            announced(&app, &delete_error),
             "the delete refusal is announced"
         );
     }
@@ -1183,7 +1176,7 @@ fn saves_persist_and_refusals_never_claim_success() {
         app.settle();
         assert_eq!(app.mode, Mode::Edit, "the draft stays open");
         assert!(app.book().is_empty(), "nothing reached the document");
-        let message = app.toast.as_ref().unwrap().0.clone();
+        let message = toast(&app).unwrap().to_owned();
         assert!(message.starts_with("Couldn't save contact:"), "{message}");
     }
 }
@@ -1949,7 +1942,7 @@ fn delete_confirmation_dispatches_the_palette_action() {
     }
 }
 
-/// Favourite toggles dispatch the palette action, palette actions reconcile on sync, the detail star toggles store and doc and a toast dismisses.
+/// Favourite toggles dispatch the palette action, palette actions reconcile on sync and the detail star toggles store and doc.
 #[allow(
     clippy::too_many_lines,
     reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
@@ -2031,56 +2024,6 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
             h.doc_contact(id).unwrap().favorite,
             !before,
             "and persists to the doc"
-        );
-    }
-
-    // --- phase: toast_auto_dismisses_after_a_real_action ---
-    {
-        // After Save/Delete/Import/Export the confirmation toast used to stay
-        // forever: it stored an Instant nothing ever read. Drive a real action
-        // (delete) so the production `show_toast` fires, then prove the frame
-        // loop keeps itself awake and clears the toast once its lifetime
-        // elapses, and idles afterwards.
-        let mut app = Live::sample(1280, 800);
-        let id = app.selected.unwrap();
-
-        app.selected = Some(id);
-        app.request(Request::DeleteSelected);
-        app.request(Request::Dialog(DialogChoice::Primary));
-        assert!(app.toast.is_some(), "deleting a contact raises a toast");
-        assert!(
-            app.needs_animation_frame(),
-            "the loop stays awake so the timed dismissal fires without further input",
-        );
-
-        // A frame drawn before the lifetime elapses keeps the toast.
-        drive_frame(&mut app, 1280, 800);
-        assert!(
-            app.toast.is_some(),
-            "a fresh toast survives an immediate frame"
-        );
-
-        // Back-date the toast past its lifetime and draw again → it clears,
-        // and the loop is then free to idle.
-        if let Some((_, shown)) = app.toast.as_mut() {
-            *shown = ui::time::now()
-                .checked_sub(TOAST_LIFETIME)
-                .unwrap()
-                .checked_sub(Duration::from_millis(50))
-                .unwrap();
-        }
-        assert!(
-            app.toast_expired(),
-            "the back-dated toast is past its lifetime"
-        );
-        app.harness_mut().relayout();
-        assert!(
-            app.toast.is_none(),
-            "the toast auto-dismisses once its lifetime elapses"
-        );
-        assert!(
-            !app.needs_animation_frame(),
-            "with the toast gone the loop can settle back to idle",
         );
     }
 }
@@ -3368,8 +3311,8 @@ fn import_and_export_run_through_the_file_chooser() {
         let opened = h.app.request_export(&[], VCardVersion::V3);
         assert!(!opened, "an empty selection does not open the Save dialog");
         assert!(!h.app.portal_in_flight(), "no export runs");
-        match &h.app.toast {
-            Some((msg, _)) => assert!(msg.to_lowercase().contains("select")),
+        match toast(&h.app) {
+            Some(msg) => assert!(msg.to_lowercase().contains("select")),
             None => panic!("an empty export must surface a guiding toast"),
         }
     }
@@ -4081,7 +4024,7 @@ fn check_refused_save_reconciles_and_announces_an_error_without_claiming_success
     let message = toast(&app).unwrap().to_owned();
     assert!(message.starts_with("Couldn't save contact:"));
     assert!(
-        live_message(&app.accessibility().unwrap(), &message).is_some(),
+        announced(&app, &message),
         "the refusal is announced through the live region"
     );
 }
@@ -4609,7 +4552,10 @@ fn check_import_of_nothing_is_a_clean_noop() {
     assert!(app.book().is_empty(), "and writes nothing to the doc");
     assert!(!path.exists(), "and never touches disk");
     let _ = &path;
-    assert!(app.toast.is_none(), "a cancelled/empty import stays silent");
+    assert!(
+        toast(&app).is_none(),
+        "a cancelled/empty import stays silent"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

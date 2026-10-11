@@ -3509,17 +3509,27 @@ impl Widget for NavShell {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.exposed_parts()
+        let mut children: Vec<&dyn Widget> = self
+            .exposed_parts()
             .iter()
             .filter_map(|part| self.exposed(*part))
-            .collect()
+            .collect();
+        if !self.toasts.is_empty() {
+            children.push(&self.toasts);
+        }
+        children
     }
 
+    // A showing notice is the last child, so assistive technology announces
+    // it as a live region.
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         for part in self.exposed_parts() {
             if let Some(widget) = self.exposed(part) {
                 visitor(widget);
             }
+        }
+        if !self.toasts.is_empty() {
+            visitor(&self.toasts);
         }
     }
 
@@ -3542,6 +3552,7 @@ impl Widget for NavShell {
             history_open,
             history_close,
             inert_parts,
+            toasts,
             ..
         } = self;
         let mut stubs = inert_parts.iter_mut();
@@ -3613,6 +3624,9 @@ impl Widget for NavShell {
             if let Some(widget) = next {
                 out.push(widget);
             }
+        }
+        if !toasts.is_empty() {
+            out.push(toasts);
         }
         out
     }
