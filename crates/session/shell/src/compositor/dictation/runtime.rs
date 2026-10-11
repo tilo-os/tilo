@@ -561,6 +561,19 @@ fn check_vocabulary(io: &mut ActorIo<'_>) -> Result<(), RuntimeError> {
     }
     Ok(())
 }
+fn finish_capture(
+    pipe: &mut Pipe,
+    microphone: &mut Option<AudioCapture>,
+    io: &ActorIo<'_>,
+    finish_interrupts_draft: bool,
+) -> Result<(), RuntimeError> {
+    if let Some(capture) = microphone.as_mut() {
+        audio(pipe, capture)?;
+    }
+    microphone.take();
+    interrupt_draft(io.worker, finish_interrupts_draft, pipe)?;
+    event(io.events, RuntimeEvent::Finishing)
+}
 fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError> {
     let mut microphone: Option<AudioCapture> = None;
     let mut ready = false;
@@ -584,12 +597,7 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
             next_vocabulary_check = later(Duration::from_millis(250));
         }
         if Instant::now() >= deadline && microphone.is_some() && !finishing {
-            if let Some(capture) = microphone.as_mut() {
-                audio(pipe, capture)?;
-            }
-            microphone.take();
-            interrupt_draft(io.worker, finish_interrupts_draft, pipe)?;
-            event(io.events, RuntimeEvent::Finishing)?;
+            finish_capture(pipe, &mut microphone, io, finish_interrupts_draft)?;
             finishing = true;
             deadline = session_end;
         }
@@ -626,12 +634,7 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
             Ok(Control::Finish) if ready && !finishing => {
                 check_vocabulary(io)?;
                 // Drain the complete final chunk before stopping capture.
-                if let Some(capture) = microphone.as_mut() {
-                    audio(pipe, capture)?;
-                }
-                microphone.take();
-                interrupt_draft(io.worker, finish_interrupts_draft, pipe)?;
-                event(io.events, RuntimeEvent::Finishing)?;
+                finish_capture(pipe, &mut microphone, io, finish_interrupts_draft)?;
                 finishing = true;
                 deadline = (later(FINISH_WINDOW)).min(session_end);
             }
