@@ -133,9 +133,9 @@ impl Button {
     /// Cancel an interrupted pointer gesture, for example when a host clips the
     /// control. Keyboard focus is preserved; no activation is emitted.
     pub fn cancel_pointer_interaction(&mut self) {
-        self.dirty |= self.is_hovered || self.is_pressed || self.pressed_into_focus;
+        self.dirty |= self.is_hovered || self.press.is_held() || self.pressed_into_focus;
         self.is_hovered = false;
-        self.is_pressed = false;
+        self.press.cancel();
         self.pressed_into_focus = false;
     }
 
@@ -1972,7 +1972,7 @@ mod tests {
         button.set_focus(true);
         button.cancel_pointer_interaction();
         assert!(button.is_focused);
-        assert!(!button.is_hovered && !button.is_pressed && !button.pressed_into_focus);
+        assert!(!button.is_hovered && !button.press.is_held() && !button.pressed_into_focus);
         dispatch(&mut button, moved());
         dispatch(&mut button, mouse(winit::event::ElementState::Released));
         assert_eq!(clicks.load(Ordering::SeqCst), 0);
