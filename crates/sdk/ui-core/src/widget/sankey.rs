@@ -20,77 +20,11 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
+use crate::widget::chart_data::{ChartLink, ChartNode};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
 };
-
-#[derive(Clone, Debug)]
-pub struct SankeyNode {
-    pub id: String,
-    pub label: String,
-    pub color: Option<Color>,
-    pub detail: String,
-}
-
-impl SankeyNode {
-    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-            color: None,
-            detail: String::new(),
-        }
-    }
-    #[must_use]
-    pub fn colored(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-    #[must_use]
-    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = detail.into();
-        self
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct SankeyLink {
-    pub id: String,
-    pub source: String,
-    pub target: String,
-    pub value: f64,
-    pub color: Option<Color>,
-    pub detail: String,
-}
-
-impl SankeyLink {
-    pub fn new(
-        id: impl Into<String>,
-        source: impl Into<String>,
-        target: impl Into<String>,
-        value: f64,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            source: source.into(),
-            target: target.into(),
-            value,
-            color: None,
-            detail: String::new(),
-        }
-    }
-    #[must_use]
-    pub fn colored(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-    #[must_use]
-    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = detail.into();
-        self
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct SankeyStyle {
@@ -148,8 +82,8 @@ enum Hit {
 }
 
 pub struct SankeyChart {
-    nodes: Vec<SankeyNode>,
-    links: Vec<SankeyLink>,
+    nodes: Vec<ChartNode>,
+    links: Vec<ChartLink>,
     style: SankeyStyle,
     title: String,
     height: f32,
@@ -164,7 +98,7 @@ pub struct SankeyChart {
 }
 
 impl SankeyChart {
-    pub fn new(nodes: Vec<SankeyNode>, links: Vec<SankeyLink>) -> Self {
+    pub fn new(nodes: Vec<ChartNode>, links: Vec<ChartLink>) -> Self {
         Self {
             nodes,
             links,
@@ -205,7 +139,7 @@ impl SankeyChart {
         self.height = height.max(180.0);
         self
     }
-    pub fn set_data(&mut self, nodes: Vec<SankeyNode>, links: Vec<SankeyLink>) {
+    pub fn set_data(&mut self, nodes: Vec<ChartNode>, links: Vec<ChartLink>) {
         self.nodes = nodes;
         self.links = links;
         self.hovered = None;
@@ -871,14 +805,14 @@ mod tests {
         SankeyChart::new(
             ["Visits", "Signup", "Trial", "Paid", "Churn"]
                 .into_iter()
-                .map(|label| SankeyNode::new(label, label))
+                .map(|label| ChartNode::new(label, label))
                 .collect(),
             vec![
-                SankeyLink::new("v-s", "Visits", "Signup", 72.0),
-                SankeyLink::new("v-t", "Visits", "Trial", 28.0),
-                SankeyLink::new("s-t", "Signup", "Trial", 54.0),
-                SankeyLink::new("t-p", "Trial", "Paid", 61.0),
-                SankeyLink::new("t-c", "Trial", "Churn", 21.0),
+                ChartLink::new("v-s", "Visits", "Signup", 72.0),
+                ChartLink::new("v-t", "Visits", "Trial", 28.0),
+                ChartLink::new("s-t", "Signup", "Trial", 54.0),
+                ChartLink::new("t-p", "Trial", "Paid", 61.0),
+                ChartLink::new("t-c", "Trial", "Churn", 21.0),
             ],
         )
     }
@@ -932,10 +866,10 @@ mod tests {
     #[test]
     fn invalid_and_dangling_links_are_ignored() {
         let chart = SankeyChart::new(
-            vec![SankeyNode::new("a", "A")],
+            vec![ChartNode::new("a", "A")],
             vec![
-                SankeyLink::new("bad", "a", "missing", 2.0),
-                SankeyLink::new("self", "a", "a", 1.0),
+                ChartLink::new("bad", "a", "missing", 2.0),
+                ChartLink::new("self", "a", "a", 1.0),
             ],
         );
         assert!(chart.resolved_links().is_empty());
