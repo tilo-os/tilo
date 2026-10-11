@@ -4026,6 +4026,13 @@ mod tests {
         type_str(&mut app, &mut doc, instruction);
         app.composer_main.select(2, 9);
         render_frame(&mut app, 1280.0, 800.0);
+        let shot_intent = match intent {
+            AgentComposerIntent::Queue => "queue",
+            AgentComposerIntent::Steer => "steer",
+            AgentComposerIntent::Message => "message",
+        };
+        write_frontier_shots(&mut app, &format!("{shot_intent}-failure-before"));
+        render_frame(&mut app, 1280.0, 800.0);
         assert!(ui::Widget::perform_semantic_action(
             &mut app,
             &Hit::Send.semantic_id(),
@@ -4034,6 +4041,8 @@ mod tests {
             &automerge::ROOT,
         ));
         settle_agent_submissions(&mut app);
+        write_frontier_shots(&mut app, &format!("{shot_intent}-failure-after"));
+        render_frame(&mut app, 1280.0, 800.0);
 
         assert!(app.agent_submissions.get().is_empty());
         assert_eq!(
@@ -4093,12 +4102,12 @@ mod tests {
         let (mut queue, mut queue_doc, queue_host, queue_surface) = failed_agent_task_submission(
             AgentComposerIntent::Queue,
             "Queue this exact instruction",
-            "Could not confirm that the task was queued. Your instruction is still here.",
+            "Queue not confirmed. Your draft is kept.",
         );
         let _steer = failed_agent_task_submission(
             AgentComposerIntent::Steer,
             "Steer with this exact direction",
-            "Could not confirm that the direction was saved. Your draft is still here.",
+            "Direction not confirmed. Your draft is kept.",
         );
 
         queue_host.fail_task_submissions(false);
