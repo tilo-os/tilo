@@ -311,6 +311,7 @@ fn refused_fresh_refresh_requires_new_catalogue_evidence_before_retry() {
     let requests = host.commands.lock().unwrap();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].fresh_binding, Some(second));
+    drop(requests);
 }
 
 #[test]
