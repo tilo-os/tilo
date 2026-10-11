@@ -9,6 +9,7 @@ use crate::resources::{OuterLimits, PeerResourceError};
 pub use domain::{
     PeerDeliveryPolicy, PeerDeliveryPolicyError, PeerDocumentCapture, PeerDocumentRead,
     PeerDocumentReadError, PeerMediaCall, PeerPolicyBasis, PeerRead, PeerRoomAccess,
+    committed_document_revision,
 };
 pub use revocations::PeerRevocations;
 

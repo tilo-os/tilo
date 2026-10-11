@@ -12,7 +12,21 @@ pub struct PeerDocumentCapture {
     bytes: Vec<u8>,
 }
 
+/// Stable revision of the exact committed graph, shared by native owners.
+pub fn committed_document_revision(heads: &[ChangeHash]) -> [u8; 32] {
+    let mut heads = heads.iter().map(|head| head.0).collect::<Vec<_>>();
+    heads.sort_unstable();
+    let mut hasher = blake3::Hasher::new_derive_key("tilo committed document revision v1");
+    for head in heads {
+        hasher.update(&head);
+    }
+    *hasher.finalize().as_bytes()
+}
+
 impl PeerDocumentCapture {
+    pub fn revision(&self) -> [u8; 32] {
+        committed_document_revision(&self.heads)
+    }
     pub fn heads(&self) -> &[ChangeHash] {
         &self.heads
     }

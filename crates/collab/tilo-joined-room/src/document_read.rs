@@ -47,16 +47,6 @@ pub enum DocumentRead {
     Captured(CommittedDocument),
 }
 
-fn revision_of(heads: &[automerge::ChangeHash]) -> [u8; 32] {
-    let mut heads = heads.iter().map(|head| head.0).collect::<Vec<_>>();
-    heads.sort_unstable();
-    let mut hasher = blake3::Hasher::new_derive_key("tilo committed document revision v1");
-    for head in heads {
-        hasher.update(&head);
-    }
-    *hasher.finalize().as_bytes()
-}
-
 impl NativeCommittedView {
     /// Read `app`'s `record` for the device `reader`.
     ///
@@ -110,7 +100,7 @@ impl NativeCommittedView {
         if let Some(known) = known_revision
             && let Some(heads) = self.peer.plaintext_complete_heads(app, record)
         {
-            let revision = revision_of(&heads);
+            let revision = tilo_peer_state::committed_document_revision(&heads);
             if revision == known {
                 self.peer.check_document_read(reader, app, record, now)?;
                 return Ok(DocumentRead::Unchanged(revision));
@@ -149,7 +139,7 @@ impl NativeCommittedView {
         let document = read
             .capture_document(reader, (app, record), now, maximum, open)
             .map_err(denied)?;
-        let revision = revision_of(document.heads());
+        let revision = document.revision();
         if known_revision == Some(revision) {
             return Ok(DocumentRead::Unchanged(revision));
         }
