@@ -99,6 +99,32 @@ macro_rules! test_client {
             }
         }
     };
+    // Like `configure`, and records in the client's `configured` that the
+    // surface has been configured.
+    (@configured $client:ty) => {
+        impl ::wayland_client::Dispatch<
+            ::wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface,
+            (),
+        > for $client
+        {
+            fn event(
+                state: &mut Self,
+                surface: &::wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface,
+                event: ::wayland_protocols::xdg::shell::client::xdg_surface::Event,
+                (): &(),
+                _: &::wayland_client::Connection,
+                _: &::wayland_client::QueueHandle<Self>,
+            ) {
+                if let ::wayland_protocols::xdg::shell::client::xdg_surface::Event::Configure {
+                    serial,
+                } = event
+                {
+                    surface.ack_configure(serial);
+                    state.configured = true;
+                }
+            }
+        }
+    };
 }
 pub(crate) use test_client;
 
