@@ -139,17 +139,28 @@ both native devices joined and both explicitly opened apps converged on the
 same channels, concurrent messages, authors and resource-reference access, and
 presented fresh local frames.
 
-Automatic opening remains **unqualified**: the second device's real observation
+Automatic opening remains **unqualified** on the same final source
+(`same-person-automatic-final-source`): the second device's real observation
 has no frames and no admitted window groups. The first device's topology
 namespace requests report `the governor is unavailable: Offline`; the governed
-host does not serve the existing desktop namespace command. Reconnect also
-remains **unqualified**: both offline edits completed, but the first post-resume
-`read-messages` invocation did not reach a terminal result. The fixture fails
-these assertions, retains the preceding semantic evidence and hashes, and keeps
-all final continuity qualification fields false. It never opens the second app
-manually to rescue the automatic-opening case or treats a pending action as
-completed recovery. Screen arrangement, cross-device input and physical-device
-continuity are not qualified by either fixture mode.
+host does not serve the existing desktop namespace command. The original
+reconnect run also failed: both offline edits completed, but the first
+post-resume `read-messages` invocation never reached a terminal result.
+
+With the governance and replay repairs below, the fresh remote
+`same-person-reconnect-final-source` journey completes both original
+post-resume reads, observes both offline messages exactly once in the original
+channel with their certified authors, and cleans up successfully. Its receipt
+sets `app_state_qualified`, `same_person_devices_qualified` and
+`offline_reconnect_qualified` true, with no error. The exact fixture SHA-256 is
+`c622f4971303a6cded8bf38e2720bd62bcdd95148559c8c14c62f98a518c876b`;
+the receipt also records actual component and package hashes. The separate full
+voice/follow `qualified` field remains false because this mode does not run it.
+
+The fixture never opens the second app manually to rescue automatic opening or
+treats a pending action as completed recovery. Screen arrangement, cross-device
+input, physical-device continuity and complete physical network isolation are
+not qualified by these fixture modes.
 
 ### Bounded failure diagnostics
 
@@ -169,9 +180,47 @@ terminal timeout. Chat's subsequent SDK log identified the owner barrier:
 `record_receipt_elsewhere` received the governor administration answer, then
 failed waiting for that exact signed effect receipt in the device's admitted
 room. The SDK reported `signed effect receipt did not reach the native owner
-in time; outcome unknown` and disabled collaboration. This narrows the failure
-to signed receipt publication/admission after reconnect; it does not establish
-which transport or admission step lost progress. Keep the fail-closed owner
-barrier while repairing that path. Retrieve only the named public failure JSON,
+in time; outcome unknown` and disabled collaboration. This was the pre-repair failure; the source and complete reconnect proof below
+repair admission and redundant replay reconciliation while retaining the
+fail-closed owner barrier. Retrieve only the named public failure JSON,
 `journey.json`, and synthetic `alice.log`, `bob.log`, and `host.log`; private
 profiles, bootstrap invitations and package signing material remain excluded.
+
+### Governance admission during native replay
+
+The native actor admits authenticated `SyncResp` governance through the existing
+`Input::admit` and durable owner before forwarding the same input to the
+compositor. It awaits one blocking admission at a time. Current session, selected
+custody, membership, revocation and pin checks remain in that production path;
+a transport acknowledgement cannot substitute for the signed owner receipt.
+This lets receipt admission progress while app replay remains queued for the UI.
+The compositor retains its ordinary ordered event stream and wakes after an
+actual owner publication. Its event drain yields after one native admission per
+UI turn, leaving subsequent events in the bounded FIFO; the existing eight-event
+budget remains for inexpensive transport events. Both paths schedule outgoing
+recovery only when the actual committed owner generation changed. An unchanged
+exact replay must not enqueue another recovery reconciliation; the regression
+requires a current pin and actual broker fanout before checking that command
+queue. No action, control-socket or
+signed-receipt timeout is extended. A regression admits a real signed document
+through the production tick, then checks the retained queue and later event
+order across successive turns.
+
+An unchanged authenticated replay reuses the committed owner publication only
+when the encoded peer state and all outgoing custody are exactly unchanged.
+For a recorded exact document, the existing `StatePeer` lookup verifies current
+authority, publisher, route, signature and operation identity before copying
+mutable peer state. The owner also checks retirement, recovery reservation and
+checkpoint obligations before reusing its committed generation; a missing
+certificate or governance still follows the ordinary deferred-admission path.
+New prerequisites, receipt state and retired outgoing obligations still cross
+the durable writer. The replay regression checks the actual generation and
+state-file bytes; the relay regression publishes a fresh signed checkpoint and
+requires its exact receipts in the actual owner with no compositor event drain.
+They exercise `tilo-joined-room` and the real pinned enrollment exchange rather
+than a synthetic receipt or helper projection.
+
+The complete reconnect receipt above qualifies this private governor-unavailable
+journey on the repaired source. Source regressions alone do not qualify an app
+journey, automatic opening or physical-device UX; each requires its own complete
+receipt, including ordinary terminal success and cleanup.

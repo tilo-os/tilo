@@ -80,7 +80,8 @@ class Fixture:
                "GST_DEBUG": "pipewiresrc:6,pipewirecore:5,appsink:5,opusenc:5,basesink:5,basesrc:6"}
         if self.routing_diagnostics:
             env["TILO_RELAY_PHASE_DIAGNOSTICS"] = "1"
-            env["RUST_LOG"] += (",tilo_relay::peer=info,tilo_relay::rooms=debug"
+            env["TILO_RELAY_CORRELATED_DIAGNOSTICS"] = "1"
+            env["RUST_LOG"] += (",tilo_relay::peer=info,tilo_relay::rooms=debug,tilo_relay::native_publication=debug"
                                 ",shell::network::actor=debug"
                                 ",shell::shell::network::native_ingress=debug")
         if self.pipewire is not None:
@@ -865,7 +866,9 @@ class Fixture:
             before = packaged.presented_primary_frame(call(session[0], {"op": "foreign_frames"}), "so.tilo.chat")
             if before is None:
                 raise RuntimeError("native app disappeared before state rendering")
-            self.act(session, room, "open-channel", resource=channels(session[0])[early])
+            resource = packaged.wait_for("current exact channel navigation action",
+                                         lambda: channels(session[0]).get(early), session[1])
+            self.act(session, room, "open-channel", resource=resource)
             def painted():
                 frame = packaged.presented_primary_frame(call(session[0], {"op": "foreign_frames"}), "so.tilo.chat")
                 return frame if frame and frame["frame_seq"] > before["frame_seq"] else None
