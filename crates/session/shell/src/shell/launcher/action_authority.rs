@@ -32,10 +32,19 @@ struct Published {
     rooms: BTreeMap<RoomId, RoomPolicy>,
     /// For each published room, the policy revision it was exported at.
     revisions: BTreeMap<RoomId, u64>,
+    /// For a room whose newest save failed, the revision that save carried
+    /// and why it failed. Cleared by a publication that reaches the revision.
+    failures: BTreeMap<RoomId, SaveFailure>,
     bindings: BTreeMap<Binding, BindingState>,
     next_refresh: Option<Instant>,
     #[cfg(target_os = "linux")]
     sandboxes: BTreeMap<u32, sandbox_revocation::Sandbox>,
+}
+#[derive(Clone)]
+struct SaveFailure {
+    revision: u64,
+    kind: std::io::ErrorKind,
+    message: String,
 }
 static PUBLISHED: LazyLock<Mutex<Published>> = LazyLock::new(|| Mutex::new(Published::default()));
 /// Signalled whenever [`Export::publish`] replaces the published policy.
@@ -71,6 +80,7 @@ impl Export {
     pub(crate) fn publish(self) {
         let mut published = lock(&PUBLISHED);
         published.revisions = self.0.keys().map(|room| (*room, self.1)).collect();
+        published.failures.retain(|_, failure| failure.revision > self.1);
         published.rooms = self.0;
         #[cfg(target_os = "linux")]
         sandbox_revocation::reconcile(&mut published);
@@ -88,9 +98,39 @@ impl Export {
         PUBLISHED_CHANGED.notify_all();
     }
 
+    /// What the save of this export reports if its write fails.
+    pub(crate) fn failure_handle(&self) -> FailureHandle {
+        FailureHandle(self.0.keys().copied().collect(), self.1)
+    }
+
     pub(crate) fn submit(self) {
         crate::shell::durable_writer::global()
             .submit(authority_root().join("publication"), move || self.publish());
+    }
+}
+
+/// Reports the failure of the save that would have published a revision.
+pub(crate) struct FailureHandle(Vec<RoomId>, u64);
+
+impl FailureHandle {
+    /// A launch waiting on this revision, or an earlier one, stops waiting
+    /// and reports the save's own error. A later successful save clears it.
+    pub(crate) fn fail(self, error: &std::io::Error) {
+        let mut published = lock(&PUBLISHED);
+        for room in self.0 {
+            if published.failures.get(&room).is_none_or(|old| old.revision <= self.1) {
+                published.failures.insert(
+                    room,
+                    SaveFailure {
+                        revision: self.1,
+                        kind: error.kind(),
+                        message: error.to_string(),
+                    },
+                );
+            }
+        }
+        drop(published);
+        PUBLISHED_CHANGED.notify_all();
     }
 }
 
@@ -347,6 +387,7 @@ fn captured_revision() -> Option<u64> {
 /// completes no write for a whole [`PUBLICATION_STALL`] window is a fault.
 ///
 /// # Errors
+/// The error of a failed save of that revision or a later one, at once;
 /// `TimedOut` when the state writer has made no progress.
 #[cfg(target_os = "linux")]
 fn await_published(room: RoomId, revision: u64) -> std::io::Result<()> {
@@ -354,6 +395,14 @@ fn await_published(room: RoomId, revision: u64) -> std::io::Result<()> {
     let mut published = lock(&PUBLISHED);
     let mut seen = writer.progress();
     while published.revisions.get(&room).copied().unwrap_or(0) < revision {
+        if let Some(failure) = published.failures.get(&room)
+            && failure.revision >= revision
+        {
+            return Err(std::io::Error::new(
+                failure.kind,
+                format!("saving filesystem authority failed: {}", failure.message),
+            ));
+        }
         let (guard, waited) = PUBLISHED_CHANGED
             .wait_timeout(published, PUBLICATION_STALL)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -885,5 +934,41 @@ mod tests {
         let registered = register(room, "so.tilo.unprompted", &granted, revision);
         lock(&PUBLISHED).rooms.remove(&room);
         registered.expect("the write's own save publishes the revision");
+    }
+
+    /// The save that would publish the revision fails (its directory cannot
+    /// exist). The launch waiting on it ends at once with that save's error,
+    /// not after the writer's no-progress window and not as a withdrawal.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_failed_save_ends_the_wait_with_its_own_error() {
+        let _turn = serial();
+        let directory = tempfile::tempdir().unwrap();
+        let blocker = directory.path().join("not-a-directory");
+        std::fs::write(&blocker, b"file").unwrap();
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        tree.persist_path = Some(blocker.join("state.json"));
+        let tree = tree.shared();
+        let room = tree.read().desktop.workspaces[0].room;
+        let granted = grant("so.tilo.failed-save", "/disposable/failed-save");
+        tree.write().desktop.workspaces[0]
+            .capabilities
+            .push(granted.clone());
+        let revision = tree.policy_revision();
+        let started = std::time::Instant::now();
+        let registered = register(room, "so.tilo.failed-save", &granted, revision);
+        let waited = started.elapsed();
+        {
+            let mut published = lock(&PUBLISHED);
+            published.rooms.remove(&room);
+            published.failures.remove(&room);
+        }
+        let error = registered.expect_err("a save that failed cannot publish");
+        assert!(
+            error.to_string().contains("saving filesystem authority failed"),
+            "{error}"
+        );
+        assert_ne!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(waited < PUBLICATION_STALL, "ended by the failure, not the stall");
     }
 }
