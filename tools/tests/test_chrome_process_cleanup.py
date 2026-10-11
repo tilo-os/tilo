@@ -7,6 +7,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -42,7 +43,12 @@ if writer == 0:
 while not (root / 'writer-ready').exists():
     time.sleep(.005)
 print('DevTools listening on ws://fixture' + str(root), file=sys.stderr, flush=True)
-while not (root / 'close-request').exists():
+def stop_root(*_args):
+    (root / 'root-closed').touch()
+    sys.exit(0)
+if (root / 'stall-close').exists():
+    signal.signal(signal.SIGTERM, stop_root)
+while (root / 'stall-close').exists() or not (root / 'close-request').exists():
     time.sleep(.005)
 (root / 'root-closed').touch()
 sys.exit(7 if (root / 'fail-root').exists() else 0)
@@ -61,6 +67,7 @@ class FixtureSocket extends EventTarget {
     const message = JSON.parse(encoded);
     if (message.method !== 'Browser.close') throw new Error('unexpected lifecycle request');
     writeFileSync(this.root + '/close-request', 'requested');
+    if (existsSync(this.root + '/no-close-reply')) return;
     queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', {
       data: JSON.stringify({id: message.id, result: {}}),
     })));
@@ -135,7 +142,7 @@ class ChromeProcessCleanup(unittest.TestCase):
             if profile.exists():
                 shutil.rmtree(profile)
 
-    def run_fixture(self, *, independent=False, root_failure=False):
+    def run_fixture(self, *, independent=False, root_failure=False, stalled_close=False, close_reply=False):
         with tempfile.TemporaryDirectory(prefix='tilo-chrome-lifecycle-') as temporary:
             root = Path(temporary)
             roots = [root / 'first']
@@ -143,6 +150,10 @@ class ChromeProcessCleanup(unittest.TestCase):
                 roots.append(root / 'second')
             for directory in roots:
                 self.fixture(directory)
+            if stalled_close:
+                (roots[0] / 'stall-close').touch()
+                if not close_reply:
+                    (roots[0] / 'no-close-reply').touch()
             if root_failure:
                 (roots[0] / 'fail-root').touch()
             script = root / 'client.mjs'
@@ -173,6 +184,29 @@ class ChromeProcessCleanup(unittest.TestCase):
         self.assertFalse(result['independent']['rootClosed'], result)
         self.assertFalse(result['independent']['writerClosed'], result)
         self.assertTrue(result['independent']['profileExists'], result)
+
+    def test_stalled_cdp_close_stops_owned_writers_within_original_deadline(self):
+        started = time.monotonic()
+        result = self.run_fixture(stalled_close=True, independent=True)
+        self.assertIsNone(result['closeError'], result)
+        self.assertLess(time.monotonic() - started, 10, 'original shutdown budget exceeded')
+        self.assertTrue(result['first']['rootClosed'], result)
+        self.assertTrue(result['first']['writerClosed'], result)
+        self.assertFalse(result['first']['earlyRemoval'], result)
+        self.assertFalse(result['first']['profileExists'], result)
+        self.assertFalse(result['independent']['rootClosed'], result)
+        self.assertFalse(result['independent']['writerClosed'], result)
+        self.assertTrue(result['independent']['profileExists'], result)
+
+    def test_acknowledged_close_still_waits_for_owned_processes(self):
+        started = time.monotonic()
+        result = self.run_fixture(stalled_close=True, close_reply=True)
+        self.assertIsNone(result['closeError'], result)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertTrue(result['first']['rootClosed'], result)
+        self.assertTrue(result['first']['writerClosed'], result)
+        self.assertFalse(result['first']['earlyRemoval'], result)
+        self.assertFalse(result['first']['profileExists'], result)
 
     def test_abnormal_owned_exit_preserves_the_profile_and_fails(self):
         result = self.run_fixture(root_failure=True)

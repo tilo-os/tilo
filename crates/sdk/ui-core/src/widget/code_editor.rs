@@ -637,26 +637,6 @@ impl Widget for CodeEditor {
         self.draw_diagnostics(scene, transform, theme);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.inner.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-        self.draw_diagnostics(scene, transform, theme);
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,

@@ -381,7 +381,7 @@ impl Widget for Toggle {
         transform: Affine,
         _text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
         // One painter for the retained widget and immediate-mode hosts, so
         // the two cannot drift: the pill is centred in the layout target and
@@ -396,6 +396,7 @@ impl Widget for Toggle {
                 .focused(c.is_focused)
                 .disabled(!c.effectively_enabled()),
         );
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     /// A fixed size: only the first layout (and a theme change, which

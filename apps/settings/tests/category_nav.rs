@@ -27,7 +27,6 @@
 use settings::SettingsApp;
 use settings::categories::Category;
 use ui::headless::{Framed, viewport};
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::Widget;
@@ -100,17 +99,9 @@ fn row_is_active(app: &SettingsApp, label: &str) -> bool {
 fn renders_something(app: &mut SettingsApp) -> bool {
     let theme = ui::Theme::dark();
     let mut tr = TextRenderer::new();
-    let perms = PermissionContext::permissive();
     let presence = PresenceCtx::empty();
     let mut scene = Scene::new();
-    app.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut tr,
-        &theme,
-        &presence,
-        &perms,
-    );
+    app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     !scene.encoding().is_empty()
 }
 
