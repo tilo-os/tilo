@@ -685,6 +685,10 @@ impl RetainedGpuTarget {
         renderer
             .enable_canonical_segment_order(&gpu.device)
             .map_err(|e| BridgeError::Renderer(format!("{e:?}")))?;
+        // Once the desktop got lighter (windows closed) and stayed so, the
+        // scratch its busiest scene grew comes back: the pool drops buffers
+        // no frame takes and the bump reservation comes down, with headroom.
+        renderer.set_shrink_scratch(true);
         if let Some(seed) = seed {
             publish_pipeline_seed(gpu, &seed);
         }
@@ -2235,6 +2239,8 @@ pub struct VelloDrmBridge {
     logged_memory: Option<[u64; 6]>,
     /// [`crate::shell::heap_trim::windows_closed`] at the last frame.
     windows_closed_seen: u64,
+    /// The renderer's [`vello::Renderer::scratch_shrinks`] at the last frame.
+    scratch_shrinks_seen: u64,
     /// Narrow fault injection for the tracked-swizzle cleanup test. It is absent from ordinary
     /// binaries and shortens only the test's mapped source view after GPU completion.
     #[cfg(test)]
@@ -2325,6 +2331,7 @@ impl VelloDrmBridge {
             _device_memory: device_memory,
             logged_memory: None,
             windows_closed_seen: crate::shell::heap_trim::windows_closed(),
+            scratch_shrinks_seen: 0,
             #[cfg(test)]
             fail_next_tracked_swizzle: false,
         })
@@ -4824,17 +4831,27 @@ impl VelloDrmBridge {
     /// few to bring it down the slow way, and kept up to 256 MiB of atlas.
     /// When the atlas did come down, so did the scene: the buffers pooled for
     /// the larger one go too (the next frame pools what it needs), and a trim
-    /// gives the memory back to the kernel. Cheap enough for every frame.
+    /// gives the memory back to the kernel. The renderer's scratch (pooled
+    /// buffers and bump reservation, sized for the busiest scene it drew)
+    /// comes down the same way, within a few frames of a close; when the
+    /// reservation shrank, a trim gives that back too. Cheap enough for
+    /// every frame.
     pub fn after_paint(&mut self) {
         let closed = crate::shell::heap_trim::windows_closed();
         if closed != self.windows_closed_seen {
             self.windows_closed_seen = closed;
             self.target.renderer.shrink_image_atlas_soon();
+            self.target.renderer.shrink_scratch_soon();
         }
         let atlas_before = self.logged_memory.map(|mark| mark[0]);
         let atlas_now = u64::from(self.target.vello().image_cache_stats().atlas_side);
+        let shrinks = self.target.vello().scratch_shrinks();
+        let scratch_shrank = shrinks != self.scratch_shrinks_seen;
+        self.scratch_shrinks_seen = shrinks;
         if atlas_before.is_some_and(|was| atlas_now < was) {
             self.target.renderer.trim_pooled_buffers();
+            crate::shell::heap_trim::request();
+        } else if scratch_shrank {
             crate::shell::heap_trim::request();
         }
         self.log_memory_changes();
