@@ -60,6 +60,44 @@ pub fn page_resource_id(page: PageId) -> String {
     format!("notes.page:{page}")
 }
 
+/// What a note-creating action answers with: the id and resource address of
+/// the page it made, so its caller can act on it without a second read.
+pub(crate) fn created_page_result_spec() -> tilo_actions::ResultSpec {
+    tilo_actions::ResultSpec::Json {
+        schema: serde_json::json!({
+            "type": ["object", "null"],
+            "properties": {
+                "page": {"type": "string"},
+                "resource": {"type": "string"}
+            }
+        }),
+    }
+}
+
+/// The page `changes` created in the document, if any: a new page is a new
+/// object under the page map, keyed by its id. Renames and edits only touch
+/// fields of pages that already exist.
+pub(crate) fn created_page_result(
+    doc: &AutoCommit,
+    changes: &[automerge::Patch],
+) -> Option<serde_json::Value> {
+    let known = NotesDoc::list_pages(doc);
+    changes.iter().find_map(|patch| {
+        let automerge::PatchAction::PutMap {
+            key,
+            value: (automerge::Value::Object(_), _),
+            ..
+        } = &patch.action
+        else {
+            return None;
+        };
+        let id = key.parse::<PageId>().ok()?;
+        known.iter().any(|page| page.id == id).then(|| {
+            serde_json::json!({"page": id.to_string(), "resource": page_resource_id(id)})
+        })
+    })
+}
+
 pub fn block_resource_id(page: PageId, block_id: &str) -> String {
     format!("notes.block:{page}:{block_id}")
 }
@@ -1878,7 +1916,8 @@ fn page_resource_from_index(
         )
         .with_continuation_identity(continuation::builder(BuilderDomain::CreatePage {
             parent: Some(parent),
-        })),
+        }))
+        .returns(created_page_result_spec()),
     );
 
     // Child pages are sorted in the index. Omitted siblings/deeper descendants
@@ -2214,7 +2253,8 @@ pub(crate) fn notebook_bound_declarations(
                 Ok(append_page_action(Uuid::new_v4(), None, title))
             },
         )
-        .describe("Create a new root note."),
+        .describe("Create a new root note.")
+        .returns(created_page_result_spec()),
     ];
     let title = today_title();
     if !workspace.pages().iter().any(|page| page.title == title) {
@@ -4036,5 +4076,42 @@ mod tests {
                 Ok(NotesAction::CreateAndAssignTag { page, tag: TagData { name, .. } }) if page == projects.to_string() && name == "Planning"
             ));
         }
+    }
+
+    /// A note-creating action answers with the page it made; a rename of an
+    /// existing page answers with nothing.
+    #[test]
+    fn creating_a_note_reports_its_page_and_renaming_does_not() {
+        let mut doc = AutoCommit::new();
+        let id = Uuid::new_v4();
+        let before = doc.get_heads();
+        NotesDoc::upsert_page_meta(
+            &mut doc,
+            &PageMeta {
+                id,
+                title: "Fresh".into(),
+                parent: None,
+                order: "a".into(),
+            },
+        );
+        let heads = doc.get_heads();
+        let created = doc.diff(&before, &heads);
+        let result = created_page_result(&doc, &created).expect("the new page");
+        assert_eq!(result["page"], id.to_string());
+        assert_eq!(result["resource"], page_resource_id(id));
+
+        let before = doc.get_heads();
+        NotesDoc::upsert_page_meta(
+            &mut doc,
+            &PageMeta {
+                id,
+                title: "Renamed".into(),
+                parent: None,
+                order: "a".into(),
+            },
+        );
+        let heads = doc.get_heads();
+        let renamed = doc.diff(&before, &heads);
+        assert_eq!(created_page_result(&doc, &renamed), None);
     }
 }
