@@ -241,6 +241,7 @@ fn draw_frame_content(
         draw_us: t_draw_us,
         top_layer,
         tooltip,
+        painted_over: scene.encoding().draw_tags.len() != layer_start,
     }
 }
 
@@ -260,6 +261,10 @@ struct DrawnFrame {
     /// Every pixel the tooltip painted over everything else, shadow
     /// included, in scene (physical) coordinates.
     tooltip: Option<KurboRect>,
+    /// Whether anything at all was painted over the widgets (an overlay,
+    /// a history overlay, a dialog, the palette, the tooltip), tracked in a
+    /// damage part or not: a scroll copy would move it with the content.
+    painted_over: bool,
 }
 
 /// Paint the tooltip on screen, if any, and return every pixel it painted

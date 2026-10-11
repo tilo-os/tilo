@@ -288,6 +288,11 @@ def scroll_log(pixels: int, differing: int = 0) -> str:
         f"copied_p50=700000 whole=0 frames=120 cpu_ms=0.512 gpu_ms=0.9 gpu_full_ms=1.6 differing={differing}",
         "FRAMEWORK-SCROLL tasks=5000 step=40.5 copying=true pixels_p50=900000 pixels_max=900000 "
         "copied_p50=0 whole=0 frames=120 cpu_ms=0.420 gpu_ms=1.6 gpu_full_ms=1.6 differing=0",
+        "FRAMEWORK-SCROLL-HOSTED tasks=5000 step=40 copying=false pixels_p50=983616 pixels_max=983616 "
+        "copied_p50=0 whole=0 frames=120 cpu_ms=0.6 gpu_ms=1.6 gpu_full_ms=1.6 differing=0",
+        f"FRAMEWORK-SCROLL-HOSTED tasks=5000 step=40 copying=true pixels_p50={pixels + 5000} "
+        f"pixels_max={pixels * 2} copied_p50=700000 whole=0 frames=120 cpu_ms=0.7 gpu_ms=0.9 "
+        f"gpu_full_ms=1.6 differing={differing}",
     ])
 
 
@@ -300,6 +305,12 @@ class FrameworkScroll(unittest.TestCase):
         self.assertEqual(records["render.framework_scroll.whole_frames.5k"].p50, 0.0)
         self.assertEqual(records["render.framework_scroll.cpu_ms.5k"].unit, "ms")
         self.assertEqual(records["render.framework_scroll.raster_ms.5k"].p50, 0.9)
+
+    def test_the_hosted_copying_run_is_recorded_apart(self):
+        records = {item.kpi: item for item in adapters.framework_scroll([scroll_log(90000)], ENV)}
+        self.assertEqual(records["render.framework_scroll.hosted_pixels.5k"].p50, 95000.0)
+        self.assertEqual(records["render.framework_scroll.pixels.5k"].p50, 90000.0)
+        self.assertEqual(records["render.framework_scroll.hosted_whole_frames.5k"].p50, 0.0)
 
     def test_pixels_a_full_render_does_not_have_fail(self):
         with self.assertRaisesRegex(ValueError, "full render"):
