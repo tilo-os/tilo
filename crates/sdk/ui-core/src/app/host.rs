@@ -55,18 +55,29 @@ fn draw_frame_content(
     // only when they change.
     let tracked = crate::scene_parts::is_tracked(scene);
     let window_bounds = vec![transform.transform_rect_bbox(window_rect)];
-    let before_history = scene.encoding().draw_tags.len();
     if tracked {
         crate::scene_parts::begin(scene, crate::scene_parts::PartKey::new("ui.history", ()));
     }
+    // Untracked, History's paint is compared with the last presented
+    // frame's: an unchanged toolbar under the live app is no layer.
+    let mut history_changed = false;
     if let Some(history) = &mut app.history {
-        history.draw(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-        );
+        if tracked {
+            history.draw(
+                scene,
+                transform,
+                &mut app.text_renderer,
+                &app.theme,
+                &app.presence_ctx,
+            );
+        } else {
+            history_changed = history.draw_compared(
+                scene,
+                transform,
+                &mut app.text_renderer,
+                (&app.theme, &app.presence_ctx),
+            );
+        }
     }
     if tracked {
         crate::scene_parts::end(scene, window_bounds.clone());
@@ -79,8 +90,7 @@ fn draw_frame_content(
     // History mode that hides the live app is a layer over all of it; one
     // that shows it and paints nothing of its own (or paints in a part)
     // leaves the widgets' damage the whole change.
-    let history_shown = (!tracked && scene.encoding().draw_tags.len() != before_history)
-        || (app.history.is_some() && !app_live);
+    let history_shown = history_changed || (app.history.is_some() && !app_live);
     if app_live {
         crate::widget::native_view_frame_start(app.root_widget.as_mut());
         app.presence_ctx
@@ -498,6 +508,9 @@ fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) -> V
 #[cfg(feature = "native")]
 fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOnce(&mut App)) {
     app.root_widget.mark_drawn();
+    if let Some(history) = &mut app.history {
+        history.paint_presented();
+    }
     publish_accessibility(app);
     app.finish_history_return_frame();
 }
