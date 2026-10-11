@@ -17,10 +17,6 @@ pub const APP_TITLE: &str = "Virtual List";
 
 pub mod locales;
 
-fn install_catalog() {
-    locales::install();
-}
-
 use std::collections::HashMap;
 use std::ops::Range;
 use ui::i18n::I18nManager;
@@ -183,8 +179,11 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Feed>) -> Element {
-        install_catalog();
         let actions = cx.actions();
         let list = VirtualList::new_async(
             ActivityModel::new(ITEM_COUNT),

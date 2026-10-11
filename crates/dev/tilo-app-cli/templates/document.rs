@@ -39,6 +39,10 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     /// The name the palette, search and history show for the open document.
     fn label(document: &Document) -> String {
         if document.title.trim().is_empty() {
@@ -49,7 +53,6 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Document>) -> Element {
-        crate::install_catalog();
         let p = cx.paths();
         let title = cx
             .input(p.title)

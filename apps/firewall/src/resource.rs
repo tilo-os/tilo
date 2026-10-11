@@ -276,10 +276,14 @@ impl ResourceApp for FirewallShell {
     type Resource = Firewall;
     const ID: &'static str = "so.tilo.firewall";
     const TITLE: &'static str = "Firewall";
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     const ICON: Option<&'static str> = Some("firewall");
 
     fn view(cx: &mut ViewCx<Firewall>) -> Element {
-        crate::locales::install();
         cx.surface(FirewallApp::new())
     }
 

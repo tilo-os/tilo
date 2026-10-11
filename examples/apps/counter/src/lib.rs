@@ -14,10 +14,6 @@ pub const APP_TITLE: &str = "Counter";
 
 pub mod locales;
 
-fn install_catalog() {
-    locales::install();
-}
-
 use locales::keys;
 use ui::i18n::I18nManager;
 use ui::prelude::*;
@@ -82,6 +78,10 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     /// How the palette, search and history name the open counter.
     fn label(counter: &Counter) -> String {
         I18nManager::format("counter-label", &[("count", counter.count.into())])
@@ -103,7 +103,6 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Counter>) -> Element {
-        install_catalog();
         let count = cx
             .text(|counter| counter.count.to_string())
             .with_role(TextRole::Display)

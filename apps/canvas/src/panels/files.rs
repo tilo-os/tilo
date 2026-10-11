@@ -574,7 +574,7 @@ mod tests {
     #[test]
     fn an_artwork_made_from_a_picture_is_exported_under_a_name_of_its_own() {
         use base64::Engine as _;
-        crate::locales::install();
+        crate::locales::CATALOG.ensure();
         // The window's content store, which the opened picture is kept in.
         let window = ui::rt::wake::WakeScope::new();
         ui::tilo_resource::content::register(

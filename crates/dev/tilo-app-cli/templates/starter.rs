@@ -40,8 +40,11 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Greeting>) -> Element {
-        crate::install_catalog();
         // Every string is a Fluent message id from locales/en-US.ftl.
         let name = cx
             .input(cx.paths().name)

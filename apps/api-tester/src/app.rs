@@ -242,7 +242,6 @@ impl ApiTesterApp {
         Self::build_with_actions(false, Some(actions.clone()))
     }
     fn build_with_actions(demo: bool, actions: Option<Actions<Workspace>>) -> Self {
-        crate::locales::install();
         let model = Self::build_model(demo);
         let sink = Sink::default();
         *sink.actions.borrow_mut() = actions;
