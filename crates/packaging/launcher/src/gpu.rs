@@ -986,7 +986,7 @@ mod tests {
                 Some(pin.vulkan_icd_json.clone().into()),
                 pin.egl_vendor_json.clone().map(Into::into),
             ),
-            Some(pin.clone())
+            Some(pin)
         );
         let radeon = search.vulkan_icd_dirs[0].join(host_icd_name("radeon"));
         assert_eq!(
