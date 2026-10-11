@@ -17,7 +17,7 @@ use ed25519_dalek::SigningKey;
 use tilo_user_identity::DeviceCapabilities;
 
 use super::idle_quiet_tests::{
-    LONE_CPU_BUDGET, LONE_IDLE, LONE_SETTLE, LONE_WAKEUP_BUDGET, device_reaching, session_threads,
+    LONE_CPU_BUDGET, LONE_IDLE, LONE_SETTLE, device_reaching, session_threads,
 };
 use super::{NetCmd, Reach, ShellNetwork, host_identity_for_key, needs_reachability};
 use crate::network::actor::gossip_caches_drain_within;
@@ -27,6 +27,13 @@ use crate::shell::state::{RoomAuthority, RoomId, WorkspaceTree, WorkspaceTreeHan
 /// enough that a pair still converging keeps them, short enough to watch
 /// them rest.
 pub(super) const REST_AFTER: Duration = Duration::from_secs(2);
+
+/// Most times per second a desktop whose collaborator left may wake once its
+/// relays rest and gossip's caches have drained. Measured 0.05/s in five
+/// focused runs (96954-96958): the test thread's own `/proc` read, and not
+/// one wakeup of the network runtime. A quarter of that is less than one
+/// wakeup in [`LONE_IDLE`], so the budget allows one more: 0.10/s.
+const RESTED_WAKEUP_BUDGET: f64 = 0.1;
 
 /// Relays nobody listens on, so a woken test desktop's probes fail at once
 /// and its peers are reached directly over loopback.
@@ -252,7 +259,7 @@ fn an_invite_minted_on_an_idle_desktop_names_its_home_relay() {
 /// come back and dial, so the relays stay up; once its membership lapses,
 /// nobody is named and the delay passes, the desktop left alone rests its
 /// relays, and from then on it wakes no more than one that never
-/// collaborated. Gossip sweeps the topics the pair linked until their last
+/// collaborated ([`RESTED_WAKEUP_BUDGET`]). Gossip sweeps the topics the pair linked until their last
 /// messages expire ([`gossip_caches_drain_within`], 100 s), long before a
 /// real desktop rests its relays five minutes after the last collaborator;
 /// this one rests them after [`REST_AFTER`], so it waits that out before it
@@ -347,9 +354,9 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
         wakeups.blocking_per_second()
     );
     assert!(
-        wakeups.blocking_per_second() <= LONE_WAKEUP_BUDGET,
-        "a desktop whose collaborator left woke {:.2} times a second, over the lone desktop's \
-         {LONE_WAKEUP_BUDGET}/s:\n{wakeups}",
+        wakeups.blocking_per_second() <= RESTED_WAKEUP_BUDGET,
+        "a desktop whose collaborator left woke {:.2} times a second, over \
+         {RESTED_WAKEUP_BUDGET}/s:\n{wakeups}",
         wakeups.blocking_per_second(),
     );
     assert!(
