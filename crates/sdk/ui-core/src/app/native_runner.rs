@@ -362,6 +362,13 @@ mod floating_source_focus_tests {
             let previous = primary_floating_ime_state(app.root_widget.as_ref(), "a", Vec2::ZERO);
             assert!(previous.is_some());
             assert!(pending_floating_ime_state(&app, true, previous).is_none());
+            // This is the production pre-sync boundary: the root queued Float
+            // during input, but neither the host pump nor Prepare has run yet.
+            app.flush_floating_present_requests_before_ime();
+            assert!(app.floating.active_ids.is_empty());
+            assert!(!app.floating.prepared_ids.contains("a"));
+            assert_eq!(pending_floating_ime_state(&app, true, previous), previous);
+            assert!(pending_floating_ime_state(&app, false, previous).is_none());
             app.pump_floating_surface_service();
             assert_eq!(pending_floating_ime_state(&app, true, previous), previous);
             assert!(pending_floating_ime_state(&app, false, previous).is_none());
@@ -388,6 +395,9 @@ mod floating_source_focus_tests {
                 let mut wire = serde_json::to_vec(&message).unwrap();
                 wire.push(b'\n');
                 host_side.write_all(&wire).unwrap();
+                app.flush_floating_present_requests_before_ime();
+                assert!(!app.floating.prepared_ids.contains("a"));
+                assert_eq!(pending_floating_ime_state(&app, true, previous), previous);
                 app.pump_floating_surface_service();
                 assert_eq!(app.floating.prepared_ids.contains("a"), outcome == 0);
             }
@@ -1907,6 +1917,9 @@ impl AppHandler {
     }
 
     fn sync_ime(&mut self, window: &Window) {
+        if self.primary_preedit_active {
+            self.app.flush_floating_present_requests_before_ime();
+        }
         let _entry = self.app.enter_wake_scope();
         self.private_input.service(
             &self.app,

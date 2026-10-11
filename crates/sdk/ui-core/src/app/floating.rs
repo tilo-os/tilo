@@ -130,12 +130,28 @@ impl App {
     #[cfg(feature = "native")]
     fn pending_floating_ime_source(&self) -> Option<&str> {
         self.floating.client.as_ref()?;
+        let active_ids = self.root_widget.active_floating_surface_ids();
         let mut sources = self.floating.pending_ime_ids.iter().filter(|id| {
-            self.floating.active_ids.contains(*id)
-                && self.root_widget.floating_surface_ime(id).is_some()
+            active_ids.contains(id) && self.root_widget.floating_surface_ime(id).is_some()
         });
         let source = sources.next()?;
         sources.next().is_none().then_some(source.as_str())
+    }
+
+    /// Publish queued Present requests before comparing the composing source's
+    /// IME projection. This deliberately does not read host lifecycle messages:
+    /// Prepare must be applied by the native runner before pending custody ends.
+    #[cfg(feature = "native")]
+    fn flush_floating_present_requests_before_ime(&mut self) {
+        let Some(mut client) = self.floating.client.take() else {
+            return;
+        };
+        if let Err(error) = self.send_floating_present_requests(&mut client) {
+            tracing::warn!(%error, "floating-surface request failed; keeping app UI local");
+            self.reattach_after_floating_service_loss();
+            return;
+        }
+        self.floating.client = Some(client);
     }
 
     /// Withhold this app's windows from screenshots, recordings, screen
@@ -506,6 +522,23 @@ impl App {
             )?;
             *changed = true;
         }
+        self.send_floating_present_requests(client)?;
+        for (id, region) in self.root_widget.take_floating_surface_source_updates() {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::UpdateRegion {
+                    id,
+                    region: crate::floating_surface::protocol_rect_array(region),
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "native")]
+    fn send_floating_present_requests(
+        &mut self,
+        client: &mut FloatingSurfaceServiceClient,
+    ) -> Result<(), String> {
         while let Some(request) = self.root_widget.take_floating_surface_request() {
             crate::floating_surface::handoff_diagnostics::mark(
                 crate::floating_surface::handoff_diagnostics::Stage::PresentDequeued,
@@ -528,14 +561,6 @@ impl App {
             crate::floating_surface::handoff_diagnostics::mark(
                 crate::floating_surface::handoff_diagnostics::Stage::PresentSendAccepted,
             );
-        }
-        for (id, region) in self.root_widget.take_floating_surface_source_updates() {
-            client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::UpdateRegion {
-                    id,
-                    region: crate::floating_surface::protocol_rect_array(region),
-                },
-            )?;
         }
         Ok(())
     }
