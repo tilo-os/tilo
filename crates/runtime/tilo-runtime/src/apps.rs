@@ -346,8 +346,14 @@ impl LauncherServices for Apps {
         room: &str,
         executable: &Path,
     ) -> Result<(), String> {
-        if uuid::Uuid::parse_str(room).is_err() || room != self.room {
+        if uuid::Uuid::parse_str(room).is_err() {
             return Err("native registration requires this runtime's exact workspace".into());
+        }
+        if room != self.room {
+            // Joining certifies the profile's device, not arbitrary same-UID
+            // executables. Neither a dev host nor the requested source grants
+            // this caller authority to launch into another workspace.
+            return Err("native registration has no host-authorized launch into this workspace; joined membership and development mode do not grant launch authority".into());
         }
         let source = self.launch_source(app, executable)?;
         self.register_independent(pid, pid, (app, room), source)

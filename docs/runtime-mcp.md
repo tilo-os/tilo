@@ -54,6 +54,23 @@ MCP client: closing one app or one MCP connection does not stop the daemon or
 the other apps. Only one daemon may own a profile, and private-directory and
 socket checks reject unsafe or competing owners.
 
+For an uninstalled build that uses native committed-document reads, start the
+isolated host explicitly with `tilo-runtime --profile "$TILO_RUNTIME_PROFILE"
+--daemon --dev` before launching the app. Development mode permits the existing
+development record-kind policy in that profile's own workspace. It does not
+manufacture package signatures or production service privileges; installed
+packages still use their original signed entrypoint and declared record kinds.
+
+Native `--run-app --room` registration currently requires the host's own exact
+workspace. A joined room's device certificate establishes membership, not
+authorization for any same-UID executable to launch there. Request fields,
+environment flags and another profile's path cannot supply that missing launch
+authority. Legacy SDK collaboration remains supported, including its existing
+joined-room transport; it is not evidence of native launch custody. A custom
+native host uses `CollaborationManager::for_native_record` and must supply the
+authenticated native document owner; `new()` and `for_record()` retain their
+legacy transport contract.
+
 The standalone runtime keeps its workspace's files in the profile and shows
 them in `$HOME/Tilo/<workspace>` (`~/Tilo/Home` for a new profile), an ordinary
 folder any program can use. Changes cross both ways within about two seconds:

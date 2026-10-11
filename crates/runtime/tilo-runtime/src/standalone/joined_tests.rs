@@ -753,6 +753,61 @@ const SDK_APP: &str = "so.tilo.chat";
 const SDK_WRITTEN: &str = "sealed by a live SDK app in a joined room";
 
 #[test]
+fn admitted_development_profile_cannot_turn_membership_into_native_launch_authority() {
+    use tilo_action_broker::services::LauncherServices as _;
+    const TEST: &str = "standalone::joined::tests::admitted_development_profile_cannot_turn_membership_into_native_launch_authority";
+    let Some(profile) = super::super::tests::isolated_root(TEST) else {
+        return;
+    };
+    let session = super::super::Standalone::start_in_dev_mode(&profile, &mut |_| {}).unwrap();
+    let (_, device) = tilo_identity_host::broker::trusted_current_device(session.room()).unwrap();
+    let governor_root = profile.parent().unwrap().join("governor");
+    std::fs::create_dir_all(&governor_root).unwrap();
+    let governing = tilo_rt::app()
+        .block_on(Box::pin(HostedRoom::start(&governor_root)))
+        .unwrap();
+    let room = session.joiner().unwrap()(&governing.invite(device.user_public_key)).unwrap();
+    assert_eq!(room, governing.room.to_string());
+    assert!(session.joined.workspace(governing.room).is_some());
+    let joined_path = profile.join(JOINED_ROOMS);
+    let joined_before = std::fs::read(&joined_path).unwrap();
+    let own_path = super::super::test_owner_path(&profile);
+    let own_before = std::fs::read(&own_path).unwrap();
+    let pid = std::process::id();
+    let app = "dev.tilo.admitted-launch-boundary";
+    let executable = std::env::current_exe().unwrap();
+    // A positive own-room registration proves the actual code source and
+    // explicit dev host are usable; only the foreign launch authority differs.
+    session
+        .apps
+        .register_independent_launch(pid, app, session.room(), &executable)
+        .unwrap();
+    assert!(
+        session
+            .apps
+            .authenticated_launch(pid, app, session.room())
+            .unwrap()
+            .unwrap()
+            .development_source
+            .is_some()
+    );
+    let error = session
+        .apps
+        .register_independent_launch(pid, app, &room, &executable)
+        .unwrap_err();
+    assert!(error.contains("no host-authorized launch"));
+    assert!(
+        session
+            .apps
+            .authenticated_launch(pid, app, &room)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(std::fs::read(&own_path).unwrap(), own_before);
+    assert_eq!(std::fs::read(&joined_path).unwrap(), joined_before);
+}
+
+#[test]
 fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
     // Helper role: an ordinary SDK app in the joined room writes once. The
     // SDK holds the write until the runtime's channel service is admitted by

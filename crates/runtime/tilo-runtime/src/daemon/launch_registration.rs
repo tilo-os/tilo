@@ -140,3 +140,70 @@ pub(super) fn register(
             .unwrap_or("native source registration refused"),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::apps::Apps;
+
+    #[test]
+    fn same_uid_claims_cannot_register_into_another_profiles_workspace() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let first_room = uuid::Uuid::new_v4().to_string();
+        let second_room = uuid::Uuid::new_v4().to_string();
+        let app = "dev.tilo.registration-boundary";
+        let executable = std::env::current_exe().unwrap();
+        for development in [false, true] {
+            let apps = Arc::new(
+                Apps::new(
+                    None,
+                    first.path(),
+                    &first_room,
+                    Path::new("").into(),
+                    Vec::new(),
+                )
+                .with_development_mode(development),
+            );
+            let launcher: Arc<dyn LauncherServices> = apps.clone();
+            let (server, _client) = UnixStream::pair().unwrap();
+            let caller = Caller::from_socket(&server).expect("actual same-UID kernel caller");
+            let claim = json!({
+                "app_id": app, "room": second_room, "executable": executable,
+                "pid": std::process::id(), "profile": second.path(),
+                "development": true, "participation": "author"
+            });
+            let reply = caller.answer(Some(&launcher), &claim);
+            assert!(
+                reply["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("no host-authorized launch")
+            );
+            assert!(!apps.attest_process(std::process::id(), app, &second_room));
+            assert!(!apps.attest_process(std::process::id(), app, &first_room));
+
+            let own = caller.answer(
+                Some(&launcher),
+                &json!({
+                    "app_id": app, "room": first_room, "executable": executable,
+                    // Wire PIDs and profile paths never replace the socket caller
+                    // or the launcher's host-selected profile.
+                    "pid": 1, "profile": second.path()
+                }),
+            );
+            assert_eq!(own, json!({"registered": true}));
+            assert!(apps.attest_process(std::process::id(), app, &first_room));
+            assert!(!apps.attest_process(1, app, &first_room));
+            assert!(!apps.attest_process(std::process::id(), "dev.tilo.impostor", &first_room));
+            assert!(!apps.attest_process(std::process::id(), app, &second_room));
+            assert!(
+                caller
+                    .answer(Some(&launcher), &claim)
+                    .get("error")
+                    .is_some()
+            );
+            assert!(!apps.attest_process(std::process::id(), app, &second_room));
+        }
+    }
+}

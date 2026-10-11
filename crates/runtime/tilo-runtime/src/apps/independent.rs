@@ -413,6 +413,41 @@ mod tests {
         let original = executable_hash(&task.executable_path()).unwrap();
         assert!(task.verify_source(original));
         assert!(task.source_current());
+        let registry = IndependentLaunches::default();
+        let scope = (
+            "dev.tilo.exec-boundary",
+            "0b7c7a52-6f7e-4a55-9a51-1c2f4b3f7e10",
+        );
+        registry
+            .register(
+                child.0.id(),
+                child.0.id(),
+                scope,
+                OriginalSource {
+                    package_hash: format!("uninstalled:{original}"),
+                    creation: None,
+                    development: true,
+                    executable: original,
+                },
+            )
+            .unwrap();
+        let cohort = registry.cohort(child.0.id(), scope.0, scope.1).unwrap();
+        assert!(cohort.tasks[0].verify_source(original));
+        let retained = registry
+            .authenticated(child.0.id(), scope.0, scope.1)
+            .unwrap();
+        let custody = retained.execution_custody.unwrap();
+        assert!((custody.0)(child.0.id()));
+        assert!(
+            registry
+                .authenticated(child.0.id(), scope.0, "another-room")
+                .is_none()
+        );
+        assert!(
+            registry
+                .authenticated(child.0.id(), "another-app", scope.1)
+                .is_none()
+        );
         child.0.stdin.take().unwrap().write_all(b"exec\n").unwrap();
         tilo_test_env::wait_until("source replacement in the retained live task", || {
             !task.source_current()
@@ -424,6 +459,10 @@ mod tests {
         assert!(
             !task.verify_source(original),
             "replacement code must not recover original custody"
+        );
+        assert!(
+            !(custody.0)(child.0.id()),
+            "a retained native capability must fence the live same-PID exec"
         );
     }
 }
