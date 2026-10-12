@@ -223,6 +223,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Prepare verified fonts for offline builds
+        uses: ./.forgejo/actions/prepare-font-assets
+
       - name: Require a real kernel FUSE environment
         run: bash scripts/ci-fuse-preflight.sh
 
