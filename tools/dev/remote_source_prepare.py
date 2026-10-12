@@ -15,6 +15,7 @@ import subprocess
 
 ROOT_FILES = {'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'rustfmt.toml', 'clippy.toml'}
 ROOTS = {'apps', 'crates', 'examples', 'vendor', '.cargo'}
+SOURCE_HELPERS = {'tools/cargo-runner.sh', 'tools/with-test-environment.sh'}
 BUILD_ROOTS = ('dist/dev/', 'dist/ci/')
 FORBIDDEN = {'.git', '.worktrees', 'target', '.aws', '.ssh', '.config', 'credentials', 'imports', 'imported', 'datasets', 'secrets', 'keys'}
 UNTRACKED_SOURCE = {'.rs', '.toml', '.ftl'}
@@ -30,7 +31,7 @@ def allowed(name, tracked):
         return False
     if path.suffix.lower() in {'.pem', '.key', '.p12', '.pfx', '.jsonl', '.sqlite', '.db'}:
         return False
-    selected = name in ROOT_FILES or path.parts[0] in ROOTS or name.startswith(BUILD_ROOTS)
+    selected = name in ROOT_FILES or name in SOURCE_HELPERS or path.parts[0] in ROOTS or name.startswith(BUILD_ROOTS)
     return selected and (tracked or path.suffix in UNTRACKED_SOURCE)
 
 
