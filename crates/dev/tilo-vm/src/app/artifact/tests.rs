@@ -89,3 +89,67 @@ fn imported_cohort_uses_verified_import_and_addressed_slot_readback() {
         }
     }
 }
+
+/// The acceptance consumer runs as an unprivileged user in a detached worktree
+/// of a root-owned CI clone: HEAD resolves, but the commit object in the shared
+/// store need not be readable. Removing the loose commit object models exactly
+/// that as git sees it (the open fails) without depending on who runs the test.
+#[test]
+fn consumer_checkout_accepts_exact_head_without_its_object_and_refuses_another_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let clone = dir.path().join("clone");
+    let checkout = dir.path().join("src");
+    let git = |cwd: &std::path::Path, args: &[&str]| -> String {
+        let output = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args([
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    std::fs::create_dir(&clone).unwrap();
+    git(&clone, &["init", "-q"]);
+    git(&clone, &["commit", "-q", "--allow-empty", "-m", "producer"]);
+    let producer = git(&clone, &["rev-parse", "HEAD"]);
+    git(&clone, &["commit", "-q", "--allow-empty", "-m", "later"]);
+    let later = git(&clone, &["rev-parse", "HEAD"]);
+    git(
+        &clone,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            checkout.to_str().unwrap(),
+            &producer,
+        ],
+    );
+    let worktree = Worktree::detect(&checkout).unwrap();
+    consumer_checkout(&worktree, &producer).unwrap();
+
+    let refused = consumer_checkout(&worktree, &later).unwrap_err().render();
+    assert!(
+        refused.contains("differs from requested exact source")
+            && refused.contains(&producer)
+            && refused.contains(&later),
+        "{refused}"
+    );
+
+    let (shard, rest) = producer.split_at(2);
+    std::fs::remove_file(clone.join(".git/objects").join(shard).join(rest)).unwrap();
+    assert!(
+        worktree.rev_parse("HEAD").is_none(),
+        "the fixture must make the commit object unreadable"
+    );
+    consumer_checkout(&worktree, &producer).unwrap();
+    assert!(consumer_checkout(&worktree, &later).is_err());
+}

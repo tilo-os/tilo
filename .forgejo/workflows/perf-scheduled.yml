@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       kpis:
-        description: "Comma-separated KPI groups to run (fs, footprint (app and OS image sizes), agent, latency, render, wakeups, hosting); empty runs all."
+        description: "Comma-separated KPI groups to run (fs, footprint (app and OS image sizes), agent, latency, render, wakeups, search, hosting); empty runs all."
         required: false
         default: ""
       accept:
@@ -62,6 +62,10 @@ on:
         description: "A/B: rounds, each running both sides (at least 6 for a 95 % interval)."
         required: false
         default: "8"
+      ab_relay_cpus:
+        description: "A/B hosting: confine the relay to this many CPUs, as on a VM with that many vCPUs (empty: all, which gives it 4 workers). Both sides' bench must know --relay-cpus."
+        required: false
+        default: ""
 
 concurrency:
   # compare.py reads the store's state and then appends to it; two runs at
@@ -87,6 +91,7 @@ jobs:
       latency: ${{ steps.select.outputs.latency }}
       render: ${{ steps.select.outputs.render }}
       wakeups: ${{ steps.select.outputs.wakeups }}
+      search: ${{ steps.select.outputs.search }}
       hosting: ${{ steps.select.outputs.hosting }}
     steps:
       - name: Select KPI groups
@@ -97,7 +102,7 @@ jobs:
           AB_ROUNDS: ${{ github.event.inputs.ab_rounds }}
         run: |
           set -euo pipefail
-          known=(fs footprint agent latency render wakeups hosting)
+          known=(fs footprint agent latency render wakeups search hosting)
           mode=${MODE:-scheduled}
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           if [[ $mode == ab ]]; then
@@ -159,7 +164,7 @@ jobs:
       - name: Build the tilo-fs performance gate
         run: >-
           bash scripts/ci-run.sh "tilo-fs performance gate build" --
-          cargo test --locked -p tilo-fs --test performance_gate --no-run
+          cargo test --locked -p tilo-fs --test performance_gate --test document_media_footprint --no-run
 
       - name: Run the gate five times and record it
         env:
@@ -171,6 +176,9 @@ jobs:
           for run in 1 2 3 4 5; do
             cargo test --locked -p tilo-fs --test performance_gate -- --nocapture --test-threads=1 \
               2> "perf/fs-gate-$run.log" || status=$?
+            # The daemon heap KPIs (fs.*-heap), in the same run's log.
+            cargo test --locked -p tilo-fs --test document_media_footprint -- --nocapture \
+              2>> "perf/fs-gate-$run.log" || status=$?
             grep '^PERF\| PERF ' "perf/fs-gate-$run.log" || true
           done
           # The Kata runners are KVM guests; the gate draws nothing.
@@ -319,7 +327,8 @@ jobs:
   # architecture, the tilo-ci base that tilo-vm:main-ci names, streamed from
   # the registry and replayed layer by layer through tools/perf/image_size.py.
   # Compressed layer bytes (a full pull), unique content (what composefs holds
-  # after install) and redundant payload (bytes the layers ship twice). Byte
+  # after install), redundant payload (bytes the layers ship twice) and the
+  # update from main's previous build (the layers it lacks). Byte
   # counts: runner-independent, so `runner` is none. The ceilings and the 5 %
   # growth rule are in tools/perf/kpi-budgets.toml (DEVELOPMENT.md, "OS image
   # size"). The full breakdown is the job's summary and the image-size
@@ -336,9 +345,13 @@ jobs:
     container:
       image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     steps:
+      # History, for the update from main's previous build: the image of the
+      # newest earlier first-parent commit that has one (Build / OS dev builds
+      # main a few times a day, when OS inputs change).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 500
           sparse-checkout: tools/perf
           sparse-checkout-cone-mode: false
 
@@ -350,6 +363,7 @@ jobs:
           mkdir -p perf
           python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci \
             --arch "$ARCH" --records perf/image-$ARCH.jsonl --runner none \
+            --update-from-previous 'main-{sha7}-{arch}' \
             --json perf/image-size-$ARCH.json --markdown perf/image-size-$ARCH.md > /dev/null
           cat "perf/image-size-$ARCH.md" >> "$GITHUB_STEP_SUMMARY"
           cat "perf/image-$ARCH.jsonl"
@@ -481,6 +495,16 @@ jobs:
           target/release/examples/framework-scaling 5000,50000 open | tee perf/framework-open.log
           python3 tools/perf/adapters.py framework-open --env-json perf/env.json \
             perf/framework-open.log >> perf/render.jsonl
+          # Scrolling a long framework list, each frame presented as a window
+          # that copies what a scroll keeps on screen presents it.
+          target/release/examples/framework-scaling 5000 scroll | tee perf/framework-scroll.log
+          python3 tools/perf/adapters.py framework-scroll --env-json perf/env.json \
+            perf/framework-scroll.log >> perf/render.jsonl
+          # The keyboard focus order of a long framework list: one
+          # recomputation, and an agent call adding one item.
+          target/release/examples/framework-scaling 500,1000,2500 focus | tee perf/framework-focus.log
+          python3 tools/perf/adapters.py framework-focus --env-json perf/env.json \
+            perf/framework-focus.log >> perf/render.jsonl
           cat perf/render.jsonl
 
       - name: Check the render counters
@@ -553,6 +577,68 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
+  # Files search's name index under file changes: process CPU for one watched
+  # change to an index of MAX_ENTRIES (50k) names, an unchanged one, a
+  # rename, a 64-file burst and a whole-index build, from the shell unit test
+  # a_watched_change_costs_one_record_not_a_rebuild (which pull requests run
+  # at 20k names), five times, through adapters.py files-name-index. A debug
+  # lib-test build with check.yml's Cargo environment; the index engine
+  # (tantivy, tilo-search) is optimised in that profile as in every other.
+  search:
+    needs: [plan, builder]
+    if: needs.plan.outputs.search == 'true'
+    runs-on: runner
+    timeout-minutes: 90
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      TILO_FILES_NAME_INDEX_NAMES: "50000"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the shell unit tests
+        run: >-
+          bash scripts/ci-run.sh "files name index cost build" --
+          cargo test --locked -p shell --lib --no-run
+
+      - name: Measure watched changes to a 50k-name index five times and record them
+        run: |
+          set -uo pipefail
+          mkdir -p perf
+          status=0
+          for run in 1 2 3 4 5; do
+            bash tools/test-env.sh cargo test --locked -p shell --lib \
+              shell::search::providers::files::tests::a_watched_change_costs_one_record_not_a_rebuild \
+              -- --exact --nocapture --test-threads=1 > "perf/files-name-index-$run.log" 2>&1 || status=$?
+            grep 'FILES-NAME-INDEX' "perf/files-name-index-$run.log" || true
+          done
+          # The Kata runners are KVM guests; the test draws nothing.
+          python3 tools/perf/record.py env --profile dev --renderer none \
+            --virtualization kvm --runner runner > perf/env.json || status=1
+          python3 tools/perf/adapters.py files-name-index --env-json perf/env.json perf/files-name-index-*.log \
+            > perf/search.jsonl || status=1
+          cat perf/search.jsonl
+          exit "$status"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-search
+          path: perf/
+          if-no-files-found: warn
+
   # What an active collaborator costs a relay (TIL-592): 100 collaborators in
   # rooms of four type, point and idle through one relay process for ten
   # measured minutes, with authentication and the production co-edit path on
@@ -560,6 +646,12 @@ jobs:
   # resident MiB and egress bytes per collaborator-hour and fan-out latency;
   # adapters.py prices them with tools/perf/prices.toml. Release build made
   # once here, with the agent and render jobs' Cargo environment.
+  #
+  # The relay runs on two CPUs (`--relay-cpus 2`), the shape of the priced
+  # 2-vCPU VM: its daemon runtime then starts two workers, as it does there,
+  # instead of the runner's four, and the collaborators run on the other CPUs.
+  # Records carry it as meta `relay_cpus`; the series before this change was
+  # measured on all of the runner's CPUs (kpi-budgets.toml, "Relay hosting cost").
   hosting:
     needs: [plan, builder]
     if: needs.plan.outputs.hosting == 'true'
@@ -594,8 +686,8 @@ jobs:
           mkdir -p perf
           python3 tools/perf/record.py env --profile release --renderer none \
             --virtualization kvm --runner runner > perf/env.json
-          target/release/examples/relay_load --collaborators 100 --minutes 10 --out perf/run \
-            | tee perf/hosting-load.log
+          target/release/examples/relay_load --collaborators 100 --minutes 10 --relay-cpus 2 \
+            --out perf/run | tee perf/hosting-load.log
           python3 tools/perf/adapters.py hosting-load --env-json perf/env.json \
             perf/run/hosting-load.json > perf/hosting.jsonl
           cat perf/hosting.jsonl
@@ -653,12 +745,14 @@ jobs:
           BASE: ${{ github.event.inputs.ab_base }}
           CANDIDATE: ${{ github.event.inputs.ab_candidate }}
           ROUNDS: ${{ github.event.inputs.ab_rounds }}
+          RELAY_CPUS: ${{ github.event.inputs.ab_relay_cpus }}
         run: |
           set -euo pipefail
           ./os/dev/assert-native-arch.sh x86_64
           git config --global --add safe.directory "$PWD"
           python3 tools/perf/ab.py run --groups "$GROUP" --base "${BASE:-origin/main}" \
             --candidate "${CANDIDATE:-$GITHUB_SHA}" --rounds "$ROUNDS" --out perf-ab \
+            --hosting-relay-cpus "${RELAY_CPUS:-0}" \
             --virtualization kvm --runner runner --summary "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
@@ -674,7 +768,7 @@ jobs:
           if-no-files-found: warn
 
   compare:
-    needs: [plan, fs, footprint, footprint-image, agent, latency, render, wakeups, hosting]
+    needs: [plan, fs, footprint, footprint-image, agent, latency, render, wakeups, search, hosting]
     if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.mode != 'ab' }}
     runs-on: runner-quality
     timeout-minutes: 15
@@ -706,6 +800,7 @@ jobs:
           LATENCY_RESULT: ${{ needs.latency.result }}
           RENDER_RESULT: ${{ needs.render.result }}
           WAKEUPS_RESULT: ${{ needs.wakeups.result }}
+          SEARCH_RESULT: ${{ needs.search.result }}
           HOSTING_RESULT: ${{ needs.hosting.result }}
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
@@ -713,7 +808,7 @@ jobs:
           shopt -s nullglob
           owner=${GITHUB_REPOSITORY%%/*}
           status=0
-          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "footprint-image:$FOOTPRINT_IMAGE_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "hosting:$HOSTING_RESULT"; do
+          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "footprint-image:$FOOTPRINT_IMAGE_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "search:$SEARCH_RESULT" "hosting:$HOSTING_RESULT"; do
             case ${job#*:} in
               success|skipped) ;;
               *) echo "::error::benchmark job ${job%%:*} ended ${job#*:}"; status=1 ;;
@@ -725,7 +820,7 @@ jobs:
             echo "::error::accept only applies to main, where the store is written"
             exit 1
           fi
-          args=(--store "$GITHUB_SERVER_URL" --owner "$owner" --groups "$GROUPS"
+          args=(--store "$GITHUB_SERVER_URL" --owner "$owner" --lane perf-scheduled --groups "$GROUPS"
                 --publish-dir publish --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --summary summary.md)
           [[ -n ${ACCEPT:-} ]] && args+=(--accept "$ACCEPT")
           [[ -n ${SERIES:-} ]] && args+=(--synthetic "$SERIES" --synthetic-factor "${FACTOR:-1.0}")

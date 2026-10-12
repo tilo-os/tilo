@@ -146,7 +146,7 @@ pub use audio::{
 pub use cache::{
     FrameCache, FrameKey, SourceKey, bucket_ms_for_fps, bucket_of, read_ahead_targets,
 };
-pub use caps::{Availability, CAPABILITIES, Feature, availability};
+pub use caps::{Availability, Feature, availability};
 pub use dmabuf::{ColorRange, Colorimetry, YuvMatrix};
 #[cfg(unix)]
 pub use dmabuf::{DmabufImage, DmabufPlane};

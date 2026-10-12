@@ -872,7 +872,7 @@ fn open_reference(
                 .map_err(|error| format!("Could not keep the reference: {error}"))?;
             let parsed = FlatpakRef::parse(&contents, PathBuf::new());
             match parsed {
-                Some(reference) if crate::doc_actions::valid_app_id(&reference.app_id) => {
+                Some(reference) if crate::reports::valid_app_id(&reference.app_id) => {
                     let path = directory.join(format!("{}.flatpakref", reference.app_id));
                     tilo_files::native::atomic::write(&path, contents.as_bytes())
                         .map_err(|error| format!("Could not keep the reference: {error}"))?;

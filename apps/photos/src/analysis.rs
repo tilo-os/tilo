@@ -6,8 +6,8 @@
 
 use crate::model::{AnalysisProvenance, ImageAnalysis, OpenImage};
 use crate::people::{VerifiedFaceCluster, VerifiedFaceClusterBatch};
+use crate::pixels;
 use crate::strings::tr;
-use crate::{doc, pixels};
 use tilo_content::ContentStore;
 
 /// Maximum text retained from an OCR engine.  This is deliberately below the
@@ -29,7 +29,8 @@ pub fn recognize_text(
     if !valid_language(language) {
         return Err(tr("photos-analysis-error-language"));
     }
-    let bytes = doc::bytes_of(open, store).ok_or_else(|| tr("photos-analysis-error-not-here"))?;
+    let bytes =
+        crate::model::bytes_of(open, store).ok_or_else(|| tr("photos-analysis-error-not-here"))?;
     let rgba = pixels::decode(&bytes).ok_or_else(|| tr("photos-analysis-error-unreadable"))?;
     let image = image::RgbaImage::from_raw(rgba.w, rgba.h, rgba.bytes)
         .ok_or_else(|| tr("photos-analysis-error-unreadable"))?;
@@ -72,7 +73,8 @@ pub fn analyze_image(
     capability: &tilo_vision::LocalVisionCapability,
     store: &ContentStore,
 ) -> Result<ImageAnalysis, String> {
-    let bytes = doc::bytes_of(open, store).ok_or_else(|| tr("photos-analysis-error-not-here"))?;
+    let bytes =
+        crate::model::bytes_of(open, store).ok_or_else(|| tr("photos-analysis-error-not-here"))?;
     let rgba = pixels::decode(&bytes).ok_or_else(|| tr("photos-analysis-error-unreadable"))?;
     let image = image::RgbaImage::from_raw(rgba.w, rgba.h, rgba.bytes)
         .ok_or_else(|| tr("photos-analysis-error-unreadable"))?;
@@ -104,7 +106,7 @@ pub fn detect_people(
     }
     let mut prepared = Vec::with_capacity(images.len());
     for (photo_id, open) in images {
-        let bytes = doc::bytes_of(&open, store).ok_or_else(|| {
+        let bytes = crate::model::bytes_of(&open, store).ok_or_else(|| {
             "A selected photograph is not available on this device yet; retry after it syncs"
                 .to_owned()
         })?;
@@ -171,7 +173,6 @@ fn image_analysis_from_vision_result(
         provenance: provenance.clone(),
         ocr_provenance: has_ocr.then(|| provenance.clone()),
         vision_provenance: Some(provenance),
-        ..ImageAnalysis::default()
     }
 }
 
@@ -232,7 +233,6 @@ mod tests {
                 },
             );
             assert_eq!(analysis.objects, ["dog", "bicycle"]);
-            assert!(analysis.people.is_empty());
             assert_eq!(analysis.pets, ["dog"]);
             assert_eq!(analysis.ocr_text, "42 North Street");
             assert_eq!(analysis.provenance.source, "local-vision");

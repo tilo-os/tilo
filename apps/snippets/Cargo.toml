@@ -20,16 +20,8 @@ thin = ["dep:runtime-dylib"]
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-# The Tilo ACTION model: Snippets' `actions` module exports every library
-# mutation as a replayable action the host's Ctrl+K palette dispatches, so a
-# toolbar button and a palette row build the identical action and share one
-# undo boundary.
-tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
-tilo-automerge.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

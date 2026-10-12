@@ -45,8 +45,7 @@ use tilo_relay_protocol::Envelope;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
 use call::{
-    CHANNEL, CHAT, browser, carrier, create_voice_channel, endpoint, enter, granted, hears, invite,
-    until,
+    CHAT, browser, carrier, create_voice_channel, endpoint, enter, granted, hears, invite, until,
 };
 use support::{TestHost, enrol, start_room_host};
 
@@ -185,11 +184,11 @@ impl Native {
     }
 
     /// Join the call on the voice channel, starting it, as the shell does.
-    async fn call(&mut self) -> Arc<Participation> {
+    async fn call(&mut self, channel: &str) -> Arc<Participation> {
         let channel = Channel {
             app: CHAT.into(),
             record: String::new(),
-            channel: CHANNEL.into(),
+            channel: channel.into(),
         };
         loop {
             // Until the governor admits the channel, it refuses to start.
@@ -260,7 +259,7 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
 
     // The chat gets a voice channel; Alice's native device starts its call
     // and the governor grants her the first participation.
-    let _replica = create_voice_channel(
+    let (_replica, voice) = create_voice_channel(
         address.clone(),
         room.workspace_id,
         &room.room,
@@ -277,7 +276,7 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
                 .is_some()
         })
         .await;
-    let call = native.call().await;
+    let call = native.call(&voice).await;
     let alone = call.grant().unwrap();
     assert_eq!(alone.participants.len(), 1);
     assert!(alone.subscriptions.is_empty());

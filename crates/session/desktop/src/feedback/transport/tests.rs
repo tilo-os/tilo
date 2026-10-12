@@ -7,7 +7,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
-use ui::permissions::{Actor, Role, UserId};
+use ui::permissions::{Actor, KindSet, Role, UserId, policy};
 use ui::record::{RecordCheckout, RecordOwners};
 
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
@@ -25,13 +25,65 @@ fn enrollment() -> Enrollment {
         owner: Caller::authenticated([11; 32], owner.verifying_key().to_bytes()).in_room(ROOM),
         reporter: Caller::authenticated([12; 32], reporter.verifying_key().to_bytes())
             .in_room(ROOM),
-        permissions: PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Owner), hex::encode([12; 32])).in_room(ROOM),
-            vec![],
-        )
-        .at_unix_time(0),
-        publication: Verb::Write,
+        permissions: PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Owner)
+            .at_unix_time(0),
     }
+}
+
+/// `person`, holding no role in the room.
+fn no_member(person: &str) -> PermissionContext {
+    PermissionContext::new(
+        Actor::person(person).in_room(ROOM),
+        vec![],
+        ui::permissions::Standing::person(
+            policy::RoomPolicy::unowned(ROOM, &policy::Subject::Role(Role::Owner)),
+            person,
+        ),
+    )
+}
+
+/// A grant to the reporter of `kinds` on submitting feedback, answered `answer`.
+fn submit_grant(kinds: KindSet, answer: Answer) -> policy::Grant {
+    policy::Grant::new(
+        "feedback-submit",
+        policy::Subject::person(hex::encode([12; 32])),
+        TreePath::room(ROOM).join(&chat_action(
+            "channels",
+            "feedback",
+            Some(destination::SUBMIT_FIELD),
+            "submit-feedback",
+        )),
+        kinds,
+        answer,
+        policy::Subject::person(hex::encode([11; 32])),
+    )
+}
+
+/// The feedback contract names what Chat itself publishes: its package and
+/// resource kind, the item ids its channels and reports have, and the
+/// action that files a report.
+#[test]
+fn the_feedback_contract_names_what_chat_publishes() {
+    use tilo_app::framework::ResourceApp;
+    use tilo_app::tilo_resource::Resource;
+    assert_eq!(destination::PACKAGE, chat::resource::ChatShell::ID);
+    assert_eq!(
+        destination::RESOURCE_KIND,
+        <chat::resource::Chat as Resource>::KIND
+    );
+    assert_eq!(
+        chat_item(destination::CHANNELS, "feedback"),
+        chat::projection::item_id("channels", "feedback")
+    );
+    assert_eq!(
+        chat_item(destination::REPORTS, "report-1"),
+        chat::projection::item_id("feedback", "report-1")
+    );
+    assert!(
+        <chat::resource::Chat as Resource>::declarations()
+            .iter()
+            .any(|declaration| declaration.id == destination::SUBMIT)
+    );
 }
 
 fn submission() -> Submission {
@@ -57,7 +109,10 @@ fn session(
             assert_eq!(target.provider, submission.destination.provider);
             assert_eq!(
                 target.address,
-                tilo_actions::ActionAddress::new("chat.channel:feedback", "submit-feedback")
+                tilo_actions::ActionAddress::new(
+                    chat::projection::item_id("channels", "feedback"),
+                    "submit-feedback"
+                )
             );
             sent.borrow_mut().push(submission.clone());
             Ok(())
@@ -94,25 +149,21 @@ fn canonical(profile: &Path) -> (RecordStore, FrameHarness) {
             .reserve_record(&checkout)
             .unwrap()
             .initialize(|doc| {
-                chat::doc::ChatDoc::seed_workspace(
+                let reporter = hex::encode([12; 32]);
+                let failed = |error: ui::tilo_actions::DoorError| error.to_string();
+                chat::demo::start_in(doc, &reporter, (ROOM, "Fixture"), "Reporter", "R")
+                    .map_err(failed)?;
+                chat::demo::insert_category(doc, &reporter, "category", ROOM, "Feedback")
+                    .map_err(failed)?;
+                chat::demo::insert_channel(
                     doc,
-                    ROOM,
-                    "Fixture",
-                    &hex::encode([12; 32]),
-                    "Reporter",
-                    "R",
-                    0,
-                )?;
-                chat::doc::ChatDoc::insert_category(doc, "category", ROOM, "Feedback");
-                chat::doc::ChatDoc::insert_channel(
-                    doc,
+                    &reporter,
                     "feedback",
-                    ROOM,
-                    "category",
+                    (ROOM, "category"),
                     "Feedback",
                     chat::model::ChannelKind::Text,
-                );
-                Ok(())
+                )
+                .map_err(failed)
             })
             .unwrap();
     }
@@ -155,7 +206,7 @@ fn submit(frame: &mut FrameHarness, report: &Submission) {
             &ui::bound_dispatch::BoundActionAddress {
                 instance_id: 7,
                 address: tilo_actions::ActionAddress::new(
-                    "chat.channel:feedback",
+                    chat::projection::item_id("channels", "feedback"),
                     "submit-feedback",
                 ),
             },
@@ -238,12 +289,13 @@ fn canonical_owner_process() {
             assert_eq!(reports.len(), 1);
             assert_eq!(reports[0].submission, report);
             assert_eq!(reports[0].author, hex::encode([12; 32]));
+            let message = tilo_app::tilo_resource::Id::from_raw(chat::feedback::message_id(ID));
             assert_eq!(
-                chat::doc::ChatDoc::list_messages(doc, "feedback")
-                    .iter()
-                    .filter(|message| message.id == format!("m_feedback_{ID}"))
-                    .count(),
-                1
+                chat::projection::read(doc)
+                    .messages
+                    .get(&message)
+                    .map(|posted| posted.channel.as_str().to_owned()),
+                Some("feedback".to_owned())
             );
             true
         })
@@ -357,11 +409,8 @@ fn canonical_owner_refuses_pending_edits_wrong_owner_and_wrong_reporter() {
         SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes(),
     )
     .in_room(ROOM);
-    wrong_reporter.permissions = PermissionContext::from_capabilities(
-        Actor::person(Some(Role::Owner), hex::encode([15; 32])).in_room(ROOM),
-        vec![],
-    )
-    .at_unix_time(0);
+    wrong_reporter.permissions =
+        PermissionContext::member_of(ROOM, hex::encode([15; 32]), Role::Owner).at_unix_time(0);
     assert!(matches!(
         service.receipt(&report, &wrong_reporter),
         Err(Error::ReceiptMismatch)
@@ -479,11 +528,8 @@ fn unsigned_wrong_owner_and_wrong_destination_acknowledgments_are_refused() {
     .unwrap();
     let mut host = Host::open(Rc::new(MemoryStore::new()), setup).unwrap();
     host.receipt(&report).unwrap().unwrap();
-    current.borrow_mut().permissions = PermissionContext::from_capabilities(
-        Actor::person(Some(Role::Viewer), hex::encode([12; 32])).in_room(ROOM),
-        vec![],
-    )
-    .at_unix_time(0);
+    current.borrow_mut().permissions =
+        PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Viewer).at_unix_time(0);
     // Read-only admission can confirm a previous durable report, never resend it.
     host.receipt(&report).unwrap().unwrap();
     assert!(host.send(&report).is_err());
@@ -509,35 +555,31 @@ fn unsigned_wrong_owner_and_wrong_destination_acknowledgments_are_refused() {
 }
 
 #[test]
-fn startup_refuses_missing_role_splice_without_write_and_replacement() {
+fn startup_admits_a_commenter_and_refuses_a_viewer_a_stranger_and_replacement() {
     let mut missing = enrollment();
-    missing.permissions = PermissionContext::from_capabilities(
-        Actor::person(None, hex::encode([12; 32])).in_room(ROOM),
-        vec![],
-    );
+    missing.permissions = no_member(&hex::encode([12; 32]));
     assert!(missing.authorize().is_err());
+    // Filing feedback is commenting: a commenter files, a viewer cannot.
     let mut commenter = enrollment();
-    commenter.permissions = PermissionContext::from_capabilities(
-        Actor::person(Some(Role::Commenter), hex::encode([12; 32])).in_room(ROOM),
-        vec![],
-    );
-    assert!(commenter.authorize().is_err()); // actual Splice still needs Write
+    commenter.permissions =
+        PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Commenter).at_unix_time(0);
+    assert!(commenter.authorize().is_ok());
+    let mut viewer = enrollment();
+    viewer.permissions =
+        PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Viewer).at_unix_time(0);
+    assert!(viewer.authorize().is_err());
     let mut other_room = enrollment();
     other_room.destination.room = "other".into();
     assert!(other_room.authorize().is_err());
+    // A room's owner holds everything; a member's grants can be refused.
     let mut blocked = enrollment();
-    blocked.permissions = blocked
-        .permissions
-        .granting(ui::permissions::CapOverride::new(
-            ui::permissions::Subject::person(hex::encode([12; 32])),
-            ui::permissions::Scope::Action {
-                app: CHAT_PACKAGE.into(),
-                resource: "chat.channel:feedback".into(),
-                action: "submit-feedback".into(),
-            },
-            ui::permissions::Effect::Restrict,
-            Verb::Read,
-        ));
+    blocked.permissions = PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Editor)
+        .with_grant(submit_grant(KindSet::ALL, Answer::Deny))
+        .at_unix_time(0);
+    let mut editor = blocked.clone();
+    editor.permissions =
+        PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Editor).at_unix_time(0);
+    assert!(editor.authorize().is_ok());
     assert!(blocked.authorize().is_err());
     let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
     let mut slot = None;
@@ -582,10 +624,8 @@ fn changed_reporter_before_dispatch_cannot_enqueue_under_another_identity() {
         SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes(),
     )
     .in_room(ROOM);
-    current.borrow_mut().permissions = PermissionContext::from_capabilities(
-        Actor::person(Some(Role::Owner), hex::encode([15; 32])).in_room(ROOM),
-        vec![],
-    );
+    current.borrow_mut().permissions =
+        PermissionContext::member_of(ROOM, hex::encode([15; 32]), Role::Owner);
     assert!(matches!(
         transport.enqueue(&submission()),
         Err(Error::ReceiptMismatch)
@@ -613,23 +653,12 @@ fn expired_snapshot_grants_and_failed_host_clocks_cannot_authorize_send() {
     let now = tilo_clock::try_unix_now().unwrap();
     assert!(now > 0, "execution clock must be observable");
     let mut expired = enrollment();
-    let resource = ui::permissions::Scope::Action {
-        app: CHAT_PACKAGE.into(),
-        resource: "chat.channel:feedback".into(),
-        action: "submit-feedback".into(),
-    };
-    expired.permissions = PermissionContext::from_capabilities(
-        Actor::person(Some(Role::Viewer), hex::encode([12; 32])).in_room(ROOM),
-        vec![
-            ui::permissions::CapOverride::grant(
-                ui::permissions::Subject::person(hex::encode([12; 32])),
-                resource,
-                Verb::Write,
-            )
-            .with_expiry(now),
-        ],
-    )
-    .at_unix_time(now.saturating_sub(1));
+    expired.permissions = PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Viewer)
+        .with_grant(
+            submit_grant(KindSet::of(ActionKind::Undoable), Answer::Allow)
+                .with_lifetime(policy::Lifetime::Until(now.saturating_mul(1000))),
+        )
+        .at_unix_time(now.saturating_sub(1));
     assert!(expired.authorize().is_err());
     let mut unavailable = enrollment();
     unavailable.permissions =
@@ -657,10 +686,8 @@ fn persisted_owner_pin_and_current_role_survive_reconnect_without_reauthorizatio
     )
     .unwrap();
     let mut host = Host::open(store.clone(), setup).unwrap();
-    current.borrow_mut().permissions = PermissionContext::from_capabilities(
-        Actor::person(Some(Role::Viewer), hex::encode([12; 32])).in_room(ROOM),
-        vec![],
-    );
+    current.borrow_mut().permissions =
+        PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Viewer);
     assert!(host.send(&submission()).is_err());
     drop(host);
     let mut changed = enrollment();

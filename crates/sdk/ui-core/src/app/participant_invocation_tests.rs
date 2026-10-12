@@ -47,15 +47,12 @@ struct TwoViews(Rc<RefCell<Probe>>);
 fn tree(view: &str) -> Vec<Resource> {
     vec![
         Resource::new("test.doc", "test.document", "Document")
-            .with_action(
-                ActionSpec::immediate_encoded(
-                    "mark",
-                    "Mark",
-                    ExecutionLocus::ClientLocal,
-                    tilo_actions::EncodedAction::encode(MARK_TYPE, &Mark(view.into())).unwrap(),
-                )
-                .requiring(tilo_actions::PermissionRequirement::Write),
-            )
+            .with_action(ActionSpec::immediate_encoded(
+                "mark",
+                "Mark",
+                ExecutionLocus::ClientLocal,
+                tilo_actions::EncodedAction::encode(MARK_TYPE, &Mark(view.into())).unwrap(),
+            ))
             .with_action(
                 ActionSpec::operation("move-caret", "Move", OperationKind::View, VIEW_TYPE, &())
                     .unwrap()
@@ -76,13 +73,7 @@ impl Widget for TwoViews {
         dyn crate::resources::PublishesResources
     );
 
-    crate::testing::inert_widget_methods!(
-        leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "two-views"
-    );
+    crate::testing::inert_widget_methods!(leaf_layout, name = "two-views");
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[VIEW_TYPE]
     }

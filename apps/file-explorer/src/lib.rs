@@ -27,7 +27,7 @@ pub mod archive;
 pub mod breadcrumbs;
 pub mod command;
 pub mod config;
-mod doc;
+mod directory_watch;
 pub mod effects;
 pub mod external_drag;
 pub mod favorites;
@@ -83,5 +83,5 @@ pub fn mounted_files_in(
 
 /// The Files application definition: the one every host mounts.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<FileExplorerShell>()
+    ui::built_in_definition!(FileExplorerShell)
 }

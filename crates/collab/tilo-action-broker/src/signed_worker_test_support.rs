@@ -381,15 +381,20 @@ impl OriginalRoom {
             "Original room",
         );
         if let Some(room) = room.flatten() {
-            workspace.room = room;
+            workspace.set_room(room);
         }
-        workspace.set_owner(principal_id_for_root(cert.user_public_key));
-        workspace.owner = None;
-        workspace.capabilities = workspace
-            .capabilities
-            .into_iter()
-            .map(|cap| cap.with_expiry(100))
-            .collect();
+        // Someone the room grants everything until 100s, and nothing after.
+        let principal = principal_id_for_root(cert.user_public_key);
+        let changes = tilo_action_policy::Grant::new(
+            "changes-for-a-while",
+            tilo_action_policy::Subject::Person(principal.clone()),
+            workspace.node(),
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Subject::Person(principal),
+        )
+        .with_lifetime(tilo_action_policy::Lifetime::Until(100_000));
+        workspace.grant(changes);
         let route = CrdtRoute::record(
             "so.tilo.word-processor",
             workspace.room.to_string(),

@@ -2,9 +2,8 @@
 //! resources.
 //!
 //! Apps do not depend on this crate. The public write path is
-//! [`tilo_document::RichTextAction`](tilo_document) (and the workbook resource's
-//! action enum). [`DocMut`] exists only so those resources' `Action::apply`
-//! can mutate storage; it is not an app API.
+//! [`tilo_document::RichTextAction`](tilo_document). [`DocMut`] exists only so
+//! that resource's `Action::apply` can mutate storage; it is not an app API.
 //!
 //! A rich-text document and a workbook are versioned resources: every edit is a
 //! change on a CRDT-backed history that merges concurrent edits and replays
@@ -43,15 +42,11 @@ pub use diff::{
 pub use document::{DocError, Document, MarkSpan, author_runs};
 pub use export::{ActiveChange, InlineBoundary, InlinePlan, InlinePoint, InlineRun, RangeBoundary};
 /// Private mutation handle for resource `Action::apply` implementations in
-/// `tilo-document`. Not an application API — use `tilo_document::RichTextAction`
-/// / [`WorkbookAction`].
+/// `tilo-document`. Not an application API — use `tilo_document::RichTextAction`.
 #[doc(hidden)]
 pub use model::DocMut;
 pub use model::{Containers, DocRef, IdGen, NoteKind, Region, ordered_keys_scan_count};
-pub use sheet::{
-    CellInput, CellType, CellView, SheetView, Workbook, WorkbookAction, WorkbookDoc,
-    WorkbookSnapshot,
-};
+pub use sheet::{CellInput, CellType, CellView, SheetView, Workbook, WorkbookSnapshot};
 pub use snapshot::{
     AttrVal, BlockView, BookmarkView, ChangeKind, ChangeView, CommentView, DocSnapshot, NoteView,
 };

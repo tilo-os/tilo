@@ -58,6 +58,7 @@ NON_COMPILING_DOCS = {
     "AGENTS.md",
     "DEVELOPMENT.md",
     "docs/ci-performance.md",
+    "tools/dev/remote-source-prepare.md",
     "docs/ci-emergency-relief.md",
     "docs/headless-testing.md",
 }
@@ -79,6 +80,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.py": "tools/tests/test_ci_recorded_test_time.py",
     "tools/rust_feedback.py": "tools/tests/test_rust_feedback.py",
+    "tools/dev/remote_source_prepare.py": "tools/tests/test_remote_source_prepare.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/ci/nextest_report.py": "tools/tests/test_nextest_report.py",
     "tools/ci/run_scoped_tests.py": "tools/tests/test_ci_scoped_tests.py",
@@ -103,6 +105,10 @@ QUALITY_ONLY_HELPERS = {
 # file in the mandatory repository-policy suite. A file missing from this exact
 # map retains native Rust checks.
 QUALITY_ONLY_CONTROL_INPUTS = {
+    "os/dev/ci-native-podman-store.sh": (
+        "tools/tests/test_ci_native_podman_store.py",
+        "os/tests/disk_image_root_podman_store.sh",
+    ),
     # These wrappers select/request the existing image workflow; they change
     # no compiler, app source or packaging inputs. Mandatory policy tests
     # observe their request gate, paths, architecture selection and delegation.
@@ -975,6 +981,9 @@ def main() -> int:
                         help="re-check of a pull request that was green on this older base commit: "
                              "limit the plan to what the base changed since (--base is the new base)")
     args = parser.parse_args()
+
+    if args.metadata is None and os.environ.get('GITHUB_ACTIONS') != 'true':
+        parser.error('local planning requires verified metadata; use the stable offline_affected_plan.py entrypoint')
 
     root = Path(run("git", "rev-parse", "--show-toplevel", cwd=Path.cwd()))
     metadata = json.loads(args.metadata.read_text()) if args.metadata else cargo_metadata(root)

@@ -7,7 +7,6 @@
 //! and recordings with `cargo run --bin shots`. `--mode hosted` runs the shell
 //! in a window inside an existing X11/Wayland session.
 
-pub mod actions;
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
 pub mod app_action_consent;
@@ -20,6 +19,7 @@ pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
 pub(crate) mod broker_services;
+pub use broker_services::decide_receipt_against_surfaces;
 pub mod capture_protection;
 pub(crate) mod capture_surface;
 pub mod catalogue;
@@ -143,6 +143,7 @@ pub mod search;
 pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
+pub(crate) mod shared_display_actions;
 pub mod shell_narrator;
 pub mod spatial_calibration;
 pub mod speaker_calibration;
@@ -1472,3 +1473,5 @@ pub fn install_approved_checks_from_args(
 ) -> Result<(), String> {
     broker_services::approved_checks::install_from_args(arguments)
 }
+
+pub(crate) mod morning_sources;

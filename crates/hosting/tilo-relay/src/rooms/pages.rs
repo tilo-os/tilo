@@ -726,18 +726,15 @@ impl Rooms {
             if room.admitted_device(request_id) != Some(device) {
                 continue;
             }
-            let ceiling = room
-                .peer()
-                .permissions(device, system_time(now))
-                .ok()
-                .and_then(|(role, _, _)| collab_types::caps::role_caps(role));
-            let role = match ceiling {
-                Some(verb) if verb.implies(collab_types::caps::Verb::Write) => RoomRole::Editor,
-                Some(verb) if verb.implies(collab_types::caps::Verb::Comment) => {
-                    RoomRole::Commenter
-                }
-                Some(verb) if verb.implies(collab_types::caps::Verb::Read) => RoomRole::Viewer,
-                Some(_) | None => return Ok(JoinReply::Declined),
+            let role = match room.peer().permissions(device, system_time(now)) {
+                Ok(member) => match member.role {
+                    collab_types::role::Role::Owner | collab_types::role::Role::Editor => {
+                        RoomRole::Editor
+                    }
+                    collab_types::role::Role::Commenter => RoomRole::Commenter,
+                    collab_types::role::Role::Viewer => RoomRole::Viewer,
+                },
+                Err(_) => return Ok(JoinReply::Declined),
             };
             return Ok(JoinReply::Admitted {
                 room: room.room().to_owned(),

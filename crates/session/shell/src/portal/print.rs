@@ -243,15 +243,7 @@ impl PrintSpooler for LpSpooler {
                 .trim()
                 .to_string())
         } else {
-            Err(String::from_utf8_lossy(&out.stderr)
-                .chars()
-                .filter(|character| {
-                    !character.is_control() || matches!(character, ' ' | '\n' | '\t')
-                })
-                .take(512)
-                .collect::<String>()
-                .trim()
-                .to_string())
+            Err(out.stderr_diagnostic())
         }
     }
 }

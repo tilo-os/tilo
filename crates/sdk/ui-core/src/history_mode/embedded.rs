@@ -48,6 +48,10 @@ pub(crate) fn owns_node(root: &dyn Widget, node: NodeId, tree: &TaffyTree<()>) -
     });
     owned
 }
+/// One node's focus admission, walking every surface: the reference
+/// [`FocusRestrictions`] must agree with. Production asks it of whole
+/// compositions through [`FocusRestrictions`] instead.
+#[cfg(test)]
 pub(crate) fn allows_focus(root: &dyn Widget, node: NodeId, tree: &TaffyTree<()>) -> bool {
     let mut allowed = true;
     crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {

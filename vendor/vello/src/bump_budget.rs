@@ -77,6 +77,49 @@ struct Pending {
     proxy: BufferProxy,
     /// Set by wgpu's map callback, from whichever thread polls.
     done: Arc<Mutex<Option<bool>>>,
+    /// The render ran coarse over the whole scene, so its counters are the
+    /// scene's needs; a damage render's cover only the bins it redrew.
+    dense: bool,
+}
+
+/// Dense frames in a row whose needs stay far below the reservation before
+/// it shrinks to them, in a renderer that opted in
+/// ([`BudgetTracker::set_shrink`]).
+const SHRINK_AFTER_FRAMES: u32 = 120;
+/// The same while a shrink is asked for soon ([`BudgetTracker::shrink_soon`]):
+/// the scene got smaller for good, and an idle desktop draws few frames.
+const SHRINK_SOON_FRAMES: u32 = 2;
+/// Measurements a soon request stays live for.
+const SHRINK_SOON_MEASUREMENTS: u32 = 16;
+/// A shrink keeps this many times the most any frame of its window used:
+/// twice what growth reserves for it, so a scene that doubles again still
+/// renders without overflowing, and one that stays put never shrinks and
+/// regrows.
+const SHRINK_HEADROOM: u32 = 4;
+/// A shrink is worth reallocating every buffer for when it hands back at
+/// least this fraction of what the viewport reserves, floors included.
+const SHRINK_MIN_FRACTION: u64 = 8;
+
+/// What [`BudgetTracker`] has measured since the reservation last changed,
+/// for handing back what a busier scene made it reserve.
+#[derive(Default)]
+struct Shrink {
+    enabled: bool,
+    /// Field-wise most the dense frames of this window used.
+    peak: BumpAllocators,
+    /// Dense frames in this window.
+    frames: u32,
+    /// Measurements left in which [`SHRINK_SOON_FRAMES`] applies.
+    soon: u32,
+    /// Shrinks so far.
+    shrinks: u64,
+}
+
+impl Shrink {
+    fn restart(&mut self) {
+        self.peak = BumpAllocators::default();
+        self.frames = 0;
+    }
 }
 
 /// The budget for one renderer, and the readback that keeps it honest.
@@ -104,6 +147,7 @@ pub(crate) struct BudgetTracker {
     n_tiles: u32,
     /// Frames seen, for the log only.
     frame: u64,
+    shrink: Shrink,
 }
 
 /// Tile edge in pixels, from `TILE_WIDTH`/`TILE_HEIGHT` in
@@ -156,7 +200,99 @@ impl BudgetTracker {
             saturated: false,
             n_tiles: 0,
             frame: 0,
+            shrink: Shrink::default(),
         }
+    }
+
+    /// Hand back reservation a busier scene grew: once dense frames have
+    /// needed far less for a while, lower each field towards
+    /// [`SHRINK_HEADROOM`] times the most they used, by at most half per
+    /// shrink. Off by default, where growth is one-way.
+    pub(crate) fn set_shrink(&mut self, enabled: bool) {
+        self.shrink.enabled = enabled;
+        self.shrink.restart();
+    }
+
+    /// The scene got smaller for good (a window closed): for the next few
+    /// measurements, shrink once after [`SHRINK_SOON_FRAMES`] dense frames
+    /// instead of [`SHRINK_AFTER_FRAMES`]. Frames measured before the
+    /// request do not count.
+    pub(crate) fn shrink_soon(&mut self) {
+        self.shrink.soon = SHRINK_SOON_MEASUREMENTS;
+        self.shrink.restart();
+    }
+
+    /// Learn from one collected measurement whether the reservation can come
+    /// down; `true` if it did. Only dense frames that fit count: a damage
+    /// render's counters miss the bins it skipped, and an overflowing one's
+    /// stop where it ran out. Growth starts the window again.
+    fn shrink_after(&mut self, used: &BumpAllocators, dense: bool, grew: bool) -> bool {
+        if !self.shrink.enabled || self.pinned {
+            return false;
+        }
+        let shrink = &mut self.shrink;
+        shrink.soon = shrink.soon.saturating_sub(1);
+        if grew || used.failed != 0 {
+            shrink.restart();
+            return false;
+        }
+        if !dense {
+            return false;
+        }
+        let peak = &mut shrink.peak;
+        peak.lines = peak.lines.max(used.lines);
+        peak.binning = peak.binning.max(used.binning);
+        peak.tile = peak.tile.max(used.tile);
+        peak.seg_counts = peak.seg_counts.max(used.seg_counts);
+        peak.segments = peak.segments.max(used.segments.max(used.seg_counts));
+        peak.blend = peak.blend.max(used.blend);
+        peak.ptcl = peak.ptcl.max(used.ptcl);
+        shrink.frames += 1;
+        let needed = if shrink.soon > 0 {
+            SHRINK_SOON_FRAMES
+        } else {
+            SHRINK_AFTER_FRAMES
+        };
+        if shrink.frames < needed {
+            return false;
+        }
+        let peak = shrink.peak;
+        shrink.restart();
+        // At most half per shrink: growth reserves twice what a frame used,
+        // so the scene that grew a field to this size still fits in one
+        // shrink's result and renders without overflowing when it comes
+        // back. A wrapped counter is huge and keeps its field as it is.
+        let keep =
+            |field: u32, used: u32| field.min(used.saturating_mul(SHRINK_HEADROOM).max(field / 2));
+        let target = BumpBudget {
+            lines: keep(self.budget.lines, peak.lines),
+            binning: keep(self.budget.binning, peak.binning),
+            tiles: keep(self.budget.tiles, peak.tile),
+            seg_counts: keep(self.budget.seg_counts, peak.seg_counts),
+            segments: keep(self.budget.segments, peak.segments),
+            blend_spill: keep(self.budget.blend_spill, peak.blend),
+            ptcl: keep(self.budget.ptcl, peak.ptcl),
+            ..self.budget
+        };
+        let before = self.effective().size_in_bytes();
+        let current = std::mem::replace(&mut self.budget, target);
+        let after = self.effective().size_in_bytes();
+        if before.saturating_sub(after) < before / SHRINK_MIN_FRACTION {
+            self.budget = current;
+            return false;
+        }
+        // A grow-once budget that shrank may grow again.
+        self.saturated = false;
+        // One shrink per request: a second would no longer fit the scene
+        // that grew the reservation.
+        self.shrink.soon = 0;
+        self.shrink.shrinks += 1;
+        true
+    }
+
+    /// Times [`Self::shrink_after`] lowered the reservation.
+    pub(crate) fn shrinks(&self) -> u64 {
+        self.shrink.shrinks
     }
 
     /// Limit every reservation to what `limits` lets one binding hold.
@@ -333,9 +469,10 @@ impl BudgetTracker {
         let overflowed = used.failed != 0;
         let in_effect = self.effective();
         let budget_changed = !self.pinned && self.grow(&used);
+        let shrunk = self.shrink_after(&used, pending.dense, budget_changed);
         let changed = before != self.effective();
         if self.log {
-            self.report(&used, &in_effect, budget_changed);
+            self.report(&used, &in_effect, budget_changed || shrunk);
         } else if used.failed != 0 && !budget_changed {
             if !self.limit_reported {
                 self.limit_reported = true;
@@ -400,6 +537,16 @@ impl BudgetTracker {
 
     /// Start a readback of the bump counters written by this frame.
     pub(crate) fn begin_readback(&mut self, engine: &WgpuEngine, proxy: BufferProxy) {
+        self.begin_readback_of(engine, proxy, false);
+    }
+
+    /// [`Self::begin_readback`] for a render that ran coarse over the whole
+    /// scene, whose counters may shrink the reservation.
+    pub(crate) fn begin_dense_readback(&mut self, engine: &WgpuEngine, proxy: BufferProxy) {
+        self.begin_readback_of(engine, proxy, true);
+    }
+
+    fn begin_readback_of(&mut self, engine: &WgpuEngine, proxy: BufferProxy, dense: bool) {
         let Some(buf) = engine.get_download(proxy) else {
             self.error.get_or_insert(BumpBudgetError::MissingDownload);
             return;
@@ -412,7 +559,7 @@ impl BudgetTracker {
             }
         });
         self.frame += 1;
-        self.pending = Some(Pending { proxy, done });
+        self.pending = Some(Pending { proxy, done, dense });
     }
 
     /// One line per measured frame: measured use against the policy budget.
@@ -477,8 +624,11 @@ fn map_read(buf: &Buffer, f: impl FnOnce(bool) + Send + 'static) {
 
 #[cfg(test)]
 mod tests {
-    use super::{BudgetTracker, max_binding_bytes};
-    use vello_encoding::BumpAllocators;
+    use super::{
+        BudgetTracker, SHRINK_AFTER_FRAMES, SHRINK_HEADROOM, SHRINK_SOON_FRAMES,
+        SHRINK_SOON_MEASUREMENTS, max_binding_bytes,
+    };
+    use vello_encoding::{BumpAllocators, BumpBudget};
 
     // Catches a budget that doubles several times while a scene fills up:
     // each growth reallocates every buffer, briefly held twice by a browser.
@@ -506,6 +656,192 @@ mod tests {
         };
         assert!(!tracker.grow(&big), "no second reallocation");
         assert_eq!(*tracker.budget(), grown);
+    }
+
+    /// A tracker for a 1080p viewport whose reservation a busy scene grew.
+    fn grown_tracker() -> BudgetTracker {
+        let mut tracker = BudgetTracker::new();
+        tracker.set_viewport(1920, 1080);
+        tracker.set_shrink(true);
+        assert!(tracker.grow(&busy()));
+        tracker
+    }
+
+    fn busy() -> BumpAllocators {
+        BumpAllocators {
+            lines: 1 << 20,
+            tile: 1 << 20,
+            seg_counts: 1 << 20,
+            segments: 1 << 20,
+            ptcl: 1 << 22,
+            binning: 1 << 16,
+            blend: 1 << 14,
+            failed: 0,
+        }
+    }
+
+    fn light() -> BumpAllocators {
+        BumpAllocators {
+            lines: 20_000,
+            tile: 10_000,
+            seg_counts: 8_000,
+            segments: 9_000,
+            ptcl: 50_000,
+            binning: 2_000,
+            blend: 0,
+            failed: 0,
+        }
+    }
+
+    /// Feed `frames` measurements of `used`; whether any shrank.
+    fn feed(tracker: &mut BudgetTracker, used: &BumpAllocators, dense: bool, frames: u32) -> bool {
+        let mut shrank = false;
+        for _ in 0..frames {
+            shrank |= tracker.shrink_after(used, dense, false);
+        }
+        shrank
+    }
+
+    /// Whether a frame using `used` fits `budget` without overflowing.
+    fn fits(budget: &BumpBudget, used: &BumpAllocators) -> bool {
+        used.lines <= budget.lines
+            && used.binning <= budget.binning
+            && used.tile <= budget.tiles
+            && used.seg_counts <= budget.seg_counts
+            && used.segments <= budget.segments
+            && used.blend <= budget.blend_spill
+            && used.ptcl <= budget.ptcl
+    }
+
+    // Catches a reservation that stays sized for the busiest scene ever
+    // drawn after the scene got lighter; one that drops so far at once that
+    // the busy scene, drawn again, overflows; and one that shrinks to exactly
+    // what the light scene used, which its next growth would overflow.
+    #[test]
+    fn a_reservation_shrinks_after_a_window_of_lighter_dense_frames() {
+        let mut tracker = grown_tracker();
+        let grown = *tracker.budget();
+        let reserved = tracker.effective_size_in_bytes();
+        let light = light();
+        assert!(!feed(&mut tracker, &light, true, SHRINK_AFTER_FRAMES - 1));
+        assert_eq!(*tracker.budget(), grown, "not before the window is full");
+        assert!(feed(&mut tracker, &light, true, 1));
+        assert_eq!(tracker.shrinks(), 1);
+        let shrunk = *tracker.budget();
+        assert_eq!(shrunk.lines, grown.lines / 2, "at most half per shrink");
+        assert_eq!(shrunk.max_binding_bytes, grown.max_binding_bytes);
+        assert!(fits(&shrunk, &busy()), "the busy scene still fits once");
+        assert!(tracker.effective_size_in_bytes() * 8 <= reserved * 7);
+        // Light frames that stay light bring it the rest of the way, to
+        // within the smallest step worth taking of what a renderer that only
+        // ever drew them reserves, and then hold.
+        while feed(&mut tracker, &light, true, SHRINK_AFTER_FRAMES) {}
+        let mut light_only = BudgetTracker::new();
+        light_only.set_viewport(1920, 1080);
+        light_only.grow(&light);
+        let floor = light_only.effective_size_in_bytes();
+        let settled = tracker.effective_size_in_bytes();
+        assert!(settled <= floor + floor / super::SHRINK_MIN_FRACTION);
+        assert!(tracker.shrinks() > 1);
+        assert!(tracker.budget().lines >= light.lines * SHRINK_HEADROOM);
+        assert!(!tracker.grow(&light), "the light scene does not regrow it");
+    }
+
+    // Catches a shrink that learns from damage renders: their counters miss
+    // every bin they did not redraw.
+    #[test]
+    fn damage_renders_neither_count_nor_shrink() {
+        let mut tracker = grown_tracker();
+        let grown = *tracker.budget();
+        assert!(!feed(
+            &mut tracker,
+            &light(),
+            false,
+            4 * SHRINK_AFTER_FRAMES
+        ));
+        assert_eq!(*tracker.budget(), grown);
+    }
+
+    // Catches a shrink from a frame that overflowed (its counters stop where
+    // it ran out) or across a growth.
+    #[test]
+    fn an_overflow_or_a_growth_starts_the_window_again() {
+        let mut tracker = grown_tracker();
+        let grown = *tracker.budget();
+        let light = light();
+        assert!(!feed(&mut tracker, &light, true, SHRINK_AFTER_FRAMES - 1));
+        let overflowed = BumpAllocators {
+            failed: 0x10,
+            ..light
+        };
+        assert!(!tracker.shrink_after(&overflowed, true, false));
+        assert!(!feed(&mut tracker, &light, true, SHRINK_AFTER_FRAMES - 1));
+        let grew = tracker.shrink_after(&light, true, true);
+        assert!(!grew, "this frame grew it");
+        assert!(!feed(&mut tracker, &light, true, SHRINK_AFTER_FRAMES - 1));
+        assert_eq!(*tracker.budget(), grown);
+        assert!(feed(&mut tracker, &light, true, 1));
+    }
+
+    // Catches a close whose memory comes back only after a hundred more
+    // frames, a soon window that still counts the busy frames before it, and
+    // a request that keeps shrinking past what the closed scene needs.
+    #[test]
+    fn asked_soon_it_shrinks_once_after_two_dense_frames_drawn_since() {
+        let mut tracker = grown_tracker();
+        let light = light();
+        assert!(!feed(&mut tracker, &busy(), true, 50));
+        tracker.shrink_soon();
+        let damage = feed(&mut tracker, &light, false, 3);
+        assert!(!damage, "damage renders still do not count");
+        assert!(!feed(&mut tracker, &light, true, SHRINK_SOON_FRAMES - 1));
+        assert!(feed(&mut tracker, &light, true, 1));
+        assert!(
+            fits(tracker.budget(), &busy()),
+            "the closed scene still fits"
+        );
+        let again = feed(&mut tracker, &light, true, SHRINK_AFTER_FRAMES - 1);
+        assert!(
+            !again,
+            "one shrink per request; the next waits the long way"
+        );
+        assert!(feed(&mut tracker, &light, true, 1));
+        // An unused request expires: the next shrink waits the long way too.
+        let mut expired = grown_tracker();
+        expired.shrink_soon();
+        assert!(!feed(&mut expired, &light, false, SHRINK_SOON_MEASUREMENTS));
+        assert!(!feed(&mut expired, &light, true, SHRINK_AFTER_FRAMES - 1));
+        assert!(feed(&mut expired, &light, true, 1));
+    }
+
+    // Catches reallocating every buffer for a shrink that frees little: a
+    // reservation already near the viewport's floors stays as it is, and a
+    // renderer that did not opt in keeps upstream's one-way growth.
+    #[test]
+    fn small_steps_and_renderers_that_did_not_opt_in_keep_their_reservation() {
+        let mut tracker = BudgetTracker::new();
+        tracker.set_viewport(1920, 1080);
+        tracker.set_shrink(true);
+        let near_floor = BumpAllocators {
+            lines: 100_000,
+            ..light()
+        };
+        assert!(tracker.grow(&near_floor));
+        let held = *tracker.budget();
+        assert!(!feed(&mut tracker, &light(), true, 4 * SHRINK_AFTER_FRAMES));
+        assert_eq!(*tracker.budget(), held);
+
+        let mut upstream = grown_tracker();
+        upstream.set_shrink(false);
+        let grown = *upstream.budget();
+        upstream.shrink_soon();
+        assert!(!feed(
+            &mut upstream,
+            &light(),
+            true,
+            4 * SHRINK_AFTER_FRAMES
+        ));
+        assert_eq!(*upstream.budget(), grown);
     }
 
     fn size_class(bytes: u64) -> u64 {

@@ -148,7 +148,12 @@ impl Widget for Columns {
     }
 
     /// Stack below the breakpoint, side by side above it.
-    fn adjust_layout_style(&mut self, tree: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let Ok(width) = tree.layout(node).map(|layout| layout.size.width) else {
             return false;
         };
@@ -169,8 +174,7 @@ impl Widget for Columns {
     }
 
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = tree.layout(node).copied().unwrap_or_default();
-        self.rect = crate::widget::placed(&layout, origin);
+        self.rect = crate::widget::layout_rect(tree, node, origin);
         let start = Point::new(self.rect.x0, self.rect.y0);
         let parts = std::iter::once(&mut self.main).chain(self.aside.as_mut());
         for (child, &wrapper) in parts.zip(&self.nodes) {

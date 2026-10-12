@@ -7,6 +7,7 @@
 //! placement and the calm list-row visual language. Device-specific glyphs,
 //! state and actions stay in their owning panes.
 
+use ui::num::f64_of_usize;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
@@ -60,14 +61,6 @@ pub const STATUS_DOT: f64 = GLYPH / 2.0;
 /// tier (the `power_menu` / drill-in reference floor). Reach it through
 /// [`control_fill`], the one definition every shell Control paints with.
 const CONTROL_FLOOR_LIFT_T: f32 = 0.35;
-
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "quick-settings row counts are tiny"
-)]
-fn usize_to_f64_lossy(value: usize) -> f64 {
-    value as f64
-}
 
 // ---------- the Control role, painted once ----------
 
@@ -202,7 +195,7 @@ impl DrillInList {
             .min(row_count.saturating_sub(self.first_visible));
         self.rows.clear();
         self.rows.extend((0..visible).map(|slot| {
-            let y = panel.y0 + list_top + usize_to_f64_lossy(slot) * (ROW_HEIGHT + RELATED_GAP);
+            let y = panel.y0 + list_top + f64_of_usize(slot) * (ROW_HEIGHT + RELATED_GAP);
             Rect::new(
                 panel.x0 + PANEL_PAD,
                 y,
@@ -246,7 +239,7 @@ impl DrillInList {
         let visible = capacity.min(row_count.saturating_sub(first));
         (0..visible)
             .map(|slot| {
-                let y = panel.y0 + list_top + usize_to_f64_lossy(slot) * (ROW_HEIGHT + RELATED_GAP);
+                let y = panel.y0 + list_top + f64_of_usize(slot) * (ROW_HEIGHT + RELATED_GAP);
                 (
                     first.saturating_add(slot),
                     Rect::new(
@@ -358,7 +351,7 @@ impl DrillInList {
     /// empty list keeps one row's band for its message, then the panel
     /// padding closes the page.
     pub fn list_height(list_top: f64, rows: usize) -> f64 {
-        let rows = usize_to_f64_lossy(rows.max(1));
+        let rows = f64_of_usize(rows.max(1));
         list_top + rows * ROW_HEIGHT + (rows - 1.0) * RELATED_GAP + PANEL_PAD
     }
 

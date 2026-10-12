@@ -4,8 +4,9 @@ use serde_json::{Value, json};
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::ActionAddress;
 
-use crate::actions::{file_resource_id, text_digest};
+use crate::actions::file_resource_id;
 use crate::doc::EditorDoc;
+use crate::project::{Project, text_digest};
 use crate::resource::CodeEditorShell;
 
 fn fixture(text: &str) -> (tempfile::TempDir, TestApp<CodeEditorShell>, String) {
@@ -18,10 +19,10 @@ fn fixture(text: &str) -> (tempfile::TempDir, TestApp<CodeEditorShell>, String) 
         .state()
         .files
         .iter()
-        .find(|file| file.name == "fixture.txt")
+        .find(|(_, file)| file.name == "fixture.txt")
         .unwrap()
-        .id
-        .clone();
+        .0
+        .to_string();
     (directory, app, file)
 }
 
@@ -58,9 +59,25 @@ fn read(app: &mut TestApp<CodeEditorShell>, file: &str, start: usize, maximum: u
 }
 
 fn edit_args(read: &Value, insert: &str) -> Value {
-    json!({"expected_base_digest":read["text_sha256"],"start_chars":read["start_chars"],
+    json!({"action":"contextual","expected_base_digest":read["text_sha256"],"start_chars":read["start_chars"],
         "delete_chars":read["text"].as_str().unwrap().chars().count(),"insert":insert,
         "deleted_text":read["text"],"before_context":read["before_context"],"after_context":read["after_context"]})
+}
+
+/// Edit the text of `file` with the edit `op`, as an agent does: one field
+/// edit at the file's text.
+fn edit(
+    app: &mut TestApp<CodeEditorShell>,
+    file: &str,
+    op: Value,
+) -> Result<(), ui::tilo_actions::DoorError> {
+    let edit = Project::paths()
+        .buffers
+        .key(file)
+        .edit(ui::tilo_resource::EditOp::Rich { rich: op });
+    app.call("field-edit", json!({ "edit": edit }))?;
+    app.settle();
+    Ok(())
 }
 
 fn body(app: &TestApp<CodeEditorShell>, file: &str) -> String {
@@ -77,7 +94,8 @@ fn text_operations_public_read_uses_unicode_positions_and_current_identity() {
         .unwrap()
         .into_iter()
         .find(|action| {
-            action.address.action == "read-text" && action.resource_kind == "code_editor.file"
+            action.address.action == "read-text"
+                && action.resource_kind == crate::actions::FILE_KIND
         })
         .unwrap();
     assert_eq!(
@@ -138,7 +156,7 @@ fn text_operations_public_edit_splices_and_preserves_framework_undo() {
     let initial = "αβ😀γ\nfinal";
     let (directory, mut app, file) = fixture(initial);
     let selected = read(&mut app, &file, 1, 2);
-    invoke(&mut app, &file, "edit-text", edit_args(&selected, "X")).unwrap();
+    edit(&mut app, &file, edit_args(&selected, "X")).unwrap();
     assert_eq!(body(&app, &file), "αXγ\nfinal");
     assert_eq!(
         read(&mut app, &file, 0, 1)["text_sha256"],
@@ -161,8 +179,8 @@ fn text_operations_public_stale_edit_rebases_only_untouched_unique_context() {
     let (_directory, mut app, file) = fixture("START middle END");
     let middle = read(&mut app, &file, 6, 6);
     let prefix = read(&mut app, &file, 0, 1);
-    invoke(&mut app, &file, "edit-text", edit_args(&prefix, "prefix S")).unwrap();
-    invoke(&mut app, &file, "edit-text", edit_args(&middle, "repaired")).unwrap();
+    edit(&mut app, &file, edit_args(&prefix, "prefix S")).unwrap();
+    edit(&mut app, &file, edit_args(&middle, "repaired")).unwrap();
     assert_eq!(body(&app, &file), "prefix START repaired END");
     assert_ne!(
         read(&mut app, &file, 0, 1)["text_sha256"],
@@ -174,35 +192,21 @@ fn text_operations_public_stale_edit_rebases_only_untouched_unique_context() {
 fn text_operations_public_conflicting_edit_is_atomic_and_malformed_payloads_refuse() {
     let (_directory, mut app, file) = fixture("START middle END");
     let middle = read(&mut app, &file, 6, 6);
-    invoke(
-        &mut app,
-        &file,
-        "edit-text",
-        edit_args(&middle, "peer-change"),
-    )
-    .unwrap();
+    edit(&mut app, &file, edit_args(&middle, "peer-change")).unwrap();
     let before = app.read_document(|doc| doc.clone().save());
-    assert!(
-        invoke(
-            &mut app,
-            &file,
-            "edit-text",
-            edit_args(&middle, "model-change")
-        )
-        .is_err()
-    );
+    assert!(edit(&mut app, &file, edit_args(&middle, "model-change")).is_err());
     assert_eq!(app.read_document(|doc| doc.clone().save()), before);
     for invalid in [json!(true), json!(-1), json!(0.5)] {
         let mut args = edit_args(&middle, "other");
         args["start_chars"] = invalid;
-        assert!(invoke(&mut app, &file, "edit-text", args).is_err());
+        assert!(edit(&mut app, &file, args).is_err());
         assert_eq!(app.read_document(|doc| doc.clone().save()), before);
     }
     let mut oversized = edit_args(&middle, &"x".repeat(16385));
-    assert!(invoke(&mut app, &file, "edit-text", oversized.clone()).is_err());
+    assert!(edit(&mut app, &file, oversized.clone()).is_err());
     oversized["insert"] = json!("x");
     oversized["delete_chars"] = json!(1);
-    assert!(invoke(&mut app, &file, "edit-text", oversized).is_err());
+    assert!(edit(&mut app, &file, oversized).is_err());
     assert_eq!(app.read_document(|doc| doc.clone().save()), before);
 }
 
@@ -229,23 +233,17 @@ fn text_operations_public_read_enforces_utf8_and_aggregate_return_bounds() {
 fn text_operations_public_ambiguous_stale_range_refuses_without_a_partial_change() {
     let (_directory, mut app, file) = fixture("L middle R");
     let original = read(&mut app, &file, 2, 6);
-    invoke(
-        &mut app,
-        &file,
-        "replace-text",
-        json!({"text":"L middle R / L middle R"}),
+    app.invoke(
+        ui::tilo_resource::Invoke::apply(&crate::actions::replace_text_action(
+            file.clone(),
+            "L middle R / L middle R",
+        ))
+        .unwrap(),
     )
     .unwrap();
+    app.settle();
     let before = app.read_document(|doc| doc.clone().save());
-    assert!(
-        invoke(
-            &mut app,
-            &file,
-            "edit-text",
-            edit_args(&original, "wrong-range")
-        )
-        .is_err()
-    );
+    assert!(edit(&mut app, &file, edit_args(&original, "wrong-range")).is_err());
     assert_eq!(app.read_document(|doc| doc.clone().save()), before);
 }
 
@@ -256,118 +254,22 @@ fn text_operations_public_viewer_can_read_but_cannot_edit() {
     let selected = read(&mut app, &file, 0, 3);
     assert_eq!(selected["text"], "unc");
     let before = app.read_document(|doc| doc.clone().save());
-    assert!(
-        invoke(
-            &mut app,
-            &file,
-            "edit-text",
-            edit_args(&selected, "changed")
-        )
-        .is_err()
-    );
-    assert_eq!(app.read_document(|doc| doc.clone().save()), before);
-}
-
-fn invoke_low_project(
-    app: &mut TestApp<CodeEditorShell>,
-    action: &str,
-    args: Value,
-) -> Result<(), ui::tilo_actions::DoorError> {
-    let resource = app
-        .harness()
-        .resources()
-        .into_iter()
-        .find(|item| item.kind == crate::resource::PROJECT_KIND)
-        .unwrap()
-        .id;
-    let instance = app.harness().component_instance_id().unwrap();
-    app.harness().invoke_bound_action(
-        &ui::bound_dispatch::BoundActionAddress {
-            instance_id: instance,
-            address: ActionAddress::new(resource.0, action),
-        },
-        &serde_json::from_value(args).unwrap(),
-    )?;
-    app.settle();
-    Ok(())
-}
-
-#[test]
-fn text_operations_low_door_refuses_unaudited_default_low_and_mixed_group_atomically() {
-    use crate::actions::CodeEditorAction;
-    let (_directory, mut app, file) = fixture("unchanged");
-    let bad = CodeEditorAction::ReplaceText {
-        id: file.clone(),
-        text: "bad".into(),
-    };
-    assert_eq!(
-        ui::tilo_actions::Action::risk(&bad),
-        ui::tilo_actions::RiskLevel::Low
-    );
-    let before = app.read_document(|doc| doc.clone().save());
-    assert!(invoke_low_project(&mut app, "apply-low", json!({"action":bad})).is_err());
-    let good = CodeEditorAction::EnsureBuffer {
-        key: "new-state-only-buffer".into(),
-        seed: "safe".into(),
-    };
-    assert!(
-        invoke_low_project(
-            &mut app,
-            "group-low",
-            json!({"actions":[
-                {"action":"apply-low","args":{"action":good}},
-                {"action":"apply","args":{"action":bad}}
-            ]})
-        )
-        .is_err()
-    );
-    assert_eq!(app.read_document(|doc| doc.clone().save()), before);
-    assert_eq!(body(&app, &file), "unchanged");
-}
-
-#[test]
-fn text_operations_low_door_retains_write_permission_and_bounded_atomic_group() {
-    use crate::actions::CodeEditorAction;
-    let (_directory, mut app, _file) = fixture("initial");
-    let good = CodeEditorAction::EnsureBuffer {
-        key: "audited-buffer".into(),
-        seed: "new".into(),
-    };
-    let descriptor = app
-        .actions()
-        .unwrap()
-        .into_iter()
-        .find(|item| item.address.action == "apply-low")
-        .unwrap();
-    assert_eq!(
-        descriptor.contract.confirmation,
-        ui::tilo_actions::ConfirmationPolicy::None
-    );
-    invoke_low_project(&mut app, "apply-low", json!({"action":good})).unwrap();
-    assert_eq!(
-        app.read_document(|doc| EditorDoc::read_buffer_key(doc, "audited-buffer")),
-        Some("new".into())
-    );
-    app.set_role(ui::permissions::Role::Viewer);
-    let before = app.read_document(|doc| doc.clone().save());
-    assert!(invoke_low_project(&mut app, "apply-low", json!({"action":good})).is_err());
+    assert!(edit(&mut app, &file, edit_args(&selected, "changed")).is_err());
     assert_eq!(app.read_document(|doc| doc.clone().save()), before);
 }
 
 #[test]
-fn text_operations_low_group_retains_contextual_refusal_and_one_undo_step() {
+fn text_operations_group_retains_contextual_refusal_and_one_undo_step() {
+    use ui::tilo_resource::Invoke;
     let (_directory, mut app, file) = fixture("abc");
     let first = crate::actions::text_edit_action(file.clone(), "abc", "aXc");
     let second = crate::actions::text_edit_action(file.clone(), "aXc", "aX!");
-    invoke_low_project(
-        &mut app,
-        "group-low",
-        json!({"actions":[
-            {"action":"apply-low","args":{"action":first}},
-            {"action":"apply-low","args":{"action":second}}
-        ]}),
-    )
+    app.invoke(Invoke::group([
+        Invoke::apply(&first).unwrap(),
+        Invoke::apply(&second).unwrap(),
+    ]))
     .unwrap();
+    app.settle();
     assert_eq!(body(&app, &file), "aX!");
     assert!(app.undo());
     app.settle();
@@ -376,7 +278,7 @@ fn text_operations_low_group_retains_contextual_refusal_and_one_undo_step() {
     app.settle();
     assert_eq!(body(&app, &file), "aX!");
     let before = app.read_document(|doc| doc.clone().save());
-    assert!(invoke_low_project(&mut app, "apply-low", json!({"action":first})).is_err());
+    assert!(app.invoke(Invoke::apply(&first).unwrap()).is_err());
     assert_eq!(app.read_document(|doc| doc.clone().save()), before);
 }
 
@@ -389,13 +291,10 @@ fn text_operations_snapshot_public_read_stamps_canonical_record() {
         .into_iter()
         .find(|action| {
             action.address.action == "read-text-snapshot"
-                && action.resource_kind == "code_editor.file"
+                && action.resource_kind == crate::actions::FILE_KIND
         })
         .unwrap();
-    assert_eq!(
-        descriptor.contract.permission,
-        ui::tilo_actions::PermissionRequirement::Read
-    );
+    assert_eq!(descriptor.contract.kind, ui::tilo_actions::ActionKind::Read);
     let snapshot = invoke(
         &mut app,
         &file,
@@ -428,9 +327,9 @@ fn text_operations_snapshot_rejects_real_pending_edits_and_aba_revision() {
         (heads, serde_json::to_string(&encoded).unwrap())
     });
     let selected = read(&mut app, &file, 0, 6);
-    invoke(&mut app, &file, "edit-text", edit_args(&selected, "after")).unwrap();
+    edit(&mut app, &file, edit_args(&selected, "after")).unwrap();
     let selected = read(&mut app, &file, 0, 5);
-    invoke(&mut app, &file, "edit-text", edit_args(&selected, "before")).unwrap();
+    edit(&mut app, &file, edit_args(&selected, "before")).unwrap();
     assert_eq!(body(&app, &file), "before");
     let stale = invoke(
         &mut app,

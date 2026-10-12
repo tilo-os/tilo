@@ -672,7 +672,7 @@ mod tests {
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
     use vello::kurbo::{Point, Rect};
-    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+    use winit::event::{ElementState, Modifiers, WindowEvent};
     use winit::keyboard::NamedKey;
 
     /// Lay the sidebar out at `rect` the way the drawer host does.
@@ -715,18 +715,11 @@ mod tests {
     }
 
     fn moved(point: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-        }
+        ui::synthetic_input::cursor_moved(point.x, point.y)
     }
 
     fn button(state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        }
+        ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
     }
 
     use ui::synthetic_input::named_key;
@@ -801,12 +794,14 @@ mod tests {
         eprintln!("phase keys_stay_attached_to_pages_across_rebuilds");
         {
             let mut ws = Workspace::new();
-            let a = ws.create_page(None);
+            ws.create_page(None);
             let b = ws.create_page(None);
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
             let key_b = tree.key(b).unwrap();
-            ws.move_to(b, None, Some(a));
+            // `b` moves before `a`.
+            let moved = ws.data.pages.remove(1);
+            ws.data.pages.insert(0, moved);
             tree.sync_from_workspace(&ws);
             assert_eq!(tree.key(b), Some(key_b));
             assert_eq!(tree.row(0).map(|(key, _, _)| key), Some(key_b));
@@ -842,7 +837,7 @@ mod tests {
         {
             let mut ws = Workspace::new();
             let root = ws.create_page(None);
-            ws.rename(root, "Project plan");
+            ws.data.pages[0].title = "Project plan".into();
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
             place(&mut tree, Rect::new(0.0, 0.0, 200.0, 300.0), 1.0);
@@ -963,7 +958,7 @@ mod tests {
         {
             let mut ws = Workspace::new();
             let id = ws.create_page(None);
-            ws.rename(id, "Untitled");
+            ws.data.pages[0].title = "Untitled".into();
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
             assert!(tree.begin_rename(id));

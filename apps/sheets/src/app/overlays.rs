@@ -12,9 +12,9 @@
 use super::{
     Affine, ContextMenu, Currency, DATE_STYLES, MenuItem, MenuRow, Point, PresenceCtx, Rect, Scene,
     SettingChip, SettingKind, SettingsPanel, SheetsApp, TAB_MENU_ACTIONS, TAB_PALETTE_LEN,
-    TIME_STYLES, TabAction, TextRenderer, TextRole, Theme, Widget, WindowEvent, count_f64,
-    tab_action_label,
+    TIME_STYLES, TabAction, TextRenderer, TextRole, Theme, Widget, WindowEvent, tab_action_label,
 };
+use ui::num::f64_of_usize;
 use ui::widget::modal_dialog::{self, ModalAction, ModalHit, ModalLayout, ModalSpec};
 use ui::widget::{
     ChipFace, ChipLead, ColorSwatch, ColorSwatchPicker, ControlSize, EventCtx, MenuItem as Row,
@@ -389,12 +389,12 @@ impl SheetsApp {
             let labels: Vec<&str> = strip.iter().map(|(label, _)| *label).collect();
             let wanted = SegmentedFace::intrinsic_width(&labels, ControlSize::Small, tr, theme);
             let total = wanted.min(width);
-            let each = total / count_f64(strip.len().max(1));
+            let each = total / f64_of_usize(strip.len().max(1));
             let cells = strip
                 .iter()
                 .enumerate()
                 .map(|(i, (_, kind))| {
-                    let x0 = each * count_f64(i);
+                    let x0 = each * f64_of_usize(i);
                     (*kind, Rect::new(x0, y, x0 + each, y + strip_h))
                 })
                 .collect();

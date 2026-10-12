@@ -61,7 +61,7 @@ pub fn certified_person_fixture_for_seeds(
         crate::test_support::WorkspaceId(71),
         "Synthetic personal room",
     );
-    workspace.room = tilo_desktop_model::RoomId::parse(&room.to_string()).unwrap();
+    workspace.set_room(tilo_desktop_model::RoomId::parse(&room.to_string()).unwrap());
     workspace.set_owner(hex::encode(certificate.user_public_key));
     let mut tree = crate::test_support::WorkspaceTree::default();
     tree.workspaces.push(workspace);

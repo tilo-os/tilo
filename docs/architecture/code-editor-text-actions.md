@@ -1,9 +1,11 @@
 # Code Editor file text actions
 
-Each published `code_editor.file` offers `read-text` and `edit-text` through the
-same resource/action door as its existing open and save operations. They accept
-no filesystem path, command, identity or grading configuration. The selected
-record and file resource retain the framework's current permission checks.
+Each file of a Code Editor project is published as its item
+(`code_editor.project/files/<id>`) and offers `read-text` through the same
+resource/action door as its open and save operations. Its text is edited by a
+field edit at `buffers.<id>`. Neither accepts a filesystem path, command,
+identity or grading configuration. The selected record and file retain the
+framework's current permission checks.
 
 `read-text` is a read-permission, idempotent effect bound to that file's ID. Open
 the file first so its collaborative body exists; reading does not hydrate disk
@@ -21,26 +23,20 @@ bounded to 32768 bytes. An out-of-range position or unavailable/deleted file
 refuses; EOF can return an empty range. The next position reports the actual
 bounded range, so callers can page without splitting a scalar.
 
-`edit-text` is a document action bound to the file. It takes the current base
-digest, start and deletion counts, inserted text, deleted text and bounded
-surrounding context from a read. Counts must be nonnegative integers; deletion
-count must equal the deleted text's scalar count. Inserted/deleted/context text
-together may occupy at most 16384 UTF-8 bytes; each context may contain at most
-32 scalars. File IDs remain bound by the published action, rather than supplied
-as an extra argument.
+An edit is the project's `field-edit` at the file's text carrying the text's
+own `contextual` operation (`SourceEdit::Contextual`): the current base digest,
+start and deletion counts, inserted text, deleted text and bounded surrounding
+context from a read. Counts must be nonnegative integers; deletion count must
+equal the deleted text's scalar count. Inserted/deleted/context text together
+may occupy at most 16384 UTF-8 bytes; each context may contain at most 32
+scalars.
 
-The action encodes the existing `CodeEditorAction::EditText`. At a matching base
-digest, its scalar position and deletion count select the range. With a stale
-base, the existing contextual splice permits only one untouched matching range;
-overlapping or ambiguous changes refuse before any splice. This preserves the
-same collaborative action, attribution, history and undo machinery used by the
-editor's keystrokes. It creates no private document or disk writer.
-
-Code Editor's typed dispatcher opts into the [audited state mutation path](audited-typed-mutations.md)
-for contextual text edits, imported metadata and first buffer materialization.
-The resource's closed whitelist and actual Low risk are rechecked at the target;
-other actions keep their existing risk admission. Saving the
-result keeps the existing save confirmation and device policy.
+At a matching base digest, its scalar position and deletion count select the
+range. With a stale base, the contextual splice permits only one untouched
+matching range; overlapping or ambiguous changes refuse before any splice. The
+editor's own keystrokes are the same edit, so attribution, history and undo are
+one machinery. It creates no private document or disk writer. Saving the result
+keeps the existing save confirmation and device policy.
 
 Mounted-app public-door tests exercise Unicode ranges, current content identity,
 UTF-8/aggregate limits, bounded editing, framework undo/redo, disjoint contextual
@@ -64,9 +60,8 @@ python3 scripts/headless-examples/code-editor-text-proof.py \
   --binaries target/debug --out target/platform-integration/code-editor-text-v1
 ```
 
-The project resource declares its kind as the literal required by the normal
-packager, with the existing exported `PROJECT_KIND` derived from that same
-identity. The proof checks the actual installed signed manifest includes this
+The project resource declares its kind (`code_editor.project`) as the literal
+required by the normal packager. The proof checks the actual installed signed manifest includes this
 resource before launch. It records observed source and executable/package hashes separately; those
 observations do not attest which source bytes a compiler consumed. The script
 cleans up its own processes and does not change the operator's profile. An

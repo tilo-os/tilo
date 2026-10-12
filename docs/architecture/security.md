@@ -143,19 +143,72 @@ app's `definition()` builds there), and agents' device keys are kept in
 `agents.json`. Moving the catalogue to installed packages and the agent keys
 to the secret store are tracked follow-ups.
 
+### Agents as governed members of a host's rooms
+
+An agent is a device of its person: its own key, a certificate the
+person's root signed with no capabilities, and a root-signed delegation
+naming the rooms and apps it may act in and until when. When its grant is
+approved or restored, each room the host governs and the delegation names
+puts it on the room's governed roster, and only through
+`room_access::decide(.., RoomOperation::AgentMembership)`
+(`crates/hosting/tilo-relay/src/room_access.rs`): a live delegated agent of
+the host's own user, in a room whose admission governance owns here. Being
+on the roster is what admits it to the room and lets the steward admit it
+to the channels of the records it opens. The
+roster row carries the delegation (`tilo-peer-state`, `state/agent_members.rs`),
+and every member applies one rule to it: the agent acts only while the
+delegation verifies against the certificate's root, names the device and
+the room, is unexpired and has not been withdrawn, with its person's grants
+bounded by its delegation, the Editor preset ([permissions.md](permissions.md)
+§4): never above an Editor, and never on the room's governance. Its changes are signed by its own key, so history
+attributes them to the agent, not to the host. A grant that is withdrawn,
+narrowed or ends is withdrawn on every room's roster
+(`rooms/agent_members.rs`), which takes the agent off every channel of the
+room; members refuse its later writes on their own. Room administration
+refuses agent devices. Other users' agents are not admitted, and agents
+never call the host's room actions.
+
+A room the desktop hosts itself applies the same rule through its action
+broker: an agent session takes the role its membership preset grants,
+capped by its person's role (`admit_agent_delegation_at`,
+`crates/collab/tilo-action-broker/src/collab_broker_capnp.rs`), and acts
+with its person's authority bounded by the preset's grants. Every
+revalidation asks again, so removing the person or revoking the agent's
+admission ends an open session at once. The cap, and the answers to the
+questions about agents that are still open (other people's agents, final
+withdrawal, members enforcing app scope), live in one place,
+`tilo_action_policy::roles::agent_policy`.
+
+History names an agent's work as the agent's, on behalf of its person:
+`ui::history_source::AuthorDirectory` resolves an authenticated agent
+invoker, or an agent's own device key, to "Scribe · Agent, for Ada" in the
+agent's colour, and keeps who acted and for whom as data
+(`HistoryAuthor::attribution`) that `history.list` returns. Files names
+file versions the same way from the identity projection, which marks a
+device governance admitted as an agent (after verifying its person's
+delegation) and keeps agent devices out of the devices sharing encrypts to.
+
 ### Load hints beside local records
 
 Loading a large record spends most of its time rebuilding every change to
-learn its hash, so a full save of a record of 64 KiB or more also writes the
-change hashes it listed to `state.hashes` beside `state.automerge`
-(`crates/system/app-state/src/load_hint.rs`), and the next load takes them
-instead (TIL-762). A hint skips verifying that each change matches its hash,
-so it is trusted exactly as far as the record bytes beside it:
+learn its hash, so a full save of a record of 64 KiB or more, or of 4,096
+changes or more, also writes the change hashes it listed to `state.hashes`
+beside `state.automerge` (`crates/system/app-state/src/load_hint.rs`), and
+the next load takes them instead. The compositor keeps the same
+hint for its desktop document, which gains a change on every workspace
+switch, as `state.automerge.hashes` beside it, and session start takes it.
+A hint skips verifying that each change matches its hash, so it is
+trusted exactly as far as the document bytes beside it:
 
-- Only `DocWriter` makes one, from the document it holds, whose changes were
-  verified when they entered it; the store keeps it on this device and never
-  syncs, sends or receives it. Documents and changes from peers are always
-  rebuilt and verified in full, through the isolate where it applies.
+- Only the writer that saved those bytes makes one (`DocWriter`'s full saves
+  and `DocStore::save` as the document's primary writer; the compositor's
+  `doc_log` when it writes the desktop document's base), from the document
+  it holds, whose changes were verified when they entered it; it stays on
+  this device and is never synced, sent or received. Documents and changes
+  from peers are always rebuilt and verified in full, through the isolate
+  where it applies, and so are the desktop document's log frames.
+- The compositor takes no hint for a record an app wrote: that hint is the
+  sandboxed app's, a different principal from the compositor reading it.
 - It names the document chunk it was made for by BLAKE3 digest and is used
   for those bytes only; anything else (a replacement, a restored file, a
   torn write) makes it stale and the load rebuilds every change.

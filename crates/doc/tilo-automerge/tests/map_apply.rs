@@ -2,7 +2,9 @@
 //! instead of walking every op of the map (vendor/automerge/TILO-PATCH.md):
 //! the document, its heads and its patches are byte for byte what crates.io
 //! automerge 0.12.0 produces from the same bytes, and the cost of a change
-//! does not grow with the history behind it.
+//! does not grow with the history behind it. A hand-built change whose op
+//! overwrites an op under another key is refused, where upstream takes it
+//! into a document that no longer loads.
 
 #![allow(
     clippy::unwrap_used,
@@ -20,38 +22,22 @@ use automerge::legacy::{Key, ObjectId, Op, OpId, OpType, SortedVec};
 use automerge::transaction::Transactable;
 use automerge::{
     ActorId, AutoCommit, Change, ChangeHash, ExpandedChange, ObjId, ObjType, ROOT, ReadDoc,
-    ScalarValue,
+    ScalarValue, TextEncoding,
 };
 use tilo_automerge::ApplyIncoming;
 
-/// xorshift64*: a reproducible stream per seed.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
-    }
-
-    fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
-        &items[self.below(items.len() as u64) as usize]
-    }
-}
+mod upstream;
+use upstream::{History, Replica, Rng, agrees_with_upstream, refuses_only_what_upstream_corrupts};
 
 const KEYS: &[&str] = &["a", "b", "desktop", "k1", "k2", "k3", "zz"];
 
 /// A base document and the changes three actors make on top of it, in the
 /// order they were made: puts that pile history onto a few keys, deletes,
 /// counters and increments, nested maps, text, merges between the actors
-/// (so writes conflict and later changes resolve them), and now and then a
-/// hand-built change whose op overwrites an op under a different key.
-fn history(seed: u64, steps: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
+/// (so writes conflict and later changes resolve them); and, kept apart,
+/// now and then a hand-built change whose op overwrites an op under a
+/// different key.
+fn history(seed: u64, steps: usize) -> History {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut base = AutoCommit::new().with_actor(ActorId::from(&[0xaa][..]));
     base.put_object(ROOT, "m1", ObjType::Map).unwrap();
@@ -70,6 +56,7 @@ fn history(seed: u64, steps: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
         })
         .collect();
     let mut changes = Vec::new();
+    let mut forged = Vec::new();
     let mut forgers = 0u8;
     for step in 0..steps {
         let a = rng.below(actors.len() as u64) as usize;
@@ -83,9 +70,9 @@ fn history(seed: u64, steps: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
         // rebuilds the changes it sends from its ops, and cannot rebuild
         // this one, so a peer that took it could not merge into another.
         if rng.below(40) == 0
-            && let Some(change) = forged(&mut actors[a], &mut forgers)
+            && let Some(change) = forge(&mut actors[a], &mut forgers)
         {
-            changes.push(change.raw_bytes().to_vec());
+            forged.push(change.raw_bytes().to_vec());
             continue;
         }
         let heads = actors[a].get_heads();
@@ -98,7 +85,11 @@ fn history(seed: u64, steps: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
             changes.push(bytes);
         }
     }
-    (base_bytes, changes)
+    History {
+        base: base_bytes,
+        changes,
+        forged,
+    }
 }
 
 /// One local edit; edits the document cannot take (a counter that is not
@@ -137,7 +128,7 @@ fn edit(doc: &mut AutoCommit, rng: &mut Rng, step: usize) {
 /// A change by a new actor, on top of `doc`, that puts a value at one
 /// root key with the op at another root key as its predecessor: not a
 /// change Automerge makes, but one a peer can send.
-fn forged(doc: &mut AutoCommit, forgers: &mut u8) -> Option<Change> {
+fn forge(doc: &mut AutoCommit, forgers: &mut u8) -> Option<Change> {
     let (key, target) = KEYS.iter().find_map(|&target| {
         let key = KEYS.iter().find(|&&key| key != target)?;
         match doc.get(ROOT, target).ok()?? {
@@ -172,101 +163,28 @@ fn forged(doc: &mut AutoCommit, forgers: &mut u8) -> Option<Change> {
     Some(Change::from(change))
 }
 
-/// Deliveries of the changes: mostly one to three at a time, sometimes a
-/// burst, sometimes two neighbours swapped so one arrives before its
-/// dependency and waits in the queue.
-fn deliveries(changes: &[Vec<u8>], rng: &mut Rng) -> Vec<Vec<u8>> {
-    let mut order: Vec<&Vec<u8>> = changes.iter().collect();
-    for i in 1..order.len() {
-        if rng.below(12) == 0 {
-            order.swap(i - 1, i);
-        }
-    }
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < order.len() {
-        let n = if rng.below(25) == 0 {
-            40
-        } else {
-            1 + rng.below(3) as usize
-        };
-        out.push(
-            order[i..(i + n).min(order.len())]
-                .iter()
-                .copied()
-                .flatten()
-                .copied()
-                .collect(),
-        );
-        i += n;
-    }
-    out
-}
-
-fn heads_hex(heads: impl IntoIterator<Item = String>) -> Vec<String> {
-    let mut heads: Vec<String> = heads.into_iter().collect();
-    heads.sort();
-    heads
-}
-
-/// Feeds the same deliveries to the fork and to crates.io automerge 0.12.0
-/// and asserts they agree after every one.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "upstream automerge is the reference here, called as it ships"
-)]
-fn agrees_with_upstream(seed: u64, steps: usize, diff: bool) {
-    let (base, changes) = history(seed, steps);
-    let mut rng = Rng(seed ^ 0x5555);
-    let mut ours = AutoCommit::load(&base).unwrap();
-    let mut theirs = upstream_automerge::AutoCommit::load(&base).unwrap();
-    if diff {
-        ours.update_diff_cursor();
-        theirs.update_diff_cursor();
-    }
-    for (n, delivery) in deliveries(&changes, &mut rng).iter().enumerate() {
-        let ours_ok = ours.load_incoming(delivery).map_err(|e| e.to_string());
-        let theirs_ok = theirs.load_incremental(delivery).map_err(|e| e.to_string());
-        assert_eq!(ours_ok, theirs_ok, "seed {seed}: delivery {n} result");
-        assert_eq!(
-            heads_hex(ours.get_heads().iter().map(ToString::to_string)),
-            heads_hex(theirs.get_heads().iter().map(ToString::to_string)),
-            "seed {seed}: heads after delivery {n}"
-        );
-        if diff {
-            assert_eq!(
-                format!("{:?}", ours.diff_incremental()),
-                format!("{:?}", theirs.diff_incremental()),
-                "seed {seed}: patches of delivery {n}"
-            );
-        }
-        if n % 16 == 0 {
-            assert_eq!(
-                ours.save(),
-                theirs.save(),
-                "seed {seed}: document after delivery {n}"
-            );
-        }
-    }
-    assert_eq!(ours.save(), theirs.save(), "seed {seed}: final document");
-    assert_eq!(
-        ours.save_nocompress(),
-        theirs.save_nocompress(),
-        "seed {seed}: final document, uncompressed"
-    );
+fn agrees(seed: u64, steps: usize, diff: bool) -> History {
+    let history = history(seed, steps);
+    let encoding = TextEncoding::UnicodeCodePoint;
+    let replica = Replica { diff, encoding };
+    agrees_with_upstream(seed, &history.base, &history.changes, replica);
+    history
 }
 
 #[test]
 fn incoming_map_changes_match_upstream() {
+    let mut refused = 0;
     for seed in 1..=6 {
-        agrees_with_upstream(seed, 1_500, false);
+        let h = agrees(seed, 1_500, false);
+        refused += refuses_only_what_upstream_corrupts(seed, &h);
     }
+    assert!(refused > 0, "no forged change was refused");
 }
 
 #[test]
 fn incoming_map_patches_match_upstream() {
     for seed in 101..=104 {
-        agrees_with_upstream(seed, 1_500, true);
+        agrees(seed, 1_500, true);
     }
 }
 

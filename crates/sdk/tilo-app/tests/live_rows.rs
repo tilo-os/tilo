@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use serde_json::json;
 use tilo_actions::{Action, ActionError, ActionParam, ActionSpec, OperationKind, ParamType};
+use tilo_app::advanced::{NodeId, TaffyTree};
 use tilo_app::automerge::transaction::Transactable;
 use tilo_app::automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use tilo_app::framework::EffectAnswer;
@@ -32,12 +33,15 @@ const TOTAL: &str = "tally/total";
 )]
 enum TallyAction {
     Add { by: i64 },
+    Double,
 }
 
 impl Action for TallyAction {
     fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
-        let Self::Add { by } = self;
-        let next = count(doc).saturating_add(*by);
+        let next = match self {
+            Self::Add { by } => count(doc).saturating_add(*by),
+            Self::Double => count(doc).saturating_mul(2),
+        };
         doc.put(ROOT, "count", next)?;
         Ok(())
     }
@@ -67,11 +71,10 @@ impl Resource for Tally {
         Ok(count(doc))
     }
 
-    fn bound_declarations(count: &i64) -> Vec<ActionDecl<Self>> {
-        let by = *count;
+    fn declarations() -> Vec<ActionDecl<Self>> {
         vec![
-            ActionDecl::new("double", "Double the count", Vec::new(), move |_, _| {
-                Ok(TallyAction::Add { by })
+            ActionDecl::new("double", "Double the count", Vec::new(), |_, _| {
+                Ok(TallyAction::Double)
             })
             .describe("Add the count to itself."),
         ]
@@ -184,9 +187,6 @@ impl Widget for Jobs {
 
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, origin: Point) {
         self.rect = Rect::from_origin_size(origin, Size::ZERO);
-    }
-
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
 
     fn name(&self) -> &'static str {
@@ -376,7 +376,7 @@ fn live_rows_and_bound_edits_join_the_resource_tree() {
     assert_eq!(app.state(), 4);
 
     // Edits bound to where the user is are typed actions of the resource:
-    // the surface's selection, the view's step, the resource's own state.
+    // the surface's selection, the view's step; the resource's own wins.
     let root = find(&resources, Tally::KIND).unwrap().clone();
     for id in ["add-selected", "add-step", "double"] {
         let spec = root.actions.iter().find(|action| action.id == id).unwrap();
@@ -450,26 +450,30 @@ fn retained_actions_follow_canonical_publication_through_edits_and_undo() {
         .unwrap();
     let conditional = ActionRef::<Tally, ()>::new("conditional", &[]);
     let root = actions
-        .binding(ActionRef::<Tally, ()>::new("seed", &[]))
+        .binding::<()>(ActionRef::<Tally, ()>::new("seed", &[]))
         .unwrap()
         .address()
         .resource
         .clone();
-    assert!(actions.binding(conditional).is_none());
+    assert!(actions.binding::<()>(conditional).is_none());
     app.invoke(ActionRef::<Tally, ()>::new("seed", &[]).invoke())
         .unwrap();
     let binding = actions
-        .binding(conditional)
+        .binding::<()>(conditional)
         .expect("new declaration is bindable");
     assert_eq!(binding.address().resource, root);
     assert!(app.undo());
     assert!(
-        actions.binding(conditional).is_none(),
+        actions.binding::<()>(conditional).is_none(),
         "removed declaration cannot bind"
     );
     assert!(app.redo());
     assert_eq!(
-        actions.binding(conditional).unwrap().address().resource,
+        actions
+            .binding::<()>(conditional)
+            .unwrap()
+            .address()
+            .resource,
         root
     );
 }

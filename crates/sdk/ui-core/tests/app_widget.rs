@@ -8,7 +8,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_ui::presence::PresenceCtx;
 use tilo_ui::widget::TaffyTreeExt;
 use tilo_ui::{AppKind, AppWidget, IconDescriptor, Theme, Widget};
 
@@ -23,27 +22,8 @@ impl Widget for DummyApp {
     ) -> taffy::NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
-    fn apply_layout(
-        &mut self,
-        _taffy: &taffy::TaffyTree,
-        _node: taffy::NodeId,
-        _origin: vello::kurbo::Point,
-    ) {
-    }
-    fn draw(
-        &mut self,
-        _scene: &mut vello::Scene,
-        _transform: vello::kurbo::Affine,
-        _text_renderer: &mut tilo_ui::text_render::TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "DummyApp"
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
 }
 

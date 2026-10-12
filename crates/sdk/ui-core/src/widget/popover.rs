@@ -60,21 +60,8 @@ impl Widget for NoContent {
     ) -> NodeId {
         taffy.leaf_node(Style::default())
     }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "NoContent"
-    }
-    fn get_rect(&self) -> Rect {
-        Rect::ZERO
     }
 }
 
@@ -972,17 +959,6 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         }
     }
 
-    /// Nothing: a popover is presented in the window's top layer.
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -1025,7 +1001,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         }
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -1344,11 +1320,7 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        let at = Point::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-        );
+        let at = crate::widget::layout_rect(taffy, node, origin).origin();
         let Some((button, popover)) = Self::nodes(taffy, node) else {
             return;
         };

@@ -886,6 +886,15 @@ jobs:
             bash scripts/ci-run.sh "package-apps.sh ($TILO_RELEASE_APPS)" -- \
             dist/apps/package-apps.sh
 
+      - name: Report package compiler cache
+        if: always()
+        run: |
+          if [[ -n ${RUSTC_WRAPPER:-} && -x $RUSTC_WRAPPER ]]; then
+            "$RUSTC_WRAPPER" --show-stats || echo 'compiler cache statistics unavailable'
+          else
+            echo 'compiler cache disabled; no hit rate established'
+          fi
+
       - name: Selected tapps within their size budget
         run: >-
           python3 tools/perf/tapp_size_ratchet.py measure dist/app-release
@@ -1032,8 +1041,12 @@ jobs:
           # checkout keeps the write-capable repository token. Every other
           # checkout reads this public repository with the job token.
           token: ${{ secrets.REGISTRY_TOKEN }}
-          fetch-depth: 0
-          filter: blob:none
+          # Recording needs the tested commit and the receipt script, not
+          # ancestry or other branches. receipt.sh fetches its notes ref.
+          fetch-depth: 1
+          fetch-tags: false
+          sparse-checkout: tools/ci/receipt.sh
+          sparse-checkout-cone-mode: false
       - name: Record an observable CI receipt without touching a branch
         if: always() && steps.receipt-checkout.outcome == 'success'
         continue-on-error: true

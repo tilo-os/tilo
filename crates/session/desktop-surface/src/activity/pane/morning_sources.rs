@@ -5,6 +5,13 @@ use super::{
     t_args, text_width,
 };
 
+struct MorningPaint<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
 impl RoomActivityPane {
     /// Explicit device-private choices; never inferred from history or app installation.
     pub fn chosen_morning_sources(&self) -> &[MorningSource] {
@@ -120,7 +127,20 @@ impl RoomActivityPane {
             self.remove_morning_source(key);
             None
         } else {
-            self.morning_target(key)
+            let source = self
+                .chosen_morning_sources()
+                .iter()
+                .find(|source| source.key() == key)?;
+            if self.morning_evidence(key).is_some()
+                && self
+                    .host
+                    .submit_morning_command(&self.task_room, source, super::MorningCommand::Open)
+                    .is_ok()
+            {
+                None
+            } else {
+                self.morning_target(key)
+            }
         }
     }
 
@@ -149,6 +169,97 @@ impl RoomActivityPane {
         )
     }
 
+    pub(super) fn submit_morning_command(&mut self, key: &str, command: super::MorningCommand) {
+        if command == super::MorningCommand::NextSource {
+            if self.scope == RoomScope::ThisRoom {
+                let choices = self.chosen_morning_sources();
+                if let Some(index) = choices.iter().position(|source| source.key() == key) {
+                    let offset = index
+                        .saturating_add(1)
+                        .checked_rem(choices.len())
+                        .unwrap_or(0);
+                    if let Some(next) = choices.get(offset).map(MorningSource::key) {
+                        self.morning_source_offset = offset;
+                        self.keyboard_focus =
+                            Some(super::ActivityFocus::MorningCommand(next, command));
+                    }
+                }
+            }
+            return;
+        }
+        let Some(source) = self
+            .chosen_morning_sources()
+            .iter()
+            .find(|source| source.key() == key)
+            .cloned()
+        else {
+            return;
+        };
+        if self.scope != RoomScope::ThisRoom || self.morning_evidence(key).is_none() {
+            return;
+        }
+        self.morning_command_message = self
+            .host
+            .submit_morning_command(&self.task_room, &source, command)
+            .err();
+    }
+    pub(super) fn morning_display_label(
+        &self,
+        key: &str,
+        evidence: Option<&(ui::HistoryResourceTarget, SystemTime)>,
+    ) -> String {
+        if self.scope != RoomScope::ThisRoom || evidence.is_none() {
+            return self.morning_source_label(evidence);
+        }
+        let payload = self
+            .chosen_morning_sources()
+            .iter()
+            .find(|source| source.key() == key)
+            .and_then(|source| self.host.morning_payload(&self.task_room, source));
+        if let (Some(_), Some((target, time))) = (payload, evidence) {
+            t_args(
+                "activity-morning-recorded",
+                &[
+                    (
+                        "source",
+                        target.app_label.as_deref().unwrap_or(&target.id).into(),
+                    ),
+                    ("time", format_relative_time(*time, self.now()).into()),
+                ],
+            )
+        } else {
+            self.morning_source_label(evidence)
+        }
+    }
+    pub(super) fn morning_payload_text(&self, key: &str) -> String {
+        let Some(source) = self
+            .chosen_morning_sources()
+            .iter()
+            .find(|source| source.key() == key)
+        else {
+            return String::new();
+        };
+        if self.scope != RoomScope::ThisRoom || self.morning_evidence(key).is_none() {
+            return t("activity-morning-payload-unavailable");
+        }
+        let mut text = self
+            .host
+            .morning_payload(&self.task_room, source)
+            .map_or_else(
+                || t("activity-morning-payload-unavailable"),
+                |payload| payload.text(),
+            );
+        if let Some(status) = self
+            .host
+            .morning_command_status(&self.task_room, source)
+            .or_else(|| self.morning_command_message.clone())
+        {
+            text.push('\n');
+            text.push_str(&status);
+        }
+        text
+    }
+
     pub(super) fn draw_morning_sources(
         &mut self,
         scene: &mut Scene,
@@ -159,11 +270,9 @@ impl RoomActivityPane {
     ) -> f64 {
         let spacing = theme.tokens.spacing;
         let inset = f64::from(spacing.s3);
-        let gap = f64::from(spacing.s2);
         let tight = f64::from(spacing.s1);
         let padding = f64::from(spacing.s4);
         let x0 = self.sheet.x0 + inset;
-        let x1 = self.sheet.x1 - inset;
         let caption = if !self.host.morning_sources_available() {
             t("activity-morning-unavailable")
         } else if self.chosen_morning_sources().is_empty() {
@@ -171,7 +280,7 @@ impl RoomActivityPane {
         } else {
             t("activity-morning-description")
         };
-        let width = text_width(x1 - x0 - gap);
+        let width = text_width(self.sheet.width() - 2.0 * inset - f64::from(spacing.s2));
         let (_, height) = tr.measure_style(&caption, Some(width), &theme.text(TextRole::Caption));
         if y + f64::from(height) + padding > self.sheet.y1 {
             return y;
@@ -185,54 +294,145 @@ impl RoomActivityPane {
             &theme.text(TextRole::Caption),
         );
         y += f64::from(height) + padding;
-        let keys = self
+        let count = self.chosen_morning_sources().len();
+        self.morning_source_offset = self.morning_source_offset.checked_rem(count).unwrap_or(0);
+        let key = self
             .chosen_morning_sources()
-            .iter()
-            .map(MorningSource::key)
-            .collect::<Vec<_>>();
-        for key in keys {
-            let evidence = self.morning_evidence(&key);
-            let label = self.morning_source_label(evidence.as_ref());
-            let title = evidence.as_ref().map_or_else(
-                || t("activity-morning-unavailable"),
-                |(target, _)| target.label.clone(),
-            );
-            let h = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme);
-            let (_, caption_height) = tr.measure_style(
-                &label,
-                Some(text_width(f64::from(width) - (2.0 * inset))),
-                &theme.text(TextRole::Caption),
-            );
-            let caption_h = f64::from(caption_height) + padding;
-            let remove_label = t("activity-morning-remove");
-            let (_, remove_height) = tr.measure_style(
-                &remove_label,
-                Some(text_width(f64::from(width) - (2.0 * inset))),
-                &theme.text(TextRole::Caption),
-            );
-            let remove_h = (f64::from(remove_height) + padding).max(
-                ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme),
-            );
-            if y + h + caption_h + remove_h + padding > self.sheet.y1 - inset {
-                break;
-            }
-            let rect = Rect::new(x0, y, x1, y + h);
-            draw_task_button(scene, transform, tr, theme, rect, &title, false);
-            if evidence.is_some() {
-                self.morning_rects.push(((key.clone(), false), rect));
-            }
-            tr.draw_style(
+            .get(self.morning_source_offset)
+            .map(MorningSource::key);
+        if let Some(key) = key {
+            let mut paint = MorningPaint {
                 scene,
-                &label,
-                theme.tokens.colors.text_dim,
-                at(transform, x0 + inset, rect.y1 + gap),
-                Some(text_width(f64::from(width) - (2.0 * inset))),
-                &theme.text(TextRole::Caption),
+                transform,
+                text: tr,
+                theme,
+            };
+            y = self.draw_morning_source(&mut paint, &key, count, y);
+        }
+        y
+    }
+
+    fn draw_morning_source(
+        &mut self,
+        paint: &mut MorningPaint<'_>,
+        key: &str,
+        count: usize,
+        y: f64,
+    ) -> f64 {
+        let theme = paint.theme;
+        let spacing = theme.tokens.spacing;
+        let inset = f64::from(spacing.s3);
+        let gap = f64::from(spacing.s2);
+        let tight = f64::from(spacing.s1);
+        let padding = f64::from(spacing.s4);
+        let x0 = self.sheet.x0 + inset;
+        let x1 = self.sheet.x1 - inset;
+        let width = text_width(x1 - x0 - gap - 2.0 * inset);
+        let evidence = self.morning_evidence(key);
+        let label = format!(
+            "{}\n{}",
+            self.morning_display_label(key, evidence.as_ref()),
+            self.morning_payload_text(key)
+        );
+        let label = paint
+            .text
+            .clamp_to_lines(&label, &theme.text(TextRole::Caption), width, 6)
+            .join("\n");
+        let title = evidence.as_ref().map_or_else(
+            || t("activity-morning-unavailable"),
+            |(target, _)| target.label.clone(),
+        );
+        let h = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme);
+        let (_, caption_height) =
+            paint
+                .text
+                .measure_style(&label, Some(width), &theme.text(TextRole::Caption));
+        let caption_h = f64::from(caption_height) + padding;
+        let refreshable = (self.scope == RoomScope::ThisRoom && evidence.is_some())
+            && self
+                .chosen_morning_sources()
+                .iter()
+                .find(|source| source.key() == key)
+                .and_then(|source| self.host.morning_payload(&self.task_room, source))
+                .is_some_and(|payload| payload.refreshable);
+        let commands = [
+            super::MorningCommand::Refresh,
+            super::MorningCommand::DraftRefresh,
+        ]
+        .into_iter()
+        .filter(|_| refreshable)
+        .chain((count > 1).then_some(super::MorningCommand::NextSource))
+        .collect::<Vec<_>>();
+        let command_h = commands.iter().fold(0.0, |height, _| height + h + gap);
+        let remove_label = t("activity-morning-remove");
+        let (_, remove_height) =
+            paint
+                .text
+                .measure_style(&remove_label, Some(width), &theme.text(TextRole::Caption));
+        let remove_h = (f64::from(remove_height) + padding).max(h);
+        if y + h + caption_h + remove_h + command_h + padding > self.sheet.y1 - inset {
+            return y;
+        }
+        let rect = Rect::new(x0, y, x1, y + h);
+        draw_task_button(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            theme,
+            rect,
+            &title,
+            false,
+        );
+        if evidence.is_some() {
+            self.morning_rects.push(((key.to_owned(), false), rect));
+        }
+        paint.text.draw_style(
+            paint.scene,
+            &label,
+            theme.tokens.colors.text_dim,
+            at(paint.transform, x0 + inset, rect.y1 + gap),
+            Some(width),
+            &theme.text(TextRole::Caption),
+        );
+        let bottom = rect.y1 + caption_h;
+        let rect = Rect::new(x0, bottom + tight, x1, bottom + tight + remove_h);
+        draw_task_button(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            theme,
+            rect,
+            &remove_label,
+            false,
+        );
+        self.morning_rects.push(((key.to_owned(), true), rect));
+        self.draw_morning_commands(paint, key, &commands, rect.y1 + gap)
+    }
+
+    fn draw_morning_commands(
+        &mut self,
+        paint: &mut MorningPaint<'_>,
+        key: &str,
+        commands: &[super::MorningCommand],
+        mut y: f64,
+    ) -> f64 {
+        let theme = paint.theme;
+        let inset = f64::from(theme.tokens.spacing.s3);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let h = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme);
+        for command in commands {
+            let rect = Rect::new(self.sheet.x0 + inset, y, self.sheet.x1 - inset, y + h);
+            draw_task_button(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                theme,
+                rect,
+                &t(command.label_key()),
+                false,
             );
-            let bottom = rect.y1 + caption_h;
-            let rect = Rect::new(x0, bottom + tight, x1, bottom + tight + remove_h);
-            draw_task_button(scene, transform, tr, theme, rect, &remove_label, false);
-            self.morning_rects.push(((key, true), rect));
+            self.morning_command_rects
+                .push(((key.to_owned(), *command), rect));
             y = rect.y1 + gap;
         }
         y

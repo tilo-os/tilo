@@ -1,7 +1,7 @@
 //! One confined child serving a private speech pipe. No microphone is opened.
 use super::{DraftPolicy, FRAME, RequestKind, SpeechConfig, SpeechError, SpeechInput, SpeechReply};
 #[cfg(feature = "whisper")]
-use super::{SpeechEngine, SpeechRecognition, speech_model_file};
+use super::{SpeechEngine, SpeechRecognition, speech_activity_file, speech_model_file};
 #[cfg(feature = "whisper")]
 use crate::catalog::VerifiedCatalog;
 use std::io::{Read, Write};
@@ -98,6 +98,7 @@ pub fn serve_with_diagnostics(
         #[cfg(not(feature = "whistle-aot"))]
         return Err(SpeechError::ModelUnavailable);
     }
+    let sealed_activity = speech_activity_file(root, verified)?;
     let verify_ms = verification_started.elapsed().as_secs_f64() * 1000.0;
     let model = sealed.id().to_owned();
     let revision = sealed.revision().to_owned();
@@ -109,10 +110,16 @@ pub fn serve_with_diagnostics(
     let native_started = std::time::Instant::now();
     let mut engine = SpeechEngine::load_file(&sealed)?;
     drop(sealed);
+    let activity = sealed_activity
+        .as_ref()
+        .map(super::activity::SpeechActivity::load_file)
+        .transpose()?;
+    drop(sealed_activity);
     engine.set_threads(threads)?;
     engine.set_vocabulary(&config.vocabulary)?;
     engine.prepare()?;
     let language = engine.language(&config.language)?;
+    SpeechEngine::enable_draft_interrupt()?;
     if diagnostics {
         eprintln!(
             "SPEECH_PREPARATION {}",
@@ -126,6 +133,7 @@ pub fn serve_with_diagnostics(
     drop(config);
     let mut decoder = WhisperDecoder {
         engine,
+        activity,
         recognition: SpeechRecognition::default(),
         language,
     };
@@ -136,6 +144,10 @@ pub fn serve_with_diagnostics(
 /// exactly once; full-context engines may use the shared cumulative input.
 /// All methods execute in the owned confined child, never the compositor.
 pub trait SpeechDecoder {
+    /// Advertise only a handler installed before Ready in this owned child.
+    fn finish_interrupts_draft(&self) -> bool {
+        false
+    }
     /// Declare scheduling supported by this implementation, never by model
     /// bytes or a remote collaborator. Older workers default to full context.
     fn draft_policy(&self) -> DraftPolicy {
@@ -158,21 +170,40 @@ pub trait SpeechDecoder {
 #[cfg(feature = "whisper")]
 struct WhisperDecoder {
     engine: SpeechEngine,
+    activity: Option<super::activity::SpeechActivity>,
     recognition: SpeechRecognition,
     language: std::ffi::CString,
 }
 #[cfg(feature = "whisper")]
 impl SpeechDecoder for WhisperDecoder {
+    fn finish_interrupts_draft(&self) -> bool {
+        true
+    }
     fn push(&mut self, _samples: &[f32]) -> Result<(), SpeechError> {
         Ok(())
     }
     fn draft(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
-        self.recognition
-            .transcribe(&mut self.engine, samples, &self.language, false)
+        match self.recognition.transcribe_with_activity(
+            &mut self.engine,
+            self.activity.as_mut(),
+            samples,
+            &self.language,
+            false,
+        ) {
+            // Acknowledge the original Draft sequence without any partial
+            // native result. Only completed canonical phrases survive; Finish decodes the full remainder.
+            Err(SpeechError::DraftInterrupted) => Ok(String::new()),
+            result => result,
+        }
     }
     fn finish(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
-        self.recognition
-            .transcribe(&mut self.engine, samples, &self.language, true)
+        self.recognition.transcribe_with_activity(
+            &mut self.engine,
+            self.activity.as_mut(),
+            samples,
+            &self.language,
+            true,
+        )
     }
 }
 
@@ -218,6 +249,7 @@ pub fn serve_decoder(
             model: identity.0.to_owned(),
             revision: identity.1.to_owned(),
             draft_policy: decoder.draft_policy(),
+            finish_interrupts_draft: decoder.finish_interrupts_draft(),
         },
     )?;
     loop {

@@ -660,13 +660,7 @@ impl Widget for CollaborationOverview {
         n
     }
     fn apply_layout(&mut self, t: &TaffyTree<()>, n: NodeId, o: Point) {
-        let l = t.layout(n).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            o.x + f64::from(l.location.x),
-            o.y + f64::from(l.location.y),
-            o.x + f64::from(l.location.x + l.size.width),
-            o.y + f64::from(l.location.y + l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(t, n, o);
         self.dirty = true;
     }
     fn draw(

@@ -72,7 +72,6 @@ pub mod installer_network;
 pub mod internal_handoff;
 pub mod keyboard_view;
 pub mod layouts;
-pub mod locales;
 pub mod media_profile;
 pub mod operation;
 pub mod power_readiness;

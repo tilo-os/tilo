@@ -49,6 +49,9 @@ pub(super) struct Flow {
     /// The cache holds floating surfaces over the blurred material. A reused
     /// cache would show them opaque, so it is redrawn while it does.
     cache_carries_material: bool,
+    /// The scene parts the cache holds, recorded when it was drawn for a
+    /// tracked section, so replaying it keeps the section's parts.
+    cache_parts: Option<crate::scene_parts::SectionParts>,
     /// Whether the cached subtree shows a secret, replayed with the cache.
     cache_shows_secret: bool,
 }
@@ -71,6 +74,7 @@ impl Flow {
             cache_present: false,
             descendant_caches_released: false,
             cache_carries_material: false,
+            cache_parts: None,
             cache_shows_secret: false,
         }
     }
@@ -141,7 +145,6 @@ impl Flow {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
     ) -> bool {
         if presence.should_cull(self.paint_rect) {
             return false;
@@ -158,8 +161,12 @@ impl Flow {
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
-        let needs_rebuild =
-            !self.cache_present || size_changed || any_child_dirty || self.cache_carries_material;
+        let tracked = crate::scene_parts::is_tracked(scene);
+        let needs_rebuild = !self.cache_present
+            || size_changed
+            || any_child_dirty
+            || self.cache_carries_material
+            || (tracked && self.cache_parts.is_none());
 
         if needs_rebuild {
             // Children rebuild at `Affine::IDENTITY`: `Scene::append` composes
@@ -179,19 +186,30 @@ impl Flow {
             local.reset();
             crate::backdrop::nest_scene(&local);
             let secrets = crate::secret_paint::SecretPaint::begin();
-            for child in &mut self.children {
-                child.draw_with_presence(
-                    &mut local,
-                    Affine::IDENTITY,
-                    text_renderer,
-                    theme,
-                    presence,
-                    permissions,
-                );
-            }
+            let mut draw_children = |local: &mut Scene| {
+                for child in &mut self.children {
+                    child.draw(local, Affine::IDENTITY, text_renderer, theme, presence);
+                }
+            };
+            // A tracked section compares its parts frame to frame; a part
+            // drawn into this cache would otherwise vanish from it.
+            // The cache lands on screen through `transform`; a scroller
+            // drawn into it offers copies in screen space.
+            self.cache_parts = crate::scroll_copy::drawing_into_cache(transform, || {
+                if tracked {
+                    crate::scene_parts::record(&mut local, draw_children).1
+                } else {
+                    draw_children(&mut local);
+                    None
+                }
+            });
             self.cache_shows_secret = secrets.finish();
-            self.cache_carries_material =
-                crate::backdrop::append_nested(scene, &local, transform) > 0;
+            self.cache_carries_material = crate::scene_parts::append_with(
+                scene,
+                self.cache_parts.as_ref(),
+                Some(transform),
+                |scene| crate::backdrop::append_nested(scene, &local, transform),
+            ) > 0;
             self.subtree_cache = local;
             self.cache_rect = self.rect;
             self.cache_present = true;
@@ -207,7 +225,12 @@ impl Flow {
                 reason = "Affine composition is float matrix math and cannot panic"
             )]
             let cache_transform = transform * Affine::translate((dx, dy));
-            scene.append(&self.subtree_cache, Some(cache_transform));
+            crate::scene_parts::append(
+                scene,
+                &self.subtree_cache,
+                self.cache_parts.as_ref(),
+                Some(cache_transform),
+            );
             if self.cache_shows_secret {
                 crate::secret_paint::note_secret_painted();
             }
@@ -223,6 +246,7 @@ impl Flow {
 
     pub fn release_scene_cache(&mut self) {
         self.subtree_cache = Scene::new();
+        self.cache_parts = None;
         self.cache_present = false;
         self.descendant_caches_released = true;
         for child in &mut self.children {
@@ -353,8 +377,11 @@ macro_rules! flow_widget_methods {
             theme: &$crate::theme::Theme,
             presence: &$crate::presence::PresenceCtx,
         ) {
-            for child in &mut self.flow.children {
-                child.draw(scene, transform, text_renderer, theme, presence);
+            if self
+                .flow
+                .draw_cached(scene, transform, text_renderer, theme, presence)
+            {
+                $crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
             }
         }
 
@@ -418,8 +445,22 @@ macro_rules! flow_widget_methods {
             }
         }
 
+        /// A flow adds no structure of its own: a change a child can
+        /// describe stays described.
+        fn take_structure_change(&mut self) -> $crate::widget::StructureChange {
+            let mut change = $crate::widget::StructureChange::None;
+            for child in &mut self.flow.children {
+                change = change.join(child.take_structure_change());
+            }
+            change
+        }
+
         fn get_rect(&self) -> vello::kurbo::Rect {
             self.flow.rect
+        }
+
+        fn paint_bounds(&self) -> vello::kurbo::Rect {
+            self.flow.paint_rect
         }
 
         fn test_id(&self) -> Option<&str> {
@@ -439,34 +480,6 @@ macro_rules! flow_widget_methods {
                 .iter_mut()
                 .map(|c| c.take_structure_dirty())
                 .fold(false, |acc, d| acc || d)
-        }
-
-        fn draw_with_presence(
-            &mut self,
-            scene: &mut vello::Scene,
-            transform: vello::kurbo::Affine,
-            text_renderer: &mut $crate::text_render::TextRenderer,
-            theme: &$crate::theme::Theme,
-            presence: &$crate::presence::PresenceCtx,
-            permissions: &$crate::permissions::PermissionContext,
-        ) {
-            if self.flow.draw_cached(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            ) {
-                $crate::widget::draw_gate_and_peer_focus(
-                    self,
-                    scene,
-                    transform,
-                    theme,
-                    presence,
-                    permissions,
-                );
-            }
         }
 
         fn release_scene_cache(&mut self) {

@@ -21,15 +21,11 @@ const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
 /// Region variants such as de-AT and de-CH negotiate to the complete German
 /// catalog, while ICU and Fluent keep the requested locale for number,
 /// plural and date rules.
-static CATALOG: EmbeddedCatalog = catalog();
+pub(crate) static CATALOG: EmbeddedCatalog = catalog();
 
 const fn catalog() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new(
-        "en-US",
-        &[("en-US", SOURCE_FTL), ("de-DE", DE_FTL)],
-        "files-menu-open",
-    )
-    .with_system_locale();
+    let catalog = EmbeddedCatalog::new("en-US", &[("en-US", SOURCE_FTL), ("de-DE", DE_FTL)])
+        .with_system_locale();
     // Unit tests assert source-copy behavior throughout the widget. Keep them
     // deterministic across developer/CI host locales; catalog negotiation
     // itself is exercised through explicit-locale helpers below.

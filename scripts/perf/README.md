@@ -73,7 +73,7 @@ executable stand-alone; the higher-level flow is described below.
   model a real provider; both default to 0. `--spawn` seeds a
   signed-in Notes desktop with the `agent_task_desktop` example of `shell`.
   It joins the `agent` group once a whole task settles: today a listing
-  stops settling after the first new note (TIL-759).
+  stops settling after the first new note in a hosted Notes tab.
 
 ## Optimise (three-step PGO + optional BOLT)
 

@@ -3355,8 +3355,81 @@ mod tests {
         );
         eprintln!("[audio test] rendered {frames} buffers to real sink `{sink_name}`");
 
+        // Tearing the real sink down once hung in CI until the runner killed
+        // the test, with nothing to say where. Bound it by the hang bound and
+        // report where every thread waits and each element's state.
+        let elements = engine
+            .backend
+            .as_ref()
+            .map(|backend| backend.inner.playbin.clone());
+        let (torn_down, watched) = std::sync::mpsc::channel::<()>();
+        let watchdog = std::thread::spawn(move || {
+            if watched.recv_timeout(tilo_test_env::hang_bound())
+                != Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            {
+                return;
+            }
+            // Threads first: reading an element's state takes its lock,
+            // which a stuck state change may hold.
+            eprintln!("tearing down the real sink hung:\n{}", thread_waits());
+            eprintln!("{}", element_states(elements.as_ref()));
+            std::process::abort();
+        });
         engine.stop();
+        drop(engine);
+        let _ = torn_down.send(());
+        watchdog.join().unwrap();
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Where each thread of this process waits (Linux `/proc`): what a hung
+    /// teardown is stuck on.
+    #[cfg(feature = "audio")]
+    fn thread_waits() -> String {
+        use std::fmt::Write as _;
+        let mut report = String::new();
+        for task in std::fs::read_dir("/proc/self/task")
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let read = |name: &str| {
+                std::fs::read_to_string(task.path().join(name))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned()
+            };
+            let _ = writeln!(
+                report,
+                "thread {:?} {}: wchan {}, syscall {}",
+                task.file_name(),
+                read("comm"),
+                read("wchan"),
+                read("syscall")
+            );
+        }
+        report
+    }
+
+    /// The state of each element of `pipeline`.
+    #[cfg(feature = "audio")]
+    fn element_states(pipeline: Option<&gstreamer::Element>) -> String {
+        use gstreamer::prelude::*;
+        use std::fmt::Write as _;
+        let mut report = String::new();
+        if let Some(bin) = pipeline.and_then(|pipeline| pipeline.downcast_ref::<gstreamer::Bin>()) {
+            let elements = std::iter::once(bin.clone().upcast::<gstreamer::Element>())
+                .chain(bin.iterate_recurse().into_iter().flatten());
+            for element in elements {
+                let (result, current, pending) = element.state(gstreamer::ClockTime::ZERO);
+                let _ = writeln!(
+                    report,
+                    "{}: {result:?} {current:?} -> {pending:?}",
+                    element.path_string()
+                );
+            }
+        }
+        report
     }
 
     /// Build a minimal PCM WAV: `secs` seconds of a 220 Hz sine, 16-bit mono.

@@ -400,9 +400,10 @@ mod tests {
                 }
                 let intent = ui::widget::controls::take_control_invocation(&mut app)
                     .expect("visible shared button intent");
+                assert_eq!(intent.address.resource, "music.library");
                 assert_eq!(
-                    intent.address,
-                    tilo_actions::ActionAddress::new("music.library", "open-file")
+                    intent.address.action,
+                    ui::tilo_resource::Effect::id(&crate::actions::MusicEffect::OpenFile)
                 );
                 assert!(intent.arguments.is_empty());
                 assert!(
@@ -817,8 +818,7 @@ mod tests {
         };
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -886,8 +886,7 @@ mod tests {
         wav(&path);
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -944,8 +943,7 @@ mod tests {
         wav(&path);
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -1120,7 +1118,7 @@ mod tests {
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
             assert!(app.lib.tracks.is_empty());
-            assert!(crate::doc::load_library(&doc).tracks.is_empty());
+            assert!(crate::seed::library_of(&doc).tracks.is_empty());
             assert_eq!(app.pb.queue.len(), 1);
             assert!(app.pb.playing);
             assert!(app.worker.is_none());

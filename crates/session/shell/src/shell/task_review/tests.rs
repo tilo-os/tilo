@@ -9,18 +9,18 @@ use tilo_peer_state::workspace_task::{
 };
 
 fn admit(owner: &NativeWorkspaceOwner, room: crate::shell::state::RoomId) {
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     let key = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
     let now = SystemTime::now();
     let messages = owner
         .with_current(room, |view| {
             let before = view.peer().clone();
             let mut next = before.clone();
-            next.put_governed_capabilities(
-                &[
-                    CapOverride::grant(Subject::agent("scribe"), Scope::Workspace, Verb::Write)
-                        .with_id("test-scribe"),
-                ],
+            next.put_governed_grants(
+                &tilo_action_policy::roles::AgentPreset::Operator.grants(
+                    &room.to_string(),
+                    "scribe",
+                    &tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner),
+                ),
                 &key,
                 now,
             )?;

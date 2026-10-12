@@ -4598,14 +4598,7 @@ impl Widget for CaptureStudio {
         n
     }
     fn apply_layout(&mut self, t: &TaffyTree<()>, n: NodeId, o: Point) {
-        if let Ok(l) = t.layout(n) {
-            self.rect = Rect::new(
-                o.x + f64::from(l.location.x),
-                o.y + f64::from(l.location.y),
-                o.x + f64::from(l.location.x + l.size.width),
-                o.y + f64::from(l.location.y + l.size.height),
-            )
-        }
+        self.rect = crate::widget::layout_rect(t, n, o);
     }
     fn draw(
         &mut self,
