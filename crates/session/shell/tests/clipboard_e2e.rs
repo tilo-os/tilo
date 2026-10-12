@@ -2145,7 +2145,7 @@ fn x11_paste(compositor: &Compositor) -> String {
     let screen = &conn.setup().roots[0];
     let window = conn.generate_id().unwrap();
     conn.create_window(
-        screen.root_depth,
+        0,
         window,
         screen.root,
         0,
@@ -2186,10 +2186,24 @@ fn x11_paste(compositor: &Compositor) -> String {
             std::thread::sleep(Duration::from_millis(5));
             continue;
         };
+        assert!(
+            !matches!(event, Event::Error(_)),
+            "the X server rejected a paste request: {event:?}"
+        );
         if let Event::SelectionNotify(notify) = event {
             assert_ne!(
-                notify.property, 0,
-                "the X11 paste was refused (nothing copied)"
+                notify.property,
+                0,
+                "the X11 paste was refused (nothing copied)\nselection/X11 log lines:\n{}",
+                compositor
+                    .full_log()
+                    .lines()
+                    .filter(|l| {
+                        let l = l.to_ascii_lowercase();
+                        l.contains("selection") || l.contains("satellite") || l.contains("x11")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
             );
             let reply = conn
                 .get_property(true, window, prop, AtomEnum::ANY, 0, u32::MAX / 4)
@@ -2289,23 +2303,35 @@ fn x11_focused_window(
         conn.flush().unwrap();
     };
     paint(&conn);
+    // Wait for Wayland keyboard focus on satellite's surface for this window
+    // and for it to hold: a window that has just opened is resized to its tab,
+    // which briefly unmaps it, and a program copies once its window has
+    // settled, not mid-resize. The X server reports the window as the input
+    // focus once satellite holds Wayland focus.
+    let probe = x11_connect(compositor);
     let end = Instant::now() + deadline();
     let mut last_paint = Instant::now();
+    let mut focused_since: Option<Instant> = None;
     loop {
         assert!(
             Instant::now() < end,
-            "the X11 window never received FocusIn: satellite never got Wayland keyboard focus\n{}",
+            "the X11 window never held keyboard focus: satellite never got (or kept) Wayland keyboard focus\n{}",
             compositor.recent_log()
         );
         if last_paint.elapsed() > Duration::from_millis(500) {
             paint(&conn);
             last_paint = Instant::now();
         }
-        match conn.poll_for_event().unwrap() {
-            Some(x11rb::protocol::Event::FocusIn(_)) => break,
-            Some(_) => {}
-            None => std::thread::sleep(Duration::from_millis(5)),
+        let focus = probe.get_input_focus().unwrap().reply().unwrap().focus;
+        if focus == window {
+            let since = *focused_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= Duration::from_millis(400) {
+                break;
+            }
+        } else {
+            focused_since = None;
         }
+        std::thread::sleep(Duration::from_millis(20));
     }
     (conn, window)
 }
@@ -2415,6 +2441,17 @@ fn x11_clipboard_source_pastes_into_a_wayland_client() {
         );
         let (conn, window) = x11_focused_window(&compositor, &mut native, &token);
         let owner = serve_x11_clipboard(conn, window, text.clone());
+        // The copy lands while the X11 window is focused; opening another
+        // window first would take focus before satellite's request arrives.
+        let end = Instant::now() + deadline();
+        while compositor.chrome_paste(false).as_deref() != Some(text.as_str()) {
+            assert!(
+                Instant::now() < end,
+                "the compositor never received the X11 copy\n{}",
+                compositor.recent_log()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let mut terminal = TestClient::new(compositor.connect(), "org.tilo.test.alacritty");
         terminal.map_window(&compositor);
         assert_eq!(
@@ -2496,23 +2533,32 @@ fn x11_clipboard_pastes_into_x11_and_wayland_into_x11() {
         "after Tilo took the selection over"
     );
     drop(owner);
-    // The owner exited; the copy survives for X11 programs too.
+    // The owner exited; the copy survives for an X11 program that is focused
+    // afterwards (satellite only holds the compositor's selection while it
+    // has keyboard focus).
+    let token = compositor.mint_host_launch_activation("org.example.x11-second", "X11 second");
+    let (_second, _second_window) = x11_focused_window(&compositor, &mut native, &token);
     assert_eq!(
         x11_paste(&compositor),
         "x11 to x11",
         "after the X11 owner exited"
     );
-    // A newer Wayland copy replaces it for X11 programs.
-    native.set_clipboard("wayland to x11");
-    let end = Instant::now() + deadline();
-    loop {
-        native.pump();
-        if x11_paste(&compositor) == "wayland to x11" {
-            break;
-        }
-        assert!(Instant::now() < end, "the Wayland copy never reached X11");
-        std::thread::sleep(Duration::from_millis(100));
+    // The user goes back to the native app and copies there ...
+    if !native.state.keyboard_focused {
+        compositor.modifiers(false, false, false, true);
+        compositor.key("ArrowLeft");
+        compositor.modifiers(false, false, false, false);
     }
+    native.wait_until(
+        |s| s.keyboard_focused,
+        "the native app never regained focus",
+    );
+    let serial = press_ctrl_c(&compositor, &mut native);
+    native.copy_with_serial("wayland to x11", serial);
+    // ... then pastes into an X11 program that has just been focused.
+    let token = compositor.mint_host_launch_activation("org.example.x11-paster", "X11 paster");
+    let (_conn, _window) = x11_focused_window(&compositor, &mut native, &token);
+    assert_eq!(x11_paste(&compositor), "wayland to x11");
 }
 
 #[test]
@@ -6197,32 +6243,27 @@ fn x11_and_wayland_clients_trade_copies_in_both_directions() {
     native.map_window(&compositor);
     let serial = press_ctrl_c(&compositor, &mut native);
     native.copy_with_serial("wayland one", serial);
-    assert_eq!(x11_paste(&compositor), "wayland one", "wayland -> x11");
 
+    // An X11 program is focused and pastes what the Wayland app copied.
     let token = compositor.mint_host_launch_activation("org.example.x11-copier", "X11 copier");
     let (conn, window) = x11_focused_window(&compositor, &mut native, &token);
+    assert_eq!(x11_paste(&compositor), "wayland one", "wayland -> x11");
+    // It copies in turn; a Wayland client that maps later (the terminal) pastes.
     let owner = serve_x11_clipboard(conn, window, "x11 two".to_string());
-    // A Wayland client that maps later (the terminal) pastes the X11 copy.
     let mut terminal = TestClient::new(compositor.connect(), "org.tilo.test.trade-terminal");
     terminal.map_window(&compositor);
     assert_eq!(terminal.read_clipboard(None), "x11 two", "x11 -> wayland");
     drop(owner);
-    // And Wayland copies again, replacing the X11 text, for X11 and Wayland.
+    // The terminal copies again, and a freshly focused X11 program pastes it.
     let serial = press_ctrl_c(&compositor, &mut terminal);
     terminal.copy_with_serial("wayland three", serial);
-    let end = Instant::now() + deadline();
-    loop {
-        terminal.pump();
-        if x11_paste(&compositor) == "wayland three" {
-            break;
-        }
-        assert!(
-            Instant::now() < end,
-            "the second Wayland copy never reached X11"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    assert_eq!(terminal.read_clipboard(None), "wayland three");
+    let token = compositor.mint_host_launch_activation("org.example.x11-paster", "X11 paster");
+    let (_conn, _window) = x11_focused_window(&compositor, &mut terminal, &token);
+    assert_eq!(
+        x11_paste(&compositor),
+        "wayland three",
+        "wayland -> x11 again"
+    );
 }
 
 // Remaining realistic cases and refusal logging.
