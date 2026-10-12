@@ -174,6 +174,32 @@ p99_tolerance = 2.0
 min_delta = 1.0
 source = "CONFLICT_SCAN_LONGEST_HOLD_SLO"
 
+# Document media after a daemon restart: the empty-range status read an
+# app's draw path makes, and one 4 MiB range near the end of a 64 MiB
+# attachment (the capability's limit). Each verifies only the chunk groups it
+# returns; loading the attachment whole instead takes the gate's reported
+# document-media-whole-blob-load-64m (464.5 ms on the first CI run).
+# Provisional ceilings until CI runs give a p99, derived beside the
+# constants; tests/document_media_footprint.rs gates the daemon heap of the
+# same reads.
+[kpi."fs.document-media-cold-64m-status"]
+unit = "ms"
+max = 5.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "MEDIA_STATUS_SLO"
+
+[kpi."fs.document-media-cold-64m-tail-4m-read"]
+unit = "ms"
+max = 40.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "MEDIA_TAIL_READ_SLO"
+
 # App package size: bytes of the newest signed tapp per app in the public
 # registry index, over the apps of tools/perf/tapp-size-budget/ (the default
 # collection; runtime and provider stubs and withdrawn packages are not apps).
