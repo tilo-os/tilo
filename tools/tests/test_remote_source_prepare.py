@@ -3,13 +3,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-import io
-import json
-import os
-from unittest import mock
 
-MODULE = Path(__file__).resolve().parents[1] / 'dev/rcargo_source_build.py'
-SPEC = importlib.util.spec_from_file_location('rcargo_source_build', MODULE)
+MODULE = Path(__file__).resolve().parents[1] / 'dev/remote_source_prepare.py'
+SPEC = importlib.util.spec_from_file_location('remote_source_prepare', MODULE)
 BUILD = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BUILD)
 
@@ -46,27 +42,6 @@ class SourceBoundaryTests(unittest.TestCase):
             (mirror / 'unexpected.txt').write_text('do not upload')
             with self.assertRaisesRegex(ValueError, 'unexpected upload'):
                 BUILD.prepare(source, mirror, receipt)
-
-    def test_build_forces_ssh_no_fallback_and_omits_aws_recovery(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            config = root / 'config.toml'
-            config.write_text('[builder]\nhost="existing.example"\nuser="fedora"\ninstance_id="must-not-forward"\nsecurity_group_id="must-not-forward"\n')
-            receipt = root / 'result.json'
-            result = {'command': ['rcargo', '--no-fallback', 'build', '--locked', '-p', 'good-morning', '--bins']}
-            process = mock.Mock(stdout=io.BytesIO(b'rcargo: timing server.command 123.0ms\n'), returncode=101)
-            image = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
-            with mock.patch.dict(os.environ, {'RCARGO_IMAGE': image, 'RCARGO_TRANSPORT': 'local', 'CARGO_TARGET_DIR': '/forbidden'}):
-                with mock.patch.object(BUILD.subprocess, 'Popen', return_value=process) as spawn:
-                    self.assertEqual(BUILD.build(root, receipt, result, config), 101)
-            env = spawn.call_args.kwargs['env']
-            self.assertEqual(env['RCARGO_TRANSPORT'], 'ssh')
-            self.assertEqual(env['RCARGO_FALLBACK'], '0')
-            self.assertNotIn('CARGO_TARGET_DIR', env)
-            scoped = (root / 'host-only-rcargo.toml').read_text()
-            self.assertNotIn('instance_id', scoped)
-            self.assertNotIn('security_group_id', scoped)
-            self.assertEqual(json.loads(receipt.read_text())['phases_seconds']['server.command'], .123)
 
     def test_symlink_source_cannot_read_external_file(self):
         with tempfile.TemporaryDirectory() as directory:
