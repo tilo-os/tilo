@@ -240,6 +240,9 @@ pub struct ImportedSheet {
     pub name: String,
     pub sheet_id: String,
     pub cells: Vec<CellWrite>,
+    /// Whether the sheet comes hidden, as the file kept it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 /// Every collaborative operation Sheets exports on the shared workbook.
@@ -265,6 +268,10 @@ pub enum SheetsAction {
         /// that file again reveals them instead of importing a copy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<String>,
+        /// The workbook's title, which the file's name gives it, when it has
+        /// none yet.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
     /// Write a cell's raw input (a value or a formula). An empty `raw` clears
     /// the cell. When `fmt` is `Some`, the cell's display format is set to it in
@@ -357,6 +364,13 @@ pub enum SheetsAction {
         idx: usize,
         sheet_id: String,
         color: Option<u32>,
+    },
+    /// Hide sheet `idx` (its formulas and the references to it still work),
+    /// or show it again.
+    SetSheetHidden {
+        idx: usize,
+        sheet_id: String,
+        hidden: bool,
     },
     /// Insert a blank row above row `at` on `sheet`, shifting cells at or below
     /// it down. Recomputed from the document's base state.
@@ -565,6 +579,18 @@ fn history_resource(action: &SheetsAction) -> HistoryResource {
             "sheets.sheet",
             "Sheet".into(),
         ),
+        SheetsAction::SetSheetHidden {
+            sheet_id, hidden, ..
+        } => (
+            if *hidden {
+                "Hide sheet"
+            } else {
+                "Unhide sheet"
+            },
+            format!("sheets.sheet:{sheet_id}"),
+            "sheets.sheet",
+            "Sheet".into(),
+        ),
         SheetsAction::InsertRow { sheet_id, at, .. } => (
             "Insert row",
             format!("sheets.row:{sheet_id}:{at}"),
@@ -689,13 +715,22 @@ impl Action for SheetsAction {
                 sheets,
                 replace_blank,
                 source,
+                title,
             } => {
                 let blank = *replace_blank && workbook_is_blank(doc);
+                if let Some(title) = title
+                    && SheetsDoc::workbook_title(doc).is_none()
+                {
+                    SheetsDoc::set_workbook_title(doc, title);
+                }
                 for imported in sheets {
                     let sheet =
                         SheetsDoc::add_sheet_with_id(doc, &imported.name, &imported.sheet_id);
                     if let Some(source) = source {
                         SheetsDoc::set_sheet_source(doc, sheet, source);
+                    }
+                    if imported.hidden {
+                        SheetsDoc::set_sheet_hidden(doc, sheet, true);
                     }
                     apply_set_cells(doc, sheet, &imported.cells);
                 }
@@ -826,6 +861,11 @@ impl Action for SheetsAction {
                 sheet_id, color, ..
             } => {
                 SheetsDoc::set_sheet_color(doc, resolve_sheet(doc, sheet_id)?, *color);
+            }
+            SheetsAction::SetSheetHidden {
+                sheet_id, hidden, ..
+            } => {
+                SheetsDoc::set_sheet_hidden(doc, resolve_sheet(doc, sheet_id)?, *hidden);
             }
             SheetsAction::InsertRow { sheet_id, at, .. } => {
                 restructure(doc, resolve_sheet(doc, sheet_id)?, GridEdit::InsertRow(*at));
@@ -1212,12 +1252,22 @@ fn validate_imported_sheets(doc: &Doc, sheets: &[ImportedSheet]) -> Result<(), A
 )]
 fn validate_action(doc: &Doc, action: &SheetsAction) -> Result<(), ActionError> {
     match action {
-        SheetsAction::ImportSheets { sheets, source, .. } => {
+        SheetsAction::ImportSheets {
+            sheets,
+            source,
+            title,
+            ..
+        } => {
             if source
                 .as_deref()
                 .is_some_and(|source| source.is_empty() || source.len() > MAX_IMPORT_SOURCE_BYTES)
             {
                 return refuse("an import's source path is empty or too long");
+            }
+            if title.as_deref().is_some_and(|title| {
+                title.trim().is_empty() || title.len() > MAX_IMPORT_SOURCE_BYTES
+            }) {
+                return refuse("an import's workbook title is empty or too long");
             }
             validate_imported_sheets(doc, sheets)
         }
@@ -1368,6 +1418,21 @@ fn validate_action(doc: &Doc, action: &SheetsAction) -> Result<(), ActionError> 
                 Ok(())
             } else {
                 refuse("sheet color is invalid")
+            }
+        }
+        SheetsAction::SetSheetHidden {
+            idx,
+            sheet_id,
+            hidden,
+        } => {
+            validate_sheet(doc, *idx, sheet_id)?;
+            let shown = (0..SheetsDoc::sheet_count(doc))
+                .filter(|at| !SheetsDoc::sheet_hidden(doc, *at))
+                .count();
+            if *hidden && !SheetsDoc::sheet_hidden(doc, *idx) && shown <= 1 {
+                refuse("a workbook keeps at least one sheet shown")
+            } else {
+                Ok(())
             }
         }
         SheetsAction::InsertRow {
@@ -1701,10 +1766,12 @@ pub fn import_sheets_action(
                 name,
                 sheet_id: Uuid::new_v4().to_string(),
                 cells,
+                hidden: false,
             })
             .collect(),
         replace_blank: false,
         source: None,
+        title: None,
     }
 }
 
@@ -1930,6 +1997,18 @@ pub fn set_sheet_color_action(
         idx,
         sheet_id: sheet_id.into(),
         color,
+    }
+}
+
+pub fn set_sheet_hidden_action(
+    idx: usize,
+    sheet_id: impl Into<String>,
+    hidden: bool,
+) -> SheetsAction {
+    SheetsAction::SetSheetHidden {
+        idx,
+        sheet_id: sheet_id.into(),
+        hidden,
     }
 }
 
@@ -2736,8 +2815,10 @@ mod tests {
             let mut action = SheetsAction::ImportSheets {
                 replace_blank: false,
                 source: None,
+                title: None,
                 sheets: vec![ImportedSheet {
                     name: "At the import limit".into(),
+                    hidden: false,
                     sheet_id: Uuid::new_v4().to_string(),
                     cells,
                 }],
@@ -2797,9 +2878,11 @@ mod tests {
             let action = SheetsAction::ImportSheets {
                 replace_blank: false,
                 source: None,
+                title: None,
                 sheets: vec![
                     ImportedSheet {
                         name: "Would exist".into(),
+                        hidden: false,
                         sheet_id: Uuid::new_v4().to_string(),
                         cells: vec![CellWrite {
                             col: 0,
@@ -2810,6 +2893,7 @@ mod tests {
                     },
                     ImportedSheet {
                         name: "Bad later sheet".into(),
+                        hidden: false,
                         sheet_id: Uuid::new_v4().to_string(),
                         cells: vec![CellWrite {
                             col: MAX_COLUMN + 1,

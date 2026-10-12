@@ -2,7 +2,8 @@
 //!
 //! Supports a practical subset of the spreadsheet formula language:
 //!   * literals: numbers, `"strings"`, `TRUE` / `FALSE`
-//!   * cell refs `A1`, absolute `$A$1`, and ranges `A1:B3`
+//!   * cell refs `A1`, absolute `$A$1`, and ranges `A1:B3`, on this sheet
+//!     or another one of the workbook (`Rates!A2:B5`, `'Q3 data'!B2`)
 //!   * arithmetic `+ - * / ^` and unary `-`/`+`
 //!   * text concatenation `&`
 //!   * comparisons `= <> < > <= >=`
@@ -195,13 +196,31 @@ pub struct RefSpan {
     pub key: String,
 }
 
+/// At a sheet name and its `!` (`Rates!`, `'Q3 data'!`), move `scan` past
+/// both and answer the text they span; otherwise leave it and answer `None`.
+fn sheet_prefix(scan: &mut Scan<'_>) -> Option<String> {
+    let start = scan.pos();
+    let mut ahead = *scan;
+    if ahead.peek() == Some('\'') {
+        quoted_sheet(&mut ahead)?;
+    } else {
+        ahead.skip_while(|c| c.is_ascii_alphanumeric() || c == '$' || c == '_' || c == '.');
+        if ahead.pos() == start || ahead.bump() != Some('!') {
+            return None;
+        }
+    }
+    *scan = ahead;
+    Some(scan.text_from(start))
+}
+
 /// Scan a formula body (the text after the leading `=`) for cell and range
 /// references, returning each one's character span and target rectangle.
 ///
 /// String literals are skipped, and an identifier immediately followed by `(`
 /// is treated as a function name rather than a reference (so `SUM` in
 /// `SUM(A1:A3)` is not tinted, but `A1:A3` is). Numeric exponents like `1e3`
-/// are never mistaken for references.
+/// are never mistaken for references. A reference to another sheet
+/// (`Rates!A2`) names no cell of this one and is not returned.
 pub fn references(body: &str) -> Vec<RefSpan> {
     let chars: Vec<char> = body.chars().collect();
     let mut scan = Scan::new(&chars);
@@ -211,6 +230,19 @@ pub fn references(body: &str) -> Vec<RefSpan> {
             scan.bump();
             scan.skip_while(|c| c != '"');
             scan.bump(); // closing quote, when the literal is terminated
+            continue;
+        }
+        if sheet_prefix(&mut scan).is_some() {
+            // The reference after it, and the range end after a `:`.
+            scan.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+            let mut ahead = scan;
+            ahead.skip_while(char::is_whitespace);
+            if ahead.peek() == Some(':') {
+                ahead.bump();
+                ahead.skip_while(char::is_whitespace);
+                ahead.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+                scan = ahead;
+            }
             continue;
         }
         if ch != '$' && !ch.is_ascii_alphabetic() {
@@ -306,7 +338,7 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
         return raw.to_string();
     }
     let shift = |token: RefToken| token.render(token.offset(dcol, drow));
-    rewrite_refs(raw, |first, second| match second {
+    rewrite_refs(raw, true, |first, second| match second {
         Some((sep, second)) => format!("{}{sep}{}", shift(first), shift(second)),
         None => shift(first),
     })
@@ -327,7 +359,7 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
 /// preserve formula relationships in the same replayable action that moves the
 /// cells, rather than leaving stale coordinates for a later UI-only repair.
 pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
-    rewrite_refs(raw, |first, second| {
+    rewrite_refs(raw, false, |first, second| {
         let moved = match second {
             Some((sep, second)) => edit
                 .map_range(first.addr, second.addr)
@@ -340,10 +372,14 @@ pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
 
 /// Rewrite every reference in a formula through `rewrite`, which receives a
 /// lone reference or both ends of a range with the separator between them.
-/// String literals, function names, and numeric exponents (`1e3`) are copied
-/// verbatim; non-formula input (no leading `=`) is returned unchanged.
+/// String literals, sheet names, function names, and numeric exponents
+/// (`1e3`) are copied verbatim; non-formula input (no leading `=`) is
+/// returned unchanged. A reference to another sheet is rewritten only when
+/// `foreign` is set: a copy shifts it as any other, but rows and columns
+/// inserted on this sheet do not move it.
 fn rewrite_refs(
     raw: &str,
+    foreign: bool,
     mut rewrite: impl FnMut(RefToken, Option<(&str, RefToken)>) -> String,
 ) -> String {
     let Some(body) = raw.strip_prefix('=') else {
@@ -353,6 +389,8 @@ fn rewrite_refs(
     let mut scan = Scan::new(&chars);
     let mut out = String::with_capacity(raw.len().saturating_add(8));
     out.push('=');
+    // Whether the reference next is on another sheet that stays as it is.
+    let mut kept = false;
     while let Some(ch) = scan.peek() {
         if ch == '"' {
             // Copy a string literal verbatim, including the closing quote.
@@ -360,6 +398,26 @@ fn rewrite_refs(
             scan.bump();
             scan.skip_while(|c| c != '"');
             scan.bump();
+            out.push_str(&scan.text_from(start));
+            continue;
+        }
+        if let Some(sheet) = sheet_prefix(&mut scan) {
+            out.push_str(&sheet);
+            kept = !foreign;
+            continue;
+        }
+        if std::mem::take(&mut kept) {
+            // The reference, and the range end after a `:`, as written.
+            let start = scan.pos();
+            scan.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+            let mut ahead = scan;
+            ahead.skip_while(char::is_whitespace);
+            if ahead.peek() == Some(':') {
+                ahead.bump();
+                ahead.skip_while(char::is_whitespace);
+                ahead.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+                scan = ahead;
+            }
             out.push_str(&scan.text_from(start));
             continue;
         }
@@ -491,6 +549,7 @@ enum Token {
     Num(f64),
     Str(String),
     Ident(String), // function name or reference text
+    Sheet(String), // the sheet a reference after it is on: `Rates!`, `'Q3 data'!`
     Op(char),      // + - * / ^ & % ( ) , : and comparison head chars
     Lt,
     Gt,
@@ -543,10 +602,21 @@ fn tokenize(input: &str) -> Result<Vec<Token>, FormulaError> {
                 out.push(Token::Str(literal));
             }
             '$' | 'A'..='Z' | 'a'..='z' | '_' => {
-                // Identifier: function name or cell reference (may contain $).
+                // Identifier: function name or cell reference (may contain $),
+                // or the name of the sheet the reference after its `!` is on.
                 let start = scan.pos();
                 scan.skip_while(|c| c.is_ascii_alphanumeric() || c == '$' || c == '_' || c == '.');
-                out.push(Token::Ident(scan.text_from(start)));
+                let text = scan.text_from(start);
+                if scan.peek() == Some('!') {
+                    scan.bump();
+                    out.push(Token::Sheet(text));
+                } else {
+                    out.push(Token::Ident(text));
+                }
+            }
+            '\'' => {
+                let name = quoted_sheet(&mut scan).ok_or(FormulaError::Ref)?;
+                out.push(Token::Sheet(name));
             }
             '<' => {
                 scan.bump();
@@ -585,6 +655,25 @@ fn tokenize(input: &str) -> Result<Vec<Token>, FormulaError> {
     Ok(out)
 }
 
+/// A quoted sheet name and the `!` after it (`'Q3 data'!`), the scan at its
+/// opening quote: the name, a doubled quote standing for one. `None` when
+/// the quote is not closed or no `!` follows.
+fn quoted_sheet(scan: &mut Scan<'_>) -> Option<String> {
+    scan.bump();
+    let mut name = String::new();
+    loop {
+        match scan.bump()? {
+            '\'' if scan.peek() == Some('\'') => {
+                scan.bump();
+                name.push('\'');
+            }
+            '\'' => break,
+            c => name.push(c),
+        }
+    }
+    (scan.bump() == Some('!')).then_some(name)
+}
+
 // ---------------------------------------------------------------------------
 // AST + parser
 // ---------------------------------------------------------------------------
@@ -596,6 +685,8 @@ enum Expr {
     Bool(bool),
     Ref(Addr),
     Range(Addr, Addr),
+    /// A reference or range on another sheet, by its name.
+    Sheet(String, Box<Expr>),
     Unary(char, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
@@ -747,6 +838,13 @@ impl Parser {
                     _ => Err(FormulaError::Error),
                 }
             }
+            Some(Token::Sheet(sheet)) => {
+                let Some(Token::Ident(id)) = self.next() else {
+                    return Err(FormulaError::Ref);
+                };
+                let reference = self.reference(&id).map_err(|_| FormulaError::Ref)?;
+                Ok(Expr::Sheet(sheet, Box::new(reference)))
+            }
             Some(Token::Ident(id)) => {
                 // Function call?
                 if matches!(self.peek(), Some(Token::Op('('))) {
@@ -775,23 +873,26 @@ impl Parser {
                     "FALSE" => return Ok(Expr::Bool(false)),
                     _ => {}
                 }
-                // Range A1:B3 ?
-                if matches!(self.peek(), Some(Token::Op(':'))) {
-                    self.next();
-                    let Some(Token::Ident(end)) = self.next() else {
-                        return Err(FormulaError::Ref);
-                    };
-                    let a = a1_to_addr(&id).ok_or(FormulaError::Ref)?;
-                    let b = a1_to_addr(&end).ok_or(FormulaError::Ref)?;
-                    return Ok(Expr::Range(a, b));
-                }
-                // Single cell reference; an identifier that isn't a valid A1
-                // reference is an unknown name.
-                let addr = a1_to_addr(&id).ok_or(FormulaError::Name)?;
-                Ok(Expr::Ref(addr))
+                self.reference(&id)
             }
             _ => Err(FormulaError::Error),
         }
+    }
+
+    /// The cell `id` names, or the range from it to the reference after a
+    /// `:`. An identifier that isn't a valid A1 reference is an unknown name.
+    fn reference(&mut self, id: &str) -> Result<Expr, FormulaError> {
+        if matches!(self.peek(), Some(Token::Op(':'))) {
+            self.next();
+            let Some(Token::Ident(end)) = self.next() else {
+                return Err(FormulaError::Ref);
+            };
+            let a = a1_to_addr(id).ok_or(FormulaError::Ref)?;
+            let b = a1_to_addr(&end).ok_or(FormulaError::Ref)?;
+            return Ok(Expr::Range(a, b));
+        }
+        let addr = a1_to_addr(id).ok_or(FormulaError::Name)?;
+        Ok(Expr::Ref(addr))
     }
 }
 
@@ -809,64 +910,121 @@ fn parse(formula: &str) -> Result<Expr, FormulaError> {
 // Evaluation engine
 // ---------------------------------------------------------------------------
 
+/// One sheet of a workbook as the engine reads it: its name, which other
+/// sheets' formulas reference it by, and its raw cell inputs.
+pub type BookSheet<'a, S> = (&'a str, &'a HashMap<Addr, String, S>);
+
 /// The recalculation engine. Holds the raw input strings for every
-/// non-empty cell and produces a fully-evaluated value map, recomputing
-/// formulas with memoisation + cycle detection.
+/// non-empty cell of a workbook's sheets and produces a sheet's
+/// fully-evaluated value map, recomputing formulas with memoisation + cycle
+/// detection across sheets.
 pub struct Engine<'a, S = std::collections::hash_map::RandomState> {
-    raw: &'a HashMap<Addr, String, S>,
-    cache: HashMap<Addr, CellValue>,
-    visiting: HashSet<Addr>,
+    sheets: Vec<BookSheet<'a, S>>,
+    /// The sheet whose cells unqualified references name: the one being
+    /// evaluated, or the one a qualified reference led to.
+    here: usize,
+    cache: HashMap<(usize, Addr), CellValue>,
+    visiting: HashSet<(usize, Addr)>,
 }
 
 impl<'a, S: BuildHasher> Engine<'a, S> {
+    /// A lone sheet: a reference to another sheet is `#REF!`.
     pub fn new(raw: &'a HashMap<Addr, String, S>) -> Self {
+        Self::in_book(vec![("", raw)], 0)
+    }
+
+    /// Sheet `here` of the workbook `sheets`, whose formulas may reference
+    /// the others by name.
+    pub fn in_book(sheets: Vec<BookSheet<'a, S>>, here: usize) -> Self {
         Self {
-            raw,
+            sheets,
+            here,
             cache: HashMap::new(),
             visiting: HashSet::new(),
         }
     }
 
-    /// Evaluate every populated cell and return the value map. Cells that
-    /// hold plain numbers/text are parsed directly; cells beginning with
-    /// `=` are parsed and evaluated.
+    /// Evaluate every populated cell of the sheet and return the value map.
+    /// Cells that hold plain numbers/text are parsed directly; cells
+    /// beginning with `=` are parsed and evaluated.
     pub fn evaluate_all(mut self) -> HashMap<Addr, CellValue> {
-        let addrs: Vec<Addr> = self.raw.keys().copied().collect();
-        for addr in addrs {
-            if !self.cache.contains_key(&addr) {
-                let v = self.eval_cell(addr);
-                self.cache.insert(addr, v);
-            }
+        let home = self.here;
+        let Some((_, raw)) = self.sheets.get(home).copied() else {
+            return HashMap::new();
+        };
+        let mut values = HashMap::with_capacity(raw.len());
+        for addr in raw.keys().copied() {
+            let v = self.eval_cell(addr);
+            values.insert(addr, v);
         }
-        self.cache
+        values
     }
 
-    /// Resolve a single cell, using/filling the memo cache.
+    /// Resolve a single cell of the current sheet, using/filling the memo
+    /// cache.
     fn eval_cell(&mut self, addr: Addr) -> CellValue {
-        if let Some(v) = self.cache.get(&addr) {
+        let key = (self.here, addr);
+        if let Some(v) = self.cache.get(&key) {
             return v.clone();
         }
-        if self.visiting.contains(&addr) {
+        if self.visiting.contains(&key) {
             return CellValue::Error(FormulaError::Cycle);
         }
-        let raw = match self.raw.get(&addr) {
+        let raw = match self
+            .sheets
+            .get(self.here)
+            .and_then(|(_, raw)| raw.get(&addr))
+        {
             Some(r) if !r.is_empty() => r.clone(),
             _ => return CellValue::Empty,
         };
 
         let value = if let Some(body) = raw.strip_prefix('=') {
-            self.visiting.insert(addr);
+            self.visiting.insert(key);
             let v = match parse(body) {
                 Ok(expr) => self.eval_expr(&expr),
                 Err(e) => CellValue::Error(e),
             };
-            self.visiting.remove(&addr);
+            self.visiting.remove(&key);
             v
         } else {
             parse_literal(&raw)
         };
-        self.cache.insert(addr, value.clone());
+        self.cache.insert(key, value.clone());
         value
+    }
+
+    /// `f` with the sheet named `name` current, as a reference qualified by
+    /// it reads it; `None` when the workbook has no sheet of that name.
+    /// Sheet names match regardless of case, as in other spreadsheets.
+    fn in_sheet<T>(&mut self, name: &str, f: impl FnOnce(&mut Self) -> T) -> Option<T> {
+        let found = self
+            .sheets
+            .iter()
+            .position(|(sheet, _)| !sheet.is_empty() && sheet.eq_ignore_ascii_case(name))?;
+        let back = std::mem::replace(&mut self.here, found);
+        let answer = f(self);
+        self.here = back;
+        Some(answer)
+    }
+
+    /// Whether `sheet`, when one is named, is a sheet of the workbook.
+    fn knows(&self, sheet: Option<&str>) -> bool {
+        sheet.is_none_or(|name| {
+            self.sheets
+                .iter()
+                .any(|(known, _)| !known.is_empty() && known.eq_ignore_ascii_case(name))
+        })
+    }
+
+    /// Cell `addr` of the sheet named `sheet`, or of the current sheet.
+    fn cell_in(&mut self, sheet: Option<&str>, addr: Addr) -> CellValue {
+        match sheet {
+            None => self.eval_cell(addr),
+            Some(name) => self
+                .in_sheet(name, |engine| engine.eval_cell(addr))
+                .unwrap_or(CellValue::Error(FormulaError::Ref)),
+        }
     }
 
     fn eval_expr(&mut self, expr: &Expr) -> CellValue {
@@ -876,6 +1034,9 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             Expr::Bool(b) => CellValue::Bool(*b),
             Expr::Ref(addr) => self.eval_cell(*addr),
             Expr::Range(_, _) => CellValue::Error(FormulaError::Value),
+            Expr::Sheet(name, reference) => self
+                .in_sheet(name, |engine| engine.eval_expr(reference))
+                .unwrap_or(CellValue::Error(FormulaError::Ref)),
             Expr::Unary(op, inner) => {
                 let v = self.eval_expr(inner);
                 if v.is_error() {
@@ -952,6 +1113,9 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 }
                 out
             }
+            Expr::Sheet(name, reference) => self
+                .in_sheet(name, |engine| engine.collect_values(reference))
+                .unwrap_or_else(|| vec![CellValue::Error(FormulaError::Ref)]),
             _ => vec![self.eval_expr(arg)],
         }
     }
@@ -1880,7 +2044,8 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         if key.is_error() {
             return key;
         }
-        let Some((tl, br)) = range_bounds(table_expr) else {
+        let Some((sheet, tl, br)) = range_bounds(table_expr).filter(|(s, ..)| self.knows(*s))
+        else {
             return CellValue::Error(FormulaError::Ref);
         };
         let Some(index) = self.eval_expr(index_expr).as_number().map(number_to_int) else {
@@ -1906,7 +2071,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             .is_none_or(|a| self.eval_expr(a).as_number() != Some(0.0));
         let mut best: Option<u32> = None;
         for along in along_from..=along_to {
-            let probe = self.eval_cell(axis.addr(along, across_first));
+            let probe = self.cell_in(sheet, axis.addr(along, across_first));
             if approx {
                 if lte(&probe, &key) {
                     best = Some(along);
@@ -1914,11 +2079,11 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                     break;
                 }
             } else if values_equal(&probe, &key) {
-                return self.eval_cell(axis.addr(along, target));
+                return self.cell_in(sheet, axis.addr(along, target));
             }
         }
         match best {
-            Some(along) => self.eval_cell(axis.addr(along, target)),
+            Some(along) => self.cell_in(sheet, axis.addr(along, target)),
             None => CellValue::Error(FormulaError::Na),
         }
     }
@@ -1926,7 +2091,11 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
     /// INDEX(range, `row_num`, [`col_num`]). A single-row or single-column range
     /// takes one index; a rectangle takes both.
     fn index_fn(&mut self, args: &[Expr]) -> CellValue {
-        let Some((tl, br)) = args.first().and_then(range_bounds) else {
+        let Some((sheet, tl, br)) = args
+            .first()
+            .and_then(range_bounds)
+            .filter(|(s, ..)| self.knows(*s))
+        else {
             return CellValue::Error(FormulaError::Ref);
         };
         let single_row = br.1 == tl.1;
@@ -1956,7 +2125,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         let (Ok(col), Ok(row)) = (u32::try_from(col), u32::try_from(row)) else {
             return CellValue::Error(FormulaError::Ref);
         };
-        self.eval_cell((col, row))
+        self.cell_in(sheet, (col, row))
     }
 
     /// MATCH(lookup, range, [`match_type`]). `0` exact, `1` largest ≤ (ascending,
@@ -1966,9 +2135,12 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             return CellValue::Error(FormulaError::Error);
         };
         let key = self.eval_expr(key_expr);
-        let Some((tl, br)) = range_bounds(range_expr) else {
+        let Some((sheet, tl, br)) = range_bounds(range_expr) else {
             return CellValue::Error(FormulaError::Na);
         };
+        if !self.knows(sheet) {
+            return CellValue::Error(FormulaError::Ref);
+        }
         let match_type = args
             .get(2)
             .and_then(|a| self.eval_expr(a).as_number())
@@ -1980,7 +2152,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         };
         let mut best: Option<usize> = None;
         for (i, addr) in cells.iter().enumerate() {
-            let v = self.eval_cell(*addr);
+            let v = self.cell_in(sheet, *addr);
             match match_type {
                 0 => {
                     if values_equal(&v, &key) {
@@ -2139,12 +2311,21 @@ fn criterion_matches(probe: &CellValue, crit: &CellValue) -> bool {
     }
 }
 
-/// Normalized inclusive rectangle a lookup/index argument refers to. A single
-/// `Ref` is a 1×1 rectangle; anything that isn't a reference yields `None`.
-fn range_bounds(arg: &Expr) -> Option<(Addr, Addr)> {
+/// Normalized inclusive rectangle a lookup/index argument refers to, with
+/// the sheet it is on when that is another one. A single `Ref` is a 1×1
+/// rectangle; anything that isn't a reference yields `None`.
+fn range_bounds(arg: &Expr) -> Option<(Option<&str>, Addr, Addr)> {
     match arg {
-        Expr::Range(a, b) => Some(((a.0.min(b.0), a.1.min(b.1)), (a.0.max(b.0), a.1.max(b.1)))),
-        Expr::Ref(a) => Some((*a, *a)),
+        Expr::Range(a, b) => Some((
+            None,
+            (a.0.min(b.0), a.1.min(b.1)),
+            (a.0.max(b.0), a.1.max(b.1)),
+        )),
+        Expr::Ref(a) => Some((None, *a, *a)),
+        Expr::Sheet(name, reference) => {
+            let (_, tl, br) = range_bounds(reference)?;
+            Some((Some(name.as_str()), tl, br))
+        }
         _ => None,
     }
 }
@@ -2399,6 +2580,37 @@ pub fn recalculate<S: BuildHasher>(raw: &HashMap<Addr, String, S>) -> HashMap<Ad
     Engine::new(raw).evaluate_all()
 }
 
+/// The values of sheet `here` of the workbook `sheets`, whose formulas may
+/// reference the other sheets by name (`Rates!B2`, `'Q3 data'!A1:A9`).
+pub fn recalculate_in_book<S: BuildHasher>(
+    sheets: Vec<BookSheet<'_, S>>,
+    here: usize,
+) -> HashMap<Addr, CellValue> {
+    Engine::in_book(sheets, here).evaluate_all()
+}
+
+/// The values of sheet `here` of `sheets`: worked out alone unless its
+/// formulas reference another sheet.
+pub fn sheet_values<S: BuildHasher>(
+    sheets: Vec<BookSheet<'_, S>>,
+    here: usize,
+) -> HashMap<Addr, CellValue> {
+    match sheets.get(here) {
+        Some((_, raw)) if !raw.values().any(|raw| references_other_sheets(raw)) => recalculate(raw),
+        Some(_) => recalculate_in_book(sheets, here),
+        None => HashMap::new(),
+    }
+}
+
+/// Whether formula input `raw` references another sheet, so its value can
+/// change when that sheet does.
+#[must_use]
+pub fn references_other_sheets(raw: &str) -> bool {
+    raw.strip_prefix('=').is_some_and(|body| {
+        tokenize(body).is_ok_and(|tokens| tokens.iter().any(|t| matches!(t, Token::Sheet(_))))
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Format propagation
 // ---------------------------------------------------------------------------
@@ -2473,7 +2685,9 @@ fn unit_of_format(fmt: CellFormat) -> Unit {
 /// Recursively determine an expression's unit.
 fn unit_of<S: BuildHasher>(expr: &Expr, formats: &HashMap<Addr, CellFormat, S>) -> Unit {
     match expr {
-        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Range(_, _) => Unit::Scalar,
+        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Range(_, _) | Expr::Sheet(..) => {
+            Unit::Scalar
+        }
         Expr::Ref(addr) => formats
             .get(addr)
             .map_or(Unit::Scalar, |f| unit_of_format(*f)),
@@ -2592,6 +2806,98 @@ mod tests {
         map.get(&a1_to_addr(a).unwrap())
             .cloned()
             .unwrap_or(CellValue::Empty)
+    }
+
+    fn sheet(cells: &[(&str, &str)]) -> HashMap<Addr, String> {
+        cells
+            .iter()
+            .map(|(a, v)| (a1_to_addr(a).unwrap(), (*v).to_string()))
+            .collect()
+    }
+
+    /// A formula reads cells, ranges and lookups of the workbook's other
+    /// sheets by name, quoted or not and in any case; an unknown sheet is
+    /// `#REF!`, and a loop through two sheets is a cycle.
+    #[test]
+    fn references_reach_the_other_sheets_of_the_workbook() {
+        let rates = sheet(&[("A2", "EUR"), ("B2", "1.08"), ("A3", "GBP"), ("B3", "1.27")]);
+        let data = sheet(&[
+            ("A1", "North"),
+            ("B1", "100"),
+            ("A2", "South"),
+            ("B2", "40"),
+            ("A3", "North"),
+            ("B3", "=Summary!C1"),
+        ]);
+        let summary = sheet(&[
+            ("A1", "=VLOOKUP(\"GBP\",Rates!A2:B3,2,0)"),
+            ("A2", "=SUMIF('Q3 data'!A1:A3,\"North\",'Q3 data'!B1:B3)"),
+            ("A3", "=rates!B2*2"),
+            ("A4", "=Missing!A1"),
+            ("A5", "=INDEX(Rates!B2:B3,2)"),
+            ("A6", "=MATCH(\"GBP\",$Rates.A2:A3,0)"),
+            ("A7", "=SUM(Rates!B2:B3)+A1"),
+            ("C1", "7"),
+            ("D1", "='Q3 data'!B3"),
+            ("E1", "=Loop!A1"),
+        ]);
+        let looped = sheet(&[("A1", "=Summary!E1")]);
+        let book = || {
+            vec![
+                ("Rates", &rates),
+                ("Q3 data", &data),
+                ("Summary", &summary),
+                ("Loop", &looped),
+            ]
+        };
+        let m = recalculate_in_book(book(), 2);
+        assert_eq!(val(&m, "A1"), CellValue::Number(1.27));
+        assert_eq!(
+            val(&m, "A2"),
+            CellValue::Number(107.0),
+            "North: 100 + Summary!C1"
+        );
+        assert_eq!(val(&m, "A3"), CellValue::Number(2.16));
+        assert_eq!(val(&m, "A4"), CellValue::Error(FormulaError::Ref));
+        assert_eq!(val(&m, "A5"), CellValue::Number(1.27));
+        assert!(val(&m, "A6").is_error(), "a `.` is no sheet separator");
+        assert_eq!(val(&m, "A7"), CellValue::Number(1.08 + 1.27 + 1.27));
+        assert_eq!(val(&m, "D1"), CellValue::Number(7.0));
+        assert_eq!(val(&m, "E1"), CellValue::Error(FormulaError::Cycle));
+        // The data sheet itself sees the summary's cell through its own reference.
+        assert_eq!(
+            val(&recalculate_in_book(book(), 1), "B3"),
+            CellValue::Number(7.0)
+        );
+        // Alone, a sheet's references to others are `#REF!`.
+        assert_eq!(
+            val(&recalculate(&summary), "A1"),
+            CellValue::Error(FormulaError::Ref)
+        );
+        assert!(references_other_sheets("=SUM(Rates!B2:B3)"));
+        assert!(references_other_sheets("='Q3 data'!B1"));
+        assert!(!references_other_sheets("=SUM(B2:B3)"));
+        assert!(!references_other_sheets("Rates!B2"));
+    }
+
+    /// A copy shifts a reference to another sheet as any other; rows
+    /// inserted on this sheet leave it; neither touches a sheet's name, even
+    /// one shaped like a cell (`Q3`); and only this sheet's references tint.
+    #[test]
+    fn sheet_references_rewrite_and_tint_as_their_sheet_does() {
+        assert_eq!(offset_refs("=Rates!B2*A1", 0, 1), "=Rates!B3*A2");
+        assert_eq!(offset_refs("='Q3 data'!B2:B4", 1, 0), "='Q3 data'!C2:C4");
+        assert_eq!(offset_refs("=Q3!A1+Q3", 0, 1), "=Q3!A2+Q4");
+        let insert = GridEdit::InsertRow(0);
+        assert_eq!(remap_refs("=Rates!B2+B2", insert), "=Rates!B2+B3");
+        assert_eq!(
+            remap_refs("=SUM('It''s'!A1:A3)+A1", insert),
+            "=SUM('It''s'!A1:A3)+A2"
+        );
+        let spans = references("Rates!B2+B2+'Q3 data'!A1:A3");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].key, "B2");
+        assert_eq!(spans[0].start, 9);
     }
 
     /// Precedence, references/SUM, IF/comparisons, div-zero/cycles and Excel error codes.

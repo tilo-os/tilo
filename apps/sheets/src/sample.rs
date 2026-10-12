@@ -61,6 +61,7 @@ pub fn workbook() -> SheetsAction {
         sheets: vec![budget(), sales()],
         replace_blank: true,
         source: None,
+        title: None,
     }
 }
 
@@ -126,6 +127,7 @@ fn budget() -> ImportedSheet {
         name: "Budget".into(),
         sheet_id: BUDGET_SHEET_ID.into(),
         cells: cells.0,
+        hidden: false,
     }
 }
 
@@ -178,6 +180,7 @@ fn sales() -> ImportedSheet {
         name: "Sales".into(),
         sheet_id: SALES_SHEET_ID.into(),
         cells: cells.0,
+        hidden: false,
     }
 }
 

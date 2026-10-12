@@ -488,6 +488,39 @@ impl SheetsDoc {
     }
 
     /// Set (or clear, with `None`) a sheet's tab colour palette index.
+    /// The workbook's title, which a file it was imported from gave it.
+    pub fn workbook_title(doc: &AutoCommit) -> Option<String> {
+        let (Value::Object(ObjType::Map), wb) = doc.get(&ROOT, "wb").ok()?? else {
+            return None;
+        };
+        read_str(doc, &wb, "title").filter(|title| !title.trim().is_empty())
+    }
+
+    /// Title the workbook `title`.
+    pub fn set_workbook_title(doc: &mut AutoCommit, title: &str) {
+        if let Ok(Some((Value::Object(ObjType::Map), wb))) = doc.get(&ROOT, "wb") {
+            let _ = doc.put(&wb, "title", title.trim());
+        }
+    }
+
+    /// Whether sheet `idx` is hidden: kept, and read by the formulas that
+    /// reference it, but not shown as a tab.
+    pub fn sheet_hidden(doc: &AutoCommit, idx: usize) -> bool {
+        Self::sheet_map(doc, idx)
+            .is_some_and(|sheet| read_bool(doc, &sheet, "hidden").unwrap_or(false))
+    }
+
+    /// Hide sheet `idx`, or show it again.
+    pub fn set_sheet_hidden(doc: &mut AutoCommit, idx: usize, hidden: bool) {
+        if let Some(sheet) = Self::sheet_map(doc, idx) {
+            if hidden {
+                let _ = doc.put(&sheet, "hidden", true);
+            } else {
+                let _ = doc.delete(&sheet, "hidden");
+            }
+        }
+    }
+
     pub fn set_sheet_color(doc: &mut AutoCommit, idx: usize, color: Option<u32>) {
         if let Some(sheet) = Self::sheet_map(doc, idx) {
             match color {
@@ -502,6 +535,39 @@ impl SheetsDoc {
     }
 
     /// Every sheet's tab colour in order (parallel to [`Self::sheet_names`]).
+    /// What sheet `idx`, as `snap` holds it, computes: its formulas read the
+    /// workbook's other sheets by name. A sheet whose formulas name no other
+    /// sheet is worked out alone.
+    pub fn values(
+        doc: &AutoCommit,
+        idx: usize,
+        snap: &SheetSnapshot,
+        default_currency: Currency,
+    ) -> std::collections::HashMap<Addr, crate::model::CellValue> {
+        if !snap
+            .raw
+            .values()
+            .any(|raw| crate::formula::references_other_sheets(raw))
+        {
+            return crate::formula::recalculate(&snap.raw);
+        }
+        let names = Self::sheet_names(doc);
+        let others: Vec<Option<SheetSnapshot>> = (0..names.len())
+            .map(|i| (i != idx).then(|| Self::snapshot_sheet(doc, i, default_currency)))
+            .collect();
+        let book = names
+            .iter()
+            .zip(&others)
+            .map(|(name, other)| {
+                (
+                    name.as_str(),
+                    other.as_ref().map_or(&snap.raw, |other| &other.raw),
+                )
+            })
+            .collect();
+        crate::formula::recalculate_in_book(book, idx)
+    }
+
     pub fn sheet_colors(doc: &AutoCommit) -> Vec<Option<u32>> {
         let n = Self::sheet_count(doc);
         (0..n).map(|i| Self::sheet_color(doc, i)).collect()

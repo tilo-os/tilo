@@ -76,6 +76,10 @@ pub struct SheetView {
     pub name: String,
     /// Cells in row-major order (`(row, col)` ascending); sparse — only cells carrying a value, formula, or style are present.
     pub cells: Vec<CellView>,
+    /// Whether the workbook keeps the sheet hidden: kept, and read by the
+    /// formulas that reference it, but shown as no tab.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 impl SheetView {

@@ -49,6 +49,9 @@ pub struct ParsedSheet {
     /// `(A1 reference, cell)` in document order; a later entry for a reference
     /// replaces an earlier one, as it does in a [`Workbook`].
     pub cells: Vec<(String, CellInput)>,
+    /// Whether the file keeps the sheet hidden (`state="hidden"` or
+    /// `"veryHidden"` in an `.xlsx`).
+    pub hidden: bool,
 }
 
 impl ParsedWorkbook {

@@ -87,7 +87,7 @@ const MAX_IMPORT_CELLS: usize = actions::MAX_IMPORTED_CELLS;
 const MAX_CSV_MATERIALIZED_SLOTS: usize = crate::xlsx::MAX_MATERIALIZED_SLOTS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Interchange {
+pub(crate) enum Interchange {
     Csv,
     Xlsx,
     Ods,
@@ -227,6 +227,10 @@ enum TabAction {
     Delete,
     /// Set (or clear, with `None`) the tab's colour to a palette index.
     SetColor(Option<u32>),
+    /// Hide the sheet: no tab shows it, its cells and formulas stay.
+    Hide,
+    /// Show every hidden sheet again.
+    UnhideAll,
 }
 
 #[derive(Clone)]
@@ -302,6 +306,64 @@ fn count_f64(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
+/// `tables`, read from a workbook file, as the one action that adds them as
+/// sheets: each cell's live formula or value with its format (a value with
+/// none inferred as `currency` takes it), each sheet hidden as the file kept
+/// it, and how many cells they hold.
+pub(crate) fn imported_sheets(
+    tables: Vec<crate::xlsx::SheetTable>,
+    cur: tilo_locale::Currency,
+) -> Result<(SheetsAction, usize), String> {
+    let mut hidden = Vec::new();
+    let mut total: usize = 0;
+    let mut imported = Vec::new();
+    for table in tables {
+        let table_hidden = table.hidden;
+        let mut writes = Vec::new();
+        for (r, row) in (0u32..).zip(&table.rows) {
+            for (c, cell) in (0u32..).zip(row) {
+                let Some(cell) = cell else { continue };
+                // A formula cell restores its live formula; a value cell
+                // stores its value. The format still derives from the
+                // imported value, not the formula text.
+                let raw = cell.formula.as_deref().unwrap_or(cell.raw.as_str());
+                let fmt = if cell.format == CellFormat::General {
+                    infer_entry(&cell.raw, cur).format
+                } else {
+                    cell.format
+                };
+                writes.push(actions::CellWrite {
+                    col: c,
+                    row: r,
+                    raw: raw.to_string(),
+                    fmt: (fmt != CellFormat::General).then(|| fmt.as_str()),
+                });
+            }
+        }
+        total = total.saturating_add(writes.len());
+        if total > MAX_IMPORT_CELLS {
+            return Err(format!(
+                "the workbook contains more than {MAX_IMPORT_CELLS} populated cells"
+            ));
+        }
+        writes.sort_by_key(|write| (write.row, write.col));
+        let name = if table.name.trim().is_empty() {
+            "Imported".to_string()
+        } else {
+            table.name
+        };
+        hidden.push(table_hidden);
+        imported.push((name, writes));
+    }
+    let mut action = actions::import_sheets_action(imported);
+    if let SheetsAction::ImportSheets { sheets, .. } = &mut action {
+        for (sheet, hidden) in sheets.iter_mut().zip(hidden) {
+            sheet.hidden = hidden;
+        }
+    }
+    Ok((action, total))
+}
+
 fn tab_action_label(act: TabAction) -> &'static str {
     match act {
         TabAction::Rename => "Rename",
@@ -311,6 +373,8 @@ fn tab_action_label(act: TabAction) -> &'static str {
         TabAction::MoveRight => "Move right",
         TabAction::Delete => "Delete",
         TabAction::SetColor(_) => "Colour",
+        TabAction::Hide => "Hide",
+        TabAction::UnhideAll => "Unhide sheets",
     }
 }
 
@@ -348,6 +412,8 @@ pub struct SheetsApp {
     add_tab_rect: Rect,
     /// Per-sheet tab colours (palette indices), refreshed on each reload.
     sheet_colors: Vec<Option<u32>>,
+    /// Which sheets are hidden: they get no tab.
+    sheet_hidden: Vec<bool>,
     /// Right-click menu on a sheet tab: the target sheet, the menu and what
     /// each of its rows does (`None` for a separator), and the colour popover
     /// its "Tab colour" row opens.
@@ -515,6 +581,7 @@ impl SheetsApp {
             tab_rects: Vec::new(),
             add_tab_rect: Rect::ZERO,
             sheet_colors: Vec::new(),
+            sheet_hidden: Vec::new(),
             tab_menu_target: None,
             tab_menu: ContextMenu::new(),
             tab_menu_rows: Vec::new(),
@@ -1100,6 +1167,9 @@ impl SheetsApp {
         {
             self.sheet_names = SheetsDoc::sheet_names(doc);
             self.sheet_colors = SheetsDoc::sheet_colors(doc);
+            self.sheet_hidden = (0..self.sheet_names.len())
+                .map(|idx| SheetsDoc::sheet_hidden(doc, idx))
+                .collect();
             self.sheet_ids = (0..self.sheet_names.len())
                 .map(|idx| SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default())
                 .collect();
@@ -1113,7 +1183,7 @@ impl SheetsApp {
         // The dock takes its height from the annotations, so the sheet
         // re-lays out whenever they change.
         self.relayout();
-        let values = formula::recalculate(&snap.raw);
+        let values = SheetsDoc::values(doc, self.active_sheet, &snap, cur);
 
         // Effective per-cell formats: an explicit cell format wins; a
         // formula cell with no explicit format inherits from its operands.
@@ -1897,51 +1967,13 @@ impl SheetsApp {
         replace_blank: bool,
         source: Option<String>,
     ) -> Result<(SheetsAction, usize, Option<String>), String> {
-        let cur = self.default_currency();
-        let mut total: usize = 0;
-        let mut imported = Vec::new();
-        for table in tables {
-            let mut writes = Vec::new();
-            for (r, row) in (0u32..).zip(&table.rows) {
-                for (c, cell) in (0u32..).zip(row) {
-                    let Some(cell) = cell else { continue };
-                    // A formula cell restores its live formula; a value cell
-                    // stores its value. The format still derives from the
-                    // imported value, not the formula text.
-                    let raw = cell.formula.as_deref().unwrap_or(cell.raw.as_str());
-                    let fmt = if cell.format == CellFormat::General {
-                        infer_entry(&cell.raw, cur).format
-                    } else {
-                        cell.format
-                    };
-                    writes.push(actions::CellWrite {
-                        col: c,
-                        row: r,
-                        raw: raw.to_string(),
-                        fmt: (fmt != CellFormat::General).then(|| fmt.as_str()),
-                    });
-                }
-            }
-            total = total.saturating_add(writes.len());
-            if total > MAX_IMPORT_CELLS {
-                return Err(format!(
-                    "the workbook contains more than {MAX_IMPORT_CELLS} populated cells"
-                ));
-            }
-            writes.sort_by_key(|write| (write.row, write.col));
-            let name = if table.name.trim().is_empty() {
-                "Imported".to_string()
-            } else {
-                table.name
-            };
-            imported.push((name, writes));
-        }
-        let mut action = actions::import_sheets_action(imported);
+        let (mut action, total) = imported_sheets(tables, self.default_currency())?;
         let last_sheet_id = match &mut action {
             SheetsAction::ImportSheets {
                 sheets,
                 replace_blank: replace,
                 source: from,
+                ..
             } => {
                 *replace = replace_blank;
                 *from = source;
@@ -2039,6 +2071,7 @@ impl SheetsApp {
                     });
                 }
                 Ok(vec![crate::xlsx::SheetTable {
+                    hidden: false,
                     name: csv_name.to_string(),
                     rows,
                 }])
@@ -2047,13 +2080,25 @@ impl SheetsApp {
     }
 
     /// `sheets` as the bytes of a spreadsheet file; a CSV holds the first.
-    fn encode_tables(
+    pub(crate) fn encode_tables(
         format: Interchange,
         sheets: &[std::sync::Arc<crate::resource::SheetInfo>],
     ) -> Result<Vec<u8>, String> {
+        // A sheet's formulas may read the others, so each is worked out in
+        // the workbook.
+        let book: Vec<formula::BookSheet<'_, _>> = sheets
+            .iter()
+            .map(|sheet| (sheet.name.as_str(), &sheet.snapshot.raw))
+            .collect();
         let tables = sheets
             .iter()
-            .map(|sheet| Self::table_from_snapshot(&sheet.snapshot))
+            .enumerate()
+            .map(|(idx, sheet)| {
+                let values = formula::sheet_values(book.clone(), idx);
+                let mut table = Self::table_from_snapshot(&sheet.snapshot, &values);
+                table.hidden = sheet.hidden;
+                table
+            })
             .collect::<Vec<_>>();
         match format {
             Interchange::Xlsx => {
@@ -2081,8 +2126,10 @@ impl SheetsApp {
         }
     }
 
-    fn table_from_snapshot(snap: &crate::doc::SheetSnapshot) -> crate::xlsx::SheetTable {
-        let values = formula::recalculate(&snap.raw);
+    fn table_from_snapshot(
+        snap: &crate::doc::SheetSnapshot,
+        values: &std::collections::HashMap<crate::model::Addr, crate::model::CellValue>,
+    ) -> crate::xlsx::SheetTable {
         let mut fmt = snap.fmt.clone();
         for (addr, raw) in &snap.raw {
             if !snap.fmt.contains_key(addr)
@@ -2092,7 +2139,7 @@ impl SheetsApp {
                 fmt.insert(*addr, inferred);
             }
         }
-        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values, &snap.bold)
+        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, values, &snap.bold)
     }
 
     /// Add `tables` as new sheets now, as an import does, and show the last.
@@ -4242,6 +4289,46 @@ impl SheetsApp {
                     "Cleared tab colour".into()
                 };
             }
+            TabAction::Hide => {
+                let count = SheetsDoc::sheet_count(doc);
+                let shown =
+                    (0..count).filter(|at| !SheetsDoc::sheet_hidden(doc, *at) && *at != idx);
+                let Some(next) = shown.min_by_key(|at| at.abs_diff(idx)) else {
+                    self.status = "A workbook keeps at least one sheet shown".into();
+                    self.pending.redraw = true;
+                    return;
+                };
+                self.apply_edit(
+                    doc,
+                    &actions::set_sheet_hidden_action(
+                        idx,
+                        SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default(),
+                        true,
+                    ),
+                );
+                if self.active_sheet == idx {
+                    self.active_sheet = next;
+                    self.grid.select_only((0, 0));
+                }
+                self.reload(doc);
+                self.status = "Hid sheet".into();
+            }
+            TabAction::UnhideAll => {
+                for at in 0..SheetsDoc::sheet_count(doc) {
+                    if SheetsDoc::sheet_hidden(doc, at) {
+                        self.apply_edit(
+                            doc,
+                            &actions::set_sheet_hidden_action(
+                                at,
+                                SheetsDoc::sheet_resource_id(doc, at).unwrap_or_default(),
+                                false,
+                            ),
+                        );
+                    }
+                }
+                self.reload(doc);
+                self.status = "Showed hidden sheets".into();
+            }
         }
         self.pending.redraw = true;
     }
@@ -5390,11 +5477,9 @@ pub(crate) mod tests {
         {
             let (app, doc) = seeded_app();
             // Budget!E2 = =SUM(B2:D2) = 3600 in the seed.
-            let table = SheetsApp::table_from_snapshot(&SheetsDoc::snapshot_sheet(
-                &doc,
-                app.active_sheet,
-                Currency::USD,
-            ));
+            let snap = SheetsDoc::snapshot_sheet(&doc, app.active_sheet, Currency::USD);
+            let values = formula::recalculate(&snap.raw);
+            let table = SheetsApp::table_from_snapshot(&snap, &values);
             let path = std::env::temp_dir().join("sheets-app-formula-rt.xlsx");
             crate::xlsx::write_xlsx(&path, std::slice::from_ref(&table)).unwrap();
             let tables = crate::xlsx::read_xlsx(&path).unwrap();
@@ -5425,6 +5510,7 @@ pub(crate) mod tests {
             let mut doc = AutoCommit::new();
             SheetsDoc::add_sheet(&mut doc, "Sheet1");
             let table = crate::xlsx::SheetTable {
+                hidden: false,
                 name: "sales".into(),
                 rows: vec![vec![Some(crate::xlsx::ImportedCell {
                     raw: "Region".into(),

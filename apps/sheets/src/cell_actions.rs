@@ -429,6 +429,32 @@ fn delete_rows_spec(sheet_id: &str) -> ActionSpec {
     .destructive()
 }
 
+fn set_hidden_spec(sheet: usize, sheet_id: &str) -> ActionSpec {
+    let sheet_id = sheet_id.to_string();
+    ActionSpec::typed(
+        "set-hidden",
+        "Hide or unhide sheet",
+        "hidden",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required(
+            "hidden",
+            ParamType::Boolean,
+            "true hides the sheet's tab (its cells and the formulas reading them stay); false shows it",
+        )],
+        move |args| {
+            let Some(hidden) = args.boolean("hidden") else {
+                return invalid("hidden is true or false");
+            };
+            encode(&crate::actions::set_sheet_hidden_action(
+                sheet,
+                sheet_id.clone(),
+                hidden,
+            ))
+        },
+    )
+    .reversible()
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReadRequest {
@@ -481,6 +507,7 @@ pub fn sheet_actions(
         format_cells_spec(sheet_id),
         sort_rows_spec(sheet, sheet_id, info),
         delete_rows_spec(sheet_id),
+        set_hidden_spec(sheet, sheet_id),
     ];
     for spec in &mut specs {
         if ANSWERING_EDITS.contains(&spec.id.as_str()) {
@@ -671,8 +698,9 @@ fn project_read(
     if width.saturating_mul(height) > MAX_READ_CELLS {
         return Err(SemanticReadError::Limit);
     }
+    let values = SheetsDoc::values(document, sheet, &snap, Currency::USD);
     Ok(ReadPage {
-        content: range_content(&snap, start, end),
+        content: range_content(&snap, &values, start, end),
         next_cursor: None,
     })
 }
@@ -694,8 +722,12 @@ fn format_name(format: CellFormat) -> Option<&'static str> {
 /// `start..=end` of `snap` as `read-cells` answers it: `formats` maps each
 /// cell with a number format to the name `format-cells` takes, so a layout
 /// copies from one sheet to another.
-fn range_content(snap: &crate::doc::SheetSnapshot, start: Addr, end: Addr) -> serde_json::Value {
-    let values = crate::formula::recalculate(&snap.raw);
+fn range_content(
+    snap: &crate::doc::SheetSnapshot,
+    values: &std::collections::HashMap<Addr, crate::model::CellValue>,
+    start: Addr,
+    end: Addr,
+) -> serde_json::Value {
     let mut rows = Vec::new();
     let mut formulas = serde_json::Map::new();
     let mut bold = Vec::new();
@@ -777,7 +809,8 @@ pub fn edit_result(
             .min(start.1.saturating_add(shown_rows.saturating_sub(1))),
     );
     let snap = SheetsDoc::snapshot_sheet(doc, sheet, Currency::USD);
-    let mut content = range_content(&snap, start, shown_end);
+    let values = SheetsDoc::values(doc, sheet, &snap, Currency::USD);
+    let mut content = range_content(&snap, &values, start, shown_end);
     if shown_end != end
         && let Some(fields) = content.as_object_mut()
     {

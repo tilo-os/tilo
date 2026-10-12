@@ -651,3 +651,53 @@ fn an_image_element_takes_a_content_address() {
         );
     }
 }
+
+/// A presentation kept as content becomes the deck: its slides and their
+/// words, as the file has them. What is no presentation, or names no
+/// content, is refused and writes nothing.
+#[test]
+fn a_presentation_kept_as_content_opens_as_the_deck() {
+    let mut source = seed_deck();
+    source.slides.truncate(2);
+    let store = tilo_content::ContentStore::memory();
+    let pptx = crate::pptx::write_pptx(&source, &store).unwrap();
+    let hash = store.put(&pptx).unwrap();
+    let text = store.put(b"not a presentation").unwrap();
+    let window = ui::WakeScope::new();
+    ui::tilo_resource::content::register(&window.handle(), store.clone());
+    let _entered = window.enter();
+
+    let mut participant = Participant::new();
+    let heads = participant.doc.get_heads();
+    for (content, says) in [
+        (format!("tilo.content:{text}"), "not a .pptx or .odp"),
+        ("deck.pptx".to_owned(), "names no content"),
+    ] {
+        let error = participant
+            .invoke(actions::IMPORT_PPTX_CONTENT, &json!({ "content": content }))
+            .unwrap_err();
+        assert!(error.to_string().contains(says), "{content}: {error}");
+    }
+    assert_eq!(
+        participant.doc.get_heads(),
+        heads,
+        "a refusal writes nothing"
+    );
+
+    participant
+        .invoke(
+            actions::IMPORT_PPTX_CONTENT,
+            &json!({ "content": format!("tilo.content:{hash}") }),
+        )
+        .unwrap();
+    let deck = participant.deck();
+    assert_eq!(deck.slides.len(), 2);
+    let words = |deck: &Deck| -> Vec<String> {
+        deck.slides
+            .iter()
+            .flat_map(|slide| slide.elements.iter().map(|element| element.text.clone()))
+            .filter(|text| !text.is_empty())
+            .collect()
+    };
+    assert_eq!(words(&deck), words(&source));
+}

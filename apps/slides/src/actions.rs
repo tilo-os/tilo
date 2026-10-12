@@ -1645,6 +1645,7 @@ pub const DELETE_ELEMENT: &str = "delete-element";
 pub const MOVE_SLIDE: &str = "move-slide";
 pub const ADD_SLIDE: &str = "add-slide";
 pub const SET_SLIDE_TEXT: &str = "set-slide-text";
+pub const IMPORT_PPTX_CONTENT: &str = "import-pptx-content";
 
 impl ui::tilo_resource::Resource for SlidesDeck {
     const KIND: &'static str = "slides.deck";
@@ -1714,6 +1715,22 @@ impl ui::tilo_resource::Resource for SlidesDeck {
         restyle_params.extend(style_params());
 
         vec![
+            ActionDecl::new(
+                IMPORT_PPTX_CONTENT,
+                "Open presentation from content",
+                vec![ActionParam::required(
+                    "content",
+                    ParamType::Text,
+                    "The presentation's content address, `tilo.content:<hash>` (an attachment, a \
+                     shared file, an export): a .pptx or .odp",
+                )],
+                |args, _| build_import_content(args),
+            )
+            .describe(
+                "Make this deck the presentation kept as content: its slides, layout, pictures \
+                 and speaker notes, replacing what the deck held.",
+            )
+            .returns(outline_result()),
             ActionDecl::new(ADD_ELEMENT, "Add element", add_params, |args, _| {
                 build_add_element(args)
             })
@@ -2071,6 +2088,29 @@ fn build_add_element(args: &ActionArgs) -> Result<SlidesAction, String> {
             style: style_patch(args)?,
         },
     })
+}
+
+/// [`IMPORT_PPTX_CONTENT`]: the deck a `.pptx` or `.odp` kept as content
+/// holds, its pictures kept as deck assets.
+fn build_import_content(args: &ActionArgs) -> Result<SlidesAction, String> {
+    let address = args.text("content").map_or("", str::trim);
+    let hash = tilo_actions::content_hash(address)
+        .unwrap_or(address)
+        .to_ascii_lowercase();
+    if !tilo_content::valid_hash(&hash) {
+        return Err(format!(
+            "`{address}` names no content: give `tilo.content:<hash>`"
+        ));
+    }
+    let content = ui::tilo_resource::content::current()
+        .ok_or("this window keeps no content to read the presentation from")?;
+    let bytes = content
+        .read(&hash)
+        .ok_or_else(|| format!("content `{hash}` is not available on this machine"))?;
+    crate::pptx::read_pptx(&bytes, &content)
+        .or_else(|_| crate::odp::read_odp(&bytes, &content))
+        .map(|deck| replace_deck_action(&deck))
+        .map_err(|error| format!("content `{hash}` is not a .pptx or .odp presentation: {error}"))
 }
 
 /// The deck asset id an image's `src` names: an `asset:blake3:<hash>` id as

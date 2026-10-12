@@ -2,6 +2,7 @@
 //! path. Mutations are [`SheetsAction`] applied through the framework
 //! dispatcher; file interchange and views are the surface's [`SheetsEffect`]s.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
@@ -31,6 +32,8 @@ const READ_CURRENCY: Currency = Currency::USD;
 #[derive(Clone, Debug, Default)]
 pub struct SheetsState {
     pub sheets: Vec<Arc<SheetInfo>>,
+    /// The workbook's title, which a file it was imported from gave it.
+    pub title: Option<String>,
 }
 
 /// One sheet. What its formulas compute is worked out the first time
@@ -42,12 +45,18 @@ pub struct SheetInfo {
     pub name: String,
     /// The file the sheet was imported from, which opening again reveals.
     pub source: Option<String>,
+    /// Whether the sheet is hidden: no tab shows it, but its cells are kept
+    /// and the formulas reading them work.
+    pub hidden: bool,
     /// The stored cells: raw inputs, formats and bold.
     pub snapshot: SheetSnapshot,
     pub charts: Vec<ChartSnapshot>,
     pub comments: Vec<CommentThread>,
     /// The sheet's map, which a change names when it touches the sheet.
     object: ObjId,
+    /// Whether a formula of the sheet reads another sheet, so what it
+    /// computes is worked out with the whole workbook.
+    crosses: bool,
     computed: OnceLock<Vec<SearchableCell>>,
 }
 
@@ -68,11 +77,35 @@ impl SheetInfo {
             id,
             name,
             source: SheetsDoc::sheet_source(doc, idx),
+            hidden: SheetsDoc::sheet_hidden(doc, idx),
             charts: SheetsDoc::charts(doc, idx),
             comments: SheetsDoc::comments(doc, idx),
+            crosses: snapshot
+                .raw
+                .values()
+                .any(|raw| crate::formula::references_other_sheets(raw)),
             snapshot,
             object,
             computed: OnceLock::new(),
+        }
+    }
+
+    /// This sheet with its cells showing `values`, what it computes in its
+    /// workbook.
+    fn in_book(&self, values: &HashMap<crate::model::Addr, crate::model::CellValue>) -> Self {
+        let computed = OnceLock::new();
+        let _ = computed.set(self.cells_from(values));
+        Self {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            source: self.source.clone(),
+            hidden: self.hidden,
+            snapshot: self.snapshot.clone(),
+            charts: self.charts.clone(),
+            comments: self.comments.clone(),
+            object: self.object.clone(),
+            crosses: self.crosses,
+            computed,
         }
     }
 
@@ -104,8 +137,16 @@ impl SheetInfo {
     /// Every populated cell with what it shows, row by row: formulas are
     /// calculated on the first call and kept until the sheet changes.
     pub fn cells(&self) -> &[SearchableCell] {
-        self.computed.get_or_init(|| {
-            let values = crate::formula::recalculate(&self.snapshot.raw);
+        self.computed
+            .get_or_init(|| self.cells_from(&crate::formula::recalculate(&self.snapshot.raw)))
+    }
+
+    /// Every populated cell, row by row, showing `values`.
+    fn cells_from(
+        &self,
+        values: &HashMap<crate::model::Addr, crate::model::CellValue>,
+    ) -> Vec<SearchableCell> {
+        {
             let mut cells = self
                 .snapshot
                 .raw
@@ -139,12 +180,105 @@ impl SheetInfo {
                 .collect::<Vec<_>>();
             cells.sort_by_key(|cell| (cell.row, cell.col));
             cells
-        })
+        }
+    }
+}
+
+impl SheetsState {
+    /// Work out the sheets whose formulas read other sheets with the whole
+    /// workbook, so what they show follows those sheets; the others are
+    /// worked out alone when first asked.
+    fn link_book(&mut self) {
+        if !self.sheets.iter().any(|sheet| sheet.crosses) {
+            return;
+        }
+        let linked: Vec<(usize, SheetInfo)> = {
+            let book: Vec<crate::formula::BookSheet<'_, _>> = self
+                .sheets
+                .iter()
+                .map(|sheet| (sheet.name.as_str(), &sheet.snapshot.raw))
+                .collect();
+            self.sheets
+                .iter()
+                .enumerate()
+                .filter(|(_, sheet)| sheet.crosses)
+                .map(|(idx, sheet)| {
+                    let values = crate::formula::recalculate_in_book(book.clone(), idx);
+                    (idx, sheet.in_book(&values))
+                })
+                .collect()
+        };
+        for (idx, sheet) in linked {
+            if let Some(slot) = self.sheets.get_mut(idx) {
+                *slot = Arc::new(sheet);
+            }
+        }
     }
 }
 
 /// The sheets workbook resource.
 pub struct SheetsWorkbook;
+
+/// The workbook's import of an `.xlsx` kept as content: an attachment, a
+/// shared file, an export.
+fn import_xlsx_content() -> ActionDecl<SheetsWorkbook> {
+    ActionDecl::new(
+        "import-xlsx-content",
+        "Import Excel workbook from content",
+        vec![
+            ActionParam::required(
+                "content",
+                ParamType::Text,
+                "The workbook's content address, `tilo.content:<hash>` (an attachment, a \
+                 shared file, an export)",
+            ),
+            ActionParam::optional(
+                "title",
+                ParamType::Text,
+                "The workbook's title, e.g. the file's name, when it has none yet",
+            ),
+        ],
+        |args, _| {
+            let address = args.text("content").map_or("", str::trim);
+            let hash = tilo_actions::content_hash(address)
+                .unwrap_or(address)
+                .to_ascii_lowercase();
+            if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(format!(
+                    "`{address}` names no content: give `tilo.content:<hash>`"
+                ));
+            }
+            let content = ui::tilo_resource::content::current()
+                .ok_or("this window keeps no content to read the workbook from")?;
+            let bytes = content
+                .read(&hash)
+                .ok_or_else(|| format!("content `{hash}` is not available on this machine"))?;
+            let tables = crate::xlsx::parse_xlsx(&bytes)
+                .map_err(|error| format!("content `{hash}` is not an Excel workbook: {error}"))?;
+            let (mut action, _) = crate::app::imported_sheets(tables, Currency::USD)?;
+            if let SheetsAction::ImportSheets {
+                replace_blank,
+                source,
+                title,
+                ..
+            } = &mut action
+            {
+                *replace_blank = true;
+                *source = Some(format!("tilo.content:{hash}"));
+                *title = args
+                    .text("title")
+                    .map(str::trim)
+                    .filter(|title| !title.is_empty())
+                    .map(|title| title.trim_end_matches(".xlsx").to_owned());
+            }
+            Ok(action)
+        },
+    )
+    .describe(
+        "Add every sheet of an .xlsx workbook kept as content, formulas, formats and \
+         hidden sheets included; a new workbook's blank sheet gives way to them.",
+    )
+}
 
 /// The identity of a new workbook's first sheet. The genesis is the same
 /// change on every device, so two people creating the room's workbook before
@@ -189,13 +323,16 @@ impl Resource for SheetsWorkbook {
     }
 
     fn read(doc: &Doc) -> Result<SheetsState, ModelError> {
-        Ok(SheetsState {
+        let mut state = SheetsState {
             sheets: sheet_objects(doc)
                 .into_iter()
                 .enumerate()
                 .map(|(idx, object)| Arc::new(SheetInfo::read(doc, idx, object)))
                 .collect(),
-        })
+            title: SheetsDoc::workbook_title(doc),
+        };
+        state.link_book();
+        Ok(state)
     }
 
     fn refresh(state: &mut SheetsState, doc: &Doc, delta: &Delta) -> Result<(), ModelError> {
@@ -220,6 +357,9 @@ impl Resource for SheetsWorkbook {
             )
             .collect();
         state.sheets = sheets;
+        state.title = SheetsDoc::workbook_title(doc);
+        // A change to any sheet may change what another's formulas read.
+        state.link_book();
         Ok(())
     }
 
@@ -284,13 +424,16 @@ impl Resource for SheetsWorkbook {
                             name,
                             sheet_id: uuid::Uuid::new_v4().to_string(),
                             cells,
+                            hidden: false,
                         }],
                         replace_blank: true,
                         source: None,
+                        title: None,
                     })
                 },
             )
             .describe("Add a sheet at the end of the workbook, with its content when given."),
+            import_xlsx_content(),
         ]
     }
 
@@ -386,6 +529,30 @@ fn annotated(scenario: Option<&str>) -> bool {
 }
 
 impl ResourceApp for SheetsShell {
+    /// A workbook is named by its title, else by its first shown sheet when
+    /// that has a name of its own rather than `SheetN`.
+    fn label(state: &SheetsState) -> String {
+        let own = |name: &str| {
+            let name = name.trim();
+            !name.is_empty()
+                && !name
+                    .strip_prefix("Sheet")
+                    .is_some_and(|n| n.chars().all(|c| c.is_ascii_digit()))
+        };
+        state
+            .title
+            .clone()
+            .or_else(|| {
+                state
+                    .sheets
+                    .iter()
+                    .find(|sheet| !sheet.hidden)
+                    .map(|sheet| sheet.name.clone())
+                    .filter(|name| own(name))
+            })
+            .unwrap_or_else(|| <SheetsWorkbook as Resource>::LABEL.to_owned())
+    }
+
     type Resource = SheetsWorkbook;
     const ID: &'static str = "so.tilo.sheets";
     const TITLE: &'static str = "Sheets";
@@ -653,5 +820,165 @@ mod tests {
         let cell = SheetsWorkbook::child(&state, &open.resource).expect("the cell resolves");
         assert!(tilo_actions::door::resolve(&[cell], &open).is_some());
         assert!(entries.iter().any(|entry| entry.title == "Sales"));
+    }
+
+    /// A formula reads another sheet of the workbook by name, and what an
+    /// agent's edit answers follows that sheet.
+    #[test]
+    fn a_formula_reads_another_sheet() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        // The first sheet with content takes the blank sheet's place.
+        app.call(
+            "new-sheet",
+            serde_json::json!({"name": "Summary", "rows": [[0]]}),
+        )
+        .unwrap();
+        app.call(
+            "new-sheet",
+            serde_json::json!({"name": "Rates", "rows": [["EUR", 1.08], ["GBP", 1.27]]}),
+        )
+        .unwrap();
+        let answer = app
+            .call(
+                "set-cells",
+                serde_json::json!({"sheet": "Summary", "start": "A1", "rows": [
+                    ["=Rates!B2*100", "=VLOOKUP(\"EUR\",Rates!A1:B2,2,0)", "=SUM('Rates'!B1:B2)"],
+                ]}),
+            )
+            .unwrap()
+            .expect("the edit answers");
+        assert_eq!(answer["rows"], serde_json::json!([[127.0, 1.08, 2.35]]));
+        let state = app.state();
+        let first = state
+            .sheets
+            .iter()
+            .find(|sheet| sheet.name == "Summary")
+            .unwrap();
+        assert_eq!(first.cells()[0].display, "127");
+    }
+
+    /// A hidden sheet stays in the workbook and in its formulas; the last
+    /// shown sheet cannot be hidden, and the workbook is named by its first
+    /// shown sheet when that has a name of its own.
+    #[test]
+    fn a_sheet_hides_and_shows_again() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        app.call(
+            "new-sheet",
+            serde_json::json!({"name": "Lookups", "rows": [[3]]}),
+        )
+        .unwrap();
+        app.call("new-sheet", serde_json::json!({"name": "Summary"}))
+            .unwrap();
+        app.call(
+            "set-cells",
+            serde_json::json!({"sheet": "Summary", "start": "A1", "rows": [["=Lookups!A1*2"]]}),
+        )
+        .unwrap();
+        app.call(
+            "set-hidden",
+            serde_json::json!({"sheet": "Lookups", "hidden": true}),
+        )
+        .unwrap();
+        let state = app.state();
+        assert!(
+            state
+                .sheets
+                .iter()
+                .any(|sheet| sheet.name == "Lookups" && sheet.hidden)
+        );
+        assert_eq!(
+            SheetsShell::label(&state),
+            "Summary",
+            "the first shown sheet names it"
+        );
+        let error = app
+            .call(
+                "set-hidden",
+                serde_json::json!({"sheet": "Summary", "hidden": true}),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("at least one sheet shown"), "{error}");
+        app.call(
+            "set-hidden",
+            serde_json::json!({"sheet": "Lookups", "hidden": false}),
+        )
+        .unwrap();
+        assert!(app.state().sheets.iter().all(|sheet| !sheet.hidden));
+    }
+
+    /// A workbook kept as content imports with its formulas, its hidden
+    /// sheet and its title, into the new workbook's place; exported again,
+    /// the sheet is still hidden and the cross-sheet values are cached.
+    #[test]
+    fn an_xlsx_kept_as_content_imports_whole() {
+        use crate::xlsx::{ImportedCell, SheetTable};
+        let cell = |raw: &str| {
+            Some(ImportedCell {
+                raw: raw.into(),
+                format: CellFormat::General,
+                formula: raw.starts_with('=').then(|| raw.into()),
+                bold: false,
+            })
+        };
+        let tables = vec![
+            SheetTable {
+                name: "Summary".into(),
+                hidden: false,
+                rows: vec![vec![cell("=Rates!B1*10")]],
+            },
+            SheetTable {
+                name: "Rates".into(),
+                hidden: true,
+                rows: vec![vec![cell("EUR"), cell("1.5")]],
+            },
+        ];
+        let bytes = crate::xlsx::xlsx_bytes(&tables).unwrap();
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        let hash = app.content().put(&bytes).unwrap();
+        let window = ui::WakeScope::new();
+        ui::tilo_resource::content::register(&window.handle(), app.content());
+        let _entered = window.enter();
+        for (content, says) in [
+            ("q3.xlsx", "names no content"),
+            (&*"0".repeat(64), "not available"),
+        ] {
+            let error = app
+                .call(
+                    "import-xlsx-content",
+                    serde_json::json!({"content": content}),
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(says), "{content}: {error}");
+        }
+        app.call(
+            "import-xlsx-content",
+            serde_json::json!({"content": format!("tilo.content:{hash}"), "title": "Q3 forecast.xlsx"}),
+        )
+        .unwrap();
+        let state = app.state();
+        let names: Vec<(&str, bool)> = state
+            .sheets
+            .iter()
+            .map(|sheet| (sheet.name.as_str(), sheet.hidden))
+            .collect();
+        assert_eq!(
+            names,
+            [("Summary", false), ("Rates", true)],
+            "the blank sheet gave way"
+        );
+        assert_eq!(state.sheets[0].cells()[0].display, "15");
+        assert_eq!(SheetsShell::label(&state), "Q3 forecast");
+
+        let exported = crate::xlsx::parse_xlsx(
+            &SheetsApp::encode_tables(crate::app::Interchange::Xlsx, &state.sheets).unwrap(),
+        )
+        .unwrap();
+        assert!(exported[1].hidden && !exported[0].hidden);
+        let summary = exported[0].rows[0][0].as_ref().unwrap();
+        assert_eq!(summary.formula.as_deref(), Some("=Rates!B1*10"));
+        assert_eq!(summary.raw, "15", "the cached value reads the other sheet");
     }
 }

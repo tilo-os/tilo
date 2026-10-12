@@ -615,6 +615,7 @@ fn snapshot_of(sheets: Vec<(&str, Vec<CellView>)>) -> WorkbookSnapshot {
                 id: name.to_string(),
                 name: name.to_string(),
                 cells,
+                hidden: false,
             })
             .collect(),
         properties: std::collections::BTreeMap::new(),

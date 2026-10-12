@@ -144,6 +144,12 @@ impl SheetsApp {
                 rows.push(Some(TabMenuRow::Act(act)));
             }
         }
+        context.push(Row::selection(tab_action_label(TabAction::Hide)));
+        rows.push(Some(TabMenuRow::Act(TabAction::Hide)));
+        if self.sheet_hidden.iter().any(|hidden| *hidden) {
+            context.push(Row::selection(tab_action_label(TabAction::UnhideAll)));
+            rows.push(Some(TabMenuRow::Act(TabAction::UnhideAll)));
+        }
         context.push(Row::separator());
         rows.push(None);
         context.push(Row::selection("Tab colour"));

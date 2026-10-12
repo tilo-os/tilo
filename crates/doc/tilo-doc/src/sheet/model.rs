@@ -218,6 +218,7 @@ pub fn materialize_sheet(doc: &AutoCommit, c: &SheetContainers, id: &str) -> She
         id: id.to_string(),
         name,
         cells,
+        hidden: false,
     }
 }
 

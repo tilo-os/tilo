@@ -63,6 +63,8 @@ impl ImportedCell {
 #[derive(Clone, Debug, Default)]
 pub struct SheetTable {
     pub name: String,
+    /// Whether the file keeps the sheet hidden.
+    pub hidden: bool,
     /// `rows[r][c]` — rows may be ragged.
     pub rows: Vec<Vec<Option<ImportedCell>>>,
 }
@@ -113,6 +115,7 @@ impl SheetTable {
         }
         Self {
             name: name.to_string(),
+            hidden: false,
             rows,
         }
     }
@@ -195,6 +198,7 @@ pub(crate) fn tables_from_parsed(
                 }
             }
             Ok(SheetTable {
+                hidden: sheet.hidden,
                 name: sheet.name,
                 rows,
             })
@@ -399,6 +403,7 @@ pub(crate) fn snapshot_of(
                 id: index.to_string(),
                 name: table.name.clone(),
                 cells,
+                hidden: table.hidden,
             }
         })
         .collect();
@@ -525,6 +530,7 @@ mod tests {
             let dir = std::env::temp_dir();
             let path = dir.join("sheets-xlsx-test.xlsx");
             let table = SheetTable {
+                hidden: false,
                 name: "Data".into(),
                 rows: vec![
                     vec![
@@ -564,14 +570,17 @@ mod tests {
             let path = std::env::temp_dir().join("sheets-xlsx-colliding-tabs.xlsx");
             let tables = vec![
                 SheetTable {
+                    hidden: false,
                     name: "Roadmap/2026".into(),
                     rows: vec![],
                 },
                 SheetTable {
+                    hidden: false,
                     name: "roadmap?2026".into(),
                     rows: vec![],
                 },
                 SheetTable {
+                    hidden: false,
                     name: "Roadmap_2026".into(),
                     rows: vec![],
                 },

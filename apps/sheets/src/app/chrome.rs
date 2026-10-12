@@ -301,6 +301,10 @@ impl SheetsApp {
         let ty = self.tabs_rect.y0 + m.s2;
         let th = m.control_h;
         for (i, name) in self.sheet_names.iter().enumerate() {
+            // A hidden sheet has no tab, unless it is the one shown.
+            if self.sheet_hidden.get(i).copied().unwrap_or(false) && i != self.active_sheet {
+                continue;
+            }
             let coloured = self.sheet_colors.get(i).copied().flatten().is_some();
             let mut w = m.tab_w(name, coloured);
             if let Some(rename) = self.tab_rename.as_ref().filter(|rename| rename.idx == i) {

@@ -152,6 +152,7 @@ mod tests {
 
     fn sample_table() -> SheetTable {
         SheetTable {
+            hidden: false,
             name: "Budget".into(),
             rows: vec![
                 vec![
@@ -228,6 +229,7 @@ mod tests {
                 (Currency::AUD, "coAUD"),
             ] {
                 let table = SheetTable {
+                    hidden: false,
                     name: "S".into(),
                     rows: vec![vec![Some(cell("12.5", CellFormat::Currency(currency)))]],
                 };

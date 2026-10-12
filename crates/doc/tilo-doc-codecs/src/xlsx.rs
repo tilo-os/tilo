@@ -71,10 +71,11 @@ impl XlsxCodec {
             .map(parse_shared_strings)
             .unwrap_or_default();
         let mut parsed = ParsedWorkbook::default();
-        for (name, rid) in parse_workbook_sheets(workbook_xml)? {
+        for (name, rid, hidden) in parse_workbook_sheets(workbook_xml)? {
             let mut sheet = ParsedSheet {
                 name,
                 cells: Vec::new(),
+                hidden,
             };
             if let Some(ws_xml) = rels
                 .get(&rid)
@@ -158,8 +159,8 @@ fn serialize(
     pkg.write_opc()
 }
 
-/// `(sheet name, r:id)` in document order.
-fn parse_workbook_sheets(xml: &[u8]) -> Result<Vec<(String, String)>, CodecError> {
+/// `(sheet name, r:id, hidden)` in document order.
+fn parse_workbook_sheets(xml: &[u8]) -> Result<Vec<(String, String, bool)>, CodecError> {
     let s = std::str::from_utf8(xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
     let mut out = Vec::new();
@@ -171,7 +172,9 @@ fn parse_workbook_sheets(xml: &[u8]) -> Result<Vec<(String, String)>, CodecError
             Event::Empty(e) | Event::Start(e) if local_name(&e) == b"sheet" => {
                 let name = attr_local(&e, b"name").unwrap_or_default();
                 let rid = attr_local(&e, b"id").unwrap_or_default(); // r:id
-                out.push((name, rid));
+                let hidden = attr_local(&e, b"state")
+                    .is_some_and(|state| state == "hidden" || state == "veryHidden");
+                out.push((name, rid, hidden));
             }
             Event::Eof => break,
             _ => {}
@@ -539,8 +542,13 @@ fn workbook_xml(snap: &WorkbookSnapshot) -> String {
         let n = i.saturating_add(1);
         let _ = write!(
             sheets,
-            r#"<sheet name="{}" sheetId="{n}" r:id="rIdSheet{n}"/>"#,
+            r#"<sheet name="{}" sheetId="{n}"{} r:id="rIdSheet{n}"/>"#,
             escape_attr_quotes(&unique_sheet_name(&sheet.name, &mut used)),
+            if sheet.hidden {
+                r#" state="hidden""#
+            } else {
+                ""
+            },
         );
     }
     format!(
