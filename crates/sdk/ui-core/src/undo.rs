@@ -696,7 +696,7 @@ mod tests {
             "NativeHistoryProbe"
         }
         crate::provides!(dyn LocalUndo);
-        crate::testing::inert_widget_methods!(leaf_layout, apply_layout, draw, get_rect);
+        crate::testing::inert_widget_methods!(leaf_layout);
     }
 
     #[test]

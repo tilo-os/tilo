@@ -10,7 +10,7 @@ use tilo_app::widget::TaffyTreeExt;
 use tilo_app::permissions::{KindSet, PermissionContext, TreePath, policy};
 use tilo_app::prelude::*;
 
-use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
+use tilo_app::advanced::{NodeId, TaffyTree};
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Memo {
     pub title: String,
@@ -215,9 +215,6 @@ impl Widget for AccessProbe {
 
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, origin: Point) {
         self.rect = Rect::from_origin_size(origin, Size::ZERO);
-    }
-
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
 
     fn name(&self) -> &'static str {

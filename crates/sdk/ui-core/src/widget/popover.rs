@@ -60,21 +60,8 @@ impl Widget for NoContent {
     ) -> NodeId {
         taffy.leaf_node(Style::default())
     }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "NoContent"
-    }
-    fn get_rect(&self) -> Rect {
-        Rect::ZERO
     }
 }
 
@@ -970,17 +957,6 @@ impl<C: Widget + 'static> Widget for Popover<C> {
             let theme = self.layout_theme.clone();
             crate::text_render::with_layout_renderer(theme.text_scale, |tr| self.place(tr, &theme));
         }
-    }
-
-    /// Nothing: a popover is presented in the window's top layer.
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn draw_overlay(

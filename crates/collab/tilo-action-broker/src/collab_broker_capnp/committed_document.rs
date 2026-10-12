@@ -19,6 +19,9 @@ pub struct NativeDocumentReadContext {
 }
 
 #[cfg(test)]
+#[path = "committed_document/await_tests.rs"]
+mod await_tests;
+#[cfg(test)]
 #[path = "committed_document/initialization_tests.rs"]
 mod initialization_tests;
 impl NativeDocumentReadContext {
@@ -121,7 +124,51 @@ pub trait NativeDocumentReads: Send + Sync {
         known_revision: Option<[u8; 32]>,
         maximum: usize,
     ) -> Result<NativeDocumentRead, String>;
+    /// Whether a caller holding `known_revision` (or nothing, after
+    /// `Unavailable`) still holds what [`Self::capture`] would answer,
+    /// decided without capturing. `None` when only a capture can say; the
+    /// broker then captures under its byte budget. A held `Await` asks this
+    /// on every announcement, so it must stay cheap, and it must refuse
+    /// exactly what [`Self::authorize`] refuses.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the caller may not read the document now.
+    fn unchanged(
+        &self,
+        context: &NativeDocumentReadContext,
+        known_revision: Option<[u8; 32]>,
+    ) -> Result<Option<bool>, String> {
+        let _ = (context, known_revision);
+        Ok(None)
+    }
+    /// The first wall-clock second after `after` (Unix seconds) at which
+    /// [`Self::authorize`] or [`Self::capture`] for `context` can answer
+    /// differently with nothing written, so nothing announced: a grant, a
+    /// certificate or a revocation taking effect at an instant known in
+    /// advance. A held `Await` registers it with
+    /// [`tilo_identity_host::policy_change::wake_at`].
+    ///
+    /// # Errors
+    ///
+    /// The default, and any implementation that cannot tell: a held wait
+    /// then re-checks every [`UNANNOUNCED_RECHECK`], the cadence readers
+    /// polled at, so an unknown expiry is never enforced later than before.
+    fn next_change(
+        &self,
+        context: &NativeDocumentReadContext,
+        after: u64,
+    ) -> Result<Option<u64>, String> {
+        let _ = (context, after);
+        Err("this document owner does not know its time-bound inputs".into())
+    }
 }
+
+/// How often a held `Await` re-checks while a change it depends on cannot be
+/// announced (no reliable policy clock or identity-file watch, or an owner
+/// that cannot name its expiries): the interval readers used to poll at, so
+/// a revocation is never noticed later than it was.
+pub(super) const UNANNOUNCED_RECHECK: Duration = Duration::from_millis(200);
 struct Active {
     capture: capture::Capture,
     context: NativeDocumentReadContext,
@@ -175,13 +222,43 @@ impl Initialization {
         })
     }
 }
+/// A held `Await` on this channel; a newer request on the channel ends it.
+struct HeldWait {
+    generation: u64,
+    wake: Arc<tokio::sync::Notify>,
+}
 #[derive(Default)]
 pub(super) struct Slot {
     active: Option<Active>,
     initialization: Option<Initialization>,
     closed: bool,
+    wait: Option<HeldWait>,
+    waits: u64,
 }
 impl Slot {
+    /// Close the channel once an unacknowledged capture outlived its
+    /// deadline; refuse every request on a closed channel.
+    fn expire(&mut self) -> Result<(), String> {
+        if self.active.as_mut().is_some_and(|active| {
+            active
+                .capture
+                .check_deadline(std::time::Instant::now())
+                .is_err()
+        }) {
+            self.closed = true;
+        }
+        if self.closed {
+            self.active = None;
+            return Err("committed read channel expired".into());
+        }
+        Ok(())
+    }
+    /// End a held `Await`: the caller asked something newer.
+    fn supersede_wait(&mut self) {
+        if let Some(wait) = self.wait.take() {
+            wait.wake.notify_one();
+        }
+    }
     fn creation_reply(
         &mut self,
         reply: Reply,
@@ -360,19 +437,10 @@ impl CapnpChannelHandle {
             return Ok(Reply::Legacy);
         }
         let mut slot = self.committed_read.borrow_mut();
-        if slot.active.as_mut().is_some_and(|active| {
-            active
-                .capture
-                .check_deadline(std::time::Instant::now())
-                .is_err()
-        }) {
-            slot.closed = true;
-        }
-        if slot.closed {
-            slot.active = None;
-            return Err("committed read channel expired".into());
-        }
+        slot.expire()?;
+        slot.supersede_wait();
         match request {
+            Request::Await { .. } => Err("a committed read wait is answered asynchronously".into()),
             Request::PrivateWindowBinding => Ok(Reply::PrivateWindowBinding {
                 instance: self.native_private_window_instance()?,
             }),
@@ -470,6 +538,269 @@ impl CapnpChannelHandle {
                 Ok(reply)
             }
         }
+    }
+}
+
+/// Whether an Open for `known_revision` would answer exactly what the caller
+/// holds (`Unchanged` for that revision, `Unavailable` for `None`), with
+/// every check the Open makes, in its order: custody and admission
+/// (`context`), the owner's authorization, the read under the shared byte
+/// budget, then both checks again. `None` when the Open would answer
+/// anything else, refusals included; otherwise the checked context.
+fn read_unchanged(
+    service: &dyn NativeDocumentReads,
+    context: impl FnOnce() -> Result<NativeDocumentReadContext, String>,
+    budget: &Arc<Budget>,
+    room: &str,
+    known_revision: Option<[u8; 32]>,
+) -> Option<NativeDocumentReadContext> {
+    if !service.requires_room(room) {
+        return None;
+    }
+    let context = context().ok()?;
+    service.authorize(&context).ok()?;
+    let unchanged = service
+        .unchanged(&context, known_revision)
+        .ok()?
+        .or_else(|| captured_unchanged(service, &context, budget, known_revision))?;
+    context.revalidate().ok()?;
+    service.authorize(&context).ok()?;
+    unchanged.then_some(context)
+}
+
+/// What only a capture can say: whether it answers what the caller holds.
+/// Captured under the shared byte budget, as an Open's capture is; `None`
+/// when the budget or the capture refuses.
+fn captured_unchanged(
+    service: &dyn NativeDocumentReads,
+    context: &NativeDocumentReadContext,
+    budget: &Arc<Budget>,
+    known_revision: Option<[u8; 32]>,
+) -> Option<bool> {
+    let _reservation = budget.reserve().ok()?;
+    Some(
+        match service
+            .capture(context, known_revision, MAX_DOCUMENT_BYTES)
+            .ok()?
+        {
+            NativeDocumentRead::Unchanged(revision) => Some(revision) == known_revision,
+            NativeDocumentRead::Pending => known_revision.is_none(),
+            NativeDocumentRead::Captured { .. } => false,
+        },
+    )
+}
+
+/// Re-run `check` whenever `wake` fires (re-`arm`ed before each check, so a
+/// change made while it runs is kept), until it says the read changed, and
+/// answer [`Reply::Stale`]. `check` answers `Some(announced)` while the read
+/// is unchanged: with `announced` false some input can change unannounced,
+/// and it re-runs every [`UNANNOUNCED_RECHECK`] as well.
+#[allow(
+    clippy::future_not_send,
+    reason = "checks a channel handle's Rc state; driven only on the broker LocalSet"
+)]
+async fn hold_until_stale(
+    wake: &tokio::sync::Notify,
+    mut arm: impl FnMut(),
+    mut check: impl FnMut() -> Result<Option<bool>, String>,
+) -> Result<Reply, String> {
+    loop {
+        arm();
+        let Some(announced) = check()? else {
+            return Ok(Reply::Stale);
+        };
+        if announced {
+            wake.notified().await;
+        } else {
+            let _ = tokio::time::timeout_at(next_unannounced_recheck(), wake.notified()).await;
+        }
+    }
+}
+
+/// The next instant on one process-wide [`UNANNOUNCED_RECHECK`] grid, at
+/// most that far ahead. Every clocked wait re-checks on the same ticks, so
+/// however many readers wait, the broker thread wakes five times a second,
+/// not five times a second per reader.
+fn next_unannounced_recheck() -> tokio::time::Instant {
+    static GRID: std::sync::OnceLock<tokio::time::Instant> = std::sync::OnceLock::new();
+    let now = tokio::time::Instant::now();
+    let origin = *GRID.get_or_init(|| now);
+    let period = UNANNOUNCED_RECHECK.as_nanos();
+    let until = now.checked_duration_since(origin).map_or(period, |since| {
+        period.saturating_sub(since.as_nanos().checked_rem(period).unwrap_or(0))
+    });
+    let until = Duration::from_nanos(u64::try_from(until).unwrap_or(u64::MAX));
+    now.checked_add(until)
+        .unwrap_or_else(|| now.checked_add(UNANNOUNCED_RECHECK).unwrap_or(now))
+}
+
+/// Ends the slot's record of a held wait when the wait is dropped (answered,
+/// cancelled by its caller, or its connection gone), unless a newer request
+/// already replaced it.
+struct WaitGuard<'a> {
+    handle: &'a CapnpChannelHandle,
+    generation: u64,
+}
+impl Drop for WaitGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = self.handle.committed_read.try_borrow_mut()
+            && slot
+                .wait
+                .as_ref()
+                .is_some_and(|wait| wait.generation == self.generation)
+        {
+            slot.wait = None;
+        }
+    }
+}
+
+impl CapnpChannelHandle {
+    /// Answer an `Await { known_revision }`: hold until an
+    /// `Open { known_revision }` on this channel would answer anything but
+    /// what the caller holds, then answer [`Reply::Stale`].
+    ///
+    /// The checks are the Open's own (custody, admission, the owner's
+    /// authorization and capture), re-run whenever something they read may
+    /// have changed: every writer of those inputs announces
+    /// ([`tilo_identity_host::policy_change`]), and the first instant a
+    /// time-bound input changes is registered with `wake_at`. Where that
+    /// cannot be relied on, they re-run every [`UNANNOUNCED_RECHECK`], as the
+    /// reader's poll did. A check that fails answers `Stale` too: the
+    /// caller's Open then meets the same refusal and fails closed, so a
+    /// revocation ends the reader as it always did, only without the poll.
+    /// No document byte and no readiness ever comes from this answer.
+    ///
+    /// # Errors
+    ///
+    /// The channel expired, a capture is unacknowledged, or a newer request
+    /// on this channel replaced the wait.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc channel handles are Rc-based; driven only on the broker LocalSet"
+    )]
+    pub(super) async fn await_committed_change(
+        self: Rc<Self>,
+        known_revision: Option<[u8; 32]>,
+    ) -> Result<Reply, String> {
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let generation = {
+            let mut slot = self.committed_read.borrow_mut();
+            slot.expire()?;
+            if slot.active.is_some() {
+                return Err(
+                    "committed read wait requires previous response acknowledgement".into(),
+                );
+            }
+            slot.supersede_wait();
+            slot.waits = slot.waits.wrapping_add(1);
+            let generation = slot.waits;
+            slot.wait = Some(HeldWait {
+                generation,
+                wake: Arc::clone(&wake),
+            });
+            generation
+        };
+        let _guard = WaitGuard {
+            handle: &self,
+            generation,
+        };
+        let watch = {
+            let wake = Arc::clone(&wake);
+            tilo_identity_host::policy_change::Watch::new(move || wake.notify_one())
+        };
+        hold_until_stale(
+            &wake,
+            || {
+                let _ = watch.arm();
+            },
+            || {
+                if !self.holds_wait(generation) {
+                    return Err("committed read wait was replaced".into());
+                }
+                Ok(self.committed_read_unchanged(known_revision))
+            },
+        )
+        .await
+    }
+
+    fn holds_wait(&self, generation: u64) -> bool {
+        self.committed_read.try_borrow().is_ok_and(|slot| {
+            !slot.closed
+                && slot.active.is_none()
+                && slot
+                    .wait
+                    .as_ref()
+                    .is_some_and(|wait| wait.generation == generation)
+        })
+    }
+
+    /// [`read_unchanged`] on this channel: `Some(announced)` while an Open
+    /// would answer exactly what the caller holds, where `announced` says
+    /// whether every input that can change that is announced or timed.
+    fn committed_read_unchanged(&self, known_revision: Option<[u8; 32]>) -> Option<bool> {
+        let service = self.state.services.committed_documents.clone()?;
+        let context = read_unchanged(
+            service.as_ref(),
+            || self.document_read_context(),
+            &self.state.committed_read_budget,
+            &self.route().cluster_id,
+            known_revision,
+        )?;
+        Some(self.register_read_expiry(&context, service.as_ref()))
+    }
+
+    /// Register with [`tilo_identity_host::policy_change::wake_at`] the first
+    /// instant at which this read's checks can answer differently by time
+    /// alone: the reader's certificate validity, the membership tree's next
+    /// grant expiry, and what the document owner names. Returns `false` when
+    /// any input is neither announced nor timed, and the wait keeps its
+    /// clock.
+    fn register_read_expiry(
+        &self,
+        context: &NativeDocumentReadContext,
+        service: &dyn NativeDocumentReads,
+    ) -> bool {
+        use tilo_identity_host::policy_change;
+        if !policy_change::timers_reliable() || !policy_change::identity_files_watched() {
+            return false;
+        }
+        if self
+            .state
+            .membership
+            .as_ref()
+            .is_some_and(|membership| !membership.announces_policy_changes())
+        {
+            return false;
+        }
+        let Ok(now) = self.state.policy_now_ns() else {
+            return false;
+        };
+        let Ok(owner) = service.next_change(context, now / 1_000_000_000) else {
+            return false;
+        };
+        let Ok((membership, _)) = self.state.next_policy_change(now) else {
+            return false;
+        };
+        let certificate = context.certificate();
+        let certificate = [Some(certificate.issued_at_ns), certificate.expires_at_ns]
+            .into_iter()
+            .flatten()
+            .filter(|at| *at > now)
+            .min();
+        let next = owner
+            .map(|seconds| seconds.saturating_mul(1_000_000_000))
+            .into_iter()
+            .chain(membership)
+            .chain(certificate)
+            .min();
+        if let Some(at) = next {
+            policy_change::wake_at(crate::policy_schedule::wall_instant(
+                at,
+                now,
+                tilo_clock::unix_now_ns(),
+            ));
+        }
+        true
     }
 }
 

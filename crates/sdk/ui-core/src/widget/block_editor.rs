@@ -7163,18 +7163,6 @@ impl Widget for BlockStackLeaf {
         self.editor().is_some_and(Widget::layout_needs_measure)
     }
 
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "BlockStack"
     }

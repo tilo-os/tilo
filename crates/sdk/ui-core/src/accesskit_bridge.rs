@@ -1308,22 +1308,6 @@ mod tests {
                 .collect();
             taffy.widget_node(taffy::Style::default(), &child_nodes, node_map, self)
         }
-        fn apply_layout(
-            &mut self,
-            _taffy: &TaffyTree<()>,
-            _node: taffy::NodeId,
-            _origin: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _scene: &mut vello::Scene,
-            _transform: vello::kurbo::Affine,
-            _text_renderer: &mut crate::text_render::TextRenderer,
-            _theme: &Theme,
-            _presence: &crate::presence::PresenceCtx,
-        ) {
-        }
         fn children(&self) -> Vec<&dyn Widget> {
             self.kids.iter().map(std::convert::AsRef::as_ref).collect()
         }
@@ -1361,22 +1345,6 @@ mod tests {
             nodes: &mut HashMap<TaffyNodeId, *mut dyn Widget>,
         ) -> TaffyNodeId {
             self.child.build_layout(tree, theme, nodes)
-        }
-        fn apply_layout(
-            &mut self,
-            _tree: &TaffyTree<()>,
-            _node: TaffyNodeId,
-            _origin: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _scene: &mut vello::Scene,
-            _transform: vello::kurbo::Affine,
-            _text: &mut crate::text_render::TextRenderer,
-            _theme: &Theme,
-            _presence: &crate::presence::PresenceCtx,
-        ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
             vec![&self.child]
@@ -1642,22 +1610,6 @@ mod tests {
         ) -> taffy::NodeId {
             let kid = self.child.build_layout(taffy, theme, node_map);
             taffy.widget_node(taffy::Style::default(), &[kid], node_map, self)
-        }
-        fn apply_layout(
-            &mut self,
-            _taffy: &TaffyTree<()>,
-            _node: taffy::NodeId,
-            _origin: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _scene: &mut vello::Scene,
-            _transform: vello::kurbo::Affine,
-            _text_renderer: &mut crate::text_render::TextRenderer,
-            _theme: &Theme,
-            _presence: &crate::presence::PresenceCtx,
-        ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
             vec![&self.child]

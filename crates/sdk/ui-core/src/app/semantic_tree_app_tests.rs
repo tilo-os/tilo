@@ -418,16 +418,6 @@ impl Widget for CounterCard {
         let kid = self.button.build_layout(taffy, theme, node_map);
         taffy.widget_node(taffy::Style::default(), &[kid], node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.button]
     }
@@ -439,9 +429,6 @@ impl Widget for CounterCard {
     }
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.replaced)
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]

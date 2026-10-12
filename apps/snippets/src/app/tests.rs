@@ -77,6 +77,31 @@ fn activate(app: &mut TestApp<SnippetsShell>, label: &str) {
     app.settle();
 }
 
+/// The list's item for the snippet titled `title`: the node the list
+/// exports around the row, named by the row's language badge and title.
+fn list_item(app: &mut TestApp<SnippetsShell>, title: &str) -> ui::accesskit::NodeId {
+    let suffix = format!(" {title}");
+    app.harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::ListItem
+                && !node.children().is_empty()
+                && node.label().is_some_and(|label| label.ends_with(&suffix))
+        })
+        .map_or_else(|| panic!("the list item of {title:?}"), |(id, _)| id)
+}
+
+/// Open the snippet titled `title` from the list, as assistive technology
+/// activates a list item.
+fn open_row(app: &mut TestApp<SnippetsShell>, title: &str) {
+    let item = list_item(app, title);
+    app.harness()
+        .perform_a11y_action(item, &ui::a11y::Action::Activate)
+        .unwrap_or_else(|error| panic!("opening {title:?}: {error}"));
+    app.settle();
+}
+
 /// The value of the snippet body's editor, as assistive technology reads it.
 fn body_shown(app: &mut TestApp<SnippetsShell>) -> String {
     app.harness()
@@ -163,7 +188,7 @@ fn sidebar_places_narrow_the_list() {
 #[test]
 fn controls_submit_library_actions_as_one_undo_step_each() {
     let mut app = launched(&[snippet("Plain", "echo hi"), snippet("Templated", "")]);
-    activate(&mut app, "Plain");
+    open_row(&mut app, "Plain");
     activate(&mut app, "Favorite");
     assert!(by_title(&app, "Plain").1.favorite);
     assert!(app.undo(), "the favorite is one undo step");
@@ -207,7 +232,7 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
 #[test]
 fn the_snippet_menus_set_the_language_and_duplicate() {
     let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
-    activate(&mut app, "Deploy");
+    open_row(&mut app, "Deploy");
     // The language is a dropdown: assistive technology sets its value.
     {
         let harness = app.harness();
@@ -242,7 +267,7 @@ fn the_folder_and_tag_chips_reveal_their_places() {
         ..snippet("Deploy", "kubectl apply")
     };
     let mut app = launched(&[tagged, snippet("Other", "")]);
-    activate(&mut app, "Deploy");
+    open_row(&mut app, "Deploy");
     activate(&mut app, "Tag: k8s");
     assert_eq!(
         app.surface_mut::<SnippetsApp>().core.borrow().selection,
@@ -263,18 +288,10 @@ fn exported_list_rows_activate_and_refuse_removed_handles() {
         snippet("First", "first body"),
         snippet("Second", "second body"),
     ]);
-    activate(&mut app, "First");
+    open_row(&mut app, "First");
     assert_eq!(body_shown(&mut app), "first body");
     let (second, _) = by_title(&app, "Second");
-    let row = app
-        .harness()
-        .a11y_nodes()
-        .into_iter()
-        .find(|(_, node)| {
-            node.label() == Some("Second") && node.role() == ui::accesskit::Role::ListItem
-        })
-        .map(|(id, _)| id)
-        .expect("the exported Second list row");
+    let row = list_item(&mut app, "Second");
     app.harness()
         .perform_a11y_action(row, &ui::a11y::Action::Focus)
         .expect("the measured list owner focuses the addressed row");
@@ -284,21 +301,27 @@ fn exported_list_rows_activate_and_refuse_removed_handles() {
         .harness()
         .focused_access_node()
         .expect("the list remains the actual keyboard focus owner");
+    let named = |child: &ui::a11y::AccessNode, title: &str| {
+        child
+            .name
+            .as_deref()
+            .is_some_and(|name| name.ends_with(&format!(" {title}")))
+    };
     assert!(
         focused
             .children
             .iter()
-            .any(|child| { child.name.as_deref() == Some("Second") && child.state.focused }),
+            .any(|child| named(child, "Second") && child.state.focused),
         "the addressed Second row carries focused semantics"
     );
     assert!(
         focused
             .children
             .iter()
-            .all(|child| { child.name.as_deref() != Some("First") || !child.state.focused }),
+            .all(|child| !named(child, "First") || !child.state.focused),
         "First must no longer carry focused semantics"
     );
-    activate(&mut app, "First");
+    open_row(&mut app, "First");
     assert_eq!(body_shown(&mut app), "first body");
     app.harness()
         .perform_a11y_action(row, &ui::a11y::Action::Activate)
@@ -335,22 +358,33 @@ fn copying_a_templated_snippet_opens_the_variables_dialog() {
 /// The list is one focus stop whose keys move the open snippet.
 #[test]
 fn the_list_moves_the_open_snippet_by_keys() {
-    let app = demo();
-    let mut core = app.core.borrow_mut();
-    let first = core.visible[0].clone();
-    let second = core.visible[1].clone();
-    let last = core.visible.last().unwrap().clone();
-    core.open = Some(first.clone());
-    assert!(core.list_key(&Key::Named(NamedKey::ArrowDown)));
-    assert_eq!(core.open, Some(second));
-    assert!(core.list_key(&Key::Named(NamedKey::ArrowUp)));
-    assert!(core.list_key(&Key::Named(NamedKey::ArrowUp)));
-    assert_eq!(core.open, Some(first.clone()), "Up stops at the top");
-    assert!(core.list_key(&Key::Named(NamedKey::End)));
-    assert_eq!(core.open, Some(last));
-    assert!(core.list_key(&Key::Named(NamedKey::Home)));
-    assert_eq!(core.open, Some(first));
-    assert!(!core.list_key(&Key::Character("a".into())));
+    let mut app = launched(&[
+        snippet("Alpha", "alpha body"),
+        snippet("Beta", "beta body"),
+        snippet("Gamma", "gamma body"),
+    ]);
+    let top = list_item(&mut app, "Alpha");
+    app.harness()
+        .perform_a11y_action(top, &ui::a11y::Action::Focus)
+        .expect("the list focuses its row");
+    app.settle();
+    assert_eq!(body_shown(&mut app), "alpha body");
+    for (key, body) in [
+        ("Down", "beta body"),
+        ("Up", "alpha body"),
+        ("Up", "alpha body"),
+        ("End", "gamma body"),
+        ("Home", "alpha body"),
+    ] {
+        app.harness().key(key);
+        app.settle();
+        assert_eq!(body_shown(&mut app), body, "after {key}");
+    }
+    assert_eq!(
+        app.state().snippets.len(),
+        3,
+        "moving through the list edits nothing"
+    );
 }
 
 /// Typing in the body splices the stored text with field edits at the
@@ -436,34 +470,31 @@ fn variable_dialog_is_semantic_and_local() {
 /// Focusing the New button does not author a snippet; activating it does.
 #[test]
 fn focusing_new_snippet_does_not_activate_it() {
-    let mut app = SnippetsApp::new();
-    let mut doc = AutoCommit::new();
-    app.core
-        .borrow_mut()
-        .list
-        .hits
-        .push((Rect::new(0.0, 0.0, 100.0, 40.0), Action::NewSnippet));
-    let target = Action::NewSnippet.semantic_id();
-    assert!(Widget::perform_semantic_action(
-        &mut app,
-        &target,
-        &ui::a11y::Action::Focus,
-        &mut ui::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    ));
-    assert!(
-        !app.core.borrow().open_minted,
+    let mut app = launched(&[snippet("Only", "")]);
+    let label = crate::tr("snippets-new");
+    let button = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.label() == Some(label.as_str())
+                && node.supports_action(ui::accesskit::Action::Click)
+        })
+        .map(|(id, _)| id)
+        .expect("the New button");
+    app.harness()
+        .perform_a11y_action(button, &ui::a11y::Action::Focus)
+        .expect("the New button takes focus");
+    app.settle();
+    assert_eq!(
+        app.state().snippets.len(),
+        1,
         "focusing a button authors nothing"
     );
-    assert!(Widget::perform_semantic_action(
-        &mut app,
-        &target,
-        &ui::a11y::Action::Activate,
-        &mut ui::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    ));
-    assert!(
-        app.core.borrow().open_minted,
+    activate(&mut app, &label);
+    assert_eq!(
+        app.state().snippets.len(),
+        2,
         "activating it creates a snippet"
     );
 }

@@ -7,7 +7,7 @@
 
 use std::cell::RefCell;
 
-use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
+use tilo_app::advanced::{NodeId, TaffyTree};
 use tilo_app::framework::{EffectCx, EffectStatus, Effected};
 use tilo_app::portal::{PickRequest, PortalOutcome};
 use tilo_app::prelude::tilo_actions::Action as _;
@@ -798,9 +798,6 @@ impl Widget for Tally {
         self.rect = Rect::from_origin_size(origin, Size::ZERO);
     }
 
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
-
     fn name(&self) -> &'static str {
         "Tally"
     }
@@ -1068,9 +1065,6 @@ impl Widget for Fetcher {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.tally.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
 
     fn name(&self) -> &'static str {
@@ -1391,9 +1385,6 @@ impl Widget for Recorder {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.tally.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
 
     fn name(&self) -> &'static str {

@@ -59,16 +59,6 @@ impl Widget for RecordingContent {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut ui::widget::EventCtx<'_>) {
         let label = match event {
             WindowEvent::CursorMoved { .. } => "CursorMoved",
