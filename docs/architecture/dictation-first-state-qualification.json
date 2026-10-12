@@ -1081,22 +1081,22 @@
       "selected": 18,
       "passed": 18,
       "excluded_by_filter": 27,
-      "command": "rcargo --no-fallback test --locked --offline -j2 -p local-model-service --lib speech::",
+      "command": "$CARGO --no-fallback test --locked --offline -j2 -p local-model-service --lib speech::",
       "log_sha256": "5d0adc38562e8832e4cf5d42d90bdc04f54db2ffea12e7a7b32995dd832458f8"
     },
     "service_all_targets_check": {
       "status": "PASS",
-      "command": "rcargo --no-fallback --no-fetch check --locked --offline -j2 -p local-model-service --all-targets",
+      "command": "$CARGO --no-fallback --no-fetch check --locked --offline -j2 -p local-model-service --all-targets",
       "log_sha256": "31750e908124f991b1d36f6f9e26c511a59357d48e02d78f53f55bc9510e1215"
     },
     "clippy": {
       "status": "PASS",
-      "command": "rcargo --no-fallback --no-fetch clippy --locked --offline -j2 -p local-model-service --all-targets -- -D warnings",
+      "command": "$CARGO --no-fallback --no-fetch clippy --locked --offline -j2 -p local-model-service --all-targets -- -D warnings",
       "log_sha256": "cb8bd34dcbd70bd08044294f681e63fb78ea013d5375130597217cb0759835c1"
     },
     "shell_tests_compile": {
       "status": "PASS",
-      "command": "rcargo --no-fallback --no-fetch check --locked --offline -j2 -p shell --tests",
+      "command": "$CARGO --no-fallback --no-fetch check --locked --offline -j2 -p shell --tests",
       "log_sha256": "a70f398686cc547e529267700c17edf689dd52f5331103c740ca4a6ddc2ce697"
     }
   },
@@ -1169,5 +1169,10 @@
     "pristine-arena-fixed-paired-builder.log": "43f751e31c45dd678b8910dd8dfbb78c91ab66f939304b71c42135abb1e5c6df",
     "pristine-arena-assembled-builder.log": "c4bafac62f9c745245d58408d16083dc6566d6c6e4a0dc16adea8b0ec5b6f56d",
     "probe-fixed-full-context.py": "3dcdde292d47682aed5f79b866958877bc5bb8607509aaa3f4180d593740d797"
+  },
+  "execution_record_portability": {
+    "executor_name": "$CARGO denotes the original remote-only cargo executor; switches, results and measurements are unchanged.",
+    "original_signed_feature_source": "3de84e1c5c0191ea5bf9ac3c5b1e63561adac1d3",
+    "original_file_sha256": "b6959397456609ac5dfd89fd177d2402181b32cb38482fcac4337be0dd31aae5"
   }
 }

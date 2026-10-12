@@ -764,7 +764,7 @@
     "provider_catalogue_tests": "11 PASS",
     "actual_finish_actor_tests": "2 PASS",
     "all_affected_targets_clippy": "PASS -D warnings including audio-evidence-review example",
-    "shell_integration_targets_compile": "PASS rcargo check -p shell --tests",
+    "shell_integration_targets_compile": "PASS $CARGO check -p shell --tests",
     "source_staged_contracts_format_secrets": "PASS before signed commit",
     "source_signature": "PASS existing configured key; no new trust grant",
     "ci": "Not submitted by source owner: the sole delivery owner assembles this source into the coherent Dictation feature PR and owns CI/integration.",
@@ -792,5 +792,10 @@
     },
     "source_inputs_count": 176,
     "qualification_scope": "Scoped acoustic-admission regression only; product goal remains incomplete."
+  },
+  "execution_record_portability": {
+    "executor_name": "$CARGO denotes the original remote-only cargo executor; switches, results and measurements are unchanged.",
+    "original_signed_feature_source": "3de84e1c5c0191ea5bf9ac3c5b1e63561adac1d3",
+    "original_file_sha256": "ea141d3ffd2c9bac099de93192b768448727e118a0d9d52a5f3b81bbb4cfecf5"
   }
 }
