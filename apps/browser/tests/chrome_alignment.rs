@@ -168,13 +168,19 @@ fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
             ui::theme::Theme::dark(),
         );
         // Open the find bar the way a person does: with the Find shortcut,
-        // which a following frame's sync turns into the bar.
-        harness.set_modifiers(&["ctrl".to_owned()]);
+        // which a following frame's sync turns into the bar. That is Cmd+F on
+        // macOS and Ctrl+F elsewhere — the browser honours the platform's
+        // command modifier, so the test presses the same one.
+        let command = match ui::platform::PlatformConventions::default().platform() {
+            ui::platform::Platform::MacOs => "super",
+            _ => "ctrl",
+        };
+        harness.set_modifiers(&[command.to_owned()]);
         harness.key("f");
         harness.set_modifiers(&[]);
         harness
             .wait_for_named("browser.find.input", tilo_test_env::hang_bound())
-            .expect("Ctrl+F composes the find bar");
+            .expect("the Find shortcut composes the find bar");
         let targets = harness.targets();
         let field = targets["browser.find.input"];
         let window = targets["browser.root"];
