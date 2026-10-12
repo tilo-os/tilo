@@ -415,10 +415,7 @@ mod guide_layout_tests {
         let label = f64::from(theme.tokens.typography.size(ui::TextRole::Caption));
         let keycap = ui::widget::InputHint::keycap_height(&theme);
         assert!(shortcut_reference_step() >= label * 1.3 + 4.0 + keycap);
-        assert!(
-            shortcut_reference_group_height()
-                >= 29.0 + 6.0 * shortcut_reference_step()
-        );
+        assert!(shortcut_reference_group_height() >= 29.0 + 6.0 * shortcut_reference_step());
     }
 
     #[test]
@@ -427,8 +424,7 @@ mod guide_layout_tests {
         assert_eq!(shortcut_reference_columns(560.0), 2);
         assert_eq!(shortcut_reference_columns(300.0), 1);
         assert!(
-            shortcut_guide_content_height(300.0, 8, 1)
-                > shortcut_guide_content_height(912.0, 8, 1)
+            shortcut_guide_content_height(300.0, 8, 1) > shortcut_guide_content_height(912.0, 8, 1)
         );
     }
 }
