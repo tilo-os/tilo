@@ -1173,9 +1173,9 @@ impl AccountsPane {
         if let Some(id) = &self.reauth_id {
             panel.push(self.reauth_form(id));
         }
-        panel.push(self.thunderbird_import_card());
         panel.push(self.browser_identity_card());
         panel.push(self.mail_card());
+        panel.push(self.thunderbird_import_card());
         panel.push(self.kind_card(AccountKind::CalDav));
         panel.push(self.kind_card(AccountKind::WebDav));
         panel.push(self.kind_card(AccountKind::Nextcloud));
@@ -2463,15 +2463,37 @@ mod tests {
         // Case `sample_directory_renders_read_only_without_remove_buttons`.
         {
             // The sample is illustration: one live Add button per provider kind,
-            // and no Remove buttons. A scratch root keeps whatever the runner's
+            // metadata import, and no Remove buttons. A scratch root keeps whatever the runner's
             // own account stores hold (a browser identity, say) out of the count.
             let (_scratch, root) = scratch_root();
             let pane = AccountsPane::from_dir_in(root, sample_directory(), true);
             let composed = lay_out(&pane);
             assert_eq!(
                 count_named(composed.as_ref(), "Button"),
+                AccountKind::ALL.len() + 1,
+                "every provider kind can be added and metadata imported over the sample"
+            );
+            let mut labels = Vec::new();
+            labels_of(composed.as_ref(), "Button", &mut labels);
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| **label == t("accounts-add"))
+                    .count(),
                 AccountKind::ALL.len(),
-                "every provider kind can be added over the sample"
+                "one Add action per provider kind"
+            );
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| **label == t("accounts-import-choose"))
+                    .count(),
+                1,
+                "one metadata import action"
+            );
+            assert!(
+                labels.iter().all(|label| *label != t("accounts-remove")),
+                "sample accounts cannot be removed"
             );
         }
 
@@ -2483,10 +2505,11 @@ mod tests {
             let (_scratch, root) = scratch_root();
             let pane = AccountsPane::from_dir_in(root, dir, false);
             let composed = lay_out(&pane);
-            // One Add per kind + four maintenance actions on each of four accounts.
+            // One Add per kind, metadata import, and four maintenance actions
+            // on each of four accounts.
             assert_eq!(
                 count_named(composed.as_ref(), "Button"),
-                AccountKind::ALL.len() + 16
+                AccountKind::ALL.len() + 1 + 16
             );
         }
 
