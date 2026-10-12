@@ -262,6 +262,17 @@ impl ActionBinding<()> {
 /// display text, and an external caller addresses parameters by a stable name.
 pub const PROMPTED_PARAM: &str = "value";
 
+/// The text of an argument object that holds exactly one string, whatever it
+/// is called: what a continuation or an accessibility set-value reads of a
+/// prompted action's arguments without knowing the action's own name for it.
+pub fn sole_text_argument(arguments: &serde_json::Map<String, serde_json::Value>) -> Option<&str> {
+    let mut values = arguments.values();
+    match (values.next(), values.next()) {
+        (Some(serde_json::Value::String(text)), None) => Some(text),
+        _ => None,
+    }
+}
+
 /// Inert envelope produced when the legacy one-field palette cannot satisfy a
 /// typed contract. Hosts recognize it as a refusal; it is never registered or
 /// dispatched as an application operation.
@@ -1081,9 +1092,9 @@ impl ActionSpec {
     /// encoded action from it.
     ///
     /// Projects to one required [`Text`](ParamType::Text) parameter named
-    /// [`PROMPTED_PARAM`], described by `prompt`. The projection and the
-    /// palette share the *same* `build` closure, so an external invocation and
-    /// the on-screen affordance produce the byte-identical [`EncodedAction`].
+    /// [`PROMPTED_PARAM`], described by `prompt`. That generic name tells a
+    /// caller who cannot see the prompt nothing; name the parameter for what it
+    /// is with [`Self::prompted_param`].
     pub fn prompted(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -1092,7 +1103,36 @@ impl ActionSpec {
         locus: ExecutionLocus,
         build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
-        let prompt = prompt.into();
+        Self::prompted_param(
+            id,
+            label,
+            ActionParam::required_owned(PROMPTED_PARAM, ParamType::Text, prompt.into()),
+            placeholder,
+            locus,
+            build,
+        )
+    }
+
+    /// An action that first collects a free-text argument, then builds its
+    /// encoded action from it, the argument being the parameter `param`:
+    /// `ActionParam::required("title", ParamType::Text, "The note's new
+    /// title")`. The name and description are what an agent reads, and the
+    /// description is also the palette's prompt.
+    ///
+    /// The projection and the palette share the *same* `build` closure, so an
+    /// external invocation and the on-screen affordance produce the
+    /// byte-identical [`EncodedAction`]. Callers that hold the typed text
+    /// find where it goes with [`Self::prompt_param`], never by name.
+    pub fn prompted_param(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        param: ActionParam,
+        placeholder: impl Into<String>,
+        locus: ExecutionLocus,
+        build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        let prompt = param.description.to_string();
+        let name = param.name.clone();
         // One `Arc`, shared by the palette's `ActionInput` and the typed
         // projection. Not two closures that happen to agree.
         let build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync> = Arc::new(build);
@@ -1105,13 +1145,9 @@ impl ActionSpec {
             kind: OperationKind::Document,
             operation_type: None,
             contract: ActionContract::default(),
-            params: vec![ActionParam::required_owned(
-                PROMPTED_PARAM,
-                ParamType::Text,
-                prompt.clone(),
-            )],
+            params: vec![param],
             build: InvocationBuilder::Dynamic {
-                build: Arc::new(move |args| for_args(args.text(PROMPTED_PARAM).unwrap_or(""))),
+                build: Arc::new(move |args| for_args(args.text(&name).unwrap_or(""))),
                 deferred_type: None,
             },
             input: ActionInput::Prompted {
@@ -1125,6 +1161,33 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
         }
+    }
+
+    /// The name of the parameter the typed text of a prompted action goes
+    /// into, or `None` for an action that collects no text. The one place a
+    /// caller holding the text of a prompt (the palette, a broker request, a
+    /// continuation) learns where it belongs.
+    pub fn prompt_param(&self) -> Option<&str> {
+        match self.input {
+            ActionInput::Prompted { .. } => self
+                .params()
+                .iter()
+                .find(|param| param.required)
+                .or_else(|| self.params().first())
+                .map(|param| param.name.as_ref()),
+            _ => None,
+        }
+    }
+
+    /// `text` as this action's typed arguments, when it is a prompted action.
+    pub fn prompt_arguments(
+        &self,
+        text: &str,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let name = self.prompt_param()?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(name.to_owned(), serde_json::Value::String(text.to_owned()));
+        Some(arguments)
     }
 
     /// An immediate effect or view operation owned by the application.
@@ -2227,6 +2290,70 @@ mod tests {
                 .continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Immediate))
                 .is_none()
         );
+    }
+
+    /// A prompted action names its one argument for what it is; every caller
+    /// holding the typed text finds the name through the action, so renaming
+    /// it never needs a caller changed.
+    #[test]
+    fn a_prompted_action_names_its_argument_and_callers_ask_it_for_the_name() {
+        let encode = |title: &str| EncodedAction::encode_operation("test.rename", &title).unwrap();
+        let named = ActionSpec::prompted_param(
+            "rename",
+            "Rename",
+            ActionParam::required("title", ParamType::Text, "The note's new title"),
+            "note title…",
+            ExecutionLocus::ClientLocal,
+            encode,
+        );
+        assert_eq!(named.prompt_param(), Some("title"));
+        assert_eq!(named.params()[0].name.as_ref(), "title");
+        assert_eq!(
+            named.params()[0].description.as_ref(),
+            "The note's new title"
+        );
+        let typed = named.prompt_arguments("Plan").unwrap();
+        assert_eq!(
+            typed,
+            serde_json::json!({"title": "Plan"})
+                .as_object()
+                .unwrap()
+                .clone()
+        );
+        // The typed projection and the palette's one-field input build the same bytes.
+        assert_eq!(named.build_json(&typed).unwrap(), encode("Plan"));
+        let ActionInput::Prompted { prompt, build, .. } = &named.input else {
+            panic!("a prompted action prompts");
+        };
+        assert_eq!(prompt, "The note's new title");
+        assert_eq!(build("Plan"), encode("Plan"));
+        // The old constructor keeps the generic name, found the same way.
+        let generic = ActionSpec::prompted(
+            "rename",
+            "Rename",
+            "Title",
+            "note title…",
+            ExecutionLocus::ClientLocal,
+            encode,
+        );
+        assert_eq!(generic.prompt_param(), Some(PROMPTED_PARAM));
+        // An action that collects no text has no prompt parameter.
+        let immediate =
+            ActionSpec::operation("run", "Run", OperationKind::Effect, "test.run", &()).unwrap();
+        assert_eq!(immediate.prompt_param(), None);
+        assert_eq!(immediate.prompt_arguments("x"), None);
+    }
+
+    #[test]
+    fn the_sole_text_of_an_argument_object_is_found_whatever_it_is_called() {
+        let sole = |value: serde_json::Value| {
+            sole_text_argument(value.as_object().unwrap()).map(str::to_owned)
+        };
+        assert_eq!(sole(serde_json::json!({"title": "a"})), Some("a".into()));
+        assert_eq!(sole(serde_json::json!({"value": "b"})), Some("b".into()));
+        assert_eq!(sole(serde_json::json!({})), None);
+        assert_eq!(sole(serde_json::json!({"a": "x", "b": "y"})), None);
+        assert_eq!(sole(serde_json::json!({"n": 1})), None);
     }
 
     #[test]

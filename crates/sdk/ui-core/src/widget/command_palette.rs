@@ -339,12 +339,7 @@ impl CommandEntry {
             ..
         } = &fa.action.input
         {
-            let params = fa.action.params();
-            let primary = params
-                .iter()
-                .find(|param| param.required)
-                .or_else(|| params.first())
-                .map_or(PROMPTED_PARAM, |param| param.name.as_ref());
+            let primary = fa.action.prompt_param().unwrap_or(PROMPTED_PARAM);
             entry = entry.with_argument(prompt.clone(), placeholder.clone());
             entry.action_argument = Some(primary.to_string());
         }
@@ -3000,6 +2995,42 @@ mod tests {
             assert_eq!(encoded.type_id, "test.rename");
         }
 
+        /// The palette's typed text lands in the parameter the action names,
+        /// whatever it is called: the prompt is the description.
+        fn prompted_action_with_a_named_parameter_gets_the_typed_text_under_that_name() {
+            let spec = tilo_actions::ActionSpec::prompted_param(
+                "rename",
+                "Rename",
+                tilo_actions::ActionParam::required(
+                    "title",
+                    tilo_actions::ParamType::Text,
+                    "The note's new title",
+                ),
+                "title…",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                |title| {
+                    tilo_actions::EncodedAction::encode_operation("test.rename", &title).unwrap()
+                },
+            );
+            let resources = vec![
+                tilo_actions::Resource::new("document:1", "document", "Document").with_action(spec),
+            ];
+            let flat = tilo_actions::flatten(&resources);
+            let entry = CommandEntry::from_flat_action(&flat[0]);
+            let mut palette = CommandPalette::commands();
+            palette.open_action_argument(entry, Some("Project Atlas".into()));
+            assert!(dispatch(
+                &mut palette,
+                &key_press(Key::Named(NamedKey::Enter))
+            ));
+            let invocation =
+                crate::widget::controls::take_control_invocation(&mut palette).unwrap();
+            assert_eq!(invocation.arguments["title"], "Project Atlas");
+            assert!(!invocation.arguments.contains_key(PROMPTED_PARAM));
+            let encoded = flat[0].action.build_json(&invocation.arguments).unwrap();
+            assert_eq!(encoded.type_id, "test.rename");
+        }
+
         fn typed_resource_action_binds_its_primary_parameter() {
             let spec = tilo_actions::ActionSpec::typed_operation(
                 "go-to-cell",
@@ -3056,6 +3087,7 @@ mod tests {
 
         immediate_resource_action_enqueues_an_address_not_a_private_outcome();
         prompted_resource_action_binds_its_declared_argument();
+        prompted_action_with_a_named_parameter_gets_the_typed_text_under_that_name();
         typed_resource_action_binds_its_primary_parameter();
         semantic_shortcut_labels_follow_the_palette_platform();
     }
