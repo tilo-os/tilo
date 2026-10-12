@@ -6,7 +6,6 @@
 )]
 
 use crate::widget::ModelPath;
-use std::collections::HashSet;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 use vello::Scene;
@@ -135,9 +134,7 @@ pub struct RadarChart {
     activated: Option<(String, String)>,
     keyboard_inspection: bool,
     touch: ChartTouchTracker,
-    hidden_series: HashSet<String>,
-    legend_hits: Vec<(String, Rect)>,
-    visibility_changed: Option<(String, bool)>,
+    toggles: chart_legend::SeriesToggles,
 }
 
 impl RadarChart {
@@ -154,9 +151,7 @@ impl RadarChart {
             activated: None,
             keyboard_inspection: false,
             touch: ChartTouchTracker::default(),
-            hidden_series: HashSet::new(),
-            legend_hits: Vec::new(),
-            visibility_changed: None,
+            toggles: chart_legend::SeriesToggles::default(),
         }
     }
     #[must_use]
@@ -176,22 +171,18 @@ impl RadarChart {
     }
     pub fn set_series(&mut self, series: Vec<RadarSeries>) {
         self.series = series;
-        self.hidden_series
-            .retain(|id| self.series.iter().any(|series| series.id == *id));
+        self.toggles
+            .retain(|id| self.series.iter().any(|series| series.id == id));
         self.hovered = None;
     }
     pub fn is_series_visible(&self, id: &str) -> bool {
-        self.series.iter().any(|series| series.id == id) && !self.hidden_series.contains(id)
+        self.series.iter().any(|series| series.id == id) && !self.toggles.is_hidden(id)
     }
     pub fn set_series_visible(&mut self, id: &str, visible: bool) -> bool {
         if !self.series.iter().any(|series| series.id == id) {
             return false;
         }
-        let changed = if visible {
-            self.hidden_series.remove(id)
-        } else {
-            self.hidden_series.insert(id.to_owned())
-        };
+        let changed = self.toggles.set(id, visible);
         if changed {
             if self
                 .hovered
@@ -200,7 +191,6 @@ impl RadarChart {
             {
                 self.hovered = None;
             }
-            self.visibility_changed = Some((id.to_owned(), visible));
         }
         changed
     }
@@ -208,14 +198,14 @@ impl RadarChart {
         self.set_series_visible(id, !self.is_series_visible(id))
     }
     pub fn take_visibility_changed(&mut self) -> Option<(String, bool)> {
-        self.visibility_changed.take()
+        self.toggles.take_changed()
     }
     pub fn take_activated(&mut self) -> Option<(String, String)> {
         self.activated.take()
     }
     pub fn inspect(&mut self, series_id: &str, axis_id: &str) -> bool {
         self.hovered = self.series.iter().enumerate().find_map(|(series, values)| {
-            (!self.hidden_series.contains(&values.id) && values.id == series_id)
+            (!self.toggles.is_hidden(&values.id) && values.id == series_id)
                 .then(|| {
                     self.axes
                         .iter()
@@ -326,7 +316,7 @@ impl InteractiveChart for RadarChart {
     fn update_hover(&mut self) {
         let mut nearest: Option<(f64, Hovered)> = None;
         for (series_index, series) in self.series.iter().enumerate() {
-            if self.hidden_series.contains(&series.id) {
+            if self.toggles.is_hidden(&series.id) {
                 continue;
             }
             for axis in 0..self.axes.len() {
@@ -354,12 +344,7 @@ impl InteractiveChart for RadarChart {
         if !self.style.legend.interactive {
             return false;
         }
-        let Some(id) = self
-            .legend_hits
-            .iter()
-            .find(|(_, rect)| rect.contains(point))
-            .map(|(id, _)| id.clone())
-        else {
+        let Some(id) = self.toggles.hit(point) else {
             return false;
         };
         self.toggle_series(&id)
@@ -383,7 +368,7 @@ impl InteractiveChart for RadarChart {
             .series
             .iter()
             .enumerate()
-            .filter(|(_, series)| !self.hidden_series.contains(&series.id))
+            .filter(|(_, series)| !self.toggles.is_hidden(&series.id))
             .flat_map(|(series, values)| {
                 self.axes.iter().enumerate().filter_map(move |(axis, _)| {
                     values
@@ -492,7 +477,7 @@ impl Widget for RadarChart {
             }
         }
         for (series_index, series) in self.series.iter().enumerate() {
-            if self.hidden_series.contains(&series.id) {
+            if self.toggles.is_hidden(&series.id) {
                 continue;
             }
             let path = self.polygon(series, 1.0);
@@ -545,7 +530,7 @@ impl Widget for RadarChart {
             }
         }
         if self.style.legend.visible {
-            self.legend_hits.clear();
+            self.toggles.clear_hits();
             let rows = chart_legend::rows(
                 self.series.iter().map(|series| series.name.as_str()),
                 self.rect.x0 + 12.0,
@@ -560,7 +545,7 @@ impl Widget for RadarChart {
             for (series, item) in self.series.iter().zip(items) {
                 let x = item.x0;
                 let y = item.y0;
-                let visible = !self.hidden_series.contains(&series.id);
+                let visible = !self.toggles.is_hidden(&series.id);
                 let color = if visible {
                     series.color
                 } else {
@@ -590,10 +575,10 @@ impl Widget for RadarChart {
                     Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
                     &theme.text(TextRole::Caption),
                 );
-                self.legend_hits.push((series.id.clone(), item));
+                self.toggles.push_hit(series.id.clone(), item);
             }
         } else {
-            self.legend_hits.clear();
+            self.toggles.clear_hits();
         }
         if let Some(hovered) = self.hovered.filter(|_| self.style.tooltip)
             && let (Some(series), Some(axis)) =
@@ -621,7 +606,7 @@ impl Widget for RadarChart {
         let children = self
             .series
             .iter()
-            .filter(|series| !self.hidden_series.contains(&series.id))
+            .filter(|series| !self.toggles.is_hidden(&series.id))
             .flat_map(|series| {
                 self.axes.iter().enumerate().filter_map(|(index, axis)| {
                     series
@@ -647,20 +632,7 @@ impl Widget for RadarChart {
                 self.series
                     .iter()
                     .filter(|_| self.style.legend.interactive)
-                    .map(|series| {
-                        AccessNode::new(Role::Button)
-                            .with_action_target(format!("legend:{}", series.id))
-                            .with_name(format!("{} series", series.name))
-                            .with_description(if self.hidden_series.contains(&series.id) {
-                                "Hidden; activate to show".to_owned()
-                            } else {
-                                "Visible; activate to hide".to_owned()
-                            })
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
-                    }),
+                    .map(|series| self.toggles.access_node(&series.id, &series.name)),
             )
             .collect();
         Some(
@@ -683,16 +655,16 @@ impl Widget for RadarChart {
         let Some(key) = crate::widget::chart_navigation::activated_key(action, key_path) else {
             return false;
         };
-        if self.style.legend.interactive {
-            for series in &self.series {
-                let target = format!("legend:{}", series.id);
-                if crate::a11y::hash_key(&target) == key {
-                    return self.toggle_series(&series.id.clone());
-                }
-            }
+        if self.style.legend.interactive
+            && let Some(id) = chart_legend::SeriesToggles::activated(
+                self.series.iter().map(|series| series.id.as_str()),
+                key,
+            )
+        {
+            return self.toggle_series(&id);
         }
         for series in &self.series {
-            if self.hidden_series.contains(&series.id) {
+            if self.toggles.is_hidden(&series.id) {
                 continue;
             }
             for axis in &self.axes {
