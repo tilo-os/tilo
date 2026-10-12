@@ -68,7 +68,8 @@ AUDITED_UNIT_MODULES = {
     "crates/session/shell/src/shell/frame_retained_tests.rs": (
         "crates/session/shell/src/shell/frame.rs",
         "crates/session/shell/Cargo.toml",
-        "b8927848596f1e71b64363e5f52f58958eff5377e99a5a73ac4a8c6b5ad4404b",
+        # Re-audited after adding the shared fs-protocol dependency.
+        "9718617b42874a28204ca0f73fa13303efaf40dc28b7970374c2553749fe1742",
     ),
     "crates/sdk/ui-core/src/app/bound_component_tests.rs": (
         "crates/sdk/ui-core/src/app/host.rs",
