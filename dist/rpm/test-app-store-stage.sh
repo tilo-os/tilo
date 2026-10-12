@@ -37,7 +37,7 @@ EOF
 cat > "$release/bin/tilo-runtime-bundle" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $1 == verify && -f $2/bundle.toml ]]
+[[ $1 == verify && -f $2/bundle.toml && ${3:-} == --require-signature ]]
 EOF
 cat > "$release/bin/tilo-install" <<'EOF'
 #!/usr/bin/env bash

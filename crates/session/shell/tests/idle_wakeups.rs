@@ -94,7 +94,21 @@ use tilo_identity_ceremony::IdentityRecord;
 /// 0.50–0.60/s the filesystem authority worker retrying a publisher the
 /// headless session does not have. Their top plus a little under a half:
 /// 6/s.
-const IDLE_WAKEUP_BUDGET: f64 = 6.0;
+///
+/// Those were the last wakers. The channel service now tells a route whose
+/// room has no known steward when one is learned (and retries a channel it
+/// failed to open on its own backoff), so a route it answered waits for
+/// that push instead of asking on the timer; the authority worker waits for
+/// its publisher with a creation-only watch instead of retrying it. The
+/// publisher's spawn attempts had also woken `tilo-secrets-bus` 0.2/s (gone
+/// with the watch alone, runs 100711–100712). Ten runs on main before blocked
+/// 2.90–4.10/s (runs 100582–100591: shovels 1.40–2.10, identity client
+/// 0.70–1.20, authority worker 0.40–0.60, secrets bus 0.20); with both,
+/// 0.00–0.40/s (runs 100713–100722), the 0.40 the one window holding a
+/// minute repaint and nothing else. Its top plus a margin that still
+/// catches one thread waking once a second in the windows without a
+/// minute turn: 1/s.
+const IDLE_WAKEUP_BUDGET: f64 = 1.0;
 
 /// Most CPU the idle desktop's threads may use, in percent of one core over
 /// the window. The wakeup count leaves out preemptions, so this is what
@@ -103,14 +117,16 @@ const IDLE_WAKEUP_BUDGET: f64 = 6.0;
 const IDLE_CPU_BUDGET: f64 = 1.5;
 
 /// Most rounds of channel-key questions per second each in-process app with
-/// a collaboration shovel may start. A route that holds no keys asks on a
-/// timer backing off from 1 s to 30 s, and is told when they change: from
-/// the settle period on, a 10 s window holds at most three rounds of one
-/// shovel's backoff, however many routes ask in each and however loaded the
-/// machine is. Asking on a 1 s timer, the regression this catches (5.3
-/// wakeups/s together), is ten. Each shovel starts its own rounds:
-/// the restored Notes notebook and the Terminal both have one.
-const KEY_ROUND_BUDGET: f64 = 0.35;
+/// a collaboration shovel may start. A route asks when it is told its
+/// channel changed; it asks on a timer (backing off from 1 s to 30 s) only
+/// while nothing will tell it: a question the identity service refused, or
+/// a removal. The fixture's routes are answered and pushed, so the ten runs
+/// above started no round in the window, where the timer used to start up
+/// to three per shovel. One round per shovel per window leaves room for a
+/// pushed change; asking on the backoff timer again, or on a 1 s one (ten),
+/// is caught. Each shovel starts its own rounds: the restored Notes
+/// notebook and the Terminal both have one.
+const KEY_ROUND_BUDGET: f64 = 0.1;
 
 /// Most iterations per second the compositor's frame loop may make while
 /// idle, from its `paint-tick` lines. A loop that wakes on a deadline that

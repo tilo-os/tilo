@@ -1365,15 +1365,25 @@ pub trait Widget {
         false
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
+    /// Take the geometry layout gave this node. The default keeps none, for
+    /// widgets that neither draw nor hit-test.
+    fn apply_layout(
+        &mut self,
+        _taffy: &TaffyTree<()>,
+        _node: NodeId,
+        _origin: vello::kurbo::Point,
+    ) {
+    }
+    /// Paint into `scene`. The default paints nothing.
     fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    );
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+    }
 
     /// Observe this app's ordinary foreground physical input before framework
     /// shortcuts consume it. Keep feedback ephemeral; this is not an input grant.
@@ -1462,7 +1472,11 @@ pub trait Widget {
         Vec::new()
     }
 
-    fn get_rect(&self) -> vello::kurbo::Rect;
+    /// The rectangle this widget occupies. The default, for widgets that
+    /// keep no geometry, is empty.
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        vello::kurbo::Rect::ZERO
+    }
 
     /// Absolute logical clip applied to ordinary children during painting and
     /// pointer routing. Inspectors and enclosing scroll regions must respect
@@ -3287,18 +3301,6 @@ mod tests {
             taffy.leaf_node(taffy::Style::default())
         }
 
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
-
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             let Some(child) = self.child.as_mut() else {
                 return Vec::new();
@@ -3309,10 +3311,6 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "CollabProbe"
-        }
-
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
     }
 
@@ -3381,9 +3379,6 @@ mod tests {
                 }
                 fn name(&self) -> &str {
                     "Observed"
-                }
-                fn get_rect(&self) -> vello::kurbo::Rect {
-                    vello::kurbo::Rect::ZERO
                 }
             }
             use automerge::transaction::Transactable;
@@ -3613,21 +3608,8 @@ pub(crate) mod control_result_probe {
             map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "ControlResultProbe"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["test.control-result.run"]

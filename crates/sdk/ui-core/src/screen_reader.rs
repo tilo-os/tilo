@@ -1155,25 +1155,11 @@ mod tests {
                 .collect();
             taffy.widget_node(taffy::Style::default(), &kids, node_map, self)
         }
-        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: taffy::NodeId, _o: vello::kurbo::Point) {
-        }
-        fn draw(
-            &mut self,
-            _s: &mut vello::Scene,
-            _t: vello::kurbo::Affine,
-            _tr: &mut crate::text_render::TextRenderer,
-            _th: &Theme,
-            _p: &crate::presence::PresenceCtx,
-        ) {
-        }
         fn children(&self) -> Vec<&dyn Widget> {
             self.kids.iter().map(Box::as_ref).collect()
         }
         fn name(&self) -> &'static str {
             "tw"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
         fn accessibility(&self) -> Option<AccessNode> {
             self.access.clone()

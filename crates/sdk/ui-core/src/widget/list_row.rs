@@ -1666,8 +1666,12 @@ pub struct ListRow {
     count: Option<usize>,
     leading: Option<Leading>,
     leading_column: Option<f64>,
+    /// Every badge of the row's list, measured into `leading_column` at
+    /// layout.
+    column_badges: Option<std::rc::Rc<[String]>>,
     pub(crate) shared_leading: Option<f64>,
     leading_tooltip: Option<String>,
+    tooltip: Option<String>,
     status: Option<(StatusKind, String)>,
     disclosure: bool,
     checked: Option<bool>,
@@ -1721,8 +1725,10 @@ impl ListRow {
             count: None,
             leading: None,
             leading_column: None,
+            column_badges: None,
             shared_leading: None,
             leading_tooltip: None,
+            tooltip: None,
             status: None,
             disclosure: false,
             checked: None,
@@ -1946,6 +1952,24 @@ impl ListRow {
     #[must_use]
     pub fn leading_column(mut self, width: f64) -> Self {
         self.leading_column = Some(width);
+        self
+    }
+
+    /// The leading column fits every badge in `badges`, measured when the
+    /// row is laid out: the rows of a
+    /// [`VirtualList`](crate::widget::virtual_list::VirtualList), which
+    /// mounts only those on screen, keep one title edge with the rest.
+    #[must_use]
+    pub fn badge_column(mut self, badges: std::rc::Rc<[String]>) -> Self {
+        self.column_badges = Some(badges);
+        self
+    }
+
+    /// What the pointer resting on the row shows, where no part of it (the
+    /// leading badge, an action, a title cut short) says more.
+    #[must_use]
+    pub fn tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = Some(tooltip.into());
         self
     }
 
@@ -2570,6 +2594,16 @@ impl Widget for ListRow {
         // Geometry outside a draw (hit-testing actions, measuring) reads the
         // theme the row was last laid out in.
         self.theme = Some(theme.clone());
+        if let Some(badges) = &self.column_badges {
+            let badges: Vec<&str> = badges.iter().map(String::as_str).collect();
+            let width = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+                badge_column_width(text, theme, &badges)
+            });
+            if self.leading_column != Some(width) {
+                self.leading_column = Some(width);
+                self.dirty = true;
+            }
+        }
         let row_style = Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
@@ -2871,10 +2905,18 @@ impl Widget for ListRow {
             .find(|(r, _)| r.contains(point))
             .and_then(|(r, index)| self.actions.get(index).map(|a| (r, a.label.clone())));
         // A title cut short reads in full where it is pointed at.
-        action.or_else(|| {
-            let band = self.text_band();
-            (self.title_elided && band.contains(point)).then(|| (band, self.title.clone()))
-        })
+        action
+            .or_else(|| {
+                let band = self.text_band();
+                (self.title_elided && band.contains(point)).then(|| (band, self.title.clone()))
+            })
+            .or_else(|| {
+                let outer = self.outer();
+                outer
+                    .contains(point)
+                    .then(|| self.tooltip.clone().map(|tooltip| (outer, tooltip)))
+                    .flatten()
+            })
     }
 
     fn is_focusable(&self) -> bool {

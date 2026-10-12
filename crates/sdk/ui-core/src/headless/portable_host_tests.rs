@@ -146,7 +146,7 @@ struct OverlayProbe {
 }
 
 impl Widget for OverlayProbe {
-    crate::testing::inert_widget_methods!(draw, name = "overlay-probe");
+    crate::testing::inert_widget_methods!(name = "overlay-probe");
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -243,13 +243,7 @@ struct Scheduled {
     updates: Rc<Cell<usize>>,
 }
 impl Widget for Scheduled {
-    crate::testing::inert_widget_methods!(
-        leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "scheduled"
-    );
+    crate::testing::inert_widget_methods!(leaf_layout, name = "scheduled");
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.inspections.set(self.inspections.get() + 1);
         None
