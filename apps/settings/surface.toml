@@ -711,7 +711,7 @@ kind = "settings.updates"
 label = "Updates"
 person = true
 verbs = []
-version = 1
+version = 2
 
 [[resources.fields]]
 owner = "update-prefs"
@@ -720,14 +720,6 @@ readonly = true
 stored = "value"
 title = "Auto"
 type = "bool"
-
-[[resources.fields]]
-owner = "update-prefs"
-path = "channel"
-readonly = true
-stored = "value"
-title = "Legacy serialized field. The actual image reference is managed by"
-type = "String"
 
 [[resources.fields]]
 owner = "update-prefs"
