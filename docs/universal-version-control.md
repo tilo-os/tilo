@@ -1,6 +1,6 @@
-# Universal version control: first slice and coverage audit
+# Universal version control: native reads and coverage audit
 
-**Status: partial.** This describes the current native
+**Status: partial native coverage.** This describes the current native
 framework slice, not a claim that every resource has complete version control.
 The goal is one history door for people, accessibility, scripts and agents:
 inspect old content, compare exact versions, then restore selected content as
@@ -157,10 +157,10 @@ schema-evolution proof or universal redaction proof is delivered here. Closed
 resources, cold/remote hosts and restart routing need end-to-end tests for this
 new workflow. Broader coverage and UI review-action integration remain work.
 
-That old **#3875 was closed unmerged** describes that PR, not absence of
-the architecture: Git records **`d8bc16deea` — “feat: one
-resource/action/view model”** as landed. Audit current code rather than treating
-that PR's disposition as the implementation inventory.
+Git records **`d8bc16deea` — “feat: one resource/action/view model”** as
+landed. Coverage must be audited against the current implementations and their
+tests: a shared resource model alone does not prove historical reads or safe
+restoration for every resource type.
 
 ## Code Editor source projects
 

@@ -4,6 +4,41 @@
 use super::*;
 use ui::tilo_resource::{Invoke, Reader, Replica};
 
+#[test]
+fn inventory_budget_refuses_before_building_the_remaining_entries() {
+    let mut project = Project::default();
+    for index in 0..800 {
+        project.files.push(
+            Id::from(format!("entry-{index}")),
+            Entry {
+                name: format!("{index}-{}", "\"".repeat(240)),
+                ..Entry::default()
+            },
+        );
+    }
+    // This last entry would fail path resolution if the reader kept building
+    // the inventory after exhausting its serialized-byte budget.
+    project.files.push(
+        Id::from("invalid-last"),
+        Entry {
+            name: "last".into(),
+            parent: Some(Id::from("missing-parent")),
+            ..Entry::default()
+        },
+    );
+    let doc = Doc::new();
+    assert!(
+        project
+            .content(&doc, None)
+            .unwrap_err()
+            .contains("exceeds 240 KiB")
+    );
+    let page = project.content(&doc, Some("inventory:0")).unwrap();
+    assert_eq!(page["entries"].as_array().unwrap().len(), 128);
+    assert_eq!(page["next"], "inventory:1");
+    assert!(serde_json::to_vec(&page).unwrap().len() <= 240 * 1024);
+}
+
 fn apply(project: &mut Replica<Project>, invoke: Invoke<Project>) -> Result<(), String> {
     project
         .apply(invoke)

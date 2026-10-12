@@ -586,17 +586,36 @@ impl Project {
             } else {
                 self.files.len()
             };
-            let entries = self
-                .files
-                .iter()
-                .skip(start)
-                .take(count)
-                .map(|(id, entry)| metadata(id, entry))
-                .collect::<Result<Vec<_>, _>>()?;
-            let next = start + entries.len();
-            serde_json::json!({"scope": "recorded-project", "complete": true,
-                "total_entries": self.files.len(), "entries": entries,
-                "next": (next < self.files.len()).then(|| format!("inventory:{}", next / PAGE))})
+            let next = start + count.min(self.files.len() - start);
+            let mut envelope = serde_json::json!({"scope": "recorded-project", "complete": true,
+                "total_entries": self.files.len(), "entries": [],
+                "next": (next < self.files.len()).then(|| format!("inventory:{}", next / PAGE))});
+            // Account for JSON escaping and separators before retaining each
+            // entry, so a whole-project refusal does not build a whole list.
+            let mut bytes = serde_json::to_vec(&envelope)
+                .map_err(|error| error.to_string())?
+                .len();
+            let mut entries = Vec::new();
+            for (id, entry) in self.files.iter().skip(start).take(count) {
+                let entry = metadata(id, entry)?;
+                bytes = bytes.saturating_add(
+                    serde_json::to_vec(&entry)
+                        .map_err(|error| error.to_string())?
+                        .len(),
+                );
+                bytes = bytes.saturating_add(usize::from(!entries.is_empty()));
+                if bytes > LIMIT {
+                    return Err(
+                        "source read exceeds 240 KiB; use inventory:N pages or a smaller text item"
+                            .into(),
+                    );
+                }
+                entries.push(entry);
+            }
+            *envelope
+                .get_mut("entries")
+                .ok_or("invalid inventory envelope")? = serde_json::Value::Array(entries);
+            envelope
         } else {
             let item = item.ok_or("no item")?;
             let prefix = format!("{}/files/", <Self as tilo_resource::Resource>::KIND);

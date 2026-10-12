@@ -158,6 +158,78 @@ impl Shelf {
     }
 }
 
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct DocumentContent {
+    name: String,
+}
+
+#[resource(
+    kind = "test.document-content",
+    read_content = DocumentContent::legacy,
+    read_content_doc = DocumentContent::content,
+)]
+impl DocumentContent {
+    /// # Errors
+    /// Always refuses: the document-aware reader must take precedence.
+    pub fn legacy(&self, _item: Option<&Id>) -> Result<serde_json::Value, String> {
+        Err("legacy reader must not run when a document reader is supplied".into())
+    }
+
+    fn content(
+        &self,
+        doc: &tilo_resource::Doc,
+        item: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let name: String = tilo_resource::read_key(doc, &automerge::ROOT, "name")
+            .map_err(|error| error.to_string())?;
+        Ok(serde_json::json!({"name": name, "state_name": self.name, "item": item}))
+    }
+}
+
+#[test]
+fn document_content_reader_takes_precedence_and_receives_document_and_raw_item() {
+    use automerge::transaction::Transactable as _;
+    const { assert!(DocumentContent::READABLE) };
+    let mut doc = tilo_resource::Doc::new();
+    doc.put(automerge::ROOT, "name", "from the document")
+        .unwrap();
+    let state = DocumentContent::default();
+    for item in [
+        None,
+        Some("inventory:1"),
+        Some("test.document-content/files/id"),
+    ] {
+        let content = DocumentContent::read_content(&state, &doc, item).unwrap();
+        assert_eq!(
+            content,
+            serde_json::json!({"name": "from the document", "state_name": "", "item": item})
+        );
+    }
+}
+
+#[test]
+fn legacy_content_reader_still_receives_optional_typed_id() {
+    const { assert!(Shelf::READABLE) };
+    let mut state = Shelf::default();
+    state.cards.push(
+        Id::from("card-id"),
+        Card {
+            title: "Legacy card".into(),
+            colour: String::new(),
+        },
+    );
+    let doc = tilo_resource::Doc::new();
+    assert_eq!(Shelf::read_content(&state, &doc, None).unwrap()["cards"], 1);
+    assert_eq!(
+        Shelf::read_content(&state, &doc, Some("card-id")).unwrap()["title"],
+        "Legacy card"
+    );
+    assert_eq!(
+        Shelf::read_content(&state, &doc, Some("missing")).unwrap_err(),
+        "no such card"
+    );
+}
+
 fn published(replica: &Replica<Shelf>) -> tilo_actions::Resource {
     tilo_resource::publish::<Shelf>("shelf", "Shelf", &replica.state().unwrap())
 }
