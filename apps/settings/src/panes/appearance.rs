@@ -200,7 +200,7 @@ pub fn text_size_name(shown: &str) -> String {
 #[derive(serde::Serialize)]
 struct AppearanceInspection<'a> {
     schema: &'static str,
-    theme: &'a str,
+    theme: String,
     mode: &'a str,
     dark_theme: &'a str,
     light_theme: &'a str,
@@ -220,7 +220,7 @@ impl<'a> From<&'a AppearancePrefs> for AppearanceInspection<'a> {
     fn from(prefs: &'a AppearancePrefs) -> Self {
         Self {
             schema: "tilo.settings.appearance.v1",
-            theme: &prefs.theme,
+            theme: prefs.theme_choice(),
             mode: &prefs.mode,
             dark_theme: &prefs.dark_theme,
             light_theme: &prefs.light_theme,
@@ -343,7 +343,7 @@ pub(crate) fn answer(
             if !AppearancePrefs::THEMES.contains(&theme.as_str()) {
                 return Err(format!("`{theme}` is not a theme"));
             }
-            host.update(|prefs: &mut AppearancePrefs| prefs.choose_legacy_theme(theme))
+            host.update(|prefs: &mut AppearancePrefs| prefs.choose_theme(&theme))
         }
         AppearanceEffect::SetUiScale { scale } => {
             let factor =
@@ -499,7 +499,7 @@ impl Shown {
     }
 
     fn show(&self, prefs: &AppearancePrefs) {
-        self.theme.set(prefs.theme.clone());
+        self.theme.set(prefs.theme_choice());
         self.ui_scale.set(ui_scale_label(prefs.ui_scale).to_owned());
         self.text_size.set(text_size_label(prefs.text_scale));
         self.high_contrast.set(prefs.high_contrast);
@@ -521,7 +521,6 @@ pub struct AppearancePane {
     /// Where the last wallpaper request stands, written by its effect.
     wallpaper_status: LocalState<Option<String>>,
     status_shown: Option<String>,
-    structure_dirty: bool,
     composed: ui::widget::Composed,
 }
 
@@ -538,7 +537,6 @@ impl AppearancePane {
             shown,
             wallpaper_status,
             status_shown,
-            structure_dirty: false,
             composed: ui::widget::Composed::default(),
         }
     }
@@ -819,12 +817,12 @@ impl Widget for AppearancePane {
         if self.prefs.refresh() {
             self.shown.show(self.prefs.get());
             // The schedule's rows and the applied theme follow the values.
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         let status = self.wallpaper_status.get();
         if status != self.status_shown {
             self.status_shown = status;
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
         self.composed.sync(state, root);
     }
@@ -853,12 +851,6 @@ impl Widget for AppearancePane {
 
     fn name(&self) -> &'static str {
         "AppearancePane"
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self.composed.take_structure_dirty();
-        own || child
     }
 
     /// Surface the user's current appearance choice so the running Settings
@@ -944,7 +936,7 @@ mod tests {
 
         let settings = app.settings::<AppearancePrefs>();
         let prefs = settings.get();
-        assert_eq!(prefs.theme, "Automatic");
+        assert_eq!(prefs.theme_choice(), "Automatic");
         assert_eq!(prefs.ui_scale, 1.50);
         assert_eq!(prefs.text_scale, 1.15);
         assert!(prefs.high_contrast);
@@ -979,7 +971,8 @@ mod tests {
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
         cx.settings::<AppearancePrefs>()
             .set(&AppearancePrefs {
-                theme: "Dark cool".into(),
+                mode: "dark".into(),
+                dark_theme: "dark-cool".into(),
                 text_scale: 1.15,
                 ui_scale: 1.25,
                 ..AppearancePrefs::default()
@@ -992,7 +985,7 @@ mod tests {
 
         cx.settings::<AppearancePrefs>()
             .update(|prefs| {
-                prefs.theme = "Dark graphite".into();
+                prefs.choose_theme("Dark graphite");
                 prefs.reduce_motion = true;
             })
             .unwrap();

@@ -1,7 +1,7 @@
 //! Driving a `ui` app without a display.
 //!
 //! `--shots` renders a cold-start frame offscreen but never delivers input,
-//! so it can't answer *does a change survive a restart?* [`Driver`] does:
+//! so it can't answer *does a change survive a restart?* [`FrameHarness`] does:
 //! it stands up the app's widget tree over a Taffy layout at a fixed
 //! viewport and feeds it the same `WindowEvent`s winit would, through the
 //! same [`Widget::handle_event`] the
@@ -95,7 +95,7 @@ pub enum Action {
 }
 
 /// A scenario step that performs a published action. See
-/// [`Driver::invoke_action`].
+/// [`FrameHarness::invoke_action`].
 #[derive(Clone)]
 pub struct Invocation {
     pub address: tilo_actions::ActionAddress,
@@ -447,7 +447,7 @@ use crate::history_mode::frame::FrameworkInputFrame;
 
 /// The canonical display-independent frame pipeline.
 ///
-/// Both screenshot rendering and [`Driver`] input scenarios use this type, so
+/// Both screenshot rendering and [`FrameHarness`] input scenarios use this type, so
 /// they cannot drift into subtly different sync/layout/draw implementations.
 /// Live [`crate::App`] additionally owns the window and event loop, but follows
 /// the same pass ordering documented by [`Self::relayout`].
@@ -535,7 +535,7 @@ pub struct FrameHarness {
     text: TextRenderer,
     theme: Theme,
     /// Scratch scene for the draw pass. Never rasterised — see
-    /// [`Driver::relayout`] for why it is drawn at all.
+    /// [`FrameHarness::relayout`] for why it is drawn at all.
     scene: Scene,
     /// Protection of the prepared scene; unknown/failed paints stay protected.
     scene_capture_protected: bool,
@@ -557,6 +557,9 @@ pub struct FrameHarness {
     last_layout_viewport: Option<(u32, u32)>,
     input_scale: f64,
     host_pointer_position: Option<winit::dpi::PhysicalPosition<f64>>,
+    /// As the live host: where the pointer last moved, replayed before a
+    /// press or release that follows a rebuild under a still pointer.
+    pointer_replay: crate::pointer_replay::PointerReplay,
     /// Records this driver has open, when the app under test uses them —
     /// without this a record-aware app would be driven against its room
     /// index instead of the record it checked out, testing something the
@@ -600,8 +603,8 @@ pub struct FrameHarness {
     acting_for: HashMap<tilo_actions::InvocationId, crate::invocation_scope::Continuation>,
     invocation_results: Option<invocation_results::InvocationResults>,
     /// Per-pass frame profiler, installed by the perf harness via
-    /// [`Driver::begin_profiling`]. `None` on a normal (persistence) run, so
-    /// [`Driver::relayout`] and [`Driver::send`] pay nothing. When set, each
+    /// [`FrameHarness::begin_profiling`]. `None` on a normal (persistence) run, so
+    /// [`FrameHarness::relayout`] and [`FrameHarness::send`] pay nothing. When set, each
     /// pass is timed and every frame committed — see [`crate::profiling`].
     profiler: Option<crate::profiling::FrameProfiler>,
     /// Whether the latest `send_host_event` was inert pointer motion that skipped relayout.
@@ -669,9 +672,6 @@ fn full_relayout_forced() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| crate::env::var("TILO_UI_FULL_RELAYOUT").is_ok_and(|s| !s.is_empty()))
 }
-
-/// Backwards-compatible name for the input-driving use of [`FrameHarness`].
-pub type Driver = FrameHarness;
 
 /// What the root reported for one [`FrameHarness::dispatch_to_root_outcome`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1185,7 +1185,7 @@ impl FrameHarness {
         node: NodeId,
         callback: impl FnOnce(&dyn Widget) -> R,
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
-        // SAFETY: Driver owns this stable tree; no target reference escapes.
+        // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
         unsafe {
             crate::bound_dispatch::inspect_bound_node(
                 &self.bindings,
@@ -1200,7 +1200,7 @@ impl FrameHarness {
         node: NodeId,
         callback: impl FnOnce(&mut dyn Widget) -> R,
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
-        // SAFETY: exclusive Driver access prevents overlapping target references.
+        // SAFETY: exclusive FrameHarness access prevents overlapping target references.
         unsafe {
             crate::bound_dispatch::mutate_bound_node(&self.bindings, &self.node_map, node, callback)
         }
@@ -1233,7 +1233,7 @@ impl FrameHarness {
         node: NodeId,
         callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
-        // SAFETY: exclusive Driver owns both maps and the stable live tree.
+        // SAFETY: exclusive FrameHarness owns both maps and the stable live tree.
         unsafe {
             crate::bound_dispatch::invoke_bound_node(
                 &self.bindings,
@@ -1271,6 +1271,7 @@ impl FrameHarness {
             .dispatch_node(focused, |widget, doc, root| {
                 widget.perform_action(
                     &crate::a11y::Action::Activate,
+                    &[],
                     &mut crate::widget::Edits::lend(doc),
                     root,
                 )
@@ -1587,6 +1588,7 @@ impl FrameHarness {
             last_layout_viewport: None,
             input_scale: 1.0,
             host_pointer_position: None,
+            pointer_replay: crate::pointer_replay::PointerReplay::default(),
             focused: None,
             focus_trap_active: false,
             active_input_instance: None,
@@ -2734,6 +2736,10 @@ impl FrameHarness {
         use crate::widget::layout::{
             CompositionFocus, composition_geometry, settle_widget_composition,
         };
+        // A pointer at rest sees no event when a relayout moves a control
+        // under it; compare the geometry to replay it, as the live host does.
+        let resting_geometry = (self.pointer_replay.is_resting() && self.layout_built)
+            .then(|| crate::pointer_replay::widget_geometry(self.root.as_ref()));
         self.swap_requested_component();
         let viewport_changed = self.last_layout_viewport != Some(self.viewport);
         self.presence_redraw = false;
@@ -3069,6 +3075,16 @@ impl FrameHarness {
         })?;
         self.last_layout_viewport = Some(self.viewport);
         self.last_relayout = stats;
+        if stats.rebuilt
+            || viewport_changed
+            || resting_geometry.is_some_and(|before| {
+                before != crate::pointer_replay::widget_geometry(self.root.as_ref())
+            })
+        {
+            // Fresh, resized or moved controls have not seen where the
+            // pointer is.
+            self.pointer_replay.mark_unsettled();
+        }
         self.relayout_frames = self.relayout_frames.saturating_add(1);
         if !stats.rebuilt {
             self.retained_frames = self.retained_frames.saturating_add(1);
@@ -3220,14 +3236,16 @@ impl FrameHarness {
             && self.history_layout.is_none_or(|layout| layout.app_visible)
         {
             crate::widget::native_view_frame_start(self.root.as_mut());
-            self.root.draw_with_presence(
-                &mut self.scene,
-                transform,
-                &mut self.text,
-                &self.theme,
-                &self.presence,
-                &self.permissions,
-            );
+            self.presence
+                .with_permissions(self.permissions.clone(), || {
+                    self.root.draw(
+                        &mut self.scene,
+                        transform,
+                        &mut self.text,
+                        &self.theme,
+                        &self.presence,
+                    )
+                });
         }
         if self.history_chrome_enabled {
             let context = crate::standalone_history::HistoryReadContext {
@@ -4395,7 +4413,7 @@ impl FrameHarness {
         let (taffy_id, key_path, ordinal_path, semantic_target) = match resolved {
             A11yTarget::Root => return Err("the window root cannot be operated".into()),
             A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None),
-            // Keys here: the driver dispatches through `perform_action_at`,
+            // Keys here: the driver dispatches through `perform_action`,
             // which identifies a synthetic child by identity.
             A11yTarget::Synthetic {
                 owner,
@@ -4443,7 +4461,7 @@ impl FrameHarness {
                         root,
                     )
                 } else {
-                    widget.perform_action_at(
+                    widget.perform_action(
                         action,
                         &key_path,
                         &mut crate::widget::Edits::lend(doc),
@@ -4478,7 +4496,7 @@ impl FrameHarness {
                 }
                 // Fall back the way the App does: a click at the widget's
                 // centre. Widget-granular by nature — it cannot reach inside a
-                // canvas, which is why `perform_action_at` exists.
+                // canvas, which is why `perform_action` exists.
                 crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck => {
                     let rect = (!ordinal_path.is_empty())
                         .then(|| {
@@ -4499,7 +4517,7 @@ impl FrameHarness {
                 _ => return Err(format!("the current control did not handle {action:?}")),
             }
         }
-        // The widget may have mutated the document from `perform_action_at` —
+        // The widget may have mutated the document from `perform_action` —
         // dispatching an action, or asking for a commit — and this route does
         // not go through `send`. Close the tick here too, or an app driven the
         // way an assistive technology drives it leaves no history behind.
@@ -4704,7 +4722,12 @@ impl FrameHarness {
                             root,
                         )
                     } else {
-                        widget.perform_action(action, &mut crate::widget::Edits::lend(doc), root)
+                        widget.perform_action(
+                            action,
+                            &[],
+                            &mut crate::widget::Edits::lend(doc),
+                            root,
+                        )
                     }
                 })
                 .map_err(|error| format!("History input refused: {error:?}"))?;
@@ -4740,7 +4763,7 @@ impl FrameHarness {
                         root,
                     )
                 } else {
-                    widget.perform_action(action, &mut crate::widget::Edits::lend(doc), root)
+                    widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), root)
                 }
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
@@ -5455,6 +5478,22 @@ impl FrameHarness {
     }
 
     fn send_with_host_navigation(&mut self, event: &WindowEvent, host_navigation_allowed: bool) {
+        // Controls swapped in or moved under a still pointer learn it is
+        // there before the press or release that follows, as in the App.
+        if let Some(moved) = self.pointer_replay.before(event) {
+            self.dispatch_with_host_navigation(&moved, host_navigation_allowed);
+        }
+        self.dispatch_with_host_navigation(event, host_navigation_allowed);
+        if crate::pointer_replay::PointerReplay::ends_press(event) {
+            self.pointer_replay.end_press();
+        }
+    }
+
+    fn dispatch_with_host_navigation(
+        &mut self,
+        event: &WindowEvent,
+        host_navigation_allowed: bool,
+    ) {
         if let WindowEvent::ModifiersChanged(modifiers) = event {
             self.modifiers = *modifiers;
         }
@@ -8751,8 +8790,8 @@ fn semantic_action_from_wire(action: tilo_headless_schema::SemanticAction) -> cr
 
 fn drive_spec_actions(
     spec: &Spec,
-    driver: &mut Driver,
-    mut persist: impl FnMut(&mut Driver),
+    driver: &mut FrameHarness,
+    mut persist: impl FnMut(&mut FrameHarness),
 ) -> Option<String> {
     if spec.results.is_some() {
         driver.retain_invocation_results();
@@ -8788,7 +8827,11 @@ fn drive_spec_actions(
     None
 }
 
-fn audit_spec(spec: &Spec, driver: &Driver, failure: &mut Option<String>) -> Result<(), String> {
+fn audit_spec(
+    spec: &Spec,
+    driver: &FrameHarness,
+    failure: &mut Option<String>,
+) -> Result<(), String> {
     if !spec.audit && spec.audit_report.is_none() {
         return Ok(());
     }
@@ -8817,7 +8860,7 @@ fn audit_spec(spec: &Spec, driver: &Driver, failure: &mut Option<String>) -> Res
     Ok(())
 }
 
-fn write_spec_outputs(spec: &Spec, driver: &mut Driver) -> Result<(), String> {
+fn write_spec_outputs(spec: &Spec, driver: &mut FrameHarness) -> Result<(), String> {
     if let Some(path) = &spec.results {
         write_headless_output(path, driver.invocation_results_json()?).map_err(|error| {
             format!("writing invocation results to {}: {error}", path.display())
@@ -8857,7 +8900,7 @@ pub fn run_component(
 ) -> i32 {
     tilo_startup_metrics::mark("headless-setup-start");
     let records = component.callback_binding().records;
-    let mut driver = match Driver::from_component(
+    let mut driver = match FrameHarness::from_component(
         component,
         spec.viewport.unwrap_or(DEFAULT_VIEWPORT),
         inputs,
@@ -9376,7 +9419,7 @@ mod tests {
         let fonts = catalog
             .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
             .unwrap();
-        let mut driver = Driver::new_with_controlled_inputs(
+        let mut driver = FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(crate::widget::Text::new("مَرْحَبًا")),
             (400, 200),
@@ -9474,7 +9517,7 @@ mod tests {
             .put(automerge::ROOT, "body", "controlled entry")
             .unwrap();
         state.commit_action(None, None);
-        let mut driver = Driver::from_managed_root_with_controlled_inputs(
+        let mut driver = FrameHarness::from_managed_root_with_controlled_inputs(
             state,
             crate::history_mode::ManagedRoot::new(
                 Box::new(crate::widget::Column::new()),
@@ -9500,7 +9543,7 @@ mod tests {
     fn controlled_managed_root_rejects_mismatched_owner() {
         let (ordinary_root, _) = controlled_owned_root(920);
         let (_ordinary_registration_owner, ordinary_registration) = controlled_owned_root(921);
-        let Err(expected) = Driver::from_managed_root(
+        let Err(expected) = FrameHarness::from_managed_root(
             State::new(),
             crate::history_mode::ManagedRoot::new(ordinary_root, ordinary_registration),
             (900, 650),
@@ -9510,7 +9553,7 @@ mod tests {
 
         let (controlled_root, _) = controlled_owned_root(922);
         let (_controlled_registration_owner, controlled_registration) = controlled_owned_root(923);
-        let Err(actual) = Driver::from_managed_root_with_controlled_inputs(
+        let Err(actual) = FrameHarness::from_managed_root_with_controlled_inputs(
             State::new(),
             crate::history_mode::ManagedRoot::new(controlled_root, controlled_registration),
             (900, 650),
@@ -9827,7 +9870,7 @@ mod tests {
     fn headless_focus_and_key_activation_route_to_the_right_target() {
         // Case `anonymous_headless_focus_survives_rebuild_without_state_transfer`.
         {
-            let mut driver = Driver::new_with_controlled_inputs(
+            let mut driver = FrameHarness::new_with_controlled_inputs(
                 State::new(),
                 Box::new(crate::widget::layout::AnonymousFocusProbe::new(
                     "own selection",
@@ -9870,7 +9913,7 @@ mod tests {
                 .push(Box::new(crate::widget::layout::AnonymousFocusProbe::new(
                     "b",
                 )));
-            let mut driver = Driver::new_with_controlled_inputs(
+            let mut driver = FrameHarness::new_with_controlled_inputs(
                 State::new(),
                 Box::new(root),
                 (600, 400),
@@ -9885,7 +9928,7 @@ mod tests {
 
         // Case `function_keys_do_not_type_their_names_into_a_focused_field`.
         {
-            let mut driver = Driver::new(
+            let mut driver = FrameHarness::new(
                 State::new(),
                 Box::new(TextInput::local().with_id("function-key-field")),
                 (640, 160),
@@ -9910,7 +9953,8 @@ mod tests {
         // decides whether focus traversal intercepts the key before a widget can
         // see it.
         {
-            let mut editor = Driver::new(State::new(), Box::new(CodeEditor::local()), (320, 160));
+            let mut editor =
+                FrameHarness::new(State::new(), Box::new(CodeEditor::local()), (320, 160));
             editor.tab(false);
             editor.key("Tab");
             let editor_node = editor.focused().expect("editor has focus");
@@ -9937,7 +9981,7 @@ mod tests {
             let form = Column::new()
                 .push(Box::new(TextInput::local().with_id("field")))
                 .push(Box::new(Button::new("next", "Next")));
-            let mut fields = Driver::new(State::new(), Box::new(form), (320, 160));
+            let mut fields = FrameHarness::new(State::new(), Box::new(form), (320, 160));
             fields.tab(false);
             let field = fields.focused().expect("first field has focus");
             fields.key("Tab");
@@ -9956,7 +10000,7 @@ mod tests {
             let button = Button::new("save", "Save").on_click(move || {
                 observed.set(observed.get().saturating_add(1));
             });
-            let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
+            let mut driver = FrameHarness::new(State::new(), Box::new(button), (400, 200));
             driver
                 .perform_named("save", &crate::a11y::Action::Focus)
                 .expect("button accepts focus");
@@ -9975,7 +10019,7 @@ mod tests {
                 focused: false,
                 rect: Rect::ZERO,
             };
-            let mut driver = Driver::new(State::new(), Box::new(control), (400, 200));
+            let mut driver = FrameHarness::new(State::new(), Box::new(control), (400, 200));
             driver
                 .perform_named("consuming-activation", &crate::a11y::Action::Focus)
                 .expect("control accepts focus");
@@ -10033,7 +10077,7 @@ mod tests {
 
             let mut stale = std::mem::replace(&mut self.current, current);
             // The admitted map still points at this allocation until the
-            // Driver starts its next relayout. Keep it alive so the fixture
+            // FrameHarness starts its next relayout. Keep it alive so the fixture
             // observes the logical stale-map distinction without a UAF.
             stale.set_focus(false);
             crate::undo::set_state(stale.as_mut(), "0");
@@ -10110,7 +10154,7 @@ mod tests {
             current: Box::new(current),
             ..StructureReplacingEditor::new("unused")
         };
-        let mut driver = Driver::new(State::new(), Box::new(root), (400, 200));
+        let mut driver = FrameHarness::new(State::new(), Box::new(root), (400, 200));
         let first = driver
             .node_map
             .keys()
@@ -10158,7 +10202,7 @@ mod tests {
     fn idle_control_tick_retires_replaced_nodes_before_sweeping_undo_brackets() {
         let editor = StructureReplacingEditor::new("draft");
         let request = editor.request_replacement.clone();
-        let mut driver = Driver::new_with_controlled_inputs(
+        let mut driver = FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(editor),
             (600, 400),
@@ -10198,7 +10242,7 @@ mod tests {
 
     #[test]
     fn structure_dirty_relayout_captures_current_live_editor_focus_and_state_before_rebuild() {
-        let mut driver = Driver::new_with_controlled_inputs(
+        let mut driver = FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(StructureReplacingEditor::new("draft")),
             (600, 400),
@@ -10236,7 +10280,7 @@ mod tests {
         assert!(before.state.focused);
 
         // A real widget interaction replaces the live application view before
-        // Driver::try_relayout. Sync then mounts one fresh editor, requiring
+        // FrameHarness::try_relayout. Sync then mounts one fresh editor, requiring
         // the pre-frame live snapshot to restore local focus and selection.
         driver.key("Escape");
 
@@ -10320,6 +10364,7 @@ mod tests {
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
+            _key_path: &[u64],
             _state: &mut crate::widget::Edits<'_>,
             _path: &crate::widget::ModelPath,
         ) -> bool {
@@ -10453,7 +10498,7 @@ mod tests {
     #[test]
     fn a_named_click_lands_on_the_bounds_the_widget_names() {
         let presses = std::rc::Rc::new(std::cell::Cell::new(0));
-        let mut driver = Driver::new(
+        let mut driver = FrameHarness::new(
             State::new(),
             Box::new(PanelButton {
                 rect: Rect::ZERO,
@@ -10531,7 +10576,7 @@ mod tests {
                 count.set(count.get() + 1);
                 Ok(tilo_actions::ActionOutput::default())
             });
-        let mut driver = Driver::new(State::new(), root, (280, 360));
+        let mut driver = FrameHarness::new(State::new(), root, (280, 360));
         let audit = driver.native_app_audit();
         assert!(audit.is_certified(), "{audit:?}");
         let bindings = crate::widget::controls::control_action_bindings(driver.root_widget());
@@ -10571,14 +10616,14 @@ mod tests {
                     Ok(tilo_actions::ActionOutput::default())
                 },
             );
-            let mut driver = Driver::new(State::new(), root, (320, 160));
+            let mut driver = FrameHarness::new(State::new(), root, (320, 160));
             assert!(driver.native_app_audit().is_certified());
             driver
                 .perform_named("save", &crate::a11y::Action::Activate)
                 .expect("bound control dispatches through the headless host");
             assert_eq!(calls.get(), 1);
 
-            let legacy = Driver::new(
+            let legacy = FrameHarness::new(
                 State::new(),
                 Box::new(Button::new("legacy", "Legacy").on_click(|| {})),
                 (320, 160),
@@ -10587,7 +10632,7 @@ mod tests {
             assert!(!audit.is_certified());
             assert_eq!(audit.issues[0].code, "legacy-callback");
 
-            let omitted = Driver::new(
+            let omitted = FrameHarness::new(
                 State::new(),
                 Box::new(Button::new("omitted", "Omitted")),
                 (320, 160),
@@ -10601,7 +10646,7 @@ mod tests {
                 "an interactive custom/control implementation cannot certify itself by omitting inventory"
             );
 
-            let disabled = Driver::new(
+            let disabled = FrameHarness::new(
                 State::new(),
                 Box::new(Button::new("unavailable", "Unavailable").with_enabled(false)),
                 (320, 160),
@@ -10613,7 +10658,7 @@ mod tests {
             );
 
             // A password field's show/hide control is bound like the field.
-            let secret = Driver::new(
+            let secret = FrameHarness::new(
                 State::new(),
                 Box::new(
                     crate::widget::TextInput::new(Vec::new())
@@ -10626,7 +10671,7 @@ mod tests {
             let audit = secret.native_app_audit();
             assert!(audit.is_certified(), "{audit:?}");
 
-            let empty = Driver::new(State::new(), Box::new(Column::new()), (320, 160));
+            let empty = FrameHarness::new(State::new(), Box::new(Column::new()), (320, 160));
             assert!(
                 empty
                     .native_app_audit()
@@ -10644,7 +10689,7 @@ mod tests {
             let button = Button::new("refresh", "Refresh").on_effect(move || {
                 invoked.set(invoked.get() + 1);
             });
-            let mut driver = Driver::new(State::new(), Box::new(button), (320, 160));
+            let mut driver = FrameHarness::new(State::new(), Box::new(button), (320, 160));
 
             assert!(driver.native_app_audit().is_certified());
             assert!(driver.resources().iter().any(|resource| {
@@ -10704,7 +10749,7 @@ mod tests {
                     .is_some_and(|path| path.starts_with("Root[0]"))
             );
 
-            let driver = Driver::new(
+            let driver = FrameHarness::new(
                 State::new(),
                 Box::new(Button::new("save", "Save")),
                 (400, 200),
@@ -10855,7 +10900,7 @@ mod tests {
         // `handle_event` the live app calls.
         {
             let button = Button::new("btn", "Save");
-            let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
+            let mut driver = FrameHarness::new(State::new(), Box::new(button), (400, 200));
             let targets = driver.targets();
             assert!(
                 targets.keys().any(|k| k.starts_with("Button")),
@@ -10879,7 +10924,7 @@ mod tests {
             let fired_by_button = Rc::clone(&fired);
             let button = Button::new("save", "Save")
                 .on_click(move || fired_by_button.set(fired_by_button.get() + 1));
-            let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
+            let mut driver = FrameHarness::new(State::new(), Box::new(button), (400, 200));
 
             let pointer_rect = driver.targets()["save"];
             assert_eq!(pointer_rect.height(), 32.0);
@@ -10907,7 +10952,7 @@ mod tests {
             use automerge::ReadDoc;
 
             let mut driver =
-                Driver::new(State::new(), Box::new(RememberControl::new()), (400, 200));
+                FrameHarness::new(State::new(), Box::new(RememberControl::new()), (400, 200));
             driver
                 .action_registry_mut()
                 .register::<SetRemember>(SET_REMEMBER);
@@ -10956,7 +11001,7 @@ mod tests {
 
         // Case `pointer_and_touch_preserve_keyboard_family_and_discovered_devices`.
         {
-            let mut driver = Driver::new(
+            let mut driver = FrameHarness::new(
                 State::new(),
                 Box::new(Button::new("save", "Save")),
                 (400, 200),
@@ -10985,14 +11030,15 @@ mod tests {
 
         // Case `clicking_a_missing_target_is_an_error`.
         {
-            let mut driver = Driver::new(State::new(), Box::new(Button::new("b", "B")), (400, 200));
+            let mut driver =
+                FrameHarness::new(State::new(), Box::new(Button::new("b", "B")), (400, 200));
             let err = driver.click_named("no_such_widget").unwrap_err();
             assert!(err.contains("no_such_widget"), "{err}");
         }
 
         // Case `wait_action_succeeds_for_a_named_widget_and_reports_bounded_timeout`.
         {
-            let mut driver = Driver::new(
+            let mut driver = FrameHarness::new(
                 State::new(),
                 Box::new(Button::new("ready", "Ready")),
                 (400, 200),
@@ -11015,7 +11061,7 @@ mod tests {
         }
     }
 
-    fn send_touch(driver: &mut Driver, phase: winit::event::TouchPhase, x: f64, y: f64) {
+    fn send_touch(driver: &mut FrameHarness, phase: winit::event::TouchPhase, x: f64, y: f64) {
         driver.send(&WindowEvent::Touch(winit::event::Touch {
             device_id: winit::event::DeviceId::dummy(),
             phase,
@@ -11028,7 +11074,7 @@ mod tests {
     #[test]
     fn a_tap_seats_the_caret_and_a_double_tap_selects_the_word() {
         let tapped = |taps: usize| {
-            let mut driver = Driver::new_with_controlled_inputs(
+            let mut driver = FrameHarness::new_with_controlled_inputs(
                 State::new(),
                 Box::new(
                     TextInput::local()
@@ -11073,7 +11119,7 @@ mod tests {
                 .with_id("name-input")
                 .with_initial_value("world")
                 .with_accessible_name("Name");
-            let mut driver = Driver::new_with_controlled_inputs(
+            let mut driver = FrameHarness::new_with_controlled_inputs(
                 State::new(),
                 Box::new(input),
                 (400, 200),
@@ -11111,7 +11157,7 @@ mod tests {
             let button = Button::new("save", "Save").on_click(move || {
                 observed.set(observed.get() + 1);
             });
-            let mut driver = Driver::new_with_controlled_inputs(
+            let mut driver = FrameHarness::new_with_controlled_inputs(
                 State::new(),
                 Box::new(button),
                 (400, 200),
@@ -11128,7 +11174,7 @@ mod tests {
 
         // Case `unsupported_semantic_action_fails_loudly`.
         {
-            let mut driver = Driver::new(
+            let mut driver = FrameHarness::new(
                 State::new(),
                 Box::new(Button::new("save", "Save")),
                 (400, 200),
@@ -11144,7 +11190,7 @@ mod tests {
         {
             let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
             let tree = TreeView::new(root).with_expanded([1]).with_id("items-tree");
-            let mut driver = Driver::new(State::new(), Box::new(tree), (500, 300));
+            let mut driver = FrameHarness::new(State::new(), Box::new(tree), (500, 300));
             driver
                 .perform_semantic_named(
                     "items-tree",
@@ -11196,7 +11242,7 @@ mod tests {
             let tree = TreeView::new(root)
                 .with_id("items-tree")
                 .with_accessible_name("Items");
-            let mut driver = Driver::new(State::new(), Box::new(tree), (640, 360));
+            let mut driver = FrameHarness::new(State::new(), Box::new(tree), (640, 360));
 
             driver
                 .perform_semantic_named("items-tree", Some("node:1"), &crate::a11y::Action::Focus)
@@ -11252,7 +11298,7 @@ mod tests {
                         .with_accessible_name("Password"),
                 ))
                 .push(Box::new(Button::new("save", "Save")));
-            let driver = Driver::new(State::new(), Box::new(root), (640, 360));
+            let driver = FrameHarness::new(State::new(), Box::new(root), (640, 360));
             let json = driver.inspection_json().expect("inspection JSON");
             let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
 
@@ -11282,7 +11328,7 @@ mod tests {
             let tree = TreeView::new(root)
                 .with_expanded([1])
                 .with_accessible_name("Items");
-            let driver = Driver::new(State::new(), Box::new(tree), (640, 360));
+            let driver = FrameHarness::new(State::new(), Box::new(tree), (640, 360));
             let inspection = driver.inspection();
             let semantics = inspection.root.semantics.expect("tree semantics");
 
@@ -11310,7 +11356,7 @@ mod tests {
                 .doc
                 .put(&automerge::ROOT, "greeting", "hello")
                 .unwrap();
-            let mut driver = Driver::new(state, Box::new(Button::new("b", "B")), (400, 200));
+            let mut driver = FrameHarness::new(state, Box::new(Button::new("b", "B")), (400, 200));
             let json = driver.dump_json();
             assert!(json.contains("greeting"), "{json}");
             assert!(json.contains("hello"), "{json}");
@@ -11331,7 +11377,7 @@ mod tests {
                 let root = Column::new()
                     .push(Box::new(legacy))
                     .push(Box::new(TileHost::from_component(component)));
-                let mut host = Driver::new_with_controlled_inputs(
+                let mut host = FrameHarness::new_with_controlled_inputs(
                     State::new(),
                     Box::new(root),
                     (400, 200),
@@ -11362,7 +11408,7 @@ mod tests {
                     crate::widget::control_result_probe::component(&owner, 11, accepted);
                 let binding = component.callback_binding();
                 let mut host =
-                    Driver::from_component(component, (400, 200), runner_inputs()).unwrap();
+                    FrameHarness::from_component(component, (400, 200), runner_inputs()).unwrap();
                 observed.enqueue("run");
                 host.dispatch_control_invocations();
                 assert_eq!(observed.calls.get(), 1);
@@ -11404,7 +11450,7 @@ mod tests {
         {
             let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
             probe.confirmation = true;
-            let mut host = Driver::new_with_controlled_inputs(
+            let mut host = FrameHarness::new_with_controlled_inputs(
                 State::new(),
                 Box::new(probe),
                 (400, 200),
@@ -11426,7 +11472,7 @@ mod tests {
             use crate::widget::control_result_probe::Probe;
             for accepted in [false, true] {
                 let (probe, observed) = Probe::new(accepted);
-                let mut host = Driver::new_with_controlled_inputs(
+                let mut host = FrameHarness::new_with_controlled_inputs(
                     State::new(),
                     Box::new(probe),
                     (400, 200),
@@ -11459,7 +11505,7 @@ mod tests {
         {
             use crate::widget::control_result_probe::Probe;
             let (probe, observed) = Probe::new(false);
-            let mut host = Driver::new_with_controlled_inputs(
+            let mut host = FrameHarness::new_with_controlled_inputs(
                 State::new(),
                 Box::new(probe),
                 (400, 200),
@@ -11556,7 +11602,7 @@ mod tests {
     #[test]
     fn app_focus_prefers_declared_default_without_invoking_its_action() {
         let activations = std::rc::Rc::new(std::cell::Cell::new(0));
-        let mut driver = Driver::new_with_controlled_inputs(
+        let mut driver = FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(
                 Column::new()
@@ -11582,7 +11628,7 @@ mod tests {
 
     #[test]
     fn app_focus_eligibility_excludes_disabled_and_hidden_controls() {
-        let mut driver = Driver::new_with_controlled_inputs(
+        let mut driver = FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(
                 Column::new()
@@ -11627,7 +11673,7 @@ mod tests {
         let mut destination = group(42);
         let previous_ptr = std::ptr::from_mut(previous.as_mut());
         let destination_ptr = std::ptr::from_mut(destination.as_mut());
-        let mut driver = Driver::new_with_controlled_inputs(
+        let mut driver = FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(
                 Column::new()
@@ -11700,7 +11746,7 @@ mod tests {
         let input = TextInput::local()
             .with_id("background")
             .with_initial_value("unchanged");
-        let mut driver = Driver::new_with_controlled_inputs(
+        let mut driver = FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(input),
             (400, 200),
@@ -11730,7 +11776,7 @@ mod tests {
 
     #[test]
     fn input_ownership_token_changes_for_control_focus_but_not_passive_layout() {
-        let mut driver = Driver::new_with_controlled_inputs(
+        let mut driver = FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(
                 Column::new()
@@ -11764,7 +11810,7 @@ mod tests {
             .with_accessible_name("Second");
         first.set_focus(true);
         second.set_focus(true);
-        let mut driver = Driver::new_with_controlled_inputs(
+        let mut driver = FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(Column::new().push(Box::new(first)).push(Box::new(second))),
             (400, 200),
@@ -11832,7 +11878,7 @@ mod tests {
 
     #[test]
     fn semantic_token_focus_rejects_unpublished_targets() {
-        let mut driver = Driver::new_with_controlled_inputs(
+        let mut driver = FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(Button::new("save", "Save")),
             (400, 200),
@@ -11925,11 +11971,11 @@ mod a11y_driver_tests {
                     )
                     // This is the high-complexity custom-canvas path: one
                     // keyed tree becomes searchable/agent-driveable while AT
-                    // still reaches the existing `perform_action_at` switch.
+                    // still reaches the existing `perform_action` switch.
                     .with_keyed_action_routes("test-strip"),
             )
         }
-        fn perform_action_at(
+        fn perform_action(
             &mut self,
             action: &Action,
             key_path: &[u64],
@@ -11963,7 +12009,7 @@ mod a11y_driver_tests {
         }
     }
 
-    fn driver() -> (Driver, Rc<RefCell<Vec<String>>>) {
+    fn driver() -> (FrameHarness, Rc<RefCell<Vec<String>>>) {
         let (d, activated, _items) = driver_with_items();
         (d, activated)
     }
@@ -11973,7 +12019,7 @@ mod a11y_driver_tests {
         reason = "the fixture exposes separate activation and mutable item handles for production driver assertions"
     )]
     fn driver_with_items() -> (
-        Driver,
+        FrameHarness,
         Rc<RefCell<Vec<String>>>,
         Rc<RefCell<Vec<&'static str>>>,
     ) {
@@ -11987,7 +12033,7 @@ mod a11y_driver_tests {
             activated: activated.clone(),
         };
         (
-            Driver::new_with_controlled_inputs(
+            FrameHarness::new_with_controlled_inputs(
                 State::new(),
                 Box::new(strip),
                 (800, 600),
@@ -12136,7 +12182,7 @@ mod a11y_driver_tests {
         }
     }
 
-    fn control_named(d: &Driver, name: &str) -> Control {
+    fn control_named(d: &FrameHarness, name: &str) -> Control {
         d.controls()
             .into_iter()
             .find(|control| control.name.as_deref() == Some(name))
@@ -12240,15 +12286,7 @@ mod undo_driver_tests {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let l = taffy.layout(node).unwrap();
-            let x = origin.x + f64::from(l.location.x);
-            let y = origin.y + f64::from(l.location.y);
-            self.rect = vello::kurbo::Rect::new(
-                x,
-                y,
-                x + f64::from(l.size.width),
-                y + f64::from(l.size.height),
-            );
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(
@@ -12297,7 +12335,7 @@ mod undo_driver_tests {
     }
 
     /// A typing surface plus history controls, and a driver over them.
-    fn undo_driver() -> Driver {
+    fn undo_driver() -> FrameHarness {
         let row = crate::widget::Row::new()
             .push(Box::new(Typer {
                 rect: vello::kurbo::Rect::ZERO,
@@ -12305,7 +12343,7 @@ mod undo_driver_tests {
             }))
             .push(Box::new(crate::widget::UndoButton::undo()))
             .push(Box::new(crate::widget::UndoButton::redo()));
-        Driver::new_with_controlled_inputs(
+        FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(row),
             (400, 120),
@@ -12317,7 +12355,7 @@ mod undo_driver_tests {
 
     /// One edit, typed through the driver and committed by the driver —
     /// so how the driver attributes an action is part of what is under test.
-    fn type_action(d: &mut Driver, text: &str) {
+    fn type_action(d: &mut FrameHarness, text: &str) {
         d.type_text(text);
         assert!(
             d.undo_status().can_undo,
@@ -12325,7 +12363,7 @@ mod undo_driver_tests {
         );
     }
 
-    fn body(d: &mut Driver) -> String {
+    fn body(d: &mut FrameHarness) -> String {
         use automerge::ReadDoc;
         let state = d.state_mut();
         match state.doc.get(&automerge::ROOT, "body") {
@@ -12461,7 +12499,7 @@ mod dispatched_action_driver_tests {
     /// whole distinction under test.
     ///
     /// Two ways in, because a canvas app has two: a keystroke, and an
-    /// accessibility verb routed to `perform_action_at` (how an assistive
+    /// accessibility verb routed to `perform_action` (how an assistive
     /// technology, and every headless scenario over a canvas, drives it).
     struct ActionEditor {
         rect: vello::kurbo::Rect,
@@ -12516,15 +12554,7 @@ mod dispatched_action_driver_tests {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let l = taffy.layout(node).unwrap();
-            let x = origin.x + f64::from(l.location.x);
-            let y = origin.y + f64::from(l.location.y);
-            self.rect = vello::kurbo::Rect::new(
-                x,
-                y,
-                x + f64::from(l.size.width),
-                y + f64::from(l.size.height),
-            );
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(
@@ -12576,7 +12606,7 @@ mod dispatched_action_driver_tests {
             *handled = self.claims;
         }
 
-        fn perform_action_at(
+        fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
             _key_path: &[u64],
@@ -12633,12 +12663,12 @@ mod dispatched_action_driver_tests {
     }
 
     /// The editor plus the history controls an app would put in its toolbar.
-    pub(super) fn action_driver() -> Driver {
+    pub(super) fn action_driver() -> FrameHarness {
         let row = crate::widget::Row::new()
             .push(Box::new(ActionEditor::new()))
             .push(Box::new(crate::widget::UndoButton::undo()))
             .push(Box::new(crate::widget::UndoButton::redo()));
-        Driver::new_with_controlled_inputs(
+        FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(row),
             (400, 120),
@@ -12648,7 +12678,7 @@ mod dispatched_action_driver_tests {
         )
     }
 
-    pub(super) fn body(d: &mut Driver) -> String {
+    pub(super) fn body(d: &mut FrameHarness) -> String {
         use automerge::ReadDoc;
         let state = d.state_mut();
         match state.doc.get(&automerge::ROOT, "body") {
@@ -12666,7 +12696,7 @@ mod dispatched_action_driver_tests {
             let mut state = State::new();
             state.doc.put(automerge::ROOT, "value", "first").unwrap();
             assert!(state.commit_action_authored(None, None, Some(author.clone())));
-            let mut driver = Driver::new_with_controlled_inputs(
+            let mut driver = FrameHarness::new_with_controlled_inputs(
                 state,
                 Box::new(crate::widget::Spacer::new()),
                 (100, 100),
@@ -12858,7 +12888,7 @@ mod dispatched_action_driver_tests {
                 .push(Box::new(ActionEditor::passive()))
                 .push(Box::new(ActionEditor::new()))
                 .push(Box::new(crate::widget::UndoButton::undo()));
-            let mut d = Driver::new(State::new(), Box::new(row), (400, 120));
+            let mut d = FrameHarness::new(State::new(), Box::new(row), (400, 120));
 
             d.type_text("a");
             assert_eq!(body(&mut d), "aa", "both widgets dispatched");
@@ -13091,7 +13121,7 @@ mod prepared_driver_tests {
     }
     fn prepared() -> (
         ProbeHost,
-        Driver,
+        FrameHarness,
         Observations,
         crate::record::RecordCheckout,
     ) {
@@ -13106,7 +13136,7 @@ mod prepared_driver_tests {
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
-        let driver = Driver::from_component(component, (320, 180), runner_inputs()).unwrap();
+        let driver = FrameHarness::from_component(component, (320, 180), runner_inputs()).unwrap();
         (host, driver, observed, checkout)
     }
     #[test]
@@ -13280,7 +13310,7 @@ mod ordinary_confirmation_owner_tests {
             let (root, ledger, _) = crate::app::ordinary_confirmation_tests::fixture(
                 tilo_actions::ConfirmationPolicy::Confirm,
             );
-            let mut driver = super::Driver::from_managed_root_with_controlled_inputs(
+            let mut driver = super::FrameHarness::from_managed_root_with_controlled_inputs(
                 crate::State::new(),
                 root,
                 (900, 650),
@@ -13523,7 +13553,7 @@ pub(crate) mod legacy_control_feedback_tests {
         let (_owner, tile, seen) = owner(99040, false, None);
         let (_sibling_owner, sibling, sibling_seen) = owner(99041, false, None);
         let root = Column::new().push(Box::new(tile)).push(Box::new(sibling));
-        let mut driver = Driver::new_with_controlled_inputs(
+        let mut driver = FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(root),
             (400, 200),
@@ -13551,7 +13581,7 @@ pub(crate) mod legacy_control_feedback_tests {
         };
         drop(tile);
         let (_replacement_owner, replacement, replacement_seen) = owner(99060, false, None);
-        let mut driver = Driver::new_with_controlled_inputs(
+        let mut driver = FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(replacement),
             (400, 200),
@@ -13625,8 +13655,7 @@ mod framed_tests {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let layout = taffy.layout(node).unwrap();
-            self.rect = crate::widget::placed(layout, origin);
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(
@@ -13749,8 +13778,7 @@ mod framed_tests {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let layout = taffy.layout(node).unwrap();
-            self.rect = crate::widget::placed(layout, origin);
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(

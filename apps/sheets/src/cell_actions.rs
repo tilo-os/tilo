@@ -22,7 +22,8 @@ use ui::semantic_document_read::{
 use crate::actions::{CellWrite, SearchableCell, SheetsAction, encode, sheet_resource_id};
 use crate::doc::SheetsDoc;
 use crate::model::{Addr, CellFormat, CellValue, a1_to_addr, addr_to_a1, letters_to_col};
-use tilo_locale::{Currency, DateStyle, TimeStyle};
+use tilo_locale::{Currency, DateStyle};
+use ui::clock::TimeStyle;
 
 pub const READ_OPERATION_TYPE: &str = "sheets.read";
 pub static READERS: [RegisteredSemanticReader; 1] = [RegisteredSemanticReader::new(

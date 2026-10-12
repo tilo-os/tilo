@@ -2,6 +2,8 @@
 //! Bluetooth settings backed directly by `BlueZ` over D-Bus. Settings starts
 //! operations; the compositor-owned `BlueZ` Agent owns security prompts.
 //! Every change is a [`BluetoothEffect`], offered on the device it names.
+//! A device without a Bluetooth adapter offers none of them: the radio's
+//! effects are published unavailable with the reason, and the pane says so.
 
 use std::cell::OnceCell;
 use std::collections::HashMap;
@@ -10,9 +12,9 @@ use std::sync::{Arc, Mutex};
 
 use tilo_bluez::{DeviceInfo, PairOutcome};
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::i18n::ArgValue;
-use ui::tilo_resource::{self, Effect};
+use ui::tilo_resource::{self, ActionRef, Effect};
 use ui::widget::{Button, Row, TextInput, Toggle, Widget};
 
 use crate::effects::{SettingsEffect, effect};
@@ -98,6 +100,10 @@ pub(crate) fn answer(
     effect: BluetoothEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    if effect == BluetoothEffect::RefreshBluetooth {
+        // A dongle plugged in a moment ago is seen without waiting.
+        app.host().radios().look_again();
+    }
     let model = app.bluetooth().model();
     let (control, name) = {
         let mut model = model.borrow_mut();
@@ -418,8 +424,73 @@ impl BluetoothArea {
         self.model.get().is_some()
     }
 
+    /// Whether this device has no Bluetooth adapter, as last read.
+    fn adapter_absent(&self) -> bool {
+        adapter_absent(&self.cx)
+    }
+
+    /// What this device cannot do with Bluetooth now: anything, without an
+    /// adapter; switch the radio or look for devices, while the adapter
+    /// cannot be read. Reads nothing itself: only what the radios and the
+    /// area's model have read, so it never opens the area.
+    pub(crate) fn statuses(&self) -> Vec<EffectStatus> {
+        let unavailable = |effects: &[&'static str], code: &str, reason: &str| {
+            effects
+                .iter()
+                .map(|&id| {
+                    EffectStatus::unavailable(
+                        ActionRef::<SettingsEffect, ()>::new(id, &[]),
+                        code,
+                        reason,
+                    )
+                })
+                .collect()
+        };
+        if self.adapter_absent() {
+            return unavailable(
+                &[
+                    BluetoothEffect::SET_BLUETOOTH.id,
+                    BluetoothEffect::SET_DISCOVERING.id,
+                    BluetoothEffect::REFRESH_BLUETOOTH.id,
+                ],
+                "no_adapter",
+                &t("settings-bluetooth-no-adapter"),
+            );
+        }
+        let unread = self
+            .model
+            .get()
+            .and_then(|model| model.try_borrow().ok()?.read_error.clone());
+        match unread {
+            // Reading again is how a restarted `BlueZ` is found.
+            Some(error) => unavailable(
+                &[
+                    BluetoothEffect::SET_BLUETOOTH.id,
+                    BluetoothEffect::SET_DISCOVERING.id,
+                ],
+                "unreachable",
+                &t_args("settings-bluetooth-read-error", &[("error", error.into())]),
+            ),
+            None => Vec::new(),
+        }
+    }
+
+    /// Follow the adapter while the pane is not shown: one plugged in is
+    /// read, so the rows published name its devices.
+    pub(crate) fn poll(&self) {
+        if let Some(model) = self.model.get()
+            && let Ok(mut model) = model.try_borrow_mut()
+        {
+            model.follow_adapter();
+        }
+    }
+
     /// One row per device, offering what can be done to it now.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
+        if self.adapter_absent() {
+            // No adapter, no devices: the last read says nothing now.
+            return Vec::new();
+        }
         let model = self.model().borrow();
         if model.read_error.is_some() {
             // The last devices read say nothing about the adapter now.
@@ -461,9 +532,19 @@ impl BluetoothArea {
     }
 }
 
+/// Whether `cx`'s device has no Bluetooth adapter, as its radios were last
+/// read; `false` until they have been.
+fn adapter_absent(cx: &PaneCx) -> bool {
+    cx.radios().now().is_some_and(|radios| !radios.bluetooth)
+}
+
 pub struct BluetoothModel {
     cx: PaneCx,
     control: Arc<dyn BluetoothControl>,
+    /// Whether the device had an adapter when the model last looked.
+    adapter: Option<bool>,
+    /// The adapter, read again off the UI thread once one is plugged in.
+    reread: crate::device_read::DeviceRead<AdapterRead>,
     devices: Vec<DeviceInfo>,
     powered: bool,
     scanning: bool,
@@ -493,9 +574,12 @@ fn read_adapter_of(control: &dyn BluetoothControl) -> AdapterRead {
 impl BluetoothModel {
     /// The model over `control`'s adapter as `read` found it.
     fn with_read(cx: PaneCx, control: Arc<dyn BluetoothControl>, read: AdapterRead) -> Self {
+        let adapter = cx.radios().now().map(|radios| radios.bluetooth);
         let mut model = Self {
             cx,
             control,
+            adapter,
+            reread: crate::device_read::DeviceRead::default(),
             devices: Vec::new(),
             powered: false,
             scanning: false,
@@ -516,6 +600,30 @@ impl BluetoothModel {
             .iter()
             .find(|device| device.path == path)
             .map(|device| device.name.clone())
+    }
+
+    /// Follow the device's adapter: show it gone when it is pulled out, and
+    /// read it, off the UI thread, when one is plugged in.
+    fn follow_adapter(&mut self) {
+        let adapter = self.cx.radios().now().map(|radios| radios.bluetooth);
+        if adapter != self.adapter {
+            let plugged_in = adapter == Some(true);
+            self.adapter = adapter;
+            self.changed = true;
+            if plugged_in {
+                let control = Arc::clone(&self.control);
+                if !self.reread.start(move || read_adapter_of(control.as_ref())) {
+                    self.refresh();
+                }
+            }
+        }
+        if self.reread.is_finished()
+            && let Some(read) = self.reread.take()
+        {
+            // A failure is kept on the model and shown in place of the adapter.
+            let _ = self.adopt(read);
+            self.changed = true;
+        }
     }
 
     /// Read the devices, the radio and discovery again.
@@ -685,7 +793,27 @@ impl BluetoothModel {
         items
     }
 
+    /// The pane of a device without an adapter: the card, its switch off
+    /// and disabled, and why.
+    fn without_adapter(&self) -> Box<dyn Widget> {
+        crate::widgets::cards(vec![card_with_action(
+            &t("settings-bluetooth-card"),
+            Box::new(
+                self.cx.bind(
+                    Toggle::from_state(&LocalState::new(false))
+                        .with_id("bluetooth.toggle")
+                        .with_enabled(false),
+                    effect(BluetoothEffect::SET_BLUETOOTH),
+                ),
+            ),
+            rows(vec![note(&t("settings-bluetooth-no-adapter"))]),
+        )])
+    }
+
     fn build_composition(&self) -> Box<dyn Widget> {
+        if adapter_absent(&self.cx) {
+            return self.without_adapter();
+        }
         let scan = t(if self.scanning {
             "settings-bluetooth-stop"
         } else {
@@ -743,6 +871,7 @@ impl PaneModel for BluetoothModel {
     }
 
     fn poll(&mut self) -> bool {
+        self.follow_adapter();
         let paired: Vec<String> = self
             .devices
             .iter()
@@ -1033,5 +1162,130 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    /// The availability Settings publishes for each of `ids`, as agents,
+    /// the palette and assistive technology read it.
+    fn published(
+        app: &mut ui::prelude::TestApp<crate::resource::SettingsShell>,
+        ids: &[&str],
+    ) -> Vec<(String, ui::tilo_actions::Availability)> {
+        let actions = app.actions().expect("the actions are published");
+        ids.iter()
+            .map(|&id| {
+                let action = actions
+                    .iter()
+                    .find(|action| action.address.action == id)
+                    .unwrap_or_else(|| panic!("`{id}` is published"));
+                (id.to_owned(), action.contract.availability.clone())
+            })
+            .collect()
+    }
+
+    /// The radio's own effects.
+    const RADIO: [&str; 3] = ["set-bluetooth", "set-discovering", "refresh-bluetooth"];
+
+    /// A device without an adapter publishes the radio's effects
+    /// unavailable with why, offers no devices and says so in the pane; an
+    /// adapter plugged in later makes them available again, and with one
+    /// nothing changes.
+    #[test]
+    fn without_an_adapter_the_radio_is_unavailable_until_one_is_plugged_in() {
+        use crate::radios::Present;
+        use crate::resource::SettingsShell;
+        use ui::prelude::TestApp;
+        use ui::tilo_actions::Availability;
+
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let radios = app.surface_mut::<SettingsApp>().host().radios().clone();
+        let device_rows = |app: &mut TestApp<SettingsShell>| {
+            app.surface::<SettingsApp, _>(|settings| settings.bluetooth().rows().len())
+                .unwrap()
+        };
+        let pane = |app: &mut TestApp<SettingsShell>| {
+            app.surface::<SettingsApp, _>(|settings| {
+                let model = settings.bluetooth().model().borrow();
+                crate::widgets::announced_text(model.build_composition().as_ref())
+            })
+            .unwrap()
+        };
+
+        radios.set(Present::ALL);
+        app.settle();
+        assert!(
+            published(&mut app, &RADIO)
+                .iter()
+                .all(|(_, availability)| *availability == Availability::Available),
+            "with an adapter the radio is offered"
+        );
+        assert_eq!(
+            device_rows(&mut app),
+            2,
+            "with an adapter its devices are rows"
+        );
+
+        radios.set(Present {
+            bluetooth: false,
+            ..Present::ALL
+        });
+        app.settle();
+        for (id, availability) in published(&mut app, &RADIO) {
+            assert_eq!(
+                availability,
+                Availability::Unavailable {
+                    code: "no_adapter".into(),
+                    reason: "No Bluetooth adapter on this device".into(),
+                },
+                "`{id}` without an adapter"
+            );
+        }
+        assert_eq!(device_rows(&mut app), 0, "no adapter, no devices");
+        let text = pane(&mut app);
+        assert!(
+            text.iter()
+                .any(|line| line == "No Bluetooth adapter on this device"),
+            "{text:#?}"
+        );
+        assert!(
+            !text.iter().any(|line| line.contains("Headphones")),
+            "{text:#?}"
+        );
+        app.effect(&SettingsEffect::from(BluetoothEffect::SetBluetooth {
+            on: true,
+        }))
+        .expect_err("an unavailable radio is refused, not tried");
+
+        radios.set(Present::ALL);
+        app.settle();
+        assert!(
+            published(&mut app, &RADIO)
+                .iter()
+                .all(|(_, availability)| *availability == Availability::Available),
+            "an adapter plugged in is offered without a restart"
+        );
+        assert_eq!(device_rows(&mut app), 2);
+        let text = pane(&mut app);
+        assert!(
+            text.iter().any(|line| line.contains("Headphones")),
+            "{text:#?}"
+        );
+    }
+
+    /// The radio's availability is read without opening the area: its
+    /// adapter is read only when its pane, a row or an effect needs it.
+    #[test]
+    fn availability_never_reads_the_adapter() {
+        use crate::radios::Present;
+
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = BluetoothArea::new(&cx);
+        assert!(
+            area.statuses().is_empty(),
+            "radios not read offer everything"
+        );
+        cx.radios().set(Present::NONE);
+        assert_eq!(area.statuses().len(), RADIO.len());
+        assert!(!area.is_open(), "the adapter was not read");
     }
 }

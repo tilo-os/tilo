@@ -109,6 +109,8 @@ pathlib.Path('target/thin-app/calculator').write_bytes(header)
 ELF
 chmod +x target/thin-app/calculator
 printf '\\177ELF fixture runtime dylib' > target/thin-app/libruntime_dylib.so
+printf '\\177ELF fixture typst engine' > target/thin-app/libtilo_typst_engine.so
+printf 'libtilo_typst_engine.so\\n' > target/thin-app/runtime-engines
 """)
         self.write("os/scripts/verify-elf-hardening.sh", "#!/bin/bash\nset -euo pipefail\nfor f; do test -x \"$f\"; done\n")
         self.write("target/release/tilo-runtime-bundle", """#!/usr/bin/env python3
@@ -309,6 +311,8 @@ exit 99
                                     "workflow did not transport the produced runtime")
                     self.assertTrue((artifact / "runtime/tilo-runtime" / abi / "lib/libxkbcommon.so.0").is_file(),
                                     "a partial calculator release omitted the default SDK keyboard dependency")
+                    self.assertTrue((artifact / "runtime/tilo-runtime" / abi / "lib/libtilo_typst_engine.so").is_file(),
+                                    "a partial calculator release omitted a runtime engine")
                     self.assertTrue((artifact / f"runtime-package/runtime-0.1.0-{architecture}.tapp").is_file(),
                                     "workflow did not transport the runtime package")
                     self.assertTrue(list((artifact / "runtime-package").glob("*.blob")),

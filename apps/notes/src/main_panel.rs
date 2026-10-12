@@ -43,7 +43,7 @@ use automerge::AutoCommit;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -237,6 +237,54 @@ fn notes_editor(
     )
 }
 
+/// Where a frame shows the note's body: its scroll offset, the clip it
+/// paints into, the thumb's track with its reach, the pinned title's rule
+/// with its reach when it is shown, the transform, and the drag handle the
+/// pointer's block shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BodyShown {
+    scroll_y: f64,
+    clip: Rect,
+    track: Rect,
+    rule: Option<Rect>,
+    transform: Affine,
+    /// The drag handle the block under the pointer shows: it stays with the
+    /// pointer while the text moves.
+    handle: Option<Rect>,
+}
+
+/// A scroll of the note's body that a host keeping its last frame may copy
+/// (`ui::scroll_copy`): where the body paints and how far it moved, what
+/// paints over it without moving (the thumb's track), and the damage beside
+/// the copy (the track, and the pinned title's rule where it came or went).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ScrollCopy {
+    clip: Rect,
+    delta: Vec2,
+    track: Rect,
+    transform: Affine,
+    pub(crate) damage: Vec<Rect>,
+}
+
+impl ScrollCopy {
+    /// Offer the copy to the host collecting damage, as `panel`. `false`
+    /// when the host does not copy: the body is then damage.
+    pub(crate) fn offer(&self, panel: &MainPanel) -> bool {
+        ui::scroll_copy::offer(
+            panel,
+            self.clip,
+            self.delta,
+            vec![self.track],
+            self.transform,
+        )
+    }
+
+    /// Where the body paints: what to damage when the copy is not made.
+    pub(crate) fn body(&self) -> Rect {
+        self.clip
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "the local focus, hover, empty-state and layout flags independently track retained widget lifecycles; grouping them would only hide rather than simplify that state"
@@ -307,6 +355,10 @@ pub struct MainPanel {
     /// title change, on rect resize, on editor mutations.
     dirty: bool,
     paint_damage: ui::widget::paint_damage::PaintDamage,
+    /// What this draw's title painted past its band (a correction chip),
+    /// and what the last drawn frame's did.
+    title_overhang: Option<Rect>,
+    drawn_title_overhang: Option<Rect>,
     /// Vertical scroll offset for the panel body (in CSS-like px).
     /// Bumped by mouse-wheel events; clamped each frame to the
     /// content overflow extent in `apply_layout`. We hand-roll this
@@ -323,6 +375,14 @@ pub struct MainPanel {
     scrollbar: Scrollbar,
     scroll_focused: bool,
     scroll_layout_dirty: bool,
+    /// A scroll moved the body since the last frame drawn. Unlike `dirty`,
+    /// it may leave every pixel but the body's to a copy the host makes of
+    /// what stays on screen (`ui::scroll_copy`).
+    scroll_moved: bool,
+    /// Where the frame being drawn shows the body, and where the last frame
+    /// the host presented did.
+    body_drawing: Option<BodyShown>,
+    body_presented: Option<BodyShown>,
     /// Follow an explicit reveal or keyboard edit once layout has fresh caret geometry.
     follow_caret: bool,
     /// Local user's id for authorship attribution, re-applied to the
@@ -376,6 +436,8 @@ impl MainPanel {
             title_node: None,
             dirty: true,
             paint_damage: ui::widget::paint_damage::PaintDamage::default(),
+            title_overhang: None,
+            drawn_title_overhang: None,
             scroll_y: 0.0,
             drag_scroll_tick: None,
             scroll_content_height: 0.0,
@@ -384,6 +446,9 @@ impl MainPanel {
             scrollbar: Scrollbar::vertical(),
             scroll_focused: false,
             scroll_layout_dirty: false,
+            scroll_moved: false,
+            body_drawing: None,
+            body_presented: None,
             follow_caret: false,
             local_author: None,
             empty_action_rect: Rect::ZERO,
@@ -668,14 +733,19 @@ impl MainPanel {
     /// The lines under the tags, in document order: where the note sits in
     /// the tree and when it was written.
     fn refresh_captions(&mut self) {
+        let lines = self.caption_lines();
+        if self.header.set_captions(lines) {
+            self.header_changed();
+        }
+    }
+
+    fn caption_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         if !self.parent_path.is_empty() {
             lines.push(self.parent_path_label());
         }
         lines.extend(self.dates.labels());
-        if self.header.set_captions(lines) {
-            self.header_changed();
-        }
+        lines
     }
 
     pub fn set_transclusion_previews(
@@ -759,8 +829,57 @@ impl MainPanel {
         if (offset - self.scroll_y).abs() > f64::EPSILON {
             self.scroll_y = offset;
             self.scroll_layout_dirty = true;
-            self.dirty = true;
+            self.scroll_moved = true;
         }
+    }
+
+    /// The copy a host may make of this frame (after its draw): when only a
+    /// scroll moved the body since the last presented frame, with the same
+    /// clip, track and transform, and nothing in the body, its header or
+    /// over it changed besides.
+    pub(crate) fn scroll_copy(&self) -> Option<ScrollCopy> {
+        let (drawing, presented) = (self.body_drawing?, self.body_presented?);
+        // Paragraphs and headings paint nothing that follows the pointer but
+        // the drag handle; other blocks' hover chrome (a code block's copy
+        // button, a table's controls, an image's) is not followed here.
+        let quiet = self.scroll_moved
+            && !self.dirty
+            && !self.editor.needs_redraw()
+            && !self.has_editor_popup()
+            && self.editor.blocks().iter().all(|block| {
+                matches!(
+                    block.kind,
+                    ui::widget::BlockKind::Paragraph | ui::widget::BlockKind::Heading(_)
+                )
+            })
+            && self
+                .header
+                .built()
+                .is_none_or(|header| !header.needs_redraw());
+        (quiet
+            && drawing.clip == presented.clip
+            && drawing.track == presented.track
+            && drawing.transform == presented.transform
+            && (drawing.scroll_y - presented.scroll_y).abs() > f64::EPSILON)
+            .then(|| ScrollCopy {
+                clip: drawing.clip,
+                delta: Vec2::new(0.0, presented.scroll_y - drawing.scroll_y),
+                track: drawing.track,
+                transform: drawing.transform,
+                // The thumb moved within its track, the pinned title's rule
+                // came or went, and the pointer's drag handle is where it is
+                // and no longer where it was (the host carries that).
+                damage: std::iter::once(drawing.track)
+                    .chain(
+                        (drawing.rule != presented.rule)
+                            .then(|| drawing.rule.into_iter().chain(presented.rule))
+                            .into_iter()
+                            .flatten(),
+                    )
+                    .chain(drawing.handle)
+                    .chain(presented.handle)
+                    .collect(),
+            })
     }
 
     fn focus_scrollbar(&mut self) -> bool {
@@ -1206,9 +1325,15 @@ impl Widget for MainPanel {
             .unwrap_or_default();
         if self.dates != dates {
             self.dates = dates;
-            self.refresh_captions();
+            // The edit time turning over a minute changes a line's words, not
+            // the header's widgets: rebuilding them would repaint the window.
+            let lines = self.caption_lines();
+            if !self.header.retext_captions(&lines) {
+                self.refresh_captions();
+            }
             self.dirty = true;
         }
+        self.header.sync_built(state, path);
         self.editor.sync(state, path);
     }
 
@@ -1507,18 +1632,20 @@ impl Widget for MainPanel {
         if let Some(page_id) = self.page_id {
             // Prominent, editable page title, drawn OUTSIDE the scroll clip so
             // it stays pinned while the body scrolls under it.
+            // Its own part: naming the note repaints the title, not the page.
             self.title_label.apply_layout_external(self.title_rect);
+            let mut title_scene = Scene::new();
             self.title_label
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw(&mut title_scene, transform, text_renderer, theme, presence);
             // Once the document has moved under the pinned title, one hairline
             // says where the title stops and the document is cut off.
+            let pinned = Rect::new(
+                self.rect.x0,
+                self.rect.y0,
+                self.rect.x1,
+                self.rect.y0 + self.scroll_top_inset(),
+            );
             if self.scroll_y > f64::EPSILON {
-                let pinned = Rect::new(
-                    self.rect.x0,
-                    self.rect.y0,
-                    self.rect.x1,
-                    self.rect.y0 + self.scroll_top_inset(),
-                );
                 ui::widget::toolbar::paint_band(scene, transform, theme, pinned);
             }
 
@@ -1526,6 +1653,18 @@ impl Widget for MainPanel {
             // metadata first, then authored blocks. One clip keeps scrolled
             // header buttons from painting through the title.
             let body_clip = self.scroll_viewport();
+            // The thumb and its focus ring stay within a spacing step of the
+            // track.
+            let track_reach = f64::from(theme.tokens.spacing.s2);
+            self.body_drawing = Some(BodyShown {
+                scroll_y: self.scroll_y,
+                clip: body_clip,
+                track: self.scroll_track.inflate(track_reach, track_reach),
+                rule: (self.scroll_y > f64::EPSILON)
+                    .then(|| Rect::new(pinned.x0, pinned.y1 - track_reach, pinned.x1, pinned.y1)),
+                transform: ui::scroll_copy::on_screen(transform),
+                handle: None,
+            });
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -1556,13 +1695,20 @@ impl Widget for MainPanel {
             let mut editor_scene = Scene::new();
             self.editor
                 .draw(&mut editor_scene, transform, text_renderer, theme, presence);
+            let handle = self.editor.editor().hover_handle();
+            if let Some(body) = &mut self.body_drawing {
+                body.handle = handle;
+            }
             scene.append(&editor_scene, None);
             scene.pop_layer();
             outside.pop_layer();
             let mut complete = std::mem::take(scene);
+            // Its own part: a paragraph that came or went moves the thumb of
+            // a long note, which repaints the track, not the page.
+            let mut scrollbar_scene = Scene::new();
             if self.scroll_thumb().is_some() {
                 self.scrollbar.draw(
-                    scene,
+                    &mut scrollbar_scene,
                     transform,
                     self.scroll_track,
                     self.scroll_metrics(),
@@ -1570,6 +1716,7 @@ impl Widget for MainPanel {
                     self.scroll_focused,
                 );
             }
+            complete.append(&scrollbar_scene, None);
             // Overlay popovers (slash menu / link popover) — drawn AFTER the
             // main editor scene so they land on top of every block, and
             // OUTSIDE the scroll clip so they stay visible at their anchor.
@@ -1579,17 +1726,48 @@ impl Widget for MainPanel {
             let suffix = std::mem::take(scene);
             complete.append(&suffix, None);
             outside.append(&suffix, None);
-            *scene = complete;
+            scene.append(&title_scene, None);
+            scene.append(&complete, None);
             let mut editor_damage = Vec::new();
             self.editor.collect_damage(&mut editor_damage);
+            // The editor's top edge and width, not its height: a paragraph
+            // that came or went grows or shrinks it, and its damage says
+            // where its blocks were and are.
+            let editor_rect = self.editor.get_rect();
             parts.push(ui::widget::paint_damage::PaintPart::new(
                 page_id.to_string(),
-                self.editor.get_rect(),
+                Rect::new(
+                    editor_rect.x0,
+                    editor_rect.y0,
+                    editor_rect.x1,
+                    editor_rect.y0 + 1.0,
+                ),
                 editor_scene,
                 editor_damage,
             ));
+            parts.push(ui::widget::paint_damage::PaintPart::new(
+                "note-scrollbar".into(),
+                self.scroll_track,
+                scrollbar_scene,
+                vec![self.scroll_track.inflate(track_reach, track_reach)],
+            ));
+            // The field's caret, selection and focus ring stay within a
+            // spacing step of its band.
+            let title_reach = f64::from(theme.tokens.spacing.s2);
+            // A correction chip the field floats past its band, where it is
+            // and where it was.
+            self.title_overhang = self.title_label.overhang();
+            let mut title_damage = vec![self.title_rect.inflate(title_reach, title_reach)];
+            title_damage.extend(self.title_overhang);
+            title_damage.extend(self.drawn_title_overhang);
+            parts.push(ui::widget::paint_damage::PaintPart::new(
+                "note-title".into(),
+                self.title_rect,
+                title_scene,
+                title_damage,
+            ));
             self.paint_damage.record(
-                self.rect,
+                self.paint_extent(),
                 Some(ui::widget::paint_damage::PaintFrame::new(
                     vec![self.rect, self.title_rect, body_clip, self.scroll_track],
                     transform,
@@ -1599,6 +1777,8 @@ impl Widget for MainPanel {
                 )),
             );
         } else {
+            self.title_overhang = None;
+            self.body_drawing = None;
             self.paint_damage.record(self.rect, None);
             // No note open: a composed zero-state rather than a bare line —
             // this is what a fresh, unseeded workspace shows, so it should
@@ -1763,7 +1943,6 @@ impl Widget for MainPanel {
                 // Clamp against max_scroll happens in apply_layout
                 // since that's where we know the content extent.
                 if (self.scroll_y - prev).abs() > f64::EPSILON {
-                    self.dirty = true;
                     *ctx.handled = true;
                     // This event belongs to the viewport. Lending it to the
                     // rich-text editor snapshots and compares every block as
@@ -1773,8 +1952,7 @@ impl Widget for MainPanel {
             }
         }
         if let Some(n) = self.editor_node {
-            #[cfg(test)]
-            let _profile = crate::cpu_profile::Phase::start("rich_text_input");
+            let _profile = ui::tilo_resource::profiling::Phase::start("rich_text_input");
             self.editor
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             if self.editor.is_focused()
@@ -1956,6 +2134,7 @@ impl Widget for MainPanel {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
+        _key_path: &[u64],
         _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
@@ -2004,21 +2183,29 @@ impl Widget for MainPanel {
             return true;
         }
         if target == "notes.first_note" && self.page_id.is_none() {
-            return self.perform_action(action, state, path);
+            return self.perform_action(action, &[], state, path);
         }
         if target == "notes.page-title" {
-            return Widget::perform_action(&mut self.title_label, action, state, path);
+            return Widget::perform_action(&mut self.title_label, action, &[], state, path);
         }
         false
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.editor.needs_redraw()
+        self.dirty || self.scroll_moved || self.editor.needs_redraw()
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        // A scroll that moved the body and changed nothing else: a host that
+        // keeps the last frame copies what stays on screen.
+        if let Some(copy) = self.scroll_copy()
+            && copy.offer(self)
+        {
+            regions.extend(copy.damage);
+            return;
+        }
         if self.needs_redraw() || self.paint_damage.is_recorded() {
-            self.paint_damage.collect(self.rect, regions);
+            self.paint_damage.collect(self.paint_extent(), regions);
         }
     }
 
@@ -2030,16 +2217,40 @@ impl Widget for MainPanel {
     }
 
     fn mark_drawn(&mut self) {
+        // Not drawn this frame, what the screen shows of the body is not
+        // known: the next scroll repaints it before copies resume.
+        self.body_presented = self.body_drawing.take();
+        self.scroll_moved = false;
+        if self.paint_damage.is_recorded() {
+            self.drawn_title_overhang = self.title_overhang;
+        }
         self.paint_damage.mark_drawn();
         self.dirty = false;
         self.editor.mark_drawn();
+        // The header's widgets learn their paint landed too, so they say
+        // when they change rather than on every frame.
+        if let Some(header) = self.header.built_mut() {
+            header.mark_drawn();
+        }
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // Forward the editor's structure-dirty flag (split/merge
-        // shifted the block count) so the host App rebuilds the
-        // taffy tree.
-        std::mem::take(&mut self.tag_layout_dirty) || self.editor.take_structure_dirty()
+        self.take_structure_change().rebuilds()
+    }
+
+    /// The header rebuilt its widgets: the host rebuilds its tree, but the
+    /// panel's damage describes it (the header is a part of its own, and a
+    /// header that grew or shrank moves the parts below it, which repaints
+    /// the panel). The editor's flag (a split or merge changed the block
+    /// count) rebuilds.
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        use ui::widget::StructureChange;
+        let header = if std::mem::take(&mut self.tag_layout_dirty) {
+            StructureChange::Described
+        } else {
+            StructureChange::None
+        };
+        header.join(self.editor.take_structure_change())
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -2052,6 +2263,13 @@ impl Widget for MainPanel {
 }
 
 impl MainPanel {
+    /// Everything the last draw painted: the panel, and a correction chip
+    /// the title's field floats above it.
+    fn paint_extent(&self) -> Rect {
+        self.title_overhang
+            .map_or(self.rect, |overhang| self.rect.union(overhang))
+    }
+
     pub(crate) fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         let delta = match event {
             WindowEvent::MouseWheel { delta, .. } => match delta {
@@ -2159,6 +2377,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             assert!(p.perform_action(
                 &ui::a11y::Action::Activate,
+                &[],
                 &mut Edits::lend(&mut doc),
                 &ObjId::Root
             ));

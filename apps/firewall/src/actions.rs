@@ -535,19 +535,10 @@ mod tests {
     use super::*;
     use crate::resource::Firewall;
     use automerge::AutoCommit;
-    use tilo_actions::{ActionInput, LocalTransport, OperationKind};
+    use tilo_actions::{LocalTransport, OperationKind};
 
     fn registry() -> ActionRegistry {
         ActionRegistry::with(register)
-    }
-
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                panic!("expected a prompted action: {}", spec.id)
-            }
-        }
     }
 
     /// A document holding the sample ruleset, imported through the action
@@ -722,7 +713,7 @@ mod tests {
                 .rules
                 .len();
 
-            let encoded = prompted_encode(spec, "8443");
+            let encoded = spec.build_text("8443").unwrap();
             let decoded = registry().decode(&encoded).unwrap();
             let mut tx = LocalTransport::new();
             tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();

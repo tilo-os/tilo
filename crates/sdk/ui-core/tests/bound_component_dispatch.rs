@@ -242,6 +242,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
                             widget.ime_cursor_rect();
                             widget.perform_action(
                                 &tilo_ui::a11y::Action::Focus,
+                                &[],
                                 &mut tilo_ui::widget::Edits::lend(doc),
                                 root,
                             );
@@ -305,7 +306,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         let renderer = tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap();
         CAPTURES.with_borrow_mut(Vec::clear);
         TASKS.with_borrow_mut(Vec::clear);
-        let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
+        let mut driver = tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
             state,
             Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
             (400, 300),
@@ -424,6 +425,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
                         if widget.name() == "Leaf" {
                             widget.perform_action(
                                 &tilo_ui::a11y::Action::Focus,
+                                &[],
                                 &mut tilo_ui::widget::Edits::lend(doc),
                                 path,
                             );
@@ -608,23 +610,17 @@ impl Widget for Leaf {
     }
     fn perform_action(
         &mut self,
-        _: &tilo_ui::a11y::Action,
+        action: &tilo_ui::a11y::Action,
+        key_path: &[u64],
         doc: &mut tilo_ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (doc, _) = tilo_ui::doc::document(doc, path);
-        self.edit(doc, "action");
-        true
-    }
-    fn perform_action_at(
-        &mut self,
-        action: &tilo_ui::a11y::Action,
-        path: &[u64],
-        doc: &mut tilo_ui::widget::Edits<'_>,
-        doc_path: &ModelPath,
-    ) -> bool {
-        let (doc, _) = tilo_ui::doc::document(doc, doc_path);
-        assert_eq!(path, &[42]);
+        if key_path.is_empty() {
+            self.edit(doc, "action");
+            return true;
+        }
+        assert_eq!(key_path, &[42]);
         assert_eq!(action, &tilo_ui::a11y::Action::Focus);
         self.edit(doc, "synthetic-action");
         true
@@ -803,6 +799,13 @@ impl Widget for Root {
         theme: &tilo_ui::Theme,
         presence: &tilo_ui::PresenceCtx,
     ) {
+        assert!(
+            presence.permits(&tilo_ui::permissions::PermissionScope::workspace(
+                tilo_ui::permissions::Verb::Write
+            )) == EXPECTED_WRITE.get(),
+            "draw received outer authority"
+        );
+        self.mark("draw-permissions");
         self.0.draw(scene, transform, renderer, theme, presence);
     }
     fn handle_event(
@@ -811,24 +814,6 @@ impl Widget for Root {
         ctx: &mut tilo_ui::widget::EventCtx<'_>,
     ) {
         self.0.handle_event(event, ctx);
-    }
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut tilo_ui::TextRenderer,
-        theme: &tilo_ui::Theme,
-        presence: &tilo_ui::PresenceCtx,
-        permissions: &tilo_ui::permissions::PermissionContext,
-    ) {
-        assert!(
-            permissions.check(&tilo_ui::permissions::PermissionScope::workspace(
-                tilo_ui::permissions::Verb::Write
-            )) == EXPECTED_WRITE.get(),
-            "draw received outer authority"
-        );
-        self.mark("draw-permissions");
-        self.0.draw(scene, transform, text, theme, presence);
     }
     fn on_external_event(
         &mut self,
@@ -1073,6 +1058,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
                         |widget, doc, root| {
                             widget.perform_action(
                                 &tilo_ui::a11y::Action::Focus,
+                                &[],
                                 &mut tilo_ui::widget::Edits::lend(doc),
                                 root,
                             )
@@ -1159,7 +1145,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
             "en-US",
         );
         let replace = std::rc::Rc::new(Cell::new(false));
-        let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
+        let mut driver = tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
             tilo_ui::State::new(),
             Box::new(ReplacingHost(
                 TileHost::from_component(component),
@@ -1296,13 +1282,18 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                         "en-US",
                     );
                     let mut renderer = tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap();
-                    tile.draw_with_presence(
-                        &mut vello::Scene::new(),
-                        vello::kurbo::Affine::IDENTITY,
-                        &mut renderer,
-                        &tilo_ui::Theme::dark(),
-                        &tilo_ui::PresenceCtx::empty(),
-                        &tilo_ui::permissions::PermissionContext::permissive(),
+                    let presence = tilo_ui::PresenceCtx::empty();
+                    presence.with_permissions(
+                        tilo_ui::permissions::PermissionContext::permissive(),
+                        || {
+                            tile.draw(
+                                &mut vello::Scene::new(),
+                                vello::kurbo::Affine::IDENTITY,
+                                &mut renderer,
+                                &tilo_ui::Theme::dark(),
+                                &presence,
+                            );
+                        },
                     );
                 }
 
@@ -1424,7 +1415,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
         );
         assert!(
             CAPTURES.with_borrow(|c| c.iter().any(|(_, label, _)| *label == "draw-permissions")),
-            "ordinary Driver paint did not reach the permission-aware root"
+            "ordinary FrameHarness paint did not reach the permission-aware root"
         );
         *permissions.borrow_mut() = tilo_ui::permissions::PermissionContext::permissive();
         EXPECTED_WRITE.set(true);
@@ -1453,6 +1444,8 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
                 viewport,
             );
+            // A bare root draws under the driver's own permissive authority.
+            EXPECTED_WRITE.set(true);
             let legacy = controlled_driver(
                 Box::new(Column::new().push(Box::new(TileHost::new(
                     tilo_ui::widget::TileContent::App(Box::new(Root(
@@ -1463,6 +1456,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 )))),
                 viewport,
             );
+            EXPECTED_WRITE.set(false);
             let actual = canonical.targets()["dispatch-root"];
             let expected = legacy.targets()["dispatch-root"];
             assert!(expected.width() > f64::from(viewport.0) / 2.0);
@@ -1749,7 +1743,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
                     .err()
                     .unwrap()
             } else {
-                tilo_ui::headless::Driver::from_component(
+                tilo_ui::headless::FrameHarness::from_component(
                     parent,
                     (320, 180),
                     crate::support::application::runner_inputs(),
@@ -2028,12 +2022,15 @@ impl Widget for SameNameUnregisteredWrapper {
     }
 }
 
-fn controlled_driver(root: Box<dyn Widget>, viewport: (u32, u32)) -> tilo_ui::headless::Driver {
+fn controlled_driver(
+    root: Box<dyn Widget>,
+    viewport: (u32, u32),
+) -> tilo_ui::headless::FrameHarness {
     let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
         tilo_ui::font_catalog::checkout_root(),
         "en-US",
     );
-    tilo_ui::headless::Driver::new_with_controlled_inputs(
+    tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
         tilo_ui::State::new(),
         root,
         viewport,

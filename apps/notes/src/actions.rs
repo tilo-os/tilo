@@ -495,8 +495,7 @@ fn duplicate_subtree_from_workspace(
 // Projection captures only existing stable identities. Destination UUIDs are
 // authored once by the final admitted builder, never by resource discovery.
 fn duplicate_sources(source: PageId, workspace: &crate::Workspace) -> Result<Vec<PageId>, String> {
-    #[cfg(test)]
-    let _profile = crate::cpu_profile::Phase::start("duplicate_sources");
+    let _profile = ui::tilo_resource::profiling::Phase::start("duplicate_sources");
     if workspace.get(source).is_none() {
         return Err("source note no longer exists".into());
     }
@@ -544,8 +543,7 @@ fn page_tree_action(
     page: PageId,
     command: PageTreeCommand,
 ) -> Option<NotesAction> {
-    #[cfg(test)]
-    let _profile = crate::cpu_profile::Phase::start("page_tree_action");
+    let _profile = ui::tilo_resource::profiling::Phase::start("page_tree_action");
     let mut workspace = workspace.clone();
     let mut before = workspace
         .pages()
@@ -1555,16 +1553,13 @@ impl<'a> PageTreeSnapshot<'a> {
         if self.positions.len() != self.pages.len() {
             return self.dense_spec(workspace, page, command, id, label);
         }
-        #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("page_tree_action");
+        let _profile = ui::tilo_resource::profiling::Phase::start("page_tree_action");
         let updates = {
-            #[cfg(test)]
-            let _profile = crate::cpu_profile::Phase::start("tree_metadata_plan");
+            let _profile = ui::tilo_resource::profiling::Phase::start("tree_metadata_plan");
             page_tree_plan(workspace, page, command)?
         };
         let changed = {
-            #[cfg(test)]
-            let _profile = crate::cpu_profile::Phase::start("tree_metadata_delta");
+            let _profile = ui::tilo_resource::profiling::Phase::start("tree_metadata_delta");
             updates
                 .iter()
                 .filter_map(|after| {
@@ -1585,8 +1580,7 @@ impl<'a> PageTreeSnapshot<'a> {
             .map(|(index, original)| changed.get(&index).unwrap_or(original).as_ref())
             .collect();
         let encoded = {
-            #[cfg(test)]
-            let _profile = crate::cpu_profile::Phase::start("tree_metadata_encode");
+            let _profile = ui::tilo_resource::profiling::Phase::start("tree_metadata_encode");
             EncodedAction::encode_operation(
                 NOTES_ACTION_TYPE,
                 &TreeAction::UpdatePageTree {
@@ -1596,8 +1590,7 @@ impl<'a> PageTreeSnapshot<'a> {
             )
             .ok()?
         };
-        #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("tree_metadata_spec");
+        let _profile = ui::tilo_resource::profiling::Phase::start("tree_metadata_spec");
         Some(
             ActionSpec::immediate_encoded(id, label, ExecutionLocus::ClientLocal, encoded)
                 .reversible(),
@@ -1612,28 +1605,24 @@ impl<'a> PageTreeSnapshot<'a> {
         id: &str,
         label: &str,
     ) -> Option<ActionSpec> {
-        #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("page_tree_action");
+        let _profile = ui::tilo_resource::profiling::Phase::start("page_tree_action");
         // Tree operations only read and mutate metadata. Rich-text bodies and
         // tag assignments never participate in authoring a tree operation.
         let mut moved = {
-            #[cfg(test)]
-            let _profile = crate::cpu_profile::Phase::start("tree_metadata_clone");
+            let _profile = ui::tilo_resource::profiling::Phase::start("tree_metadata_clone");
             let mut moved = crate::Workspace::default();
             moved.data.pages = workspace.pages().to_vec();
             moved
         };
         let changed = {
-            #[cfg(test)]
-            let _profile = crate::cpu_profile::Phase::start("tree_metadata_move");
+            let _profile = ui::tilo_resource::profiling::Phase::start("tree_metadata_move");
             move_page_tree(&mut moved, page, command)?
         };
         if !changed {
             return None;
         }
         let moved_pages = {
-            #[cfg(test)]
-            let _profile = crate::cpu_profile::Phase::start("tree_metadata_index");
+            let _profile = ui::tilo_resource::profiling::Phase::start("tree_metadata_index");
             moved
                 .pages()
                 .iter()
@@ -1641,8 +1630,7 @@ impl<'a> PageTreeSnapshot<'a> {
                 .collect::<HashMap<_, _>>()
         };
         let changed = {
-            #[cfg(test)]
-            let _profile = crate::cpu_profile::Phase::start("tree_metadata_delta");
+            let _profile = ui::tilo_resource::profiling::Phase::start("tree_metadata_delta");
             self.pages
                 .iter()
                 .enumerate()
@@ -1663,8 +1651,7 @@ impl<'a> PageTreeSnapshot<'a> {
             .map(|(index, before)| changed.get(&index).unwrap_or(before).as_ref())
             .collect::<Vec<_>>();
         let encoded = {
-            #[cfg(test)]
-            let _profile = crate::cpu_profile::Phase::start("tree_metadata_encode");
+            let _profile = ui::tilo_resource::profiling::Phase::start("tree_metadata_encode");
             EncodedAction::encode_operation(
                 NOTES_ACTION_TYPE,
                 &TreeAction::UpdatePageTree {
@@ -1674,8 +1661,7 @@ impl<'a> PageTreeSnapshot<'a> {
             )
             .ok()?
         };
-        #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("tree_metadata_spec");
+        let _profile = ui::tilo_resource::profiling::Phase::start("tree_metadata_spec");
         Some(
             ActionSpec::immediate_encoded(id, label, ExecutionLocus::ClientLocal, encoded)
                 .reversible(),
@@ -1847,12 +1833,10 @@ pub(crate) fn page_body_dispatcher(
 /// A page's body, published as the rich-text resource it is: its actions
 /// apply as the notebook's [`NotesAction::EditBody`] on that page.
 fn page_body_child(page: &PageMeta, state: Option<&tilo_document::RichTextState>) -> Resource {
-    #[cfg(test)]
-    let _profile = crate::cpu_profile::Phase::start("page_body_resource");
+    let _profile = ui::tilo_resource::profiling::Phase::start("page_body_resource");
     let id = page_body_id(page.id);
     let mut body = {
-        #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("page_body_publish");
+        let _profile = ui::tilo_resource::profiling::Phase::start("page_body_publish");
         ui::tilo_resource::publish_child::<RichText, crate::resource::Notebook>(
             &id,
             &page.title,
@@ -1861,8 +1845,7 @@ fn page_body_child(page: &PageMeta, state: Option<&tilo_document::RichTextState>
         )
     };
     {
-        #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("page_body_continuations");
+        let _profile = ui::tilo_resource::profiling::Phase::start("page_body_continuations");
         stamp_published_dynamic_continuations(&mut body, id.as_bytes());
     }
     body
@@ -1921,8 +1904,7 @@ fn page_resource_from_index(
         );
     }
     {
-        #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("page_tree_commands");
+        let _profile = ui::tilo_resource::profiling::Phase::start("page_tree_commands");
         for (id, label, command) in [
             ("move-up", "Move note up", PageTreeCommand::MoveUp),
             ("move-down", "Move note down", PageTreeCommand::MoveDown),
@@ -2015,8 +1997,7 @@ fn page_resource_from_index(
 }
 
 fn page_preview_detail(bodies: &Bodies, page: PageId) -> Option<String> {
-    #[cfg(test)]
-    let _profile = crate::cpu_profile::Phase::start("page_preview");
+    let _profile = ui::tilo_resource::profiling::Phase::start("page_preview");
     let text = bodies
         .get(&page)?
         .iter()
@@ -2164,8 +2145,7 @@ pub fn provide_resources(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Vec<Resour
 /// lack one (`apply` / `group` and rich-text catalogue builders). Fixed
 /// encodings and already-stamped specs are left alone.
 fn stamp_published_dynamic_continuations(resource: &mut Resource, scope: &[u8]) {
-    #[cfg(test)]
-    let _profile = crate::cpu_profile::Phase::start("continuation_stamp");
+    let _profile = ui::tilo_resource::profiling::Phase::start("continuation_stamp");
     let actions = std::mem::take(&mut resource.actions);
     resource.actions = actions
         .into_iter()
@@ -2195,21 +2175,18 @@ fn notebook_resource(workspace: &crate::Workspace) -> Resource {
 /// rich-text body, membership actions for every tag and the notes linking to
 /// it; and the tag catalogue.
 pub(crate) fn notebook_children(workspace: &crate::Workspace) -> Vec<Resource> {
-    #[cfg(test)]
-    let _profile = crate::cpu_profile::Phase::start("notebook_children");
+    let _profile = ui::tilo_resource::profiling::Phase::start("notebook_children");
     let ctx = NotesResourceCtx::of(workspace);
     let mut children = notebook_page_children(workspace, &workspace.bodies);
     children.push(tags_resource(&ctx));
     let backlink_targets = {
-        #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("publication_backlinks");
+        let _profile = ui::tilo_resource::profiling::Phase::start("publication_backlinks");
         canonical_backlink_index(&workspace.bodies, workspace.pages())
             .into_keys()
             .collect::<HashSet<_>>()
     };
     for child in &mut children {
-        #[cfg(test)]
-        let _profile = crate::cpu_profile::Phase::start("page_decoration");
+        let _profile = ui::tilo_resource::profiling::Phase::start("page_decoration");
         decorate_tag_actions(child, &ctx);
         decorate_backlinks(child, &backlink_targets);
         let scope = child.id.as_str().as_bytes().to_vec();
@@ -2631,7 +2608,7 @@ mod tests {
     use super::*;
     use crate::model::Workspace;
     use automerge::transaction::Transactable;
-    use tilo_actions::{ActionInput, ExecutionMode, LocalTransport, OperationKind, ResultSpec};
+    use tilo_actions::{ExecutionMode, LocalTransport, OperationKind, ResultSpec};
     use ui::tilo_resource::Resource as _;
     use uuid::Uuid;
 
@@ -3129,15 +3106,6 @@ mod tests {
         }
     }
 
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                panic!("expected a prompted action: {}", spec.id)
-            }
-        }
-    }
-
     fn resource_count(resource: &Resource) -> usize {
         1 + resource.children.iter().map(resource_count).sum::<usize>()
     }
@@ -3596,7 +3564,7 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "replace-text")
                 .expect("agent-editable block action");
-            let encoded = prompted_encode(edit, "Rewritten");
+            let encoded = edit.build_text("Rewritten").unwrap();
             let decoded: NotesAction = serde_json::from_slice(&encoded.payload).unwrap();
             assert_eq!(
                 decoded,
@@ -3892,7 +3860,7 @@ mod tests {
             // New-child builds an AppendPage under the right parent; the position
             // is resolved when it applies (the minted id differs each call).
             let new_child_spec = page.actions.iter().find(|a| a.id == "new-child").unwrap();
-            let encoded = prompted_encode(new_child_spec, "Child");
+            let encoded = new_child_spec.build_text("Child").unwrap();
             let decoded: NotesAction =
                 serde_json::from_slice(&encoded.payload).expect("payload decodes to NotesAction");
             let NotesAction::AppendPage { id, title, parent } = &decoded else {
@@ -4021,7 +3989,7 @@ mod tests {
             .find(|spec| spec.id == "new-page")
             .unwrap();
         let new_action: NotesAction =
-            serde_json::from_slice(&prompted_encode(new_spec, "Later note").payload).unwrap();
+            serde_json::from_slice(&new_spec.build_text("Later note").unwrap().payload).unwrap();
         let NotesAction::AppendPage { id, parent, .. } = &new_action else {
             panic!("a new note resolves its sibling position when it applies");
         };
@@ -4167,7 +4135,7 @@ mod tests {
                 .find(|action| action.id == "new-and-assign-tag")
                 .expect("normal create-and-assign workflow");
             assert!(matches!(
-                serde_json::from_slice::<NotesAction>(&prompted_encode(create, "Planning").payload),
+                serde_json::from_slice::<NotesAction>(&create.build_text("Planning").unwrap().payload),
                 Ok(NotesAction::CreateAndAssignTag { page, tag: TagData { name, .. } }) if page == projects.to_string() && name == "Planning"
             ));
         }

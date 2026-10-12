@@ -507,3 +507,18 @@ terminal-service-invalid-session = Der Shell-Dienst hat eine ungültige Sitzung 
 terminal-service-missing-lease = Die Shell-Sitzung hat keine Verbindung für ihre Laufzeit bereitgestellt.
 terminal-service-missing-terminal = Die Shell-Sitzung hat kein Terminal bereitgestellt.
 terminal-service-invalid-lease = Die Verbindung der Shell-Sitzung konnte nicht überprüft werden.
+
+display-arrangement-offline = Offline
+display-arrangement-excluded = Nicht im Layout
+display-arrangement-offline-excluded = Offline · Nicht im Layout
+display-arrangement-item-status = { $position }; { $status }
+display-arrangement-caption-status = { $status } · { $name }
+
+# Suche: Einstiegsgruppen in der leeren Anwendungsliste
+search-apps-group-start-here = Zum Einstieg
+search-apps-group-everyday = Alltag
+search-apps-group-work = Arbeit
+search-apps-group-media = Medien
+search-apps-group-system-tools = Systemwerkzeuge
+search-apps-group-more-apps = Weitere Apps
+search-apps-group-developer-tools = Entwicklerwerkzeuge

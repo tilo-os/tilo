@@ -27,6 +27,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::hash::BuildHasher;
+use ui::num::f64_of_usize;
 
 use crate::model::{Addr, CellFormat, CellValue, FormulaError, GridEdit, a1_to_addr, addr_to_a1};
 
@@ -125,13 +126,6 @@ fn number_to_int(n: f64) -> i64 {
 /// NaN and oversized arguments collapse to the nearest valid position.
 fn number_to_index(n: f64, len: usize) -> usize {
     usize::try_from(number_to_int(n)).unwrap_or(0).min(len)
-}
-
-/// A count or length as a spreadsheet number. Counts come from materialised
-/// ranges, so `u32` is far above any reachable value and the conversion stays
-/// exact.
-fn count_number(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 /// An integer as a spreadsheet number. Values outside `i32` clamp, which keeps
@@ -302,15 +296,56 @@ pub fn ref_color_slots(spans: &[RefSpan]) -> Vec<usize> {
 /// unchanged. A relative component never underflows past the grid origin
 /// (column `A` / row `1`).
 pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
-    let Some(body) = raw.strip_prefix('=') else {
-        return raw.to_string();
-    };
     if dcol == 0 && drow == 0 {
         return raw.to_string();
     }
+    let shift = |token: RefToken| token.render(token.offset(dcol, drow));
+    rewrite_refs(raw, |first, second| match second {
+        Some((sep, second)) => format!("{}{sep}{}", shift(first), shift(second)),
+        None => shift(first),
+    })
+}
+
+/// Rewrite every A1 reference in a formula through a structural grid change.
+///
+/// Unlike [`offset_refs`], this is not a copy/fill operation: `$` anchors
+/// affect copying, but inserting or deleting a row/column moves *all*
+/// references, including absolute ones. A target that was deleted becomes the
+/// canonical `#REF!` token. A range `A1:B3` moves as a unit through
+/// [`GridEdit::map_range`], so deleting its first or last line shrinks it and
+/// only deleting all of it yields `#REF!`. String literals, function names,
+/// and numeric exponents use the same scanner as copy/fill and are left
+/// verbatim.
+///
+/// Keeping this beside [`offset_refs`] is important: row/column actions must
+/// preserve formula relationships in the same replayable action that moves the
+/// cells, rather than leaving stale coordinates for a later UI-only repair.
+pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
+    rewrite_refs(raw, |first, second| {
+        let moved = match second {
+            Some((sep, second)) => edit
+                .map_range(first.addr, second.addr)
+                .map(|(a, b)| format!("{}{sep}{}", first.render(a), second.render(b))),
+            None => edit.map_addr(first.addr).map(|addr| first.render(addr)),
+        };
+        moved.unwrap_or_else(|| "#REF!".into())
+    })
+}
+
+/// Rewrite every reference in a formula through `rewrite`, which receives a
+/// lone reference or both ends of a range with the separator between them.
+/// String literals, function names, and numeric exponents (`1e3`) are copied
+/// verbatim; non-formula input (no leading `=`) is returned unchanged.
+fn rewrite_refs(
+    raw: &str,
+    mut rewrite: impl FnMut(RefToken, Option<(&str, RefToken)>) -> String,
+) -> String {
+    let Some(body) = raw.strip_prefix('=') else {
+        return raw.to_string();
+    };
     let chars: Vec<char> = body.chars().collect();
     let mut scan = Scan::new(&chars);
-    let mut out = String::with_capacity(raw.len().saturating_add(4));
+    let mut out = String::with_capacity(raw.len().saturating_add(8));
     out.push('=');
     while let Some(ch) = scan.peek() {
         if ch == '"' {
@@ -338,63 +373,6 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
         let mut ahead = scan;
         ahead.skip_while(char::is_whitespace);
         let is_call = ahead.peek() == Some('(');
-        if !prev_numish
-            && !is_call
-            && let Some(shifted) = offset_ref_token(&token, dcol, drow)
-        {
-            out.push_str(&shifted);
-            continue;
-        }
-        out.push_str(&token);
-    }
-    out
-}
-
-/// Rewrite every A1 reference in a formula through a structural grid change.
-///
-/// Unlike [`offset_refs`], this is not a copy/fill operation: `$` anchors
-/// affect copying, but inserting or deleting a row/column moves *all*
-/// references, including absolute ones. A target that was deleted becomes the
-/// canonical `#REF!` token. A range `A1:B3` moves as a unit through
-/// [`GridEdit::map_range`], so deleting its first or last line shrinks it and
-/// only deleting all of it yields `#REF!`. String literals, function names,
-/// and numeric exponents use the same scanner as copy/fill and are left
-/// verbatim.
-///
-/// Keeping this beside [`offset_refs`] is important: row/column actions must
-/// preserve formula relationships in the same replayable action that moves the
-/// cells, rather than leaving stale coordinates for a later UI-only repair.
-pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
-    let Some(body) = raw.strip_prefix('=') else {
-        return raw.to_string();
-    };
-    let chars: Vec<char> = body.chars().collect();
-    let mut scan = Scan::new(&chars);
-    let mut out = String::with_capacity(raw.len().saturating_add(8));
-    out.push('=');
-    while let Some(ch) = scan.peek() {
-        if ch == '"' {
-            let start = scan.pos();
-            scan.bump();
-            scan.skip_while(|c| c != '"');
-            scan.bump();
-            out.push_str(&scan.text_from(start));
-            continue;
-        }
-        if ch != '$' && !ch.is_ascii_alphabetic() {
-            out.push(ch);
-            scan.bump();
-            continue;
-        }
-        let start = scan.pos();
-        scan.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
-        let token = scan.text_from(start);
-        let prev_numish = scan
-            .before(start)
-            .is_some_and(|prev| prev.is_ascii_digit() || prev == '.');
-        let mut ahead = scan;
-        ahead.skip_while(char::is_whitespace);
-        let is_call = ahead.peek() == Some('(');
         let Some(first) = RefToken::parse(&token).filter(|_| !prev_numish && !is_call) else {
             out.push_str(&token);
             continue;
@@ -407,77 +385,13 @@ pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
             ahead.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
             if let Some(second) = RefToken::parse(&ahead.text_from(end_start)) {
                 scan = ahead;
-                match edit.map_range(first.addr, second.addr) {
-                    Some((a, b)) => {
-                        out.push_str(&first.render(a));
-                        out.push_str(&sep);
-                        out.push_str(&second.render(b));
-                    }
-                    None => out.push_str("#REF!"),
-                }
+                out.push_str(&rewrite(first, Some((&sep, second))));
                 continue;
             }
         }
-        match edit.map_addr(first.addr) {
-            Some(addr) => out.push_str(&first.render(addr)),
-            None => out.push_str("#REF!"),
-        }
+        out.push_str(&rewrite(first, None));
     }
     out
-}
-
-/// Shift one `A1`/`$A$1`-shaped token by `(dcol, drow)`, preserving each `$`
-/// anchor. Returns `None` when the token is not a well-formed reference
-/// (leaving function names, booleans, and bare words untouched).
-fn offset_ref_token(tok: &str, dcol: i64, drow: i64) -> Option<String> {
-    let bytes = tok.as_bytes();
-    let mut at = 0usize;
-    let col_abs = bytes.first() == Some(&b'$');
-    if col_abs {
-        at = 1;
-    }
-    let letters_start = at;
-    while bytes.get(at).is_some_and(u8::is_ascii_alphabetic) {
-        at = at.saturating_add(1);
-    }
-    let letters = tok.get(letters_start..at).filter(|s| !s.is_empty())?;
-    let row_abs = bytes.get(at) == Some(&b'$');
-    if row_abs {
-        at = at.saturating_add(1);
-    }
-    let digits_start = at;
-    while bytes.get(at).is_some_and(u8::is_ascii_digit) {
-        at = at.saturating_add(1);
-    }
-    if at != bytes.len() {
-        return None; // trailing junk: not a plain A1 reference
-    }
-    let col = i64::from(crate::model::letters_to_col(letters)?);
-    let row: i64 = tok.get(digits_start..at)?.parse().ok()?; // 1-based
-    // Both components are clamped to the grid's addressable range, so a wild
-    // offset lands on the edge rather than wrapping around it.
-    let new_col = if col_abs {
-        col
-    } else {
-        col.saturating_add(dcol).clamp(0, i64::from(u32::MAX))
-    };
-    let new_row = if row_abs {
-        row
-    } else {
-        row.saturating_add(drow).clamp(1, i64::from(u32::MAX))
-    };
-    let mut s = String::new();
-    if col_abs {
-        s.push('$');
-    }
-    s.push_str(&crate::model::col_to_letters(
-        u32::try_from(new_col).unwrap_or(0),
-    ));
-    if row_abs {
-        s.push('$');
-    }
-    s.push_str(&new_row.to_string());
-    Some(s)
 }
 
 /// One `A1`/`$A$1`-shaped token, remembering its `$` spelling so a
@@ -526,6 +440,25 @@ impl RefToken {
             col_abs,
             row_abs,
         })
+    }
+
+    /// The address moved by `(dcol, drow)` for a copy or fill: `$`-anchored
+    /// components stay, the others clamp to the grid's addressable range
+    /// so a wild offset lands on the edge rather than wrapping around it.
+    fn offset(self, dcol: i64, drow: i64) -> Addr {
+        let shift = |at: u32, by: i64, anchored: bool| {
+            if anchored {
+                return at;
+            }
+            let moved = i64::from(at)
+                .saturating_add(by)
+                .clamp(0, i64::from(u32::MAX));
+            u32::try_from(moved).unwrap_or(at)
+        };
+        (
+            shift(self.addr.0, dcol, self.col_abs),
+            shift(self.addr.1, drow, self.row_abs),
+        )
     }
 
     /// `addr` spelled with this token's `$` anchors.
@@ -1087,7 +1020,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             },
             "AVERAGE" => match self.numeric_args(args) {
                 Ok(ns) if !ns.is_empty() => {
-                    CellValue::Number(ns.iter().sum::<f64>() / count_number(ns.len()))
+                    CellValue::Number(ns.iter().sum::<f64>() / f64_of_usize(ns.len()))
                 }
                 Ok(_) => CellValue::Error(FormulaError::Div0),
                 Err(e) => e,
@@ -1110,21 +1043,21 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 Err(e) => e,
             },
             // Count of numeric cells.
-            "COUNT" => CellValue::Number(count_number(
+            "COUNT" => CellValue::Number(f64_of_usize(
                 self.count_matching(args, |v| matches!(v, CellValue::Number(_))),
             )),
             // Count of non-empty cells.
             "COUNTA" => {
-                CellValue::Number(count_number(self.count_matching(args, |v| !v.is_empty())))
+                CellValue::Number(f64_of_usize(self.count_matching(args, |v| !v.is_empty())))
             }
             "COUNTBLANK" => {
-                CellValue::Number(count_number(self.count_matching(args, CellValue::is_empty)))
+                CellValue::Number(f64_of_usize(self.count_matching(args, CellValue::is_empty)))
             }
             "SUMIF" => self.sumif(args),
             "COUNTIF" => self.countif(args),
             "AVERAGEIF" => self.averageif(args),
             "COUNTIFS" => match self.criteria_mask(args) {
-                Ok(mask) => CellValue::Number(count_number(mask.iter().filter(|b| **b).count())),
+                Ok(mask) => CellValue::Number(f64_of_usize(mask.iter().filter(|b| **b).count())),
                 Err(e) => e,
             },
             "SUMIFS" => {
@@ -1163,7 +1096,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                         if cnt == 0 {
                             CellValue::Error(FormulaError::Div0)
                         } else {
-                            CellValue::Number(sum / count_number(cnt))
+                            CellValue::Number(sum / f64_of_usize(cnt))
                         }
                     }
                     Err(e) => e,
@@ -1344,7 +1277,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 let text = self
                     .eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
                     .to_plain_string();
-                CellValue::Number(count_number(text.chars().count()))
+                CellValue::Number(f64_of_usize(text.chars().count()))
             }
             "UPPER" => self.unary_text(args, str::to_uppercase),
             "LOWER" => self.unary_text(args, str::to_lowercase),
@@ -1716,7 +1649,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         let probe = self.collect_values(range_expr);
         let crit = self.eval_expr(crit_expr);
         let n = probe.iter().filter(|v| criterion_matches(v, &crit)).count();
-        CellValue::Number(count_number(n))
+        CellValue::Number(f64_of_usize(n))
     }
 
     /// AVERAGEIF(range, criterion, [`average_range`]).
@@ -1743,7 +1676,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         if cnt == 0 {
             CellValue::Error(FormulaError::Div0)
         } else {
-            CellValue::Number(sum / count_number(cnt))
+            CellValue::Number(sum / f64_of_usize(cnt))
         }
     }
 
@@ -1884,7 +1817,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         match tail.find(&pattern) {
             Some(byte_pos) => {
                 let char_off = tail.get(..byte_pos).map_or(0, |p| p.chars().count());
-                CellValue::Number(count_number(
+                CellValue::Number(f64_of_usize(
                     start.saturating_add(char_off).saturating_add(1),
                 ))
             }
@@ -2045,7 +1978,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             match match_type {
                 0 => {
                     if values_equal(&v, &key) {
-                        return CellValue::Number(count_number(i.saturating_add(1)));
+                        return CellValue::Number(f64_of_usize(i.saturating_add(1)));
                     }
                 }
                 t if t > 0 => {
@@ -2065,7 +1998,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             }
         }
         match best {
-            Some(i) => CellValue::Number(count_number(i.saturating_add(1))),
+            Some(i) => CellValue::Number(f64_of_usize(i.saturating_add(1))),
             None => CellValue::Error(FormulaError::Na),
         }
     }
@@ -2480,7 +2413,7 @@ enum Unit {
     /// A date serial.
     Date(tilo_locale::DateStyle),
     /// A time/duration serial.
-    Time(tilo_locale::TimeStyle),
+    Time(ui::clock::TimeStyle),
     /// Conflicting units (e.g. USD + EUR) — render plain.
     Mixed,
 }
@@ -2608,7 +2541,7 @@ fn unit_of_call<S: BuildHasher>(
         // Date/time builders render as dates/times so a bare `=TODAY()` shows
         // a date rather than its underlying serial number.
         "DATE" | "TODAY" | "NOW" => Unit::Date(tilo_locale::DateStyle::Iso),
-        "TIME" => Unit::Time(tilo_locale::TimeStyle::H24),
+        "TIME" => Unit::Time(ui::clock::TimeStyle::H24),
         // Counting / text / logical / lookup functions are unitless.
         _ => Unit::Scalar,
     }

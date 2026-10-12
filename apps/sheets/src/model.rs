@@ -7,7 +7,8 @@
 //! `(col, row)`; `A1` is `(0, 0)`. The `col_to_letters` / `a1_to_addr`
 //! helpers translate to and from the user-facing A1 strings.
 
-use tilo_locale::{Currency, DateStyle, TimeStyle};
+use tilo_locale::{Currency, DateStyle};
+use ui::clock::TimeStyle;
 
 /// Zero-based column index. `0` is column `A`.
 pub type Col = u32;

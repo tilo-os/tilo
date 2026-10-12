@@ -81,10 +81,6 @@ impl ResourceApp for PasswordsShell {
         crate::window::SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
-
     /// A screenshot never opens the person's vault: it shows synthetic items
     /// with no store behind them.
     fn fixture(fixture: &mut Fixture<Passwords>) {

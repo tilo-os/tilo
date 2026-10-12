@@ -12,6 +12,7 @@
 pub use settings_store::display_placement as placement;
 
 use crate as ui;
+use crate::num::f32_of_f64;
 use crate::widget::TaffyTreeExt;
 
 use std::collections::HashMap;
@@ -29,30 +30,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use placement::Placement;
 
-use crate::i18n::{ArgValue, EmbeddedCatalog};
-
-static CATALOG: EmbeddedCatalog = catalogue();
-
-const fn catalogue() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new(
-        "en-US",
-        &[
-            ("en-US", include_str!("../../locales/en-US.ftl")),
-            ("de-DE", include_str!("../../locales/de-DE.ftl")),
-        ],
-        "display-arrangement-name",
-    )
-    .with_system_locale();
-    #[cfg(test)]
-    let catalog = catalog.with_pinned_locale("en-US");
-    catalog
-}
+use crate::i18n::widget_format;
 
 fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
+    widget_format(key, &[])
 }
 
 /// One display as the canvas draws it.
@@ -61,6 +42,8 @@ pub struct ArrangedDisplay {
     pub connector: String,
     /// Screens in one device move together without changing its native seat layout.
     pub movement_group: Option<String>,
+    /// Certified shared identity and layout state; absent for native-only or legacy tiles.
+    pub shared: Option<SharedDisplayState>,
     pub label: String,
     /// The number Identify shows on this display.
     pub number: usize,
@@ -69,6 +52,34 @@ pub struct ArrangedDisplay {
     /// Mirrors sit on their target and follow it, so only extended displays
     /// can be dragged.
     pub movable: bool,
+}
+
+/// State of one certified output in the person's shared layout.
+/// Availability and inclusion are independent: an offline display keeps its place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedDisplayState {
+    pub device: String,
+    pub output: String,
+    pub online: bool,
+    pub included: bool,
+}
+
+impl ArrangedDisplay {
+    fn status(&self) -> Option<String> {
+        let shared = self.shared.as_ref()?;
+        match (shared.online, shared.included) {
+            (true, true) => None,
+            (false, true) => Some(t("display-arrangement-offline")),
+            (true, false) => Some(t("display-arrangement-excluded")),
+            (false, false) => Some(t("display-arrangement-offline-excluded")),
+        }
+    }
+
+    fn muted(&self) -> bool {
+        self.shared
+            .as_ref()
+            .is_some_and(|shared| !shared.online || !shared.included)
+    }
 }
 
 /// An in-progress drag. Owned by the pane, not the widget, so it survives
@@ -159,11 +170,6 @@ fn round_to_i32(value: f64) -> i32 {
     value
         .round()
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-}
-
-#[allow(clippy::cast_possible_truncation, reason = "canvas pixels fit f32")]
-fn px(value: f64) -> f32 {
-    value as f32
 }
 
 pub struct DisplayArrangement {
@@ -426,7 +432,9 @@ impl DisplayArrangement {
             theme,
             ui::chrome::SelectionState::new(display.primary, dragging, false),
         );
-        let fill = if display.movable {
+        let fill = if display.muted() {
+            colors.lift(0.1)
+        } else if display.movable {
             colors.lift(if dragging { 0.7 } else { 0.45 })
         } else {
             colors.lift(0.2)
@@ -449,7 +457,11 @@ impl DisplayArrangement {
         text_renderer.draw_style(
             scene,
             &number,
-            colors.text_primary,
+            if display.muted() {
+                colors.text_dim
+            } else {
+                colors.text_primary
+            },
             transform.pre_translate(
                 (
                     rect.center().x - f64::from(nw) / 2.0,
@@ -461,9 +473,21 @@ impl DisplayArrangement {
             &number_style,
         );
         let caption_style = theme.text(ui::TextRole::Caption);
+        let caption = display.status().map_or_else(
+            || display.label.clone(),
+            |status| {
+                widget_format(
+                    "display-arrangement-caption-status",
+                    &[
+                        ("status", status.into()),
+                        ("name", display.label.clone().into()),
+                    ],
+                )
+            },
+        );
         let label = text_renderer.elide_to_width_style(
-            &display.label,
-            px(rect.width() - f64::from(theme.tokens.spacing.s3)),
+            &caption,
+            f32_of_f64(rect.width() - f64::from(theme.tokens.spacing.s3)),
             &caption_style,
         );
         let (lw, _) = text_renderer.measure_style(&label, None, &caption_style);
@@ -633,41 +657,58 @@ impl Widget for DisplayArrangement {
             } else {
                 "display-arrangement-item"
             };
-            group.children.push(
-                AccessNode::new(Role::Image)
-                    .with_name(t_args(
-                        key,
-                        &[
-                            (
-                                "number",
-                                ui::i18n::ArgValue::Text(display.number.to_string()),
-                            ),
-                            ("name", ui::i18n::ArgValue::Text(display.label.clone())),
-                        ],
-                    ))
-                    .with_description(t_args(
-                        "display-arrangement-item-position",
-                        &[
-                            (
-                                "x",
-                                ui::i18n::ArgValue::Text(display.placement.x.to_string()),
-                            ),
-                            (
-                                "y",
-                                ui::i18n::ArgValue::Text(display.placement.y.to_string()),
-                            ),
-                            (
-                                "width",
-                                ui::i18n::ArgValue::Text(display.placement.width.to_string()),
-                            ),
-                            (
-                                "height",
-                                ui::i18n::ArgValue::Text(display.placement.height.to_string()),
-                            ),
-                        ],
-                    ))
-                    .with_bounds(mapping.to_canvas(display.placement)),
-            );
+            let node = AccessNode::new(Role::Image)
+                .with_name(widget_format(
+                    key,
+                    &[
+                        (
+                            "number",
+                            ui::i18n::ArgValue::Text(display.number.to_string()),
+                        ),
+                        ("name", ui::i18n::ArgValue::Text(display.label.clone())),
+                    ],
+                ))
+                .with_description(widget_format(
+                    "display-arrangement-item-position",
+                    &[
+                        (
+                            "x",
+                            ui::i18n::ArgValue::Text(display.placement.x.to_string()),
+                        ),
+                        (
+                            "y",
+                            ui::i18n::ArgValue::Text(display.placement.y.to_string()),
+                        ),
+                        (
+                            "width",
+                            ui::i18n::ArgValue::Text(display.placement.width.to_string()),
+                        ),
+                        (
+                            "height",
+                            ui::i18n::ArgValue::Text(display.placement.height.to_string()),
+                        ),
+                    ],
+                ))
+                .with_bounds(mapping.to_canvas(display.placement));
+            let mut node = if let Some(status) = display.status() {
+                let position = node.description.clone().unwrap_or_default();
+                node.with_description(widget_format(
+                    "display-arrangement-item-status",
+                    &[("position", position.into()), ("status", status.into())],
+                ))
+            } else {
+                node
+            };
+            if let Some(shared) = &display.shared {
+                // Length-prefix the device component so separators inside IDs cannot alias.
+                node = node.with_semantic_key(format!(
+                    "shared-display:{}:{}{}",
+                    shared.device.len(),
+                    shared.device,
+                    shared.output
+                ));
+            }
+            group.children.push(node);
         }
         Some(group)
     }
@@ -717,6 +758,7 @@ mod tests {
             ArrangedDisplay {
                 connector: "eDP-1".into(),
                 movement_group: None,
+                shared: None,
                 label: "Built-in display".into(),
                 number: 1,
                 placement: Placement::new(0, 0, 1920, 1080),
@@ -726,6 +768,7 @@ mod tests {
             ArrangedDisplay {
                 connector: "HDMI-A-1".into(),
                 movement_group: None,
+                shared: None,
                 label: "Desk monitor".into(),
                 number: 2,
                 placement: Placement::new(1920, 0, 1920, 1080),
@@ -763,6 +806,70 @@ mod tests {
         let mut canvas = DisplayArrangement::new(displays(), moves, ui::LocalState::new(None));
         canvas.rect = Rect::new(0.0, 0.0, 600.0, 220.0);
         canvas
+    }
+
+    #[test]
+    fn certified_shared_tiles_expose_independent_availability_and_inclusion() {
+        let mut canvas = canvas();
+        canvas.displays[0].shared = Some(SharedDisplayState {
+            device: "laptop".into(),
+            output: "edid:panel".into(),
+            online: false,
+            included: true,
+        });
+        canvas.displays[1].shared = Some(SharedDisplayState {
+            device: "desk".into(),
+            output: "edid:panel".into(),
+            online: true,
+            included: false,
+        });
+        let before = canvas.accessibility().unwrap();
+        assert!(
+            before.children[0]
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("Offline")
+        );
+        assert!(
+            !before.children[0]
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("Not in layout")
+        );
+        assert!(
+            before.children[1]
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("Not in layout")
+        );
+        assert!(
+            !before.children[1]
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("Offline")
+        );
+        assert_ne!(
+            before.children[0].semantic_key,
+            before.children[1].semantic_key
+        );
+        let mapping = canvas.mapping();
+        assert!(canvas.press(mapping.to_canvas(canvas.displays[1].placement).center()));
+        assert!(canvas.drag_to(mapping.to_canvas(canvas.displays[0].placement).center()));
+        let preview = canvas.drawn();
+        assert_eq!(preview[1].0.shared, canvas.displays[1].shared);
+        let after = canvas.accessibility().unwrap();
+        assert_eq!(
+            before.children[1].semantic_key,
+            after.children[1].semantic_key
+        );
+        canvas.displays[1].shared.as_mut().unwrap().online = false;
+        let offline_excluded = canvas.accessibility().unwrap();
+        let description = offline_excluded.children[1].description.as_ref().unwrap();
+        assert!(description.contains("Offline") && description.contains("Not in layout"));
     }
 
     #[test]
@@ -830,6 +937,7 @@ mod tests {
         canvas.displays.push(ArrangedDisplay {
             connector: "peer/DP-2".into(),
             movement_group: Some("peer".into()),
+            shared: None,
             label: "Second peer screen".into(),
             number: 3,
             placement: Placement::new(1920, 1080, 1280, 720),

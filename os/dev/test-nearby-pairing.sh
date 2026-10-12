@@ -277,8 +277,10 @@ await_state() {
 }
 no_privileged_pairing() {
   # Pairing never involves an administrator: nothing waits on a polkit agent
-  # and polkit was never asked.
-  vm_b ssh '! pgrep -x pkexec >/dev/null && ! pgrep -f polkit-agent-helper-1 >/dev/null && ! pgrep -f tilo-home-peer-control >/dev/null' \
+  # and polkit was never asked. The probe names processes by what they run,
+  # not by a pattern in a command line, which matched the remote shell
+  # carrying it.
+  vm_b ssh 'sh -s' < "$dev_dir/nearby-privileged-processes.sh" \
     || die "a privileged helper or polkit prompt is pending on B"
   if vm_b ssh 'journalctl -b --no-pager -o cat -u polkit.service' \
       | grep -E 'org\.tilo\.|FAILED to authenticate|tilo-home-peer-control'; then

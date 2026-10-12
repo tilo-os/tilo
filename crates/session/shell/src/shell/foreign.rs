@@ -4569,17 +4569,7 @@ impl Widget for ForeignSurfaceWidget {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        let x = origin.x + f64::from(l.location.x);
-        let y = origin.y + f64::from(l.location.y);
-        let next_rect = Rect::new(
-            x,
-            y,
-            x + f64::from(l.size.width),
-            y + f64::from(l.size.height),
-        );
+        let next_rect = ui::widget::layout_rect(taffy, node, origin);
         if self.rect != next_rect {
             self.rect = next_rect;
             self.placement_dirty = true;

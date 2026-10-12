@@ -299,10 +299,10 @@ pub(super) unsafe fn compute_widget_layout_depth(
         }
         for &node in nodes.keys() {
             // SAFETY: same contract as measurement; no topology mutation is
-            // permitted by adjust_layout_with_measure.
+            // permitted by adjust_layout_style.
             changed |= unsafe {
                 layout_bound_node(bindings, nodes, node, |widget| {
-                    widget.adjust_layout_with_measure(taffy, node, text)
+                    widget.adjust_layout_style(taffy, node, text)
                 })
             }
             .unwrap_or(false);
@@ -867,7 +867,12 @@ mod tests {
                 height: 20.0,
             }
         }
-        fn adjust_layout_style(&mut self, tree: &mut TaffyTree<()>, node: NodeId) -> bool {
+        fn adjust_layout_style(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            node: NodeId,
+            _text: &mut crate::text_render::TextRenderer,
+        ) -> bool {
             self.adjustments = self.adjustments.checked_add(1).unwrap();
             let mut style = tree.style(node).unwrap().clone();
             style.size.width = taffy::Dimension::length(if self.adjustments.is_multiple_of(2) {

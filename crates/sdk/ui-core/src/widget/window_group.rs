@@ -1,6 +1,7 @@
 use crate::animation::Spring;
 use crate::color_compat::ColorCompat;
 use crate::icons;
+use crate::num::f32_of_f64;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -72,18 +73,6 @@ fn instant_ago_ms(ms: u64) -> Instant {
         .unwrap_or_else(crate::time::now)
 }
 
-/// Narrows a screen-space coordinate, length or eased animation factor
-/// (`f64`, from taffy layout or CRDT storage) to the `f32` vello/taffy
-/// consume. Real output geometry never approaches `f32`'s range (or an
-/// eased factor its precision), so this never truncates in practice.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen coordinates/lengths and eased [0,1] factors are always far below f32's range"
-)]
-fn px_f32(v: f64) -> f32 {
-    v as f32
-}
-
 /// One critically-damped heavy spring per rect edge. A new target mid-flight
 /// keeps value and velocity, so Super+M twice is one motion, not a queue.
 struct RectSprings {
@@ -97,25 +86,25 @@ impl RectSprings {
     fn at(rect: Rect) -> Self {
         let params = SpringPresets::default().heavy;
         Self {
-            x: Spring::new(px_f32(rect.x0), params),
-            y: Spring::new(px_f32(rect.y0), params),
-            w: Spring::new(px_f32(rect.width()), params),
-            h: Spring::new(px_f32(rect.height()), params),
+            x: Spring::new(f32_of_f64(rect.x0), params),
+            y: Spring::new(f32_of_f64(rect.y0), params),
+            w: Spring::new(f32_of_f64(rect.width()), params),
+            h: Spring::new(f32_of_f64(rect.height()), params),
         }
     }
 
     fn set_target(&mut self, rect: Rect) {
-        self.x.set_target(px_f32(rect.x0));
-        self.y.set_target(px_f32(rect.y0));
-        self.w.set_target(px_f32(rect.width().max(0.0)));
-        self.h.set_target(px_f32(rect.height().max(0.0)));
+        self.x.set_target(f32_of_f64(rect.x0));
+        self.y.set_target(f32_of_f64(rect.y0));
+        self.w.set_target(f32_of_f64(rect.width().max(0.0)));
+        self.h.set_target(f32_of_f64(rect.height().max(0.0)));
     }
 
     fn snap(&mut self, rect: Rect) {
-        self.x.snap(px_f32(rect.x0));
-        self.y.snap(px_f32(rect.y0));
-        self.w.snap(px_f32(rect.width().max(0.0)));
-        self.h.snap(px_f32(rect.height().max(0.0)));
+        self.x.snap(f32_of_f64(rect.x0));
+        self.y.snap(f32_of_f64(rect.y0));
+        self.w.snap(f32_of_f64(rect.width().max(0.0)));
+        self.h.snap(f32_of_f64(rect.height().max(0.0)));
     }
 
     fn step(&mut self, dt: f32) {
@@ -212,7 +201,7 @@ pub struct WindowGroup {
     strip_usable_px: f64,
     rect: Rect,
     /// `(press-time cursor x, press-time resolved width in px)`.
-    resize_origin: Option<(f32, f64)>,
+    resize_origin: Option<(f32, f64, WindowWidth)>,
     pub hover_resize: bool,
     /// The pointer entered or left the resize band since the last frame,
     /// which shows or hides the grip.
@@ -528,7 +517,7 @@ impl WindowGroup {
     }
 
     fn arm_width_from_zero(&mut self) {
-        let target = px_f32(self.resolved_width_px());
+        let target = f32_of_f64(self.resolved_width_px());
         if self.reduce_motion {
             self.width_spring = None;
             return;
@@ -541,7 +530,7 @@ impl WindowGroup {
     }
 
     fn retarget_width(&mut self, from: f64, to: f64) {
-        let to = px_f32(to.max(0.0));
+        let to = f32_of_f64(to.max(0.0));
         if self.reduce_motion {
             self.width_spring = None;
             return;
@@ -550,7 +539,7 @@ impl WindowGroup {
             spring.set_target(to);
             return;
         }
-        let from = px_f32(from.max(0.0));
+        let from = f32_of_f64(from.max(0.0));
         if (from - to).abs() < 0.5 {
             return;
         }
@@ -621,7 +610,7 @@ impl WindowGroup {
         }
         let raw = (elapsed.as_secs_f64() / spawn_anim_secs()).clamp(0.0, 1.0);
         let eased = 1.0 - (1.0 - raw).powi(3);
-        px_f32(eased)
+        f32_of_f64(eased)
     }
 
     pub fn start_closing(&mut self) {
@@ -681,11 +670,12 @@ impl WindowGroup {
         } else {
             self.layout_width_px()
         };
+        let width = self.width;
         self.set_width_px(visible_width);
-        self.resize_origin = Some((pointer_x, visible_width));
+        self.resize_origin = Some((pointer_x, visible_width, width));
     }
     pub fn update_resize(&mut self, pointer_x: f32) {
-        if let Some((origin_x, origin_w)) = self.resize_origin {
+        if let Some((origin_x, origin_w, _)) = self.resize_origin {
             let delta = f64::from(pointer_x - origin_x);
             let usable = self.strip_usable_px;
             let clamped = (origin_w + delta).clamp(min_group_px(usable), max_group_px(usable));
@@ -695,6 +685,15 @@ impl WindowGroup {
     pub fn end_resize(&mut self) {
         self.resize_origin = None;
         self.pending_width_change = Some(self.width.permille());
+    }
+
+    /// An interrupted edge drag is a preview, not a committed view change.
+    fn cancel_resize(&mut self) {
+        if let Some((_, _, width)) = self.resize_origin.take() {
+            self.set_width(width);
+            self.hover_resize = false;
+            self.grip_dirty = true;
+        }
     }
 
     /// Does NOT touch `resize_origin` — the inter-group handle owns its
@@ -1464,6 +1463,20 @@ impl WindowGroup {
         handle_rect: Rect,
     ) -> bool {
         match event {
+            WindowEvent::Focused(false) if self.resize_origin.is_some() => {
+                self.cancel_resize();
+                // Focus loss must still reach the tab and application so
+                // their own pending input is cancelled too.
+                false
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if self.resize_origin.is_some()
+                    && event.state == ElementState::Pressed
+                    && event.logical_key == Key::Named(winit::keyboard::NamedKey::Escape) =>
+            {
+                self.cancel_resize();
+                true
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = pt;
@@ -1476,7 +1489,7 @@ impl WindowGroup {
                 self.fullscreen_hover = self.maximized && self.fullscreen_rect.contains(pt);
                 self.close_hover = self.maximized && self.close_rect.contains(pt);
                 if self.resize_origin.is_some() {
-                    self.update_resize(px_f32(pt.x));
+                    self.update_resize(f32_of_f64(pt.x));
                     return true;
                 }
                 false
@@ -1548,7 +1561,7 @@ impl WindowGroup {
                 // Anchor on the actual press point, not the group's right
                 // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
                 // edge would jump the window on grab.
-                self.begin_resize(px_f32(self.last_cursor.x));
+                self.begin_resize(f32_of_f64(self.last_cursor.x));
                 true
             }
             WindowEvent::MouseInput {
@@ -1689,7 +1702,7 @@ impl WindowGroup {
             // No offset: the per-host curve already carries the y-drift.
             // Ratio of two `Duration`s taken via `as_secs_f64` rather than
             // an integer->float `as` cast on the millisecond counts.
-            let raw = px_f32(
+            let raw = f32_of_f64(
                 (started.elapsed().as_secs_f64() / self.close_duration.as_secs_f64())
                     .clamp(0.0, 1.0),
             );
@@ -1706,7 +1719,7 @@ impl WindowGroup {
                 let eased = 1.0 - (1.0 - raw).powi(3);
                 let scale = SPAWN_ANIM_INITIAL_SCALE + (1.0 - SPAWN_ANIM_INITIAL_SCALE) * eased;
                 let x_off = SPAWN_ANIM_X_OFFSET * (1.0 - eased);
-                (px_f32(eased), x_off, 0.0, scale)
+                (f32_of_f64(eased), x_off, 0.0, scale)
             }
         } else {
             (1.0, 0.0, 0.0, 1.0)
@@ -1738,7 +1751,7 @@ impl WindowGroup {
             let elapsed = started.elapsed().as_secs_f64();
             let raw = (elapsed / (f64::from(CLOSE_FADE_MS) / 1000.0)).clamp(0.0, 1.0);
             let eased = 1.0 - (1.0 - raw).powi(3);
-            let alpha = px_f32(1.0 - eased);
+            let alpha = f32_of_f64(1.0 - eased);
             let scale = 1.0 + (-0.05) * eased; // 1.0 → 0.95
             let y_offset = -20.0 * eased;
             if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == id) {
@@ -2474,7 +2487,7 @@ impl Widget for WindowGroup {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
             size: Size {
-                width: Dimension::length(px_f32(self.layout_width_px())),
+                width: Dimension::length(f32_of_f64(self.layout_width_px())),
                 height: Dimension::percent(1.0),
             },
             flex_grow: 0.0,
@@ -2494,7 +2507,7 @@ impl Widget for WindowGroup {
             // External navigation (including a fullscreen host) owns its
             // own chrome and keeps the complete client area.
             if !self.external_navigation {
-                style.padding.top = length(px_f32(maximized_chrome_height(theme)));
+                style.padding.top = length(f32_of_f64(maximized_chrome_height(theme)));
             }
             if let Some(bar_node) = bar_node {
                 let mut bar_style = taffy.style(bar_node).cloned().unwrap_or_default();
@@ -3059,7 +3072,7 @@ mod tests {
         );
 
         group.hover_resize = false;
-        group.begin_resize(px_f32(rect.x1));
+        group.begin_resize(f32_of_f64(rect.x1));
         let dragging = render(&mut group);
         assert_ne!(
             at(&dragging, x, y),
@@ -4117,6 +4130,121 @@ mod tests {
         }
     }
 
+    struct EdgeResizeJourney {
+        row: crate::widget::GroupRow,
+        tree: TaffyTree<()>,
+        node: NodeId,
+        pointer: Point,
+    }
+
+    impl EdgeResizeJourney {
+        fn new() -> Self {
+            use taffy::prelude::TaffyMaxContent;
+
+            let mut row = crate::widget::GroupRow::new(vec![make_group()]);
+            let mut tree = TaffyTree::new();
+            let node = row.build_layout(
+                &mut tree,
+                &Theme::dark().with_reduce_motion(true),
+                &mut Default::default(),
+            );
+            let root = tree.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(900.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            );
+            tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+            row.apply_layout(&tree, node, Point::ZERO);
+            let rect = row.groups[0].get_rect();
+            assert!(rect.height() > 0.0);
+            Self {
+                row,
+                tree,
+                node,
+                pointer: Point::new(rect.x1 - 3.0, rect.center().y),
+            }
+        }
+
+        fn send(&mut self, event: &WindowEvent) -> bool {
+            Dispatch::new()
+                .layout(&self.tree, self.node)
+                .send(&mut self.row, event)
+                .handled
+        }
+
+        fn move_pointer(&mut self, dx: f64) {
+            self.send(&WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(self.pointer.x + dx, self.pointer.y),
+            });
+        }
+
+        fn mouse(&mut self, state: ElementState) {
+            self.send(&WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state,
+                button: MouseButton::Left,
+            });
+        }
+
+        fn begin(&mut self) {
+            self.move_pointer(0.0);
+            self.mouse(ElementState::Pressed);
+            assert!(self.row.wants_pointer_capture());
+            self.move_pointer(100.0);
+            assert_ne!(self.row.groups[0].width(), WindowWidth::Normal);
+            assert!(self.row.groups[0].take_pending_width_change().is_none());
+        }
+
+        fn assert_cancelled_and_restart(&mut self) {
+            assert!(
+                !self.row.wants_pointer_capture(),
+                "interruption must release capture"
+            );
+            assert_eq!(self.row.groups[0].width(), WindowWidth::Normal);
+            self.move_pointer(250.0);
+            self.mouse(ElementState::Released);
+            assert_eq!(self.row.groups[0].width(), WindowWidth::Normal);
+            assert!(self.row.groups[0].take_pending_width_change().is_none());
+            self.begin();
+            self.mouse(ElementState::Released);
+            assert!(!self.row.wants_pointer_capture());
+            assert!(self.row.groups[0].take_pending_width_change().is_some());
+            assert!(self.row.groups[0].take_pending_width_change().is_none());
+        }
+    }
+
+    #[test]
+    fn window_edge_resize_focus_loss_cancels_preview_and_allows_a_fresh_drag() {
+        let mut journey = EdgeResizeJourney::new();
+        journey.begin();
+        journey.send(&WindowEvent::Focused(false));
+        journey.assert_cancelled_and_restart();
+    }
+
+    #[test]
+    fn window_edge_resize_escape_cancels_preview_before_a_late_release() {
+        let mut journey = EdgeResizeJourney::new();
+        journey.begin();
+        let escape = WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: crate::synthetic_input::key_event(
+                Key::Named(winit::keyboard::NamedKey::Escape),
+                None,
+                ElementState::Pressed,
+            ),
+            is_synthetic: true,
+        };
+        assert!(journey.send(&escape));
+        journey.send(&escape);
+        journey.assert_cancelled_and_restart();
+    }
+
     #[test]
     fn resize_gesture_anchors_on_press_changes_width_and_drains_once() {
         // Case `resize_drag_changes_laid_out_width`.
@@ -4298,7 +4426,7 @@ mod tests {
 
             // In-flight resize drag holds the cursor even off the band —
             // pointer capture keeps the gesture alive.
-            g.begin_resize(px_f32(rect.x1));
+            g.begin_resize(f32_of_f64(rect.x1));
             assert_eq!(
                 Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
                 Some(winit::window::CursorIcon::EwResize),
@@ -4912,7 +5040,7 @@ mod tests {
             assert!(
                 g.width_spring
                     .as_ref()
-                    .is_some_and(|s| s.target() < px_f32(mid)),
+                    .is_some_and(|s| s.target() < f32_of_f64(mid)),
                 "Narrow on a 1200 px strip is smaller than the mid-open width",
             );
         }

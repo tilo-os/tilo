@@ -142,7 +142,7 @@ fn execute() -> Result<bool, String> {
         serde_json::to_vec_pretty(&catalogue).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    let mut driver = ui::headless::Driver::new_with_theme(
+    let mut driver = ui::headless::FrameHarness::new_with_theme(
         ui_state,
         Box::new(session.host),
         (scenario.viewport[0], scenario.viewport[1]),

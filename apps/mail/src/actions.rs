@@ -1331,7 +1331,7 @@ mod tests {
     use automerge::AutoCommit;
     use tilo_automerge::ApplyIncoming;
 
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::LocalTransport;
     use ui::framework::testing::TestApp;
 
     fn registry() -> ActionRegistry {
@@ -1392,15 +1392,6 @@ mod tests {
                 "x".repeat(MAX_CALENDAR_ICS_BYTES)
             ));
             assert!(!valid_calendar_invitation(&oversized));
-        }
-    }
-
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                panic!("expected a prompted action: {}", spec.id)
-            }
         }
     }
 
@@ -2086,7 +2077,7 @@ mod tests {
                 .iter()
                 .find(|a| a.id == "new-folder")
                 .unwrap();
-            let encoded = prompted_encode(spec, "Receipts");
+            let encoded = spec.build_text("Receipts").unwrap();
             let mut doc = app.read_document(Clone::clone);
             let decoded = registry().decode(&encoded).unwrap();
             let mut tx = LocalTransport::new();

@@ -112,12 +112,6 @@ struct AppHandler {
     /// Synthetic mouse events must retain touch modality rather than making
     /// the host immediately classify them as a fine pointer.
     dispatching_touch_pointer: bool,
-    /// Where the pointer last moved over the primary window, until it left.
-    last_pointer: Option<PhysicalPosition<f64>>,
-    /// The widgets moved or were rebuilt since the pointer last moved: a
-    /// control now under a still pointer has never seen it arrive, so a
-    /// press there replays the position first instead of being lost.
-    pointer_unsettled: bool,
     /// Per-window state handed to the next in-place reload. Keyed by the
     /// window id that stays for the life of the process.
     dev_window_state: std::collections::HashMap<String, Vec<u8>>,
@@ -1259,6 +1253,7 @@ impl AppHandler {
                 height: size.height.max(1),
                 base_color: self.app.theme.tokens.colors.surfaces.content,
                 damage_regions,
+                scroll_copies: Vec::new(),
                 full_redraw: true,
                 backdrop: crate::backdrop::BackdropFrame::default(),
             })
@@ -1762,6 +1757,7 @@ impl AppHandler {
                 height: inner.height.max(1),
                 base_color: Color::TRANSPARENT,
                 damage_regions,
+                scroll_copies: Vec::new(),
                 full_redraw: true,
                 // The compositor puts this window over the desktop; nothing
                 // under its surfaces is in this scene to blur.
@@ -2038,6 +2034,10 @@ impl AppHandler {
         // cannot describe repaints the whole window: a rebuilt tree, moved
         // geometry, a resized surface, and layers drawn over the widgets.
         let mut full_redraw_required = app.layout.structure_dirty;
+        // Armed for this frame: each rebuild it does clears it unless the
+        // widgets behind it described the change (a long list mounting the
+        // rows a scroll brought near).
+        app.layout.frame_rebuilds_described = true;
 
         // Records first: if the root widget opened a different
         // record, sync against that record's document, not the
@@ -2091,7 +2091,7 @@ impl AppHandler {
         // taffy tree from scratch so new widgets get node ids the
         // layout pass below can see.
         mark_first_frame("first-frame-build-layout-start");
-        app.layout.structure_dirty |= app.root_widget.take_structure_dirty();
+        app.layout.structure_dirty |= app.take_root_structure_dirty();
         // Captured BEFORE `rebuild_structure` clears it — a fresh
         // taffy tree always needs a full solve regardless of the
         // scroll fast path below.
@@ -2114,6 +2114,19 @@ impl AppHandler {
             return;
         };
         mark_first_frame("first-frame-layout-start");
+        // Every widget's box before a relayout that rebuilds nothing, and
+        // what says whether the layout pass rebuilt or resized: a frame
+        // whose only moves are scrolls this window copies stays sparse.
+        let boxes_before = (!structure_rebuilt
+            && app.layout.layout_dirty
+            && app
+                .history
+                .as_ref()
+                .is_none_or(|history| history.live_interactive())
+            && app.history_layout.is_none()
+            && app.close_admission.dialog.is_none())
+        .then(|| crate::scroll_copy::placed(app.root_widget.as_ref()));
+        let layout_before = (app.layout.rebuilds, app.layout.last_layout_logical);
         let Some((geometry_changed, t_compute_us, t_apply_us)) = run_layout_pass(
             app,
             root_node,
@@ -2129,8 +2142,19 @@ impl AppHandler {
             return;
         };
         mark_first_frame("first-frame-layout-done");
-        full_redraw_required |= structure_rebuilt || geometry_changed;
-        self.pointer_unsettled |= structure_rebuilt || geometry_changed;
+        // A relayout that moved widgets and rebuilt or resized nothing may be
+        // scrolls this window copies; that is decided with the frame's damage.
+        let moved_from = boxes_before.filter(|_| {
+            geometry_changed
+                && app.layout.last_layout_logical == layout_before.1
+                && (app.layout.rebuilds == layout_before.0 || app.layout.frame_rebuilds_described)
+        });
+        full_redraw_required |= structure_rebuilt || (geometry_changed && moved_from.is_none());
+        if geometry_changed {
+            // A rebuild marks it in `rebuild_structure`; a moved control
+            // under a still pointer has not seen it either.
+            app.input.pointer_replay.mark_unsettled();
+        }
         // Read before `draw_frame_content` drains widget dirty flags via
         // `mark_drawn`. Clean compositor/exposure redraws do not invalidate
         // independent native floating surfaces.
@@ -2175,11 +2199,15 @@ impl AppHandler {
         // window in full on the render worker whatever damage says; until it
         // takes damage there too, a tooltip is a layer like the others here.
         let mut top_layer = drawn.top_layer.is_some() || drawn.tooltip.is_some();
+        // What paints over the widgets without moving with a scroll and is no
+        // widget the copy planner sees: the header bar another desktop gets.
+        let before_decorations = scene.encoding().draw_tags.len();
         #[cfg(target_os = "linux")]
         {
             self.decorations.draw(app, &mut scene, transform);
             full_redraw_required |= self.decorations.take_repaint();
         }
+        let decorated = scene.encoding().draw_tags.len() != before_decorations;
         let backdrop =
             crate::backdrop::BackdropFrame::from_single_scene(backdrop_recording.finish());
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
@@ -2253,17 +2281,67 @@ impl AppHandler {
         // `mark_drawn` clears regular dirty flags. This makes the submitted
         // scene and its damage describe the same frame rather than trailing
         // animation by one frame.
+        let mut scroll_copies = Vec::new();
         if !full_redraw_required {
-            collect_submitted_widget_damage(app.root_widget.as_ref(), &mut damage_regions);
-            if !submit_presence_damage(
-                &mut damage_regions,
-                presence_damage.as_deref().unwrap_or_default(),
-                self.presence_layer.widgets_place_content_marks(),
+            let root = app.root_widget.as_ref();
+            // The retained target holds the last presented frame, so a scroll
+            // copies what stays on screen (`crate::scroll_copy`).
+            let mut offers = crate::scroll_copy::accepting(|| {
+                collect_submitted_widget_damage(root, &mut damage_regions);
+            });
+            // Moved geometry repaints the window unless every move is a
+            // scroll's content moving with it; rows a long list mounted or
+            // let go of in it are damage beside the copy.
+            if let Some(before) = &moved_from {
+                let moves = (!offers.is_empty()).then(|| {
+                    crate::scroll_copy::moves_besides(
+                        before,
+                        &crate::scroll_copy::placed(root),
+                        &offers,
+                    )
+                });
+                match moves {
+                    Some(moves) if moves.besides.is_empty() => {
+                        damage_regions.extend(moves.carried);
+                    }
+                    _ => full_redraw_required = true,
+                }
+            }
+            // Peer marks and a header bar paint over the content without
+            // moving with it, where the planner cannot see them.
+            if !offers.is_empty() && (decorated || self.presence_layer.paints()) {
+                damage_regions.extend(offers.iter().map(crate::scroll_copy::ScrollOffer::viewport));
+                offers.clear();
+            }
+            if full_redraw_required {
+                offers.clear();
+            }
+            let history = app.history.as_deref().map(|history| history as &dyn Widget);
+            let planned = crate::scroll_copy::plan(
+                &offers,
+                &std::iter::once(root).chain(history).collect::<Vec<_>>(),
                 f64::from(scale_factor),
-                KurboRect::new(0.0, 0.0, f64::from(width), f64::from(height)),
-            ) {
+                (width, height),
+            );
+            if full_redraw_required
+                || !submit_presence_damage(
+                    &mut damage_regions,
+                    presence_damage.as_deref().unwrap_or_default(),
+                    self.presence_layer.widgets_place_content_marks(),
+                    f64::from(scale_factor),
+                    KurboRect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+                )
+            {
                 full_redraw_required = true;
                 damage_regions.clear();
+            } else {
+                // Already in device pixels, and exact: no effect margin. What
+                // changed in place where a copy reads it lands one delta
+                // away; what the copies exposed is repainted as it is.
+                damage_regions.extend(planned.damage);
+                crate::scroll_copy::carry(&planned.copies, &mut damage_regions);
+                damage_regions.extend(planned.exposed);
+                scroll_copies = planned.copies;
             }
         }
         if !app.capture_frame_ready() {
@@ -2313,7 +2391,7 @@ impl AppHandler {
         }
         if crate::render_thread::retry::submit_redraw_frame(
             full_redraw_required,
-            !damage_regions.is_empty(),
+            !damage_regions.is_empty() || !scroll_copies.is_empty(),
         ) {
             let cpu_frame_id = app
                 .profiler
@@ -2340,6 +2418,7 @@ impl AppHandler {
                 height,
                 base_color: app.theme.tokens.colors.surfaces.content,
                 damage_regions,
+                scroll_copies,
                 full_redraw: full_redraw_required,
                 backdrop,
                 on_present: self.dev_reload_timing.take().map(|timing| {
@@ -2465,51 +2544,6 @@ impl AppHandler {
 
 impl AppHandler {
     /// `UserEvent` injection keeps the ordinary window dispatch after admission.
-    /// Before a press on the primary window, the pointer's last position
-    /// once more when the widgets moved or were rebuilt since it moved:
-    /// controls learn they are under the pointer from its moves, and one
-    /// swapped in under a still pointer would otherwise drop the click.
-    fn replay_unsettled_pointer(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window_id: WindowId,
-        event: &WindowEvent,
-    ) {
-        if self
-            .window
-            .as_ref()
-            .is_none_or(|window| window.id() != window_id)
-        {
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_pointer = Some(*position);
-                self.pointer_unsettled = false;
-            }
-            WindowEvent::CursorLeft { .. } => self.last_pointer = None,
-            WindowEvent::MouseInput {
-                device_id,
-                state: ElementState::Pressed,
-                ..
-            } if self.pointer_unsettled => {
-                self.pointer_unsettled = false;
-                if let Some(position) = self.last_pointer {
-                    self.route_window_event(
-                        event_loop,
-                        window_id,
-                        WindowEvent::CursorMoved {
-                            device_id: *device_id,
-                            position,
-                        },
-                        native_input_isolation::EventOrigin::Platform,
-                    );
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn injected_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -3131,7 +3165,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             None
         };
         self.note_host_appearance_event(&event);
-        self.replay_unsettled_pointer(event_loop, window_id, &event);
         self.route_window_event(
             event_loop,
             window_id,
@@ -4008,8 +4041,6 @@ impl App {
             floating_destination_present_frames: std::collections::HashMap::new(),
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),
             dispatching_touch_pointer: false,
-            last_pointer: None,
-            pointer_unsettled: false,
             native_scenario,
             native_input_ids: Vec::new(),
             physical_input_trace: std::env::var("TILO_PROFILE_PRESENTATION")

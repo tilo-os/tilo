@@ -1187,6 +1187,7 @@ impl Widget for FooterKey {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _: &mut crate::widget::Edits<'_>,
         _: &ModelPath,
     ) -> bool {
@@ -1205,7 +1206,7 @@ impl Widget for FooterKey {
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        target == self.action_target && self.perform_action(action, state, path)
+        target == self.action_target && self.perform_action(action, &[], state, path)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -2018,7 +2019,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // The content is laid out in the host's tree, so its nodes are the
         // window's: a field's focus request and the focus order name the
         // same nodes. The dialog's node covers its parent out of flow;
-        // `adjust_layout_with_measure` narrows its content box to the body.
+        // `adjust_layout_style` narrows its content box to the body.
         let content_node = self.content.build_layout(taffy, theme, node_map);
         self.host_content = Some(content_node);
         let dialog = self.test_id.clone();
@@ -2062,7 +2063,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         node
     }
 
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
@@ -2075,12 +2076,16 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // Compact presentation depends on both viewport axes. A synthetic
         // one-pixel height would classify every desktop sheet as a page and
         // measure its body at the wrong width, leaving it perpetually dirty.
-        let window = if self.presented {
-            self.window
-        } else {
-            tree_window(taffy, node)
-                .unwrap_or_else(|| Rect::new(0.0, 0.0, node_w, f64::from(l.size.height)))
-        };
+        // A presented dialog's last painted viewport can precede a resize.
+        // Measure against the current host tree before the next paint, so
+        // its body and wrapped text use the width they will actually occupy.
+        let window = tree_window(taffy, node).unwrap_or_else(|| {
+            if self.presented {
+                self.window
+            } else {
+                Rect::new(0.0, 0.0, node_w, f64::from(l.size.height))
+            }
+        });
         let body_w = body_width(window, self.max_width, &self.layout_theme);
         let pad = crate::num::f32_of_f64((node_w - body_w).max(0.0));
         let Ok(mut style) = taffy.style(node).cloned() else {
@@ -2097,14 +2102,13 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
         // Until the top layer has been painted over the window once, the
         // root of the tree the dialog stands in is the window: the sheet is
         // centred where the first paint will put it, so the content is
         // placed where it is drawn and hit from the first frame.
         if !self.presented {
-            self.window =
-                tree_window(taffy, node).unwrap_or_else(|| crate::widget::placed(&l, origin));
+            self.window = tree_window(taffy, node)
+                .unwrap_or_else(|| crate::widget::layout_rect(taffy, node, origin));
         }
         let Some(content_node) = taffy
             .children(node)
@@ -2579,7 +2583,7 @@ fn activate_focused(
             .accessibility()
             .is_some_and(|node| node.role == crate::a11y::Role::Button);
         return (button || !buttons_only)
-            && widget.perform_action(&crate::a11y::Action::Activate, state, path);
+            && widget.perform_action(&crate::a11y::Action::Activate, &[], state, path);
     }
     widget
         .children_mut()

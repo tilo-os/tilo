@@ -12,6 +12,8 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::num::{f32_of_f64, f32_of_u32, f32_of_usize, f64_of_usize, i32_of_f64};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{AlignItems, Dimension, NodeId, Size, Style, TaffyTree};
@@ -137,11 +139,11 @@ pub struct SidebarWheelDisc {
     cached_scene: Scene,
     /// Cache-validity fingerprint — see [`SidebarWheelDisc::current_fingerprint`].
     cached_fp: WheelCacheFp,
-    /// Whole-pixel origin the cached hit rects currently sit at, advanced
-    /// by [`SidebarWheelDisc::retarget_hit_rects`] on each pan frame that
-    /// takes the translate fast path, so the shift is applied once per
-    /// move rather than re-applied cumulatively.
-    hit_rects_origin_px: (i64, i64),
+    /// Origin the cached hit rects currently sit at, advanced by
+    /// [`SidebarWheelDisc::retarget_hit_rects`] on each pan frame that takes
+    /// the translate fast path, so the shift is applied once per move rather
+    /// than re-applied cumulatively.
+    hit_rects_origin: Point,
     /// `Some(p)`: summoned — detached from the strip's canvas, rim passing
     /// through `p`. `None`: docked, at the strip's left edge, panning with
     /// it. Summoning exists because docking scrolls off-screen with the strip.
@@ -153,11 +155,16 @@ pub struct SidebarWheelDisc {
 /// invalidate on every micro-step while still being comparable.
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 struct WheelCacheFp {
-    /// Top-left of the footprint. Split out from `size_px` because a
-    /// plain strip pan changes only this, not a single painted pixel —
-    /// letting `draw` replay the cached scene under a translation
-    /// instead of re-encoding it. See [`WheelCacheFp::content_eq`].
-    origin_px: (i64, i64),
+    /// Top-left of the footprint, exactly (`f64` bits). Split out from
+    /// `size_px` because a plain strip pan changes only this, not a single
+    /// painted pixel — letting `draw` replay the cached scene under a
+    /// translation instead of re-encoding it. See
+    /// [`WheelCacheFp::content_eq`]. Exact, not rounded: the replay moves
+    /// the disc by exactly as far as the strip it rides moved, so a strip
+    /// panned by a fraction of a layout pixel (a device pixel on a scaled
+    /// display) carries the disc with it to the same place whether it is
+    /// drawn on screen or in a retained canvas.
+    origin_bits: (u64, u64),
     size_px: (u64, u64),
     /// `visual_rotation_deg() * 100` rounded to i64 — hundredths keep
     /// the cache stable across float noise while still invalidating on
@@ -183,6 +190,14 @@ impl WheelCacheFp {
             && self.spoke_count == other.spoke_count
             && self.spoke_signature == other.spoke_signature
             && self.diameter_px == other.diameter_px
+    }
+
+    /// Top-left of the footprint.
+    fn origin(&self) -> Point {
+        Point::new(
+            f64::from_bits(self.origin_bits.0),
+            f64::from_bits(self.origin_bits.1),
+        )
     }
 
     /// A zero-width footprint means the disc has not laid out yet.
@@ -335,7 +350,7 @@ impl SidebarWheelDisc {
             spoke_hit_rects: Vec::new(),
             cached_scene: Scene::new(),
             cached_fp: WheelCacheFp::default(),
-            hit_rects_origin_px: (0, 0),
+            hit_rects_origin: Point::ZERO,
             summon_at: None,
         }
     }
@@ -447,7 +462,7 @@ impl SidebarWheelDisc {
         let Some(span) = self.band_angular_height_deg() else {
             return SPOKE_ANGLE_STEP_DEG; // No layout yet.
         };
-        let gap = span / usize_to_f32_lossy(n.min(SECTORS_ACROSS_BAND)) * SECTOR_SIZE_BOOST;
+        let gap = span / f32_of_usize(n.min(SECTORS_ACROSS_BAND)) * SECTOR_SIZE_BOOST;
         if gap.is_finite() {
             gap.clamp(MIN_SPOKE_GAP_DEG, MAX_SPOKE_GAP_DEG)
         } else {
@@ -483,7 +498,7 @@ impl SidebarWheelDisc {
     /// of the visible arc. Later workspaces sit at more negative
     /// rotations.
     fn rotation_for_idx(&self, idx: usize) -> f32 {
-        -usize_to_f32_lossy(idx) * self.spoke_gap_deg()
+        -f32_of_usize(idx) * self.spoke_gap_deg()
     }
 
     /// The rotations the wheel can actually rest at, as `(last, first)`.
@@ -502,7 +517,7 @@ impl SidebarWheelDisc {
             return 0;
         };
         let steps = (-rot / self.spoke_gap_deg()).round();
-        let clamped = steps.clamp(0.0, usize_to_f32_lossy(last));
+        let clamped = steps.clamp(0.0, f32_of_usize(last));
         // `clamped` is bounded to `[0.0, last]` by the clamp just above,
         // and `last` is a spoke count — never near `usize::MAX` — so the
         // truncation this cast performs never actually discards range.
@@ -742,10 +757,7 @@ impl SidebarWheelDisc {
     /// Used by [`Widget::draw`] to decide whether `self.cached_scene`
     /// can be reused. See [`WheelCacheFp`] for the field semantics.
     fn current_fingerprint(&self) -> WheelCacheFp {
-        let origin_px = (
-            f64_round_to_i64_lossy(self.rect.x0),
-            f64_round_to_i64_lossy(self.rect.y0),
-        );
+        let origin_bits = (self.rect.x0.to_bits(), self.rect.y0.to_bits());
         let size_px = (
             f64_round_to_u64_lossy(self.rect.width()),
             f64_round_to_u64_lossy(self.rect.height()),
@@ -763,7 +775,7 @@ impl SidebarWheelDisc {
         }
         let h = std::hash::Hasher::finish(&hasher);
         WheelCacheFp {
-            origin_px,
+            origin_bits,
             size_px,
             rotation_centi_deg,
             active_idx: self.active_idx,
@@ -788,26 +800,6 @@ impl SidebarWheelDisc {
     }
 }
 
-/// Lossy but bounded: the wheel never carries anywhere near 2^24
-/// workspaces/sectors, so this never actually drops a representable
-/// integer — it only silences the generic `usize -> f32` lint.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "workspace/spoke/sector counts stay far below f32's 24-bit exact-integer range"
-)]
-fn usize_to_f32_lossy(n: usize) -> f32 {
-    n as f32
-}
-
-/// Same rationale as [`usize_to_f32_lossy`], for the `f64` call sites.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "workspace/spoke/sector counts stay far below f64's 53-bit exact-integer range"
-)]
-fn usize_to_f64_lossy(n: usize) -> f64 {
-    n as f64
-}
-
 /// Rounds and casts to `i64` for cache-fingerprint fields: screen
 /// coordinates and rotation-centidegrees never come remotely close to
 /// `i64`'s range, so this never actually truncates.
@@ -817,6 +809,11 @@ fn usize_to_f64_lossy(n: usize) -> f64 {
 )]
 fn f64_round_to_i64_lossy(v: f64) -> i64 {
     v.round() as i64
+}
+
+/// How far `to` lies from `from`, exactly.
+fn offset(from: Point, to: Point) -> (f64, f64) {
+    (to.x - from.x, to.y - from.y)
 }
 
 /// Same rationale as [`f64_round_to_i64_lossy`], for the always-non-negative
@@ -830,39 +827,6 @@ fn f64_round_to_u64_lossy(v: f64) -> u64 {
     v.round() as u64
 }
 
-/// Rust's `f64 as i32` cast saturates rather than wrapping, so this is
-/// memory-safe regardless of `v`; the caller (`slot_reach`) clamps the
-/// result into `[0, MAX_SLOT_REACH]` immediately afterward anyway.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "saturating float-to-int cast; result is clamped by the caller"
-)]
-fn f64_saturating_to_i32(v: f64) -> i32 {
-    v as i32
-}
-
-/// Narrows an `f64` pixel/angle/duration value to the `f32` that
-/// `taffy`/`vello`'s own APIs take. The wheel's geometry never
-/// approaches a magnitude where this loses meaningful precision, so
-/// this is a deliberate, bounded narrowing rather than an accident.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space geometry stays well within f32's precision for this UI"
-)]
-fn f64_to_f32_lossy(v: f64) -> f32 {
-    v as f32
-}
-
-/// Pixel-coordinate delta, `i64 -> f64`: screen-space deltas between two
-/// fingerprints never approach f64's 53-bit exact-integer range.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "pixel-coordinate deltas are always tiny relative to f64's exact-integer range"
-)]
-fn i64_to_f64_lossy(v: i64) -> f64 {
-    v as f64
-}
-
 /// Clamps an alpha-channel value into `u8`'s range before the (otherwise
 /// saturating but silently-wrong-looking) narrowing cast, for stroke/fill
 /// alphas computed from a fixed base times a `[0, 1]`-ish fade factor.
@@ -873,17 +837,6 @@ fn i64_to_f64_lossy(v: i64) -> f64 {
 )]
 fn f32_to_u8_saturating(v: f32) -> u8 {
     v.clamp(0.0, 255.0) as u8
-}
-
-/// Lossy but bounded: motion-token durations (fling projection, timeouts)
-/// are always tiny millisecond counts, nowhere near f32's exact-integer
-/// range.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "motion durations are always tiny millisecond counts"
-)]
-fn u32_to_f32_lossy(n: u32) -> f32 {
-    n as f32
 }
 
 /// Safe lookup into a [`SidebarWheelDisc::slot_indices`] result for
@@ -909,9 +862,7 @@ fn slot_reach(sweep_rad: f64, gap_deg: f64) -> i32 {
     if !reach.is_finite() {
         return 0;
     }
-    f64_saturating_to_i32(reach)
-        .saturating_add(1)
-        .clamp(0, MAX_SLOT_REACH)
+    i32_of_f64(reach).saturating_add(1).clamp(0, MAX_SLOT_REACH)
 }
 
 /// Point on the circle of radius `r` about `c` at `angle` radians,
@@ -932,7 +883,7 @@ fn disc_segment(c: Point, r_out: f64, a0: f64, a1: f64) -> BezPath {
         path.line_to(polar(
             c,
             r_out,
-            a0 + span * (usize_to_f64_lossy(i) / usize_to_f64_lossy(STEPS)),
+            a0 + span * (f64_of_usize(i) / f64_of_usize(STEPS)),
         ));
     }
     path.close_path();
@@ -965,31 +916,20 @@ impl Widget for SidebarWheelDisc {
         // Leaf reserves the visible-arc width and takes 100% of the
         // parent slot's height — the disc's centre sits off-screen-left,
         // concept-faithful "huge wheel" feel.
-        // `TaffyTree::new_leaf` only ever inserts into its own slotmaps
-        // and returns `Ok` unconditionally (taffy 0.10's implementation
-        // has no failure path for a leaf with no child/parent refs) —
-        // so this is a `let...else` rather than a real fallible call.
-        #[allow(
-            clippy::unreachable,
-            reason = "verified against taffy 0.10.1's own source \
-                      (tree/taffy_tree.rs): new_leaf unconditionally inserts \
-                      into its own slotmaps and returns Ok — there is no Err \
-                      path for a plain leaf, so this cannot fire"
-        )]
-        let Ok(node) = taffy.new_leaf(Style {
-            size: Size {
-                width: Dimension::length(f64_to_f32_lossy(self.visible_width_px())),
-                height: Dimension::percent(1.0),
+        taffy.widget_leaf(
+            Style {
+                size: Size {
+                    width: Dimension::length(f32_of_f64(self.visible_width_px())),
+                    height: Dimension::percent(1.0),
+                },
+                flex_grow: 0.0,
+                flex_shrink: 0.0,
+                align_self: Some(AlignItems::Stretch),
+                ..Default::default()
             },
-            flex_grow: 0.0,
-            flex_shrink: 0.0,
-            align_self: Some(AlignItems::Stretch),
-            ..Default::default()
-        }) else {
-            unreachable!("TaffyTree::new_leaf has no failure path for a plain leaf node")
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1129,7 +1069,7 @@ impl Widget for SidebarWheelDisc {
         // the next idle frame takes the fast path.
         out_scene.append(&local, Some(out_transform));
         self.cached_scene = local;
-        self.hit_rects_origin_px = fp.origin_px;
+        self.hit_rects_origin = fp.origin();
         self.cached_fp = fp;
     }
 
@@ -1318,7 +1258,7 @@ impl Widget for SidebarWheelDisc {
 
     /// Key-path route for hosts that address nodes by ordinal; the same
     /// nodes, the same effect as [`Widget::perform_semantic_action`].
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
@@ -1443,9 +1383,7 @@ impl SidebarWheelDisc {
             return true;
         }
         if fp.content_eq(&self.cached_fp) {
-            let dx = i64_to_f64_lossy(fp.origin_px.0.saturating_sub(self.cached_fp.origin_px.0));
-            let dy = i64_to_f64_lossy(fp.origin_px.1.saturating_sub(self.cached_fp.origin_px.1));
-            let shift = Affine::translate((dx, dy));
+            let shift = Affine::translate(offset(self.cached_fp.origin(), fp.origin()));
             // `Affine * Affine` is matrix composition — total, no
             // overflow/panic path, unlike scalar arithmetic.
             #[allow(
@@ -1454,7 +1392,7 @@ impl SidebarWheelDisc {
             )]
             let shifted = out_transform * shift;
             out_scene.append(&self.cached_scene, Some(shifted));
-            self.retarget_hit_rects(fp.origin_px);
+            self.retarget_hit_rects(fp.origin());
             return true;
         }
         false
@@ -1776,9 +1714,9 @@ impl SidebarWheelDisc {
         let peer_count = peers.len().min(3);
         let dot_r = geom.r_out - LABEL_RIM_GAP / 2.0;
         let spacing = 7.0_f64 / dot_r;
-        let centre_bias = (usize_to_f64_lossy(peer_count) - 1.0) / 2.0;
+        let centre_bias = (f64_of_usize(peer_count) - 1.0) / 2.0;
         for (kk, user) in peers.iter().take(peer_count).enumerate() {
-            let off = (usize_to_f64_lossy(kk) - centre_bias) * spacing;
+            let off = (f64_of_usize(kk) - centre_bias) * spacing;
             let (rr, gg, bb) = ctx.presence.color_for(user);
             // Empty-initials Avatar chip in the peer's own colour,
             // matching the cursor/avatar sites.
@@ -1910,7 +1848,7 @@ impl SidebarWheelDisc {
         self.last_cursor_pos = Some(p);
         if let Some(origin) = self.drag_from {
             let dy = p.y - origin.y;
-            let delta_deg = f64_to_f32_lossy(dy) * Self::deg_per_pixel();
+            let delta_deg = f32_of_f64(dy) * Self::deg_per_pixel();
             // Where the pointer asks the wheel to be, before
             // resistance and detent magnetism have a say.
             let raw = self.drag_rotation_origin + delta_deg;
@@ -1955,7 +1893,7 @@ impl SidebarWheelDisc {
         }
         let dy = match *delta {
             winit::event::MouseScrollDelta::LineDelta(_, y) => y * 16.0,
-            winit::event::MouseScrollDelta::PixelDelta(p) => f64_to_f32_lossy(p.y),
+            winit::event::MouseScrollDelta::PixelDelta(p) => f32_of_f64(p.y),
         };
         // Every `WHEEL_DETENT_PX` triggers a workspace advance via
         // `click_to_spoke` (a spring settle, not a teleport); at an
@@ -2034,20 +1972,11 @@ impl SidebarWheelDisc {
         false
     }
 
-    /// Slide cached click targets to `target_origin_px` — used on the pan
+    /// Slide cached click targets to `target_origin` — used on the pan
     /// fast-path, where the scene replays under a translation instead of
     /// re-encoding, so the absolute-coordinate hit rects would otherwise go stale.
-    fn retarget_hit_rects(&mut self, target_origin_px: (i64, i64)) {
-        let dx = i64_to_f64_lossy(
-            target_origin_px
-                .0
-                .saturating_sub(self.hit_rects_origin_px.0),
-        );
-        let dy = i64_to_f64_lossy(
-            target_origin_px
-                .1
-                .saturating_sub(self.hit_rects_origin_px.1),
-        );
+    fn retarget_hit_rects(&mut self, target_origin: Point) {
+        let (dx, dy) = offset(self.hit_rects_origin, target_origin);
         if dx == 0.0 && dy == 0.0 {
             return;
         }
@@ -2061,7 +1990,7 @@ impl SidebarWheelDisc {
                 .plus_rect
                 .with_origin(Point::new(self.plus_rect.x0 + dx, self.plus_rect.y0 + dy));
         }
-        self.hit_rects_origin_px = target_origin_px;
+        self.hit_rects_origin = target_origin;
     }
 
     /// Snap `rotation_deg` to the nearest spoke, exposed so tests can
@@ -2104,7 +2033,7 @@ impl SidebarWheelDisc {
         } else {
             // Project from where the gesture *ended*, not the trailing rim
             // position — the lag is meant to be visible, not subtracted.
-            let coast_s = u32_to_f32_lossy(Gesture::default().fling_projection_ms) / 1000.0;
+            let coast_s = f32_of_u32(Gesture::default().fling_projection_ms) / 1000.0;
             let projected = self.rotation_deg + velocity * coast_s;
             self.rotation_for_idx(self.idx_at_rotation(projected))
         };
@@ -2398,6 +2327,55 @@ mod tests {
     /// that care which rows are visible need this, not `mk`'s square rect.
     fn live_slot() -> Rect {
         Rect::new(0.0, 40.0, 234.0, 830.0)
+    }
+
+    /// A strip panned by a fraction of a layout pixel (one device pixel at
+    /// 150 % is two thirds of one) carries the docked disc exactly as far:
+    /// the cached drawing replays where a fresh encode at the new place
+    /// would draw, so the disc a retained canvas shows and the one drawn on
+    /// screen land on the same pixels, and its click targets follow.
+    #[test]
+    fn a_fractional_pan_moves_the_cached_disc_exactly_as_far() {
+        let spokes = || {
+            vec![
+                SpokeLabel {
+                    text: "Home".into(),
+                    workspace_id: None,
+                },
+                SpokeLabel {
+                    text: "Work".into(),
+                    workspace_id: None,
+                },
+            ]
+        };
+        let mut panned = SidebarWheelDisc::new(spokes());
+        layout_into_slot(&mut panned, live_slot());
+        paint(&mut panned);
+        let before = panned.plus_rect;
+        assert!(before.area() > 0.0, "the first paint places the add row");
+        let step = 2.0 / 3.0;
+        let mut at = live_slot();
+        for _ in 0..4 {
+            panned.rect.x0 -= step;
+            panned.rect.x1 -= step;
+            at.x0 -= step;
+            at.x1 -= step;
+            paint(&mut panned);
+            let mut fresh = SidebarWheelDisc::new(spokes());
+            layout_into_slot(&mut fresh, at);
+            paint(&mut fresh);
+            assert!(
+                (panned.plus_rect.x0 - fresh.plus_rect.x0).abs() < 1e-9
+                    && (panned.plus_rect.y0 - fresh.plus_rect.y0).abs() < 1e-9,
+                "the replayed disc's add row {:?} is where a fresh encode puts it, {:?}",
+                panned.plus_rect,
+                fresh.plus_rect
+            );
+        }
+        assert!(
+            (panned.plus_rect.x0 - (before.x0 - 4.0 * step)).abs() < 1e-9,
+            "four device-pixel steps move the add row by exactly 8/3 layout pixels"
+        );
     }
 
     #[test]
@@ -2855,7 +2833,7 @@ mod tests {
             layout_into_slot(&mut d, live_slot());
 
             for step in 0_usize..24 {
-                d.rotation_deg = usize_to_f32_lossy(step) * 15.0;
+                d.rotation_deg = f32_of_usize(step) * 15.0;
                 paint(&mut d);
                 let (r_in, r_out) = d.label_band_radii();
                 let c = d.disc_centre();
@@ -2889,7 +2867,7 @@ mod tests {
             layout_into_slot(&mut d, live_slot());
 
             for step in 0..72 {
-                d.rotation_deg = usize_to_f32_lossy(step) * 5.0;
+                d.rotation_deg = f32_of_usize(step) * 5.0;
                 paint(&mut d);
                 assert!(
                     d.plus_rect.area() > 0.0,
@@ -3214,8 +3192,8 @@ mod tests {
         let node = d.build_layout(&mut taffy, &theme, &mut node_map);
         let mut style = taffy.style(node).unwrap().clone();
         style.size = Size {
-            width: Dimension::length(f64_to_f32_lossy(d.visible_width_px().min(slot.width()))),
-            height: Dimension::length(f64_to_f32_lossy(slot.height())),
+            width: Dimension::length(f32_of_f64(d.visible_width_px().min(slot.width()))),
+            height: Dimension::length(f32_of_f64(slot.height())),
         };
         taffy.set_style(node, style).unwrap();
         taffy
@@ -3708,7 +3686,7 @@ mod tests {
                 // Each hand-off happens as the wheel crosses the boundary
                 // between the two, i.e. half a detent from either's home.
                 for (idx, rot) in &steps_at {
-                    let boundary = -(usize_to_f32_lossy(*idx) - 0.5) * gap;
+                    let boundary = -(f32_of_usize(*idx) - 0.5) * gap;
                     assert!(
                         (rot - boundary).abs() < gap * 0.15,
                         "the indicator changed to {idx} at {rot:.2}°, but the boundary \
@@ -3770,7 +3748,7 @@ mod tests {
                     worst_overshoot * 100.0
                 );
 
-                let ms = usize_to_f32_lossy(frames_taken) * 1000.0 / 60.0;
+                let ms = f32_of_usize(frames_taken) * 1000.0 / 60.0;
                 assert!(
                     (250.0..900.0).contains(&ms),
                     "the settle took {ms:.0} ms. Under ~250 ms it snaps and the weight is \
@@ -3888,7 +3866,7 @@ mod tests {
                         "overscroll reached {at:.1}°, past its {reach:.1}° ceiling — the \
                          wheel can be dragged somewhere it does not belong"
                     );
-                    let raw = f64_to_f32_lossy(pull_px) * DRAG_FACTOR;
+                    let raw = f32_of_f64(pull_px) * DRAG_FACTOR;
                     assert!(
                         at < raw,
                         "pulling {pull_px} px past the end moved the wheel {at:.1}° of the \
@@ -4244,7 +4222,7 @@ mod tests {
             "a stale address is refused, never guessed"
         );
         assert!(
-            !d.perform_action_at(
+            !d.perform_action(
                 &Action::Activate,
                 &[9],
                 &mut ui::widget::Edits::lend(&mut doc),
@@ -4252,7 +4230,7 @@ mod tests {
             ),
             "a stale key is refused, never guessed"
         );
-        assert!(d.perform_action_at(
+        assert!(d.perform_action(
             &Action::Activate,
             &[1],
             &mut ui::widget::Edits::lend(&mut doc),

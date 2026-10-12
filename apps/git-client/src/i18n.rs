@@ -5,36 +5,7 @@
 //! manager. The locale follows the usual POSIX variables and falls back per
 //! message to `en-US`.
 
-use ui::i18n::{ArgValue, EmbeddedCatalog};
-
-const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
-const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
-
-static CATALOG: EmbeddedCatalog = catalog();
-
-const fn catalog() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new(
-        "en-US",
-        &[("en-US", SOURCE_FTL), ("de-DE", DE_FTL)],
-        "git-remote-running",
-    )
-    .with_system_locale();
-    // Unit tests assert the source copy; keep them independent of the
-    // developer's or CI host's locale.
-    #[cfg(test)]
-    let catalog = catalog.with_pinned_locale("en-US");
-    catalog
-}
-
-/// The message `key` in the active locale.
-pub fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-
-/// The message `key` with its named variables filled in.
-pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
-}
+ui::embedded_catalog!(pub fn, "git-remote-running", ["en-US", "de-DE"]);
 
 /// Select `locale` (BCP-47 or POSIX) on this thread.
 pub fn set_locale(locale: &str) {
@@ -44,6 +15,10 @@ pub fn set_locale(locale: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::i18n::ArgValue;
+
+    const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
+    const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
 
     /// Every message the source catalogue has, the German one has too, so a
     /// German window never mixes languages.

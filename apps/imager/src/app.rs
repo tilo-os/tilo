@@ -47,7 +47,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::icons::Icon;
-use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::text_render::{ParagraphAlign, TextRenderer};
@@ -2339,18 +2338,6 @@ impl Widget for ImagerApp {
 
     fn needs_idle_sync(&self) -> bool {
         self.job_control.is_some() || false || self.release_download.is_some()
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, text_renderer, theme, presence);
     }
 }
 

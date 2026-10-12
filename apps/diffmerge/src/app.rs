@@ -24,7 +24,6 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, EffectReply, Effected};
-use ui::permissions::PermissionContext;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
 };
@@ -798,10 +797,7 @@ impl Widget for DiffMergeApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         // Drive both views to the content rect directly so mode switches
         // don't require a taffy rebuild to position correctly, and so the
         // views end at the window bottom rather than a toolbar's height below
@@ -1045,18 +1041,6 @@ impl Widget for DiffMergeApp {
         self.invalidation.paint = false;
         self.diff.mark_drawn();
         self.merge.mark_drawn();
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, tr, theme, presence);
     }
 }
 
@@ -1838,7 +1822,7 @@ mod tests {
         assert_eq!(selected_compact_source(app), "Show Ours source");
 
         let theirs_key = ui::a11y::hash_key(&"diffmerge.source.theirs");
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             &mut app.merge,
             &ui::a11y::Action::Activate,
             &[theirs_key],

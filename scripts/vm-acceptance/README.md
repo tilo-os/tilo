@@ -194,8 +194,10 @@ run here on every full run instead, on the dev disk under KVM:
   applications <app>`) and timed to the app's own `first-frame-presented` startup mark,
   so the time holds the compositor's dispatch, the launcher and the sandbox as well as
   the app's start; it waits for the app's processes to exit before the next open. The
-  median is held to the app's budget on the session's renderer (`app_startup.budget_ms`);
-  on a GPU the p95 is also held to the KPI document's target (`tools/perf/kpi-budgets.toml`).
+  median is held to the app's warm-open budget on the session's renderer
+  (`app_startup.warm_open_budget_ms`: 1.5 s on a CPU rasterizer, tighter than a launch's
+  3 s, otherwise the app's budget); on a GPU the p95 is also held to the KPI document's
+  target (`tools/perf/kpi-budgets.toml`).
   Each open is split into segments that add up to it (`open_segments`): request to the
   launcher's start, the launcher's own phases (the marks it hands the app in
   `TILO_STARTUP_LAUNCHER_MARKS`), the launcher's hand-off to the app's `main` (bubblewrap,
@@ -291,7 +293,7 @@ fail P01 if the VM booted anything else, was moved onto another image since, or 
 | apps | A01–A07: Terminal (live shell), Files, Settings, Notes, Store, a host Wayland app, an X11 app — first frame, placement, focus, exit on close, no false toasts. A08–A13, the apps used every day, one per toolkit and protocol path: Chromium on Wayland (A08, the engine Electron apps ship) and forced onto X11 (A09), GNOME Text Editor (A10, GTK4/libadwaita), FeatherPad (A11, Qt6 Wayland), alacritty (A12, winit/OpenGL), glxgears (A13, OpenGL X11 like games) — window in the current strip with focus, a first frame with content, the right buffer scale on both outputs as it moves between them, real-keyboard typing, copy to and paste from Tilo's clipboard, exit on close; A13 also full screen and back. A14 Files' first launch: process start to first presented frame within budget, and its folder listing read off its AT-SPI tree. A15 ten warm opens each of Files, Notes and Settings, request to first frame; A16 every launch of the run within its app's budget |
 | search | S01–S09: empty-query view, English and German names, launch from search, windows, actions, files, room activity, workspace history |
 | resources | R01/R02 idle CPU, wakeups and frames with no apps and with several (`R01-idle-empty.json`/`R02-idle-apps.json` carry CPU and context switches per thread of the compositor, `shell_threads` and `shell_thread_groups`, and of any other process above 0.5%, plus the compositor's age when the window opened, `session_age_s`; the compositor is the slot user's `shell` with no `shell` above it, so its own shader-seed child is never taken for it; an over-budget compositor names its busiest threads), R03 memory per open app from its own cgroup (memory.current, anon/file) plus the compositor's anonymous RSS; R01 and R03 also write the compositor's `smaps_rollup`, status lines and 20 largest anonymous mappings (`R01-shell-smaps.json`/`R03-shell-smaps.json`), so R03 less R01 is what four windows cost and a growing `[heap]` or run of glibc arenas reads apart from one GPU buffer, R04 frame CPU p50/p95/p99 during interactions (wall time on real display hardware), R05 every app window renders on the machine's GPU, not a CPU fallback; the renderer and whether the display is real hardware are recorded; R06 boot to a usable greeter and where its time went, R07 the render-path gate, R08 greeter sign-in to a usable desktop |
-| basics | B01 brightness, B02 Wi-Fi, B03 Bluetooth (unavailable without hardware, no fake controls), B04 de nodeadkeys + compose applied to the physical keys, B05 display arrangement, B06 hotplug, B07 GNOME keyboard import (host-desktop installs only, so unobservable in a VM) |
+| basics | B01 brightness, B02 Wi-Fi, B03 Bluetooth (unavailable without hardware, no fake controls), B04 de nodeadkeys + compose applied to the physical keys, B05 display arrangement, B06 hotplug. The GNOME keyboard import runs only in a host-desktop session, so the host-desktop VM test checks it (dist/session/vm-e2e, H05) |
 
 The everyday apps (A08–A13) come with the dev image (`os/Containerfile.dev`, about 600 MiB,
 two thirds of it Chromium; the desktop entries for the Chromium variants and glxgears are in

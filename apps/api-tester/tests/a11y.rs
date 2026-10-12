@@ -21,7 +21,7 @@ use api_tester::ApiTesterShell;
 use api_tester::actions::ApiTesterEffect;
 use ui::a11y::Role;
 use ui::framework::testing::TestApp;
-use ui::headless::Driver;
+use ui::headless::FrameHarness;
 
 /// The live app at `viewport`, staged for `scenario` as `--shots` stages it.
 fn staged(scenario: Option<&str>, viewport: (u32, u32)) -> TestApp<ApiTesterShell> {
@@ -44,7 +44,7 @@ fn captured(scenario: &str, viewport: (u32, u32)) -> TestApp<ApiTesterShell> {
 
 /// All published semantic descendants, including shared list rows that do
 /// not each create another Tab stop.
-fn semantic_nodes(d: &Driver) -> Vec<ui::a11y::AccessNode> {
+fn semantic_nodes(d: &FrameHarness) -> Vec<ui::a11y::AccessNode> {
     fn flatten(node: ui::a11y::AccessNode, out: &mut Vec<ui::a11y::AccessNode>) {
         let children = node.children.clone();
         out.push(node);
@@ -60,14 +60,14 @@ fn semantic_nodes(d: &Driver) -> Vec<ui::a11y::AccessNode> {
 }
 
 /// Drive a synthetic retained row action through its published AT owner.
-fn act_named(d: &mut Driver, name: &str, action: &ui::a11y::Action) {
+fn act_named(d: &mut FrameHarness, name: &str, action: &ui::a11y::Action) {
     let node = d
         .a11y_node_named(name)
         .unwrap_or_else(|| panic!("missing actionable {name}: {}", d.dump_json()));
     d.perform_a11y_action(node, action).unwrap();
 }
 
-fn environment_command(d: &mut Driver, choice: &str) {
+fn environment_command(d: &mut FrameHarness, choice: &str) {
     if !d.targets().contains_key("api.env") {
         d.perform_named("nav-shell-sidebar", &ui::a11y::Action::Focus)
             .expect("the actual sidebar control is reachable");
@@ -83,13 +83,13 @@ fn environment_command(d: &mut Driver, choice: &str) {
 }
 
 /// Apply what the last input submitted.
-fn settle(d: &mut Driver) {
+fn settle(d: &mut FrameHarness) {
     d.wait_until(ui::time::Duration::ZERO, |_| true);
 }
 
 /// Every surface (full demo, empty and error responses, the narrow window,
 /// contextual sheets) exposes its controls as named accessibility nodes; each
-/// case mounts its own Driver.
+/// case mounts its own `FrameHarness`.
 #[test]
 fn every_surface_exposes_named_accessible_controls() {
     every_control_is_a_focusable_accessible_node();
@@ -275,7 +275,7 @@ fn contextual_forms_expose_only_their_named_fields() {
 }
 
 /// Tab order, Enter activation and Escape dismissal drive the real widget
-/// handlers; each case mounts its own Driver.
+/// handlers; each case mounts its own `FrameHarness`.
 #[test]
 fn keyboard_focus_traverses_activates_and_dismisses_through_real_handlers() {
     tab_traverses_every_control_in_order();
@@ -433,7 +433,7 @@ fn composition_disclosure_hides_maintenance_and_returns_focus() {
 
 /// The request divider responds to keyboard and pointer, its manual
 /// preference survives resizes and tab changes, and 2x text keeps every
-/// control on screen; each case mounts its own Driver.
+/// control on screen; each case mounts its own `FrameHarness`.
 #[test]
 fn request_divider_and_controls_survive_resize_and_text_scale() {
     composition_params_fit_rows_and_divider_adjusts_with_keyboard();
@@ -463,7 +463,7 @@ fn composition_params_fit_rows_and_divider_adjusts_with_keyboard() {
     assert_eq!(d.targets()["api.request-divider"], before);
 }
 
-fn click_tab(d: &mut Driver, index: u32) {
+fn click_tab(d: &mut FrameHarness, index: u32) {
     let rect = d.targets()["api.request-tabs"];
     d.click_at(
         rect.x0 + rect.width() * (f64::from(index) + 0.5) / 4.0,
@@ -471,14 +471,22 @@ fn click_tab(d: &mut Driver, index: u32) {
     );
 }
 
-fn move_pointer(d: &mut Driver, x: f64, y: f64) {
+fn move_pointer(d: &mut FrameHarness, x: f64, y: f64) {
     d.send(&winit::event::WindowEvent::CursorMoved {
         device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(x, y),
     });
 }
 
-fn assert_sidebar_targets(d: &Driver, height: f64) {
+/// Settle the drawer's animation through real redraw ticks.
+fn settle_drawer(d: &mut FrameHarness) {
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        d.relayout();
+    }
+}
+
+fn assert_sidebar_targets(d: &FrameHarness, height: f64) {
     let targets = d.targets();
     let mut sidebar = Vec::new();
     for (id, rect) in &targets {
@@ -591,7 +599,7 @@ fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
 }
 
 /// Real management buttons and Send (pointer and keyboard) drive the same
-/// mutations and requests as the live app; each case mounts its own Driver.
+/// mutations and requests as the live app; each case mounts its own `FrameHarness`.
 #[test]
 fn real_buttons_perform_canonical_mutations_and_live_sends() {
     composition_management_real_buttons_keep_canonical_mutations();
@@ -646,11 +654,7 @@ fn composition_narrow_escape_paging_and_open_resize_are_reachable() {
     d.perform_named("nav-shell-sidebar", &ui::a11y::Action::Focus)
         .unwrap();
     d.key("Enter");
-    // Settle the drawer's existing animation through real redraw ticks.
-    for _ in 0..30 {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        d.relayout();
-    }
+    settle_drawer(d);
     assert_sidebar_targets(d, 900.0);
     environment_command(d, "Add variable…");
     d.wait_for_named("api.form-variable-key", ui::time::Duration::from_secs(5))
@@ -680,6 +684,12 @@ fn composition_real_two_x_retains_all_controls_and_response_space() {
     )
     .unwrap();
     assert_sidebar_targets(d, 900.0);
+    // Large text narrows the window to the drawer, which covers the request
+    // while open; close it to reach the request.
+    d.perform_named("nav-shell-sidebar", &ui::a11y::Action::Focus)
+        .unwrap();
+    d.key("Enter");
+    settle_drawer(d);
     let targets = d.targets();
     assert!(targets["api.request-divider"].y1 < 700.0);
     assert!(targets["api.request-tabs"].x1 <= 800.0);

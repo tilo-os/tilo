@@ -230,7 +230,7 @@ impl App {
             }
         }
         self.invalidate_widget_resource_cache();
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.layout.layout_dirty = true;
     }
     pub(super) fn update_history_focus_order(
@@ -504,7 +504,7 @@ impl App {
                 self.invalidate_widget_resource_cache();
                 self.publish_owned_documents();
             }
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             return true;
         }
         let nested_focus = unsafe {
@@ -535,7 +535,9 @@ impl App {
             self.bindings.clear();
             self.focused_node = None;
             let changed = history.invalidate_owner();
-            self.layout.structure_dirty |= changed;
+            if changed {
+                self.layout.request_rebuild();
+            }
             return changed;
         }
         if history.has_review_request() {
@@ -565,7 +567,7 @@ impl App {
                     self.publish_owned_documents();
                 }
             }
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
             return true;
         }
         if history.returning_live() {

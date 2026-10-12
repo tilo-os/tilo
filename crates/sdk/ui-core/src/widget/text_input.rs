@@ -2913,8 +2913,8 @@ impl TextInput {
         self.model_layout_dirty = false;
     }
 
-    /// Bypasses `draw_with_presence` — only safe on local-mode `TextInputs`
-    /// with no presence path or permission scope.
+    /// Places the input without a layout tree — only safe on local-mode
+    /// `TextInputs` with no presence path or permission scope.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.single_origin.x += rect.x0 - self.rect.x0;
         self.single_origin.y += rect.y0 - self.rect.y0;
@@ -4182,6 +4182,15 @@ impl TextInput {
         })
     }
 
+    /// What the last draw painted outside the field's rect: while a
+    /// correction is offered, its chip, which floats above or below the
+    /// field. A host proving its own damage repaints this too when the field
+    /// changes.
+    #[must_use]
+    pub fn overhang(&self) -> Option<Rect> {
+        self.suggestion_chip
+    }
+
     /// Replace the previewed word with its correction (a click on the chip).
     fn accept_suggestion(&mut self) -> bool {
         self.refresh_personal_spelling();
@@ -5046,8 +5055,7 @@ impl Widget for TextInput {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.apply_layout_external(crate::widget::placed(&layout, origin));
+        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
     /// Single-line keeps its fixed row height from `build_layout` (ZERO
@@ -5211,6 +5219,7 @@ impl Widget for TextInput {
             self.draw_spelling(scene, transform, theme);
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
+            self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
             return;
         }
         self.multiline_shaped = false;
@@ -5312,6 +5321,7 @@ impl Widget for TextInput {
         drop(spelling_probe);
         self.draw_autocorrection(scene, transform, theme);
         self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
+        self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -5695,6 +5705,7 @@ impl Widget for TextInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -5776,84 +5787,6 @@ impl Widget for TextInput {
             return None;
         }
         Some((self.core.caret(), self.text.clone()))
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(key) = crate::presence::capability::presence_key(self) {
-            // Peer caret + selection reuse `caret_rect`/`selection_rect`, never a
-            // re-derived approximation. `transform` maps the local rect to the scene.
-
-            // Fading "just typed" highlighter under the caret/selection.
-            let now = crate::time::now();
-            for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
-                let rect = self.selection_rect(theme, range.start, range.end);
-                // `Affine * Point` is a geometric transform over f64 coordinates,
-                // not integer arithmetic that can overflow/wrap.
-                #[allow(
-                    clippy::arithmetic_side_effects,
-                    reason = "Affine*Point transform over f64 screen coordinates, no overflow/wrap semantics"
-                )]
-                let (p0, p1) = (
-                    transform * vello::kurbo::Point::new(rect.x0, rect.y0),
-                    transform * vello::kurbo::Point::new(rect.x1, rect.y1),
-                );
-                presence.draw_peer_typing(
-                    scene,
-                    theme,
-                    &user,
-                    &[(vello::kurbo::Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
-                );
-            }
-            if let Some(list) = presence.carets.get(&key) {
-                for (user, caret) in list {
-                    let name = presence.display_name(user);
-                    presence.draw_peer_caret_labeled(
-                        scene,
-                        theme,
-                        text_renderer,
-                        transform,
-                        user,
-                        &name,
-                        self.caret_rect(theme, *caret),
-                    );
-                }
-            }
-
-            if let Some(list) = presence.selections.get(&key) {
-                for (user, range) in list {
-                    for r in self.selection_rects(theme, range.start, range.end) {
-                        presence.draw_peer_selection(scene, theme, transform, user, r);
-                    }
-                }
-            }
-        }
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let r = self.rect;
-            let overlay = Self::PERMISSION_DENIED_OVERLAY;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                Affine::IDENTITY,
-                overlay,
-                None,
-                &r,
-            );
-        }
     }
 
     /// Paints the open context menu here so it floats above every sibling
@@ -5983,6 +5916,81 @@ impl crate::widget::controls::ActionControls for TextInput {
 }
 
 impl TextInput {
+    /// Peers' typing marks, carets and selections — at the field's own
+    /// caret and selection geometry rather than a generic focus ring — then
+    /// the denied-permission overlay.
+    fn draw_peers_and_gate(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        if let Some(key) = crate::presence::capability::presence_key(self) {
+            // Peer caret + selection reuse `caret_rect`/`selection_rect`, never a
+            // re-derived approximation. `transform` maps the local rect to the scene.
+
+            // Fading "just typed" highlighter under the caret/selection.
+            let now = crate::time::now();
+            for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
+                let rect = self.selection_rect(theme, range.start, range.end);
+                // `Affine * Point` is a geometric transform over f64 coordinates,
+                // not integer arithmetic that can overflow/wrap.
+                #[allow(
+                    clippy::arithmetic_side_effects,
+                    reason = "Affine*Point transform over f64 screen coordinates, no overflow/wrap semantics"
+                )]
+                let (p0, p1) = (
+                    transform * vello::kurbo::Point::new(rect.x0, rect.y0),
+                    transform * vello::kurbo::Point::new(rect.x1, rect.y1),
+                );
+                presence.draw_peer_typing(
+                    scene,
+                    theme,
+                    &user,
+                    &[(vello::kurbo::Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
+                );
+            }
+            if let Some(list) = presence.carets.get(&key) {
+                for (user, caret) in list {
+                    let name = presence.display_name(user);
+                    presence.draw_peer_caret_labeled(
+                        scene,
+                        theme,
+                        text_renderer,
+                        transform,
+                        user,
+                        &name,
+                        self.caret_rect(theme, *caret),
+                    );
+                }
+            }
+
+            if let Some(list) = presence.selections.get(&key) {
+                for (user, range) in list {
+                    for r in self.selection_rects(theme, range.start, range.end) {
+                        presence.draw_peer_selection(scene, theme, transform, user, r);
+                    }
+                }
+            }
+        }
+
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
+            && !presence.permits(&scope)
+        {
+            let r = self.rect;
+            let overlay = Self::PERMISSION_DENIED_OVERLAY;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                Affine::IDENTITY,
+                overlay,
+                None,
+                &r,
+            );
+        }
+    }
+
     /// The binding of the field's own value.
     fn field_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("text_input");

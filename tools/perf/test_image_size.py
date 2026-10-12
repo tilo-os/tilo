@@ -402,6 +402,28 @@ class References(unittest.TestCase):
         with self.assertRaises(ValueError):
             image_size.select_platform(index, None)
 
+    def test_one_image_under_several_tags_is_one_manifest(self) -> None:
+        digest = "sha256:" + "3" * 64
+        index = {"manifests": [
+            {"digest": digest, "annotations": {"io.containerd.image.name": f"registry.tilo.so/tilo/tilo:{tag}",
+                                               "org.opencontainers.image.ref.name": tag}}
+            for tag in ("gen1", "main-abc1234")]}
+        self.assertEqual(image_size.select_platform(index, None), digest)
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "blobs/sha256").mkdir(parents=True)
+            config = json.dumps({"config": {}}).encode()
+            config_digest = hashlib.sha256(config).hexdigest()
+            (root / "blobs/sha256" / config_digest).write_bytes(config)
+            manifest = json.dumps({"schemaVersion": 2, "layers": [],
+                                   "config": {"digest": "sha256:" + config_digest}}).encode()
+            manifest_digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
+            (root / "blobs/sha256" / manifest_digest[7:]).write_bytes(manifest)
+            for item in index["manifests"]:
+                item["digest"] = manifest_digest
+            (root / "index.json").write_text(json.dumps(index))
+            self.assertEqual(image_size.layout_image(root, None).manifest_digest, manifest_digest)
+
 
 if __name__ == "__main__":
     unittest.main()

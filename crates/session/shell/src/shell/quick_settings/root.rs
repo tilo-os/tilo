@@ -14,6 +14,7 @@ use tilo_desktop::drill_in::{
     paint_control, trailing_glyph, trailing_toggle,
 };
 use ui::TextRole;
+use ui::num::f64_of_usize;
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -23,10 +24,6 @@ use ui::widget::{Button, ButtonFace, Slider, SliderFace, Toggle, ToggleFace};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
-
-fn n(value: usize) -> f64 {
-    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
-}
 
 fn f32v(value: f64) -> f32 {
     #[allow(
@@ -465,8 +462,8 @@ impl QuickSettingsRoot {
     fn sliders_height_at(&self, scale: f64) -> f64 {
         let count = self.slider_count();
         let captions: f64 = (0..count).map(|i| self.slider_caption_height(i)).sum();
-        (2.0 * CONTROL_PAD + n(count.saturating_sub(1)) * RELATED_GAP) * scale
-            + n(count) * Self::target_at(scale)
+        (2.0 * CONTROL_PAD + f64_of_usize(count.saturating_sub(1)) * RELATED_GAP) * scale
+            + f64_of_usize(count) * Self::target_at(scale)
             + captions
     }
     /// Brightness sliders: one per monitor, at least one.
@@ -688,7 +685,7 @@ impl QuickSettingsRoot {
     fn preferred_height_at(&self, state: &QuickSettingsState, layout_scale: f64) -> f64 {
         let scaled = |value: f64| value * layout_scale;
         if self.edit_mode {
-            let rows = n(self.active_edit_controls(state).len());
+            let rows = f64_of_usize(self.active_edit_controls(state).len());
             let available = if self.available_edit_controls(state).is_empty() {
                 0.0
             } else {
@@ -703,7 +700,7 @@ impl QuickSettingsRoot {
                 + available
                 + scaled(Self::EDIT_FOOTER)
         } else {
-            let rows = n(self.visible_controls(state).len().div_ceil(2));
+            let rows = f64_of_usize(self.visible_controls(state).len().div_ceil(2));
             // Title band → tiles → sliders → cards → rows: one section gap
             // before each section that exists on this machine. The Devices
             // and Clipboard row and the power row sit one sibling gap apart.
@@ -780,7 +777,7 @@ impl QuickSettingsRoot {
         self.edit_help_baseline() + self.caption_band()
     }
     fn available_edit_top(&self, state: &QuickSettingsState) -> f64 {
-        let active = n(self.active_edit_controls(state).len());
+        let active = f64_of_usize(self.active_edit_controls(state).len());
         self.edit_grid_top(self.panel)
             + active * self.edit_row_height()
             + (active - 1.0).max(0.0) * self.scaled(RELATED_GAP)
@@ -799,13 +796,13 @@ impl QuickSettingsRoot {
         let x0 = self.panel.x0 + self.scaled(PANEL_PAD);
         let width = (self.panel.width()
             - self.scaled(PANEL_PAD * 2.0)
-            - gap * n(available.len().saturating_sub(1)))
-            / n(available.len());
+            - gap * f64_of_usize(available.len().saturating_sub(1)))
+            / f64_of_usize(available.len());
         available
             .into_iter()
             .enumerate()
             .map(|(i, control)| {
-                let x = x0 + n(i) * (width + gap);
+                let x = x0 + f64_of_usize(i) * (width + gap);
                 (
                     control,
                     Rect::new(x, top, x + width, top + self.scaled(TARGET)),
@@ -823,7 +820,8 @@ impl QuickSettingsRoot {
     fn card(&self, panel: Rect, i: usize, edit: bool) -> Rect {
         if edit {
             let row_h = self.edit_row_height();
-            let y = self.edit_grid_top(panel) + n(i) * (row_h + self.scaled(RELATED_GAP));
+            let y =
+                self.edit_grid_top(panel) + f64_of_usize(i) * (row_h + self.scaled(RELATED_GAP));
             return Rect::new(
                 panel.x0 + self.scaled(PANEL_PAD),
                 y,
@@ -837,8 +835,8 @@ impl QuickSettingsRoot {
         let gap = self.scaled(SIBLING_GAP);
         let card = self.card_height();
         let w = (panel.width() - 2.0 * pad - gap) / 2.0;
-        let x = panel.x0 + pad + n(col) * (w + gap);
-        let y = self.grid_top(panel) + n(row) * (card + gap);
+        let x = panel.x0 + pad + f64_of_usize(col) * (w + gap);
+        let y = self.grid_top(panel) + f64_of_usize(row) * (card + gap);
         Rect::new(x, y, x + w, y + card)
     }
     fn edit_action_rect(&self, row: Rect) -> Rect {
@@ -854,12 +852,12 @@ impl QuickSettingsRoot {
         let pad = self.scaled(PANEL_PAD);
         let gap = self.scaled(SIBLING_GAP);
         let card = self.card_height();
-        let y = self.grid_top(panel) + n(row) * (card + gap);
+        let y = self.grid_top(panel) + f64_of_usize(row) * (card + gap);
         if count % 2 == 1 && i.checked_add(1) == Some(count) {
             return Rect::new(panel.x0 + pad, y, panel.x1 - pad, y + card);
         }
         let w = (panel.width() - 2.0 * pad - gap) / 2.0;
-        let x = panel.x0 + pad + n(i % 2) * (w + gap);
+        let x = panel.x0 + pad + f64_of_usize(i % 2) * (w + gap);
         Rect::new(x, y, x + w, y + card)
     }
     fn has_details(control: QuickSettingsControl, state: &QuickSettingsState) -> bool {
@@ -916,7 +914,7 @@ impl QuickSettingsRoot {
         let above: f64 = (0..i).map(|j| self.slider_caption_height(j)).sum();
         let y = block.y0
             + self.scaled(CONTROL_PAD)
-            + n(i) * (Self::target_at(self.layout_scale) + self.scaled(RELATED_GAP))
+            + f64_of_usize(i) * (Self::target_at(self.layout_scale) + self.scaled(RELATED_GAP))
             + above
             + self.slider_caption_height(i);
         Rect::new(
@@ -941,8 +939,8 @@ impl QuickSettingsRoot {
             grid_top - self.scaled(SECTION_GAP)
         } else {
             grid_top
-                + n(rows) * self.card_height()
-                + n(rows.saturating_sub(1)) * self.scaled(SIBLING_GAP)
+                + f64_of_usize(rows) * self.card_height()
+                + f64_of_usize(rows.saturating_sub(1)) * self.scaled(SIBLING_GAP)
         }
     }
     /// Devices and Clipboard share one row, one section gap under the
@@ -952,7 +950,7 @@ impl QuickSettingsRoot {
         let gap = self.scaled(SIBLING_GAP);
         let y = self.cards_bottom(panel, state) + self.scaled(SECTION_GAP);
         let w = (panel.width() - 2.0 * pad - gap) / 2.0;
-        let x = panel.x0 + pad + n(index.min(1)) * (w + gap);
+        let x = panel.x0 + pad + f64_of_usize(index.min(1)) * (w + gap);
         Rect::new(x, y, x + w, y + self.power_height())
     }
     /// The power-profile row: one sibling gap under the Devices and
@@ -969,9 +967,9 @@ impl QuickSettingsRoot {
     fn action(&self, i: usize) -> Rect {
         let pad = self.scaled(PANEL_PAD);
         let gap = self.scaled(SIBLING_GAP);
-        let gaps = n(Self::ACTION_COUNT.saturating_sub(1));
-        let w = (self.panel.width() - 2.0 * pad - gaps * gap) / n(Self::ACTION_COUNT);
-        let x = self.panel.x0 + pad + n(i) * (w + gap);
+        let gaps = f64_of_usize(Self::ACTION_COUNT.saturating_sub(1));
+        let w = (self.panel.width() - 2.0 * pad - gaps * gap) / f64_of_usize(Self::ACTION_COUNT);
+        let x = self.panel.x0 + pad + f64_of_usize(i) * (w + gap);
         let y = self.actions_top(self.panel);
         Rect::new(x, y, x + w, y + self.action_height())
     }
@@ -2196,27 +2194,8 @@ impl QuickSettingsRoot {
                 radius,
                 &theme.tokens.elevation.floating,
             );
-            let tier = ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(true));
-            let shape = RoundedRect::from_rect(ghost, radius);
-            scene.fill(Fill::NonZero, transform, tier.fill, None, &shape);
-            if let Some(border) = tier.border {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    border,
-                    None,
-                    &shape,
-                );
-            }
-            if let Some(glow) = tier.inner_glow {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    glow,
-                    None,
-                    &RoundedRect::from_rect(ghost.inset(1.0), (radius - 1.0).max(0.0)),
-                );
-            }
+            ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(true))
+                .paint(scene, transform, ghost, radius);
             scene.fill(
                 Fill::NonZero,
                 transform,

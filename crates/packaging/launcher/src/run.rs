@@ -2225,6 +2225,14 @@ fn splice_gpu(
             crate::sandbox::grants_drm(manifest, capabilities),
         );
         argv.push(entry);
+    } else if opts.render_node.is_none()
+        && let Some(pin) = crate::gpu::inherited_software_pin()
+    {
+        // A compositor with no GPU renders with lavapipe and pinned its own
+        // loaders to it; its apps follow, as they follow a GPU's pin.
+        let entry = pop_entry(argv)?;
+        crate::sandbox::push_software_pin(argv, &pin);
+        argv.push(entry);
     }
     let seed = gpu
         .as_ref()
@@ -5152,8 +5160,68 @@ mod mesa_seed_software_tests {
     use super::*;
 
     #[test]
+    fn a_launch_without_a_render_node_follows_a_gpu_less_compositor_onto_lavapipe() {
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let icds = home.root().join("vulkan/icd.d");
+        std::fs::create_dir_all(&icds).unwrap();
+        let lavapipe = icds.join("lvp_icd.json");
+        std::fs::write(
+            &lavapipe,
+            r#"{"file_format_version":"1.0.1","ICD":{"library_path":"libvulkan_lvp.so"}}"#,
+        )
+        .unwrap();
+        let radeon = icds.join("radeon_icd.json");
+        std::fs::write(
+            &radeon,
+            r#"{"file_format_version":"1.0.1","ICD":{"library_path":"libvulkan_radeon.so"}}"#,
+        )
+        .unwrap();
+        home.env()
+            .set(crate::gpu::VK_DRIVER_FILES_ENV, &lavapipe)
+            .remove(crate::gpu::VK_ICD_FILENAMES_ENV)
+            .remove(crate::gpu::EGL_VENDOR_ENV);
+        let manifest: ManifestView = crate::manifest::test_manifest(
+            "id = \"io.tilo.software-pin\"\nversion = \"0.1.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/probe\"\n",
+        );
+        let opts = RunOptions::default();
+        let mut argv = vec!["/app/probe".to_owned()];
+        let (gpu, _) = splice_gpu(&mut argv, &manifest, &opts, &CapabilityPlan::empty()).unwrap();
+        assert!(gpu.is_none(), "no render node, no device pin");
+        let path = lavapipe.to_str().unwrap();
+        assert!(
+            argv.windows(3)
+                .any(|args| args == ["--ro-bind-try", path, path])
+        );
+        for key in [
+            crate::gpu::VK_DRIVER_FILES_ENV,
+            crate::gpu::VK_ICD_FILENAMES_ENV,
+        ] {
+            assert!(argv.windows(3).any(|args| args == ["--setenv", key, path]));
+        }
+        assert!(!argv.iter().any(|arg| arg == "--dev-bind-try"));
+        assert_eq!(argv.last().map(String::as_str), Some("/app/probe"));
+
+        // A GPU's driver in the environment is not the software pin.
+        home.env().set(crate::gpu::VK_DRIVER_FILES_ENV, &radeon);
+        let mut argv = vec!["/app/probe".to_owned()];
+        splice_gpu(&mut argv, &manifest, &opts, &CapabilityPlan::empty()).unwrap();
+        assert!(
+            !argv
+                .iter()
+                .any(|arg| arg == crate::gpu::VK_DRIVER_FILES_ENV)
+        );
+    }
+
+    #[test]
     fn a_software_launch_gets_only_the_read_only_session_seed_without_a_device_pin() {
-        let home = tilo_test_env::TestHome::new().unwrap();
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        // A compositor's software pin is its own case below; CI pins
+        // lavapipe in the test environment itself.
+        home.env()
+            .remove(crate::gpu::VK_DRIVER_FILES_ENV)
+            .remove(crate::gpu::VK_ICD_FILENAMES_ENV)
+            .remove(crate::gpu::EGL_VENDOR_ENV);
         let source = home.runtime().join("tilo/pipeline-seed");
         std::fs::create_dir_all(&source).unwrap();
         let manifest: ManifestView = crate::manifest::test_manifest(

@@ -15,6 +15,7 @@
 //! history, so toggling a chip narrows the list without re-chunking it under
 //! the reader.
 
+use crate::num::f64_of_usize;
 use crate::time::SystemTime;
 use crate::widget::ModelPath;
 use std::collections::{HashMap, HashSet};
@@ -92,15 +93,6 @@ const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
 /// moves `surface` further.
 fn wash(surface: Color, alpha: u8) -> Color {
     crate::tokens::colors::Colors::hairline_on(surface, alpha)
-}
-
-/// A nesting depth, row count or dot count, widened for pixel-space layout
-/// math. Lossless in practice — none of these ever approach `u32::MAX` — but
-/// `usize -> f64` cannot express that to the compiler, so this goes through
-/// `u32` (exactly representable in `f64`) with a saturating fallback rather
-/// than an `as` cast.
-fn px(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 /// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
@@ -1239,7 +1231,7 @@ impl ActivityTimeline {
         let full = self.row_rect(i)?;
         let rg = self.row_groups.get(g)?;
         let row = Rect::new(
-            full.x0 + px(rg.depth) * INDENT,
+            full.x0 + f64_of_usize(rg.depth) * INDENT,
             full.y0 + 2.0,
             full.x1,
             full.y1 - 2.0,
@@ -1261,7 +1253,7 @@ impl ActivityTimeline {
         let full = self.row_rect(i)?;
         let rg = self.row_groups.get(g)?;
         let row = Rect::new(
-            full.x0 + px(rg.depth) * INDENT,
+            full.x0 + f64_of_usize(rg.depth) * INDENT,
             full.y0 + 2.0,
             full.x1,
             full.y1 - 2.0,
@@ -1757,7 +1749,7 @@ impl RowSlot {
     /// The band less its depth's indent: where the row's own content sits.
     fn indented(self) -> Rect {
         Rect::new(
-            self.rect.x0 + px(self.depth) * INDENT,
+            self.rect.x0 + f64_of_usize(self.depth) * INDENT,
             self.rect.y0,
             self.rect.x1,
             self.rect.y1,
@@ -1947,7 +1939,7 @@ impl ActivityTimeline {
             text_style: ctx.theme.text(TextRole::Caption),
             // The indent comes out of the author cluster, not the summary —
             // the summary is what the reader is here for.
-            author_slot_w: (self.author_slot_w() - px(slot.depth) * INDENT).max(72.0),
+            author_slot_w: (self.author_slot_w() - f64_of_usize(slot.depth) * INDENT).max(72.0),
             offers_revert,
             chip_reserve: if offers_revert {
                 self.revert_chip_w() + 6.0
@@ -2008,7 +2000,7 @@ impl ActivityTimeline {
         // to the bands above them rather than just starting further right.
         let surface = theme.tokens.colors.surfaces.raised;
         for level in 1..=depth {
-            let x = full_row.x0 + (px(level) - 0.5) * INDENT;
+            let x = full_row.x0 + (f64_of_usize(level) - 0.5) * INDENT;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -2290,7 +2282,7 @@ impl ActivityTimeline {
             .map(|n| &n.field);
         let is_hovered = emphasis.hovered;
         let row = Rect::new(
-            full_row.x0 + px(rg.depth) * INDENT,
+            full_row.x0 + f64_of_usize(rg.depth) * INDENT,
             full_row.y0 + 2.0,
             full_row.x1,
             full_row.y1 - 2.0,
@@ -2370,7 +2362,7 @@ impl ActivityTimeline {
         let colors = &theme.tokens.colors;
         let surface = colors.surfaces.raised;
         for level in 1..=rg.depth {
-            let x = full_row.x0 + (px(level) - 0.5) * INDENT;
+            let x = full_row.x0 + (f64_of_usize(level) - 0.5) * INDENT;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -2555,7 +2547,11 @@ impl ActivityTimeline {
         let (rel_w, rel_h) = tr.measure_style(&rel, None, &meta_style);
         // Author dots sit between the subtitle and the timestamp; reserve them.
         let dots = rg.authors.len().min(3);
-        let dots_w = if dots > 0 { px(dots) * 10.0 + 6.0 } else { 0.0 };
+        let dots_w = if dots > 0 {
+            f64_of_usize(dots) * 10.0 + 6.0
+        } else {
+            0.0
+        };
         let sub_budget =
             (row.x1 - title_x - f64::from(rel_w) - dots_w - TRAILING_INSET - 16.0).max(0.0);
         let subtitle = if rg.expanded {
@@ -2910,9 +2906,8 @@ impl Widget for ActivityTimeline {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
-        self.rect = crate::widget::placed(&layout, origin);
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if prev != self.rect {
             self.dirty = true;
         }

@@ -4,6 +4,7 @@ use crate::verification::placement::Placement;
 use crate::view::ChipEffect;
 use ui::framework::ViewCx;
 use ui::i18n::I18nManager;
+use ui::num::f32_of_f64;
 use ui::widget::{
     Button, Card, Column, Container, Element, Manual, Property, PropertyList, ScrollAxis,
     Scrollable, Text,
@@ -116,8 +117,8 @@ fn canvas(
     let height = f64::from(top) - f64::from(bottom);
     let scale = 900.0 / width.max(height);
     let extent = ui::taffy::Size {
-        width: pixels(width * scale),
-        height: pixels(height * scale),
+        width: f32_of_f64(width * scale),
+        height: f32_of_f64(height * scale),
     };
     let rectangles: Vec<_> = placement
         .macros
@@ -161,14 +162,6 @@ fn canvas(
                     .with_child(Box::new(canvas)),
             )),
     )
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "validated die and macro coordinates are normalized to finite [0, 900] display pixels; f32 rounding affects presentation only, while resource coordinates stay exact integers"
-)]
-fn pixels(value: f64) -> f32 {
-    value as f32
 }
 
 fn button(

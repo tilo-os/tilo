@@ -46,6 +46,15 @@ pub(super) struct LayoutRuntime {
     /// How many times the taffy tree was rebuilt: a host comparing two
     /// frames' widgets needs to know they are still the same ones.
     pub(super) rebuilds: u64,
+    /// Whether every rebuild requested since the last one was a change the
+    /// widgets describe ([`crate::widget::StructureChange::Described`]).
+    /// Anything else that asks for a rebuild goes through
+    /// [`Self::request_rebuild`], which clears it.
+    pub(super) rebuild_described: bool,
+    /// Whether every rebuild since a host armed it (a frame that compares
+    /// itself with the last one) was described: that host keeps the frame's
+    /// damage instead of repainting whole.
+    pub(super) frame_rebuilds_described: bool,
 }
 
 impl LayoutRuntime {
@@ -61,7 +70,16 @@ impl LayoutRuntime {
             safe_area: crate::scale::SafeArea::default(),
             content_origin: vello::kurbo::Point::ORIGIN,
             rebuilds: 0,
+            rebuild_described: true,
+            frame_rebuilds_described: false,
         }
+    }
+
+    /// Rebuild the tree before the next layout, for a reason no widget
+    /// describes: the frame that does it repaints whole.
+    pub(super) fn request_rebuild(&mut self) {
+        self.structure_dirty = true;
+        self.rebuild_described = false;
     }
 }
 
@@ -89,6 +107,9 @@ pub(super) struct InputRuntime {
     pub(super) tab_order_continues_in_host: bool,
     /// The pointer buttons held down, one bit each; see `input_publication`.
     pub(super) pointer_buttons: u32,
+    /// Where the pointer last moved, replayed before a press or release
+    /// that follows a rebuild under a still pointer.
+    pub(super) pointer_replay: crate::pointer_replay::PointerReplay,
 }
 
 impl InputRuntime {
@@ -104,6 +125,7 @@ impl InputRuntime {
             pen: crate::pen::PenInput::default(),
             tab_order_continues_in_host: false,
             pointer_buttons: 0,
+            pointer_replay: crate::pointer_replay::PointerReplay::default(),
         }
     }
 }

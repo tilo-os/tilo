@@ -15,15 +15,8 @@
 //! the insertion index via its own [`ListMetrics`], but the whole-slot
 //! reflow shift only makes sense for uniform slots.
 
+use crate::num::f64_of_usize;
 use vello::kurbo::{Point, Rect, Size};
-
-/// Lossless `usize -> f64` widening for list-reflow geometry. Item/slot
-/// counts are bounded far below `u32::MAX`, so routing through `u32`
-/// (which `f64` represents exactly) avoids the precision loss a direct
-/// cast risks.
-fn usize_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
 
 /// Which way a reorderable list runs. The controller pins the *cross* axis
 /// while dragging so the ghost slides only along the list.
@@ -70,7 +63,7 @@ impl ListMetrics {
     /// Leading-edge coordinate of slot boundary `i` (`0..=count`): boundary
     /// `0` sits before the first item, boundary `count` after the last.
     pub fn slot_lead(&self, i: usize) -> f64 {
-        self.origin + usize_to_f64(i) * self.pitch()
+        self.origin + f64_of_usize(i) * self.pitch()
     }
 
     /// The insertion **boundary** (`0..=count`) nearest `axis_coord` —
@@ -138,8 +131,8 @@ fn target_for<Id>(axis: Axis, s: &Session<Id>, m: &ListMetrics) -> usize {
     let ghost_lead = axis_coord(axis, s.current) - s.grab_offset;
     let orig_lead = m.slot_lead(s.from);
     let delta = ((ghost_lead - orig_lead) / m.pitch()).round();
-    let max_index = usize_to_f64(m.count.saturating_sub(1));
-    let target = (usize_to_f64(s.from) + delta).clamp(0.0, max_index);
+    let max_index = f64_of_usize(m.count.saturating_sub(1));
+    let target = (f64_of_usize(s.from) + delta).clamp(0.0, max_index);
     // `target` is clamped into `[0.0, max_index]` immediately above (and
     // `max_index` itself came from a `usize` via the lossless helper), so
     // this cast is exact.
@@ -341,7 +334,7 @@ impl<Id: Clone> DragController<Id> {
         } else {
             collapsed.saturating_add(1)
         };
-        (usize_to_f64(final_i) - usize_to_f64(index)) * metrics.pitch()
+        (f64_of_usize(final_i) - f64_of_usize(index)) * metrics.pitch()
     }
 
     /// The leading-edge coordinate of the floating ghost along the axis

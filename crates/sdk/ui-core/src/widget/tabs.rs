@@ -1,6 +1,7 @@
 use crate::color_compat::ColorCompat;
 use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
 use crate::icons;
+use crate::num::f64_of_u64;
 use crate::paint::PaintCtx;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
@@ -96,17 +97,6 @@ struct PillPaint<'a> {
 
 fn shift_rect(r: Rect, d: vello::kurbo::Vec2) -> Rect {
     r + d
-}
-
-/// Converts a millisecond animation-timing constant to `f64`. These are small
-/// compile-time durations (well under a second), nowhere near `f64`'s 52-bit
-/// mantissa limit, so the conversion is exact.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "millisecond timing constants stay far below 2^52; exact in f64"
-)]
-fn ms_f64(ms: u64) -> f64 {
-    ms as f64
 }
 
 /// Converts an elapsed-time reading (in milliseconds) to `f64`. Only ever fed a
@@ -1335,7 +1325,7 @@ impl TabBar {
         let Some(a) = self.reveal_anim.get(&id) else {
             return Reveal::None.reserve();
         };
-        let span = ms_f64(REVEAL_ANIM_MS) / 1000.0;
+        let span = f64_of_u64(REVEAL_ANIM_MS) / 1000.0;
         if span <= 0.0 {
             return a.to;
         }
@@ -2669,7 +2659,7 @@ impl Widget for TabBar {
             if elapsed >= Duration::from_millis(LAYOUT_ANIM_MS) {
                 None
             } else {
-                let raw = elapsed.as_secs_f64() / (ms_f64(LAYOUT_ANIM_MS) / 1000.0);
+                let raw = elapsed.as_secs_f64() / (f64_of_u64(LAYOUT_ANIM_MS) / 1000.0);
                 Some(crate::ease_out(raw))
             }
         });
@@ -3108,7 +3098,7 @@ impl TabBar {
                     if elapsed >= fade_window {
                         (1.0, 0.0)
                     } else {
-                        let raw = (elapsed.as_secs_f64() / (ms_f64(INSERT_FADE_MS) / 1000.0))
+                        let raw = (elapsed.as_secs_f64() / (f64_of_u64(INSERT_FADE_MS) / 1000.0))
                             .clamp(0.0, 1.0);
                         let eased = crate::ease_out(raw);
                         #[allow(
@@ -3326,10 +3316,10 @@ impl TabBar {
         }
         let now = crate::time::now();
         let elapsed_ms = self.hover_drop_animated_at.map_or_else(
-            || ms_f64(HOVER_DROP_FADE_MS),
+            || f64_of_u64(HOVER_DROP_FADE_MS),
             |t| duration_ms_f64(now.duration_since(t).as_millis()),
         );
-        let raw_t = (elapsed_ms / ms_f64(HOVER_DROP_FADE_MS)).clamp(0.0, 1.0);
+        let raw_t = (elapsed_ms / f64_of_u64(HOVER_DROP_FADE_MS)).clamp(0.0, 1.0);
         let eased_t = crate::ease_out(raw_t);
         // 4px above/below the pill's extent for bleed past the rounded caps.
         let (cx, y0, y1) = if gap_idx == 0 {

@@ -3,6 +3,7 @@
 //! Enter invokes the selected entry's `on_select` with the CRDT handle and
 //! root path directly — there is no message layer.
 
+use crate::num::f32_of_f64;
 use crate::search::ListIndex;
 use crate::widget::ModelPath;
 use automerge::ObjId;
@@ -380,19 +381,6 @@ fn elide_middle(tr: &mut TextRenderer, text: &str, style: &TextStyle, max_w: f64
         }
     }
     "\u{2026}".to_string()
-}
-
-/// Narrows a layout/measurement value to `f32` for vello/taffy. Every call
-/// site is a pixel size or offset inside this card (row widths, card
-/// dimensions), always many orders of magnitude below `f32::MAX`, so the
-/// truncation the lint warns about can't actually occur here.
-#[inline]
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space pixel values in this widget never approach f32::MAX"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
 }
 
 /// Shared by `draw` and the layout tests so they can't disagree.
@@ -1861,7 +1849,8 @@ impl CommandPalette {
         let avail = (text_right - text_x).max(0.0);
 
         if let Some(desc) = &entry.description {
-            let label = text_renderer.elide_to_width_style(&entry.label, px(avail), &label_style);
+            let label =
+                text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
             let sub = elide_middle(text_renderer, desc, &desc_style, avail);
             let (_, label_height) = text_renderer.measure_style(&label, None, &label_style);
             let (_, desc_height) = text_renderer.measure_style(&sub, None, &desc_style);
@@ -1885,7 +1874,8 @@ impl CommandPalette {
                 &desc_style,
             );
         } else {
-            let label = text_renderer.elide_to_width_style(&entry.label, px(avail), &label_style);
+            let label =
+                text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
             let (_, height) = text_renderer.measure_style(&label, None, &label_style);
             let ly = row.y0 + (row.height() - f64::from(height)) / 2.0;
             text_renderer.draw_style(
@@ -1932,8 +1922,11 @@ impl CommandPalette {
         );
         let title_style = theme.text(TextRole::Caption);
         let title = self.empty_results_title();
-        let title =
-            text_renderer.elide_to_width_style(&title, px(self.rect.width() - 48.0), &title_style);
+        let title = text_renderer.elide_to_width_style(
+            &title,
+            f32_of_f64(self.rect.width() - 48.0),
+            &title_style,
+        );
         let (tw, title_height) = text_renderer.measure_style(&title, None, &title_style);
         text_renderer.draw_style(
             scene,
@@ -2083,8 +2076,8 @@ impl Widget for CommandPalette {
         let (width, height) = self.desired_size();
         let style = Style {
             size: Size {
-                width: Dimension::length(px(width)),
-                height: Dimension::length(px(height)),
+                width: Dimension::length(f32_of_f64(width)),
+                height: Dimension::length(f32_of_f64(height)),
             },
             ..Default::default()
         };
@@ -2230,12 +2223,18 @@ impl Widget for CommandPalette {
                 KeyEvent {
                     logical_key,
                     state: element_state,
+                    repeat,
                     ..
                 },
             ..
         } = event
         {
             if *element_state != ElementState::Pressed {
+                return;
+            }
+            // Submission needs a fresh press, including after loading or opening a prompt.
+            if *repeat && matches!(logical_key, Key::Named(NamedKey::Enter)) {
+                *ctx.handled = true;
                 return;
             }
             let mods = ctx.modifiers.state();
@@ -2509,6 +2508,7 @@ impl Widget for CommandPalette {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
@@ -3821,5 +3821,85 @@ mod selected_status_tests {
         assert!(row.description.as_deref().unwrap().contains("Couldn't run"));
         palette.set_entries(vec![CommandEntry::new("two", "Fixture two")]);
         assert!(palette.visible_entries().first().unwrap().badge.is_none());
+    }
+}
+
+#[cfg(test)]
+mod state_submit_tests {
+    use super::*;
+    use crate::testing::dispatch;
+
+    fn key(key: NamedKey, repeat: bool) -> WindowEvent {
+        let mut event =
+            crate::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
+        event.repeat = repeat;
+        crate::synthetic_input::keyboard_input(event)
+    }
+
+    #[test]
+    fn loaded_results_require_a_fresh_enter_and_remain_navigable() {
+        let mut palette = CommandPalette::new();
+        palette.open();
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, false)));
+        assert!(palette.take_outcome().is_none());
+        palette.set_entries(vec![
+            CommandEntry::new("first", "First"),
+            CommandEntry::new("second", "Second"),
+        ]);
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, true)));
+        assert!(
+            palette.take_outcome().is_none(),
+            "loading must not turn held Enter into activation"
+        );
+        assert!(dispatch(&mut palette, &key(NamedKey::ArrowDown, true)));
+        assert_eq!(palette.selected_id(), Some("second"));
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, false)));
+        assert_eq!(
+            palette.take_outcome().expect("fresh Enter activates").id,
+            "second"
+        );
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, true)));
+        assert!(
+            palette.take_outcome().is_none(),
+            "one press must not invoke repeatedly"
+        );
+        palette.close();
+        palette.open();
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, true)));
+        assert!(
+            palette.take_outcome().is_none(),
+            "reopening must not accept an orphan repeat"
+        );
+    }
+
+    #[test]
+    fn opening_an_argument_requires_a_separate_confirmation() {
+        let mut palette = CommandPalette::commands();
+        palette.push(
+            CommandEntry::new("goto", "Go to cell")
+                .with_argument("Go to cell", "Cell")
+                .with_argument_prefill("A1"),
+        );
+        palette.open();
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, false)));
+        assert!(palette.arg_state.is_some());
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, true)));
+        assert!(palette.is_open(), "held Enter must leave the prompt open");
+        assert!(
+            palette.take_outcome().is_none(),
+            "prefill needs fresh confirmation"
+        );
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, false)));
+        let outcome = palette
+            .take_outcome()
+            .expect("fresh Enter submits the prompt");
+        assert_eq!(outcome.id, "goto");
+        assert_eq!(outcome.argument.as_deref(), Some("A1"));
+        assert!(!palette.is_open());
+        palette.open();
+        assert!(dispatch(&mut palette, &key(NamedKey::Enter, false)));
+        assert!(dispatch(&mut palette, &key(NamedKey::Escape, false)));
+        assert!(palette.arg_state.is_none(), "Escape cancels the argument");
+        assert!(palette.take_outcome().is_none());
     }
 }

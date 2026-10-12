@@ -10,6 +10,7 @@
 //! windows paint, hit testing, fetching, scrolling, and accessibility to the
 //! same visible rows.
 
+use crate::num::f32_of_f64;
 use crate::time::Instant;
 use crate::widget::{AppModel, ModelPath};
 use std::cmp::Ordering;
@@ -1790,7 +1791,7 @@ impl<Row> DataTable<Row> {
 
     #[must_use]
     pub fn scroll_y(&self) -> f32 {
-        px(self.viewport.offset())
+        f32_of_f64(self.viewport.offset())
     }
 
     /// Override one display row's measured height while keeping the current
@@ -1987,7 +1988,7 @@ impl<Row> DataTable<Row> {
 
     /// `content - viewport`, floored at 0.
     pub fn max_scroll_y(&self) -> f32 {
-        px(self.viewport.max_offset())
+        f32_of_f64(self.viewport.max_offset())
     }
 
     fn v_metrics(&self) -> ScrollMetrics {
@@ -2578,7 +2579,7 @@ impl<Row> DataTable<Row> {
     fn on_cursor_moved(&mut self, pt: Point, handled: &mut bool) {
         self.last_cursor = Some(pt);
         if self.resize.is_some() {
-            self.drag_resize(px(pt.x));
+            self.drag_resize(f32_of_f64(pt.x));
             *handled = true;
             return;
         }
@@ -2587,7 +2588,7 @@ impl<Row> DataTable<Row> {
             if let Some(track) = self.v_track()
                 && let Some(target) = self.vbar.drag_to(track, self.v_metrics(), pt)
             {
-                self.set_scroll_y(px(target));
+                self.set_scroll_y(f32_of_f64(target));
             }
             *handled = true;
             return;
@@ -2659,7 +2660,7 @@ impl<Row> DataTable<Row> {
                     return;
                 }
                 PressOutcome::Page(target) => {
-                    self.set_scroll_y(px(target));
+                    self.set_scroll_y(f32_of_f64(target));
                     *handled = true;
                     return;
                 }
@@ -2688,7 +2689,7 @@ impl<Row> DataTable<Row> {
                 let Some(key) = self.columns.get(i).map(|c| c.key.clone()) else {
                     continue;
                 };
-                self.begin_resize(&key, px(pt.x));
+                self.begin_resize(&key, f32_of_f64(pt.x));
                 *handled = true;
                 return;
             }
@@ -3026,13 +3027,13 @@ fn paint_cell_text<Row>(
         Some(value) => (value, theme.text_primary),
         None => (column.absent.as_str(), theme.text_tertiary),
     };
-    let room = px((cell.width() - 2.0 * pad).max(0.0));
+    let room = f32_of_f64((cell.width() - 2.0 * pad).max(0.0));
     if column.max_lines > 1 {
         // A wrapping cell: its lines centred on the row as one block.
         let lines = text.clamp_to_lines(label, &style, room, column.max_lines);
         let line_h = f64::from(style.line_height_px());
         let block = line_h * lines.len() as f64;
-        let mut y = centered_text_top(cell.y0, cell.height(), px(block));
+        let mut y = centered_text_top(cell.y0, cell.height(), f32_of_f64(block));
         for line in &lines {
             let (w, _) = text.measure_style(line, None, &style);
             let x = align.place(cell, f64::from(w), pad);
@@ -3097,17 +3098,6 @@ fn paint_cell_badge(
 /// the row above, which the unclamped rule would let it do.
 pub(crate) fn centered_text_top(band_y0: f64, band_h: f64, text_h: f32) -> f64 {
     crate::text_metrics::centered_text_top(band_y0, band_h, f64::from(text_h)).max(band_y0)
-}
-
-/// Narrows a bounded screen-space `f64` (row/pixel geometry) to `f32` for
-/// vello/taffy; table content stays far below `f32::MAX`.
-#[inline]
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space pixel values in this widget never approach f32::MAX"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
 }
 
 /// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
@@ -3212,11 +3202,11 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .get(cell.column_index)
                 .is_none_or(|column| column.alignment() == CellAlign::Leading);
             if let Some(column) = self.col_rects.get(cell.column_index) {
-                style.inset.left = length(px(column.x0 - self.rect.x0));
+                style.inset.left = length(f32_of_f64(column.x0 - self.rect.x0));
                 if fills {
-                    style.size.width = Dimension::length(px(column.width()));
+                    style.size.width = Dimension::length(f32_of_f64(column.width()));
                 } else {
-                    style.max_size.width = Dimension::length(px(column.width()));
+                    style.max_size.width = Dimension::length(f32_of_f64(column.width()));
                 }
             } else if let Some(column) = self.columns.get(cell.column_index)
                 && let ColumnWidth::Fixed(width) = column.width
@@ -3231,7 +3221,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .viewport
                 .item_view_top(cell.row_index)
                 .unwrap_or_default();
-            style.inset.top = length(px(self.header_h + top));
+            style.inset.top = length(f32_of_f64(self.header_h + top));
             let _ = taffy.set_style(child, style);
             cell.node = Some(child);
             child_nodes.push(child);
@@ -3259,7 +3249,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 },
                 min_size: Size {
                     width: Dimension::auto(),
-                    height: Dimension::length(px(self.header_h + self.default_row_h)),
+                    height: Dimension::length(f32_of_f64(self.header_h + self.default_row_h)),
                 },
                 flex_grow: 1.0,
                 flex_shrink: 1.0,
@@ -3274,7 +3264,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
             Style {
                 size: Size {
                     width: percent(1.0_f32),
-                    height: Dimension::length(px(height)),
+                    height: Dimension::length(f32_of_f64(height)),
                 },
                 overflow: taffy::Point {
                     x: taffy::Overflow::Clip,
@@ -3291,7 +3281,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
 
     /// Measure [`ColumnWidth::Auto`] columns from their header and the
     /// visible cells, never narrower than four characters' worth of line.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         _taffy: &mut TaffyTree<()>,
         _node: NodeId,
@@ -3361,7 +3351,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     width = width.max(f64::from(measured.width) - pad);
                 }
             }
-            next.insert(col.key.clone(), px((width + pad).max(floor).ceil()));
+            next.insert(col.key.clone(), f32_of_f64((width + pad).max(floor).ceil()));
         }
         // Wrapping cells grow their rows to hold their lines.
         let mut grew = false;
@@ -3384,7 +3374,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                         continue;
                     }
                     let cell = value(row).unwrap_or_default();
-                    let room = px((cr.width() - pad).max(1.0));
+                    let room = f32_of_f64((cr.width() - pad).max(1.0));
                     let n = text
                         .clamp_to_lines(&cell, &cell_style(&theme, col.kind), room, col.max_lines)
                         .len();
@@ -3896,17 +3886,16 @@ impl<Row: 'static> Widget for DataTable<Row> {
     /// Rows carry no explicit key, so the path element is the row's display
     /// index (its ordinal among the table's synthetic children); the
     /// callbacks it reaches name the host's row, as `on_row_click` does.
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-        // Empty path: the table itself, not a row — nothing table-specific to do.
         let Some(&row_key) = key_path.first() else {
-            return self.perform_action(action, state, path);
+            return false;
         };
         // A read-only table's rows aren't operable.
         if !self.selectable {
@@ -4254,7 +4243,9 @@ fn paint_header_label(
             0.0
         })
     .max(0.0);
-    let label = ctx.text.elide_to_width_style(label, px(room), &text_style);
+    let label = ctx
+        .text
+        .elide_to_width_style(label, f32_of_f64(room), &text_style);
     let (label_w, label_h) = ctx.text.measure_style(&label, None, &text_style);
     let label_y = centered_text_top(cell.y0, cell.height(), label_h);
     let trailing = align == CellAlign::Trailing;
@@ -4466,7 +4457,7 @@ impl<'a> DataTableFace<'a> {
                             width = width.max(f64::from(text.measure_style(cell, None, &style).0));
                         }
                     }
-                    auto.insert(i.to_string(), px((width + pad).ceil()));
+                    auto.insert(i.to_string(), f32_of_f64((width + pad).ceil()));
                 }
                 ColumnDef::new(i.to_string(), c.header, c.width)
             })
@@ -5199,8 +5190,8 @@ mod tests {
             let mut t = DataTable::<R>::new(sample_cols())
                 .with_row_key(|row| u64::from(row.name.as_bytes()[0]));
             t.set_rows(rows4());
-            t.set_viewport(24.0, px(ROW_HEIGHT));
-            t.set_scroll_y(2.0 * px(ROW_HEIGHT) + 5.0);
+            t.set_viewport(24.0, f32_of_f64(ROW_HEIGHT));
+            t.set_scroll_y(2.0 * f32_of_f64(ROW_HEIGHT) + 5.0);
             let before = t.viewport.item_view_top(2);
 
             t.set_rows(vec![
@@ -5741,7 +5732,7 @@ mod tests {
 
             let mut doc = automerge::AutoCommit::new();
             let root = automerge::ROOT;
-            let handled = Widget::perform_action_at(
+            let handled = Widget::perform_action(
                 &mut t,
                 &crate::a11y::Action::Activate,
                 &[7],
@@ -6226,8 +6217,8 @@ mod tests {
                     .collect(),
             );
             let _laid = lay_out(&mut t);
-            t.set_viewport(5.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
-            t.set_scroll_y(10.0 * px(ROW_HEIGHT)); // scrolled past 10 rows
+            t.set_viewport(5.0 * f32_of_f64(ROW_HEIGHT), f32_of_f64(ROW_HEIGHT));
+            t.set_scroll_y(10.0 * f32_of_f64(ROW_HEIGHT)); // scrolled past 10 rows
             let rect = t.get_rect();
             let p = Point::new(rect.x0 + 5.0, rect.y0 + t.header_h + 1.0);
             assert_eq!(
@@ -6246,7 +6237,7 @@ mod tests {
         fn variable_row_heights_share_placement_and_hit_testing() {
             let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
             t.set_rows(rows4());
-            t.set_viewport(60.0, px(ROW_HEIGHT));
+            t.set_viewport(60.0, f32_of_f64(ROW_HEIGHT));
             assert!(t.set_row_height(0, 10.0));
             assert!(t.set_row_height(1, 50.0));
             let _laid = lay_out(&mut t);
@@ -6267,8 +6258,8 @@ mod tests {
                     })
                     .collect(),
             );
-            t.set_viewport(120.0, px(ROW_HEIGHT));
-            t.set_scroll_y(50_000.0 * px(ROW_HEIGHT));
+            t.set_viewport(120.0, f32_of_f64(ROW_HEIGHT));
+            t.set_scroll_y(50_000.0 * f32_of_f64(ROW_HEIGHT));
             let _laid = lay_out(&mut t);
 
             assert!((t.get_rect().height() - (t.header_h + 120.0)).abs() <= 0.5);
@@ -6322,7 +6313,7 @@ mod tests {
                 .collect(),
         );
         let (tree, node) = lay_out(&mut t);
-        t.set_viewport(5.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
+        t.set_viewport(5.0 * f32_of_f64(ROW_HEIGHT), f32_of_f64(ROW_HEIGHT));
         (t, tree, node)
     }
 
@@ -6390,7 +6381,7 @@ mod tests {
             t.set_rows(rows4());
             let _ = lay_out(&mut t);
             // Viewport taller than the 4 rows → content fits → no bar.
-            t.set_viewport(50.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
+            t.set_viewport(50.0 * f32_of_f64(ROW_HEIGHT), f32_of_f64(ROW_HEIGHT));
             assert!(
                 t.scrollbar_thumb().is_none(),
                 "no bar when rows fit the viewport"
@@ -6516,7 +6507,8 @@ mod tests {
             );
             assert!(!t.vbar.is_dragging(), "track click is not a drag");
             // Paged by ≈ one viewport (five rows) × PAGE_FRACTION.
-            let expected = 5.0 * px(ROW_HEIGHT) * px(crate::widget::scrollbar::PAGE_FRACTION);
+            let expected =
+                5.0 * f32_of_f64(ROW_HEIGHT) * f32_of_f64(crate::widget::scrollbar::PAGE_FRACTION);
             assert!(
                 (t.scroll_y() - expected).abs() < 1.0,
                 "page step ≈ viewport*frac ({expected}), got {}",
@@ -6702,7 +6694,7 @@ mod tests {
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = table.build_layout(&mut tree, &theme, &mut map);
         table.set_viewport(200.0, 32.0);
-        assert!(table.adjust_layout_with_measure(&mut tree, node, &mut text));
+        assert!(table.adjust_layout_style(&mut tree, node, &mut text));
         let measured = f64::from(table.auto_widths["name"]);
         let cell = f64::from(
             text.measure_style(
@@ -6714,7 +6706,7 @@ mod tests {
         );
         assert!(measured >= cell, "{measured} fits {cell}");
         assert!(
-            !table.adjust_layout_with_measure(&mut tree, node, &mut text),
+            !table.adjust_layout_style(&mut tree, node, &mut text),
             "settles"
         );
 
@@ -6821,7 +6813,7 @@ mod content_edge_tests {
             let rect = tree.layout(tnode).copied().unwrap_or_default();
             let _ = rect;
             table.apply_layout(&tree, tnode, Point::new(24.0, 0.0));
-            let changed = table.adjust_layout_with_measure(&mut tree, tnode, &mut text);
+            let changed = table.adjust_layout_style(&mut tree, tnode, &mut text);
             node = Some(tnode);
             if !changed {
                 break;
@@ -7049,7 +7041,7 @@ mod content_edge_tests {
         assert_eq!(node_a11y.children[0].state.expanded, Some(false));
         assert_eq!(node_a11y.children[1].level, Some(2));
         let mut doc = AutoCommit::new();
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             &mut table,
             &crate::a11y::Action::Expand,
             &[0],
@@ -7176,14 +7168,14 @@ mod content_edge_tests {
         );
         assert_eq!(*checks.borrow(), [(1, true)]);
         let mut state = crate::state::State::new();
-        assert!(table.perform_action_at(
+        assert!(table.perform_action(
             &crate::a11y::Action::ToggleCheck,
             &[0, 0],
             &mut crate::widget::Edits::lend(&mut state.doc),
             &state.root,
         ));
         assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
-        assert!(!table.perform_action_at(
+        assert!(!table.perform_action(
             &crate::a11y::Action::ToggleCheck,
             &[0, 99],
             &mut crate::widget::Edits::lend(&mut state.doc),

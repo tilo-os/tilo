@@ -219,16 +219,7 @@ pub enum FeedsEffect {
     },
 }
 
-/// The reader's messages, in every host that mounts it.
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[
-        ("en-US", include_str!("../locales/en-US.ftl")),
-        ("de-DE", include_str!("../locales/de-DE.ftl")),
-    ],
-    "feeds-open-link-invalid",
-)
-.with_system_locale();
+ui::embedded_catalog!(static CATALOG, "feeds-open-link-invalid", ["en-US", "de-DE"]);
 
 /// Framework app.
 pub struct FeedsShell;

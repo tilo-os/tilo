@@ -820,9 +820,12 @@ fn cmd_sign_delegated_snapshot(
     let identity = storage.load_identity()?;
     let writer = storage.lock_snapshot()?;
     recover_snapshot_transaction(&writer, &identity.owner_pubkey_hex)?;
-    if storage.load_promotion_transaction()?.is_some() || storage.load_staged_promotion()?.is_some()
-    {
-        anyhow::bail!("staged first-party promotion must publish before a delegated refresh");
+    // A collected batch has not changed the public catalogue. Refreshing only
+    // the current entries keeps it available while an incomplete batch waits
+    // for its runtime. An active transaction owns a candidate/sequence and
+    // must complete before any independent snapshot can advance that sequence.
+    if storage.load_promotion_transaction()?.is_some() {
+        anyhow::bail!("active first-party promotion must publish before a delegated refresh");
     }
     let authorization = storage
         .load_channel_authorization()?

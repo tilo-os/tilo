@@ -912,10 +912,7 @@ impl State {
             actor,
             phase: DictationStatus::Loading,
             language: language.to_owned(),
-            literal: settings_store::load_section("accessibility")
-                .get("dictation_literal")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
+            literal: settings_store::accessibility::AccessibilitySettings::load().dictation_literal,
         });
         Ok(())
     }

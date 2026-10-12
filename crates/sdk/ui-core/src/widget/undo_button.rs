@@ -237,21 +237,7 @@ impl Widget for UndoButton {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        #[allow(
-            clippy::expect_used,
-            reason = "Widget apply_layout receives the node created by build_layout"
-        )]
-        let layout = taffy
-            .layout(node)
-            .expect("build_layout registered this node with the same tree");
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        let next = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
+        let next = crate::widget::layout_rect(taffy, node, origin);
         if next != self.rect {
             self.rect = next;
             self.dirty = true;
@@ -383,12 +369,13 @@ impl Widget for UndoButton {
 
     /// Keyboard (Enter / Space) and assistive-technology activation.
     ///
-    /// [`perform_action_at`](Widget::perform_action_at) defaults to forwarding
+    /// [`perform_action`](Widget::perform_action) defaults to forwarding
     /// here with the empty key path, so an AT operating the node lands on the
     /// same request a mouse release makes.
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
@@ -614,13 +601,13 @@ mod tests {
 
         // Case `assistive_activation_takes_the_same_route_as_a_click`.
         // Assistive technology reaches the same request as a mouse release —
-        // `perform_action_at` forwards the empty key path here.
+        // `perform_action` forwards the empty key path here.
         {
             let mut doc = AutoCommit::new();
             let mut b = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));
 
             assert!(
-                !b.perform_action_at(
+                !b.perform_action(
                     &Action::Activate,
                     &[],
                     &mut crate::widget::Edits::lend(&mut doc),
@@ -631,7 +618,7 @@ mod tests {
             assert_eq!(crate::undo::take_undo_request(&mut b), None);
 
             crate::undo::set_undo_status(&mut b, &mut || status(false, true));
-            assert!(b.perform_action_at(
+            assert!(b.perform_action(
                 &Action::Activate,
                 &[],
                 &mut crate::widget::Edits::lend(&mut doc),

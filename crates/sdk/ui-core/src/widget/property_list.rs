@@ -741,7 +741,7 @@ pub struct PropertyList {
     layout: ListLayout,
     cursor: Point,
     hovered_action: Option<(usize, usize)>,
-    pressed_action: Option<(usize, usize)>,
+    pressed_action: crate::pointer_replay::HeldPress<(usize, usize)>,
     rect: Rect,
     dirty: bool,
 }
@@ -771,7 +771,7 @@ impl PropertyList {
             layout: ListLayout::empty(),
             cursor: Point::ZERO,
             hovered_action: None,
-            pressed_action: None,
+            pressed_action: crate::pointer_replay::HeldPress::default(),
             rect: Rect::ZERO,
             dirty: true,
         }
@@ -821,6 +821,25 @@ impl PropertyList {
 
     fn properties(&self) -> impl Iterator<Item = &Property> {
         self.groups.iter().flat_map(|(_, rows)| rows.iter())
+    }
+
+    /// What names a row's action across a rebuild: the list, the row's
+    /// label and the action, not their indices, so a rebuilt list whose
+    /// rows shifted under the pointer completes no press.
+    fn press_key(&self, (row, action): (usize, usize)) -> String {
+        let Some(property) = self.properties().nth(row) else {
+            return String::new();
+        };
+        let action = match property.actions.get(action) {
+            Some(PropertyAction::Copy) => "copy",
+            Some(PropertyAction::Custom { label, .. }) => label.as_str(),
+            None => return String::new(),
+        };
+        format!(
+            "property-list:{}:{}:{action}",
+            self.id.as_deref().unwrap_or_default(),
+            property.label
+        )
     }
 
     /// Whether the last layout stacked labels above values.
@@ -962,22 +981,29 @@ impl Widget for PropertyList {
                 button: MouseButton::Left,
                 ..
             } => {
-                let over = target_at(&self.layout, self.cursor);
+                use crate::pointer_replay::{PressAt, Release};
+                let over = targets(&self.layout)
+                    .into_iter()
+                    .find(|(_, r)| r.contains(self.cursor));
+                let key = over.map(|(target, _)| self.press_key(target));
+                let at = over
+                    .zip(key.as_deref())
+                    .map(|((target, rect), key)| PressAt { target, key, rect });
                 match state {
-                    ElementState::Pressed if over.is_some() => {
-                        self.pressed_action = over;
-                        *ctx.handled = true;
-                    }
-                    ElementState::Released if self.pressed_action.is_some() => {
-                        let pressed = self.pressed_action.take();
-                        *ctx.handled = true;
-                        if over == pressed
-                            && let Some((row, action)) = pressed
-                        {
-                            self.run_action(row, action);
+                    ElementState::Pressed => {
+                        if let Some(at) = at {
+                            self.pressed_action.press(at);
+                            *ctx.handled = true;
                         }
                     }
-                    _ => {}
+                    ElementState::Released => match self.pressed_action.release(at) {
+                        Release::NotHeld => {}
+                        Release::Cancelled => *ctx.handled = true,
+                        Release::Click((row, action)) => {
+                            *ctx.handled = true;
+                            self.run_action(row, action);
+                        }
+                    },
                 }
             }
             _ => {}
@@ -1066,15 +1092,14 @@ impl Widget for PropertyList {
 
     /// An action addressed to one of a row's action buttons: `[row,
     /// action]`.
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
     ) -> bool {
         match key_path {
-            [] => self.perform_action(action, state, path),
             [row, index] if matches!(action, crate::a11y::Action::Activate) => {
                 match (usize::try_from(*row), usize::try_from(*index)) {
                     (Ok(row), Ok(index)) => self.run_action(row, index),
@@ -1123,7 +1148,7 @@ pub struct PropertyValue {
     rect: Rect,
     copy_rect: Option<Rect>,
     hovered: bool,
-    pressed: bool,
+    pressed: crate::pointer_replay::HeldPress,
     metrics: Option<ListMetrics>,
 }
 
@@ -1137,7 +1162,7 @@ impl PropertyValue {
             rect: Rect::ZERO,
             copy_rect: None,
             hovered: false,
-            pressed: false,
+            pressed: crate::pointer_replay::HeldPress::default(),
             metrics: None,
         }
     }
@@ -1313,20 +1338,31 @@ impl Widget for PropertyValue {
                 state,
                 button: MouseButton::Left,
                 ..
-            } => match state {
-                ElementState::Pressed if self.hovered => {
-                    self.pressed = true;
-                    *ctx.handled = true;
-                }
-                ElementState::Released if self.pressed => {
-                    self.pressed = false;
-                    *ctx.handled = true;
-                    if self.hovered {
-                        crate::text_selection::clipboard_copy(&self.value);
+            } => {
+                use crate::pointer_replay::{PressAt, Release};
+                // The field's name (or, unnamed, the value) names the copy
+                // action across a rebuild.
+                let key = format!(
+                    "property-value:{}",
+                    self.accessible_name.as_deref().unwrap_or(&self.value)
+                );
+                let at = self.hovered.then_some(PressAt::one(&key, target));
+                match state {
+                    ElementState::Pressed => {
+                        if let Some(at) = at {
+                            self.pressed.press(at);
+                            *ctx.handled = true;
+                        }
+                    }
+                    ElementState::Released => {
+                        let release = self.pressed.release(at);
+                        *ctx.handled |= release.ended();
+                        if release == Release::Click(()) {
+                            crate::text_selection::clipboard_copy(&self.value);
+                        }
                     }
                 }
-                _ => {}
-            },
+            }
             _ => {}
         }
     }
@@ -1367,7 +1403,7 @@ impl Widget for PropertyValue {
         Some(node)
     }
 
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],

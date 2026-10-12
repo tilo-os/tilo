@@ -5,6 +5,9 @@
 //! history, not the live Wayland selection, until explicitly activated.
 
 mod display_auto_leases;
+mod display_refresh;
+#[cfg(test)]
+mod display_refresh_tests;
 pub(crate) mod person_layout;
 mod receive_recovery;
 mod remote_capture;
@@ -1601,6 +1604,7 @@ pub struct LocalFabricCapabilities {
 pub struct DeviceFabricRuntime {
     counter: u64,
     last_sample: Option<Instant>,
+    display_refresh: display_refresh::DisplayRefresh,
     last_publish: Option<Instant>,
     local_fingerprint: Option<[u8; 32]>,
     merged_settings_fingerprint: Option<[u8; 32]>,
@@ -1618,6 +1622,7 @@ pub struct DeviceFabricRuntime {
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
     local_app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
     policy: Option<ContinuityPolicySnapshot>,
+    policy_cache: Option<ContinuityPolicySnapshot>,
     policy_store_stamp: Option<SystemTime>,
     last_policy_store_check: Option<Instant>,
 }
@@ -1631,6 +1636,7 @@ impl DeviceFabricRuntime {
         Self {
             counter,
             last_sample: None,
+            display_refresh: display_refresh::DisplayRefresh::new(network.loop_waker()),
             last_publish: None,
             local_fingerprint: None,
             merged_settings_fingerprint: None,
@@ -1653,6 +1659,7 @@ impl DeviceFabricRuntime {
             inbound_gamepads: BTreeMap::new(),
             local_app_focus: None,
             policy: None,
+            policy_cache: None,
             policy_store_stamp: None,
             last_policy_store_check: None,
         }
@@ -1702,17 +1709,17 @@ impl DeviceFabricRuntime {
     }
 
     fn current_policy(&mut self, now: Instant) -> ContinuityPolicySnapshot {
-        if self.policy.is_some() && self.policy_cache_fresh(now) {
-            return self.policy.unwrap_or_default();
+        if self.policy_cache.is_some() && self.policy_cache_fresh(now) {
+            return self.policy_cache.unwrap_or_default();
         }
         self.last_policy_store_check = Some(now);
         let stamp = settings_store::settings_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
-        if self.policy.is_none() || stamp != self.policy_store_stamp {
-            self.policy = Some(ContinuityPolicySnapshot::load());
+        if self.policy_cache.is_none() || stamp != self.policy_store_stamp {
+            self.policy_cache = Some(ContinuityPolicySnapshot::load());
             self.policy_store_stamp = stamp;
         }
-        self.policy.unwrap_or_default()
+        self.policy_cache.unwrap_or_default()
     }
 
     fn policy_cache_fresh(&self, now: Instant) -> bool {
@@ -1757,6 +1764,15 @@ impl DeviceFabricRuntime {
         selection: &SharedSelection,
         local: LocalFabricCapabilities,
     ) {
+        let changes = self.display_refresh.take_changes(local);
+        if changes.resample {
+            self.last_sample = None;
+        }
+        if changes.policy {
+            // Keep the last enforced policy: teardown compares against it.
+            self.policy_cache = None;
+            self.last_policy_store_check = None;
+        }
         let policy = self.current_policy(Instant::now());
         self.enforce_policy(network, selection, policy);
         // Always drain Bluetooth worker completions. Policy teardown removes
@@ -1889,7 +1905,6 @@ impl DeviceFabricRuntime {
             );
         }
         let fingerprint = local_observation_fingerprint(&candidate, rich_outputs.as_deref());
-        publish_device_displays(network, policy);
         let heartbeat_due = self
             .last_publish
             .is_none_or(|published| now.duration_since(published) >= PRESENCE_HEARTBEAT);
@@ -1922,6 +1937,7 @@ impl DeviceFabricRuntime {
             tracing::debug!(%error, "could not publish rich display observations");
         }
         self.merge_remote_state(network, selection, &device, policy);
+        publish_device_displays(network, policy);
         crate::shell::device_unlock_runtime::refresh(network);
         if policy.permits(ContinuityCapability::WifiSettings)
             && let Err(error) = network.refresh_wifi_credential_recipients()

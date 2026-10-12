@@ -39,9 +39,6 @@
 use std::path::PathBuf;
 
 pub mod client;
-#[cfg(feature = "service")]
-#[cfg(feature = "service")]
-pub mod fetch;
 pub mod install;
 #[cfg(feature = "service")]
 pub mod runtime_request;
