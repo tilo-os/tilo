@@ -403,10 +403,10 @@ impl<R: Resource> TypedRoot for Typed<R> {
         }
         let state = state_of::<R>(state).ok_or("the resource is not readable here")?;
         if let Some(id) = item {
-            let key = id.rsplit('/').next().unwrap_or(id);
             if super::super::rows::find(&R::children(state), id).is_some() {
-                return R::read_content(state, doc, Some(key)).map(Some);
+                return R::read_content(state, doc, Some(id)).map(Some);
             }
+            let key = id.rsplit('/').next().unwrap_or(id);
             let mut loaded = R::read(doc).map_err(|error| error.to_string())?;
             R::load(
                 &mut loaded,
@@ -419,7 +419,7 @@ impl<R: Resource> TypedRoot for Typed<R> {
             {
                 return Ok(None);
             }
-            return R::read_content(&loaded, doc, Some(key)).map(Some);
+            return R::read_content(&loaded, doc, Some(id)).map(Some);
         }
         R::read_content(state, doc, None).map(Some)
     }

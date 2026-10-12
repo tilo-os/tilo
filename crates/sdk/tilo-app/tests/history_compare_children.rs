@@ -3,6 +3,141 @@ use super::*;
 use tilo_resource::{Demand, Doc, ModelError};
 use ui_core::automerge::ReadDoc;
 
+const LEFT: &str = "resource/left/body";
+const RIGHT: &str = "resource/right/body";
+
+/// Both branches publish the same leaf name, but readers require its full identity.
+struct Namespaced<const LAZY: bool>;
+impl<const LAZY: bool> Resource for Namespaced<LAZY> {
+    const KIND: &'static str = "resource";
+    const LABEL: &'static str = "Namespaced";
+    const READABLE: bool = true;
+    type State = (String, String, bool);
+    type Action = readability::Noop;
+
+    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
+        doc.put(ui_core::automerge::ROOT, "left", "left before")?;
+        doc.put(ui_core::automerge::ROOT, "right", "right before")?;
+        Ok(())
+    }
+
+    fn read(doc: &Doc) -> Result<Self::State, ModelError> {
+        Ok((
+            tilo_resource::model::read_key(doc, &ui_core::automerge::ROOT, "left")?,
+            tilo_resource::model::read_key(doc, &ui_core::automerge::ROOT, "right")?,
+            !LAZY,
+        ))
+    }
+
+    fn children(state: &Self::State) -> Vec<tilo_actions::Resource> {
+        if !state.2 {
+            return Vec::new();
+        }
+        [LEFT, RIGHT]
+            .into_iter()
+            .map(|id| {
+                let parent = id.strip_suffix("/body").unwrap();
+                let mut folder = tilo_actions::Resource::new(parent, "test.folder", "Folder");
+                folder
+                    .children
+                    .push(tilo_actions::Resource::new(id, "test.item", "Body"));
+                folder
+            })
+            .collect()
+    }
+
+    fn load(state: &mut Self::State, _: &Doc, demand: &Demand) -> Result<(), ModelError> {
+        state.2 = demand.keys.iter().any(|id| id == LEFT || id == RIGHT);
+        Ok(())
+    }
+
+    fn read_content(state: &Self::State, _: &Doc, item: Option<&str>) -> Result<Value, String> {
+        let text = match item {
+            Some(LEFT) => &state.0,
+            Some(RIGHT) => &state.1,
+            _ => return Err("content read requires an exact published id".into()),
+        };
+        if text == "broken" {
+            return Err(format!("content decoder failed for {}", item.unwrap()));
+        }
+        Ok(json!({"id": item, "text": text}))
+    }
+}
+
+struct NamespacedApp<const LAZY: bool>;
+impl<const LAZY: bool> ResourceApp for NamespacedApp<LAZY> {
+    type Resource = Namespaced<LAZY>;
+    const ID: &'static str = "so.tilo.test-namespaced";
+    const TITLE: &'static str = "Namespaced";
+    fn view(cx: &mut ViewCx<Self::Resource>) -> Element {
+        Box::new(cx.text(|state| state.0.clone()))
+    }
+}
+
+fn namespaced_reads_agree<const LAZY: bool>() {
+    let mut app = TestApp::<NamespacedApp<LAZY>>::new().unwrap();
+    app.call("checkpoint", json!({"name": "before"})).unwrap();
+    app.merge_peer_edit(|doc| {
+        doc.put(ui_core::automerge::ROOT, "left", "left after")
+            .unwrap();
+        doc.put(ui_core::automerge::ROOT, "right", "right after")
+            .unwrap();
+        doc.commit();
+    });
+    app.call("checkpoint", json!({"name": "after"})).unwrap();
+    let compared = app
+        .call(
+            "compare",
+            json!({"from": "before", "to": "after", "items": [LEFT, RIGHT]}),
+        )
+        .unwrap()
+        .unwrap();
+    for (index, (id, namespace)) in [(LEFT, "left"), (RIGHT, "right")].into_iter().enumerate() {
+        let pair = compared.get("comparisons").unwrap().get(index).unwrap();
+        assert_eq!(pair.get("item").unwrap(), id);
+        for (side, version) in [("before", "before"), ("after", "after")] {
+            let read = app
+                .call("read", json!({"version": version, "item": id}))
+                .unwrap()
+                .unwrap();
+            let expected = json!({"id": id, "text": format!("{namespace} {version}")});
+            assert_eq!(read.get("content").unwrap(), &expected);
+            assert_eq!(
+                pair.get(side).unwrap(),
+                &json!({"status": "present", "content": expected})
+            );
+        }
+    }
+    app.merge_peer_edit(|doc| {
+        doc.put(ui_core::automerge::ROOT, "right", "broken")
+            .unwrap();
+        doc.commit();
+    });
+    app.call("checkpoint", json!({"name": "broken"})).unwrap();
+    for action in ["read", "compare"] {
+        let args = if action == "read" {
+            json!({"version": "broken", "item": RIGHT})
+        } else {
+            json!({"from": "before", "to": "broken", "items": [RIGHT]})
+        };
+        let error = refusal(app.call(action, args));
+        assert!(
+            error.contains(&format!("content decoder failed for {RIGHT}")),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn compare_preserves_published_tree_namespaces() {
+    namespaced_reads_agree::<false>();
+}
+
+#[test]
+fn compare_preserves_lazy_published_tree_namespaces() {
+    namespaced_reads_agree::<true>();
+}
+
 const ITEM: &str = "test.children/items/body";
 struct Children<const FAIL_LOAD: bool>;
 impl<const FAIL_LOAD: bool> Resource for Children<FAIL_LOAD> {
@@ -38,8 +173,8 @@ impl<const FAIL_LOAD: bool> Resource for Children<FAIL_LOAD> {
     }
 
     fn read_content(state: &Self::State, _: &Doc, item: Option<&str>) -> Result<Value, String> {
-        if item != Some("body") {
-            return Err("content read needs the body item key".into());
+        if item != Some(ITEM) {
+            return Err("content read needs the full published item id".into());
         }
         match state.as_deref() {
             Some("broken") => Err("published content decoder failed".into()),

@@ -21,6 +21,10 @@ pub struct Card {
 }
 
 fn read_board(board: &Board, item: Option<&Id>) -> Result<Value, String> {
+    let published = item.and_then(|id| {
+        tilo_resource::items::item_of_resource::<Board>(id.as_str()).map(|(_, key)| key)
+    });
+    let item = published.as_ref().or(item);
     match item {
         Some(id) => board
             .cards
