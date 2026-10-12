@@ -344,7 +344,7 @@ async fn finish_journey(
         )
         .await;
     } else if matches!(context.journey, Journey::ActiveReads) {
-        active_reads::run(context, authority, owner, refreshes, mounted).await;
+        active_reads::run(first, &mut mounted[0]).await;
     } else {
         edit_and_converge(context, authority, owner, refreshes, mounted).await;
     }

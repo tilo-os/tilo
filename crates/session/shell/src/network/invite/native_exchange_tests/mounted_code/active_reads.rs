@@ -2,11 +2,12 @@
 //! editing a large shared document, what does each of their edits cost the
 //! app that shows it?
 //!
-//! The second device makes the document large, then edits it a line at a
-//! time. The first device's mounted app re-reads the committed document
-//! after each edit; this journey counts what its readers are handed by the
-//! actual owner (bytes, owner time, whole captures) and how long each edit
-//! takes to show there.
+//! A collaborator makes the document large, then edits it a line at a time,
+//! each edit a signed write the actual owner commits. The mounted app
+//! re-reads the committed document after each one; this journey counts what
+//! its readers are handed by the owner (bytes, owner time, whole captures)
+//! and how long each edit takes to show there.
+use super::blocked_read::commit_edit;
 use super::*;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,6 +19,9 @@ use tilo_action_broker::services::{
 const LINES: usize = 1_000;
 /// Small edits measured after the document is large.
 const EDITS: usize = 10;
+/// Bytes a reader may be handed per one-line edit of the large document;
+/// a whole read hands it the document, tens of kilobytes.
+const READER_BYTES_PER_EDIT_BUDGET: u64 = 4096;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_large_shared_document_under_remote_editing_is_reread_by_the_edit() {
@@ -178,7 +182,7 @@ fn thread_cpu(prefixes: &[&str]) -> (std::time::Duration, Vec<std::time::Duratio
             .filter(|thread| keep(&thread.comm))
             .map(|thread| thread.cpu_ticks)
             .sum();
-        tilo_test_env::idle::CPU_TICK * u32::try_from(ticks).unwrap_or(u32::MAX)
+        tilo_test_env::idle::CPU_TICK.saturating_mul(u32::try_from(ticks).unwrap_or(u32::MAX))
     };
     (
         ticks(&|_| true),
@@ -189,29 +193,45 @@ fn thread_cpu(prefixes: &[&str]) -> (std::time::Duration, Vec<std::time::Duratio
     )
 }
 
-/// Make the shared document large from the second device, then edit it a
-/// line at a time there and measure each edit on the first device.
+/// Wait until `target` shows `body`, framing it; how long that took.
 #[expect(
     clippy::future_not_send,
     reason = "mounted UI roots use Rc and run on this test runtime thread"
 )]
-pub(super) async fn run(
-    context: &Context<'_>,
-    authority: &ActualAuthority,
-    source: &NativeWorkspaceOwner,
-    refreshes: &mut RefreshConsumer,
-    mounted: &mut [Mounted],
-) {
-    let meter = mounted[0]
+async fn shown(target: &mut Mounted, body: &str, what: &str) -> std::time::Duration {
+    let started = std::time::Instant::now();
+    tilo_test_env::within(what, async {
+        loop {
+            target.frame();
+            if target.has_body(body) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    started.elapsed()
+}
+
+/// Make the shared document large, then edit it a line at a time, each a
+/// signed write the owner commits, and measure what each edit costs the
+/// mounted app's committed readers and how long it takes to show there.
+#[expect(
+    clippy::future_not_send,
+    reason = "mounted UI roots use Rc and run on this test runtime thread"
+)]
+pub(super) async fn run(device: &Device, target: &mut Mounted) {
+    let meter = target
         .active_reads
         .clone()
-        .expect("the active journey measures the first mounted app's reads");
+        .expect("the active journey measures the mounted app's reads");
+    let owner = target.network.native_owner().unwrap();
     let mut body = String::from(BODY);
     for line in 0..LINES {
-        let _ = writeln!(body, "// shared line {line:05} kept by both devices");
+        let _ = writeln!(body, "// shared line {line:05} kept by every collaborator");
     }
-    mounted[1].invoke("replace-text", Some(&body));
-    drive(context, authority, source, refreshes, mounted, &body, 2).await;
+    commit_edit(device, &owner, BODY, &body);
+    shown(target, &body, "the large shared document to show").await;
     eprintln!(
         "active journey: the shared document holds {} characters",
         body.len()
@@ -221,10 +241,11 @@ pub(super) async fn run(
     let threads = ["tilo-collab-bro", "ui-collab-shove"];
     let (cpu_before, parts_before) = thread_cpu(&threads);
     for edit in 0..EDITS {
-        let _ = writeln!(body, "// remote edit {edit}");
+        let base = body.clone();
+        let _ = writeln!(body, "// collaborator edit {edit}");
         let started = std::time::Instant::now();
-        mounted[1].invoke("replace-text", Some(&body));
-        drive(context, authority, source, refreshes, mounted, &body, 2).await;
+        commit_edit(device, &owner, &base, &body);
+        shown(target, &body, "the edit to show").await;
         latencies.push(started.elapsed());
     }
     let (cpu_after, parts_after) = thread_cpu(&threads);
@@ -237,23 +258,33 @@ pub(super) async fn run(
     let read = meter.sample().since(before);
     latencies.sort_unstable();
     let edits = EDITS as u64;
+    let per_edit = |total: u128| total.checked_div(u128::from(edits)).unwrap_or(0);
+    let bytes_per_edit = read.bytes.checked_div(edits).unwrap_or(0);
     eprintln!(
-        "ACTIVE-SHARED-DOCUMENT doc_chars={} edits={EDITS} full_captures={} changes={} reader_bytes_per_edit={} owner_read_us_per_edit={} process_cpu_ms_per_edit={} broker_cpu_ms_per_edit={} shovel_cpu_ms_per_edit={} latency_ms_p50={} latency_ms_max={}",
+        "ACTIVE-SHARED-DOCUMENT doc_chars={} edits={EDITS} full_captures={} changes={} reader_bytes_per_edit={bytes_per_edit} owner_read_us_per_edit={} process_cpu_ms_per_edit={} broker_cpu_ms_per_edit={} shovel_cpu_ms_per_edit={} latency_ms_p50={} latency_ms_max={}",
         body.len(),
         read.captures,
         read.changes,
-        read.bytes / edits,
-        read.owner_ns / edits / 1_000,
-        cpu.as_millis() / u128::from(edits),
-        parts[0].as_millis() / u128::from(edits),
-        parts[1].as_millis() / u128::from(edits),
-        latencies[EDITS / 2].as_millis(),
-        latencies[EDITS - 1].as_millis(),
+        per_edit(u128::from(read.owner_ns)) / 1_000,
+        per_edit(cpu.as_millis()),
+        per_edit(parts.first().map_or(0, std::time::Duration::as_millis)),
+        per_edit(parts.get(1).map_or(0, std::time::Duration::as_millis)),
+        latencies
+            .get(EDITS / 2)
+            .map_or(0, std::time::Duration::as_millis),
+        latencies.last().map_or(0, std::time::Duration::as_millis),
     );
     assert!(
-        mounted
-            .iter()
-            .all(|app| app.code.app.collaboration_is_connected()),
-        "both apps stay connected through the edits"
+        target.code.app.collaboration_is_connected(),
+        "the app stays connected through the edits"
+    );
+    assert_eq!(
+        read.captures, 0,
+        "an edit of a document the reader holds is read as its changes, never whole"
+    );
+    assert!(
+        bytes_per_edit <= READER_BYTES_PER_EDIT_BUDGET,
+        "each one-line edit handed the reader {bytes_per_edit} bytes (budget {READER_BYTES_PER_EDIT_BUDGET}); the document is {} characters",
+        body.len()
     );
 }
