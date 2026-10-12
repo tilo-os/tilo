@@ -265,6 +265,8 @@ impl Compositor {
         fixture_tree.desktop.workspaces[0].name = "Clipboard test desktop".into();
         shell::shell::persist::save_tree_to(&fixture_tree, &state_path)
             .expect("seed the clipboard e2e desktop");
+        // Let go of the file's writer lease: the compositor owns its session.
+        fixture_tree.native_runtime = Default::default();
         Self::seed_tab_records(&runtime_dir, &fixture_tree);
         let identity_root = Self::seed_identity(&runtime_dir);
 
