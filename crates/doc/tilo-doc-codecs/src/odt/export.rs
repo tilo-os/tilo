@@ -174,7 +174,7 @@ fn write_image_blobs(
         if let Some(AttrVal::Str(hash)) = b.attrs.get("blob")
             && let Some(bytes) = snap.image(hash)
         {
-            let (ext, media) = image_ext_and_media(bytes);
+            let (ext, media) = crate::office_image_part(bytes);
             let path = format!("Pictures/{hash}.{ext}");
             c.set(&path, bytes.to_vec());
             if !pic_entries.iter().any(|(p, _)| p == &path) {
@@ -185,18 +185,9 @@ fn write_image_blobs(
     pic_entries
 }
 
-/// Detect an image's file extension + ODF media type from its magic bytes; unknown payloads fall back to a generic binary stream.
-fn image_ext_and_media(bytes: &[u8]) -> (&'static str, &'static str) {
-    tilo_doc::export::detect_image_media(bytes)
-        .filter(|media| matches!(media.extension, "png" | "jpg" | "gif"))
-        .map_or(("bin", "application/octet-stream"), |media| {
-            (media.extension, media.mime)
-        })
-}
-
 /// The `Pictures/<hash>.<ext>` href an image block's blob is written under.
 fn picture_href(hash: &str, bytes: &[u8]) -> String {
-    let (ext, _) = image_ext_and_media(bytes);
+    let (ext, _) = crate::office_image_part(bytes);
     format!("Pictures/{hash}.{ext}")
 }
 
