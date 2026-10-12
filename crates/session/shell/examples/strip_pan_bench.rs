@@ -21,7 +21,9 @@
 //! Every motion starts from a desktop at rest: two frames in a row that
 //! change nothing, with nothing animating, each kept rather than rendered as
 //! the DRM presenter keeps it; a pan also rests as long as the session waits
-//! before it warms the layers first, and then again two such frames. Once at rest the layered presenter warms its
+//! before it warms the layers first, and then again two such frames, and
+//! rests and warms again until a frame after the warm changes nothing
+//! (`rest_and_warm`). Once at rest the layered presenter warms its
 //! strip layers as the session does when the desktop rests after a frame
 //! that changed it (`FrameBuilder::layers_at_rest`,
 //! `RetainedGpuTarget::warm_layers`); that idle work is reported apart
@@ -93,6 +95,8 @@ const RENDER_DEADLINE: Duration = Duration::from_secs(10);
 /// first content, an animation running on the clock) happens unseen in that
 /// time, as it does in a session.
 const REST: Duration = Duration::from_millis(1100);
+/// Most rests and warms before a pan ([`rest_and_warm`]).
+const WARM_ROUNDS: usize = 4;
 
 struct Args {
     out: Option<PathBuf>,
@@ -582,6 +586,39 @@ fn rest(
     settle(fixture, target, size)
 }
 
+/// Rest ([`rest`]) and warm the layers ([`warm`]) as a session does, until
+/// a frame drawn at rest after the warm changes nothing. The in-process apps
+/// hand over what they produce on their own threads (a listing, a prompt)
+/// when a frame polls them, and the bench has no event loop their wakeups
+/// could start: what lands while a 4K warm runs would otherwise be drawn by
+/// the motion's first frame (a whole window group of the still strip on two
+/// strips, about 2.4 M px). A session draws such a frame as it lands and
+/// warms the layers again once the desktop has rested after it. The warm's
+/// time and pixels add up over the rounds.
+fn rest_and_warm(
+    fixture: &mut Fixture,
+    target: &mut RetainedGpuTarget,
+    size: (u32, u32),
+) -> Result<Option<(u64, u64)>, String> {
+    let mut warmed: Option<(u64, u64)> = None;
+    for _ in 0..WARM_ROUNDS {
+        rest(fixture, target, size)?;
+        if let Some((us, pixels)) = warm(fixture, target)? {
+            let (total_us, total_pixels) = warmed.unwrap_or_default();
+            warmed = Some((
+                total_us.saturating_add(us),
+                total_pixels.saturating_add(pixels),
+            ));
+        }
+        if frame(fixture, target, size, None)? && !fixture.frame.needs_animation_frame() {
+            return Ok(warmed);
+        }
+    }
+    Err(format!(
+        "the desktop still changed after {WARM_ROUNDS} warms at rest"
+    ))
+}
+
 fn active_strip_max_scroll(frame: &FrameBuilder) -> f64 {
     let active = frame.chrome().active_strip_id();
     frame
@@ -598,13 +635,13 @@ fn pan(
     size: (u32, u32),
     frames: usize,
 ) -> Result<Samples, String> {
-    rest(fixture, target, size)?;
+    let warmed = rest_and_warm(fixture, target, size)?;
     let max = active_strip_max_scroll(&fixture.frame);
     if max < PAN_STEP * 4.0 {
         return Err(format!("the strip does not pan: max scroll {max}"));
     }
     let mut samples = Samples {
-        warm: warm(fixture, target)?,
+        warm: warmed,
         ..Samples::default()
     };
     let mut travel = 0.0;
@@ -635,8 +672,7 @@ fn pan(
         .frame
         .host_mut()
         .end_active_strip_pan(Instant::now());
-    rest(fixture, target, size)?;
-    samples.rewarm = warm(fixture, target)?;
+    samples.rewarm = rest_and_warm(fixture, target, size)?;
     fixture.frame.host_mut().update_active_strip_pan(0.0, true);
     fixture
         .frame

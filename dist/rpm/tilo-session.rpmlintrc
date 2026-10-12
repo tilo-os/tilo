@@ -4,11 +4,11 @@
 # LD_LIBRARY_PATH; changing them would invalidate the signed app/runtime
 # contract. The bundled glibc necessarily contains its own mktemp
 # compatibility symbol; no Tilo package script or executable calls mktemp.
-# glibc is in the bundle twice: in the loader set at lib/lib64/, and at lib/
-# since the bundle signs the full ldd closure of its libraries, libc included
-# (os/scripts/collect-runtime-dependencies.py).
+# The bundle signs glibc once, at lib/, where LD_LIBRARY_PATH finds it: the
+# full ldd closure of its libraries includes libc, and tilo-runtime-bundle keeps
+# one copy per soname (os/scripts/collect-runtime-dependencies.py).
 addFilter(r"^tilo-session-apps(?:\.[A-Za-z0-9_]+)?: [EW]: invalid-soname /usr/lib/tilo-runtime/2026\.07(?:\+native\.[0-9a-f]{32})?/lib/(libruntime_dylib|libtilo_[a-z0-9]+_engine)\.so \1\.so$")
-addFilter(r"^tilo-session-apps(?:\.[A-Za-z0-9_]+)?: [EW]: call-to-mktemp /usr/lib/tilo-runtime/2026\.07(?:\+native\.[0-9a-f]{32})?/lib/(?:lib64/)?libc\.so\.6$")
+addFilter(r"^tilo-session-apps(?:\.[A-Za-z0-9_]+)?: [EW]: call-to-mktemp /usr/lib/tilo-runtime/2026\.07(?:\+native\.[0-9a-f]{32})?/lib/libc\.so\.6$")
 # libmount and libblkid are signed into the runtime as GIO's dependencies
 # (GLib loads on first media use). util-linux's only setgid/setuid calls in
 # either are drop_permissions(): setgid(getgid()); setuid(getuid()) in a forked

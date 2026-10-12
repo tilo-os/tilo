@@ -448,6 +448,70 @@ impl NativeRedrawReasons {
             || (!session_locked && self.keepalive)
             || (session_locked && (self.lock_clock || self.lock_animation || self.lock_osd))
     }
+
+    /// The reasons [`Self::content_changed`] counts, as frame-trace
+    /// [`metrics::paint_reason`] bits, gated exactly as it gates them.
+    /// `transition` separates a compositor transition's frame run from the
+    /// other animations folded into `hidden_desktop_animation`.
+    fn paint_reason_bits(self, session_locked: bool, transition: bool) -> u16 {
+        use metrics::paint_reason as r;
+        let desktop = !session_locked;
+        [
+            (self.force, r::FORCE),
+            (self.backend_event, r::INPUT),
+            (self.visible_input, r::CURSOR),
+            (self.session, r::SESSION),
+            (self.revision, r::REVISION),
+            (desktop && self.hidden_desktop_animation, r::ANIMATION),
+            (
+                desktop && self.hidden_desktop_animation && transition,
+                r::TRANSITION,
+            ),
+            (desktop && self.apps, r::APPS),
+            (desktop && self.peers, r::PEERS),
+            (desktop && self.presentation, r::PRESENTATION),
+            (desktop && self.capture, r::CAPTURE),
+            (desktop && self.keepalive, r::KEEPALIVE),
+            (session_locked && self.lock_clock, r::LOCK_CLOCK),
+            (session_locked && self.lock_animation, r::LOCK_ANIMATION),
+            (session_locked && self.lock_osd, r::LOCK_OSD),
+        ]
+        .into_iter()
+        .filter(|(held, _)| *held)
+        .fold(0, |bits, (_, bit)| bits | bit)
+    }
+}
+
+/// `+`-joined app ids of the tiles whose surfaces committed since the last
+/// painted tick, for the frame trace. Characters that would break the CSV
+/// row or the join are replaced; a surface no tab has adopted yet is named
+/// by its id.
+fn paint_client_label(
+    tree: &crate::shell::state::WorkspaceTree,
+    surfaces: &[crate::shell::foreign::SurfaceId],
+) -> &'static str {
+    let mut names: Vec<String> = surfaces
+        .iter()
+        .map(|surface| {
+            crate::shell::tab_binding::app_id_for_surface(tree, *surface).map_or_else(
+                || format!("surface-{surface}"),
+                |app| {
+                    app.chars()
+                        .map(|c| {
+                            if c == ',' || c == '+' || c.is_control() {
+                                '_'
+                            } else {
+                                c
+                            }
+                        })
+                        .collect()
+                },
+            )
+        })
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    metrics::intern_clients(&names.join("+"))
 }
 
 /// An animation's resting frame is owed after its demand clears. The last
@@ -8726,6 +8790,7 @@ pub fn run() {
         backend.pixel_aligned_strip_pan(),
         backend.composites_strip_layers(),
     );
+    frame_builder.set_scroll_copy_presenter(backend.copies_scrolls());
     let clipboard_store = state.selection_store();
     frame_builder
         .host_mut()
@@ -9571,6 +9636,11 @@ pub fn run() {
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
     let mut animation_settle = AnimationSettle::default();
+    // When the frame being made was first wanted, for its trace lateness.
+    let mut demand_onset = metrics::DemandOnset::default();
+    // Each foreign surface's frame counter at the last traced paint, so a
+    // painted tick can name the apps whose commits it carries.
+    let mut trace_surface_frames = std::collections::HashMap::new();
     // `output_presentation_frame_changed` observes live foreign-frame
     // sequences, but removal leaves no live entry to report. Keep a local
     // repaint edge until its full-frame boundary is actually submitted.
@@ -12401,7 +12471,7 @@ pub fn run() {
         }
         // Is there anything new to show? This redraw gating lets a static desktop
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
-        let content_changed = NativeRedrawReasons {
+        let redraw_reasons = NativeRedrawReasons {
             force: force_first_paint,
             backend_event: had_backend_events,
             visible_input: visible_input_changed,
@@ -12435,8 +12505,9 @@ pub fn run() {
             )
             .is_some_and(|deadline| iter_t0 >= deadline),
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
-        }
-        .content_changed(session.is_locked());
+        };
+        let content_changed = redraw_reasons.content_changed(session.is_locked());
+        demand_onset.note_tick(content_changed, iter_t0);
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
@@ -12558,6 +12629,21 @@ pub fn run() {
             }
         }
 
+        if should_paint && metrics.is_enabled() {
+            let advanced =
+                crate::shell::foreign::store().surfaces_advanced(&mut trace_surface_frames);
+            let clients = if advanced.is_empty() {
+                ""
+            } else {
+                let chrome = frame_builder.chrome();
+                let tree = chrome.tree();
+                paint_client_label(&tree, &advanced)
+            };
+            metrics.mark_paint_reasons(
+                redraw_reasons.paint_reason_bits(session.is_locked(), transition_run),
+                clients,
+            );
+        }
         if should_paint {
             frame_builder.with_chrome(
                 super::super::shell::chrome_state::ChromeState::consume_transition_paint,
@@ -13055,8 +13141,9 @@ pub fn run() {
             // this afterwards would compare against the *next* interval and
             // hide an overrun by roughly one refresh period.
             metrics.mark_deadline_lateness(
-                submit_done.saturating_duration_since(frame_clock.next_deadline()),
+                demand_onset.lateness(submit_done, frame_clock.next_deadline()),
             );
+            demand_onset.painted();
             metrics.mark_submit(
                 submit_done.saturating_duration_since(t_submit_start),
                 async_present,
@@ -14553,6 +14640,44 @@ mod tests {
             );
             assert_eq!(dimmer.overlay_alpha(), None);
         }
+    }
+
+    #[test]
+    fn paint_reasons_name_exactly_what_content_changed_counts() {
+        use crate::compositor::metrics::paint_reason as r;
+        let quiet = NativeRedrawReasons::default();
+        assert!(!quiet.content_changed(false));
+        assert_eq!(quiet.paint_reason_bits(false, false), 0);
+        let commit = NativeRedrawReasons {
+            apps: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert_eq!(commit.paint_reason_bits(false, false), r::APPS);
+        assert_eq!(
+            commit.paint_reason_bits(true, false),
+            0,
+            "a hidden desktop's commit is not why a locked tick paints"
+        );
+        let fade = NativeRedrawReasons {
+            hidden_desktop_animation: true,
+            revision: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert_eq!(
+            fade.paint_reason_bits(false, true),
+            r::REVISION | r::ANIMATION | r::TRANSITION
+        );
+        assert_eq!(
+            fade.paint_reason_bits(false, false),
+            r::REVISION | r::ANIMATION,
+            "an animation that is not a compositor transition is not named one"
+        );
+        let lock = NativeRedrawReasons {
+            lock_clock: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert_eq!(lock.paint_reason_bits(true, false), r::LOCK_CLOCK);
+        assert_eq!(lock.paint_reason_bits(false, false), 0);
     }
 
     #[test]

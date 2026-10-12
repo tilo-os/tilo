@@ -81,6 +81,8 @@ third-party = [
 #   (os/kernel/project-crate.py).
 # - tilo-vm and its protocol are the tilo-vm Windows CLI's whole
 #   workspace graph; keep that cross build to the crates it uses.
+# - install-profile-model is also built by the isolated tools/imager-profile
+#   workspace, which must not resolve the application workspace.
 # - tilo-advisory-lock is the builder image's sccache canary, compiled cold into
 #   an empty namespace (build-ci-builder.yml); it must stay small.
 workspace-members = [
@@ -99,6 +101,8 @@ workspace-members = [
     # tilo-vm Windows CLI
     "tilo-vm",
     "tilo-vm-protocol",
+    # also built by the isolated tools/imager-profile workspace
+    "install-profile-model",
     # builder sccache canary
     "tilo-advisory-lock",
     # The [patch.crates-io] replacement for rustls-native-certs sits below

@@ -62,7 +62,7 @@ class FsGate(unittest.TestCase):
             name, unit, value = match.groups()
             slos[name] = float(value) * (1000.0 if unit == "secs" else 1.0)
         reports = dict(re.findall(r'report\(\s*"([a-z0-9-]+)",\s*[^,]+,\s*(\w+_SLO),?\s*\)', source))
-        self.assertEqual(len(reports), 11, reports)
+        self.assertEqual(len(reports), 13, reports)
         budgets = compare.load_budgets(compare.BUDGETS)
         expected = {f"fs.{name}": slos[constant] for name, constant in reports.items()}
         got = {kpi: entry["max"] for kpi, entry in budgets.kpis.items() if kpi.startswith("fs.")}
@@ -288,6 +288,16 @@ def scroll_log(pixels: int, differing: int = 0) -> str:
         f"copied_p50=700000 whole=0 frames=120 cpu_ms=0.512 gpu_ms=0.9 gpu_full_ms=1.6 differing={differing}",
         "FRAMEWORK-SCROLL tasks=5000 step=40.5 copying=true pixels_p50=900000 pixels_max=900000 "
         "copied_p50=0 whole=0 frames=120 cpu_ms=0.420 gpu_ms=1.6 gpu_full_ms=1.6 differing=0",
+        "FRAMEWORK-SCROLL-HOSTED tasks=5000 step=40 copying=false pixels_p50=983616 pixels_max=983616 "
+        "copied_p50=0 whole=0 frames=120 cpu_ms=0.6 gpu_ms=1.6 gpu_full_ms=1.6 differing=0",
+        f"FRAMEWORK-SCROLL-HOSTED tasks=5000 step=40 copying=true pixels_p50={pixels + 5000} "
+        f"pixels_max={pixels * 2} copied_p50=700000 whole=0 frames=120 cpu_ms=0.7 gpu_ms=0.9 "
+        f"gpu_full_ms=1.6 differing={differing}",
+        "FRAMEWORK-SCROLL-PEER tasks=5000 step=40 copying=false pixels_p50=990000 pixels_max=990000 "
+        "copied_p50=0 whole=0 frames=120 cpu_ms=0.5 gpu_ms=1.6 gpu_full_ms=1.6 differing=0",
+        f"FRAMEWORK-SCROLL-PEER tasks=5000 step=40 copying=true pixels_p50={pixels + 9000} "
+        f"pixels_max={pixels * 2} copied_p50=700000 whole=0 frames=120 cpu_ms=0.6 gpu_ms=0.9 "
+        f"gpu_full_ms=1.6 differing={differing}",
     ])
 
 
@@ -300,6 +310,18 @@ class FrameworkScroll(unittest.TestCase):
         self.assertEqual(records["render.framework_scroll.whole_frames.5k"].p50, 0.0)
         self.assertEqual(records["render.framework_scroll.cpu_ms.5k"].unit, "ms")
         self.assertEqual(records["render.framework_scroll.raster_ms.5k"].p50, 0.9)
+
+    def test_the_hosted_copying_run_is_recorded_apart(self):
+        records = {item.kpi: item for item in adapters.framework_scroll([scroll_log(90000)], ENV)}
+        self.assertEqual(records["render.framework_scroll.hosted_pixels.5k"].p50, 95000.0)
+        self.assertEqual(records["render.framework_scroll.pixels.5k"].p50, 90000.0)
+        self.assertEqual(records["render.framework_scroll.hosted_whole_frames.5k"].p50, 0.0)
+
+    def test_the_run_beside_a_peer_is_recorded_apart(self):
+        records = {item.kpi: item for item in adapters.framework_scroll([scroll_log(90000)], ENV)}
+        self.assertEqual(records["render.framework_scroll.peer_pixels.5k"].p50, 99000.0)
+        self.assertEqual(records["render.framework_scroll.peer_whole_frames.5k"].p50, 0.0)
+        self.assertEqual(records["render.framework_scroll.pixels.5k"].p50, 90000.0)
 
     def test_pixels_a_full_render_does_not_have_fail(self):
         with self.assertRaisesRegex(ValueError, "full render"):
@@ -332,7 +354,11 @@ def load_report(collaborators: int = 100, minutes: int = 2) -> dict:
     per_minute = {"hosting.relay.cpu_s_per_collab_hour": ("s", 36.0),
                   "hosting.relay.rss_mib_per_collab": ("MiB", 1.0),
                   "hosting.relay.egress_bytes_per_collab_hour": ("bytes", 10e6),
-                  "hosting.relay.frame_bytes_per_collab_hour": ("bytes", 8e6)}
+                  "hosting.relay.frame_bytes_per_collab_hour": ("bytes", 8e6),
+                  "hosting.relay.client_packets_per_collab_hour": ("count", 23_000.0),
+                  "hosting.relay.client_data_packets_per_collab_hour": ("count", 6_000.0),
+                  "hosting.relay.datagrams_per_collab_hour": ("count", 26_000.0),
+                  "hosting.relay.ack_only_datagrams_per_collab_hour": ("count", 7_500.0)}
     kpis = {kpi: {"unit": unit, "samples": [value] * minutes} for kpi, (unit, value) in per_minute.items()}
     kpis["hosting.relay.fanout_ms"] = {"unit": "ms", "samples": [4.0, 6.0, 30.0]}
     kpis["hosting.relay.presence_pointer_ms"] = {"unit": "ms", "samples": [20.0, 40.0, 55.0]}
@@ -355,7 +381,15 @@ class HostingLoad(unittest.TestCase):
         self.assertEqual((cpu.unit, cpu.n, cpu.p50), ("s", 2, 36.0))
         fanout = records["hosting.relay.fanout_ms.n100"]
         self.assertEqual((fanout.n, fanout.p50, fanout.max), (3, 6.0, 30.0))
+        acks = records["hosting.relay.ack_only_datagrams_per_collab_hour.n100"]
+        self.assertEqual((acks.unit, acks.n, acks.p50), ("count", 2, 7_500.0))
         self.assertEqual(cpu.meta["prices_checked"], self.prices["checked"])
+        self.assertEqual(cpu.meta["relay_cpus"], "all")
+
+    def test_records_say_how_many_cpus_the_relay_ran_on(self):
+        report = {**load_report(), "relay_cpus": 2}
+        records = adapters.hosting_load(report, self.prices, ENV)
+        self.assertEqual({item.meta["relay_cpus"] for item in records}, {"2"})
 
     def test_the_price_sheet_prices_each_minute(self):
         records = {item.kpi: item for item in adapters.hosting_load(load_report(), self.prices, ENV)}

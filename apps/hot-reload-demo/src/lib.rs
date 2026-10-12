@@ -7,10 +7,6 @@ pub const APP_TITLE: &str = "Hot reload";
 
 pub mod locales;
 
-fn install_catalog() {
-    locales::install();
-}
-
 use ui::prelude::*;
 use ui::widget::{Column, EmptyState, Field, Form, FormPage, FormSection, LabelPlacement};
 
@@ -47,6 +43,10 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn label(document: &Document) -> String {
         if document.title.is_empty() {
             String::from("Document")
@@ -80,7 +80,6 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Document>) -> Element {
-        crate::install_catalog();
         let paths = cx.paths();
         let title = cx
             .input(paths.title)

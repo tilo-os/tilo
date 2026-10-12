@@ -15,6 +15,8 @@ use tilo_actions::{ActionSpec, EncodedAction, Resource};
 pub mod retirement;
 
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024;
+/// The longest opaque cursor a paged read hands out or accepts.
+pub const MAX_CURSOR_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemanticReadError {
@@ -59,6 +61,78 @@ impl SemanticReadError {
             Self::Malformed => ("document_malformed", "The document cannot be read"),
         }
     }
+}
+
+impl From<tilo_doc::semantic_read::ReadError> for SemanticReadError {
+    fn from(error: tilo_doc::semantic_read::ReadError) -> Self {
+        use tilo_doc::semantic_read::ReadError;
+        match error {
+            ReadError::Pending => Self::Pending,
+            ReadError::StaleCursor => Self::StaleCursor,
+            ReadError::InvalidCursor => Self::InvalidRequest,
+            ReadError::Limit => Self::Limit,
+            ReadError::Malformed => Self::Malformed,
+        }
+    }
+}
+
+/// The exact result schema of a read whose projection yields `content`: the
+/// SDK stamps `version`, `record` and `basis` around it. A `paged` read
+/// returns an opaque `nextCursor` or null; any other read always returns null.
+#[must_use]
+pub fn result_schema(content: serde_json::Value, paged: bool) -> serde_json::Value {
+    let next_cursor = if paged {
+        serde_json::json!({"type":["string","null"],"maxLength":MAX_CURSOR_BYTES})
+    } else {
+        serde_json::json!({"type":"null"})
+    };
+    serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{
+        "version":{"type":"integer","enum":[1]},
+        "record":{"type":"object","required":["roomId","appId","recordId"],"additionalProperties":false,"properties":{
+            "roomId":{"type":["string","null"],"format":"uuid"},"appId":{"type":"string","minLength":1,"maxLength":256},"recordId":{"type":"string","maxLength":512}
+        }},
+        "basis":{"type":"object","required":["heads"],"additionalProperties":false,"properties":{
+            "heads":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^[0-9a-f]{64}$"}}
+        }},
+        "content":content,
+        "nextCursor":next_cursor
+    }})
+}
+
+/// A reader's closed request, decoded from its payload. The SDK has already
+/// refused a payload over [`MAX_REQUEST_BYTES`].
+pub fn decode_request<T: serde::de::DeserializeOwned>(
+    payload: &[u8],
+) -> Result<T, SemanticReadError> {
+    serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)
+}
+
+/// The cursor an earlier page handed out, decoded; `None` reads from the start.
+pub fn decode_cursor<C: serde::de::DeserializeOwned>(
+    cursor: Option<&str>,
+) -> Result<Option<C>, SemanticReadError> {
+    let Some(cursor) = cursor else {
+        return Ok(None);
+    };
+    if cursor.len() > MAX_CURSOR_BYTES {
+        return Err(SemanticReadError::Limit);
+    }
+    serde_json::from_str(cursor)
+        .map(Some)
+        .map_err(|_| SemanticReadError::InvalidRequest)
+}
+
+/// The opaque cursor for the page after this one, when there is one.
+pub fn encode_cursor<C: serde::Serialize>(
+    next: Option<&C>,
+) -> Result<Option<String>, SemanticReadError> {
+    next.map(|next| {
+        serde_json::to_string(next)
+            .ok()
+            .filter(|cursor| cursor.len() <= MAX_CURSOR_BYTES)
+            .ok_or(SemanticReadError::Limit)
+    })
+    .transpose()
 }
 
 /// One page an app's projection produced at the heads it was given.

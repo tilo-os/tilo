@@ -158,13 +158,6 @@ pub fn namespace_of<'a>(kind: Option<&str>, resource_id: &'a str) -> &'a str {
     .map_or_else(|| app_of(resource_id), |contract| contract.namespace)
 }
 
-/// The contract for an announced app id.
-pub fn for_app_id(app_id: &str) -> Option<&'static AppContract> {
-    CONTRACTS
-        .iter()
-        .find(|contract| contract.app_id() == app_id)
-}
-
 /// The contract whose package-primary document `artifact` is, in the room
 /// `cluster_id`. The artifact is part of the authenticated envelope a
 /// document arrives in, so this names the app that wrote it without reading
@@ -176,15 +169,6 @@ pub fn for_artifact(
     CONTRACTS.iter().find(|contract| {
         artifact == collab_types::document_artifact_id(contract.app_id(), cluster_id, "")
     })
-}
-
-/// The contract an operation belongs to: the app whose resource kind it is
-/// published on, or whose namespace its resource id starts with.
-pub fn for_descriptor(descriptor: &ActionDescriptor) -> Option<&'static AppContract> {
-    CONTRACTS
-        .iter()
-        .find(|contract| contract.kind.kind() == descriptor.resource_kind)
-        .or_else(|| for_namespace(app_of(&descriptor.address.resource)))
 }
 
 /// Decoders for every app the agent speaks to, in one registry: the door
@@ -746,32 +730,6 @@ impl Catalogue {
     /// The facts about the resource `address` is published by.
     pub fn about(&self, resource: &str) -> Option<&ResourceFacts> {
         self.facts.iter().find(|f| f.id == resource)
-    }
-
-    /// The same catalogue narrowed to one resource, keeping the operations
-    /// that name no resource at all.
-    ///
-    /// What a request that arrived carrying its own subject is decided
-    /// against. The opens stay: dropping them would mean the application
-    /// that would export an operation on the named resource, when it is not
-    /// running, can never be started to answer the request.
-    #[must_use]
-    pub fn scoped_to(&self, resource: &str) -> Catalogue {
-        Catalogue {
-            held: self.held.clone(),
-            offers: self
-                .offers
-                .iter()
-                .filter(|o| o.address().resource == resource || opens(o.address()).is_some())
-                .cloned()
-                .collect(),
-            facts: self
-                .facts
-                .iter()
-                .filter(|f| f.id == resource)
-                .cloned()
-                .collect(),
-        }
     }
 }
 
