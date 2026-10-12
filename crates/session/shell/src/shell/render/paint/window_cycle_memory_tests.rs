@@ -1,4 +1,4 @@
-//! What one window's open/close cycle costs the compositor (TIL-692).
+//! What one window's open/close cycle costs the compositor.
 //!
 //! The nightly VM run saw the compositor's anonymous memory climb by about
 //! 14 MiB per app opened and closed, with no plateau in sight. Each cycle here
@@ -193,7 +193,7 @@ fn window_cycle_memory_returns_to_the_bare_desktop() {
 /// runs its cycles in.
 const HEAP_TRIM_CHILD: &str = "TILO_HEAP_TRIM_TEST_CHILD";
 
-/// What closed windows freed goes back to the kernel (TIL-705). glibc kept it
+/// What closed windows freed goes back to the kernel. glibc kept it
 /// before: 61–75 MiB free in its arenas stayed in the compositor's anonymous
 /// RSS. Closing a window asks the heap trimmer to return it; once the
 /// trimmer has served the closes, a further `malloc_trim` has nothing left
@@ -276,7 +276,7 @@ const DEVICE_SLACK_MIB: u64 = 8;
 /// Frames a desktop draws after a close before it goes idle.
 const CLOSE_PAINTS: u32 = 8;
 
-/// What closed windows' textures touched goes back to the kernel (TIL-731).
+/// What closed windows' textures touched goes back to the kernel.
 /// On lavapipe, the software rasteriser the dev VM and CI render with,
 /// device memory lives in one memfd that never shrinks: four apps opened
 /// and closed left about 305 MiB allocated to it and mapped by nobody, and

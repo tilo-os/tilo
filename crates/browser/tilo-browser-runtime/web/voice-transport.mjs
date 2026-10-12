@@ -11,7 +11,7 @@
  * and expects: each 20 ms object leaves as one datagram; without datagrams,
  * groups of five objects. Both forms are received.
  *
- * Redundancy follows measured loss, hop by hop (TIL-624). A datagram carries
+ * Redundancy follows measured loss, hop by hop. A datagram carries
  * up to two earlier objects as well only while this carrier's own QUIC
  * connection reports loss (one at 1%, repairing an isolated loss 20 ms
  * later; two at 5%, repairing a 40 ms burst), and the relay re-bundles each
