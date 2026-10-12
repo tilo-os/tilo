@@ -113,6 +113,33 @@ pub enum MountHealth {
     Error,
 }
 
+impl MountHealth {
+    /// The word the cloud child reports this health with.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Syncing => "syncing",
+            Self::Healthy => "healthy",
+            Self::Offline => "offline",
+            Self::NeedsAuthentication => "needs-authentication",
+            Self::Error => "error",
+        }
+    }
+
+    /// The health [`Self::as_str`] wrote.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        Some(match text {
+            "syncing" => Self::Syncing,
+            "healthy" => Self::Healthy,
+            "offline" => Self::Offline,
+            "needs-authentication" => Self::NeedsAuthentication,
+            "error" => Self::Error,
+            _ => return None,
+        })
+    }
+}
+
 /// What a mounted account's provider offers beyond files and folders. An
 /// operation a provider lacks is not offered, rather than offered and
 /// failing.

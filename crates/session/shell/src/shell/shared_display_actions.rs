@@ -39,7 +39,16 @@ pub(crate) struct SharedDisplayView {
 }
 
 pub(crate) fn current() -> Option<SharedDisplayView> {
-    let facts = PersonDisplays::load()?;
+    view_of(PersonDisplays::load()?)
+}
+
+/// [`current`] over the view this process published, taken from memory
+/// rather than read back from the runtime file it wrote for Settings.
+pub(crate) fn published() -> Option<SharedDisplayView> {
+    view_of(PersonDisplays::published()?.as_ref().clone())
+}
+
+fn view_of(facts: PersonDisplays) -> Option<SharedDisplayView> {
     crate::shell::personal_continuity::DeviceId::new(facts.local_device.clone()).ok()?;
     let arrangement = Arrangement::load();
     let layout = Layout::resolve(&facts.devices, &arrangement);
