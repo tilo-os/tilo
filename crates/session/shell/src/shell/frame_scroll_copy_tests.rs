@@ -135,15 +135,26 @@ fn write_a_long_note(frame: &mut FrameBuilder, label: &str, reach: f64) -> Point
     // as they come (shaping can land a frame or two after the text).
     let mut paragraph = 0_usize;
     while max_scroll(frame) < reach && paragraph < 400 {
+        // Each a committed phrase and Enter, handed to the tile as the
+        // shell hands it keyboard input: a key at a time through the whole
+        // desktop is minutes of a debug build per note.
         for _ in 0..10 {
-            type_text(
+            notes_input(
                 frame,
-                &format!(
+                &WindowEvent::Ime(winit::event::Ime::Commit(format!(
                     "Paragraph {paragraph}: the quick brown fox jumps over the lazy dog, \
                      and a second clause so the line runs on a while."
-                ),
+                ))),
             );
-            press_key(frame, &Key::Named(NamedKey::Enter));
+            for state in [
+                winit::event::ElementState::Pressed,
+                winit::event::ElementState::Released,
+            ] {
+                notes_input(
+                    frame,
+                    &ui::synthetic_input::key_input(&Key::Named(NamedKey::Enter), state),
+                );
+            }
             paragraph += 1;
         }
         for _ in 0..5 {
@@ -375,15 +386,31 @@ fn assert_scroll_copies(run: &ScrollRun, label: &str) {
     );
 }
 
+/// Scroll a long note in `theme` at 100 % and 200 %, with a peer's
+/// pointer over it, on a presenter that copies.
+fn scroll_copies_in((name, theme): ThemeCase) {
+    for scale in [1.0, 2.0] {
+        let (down, up) = scroll_a_long_note(theme(), scale, true, true);
+        assert_scroll_copies(&down, &format!("{name} {scale}x down"));
+        assert_scroll_copies(&up, &format!("{name} {scale}x up"));
+    }
+}
+
+// One theme per test: each writes and scrolls a note twice, and the three
+// together would outlast a test's time budget.
 #[test]
 fn scrolling_an_in_process_app_copies_on_the_presenter_and_matches_a_full_render() {
-    for (name, theme) in THEMES {
-        for scale in [1.0, 2.0] {
-            let (down, up) = scroll_a_long_note(theme(), scale, true, true);
-            assert_scroll_copies(&down, &format!("{name} {scale}x down"));
-            assert_scroll_copies(&up, &format!("{name} {scale}x up"));
-        }
-    }
+    scroll_copies_in(THEMES[0]);
+}
+
+#[test]
+fn scrolling_an_in_process_app_copies_and_matches_in_the_light_theme() {
+    scroll_copies_in(THEMES[1]);
+}
+
+#[test]
+fn scrolling_an_in_process_app_copies_and_matches_in_high_contrast() {
+    scroll_copies_in(THEMES[2]);
 }
 
 /// The same scroll for a presenter that does not copy: every frame
