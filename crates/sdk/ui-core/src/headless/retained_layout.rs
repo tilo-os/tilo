@@ -131,24 +131,9 @@ impl FrameHarness {
             .keys()
             .copied()
             .filter(|&node| {
-                // Hidden layout subtrees are not measured by Taffy. Their
-                // widget flags can remain dirty until shown, so do not let
-                // them request work on every visible edit. Showing them
-                // recomposes the tree and performs the required measurement.
-                let mut ancestor = Some(node);
-                while let Some(current) = ancestor {
-                    if self
-                        .taffy
-                        .style(current)
-                        .is_ok_and(|style| style.display == taffy::Display::None)
-                    {
-                        return false;
-                    }
-                    ancestor = self.taffy.parent(current);
-                }
                 // SAFETY: these maps describe this exclusive runner's current
                 // admitted tree; the callback only reads widget flags.
-                unsafe {
+                let flagged = unsafe {
                     crate::bound_dispatch::inspect_bound_node(
                         &self.bindings,
                         &self.node_map,
@@ -156,7 +141,28 @@ impl FrameHarness {
                         |widget| widget.is_layout_dirty() || widget.layout_needs_measure(),
                     )
                 }
-                .unwrap_or(true)
+                .unwrap_or(true);
+                // Hidden layout subtrees are not measured by Taffy. Their
+                // widget flags can remain dirty until shown, so do not let
+                // them request work on every visible edit. Showing them
+                // recomposes the tree and performs the required measurement.
+                // Only a flagged node walks up: the walk is per node.
+                flagged && {
+                    let mut ancestor = Some(node);
+                    let mut shown = true;
+                    while let Some(current) = ancestor {
+                        if self
+                            .taffy
+                            .style(current)
+                            .is_ok_and(|style| style.display == taffy::Display::None)
+                        {
+                            shown = false;
+                            break;
+                        }
+                        ancestor = self.taffy.parent(current);
+                    }
+                    shown
+                }
             })
             .collect();
         let mut leaves = 0usize;

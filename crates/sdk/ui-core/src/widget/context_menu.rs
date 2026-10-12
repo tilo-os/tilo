@@ -1823,6 +1823,10 @@ impl Widget for ContextMenu {
         self.rect
     }
 
+    fn accessibility_hidden(&self) -> bool {
+        !self.open
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Menu items are painted rows rather than child widgets, so publish
@@ -1892,7 +1896,7 @@ impl Widget for ContextMenu {
             AccessNode::new(Role::Menu)
                 .with_state(AccessState {
                     expanded: Some(self.open),
-                    hidden: !self.open,
+                    hidden: self.accessibility_hidden(),
                     ..Default::default()
                 })
                 .with_children(children),
