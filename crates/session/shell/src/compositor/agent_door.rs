@@ -500,9 +500,19 @@ mod tests {
                 assert!(std::time::Instant::now() < deadline, "no reply");
             }
         };
+        // The door serves the agent tools: `tilo_ls` with no path lists the
+        // apps, one `<name>  <label>  running|installed` line each.
         let list_apps = |id: u64| {
             serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
-                "params":{"name":"tilo_list_apps","arguments":{}}})
+                "params":{"name":"tilo_ls","arguments":{}}})
+        };
+        let running_settings = |reply: &serde_json::Value| {
+            reply["result"]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| {
+                    text.lines()
+                        .any(|line| line.starts_with("settings ") && line.ends_with("running"))
+                })
         };
 
         send(
@@ -589,12 +599,8 @@ mod tests {
             send(list_apps(3));
         };
         assert_eq!(listed["result"]["isError"], false, "{listed}");
-        let apps = listed["result"]["structuredContent"]["apps"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
         assert!(
-            apps.iter().any(|app| app["app_id"] == "so.tilo.settings"),
+            running_settings(&listed),
             "the live app is listed: {listed}"
         );
 
@@ -604,9 +610,9 @@ mod tests {
         send(list_apps(4));
         let revoked = reply(&mut consent);
         assert_eq!(revoked["id"], 4);
-        let still = revoked["result"]["structuredContent"]["apps"]
-            .as_array()
-            .is_some_and(|apps| apps.iter().any(|app| app["app_id"] == "so.tilo.settings"));
-        assert!(!still, "a removed agent still lists the app: {revoked}");
+        assert!(
+            !running_settings(&revoked),
+            "a removed agent still lists the app: {revoked}"
+        );
     }
 }
