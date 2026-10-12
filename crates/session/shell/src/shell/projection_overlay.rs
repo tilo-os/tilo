@@ -174,6 +174,16 @@ fn staged_transaction(receipt: &crate::shell::search::ActionReceipt) -> Option<u
     output.value.as_ref()?.get("transaction")?.as_u64()
 }
 
+/// Which version of the settings document the sheet last read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SettingsSeen {
+    /// Not read yet, or read while it may still change under the same stamp.
+    #[default]
+    Unread,
+    /// Read at this stamp (`None`: there was no document to stamp).
+    At(Option<settings_store::SettingsStamp>),
+}
+
 /// Attached displays, the committed layout and the transaction this
 /// session staged. Displays come from what the compositor published in
 /// memory; the layout and the change from the settings document, read again
@@ -188,9 +198,8 @@ pub(crate) struct DisplayLayouts {
     outputs_seen: Option<u64>,
     /// Generation of the published person's displays `person` came from.
     person_seen: Option<u64>,
-    /// Settings document version `committed` and `transaction` were read
-    /// at; `None` until read, or while that read may be stale.
-    settings_seen: Option<Option<settings_store::SettingsStamp>>,
+    /// Settings document version `committed` and `transaction` were read at.
+    settings_seen: SettingsSeen,
     /// Id of the transaction this sheet staged, so an old rejection left in
     /// settings is never reported as the answer to a new choice.
     staged: Option<u64>,
@@ -292,7 +301,7 @@ impl DisplayLayouts {
             if outputs != self.outputs {
                 self.outputs = outputs;
                 // The committed layout is the attached set's own.
-                self.settings_seen = None;
+                self.settings_seen = SettingsSeen::Unread;
                 self.polled_at = None;
                 changed = true;
             }
@@ -319,7 +328,11 @@ impl DisplayLayouts {
         // and keep its stamp; read it once more on the next poll.
         let racy = matches!(stamp, Some(settings_store::SettingsStamp::Modified(at))
             if std::time::SystemTime::now().duration_since(at).is_ok_and(|age| age < RACY_STAMP));
-        self.settings_seen = (!racy).then_some(stamp);
+        self.settings_seen = if racy {
+            SettingsSeen::Unread
+        } else {
+            SettingsSeen::At(stamp)
+        };
     }
 
     /// Everything at once: when the sheet opens.
@@ -339,7 +352,7 @@ impl DisplayLayouts {
                     self.staged = staged_transaction(&receipt);
                     self.notice = None;
                     // Show the stored change, with its Keep and Revert.
-                    self.settings_seen = None;
+                    self.settings_seen = SettingsSeen::Unread;
                     self.polled_at = None;
                 }
                 Err(error) => {
@@ -360,7 +373,7 @@ impl DisplayLayouts {
                 changed = true;
                 self.answer = None;
                 self.notice = notice;
-                self.settings_seen = None;
+                self.settings_seen = SettingsSeen::Unread;
                 self.polled_at = None;
             }
         }
@@ -379,7 +392,7 @@ impl DisplayLayouts {
         {
             self.polled_at = Some(now);
             let stamp = settings_store::stamp();
-            if self.settings_seen != Some(stamp) {
+            if self.settings_seen != SettingsSeen::At(stamp) {
                 let before = (self.committed.clone(), self.transaction.clone());
                 self.read_settings(now);
                 changed |= before != (self.committed.clone(), self.transaction.clone());
@@ -402,7 +415,7 @@ impl DisplayLayouts {
         if self.followed != Some(id) {
             self.followed = Some(id);
             self.polled_at = None;
-            self.settings_seen = None;
+            self.settings_seen = SettingsSeen::Unread;
         }
         self.poll(now);
         self.read_as_settled(id)
