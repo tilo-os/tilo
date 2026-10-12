@@ -54,6 +54,7 @@ impl<G: PartialEq + Send + 'static, T: Send + 'static> BackgroundIndex<G, T> {
         let (sender, receiver) = mpsc::sync_channel(1);
         #[cfg(test)]
         let probe = std::sync::Arc::clone(&self.probe);
+        let wake = crate::shell::search::invocation_wake::waker();
         let spawned = std::thread::Builder::new()
             .name(self.thread_name.into())
             .spawn(move || {
@@ -66,6 +67,7 @@ impl<G: PartialEq + Send + 'static, T: Send + 'static> BackgroundIndex<G, T> {
                         Some(std::thread::current().id());
                 }
                 let _ = sender.send(build());
+                wake.wake();
             });
         if spawned.is_ok() {
             *self.build.borrow_mut() = Some(receiver);
@@ -124,7 +126,6 @@ impl<G: PartialEq + Send + 'static, T: Send + 'static> BackgroundIndex<G, T> {
             .is_some_and(|(built, _)| built == generation)
     }
 
-    #[cfg(test)]
     pub(super) fn building(&self) -> bool {
         self.build.borrow().is_some()
     }
