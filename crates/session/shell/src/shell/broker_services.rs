@@ -1902,23 +1902,6 @@ fn workspace_control_event(
             timestamp,
         },
         crate::network::WorkspaceControlUpdate::Closed(reason) => {
-            let reason = match reason {
-                crate::network::WorkspaceControlCloseReason::Denied(message) => {
-                    runtime_collab::WorkspaceControlCloseReason::Denied(message)
-                }
-                crate::network::WorkspaceControlCloseReason::Revoked => {
-                    runtime_collab::WorkspaceControlCloseReason::Revoked
-                }
-                crate::network::WorkspaceControlCloseReason::TargetDisconnected => {
-                    runtime_collab::WorkspaceControlCloseReason::TargetDisconnected
-                }
-                crate::network::WorkspaceControlCloseReason::RelayDisconnected => {
-                    runtime_collab::WorkspaceControlCloseReason::RelayDisconnected
-                }
-                crate::network::WorkspaceControlCloseReason::LocalDisconnect => {
-                    runtime_collab::WorkspaceControlCloseReason::LocalDisconnect
-                }
-            };
             runtime_collab::WorkspaceControlEvent::Closed(reason)
         }
     }
