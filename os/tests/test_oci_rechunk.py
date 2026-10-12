@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -528,6 +529,8 @@ class Rechunk(unittest.TestCase):
         (rootfs / "usr/lib64/libc-alias.so.6").hardlink_to(rootfs / "usr/lib64/libc.so.6")
         calls, environment = self.fake_tools(rootfs, owned=[
             "/usr/bin/bash", "/usr/lib64/libc.so.6", "/etc/hostname", "/usr/share/doc/absent"])
+        os.utime(rootfs / "etc/systemd", (1_787_913_256, 1_787_913_256))
+        os.utime(rootfs / "etc/hostname", (1_787_913_256, 1_787_913_256))
         subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs), str(self.work / "out"),
                         "96"], check=True, env=environment)
 
@@ -558,6 +561,11 @@ class Rechunk(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in (rootfs / "usr/lib/sysimage/rpm").iterdir()),
                          ["rpmdb.sqlite"])
         self.assertEqual((tilo[0], signatures[0]), (56, 1))
+        # Every directory chunkah reads has one time, whatever the build cache
+        # left; files keep theirs (chunkah caps them by package).
+        for directory in (rootfs, rootfs / "etc/systemd", rootfs / "usr/lib64", rootfs / "sysroot/ostree"):
+            self.assertEqual(directory.lstat().st_mtime, 0, directory)
+        self.assertEqual((rootfs / "etc/hostname").lstat().st_mtime, 1_787_913_256)
 
     def test_an_image_whose_packages_cannot_be_read_is_refused(self) -> None:
         rootfs = self.work / "rootfs"

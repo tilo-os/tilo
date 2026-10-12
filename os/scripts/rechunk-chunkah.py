@@ -243,10 +243,31 @@ def unowned(rootfs: Path, skip: list[str]) -> list[str]:
     return sorted(found)
 
 
+def level_directory_times(rootfs: Path) -> int:
+    """Give every directory of `rootfs` the time 0; returns how many.
+
+    chunkah writes each directory into every layer that holds something below
+    it, with the directory's time capped, so the directory's time is part of
+    that layer's digest. That time says nothing: oci-rechunk.py's directory
+    layer restores every directory's exact metadata from the raw image, and
+    proves it. But it was not stable. A rootfs stage restored from the build
+    cache gave the RPMs' directories one time and the same stage built afresh
+    (any change to a unit or config file copied before the package installs)
+    another, so a one-line unit change re-sent 35 unchanged RPM layers, 670 MB.
+    The rootfs is the build's scratch mount; the raw image is untouched.
+    """
+    count = 0
+    for directory, _subdirectories, _files in os.walk(rootfs):
+        os.utime(directory, (0, 0), follow_symlinks=False)
+        count += 1
+    return count
+
+
 def main(argv: list[str]) -> int:
     rootfs, out, max_layers = Path(argv[1]), Path(argv[2]), int(argv[3])
     if int(os.environ.get("SOURCE_DATE_EPOCH", "0")) <= 0:
         raise SystemExit("SOURCE_DATE_EPOCH must be a positive epoch")
+    level_directory_times(rootfs)
     trees = tree_roots(rootfs)
     every_root = [path for paths in trees.values() for path in paths]
     file_sets = {name: files for name, patterns in FILE_SETS.items() if (files := matches(rootfs, patterns))}
