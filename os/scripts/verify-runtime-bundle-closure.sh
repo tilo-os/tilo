@@ -9,10 +9,12 @@
 # own target dir, which always has libstd; an image whose bundle lacked it
 # still shipped, and no thin app could start.
 #
-# The one exception is the dynamic loader. The bundle signs it once, at its
+# The one exception is the dynamic loader: the launcher binds it from its
 # canonical interpreter path (lib/lib64/ld-linux-x86-64.so.2,
-# lib/lib/ld-linux-aarch64.so.1, ...), where the launcher binds it for INTERP;
-# the mapped interpreter then answers libc's NEEDED on its soname.
+# lib/lib/ld-linux-aarch64.so.1, ...) for INTERP, and the mapped interpreter
+# answers libc's NEEDED on its soname, so a copy there satisfies that NEEDED
+# too. The bundle also signs it at the top of lib/ for tools that follow
+# NEEDED by name.
 set -euo pipefail
 
 bundle=${1:?usage: verify-runtime-bundle-closure.sh BUNDLE_DIR [THIN_APP...]}
