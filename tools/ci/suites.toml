@@ -824,27 +824,28 @@ readers = ["crates/runtime/legacy-vm/src/image.rs"]
 
 [[cargo]]
 package = "installer"
-inputs = ["os/usr/share/tilo/installer-locales.txt", "crates/system/block-devices/tests/fixtures/installer.json"]
-readers = ["crates/session/installer/src/disks.rs", "crates/session/installer/src/locales.rs"]
+inputs = ["crates/system/block-devices/tests/fixtures/installer.json"]
+readers = ["crates/session/installer/src/disks.rs"]
 
 [[cargo]]
 package = "imager"
 inputs = [
-  "os/usr/share/tilo/installer-locales.txt", "crates/system/block-devices/tests/fixtures/imager.json",
+  "crates/system/block-devices/tests/fixtures/imager.json",
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
 ]
 readers = [
-  "apps/imager/src/model.rs", "apps/imager/src/probe.rs", "apps/imager/src/setup/desktop_install.rs",
+  "apps/imager/src/probe.rs", "apps/imager/src/setup/desktop_install.rs",
   "apps/imager/src/setup/internal_bundle.rs", "apps/imager/src/write.rs",
 ]
 
 [[cargo]]
 package = "tilo-imager-profile"
-# Compiles the imager's profile modules, which include the locale list.
+# Compiles the imager's profile modules, whose rules include the locale list.
 inputs = [
   "apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs",
-  "os/usr/share/tilo/installer-locales.txt", "os/usr/libexec/tilo-installer-profile-extract",
+  "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt",
+  "os/usr/libexec/tilo-installer-profile-extract",
 ]
 readers = ["tools/imager-profile/src/main.rs", "tools/imager-profile/tests/embed.rs"]
 
