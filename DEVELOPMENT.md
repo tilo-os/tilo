@@ -2259,6 +2259,12 @@ lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
 declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
 CI (`.forgejo/workflows/check.yml`).
 
+Committing a merge checks only what the resolution changed. A file staged
+exactly as the merged-in side has it already passed that side's checks, so the
+hook runs against a temporary index where those files are back at `HEAD`. A
+merge of `origin/main` into a branch 300 commits behind (3,400 staged files)
+takes about 13 seconds instead of nearly three minutes.
+
 A vendored crate under `vendor/` is upstream's code, carried as it ships: the
 added-code checks (`#[ignore]` reasons, `#[allow]` placement, `dbg!`) and
 rustfmt skip it. rustfmt also skips a generated source, one with an
