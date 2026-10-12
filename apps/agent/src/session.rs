@@ -85,7 +85,13 @@ const MAX_TASK_STEPS: usize = 64;
 /// job: following several at once shares only the waiting.
 struct Following {
     action: TaskAction,
+    /// The arguments it was started with: a native child is re-asked with
+    /// the identical request.
+    arguments: serde_json::Map<String, serde_json::Value>,
     invocation: tilo_actions::InvocationId,
+    /// How a native task's child is observed; `None` for a Task Center
+    /// invocation, observed through the action host.
+    reask: Option<native_task::Reask>,
     /// The latest state the host reported.
     update: tilo_actions::InvocationUpdate,
     /// The last semantic interaction sequence published for it.
@@ -689,15 +695,6 @@ impl Session {
             Ok(following) => following,
             Err(stop) => return Ok(Err(stop)),
         };
-        if self.native_task.is_some() {
-            return self.follow_native_invocation(
-                run,
-                action,
-                arguments,
-                following.invocation,
-                following.update,
-            );
-        }
         let mut followed = [following];
         self.follow_invocations(run, &mut followed)?;
         let [following] = followed;
@@ -731,6 +728,7 @@ impl Session {
             resource: action.resource.clone(),
             action: action.action.clone(),
             arguments: arguments.clone(),
+            wait: None,
         })?;
         let update = match self.wait_for_task_action_result(request_id)? {
             Ok((_, update)) => update,
@@ -741,7 +739,9 @@ impl Session {
         }
         Ok(Ok(Following {
             action: action.clone(),
+            arguments: arguments.clone(),
             invocation,
+            reask: self.native_task.is_some().then(native_task::Reask::default),
             update,
             sequence: 0,
             deadline: self.task_wait_deadline(TASK_ACTION_WAIT),
@@ -758,6 +758,9 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
         followed: &mut [Following],
     ) -> Result<()> {
+        if followed.iter().any(|following| following.reask.is_some()) {
+            return self.follow_native(run, followed);
+        }
         let mut wait = FOLLOW_FIRST_WAIT;
         loop {
             for following in followed.iter_mut() {
@@ -924,8 +927,13 @@ impl Session {
     }
 
     /// Ask the host to stop `following` without waiting for its answer: the
-    /// turn that started it ended before it settled.
+    /// turn that started it ended before it settled. A native child is not
+    /// the action host's to stop: the run's terminal report, which every
+    /// early end of a native run sends, cancels each child still running.
     fn abandon_following(&mut self, following: &Following) {
+        if following.reask.is_some() {
+            return;
+        }
         if let Err(error) = self.link.send(&CollabRequest::RemoteAction {
             message: RemoteActionMessage::Cancel {
                 invocation: following.invocation,

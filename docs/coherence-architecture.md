@@ -154,7 +154,7 @@ sane roles (owner/editor/commenter/viewer) that a user can then refine.
   CRDT ops) runs **sandboxed + bounded** (XXE/zip-bomb/entity limits); op-application is
   signed + permission-checked. Understanding lives in the sandbox, not the trusted base.
 - **Result security + ranking:** providers are **permission-aware** — filter at source
-  (you only get resources you hold a cap to see). Ranking = `tier (ProviderTier) × match
+  (you only get resources you hold a cap to see). Ranking = `provider tier × match
   score × recency`, boosted for this-instance scope; the palette does the final
   cross-provider merge/rank.
 

@@ -137,19 +137,9 @@ impl RangeChart {
         }
     }
     #[must_use]
-    pub fn styled(mut self, style: RangeStyle) -> Self {
+    pub fn with_style(mut self, style: RangeStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: RangeStyle) -> Self {
-        self.styled(style)
-    }
-    pub fn style(&self) -> &RangeStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut RangeStyle {
-        &mut self.style
     }
     #[must_use]
     pub fn titled(mut self, title: impl Into<String>) -> Self {
@@ -553,7 +543,7 @@ mod tests {
 
         // Case `explicit_range_wins`.
         {
-            let chart = RangeChart::new(Vec::new()).styled(RangeStyle {
+            let chart = RangeChart::new(Vec::new()).with_style(RangeStyle {
                 range: Some((10.0, 20.0)),
                 ..Default::default()
             });

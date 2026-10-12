@@ -626,12 +626,6 @@ impl Widget for JournalPane {
         children
     }
 
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        for child in self.children() {
-            visitor(child);
-        }
-    }
-
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let shows_filters = self.shows_filters();
         let body: &mut dyn Widget = match &mut self.placeholder {

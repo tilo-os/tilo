@@ -310,8 +310,7 @@ mod tests {
                 return;
             }
             let directory = tempfile::tempdir().unwrap();
-            // SAFETY: `geteuid` has no preconditions and does not mutate memory.
-            let uid = unsafe { libc::geteuid() };
+            let uid = rustix::process::geteuid().as_raw();
             let lease = AudioProxyLease::start(directory.path().join("lease"), uid, false).unwrap();
             assert!(
                 fs::symlink_metadata(lease.pipewire_socket())
