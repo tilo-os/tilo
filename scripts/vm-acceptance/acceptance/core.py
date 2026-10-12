@@ -590,6 +590,36 @@ def _to_submit_us(r: dict) -> int:
                if isinstance(r.get(k), int))
 
 
+def paint_reasons(r: dict) -> set[str]:
+    """The reasons the compositor painted this tick (its `paint_reasons` column)."""
+    return {x for x in str(r.get("paint_reasons") or "").split("+") if x}
+
+
+def tick_phases(r):
+    """Where one tick's time went (wall ms per loop phase; `cpu_ms` is the loop
+    thread's CPU), so a stall names the phase it stalled in."""
+    if r is None:
+        return None
+    phases = {k[:-3] + "_ms": _ms(r[k]) for k in ("input_us", "pump_us", "layout_us", "scene_us",
+                                                  "submit_us", "clients_us")
+              if isinstance(r.get(k), int)}
+    cpu = _ms(r["cpu_us"]) if isinstance(r.get("cpu_us"), int) else None
+    return {"seq": r.get("seq"), "cpu_ms": cpu, **phases, "input_step": r.get("input_step") or "",
+            "paint_reasons": r.get("paint_reasons") or ""}
+
+
+def describe_phases(t) -> str:
+    """`tick_phases` as a sentence fragment, slowest phase first."""
+    if not t:
+        return ""
+    phases = sorted(((k[:-3], v) for k, v in t.items() if k.endswith("_ms") and k != "cpu_ms"
+                     and isinstance(v, (int, float)) and v), key=lambda kv: -kv[1])
+    text = ", ".join(f"{k} {v} ms" for k, v in phases)
+    step = f"; slowest input step {t['input_step']}" if t.get("input_step") else ""
+    why = f"; painted for {t['paint_reasons']}" if t.get("paint_reasons") else ""
+    return f" (tick {t.get('seq')}: {text} wall{step}{why})"
+
+
 def transition_stats(rows: list[dict]) -> dict:
     """One transition, from the first tick that wanted a frame to the last.
 
@@ -613,17 +643,26 @@ def transition_stats(rows: list[dict]) -> dict:
     # frame painted before that carries a deadline from before the previous frame. From
     # whichever is later, the previous submit or the end of the last park behind a full
     # presenter, the rest is the compositor's. The first frame is judged as input latency.
-    late = []
+    # `late_cpu` bounds each frame's lateness by the CPU its tick spent: the part of
+    # the lateness that was the compositor's own work rather than the loop thread
+    # waiting for a CPU (on a software renderer the rasteriser's threads compete for
+    # them) or blocked.
+    late, late_cpu = [], []
     prev_submit, ready = None, None
     for x, nxt in zip(rows, rows[1:] + [None]):
         if x.get("painted") == 1 and isinstance(x.get("deadline_late_us"), int):
             submit = x["start_us"] + _to_submit_us(x)
             if prev_submit is not None:
-                late.append(max(0, min(x["deadline_late_us"], submit - max(prev_submit, ready or 0))))
+                value = max(0, min(x["deadline_late_us"], submit - max(prev_submit, ready or 0)))
+                late.append(value)
+                if isinstance(x.get("cpu_us"), int):
+                    late_cpu.append(min(value, x["cpu_us"]))
             prev_submit, ready = submit, None
         elif x.get("backpressured") == 1 and nxt is not None:
             ready = nxt["start_us"]
     cpu = [r["cpu_us"] for r in rows if isinstance(r.get("cpu_us"), int)]
+    worst = max((r for r in rows if isinstance(r.get("cpu_us"), int)), key=lambda r: r["cpu_us"],
+                default=None)
     # The longest tick by wall time outside its park, and how much of that was CPU.
     longest = max(((wall, r) for r, wall in walls), key=lambda t: t[0], default=(None, {}))
     input_ms = input_compositor_ms = None
@@ -648,6 +687,12 @@ def transition_stats(rows: list[dict]) -> dict:
         "late_judged": len(late),
         "late_ms_p95": _ms(percentile(late, 95)),
         "late_ms_max": _ms(max(late) if late else None),
+        "late_cpu_ms_p95": _ms(percentile(late_cpu, 95)),
+        # Why each frame painted (the compositor's paint_reasons column; absent from
+        # traces of compositors that predate it).
+        "reasons_recorded": any("paint_reasons" in r for r in painted),
+        "transition_frames": sum("transition" in paint_reasons(r) for r in painted),
+        "cpu_max_tick": tick_phases(worst),
         "cpu_ms_p95": _ms(percentile(cpu, 95)),
         "cpu_ms_max": _ms(max(cpu) if cpu else None),
         "longest_tick_ms": _ms(longest[0]),

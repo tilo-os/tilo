@@ -673,14 +673,7 @@ pub(super) fn read_message(error: Error) -> String {
 pub(super) fn outcome_message(outcome: &Outcome) -> String {
     match outcome {
         Outcome::Applied { receipt } => I18nManager::format(
-            match receipt.prior_reference {
-                fs_protocol::files::FileRestorePriorReferenceV1::ObservedRevision => {
-                    "history-files-outcome-applied"
-                }
-                fs_protocol::files::FileRestorePriorReferenceV1::LegacyContentRepresentative => {
-                    "history-files-outcome-applied-legacy"
-                }
-            },
+            "history-files-outcome-applied",
             &[
                 (
                     "revision",

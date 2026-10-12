@@ -673,6 +673,17 @@ pub struct RetainedGpuTarget {
     strip_layers: Option<super::strip_layers::StripLayers>,
     /// The work the latest layered frame did.
     last_layer_work: Option<super::strip_layers::LayerWork>,
+    /// The scroll copies of the frame of the revision named, for the next
+    /// render of it ([`Self::stage_scroll_copies`]).
+    staged_copies: Option<(u64, crate::shell::frame::ScrollCopies)>,
+    /// What the next sparse render rasterises instead of its damage: the
+    /// staged copies were made, so it repaints only what they did not move.
+    raster_override: Option<Vec<vello::FineDamageRect>>,
+    /// Scratch space copies within `texture` move through.
+    copy_scratch: ui::scroll_copy::CopyScratch,
+    /// The pixels the latest render rasterised and copied, when it made
+    /// scroll copies.
+    last_scroll_copy_work: Option<(u64, u64)>,
 }
 
 /// Whether this process has published its pipelines for apps (see [`ui::pipeline_seed`]).
@@ -814,6 +825,10 @@ impl RetainedGpuTarget {
             last_sparse_render_stats: None,
             strip_layers: None,
             last_layer_work: None,
+            staged_copies: None,
+            raster_override: None,
+            copy_scratch: ui::scroll_copy::CopyScratch::default(),
+            last_scroll_copy_work: None,
         };
         if gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu {
             // Lavapipe compiles each pipeline on its first dispatch: on a cold shader cache,
@@ -1524,6 +1539,77 @@ impl RetainedGpuTarget {
         }
     }
 
+    /// Hand the next render of frame `revision` the copies its producer
+    /// planned ([`crate::shell::frame::FramePaint::scroll_copies`]): when
+    /// that render is sparse against the frame this target holds, it moves
+    /// those pixels within the target first and rasterises only the rest.
+    /// Any other render ignores them; `None` drops what was staged.
+    pub fn stage_scroll_copies(
+        &mut self,
+        revision: Option<u64>,
+        copies: Option<&crate::shell::frame::ScrollCopies>,
+    ) {
+        self.staged_copies = revision.zip(copies.cloned());
+    }
+
+    /// The pixels the latest render rasterised and copied, when it made
+    /// scroll copies ([`Self::stage_scroll_copies`]), for counters.
+    pub fn last_scroll_copy_work(&self) -> Option<(u64, u64)> {
+        self.last_scroll_copy_work
+    }
+
+    /// The changed regions of a frame that makes `copies`, sparse against
+    /// the frame this target holds, after making the copies within it: what
+    /// the render reads out (every pixel the frame changes), with the
+    /// rasterised regions set aside for it. `None`, with nothing copied,
+    /// when the frame is not sparse-eligible or a copy would leave the
+    /// target: it then renders as it would without copies.
+    fn make_scroll_copies(
+        &mut self,
+        damage: SceneDamage<'_>,
+        copies: &crate::shell::frame::ScrollCopies,
+    ) -> Option<Vec<vello::FineDamageRect>> {
+        if self.last_successful_revision != Some(damage.previous_revision?)
+            || !self.retained_target_valid
+            || !self.renderer.sparse_fine_supported()
+            || Self::band_rows(self.size).is_some()
+            || copies.copies.is_empty()
+        {
+            return None;
+        }
+        // What is rasterised stays under half the target, as any sparse
+        // frame's damage; what the copies move may be more.
+        let raster = VelloDrmBridge::normalize_damage(&copies.raster, self.size)?;
+        let changed = VelloDrmBridge::normalize_rects(damage.regions?, self.size)?;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("tilo-scroll-copies"),
+            });
+        if !ui::scroll_copy::encode_copies(
+            &self.device,
+            &mut encoder,
+            &self.texture,
+            &mut self.copy_scratch,
+            &copies.copies,
+        ) {
+            return None;
+        }
+        self.queue.submit([encoder.finish()]);
+        let area = |rect: &vello::FineDamageRect| {
+            u64::from(rect.width).saturating_mul(u64::from(rect.height))
+        };
+        let moved_pixels = copies
+            .copies
+            .iter()
+            .map(|copy| u64::from(copy.width).saturating_mul(u64::from(copy.height)))
+            .fold(0_u64, u64::saturating_add);
+        let rasterised = raster.iter().map(area).fold(0_u64, u64::saturating_add);
+        self.last_scroll_copy_work = Some((rasterised, moved_pixels));
+        self.raster_override = Some(raster);
+        Some(changed)
+    }
+
     /// The work the latest [`Self::render_layers_until`] did, for counters.
     pub fn last_layer_raster_pixels(&self) -> Option<(u64, u64)> {
         self.last_layer_work
@@ -1697,12 +1783,24 @@ impl RetainedGpuTarget {
     where
         F: Fn(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::TextureView),
     {
-        let sparse = damage.and_then(|damage| self.eligible_sparse_damage(damage));
         crate::shell::gpu_frames::apply(
             &mut self.renderer,
             self.present_generation,
             &mut self.client_frames,
         );
+        self.raster_override = None;
+        self.last_scroll_copy_work = None;
+        // The frame's scroll copies, when it is the one they were planned for.
+        let staged = self
+            .staged_copies
+            .take()
+            .filter(|(revision, _)| damage.is_some_and(|damage| damage.revision == *revision));
+        let copied = staged
+            .as_ref()
+            .zip(damage)
+            .and_then(|((_, copies), damage)| self.make_scroll_copies(damage, copies));
+        let sparse =
+            copied.or_else(|| damage.and_then(|damage| self.eligible_sparse_damage(damage)));
         self.invalidate();
         self.reset_attempts();
         self.check_live(policy)?;
@@ -1970,6 +2068,9 @@ impl RetainedGpuTarget {
             self.renderer.trim_pooled_buffers();
         }
         self.last_frame_full = full;
+        // After scroll copies only what they did not move is rasterised;
+        // every changed pixel is still read out.
+        let mut raster = self.raster_override.take();
         while self.last_render_attempts < RESILIENT_RENDER_ATTEMPTS {
             self.check_live(policy)?;
             let regions = sparse.take();
@@ -2018,6 +2119,7 @@ impl RetainedGpuTarget {
                 output.append(encoder, &self.texture, self.size, regions.as_deref());
                 post_render(&self.device, encoder, &self.view);
             };
+            let rasterised = raster.take();
             let submitted = if let Some(regions) = regions.as_deref() {
                 self.renderer
                     .render_to_texture_with_damage_and_post_render_checked(
@@ -2026,7 +2128,7 @@ impl RetainedGpuTarget {
                         scene,
                         &self.view,
                         &params,
-                        regions,
+                        rasterised.as_deref().unwrap_or(regions),
                         append,
                         before_submit,
                     )
@@ -2720,6 +2822,20 @@ impl VelloDrmBridge {
         self.target.backdrop = backdrop;
     }
 
+    /// [`RetainedGpuTarget::stage_scroll_copies`] on this bridge's target.
+    pub fn stage_scroll_copies(
+        &mut self,
+        revision: Option<u64>,
+        copies: Option<&crate::shell::frame::ScrollCopies>,
+    ) {
+        self.target.stage_scroll_copies(revision, copies);
+    }
+
+    /// [`RetainedGpuTarget::last_scroll_copy_work`] of this bridge's target.
+    pub fn last_scroll_copy_work(&self) -> Option<(u64, u64)> {
+        self.target.last_scroll_copy_work()
+    }
+
     /// `true` exactly once: on the first call after this bridge was built, which its owner
     /// makes once the bridge's first frame was painted. The pipelines' compile scratch is
     /// free by then.
@@ -3150,6 +3266,11 @@ impl VelloDrmBridge {
         // Frames this output skipped while its flip was pending left their damage owed: the
         // retained pixels already claim those revisions, so this render repairs it too.
         let repaired = self.target.take_owed_damage(damage.regions);
+        if repaired.is_some() {
+            // The skipped frames' pixels are owed, not in the target: a copy
+            // would move what they replaced.
+            self.target.stage_scroll_copies(None, None);
+        }
         let damage = damage.with_regions(repaired.as_deref());
         let hdr = output.format != wgpu::TextureFormat::Bgra8Unorm;
         let composite = hdr && !hdr_layers.is_empty();
@@ -4350,6 +4471,36 @@ impl VelloDrmBridge {
         damage: &[vello::FineDamageRect],
         size: (u32, u32),
     ) -> Option<Vec<vello::FineDamageRect>> {
+        let normalized = Self::normalize_unbounded(damage, size)?;
+        let (width, height) = size;
+        // More regions than one dispatch takes are merged, never refused: a repaint of a little
+        // more than the damage is still far cheaper than a dense frame.
+        let normalized = coalesce_damage(normalized, MAX_DAMAGE_RECTS);
+        let dirty_pixels = damage_area(&normalized);
+        let full_pixels = u64::from(width).saturating_mul(u64::from(height));
+        if !damage_is_profitable(dirty_pixels, full_pixels) {
+            return None;
+        }
+        Some(normalized)
+    }
+
+    /// `damage` inside a `size` target, each rect no other holds: `None`
+    /// when there is none, too many, or one leaves the target.
+    fn normalize_rects(
+        damage: &[vello::FineDamageRect],
+        size: (u32, u32),
+    ) -> Option<Vec<vello::FineDamageRect>> {
+        if damage.len() > MAX_DAMAGE_RECTS {
+            return None;
+        }
+        Self::normalize_unbounded(damage, size)
+    }
+
+    /// [`Self::normalize_rects`] without the bound on how many there may be.
+    fn normalize_unbounded(
+        damage: &[vello::FineDamageRect],
+        size: (u32, u32),
+    ) -> Option<Vec<vello::FineDamageRect>> {
         if damage.is_empty() {
             return None;
         }
@@ -4385,15 +4536,6 @@ impl VelloDrmBridge {
             if !contained {
                 normalized.push(rect);
             }
-        }
-
-        // More regions than one dispatch takes are merged, never refused: a repaint of a little
-        // more than the damage is still far cheaper than a dense frame.
-        let normalized = coalesce_damage(normalized, MAX_DAMAGE_RECTS);
-        let dirty_pixels = damage_area(&normalized);
-        let full_pixels = u64::from(width).saturating_mul(u64::from(height));
-        if !damage_is_profitable(dirty_pixels, full_pixels) {
-            return None;
         }
         Some(normalized)
     }

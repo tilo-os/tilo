@@ -119,7 +119,11 @@ What a relay costs per active collaborator is measured, not estimated:
   characters, then pointing for four seconds at 30 Hz (which each client's
   session writer paces to the relay's 20 Hz before it is sent), then idle, every
   minute, against one relay process. It records CPU-seconds, resident MiB and
-  egress bytes per collaborator-hour, fan-out latency, and the workspace
+  egress bytes per collaborator-hour; packets per collaborator-hour, from the
+  collaborators' own QUIC connection counters (datagrams they sent and of
+  those the ones carrying data, datagrams the relay sent and of those the
+  ones carrying only acknowledgements), so the same bytes in more packets
+  fail a budget too; fan-out latency, and the workspace
   store's fsyncs per committed edit (`store::fsyncs`; the durability
   contract is in `src/persistence.rs`).
   `tools/perf/adapters.py hosting-load` prices each minute with

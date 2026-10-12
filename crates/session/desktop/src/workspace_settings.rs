@@ -2436,16 +2436,6 @@ pub fn agent_preset_label(preset: AgentPreset) -> String {
     })
 }
 
-/// Plain-language preview shown before the user admits an agent.
-pub fn agent_preset_hint(preset: AgentPreset) -> String {
-    t(match preset {
-        AgentPreset::Observer => "workspace-settings-preset-observer-hint",
-        AgentPreset::Contributor => "workspace-settings-preset-contributor-hint",
-        AgentPreset::Operator => "workspace-settings-preset-operator-hint",
-        AgentPreset::Custom => "workspace-settings-preset-custom-hint",
-    })
-}
-
 /// The preset `agent` was admitted with, from the ids of its room grants.
 /// Anything broad or sensitive it holds beside them (the whole room, an
 /// outside effect, a device, the network) makes it custom: that needs a

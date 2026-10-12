@@ -236,26 +236,6 @@ pub mod __private {
     /// Why `T` has no such value.
     use crate::model::LocatedAt as _;
 
-    pub fn missing_at<T: crate::Model>(key: &str) -> Result<T, crate::ModelError> {
-        T::missing().located(key)
-    }
-
-    /// The field `key` of a record's JSON form, read as a `T` (or its
-    /// missing value), located at it.
-    ///
-    /// # Errors
-    /// Why the value is not a `T`.
-    pub fn from_json_at<T: crate::Model>(
-        fields: &serde_json::Map<String, serde_json::Value>,
-        key: &str,
-    ) -> Result<T, crate::ModelError> {
-        match fields.get(key) {
-            Some(value) => T::from_json(value),
-            None => T::missing(),
-        }
-        .located(key)
-    }
-
     /// The field edit `op` at `rest` inside the field `key` of `obj`,
     /// located at it.
     ///
@@ -270,19 +250,6 @@ pub mod __private {
         cx: &mut crate::ActionCx,
     ) -> Result<(), crate::ModelError> {
         T::edit(doc, crate::Slot::Key(obj, key), rest, op, cx).located(key)
-    }
-
-    /// [`Model::read_whole`](crate::Model::read_whole) of the field `key`,
-    /// located at it.
-    ///
-    /// # Errors
-    /// Why the value does not read whole.
-    pub fn read_whole_at<T: crate::Model>(
-        value: &mut T,
-        doc: &crate::Doc,
-        key: &str,
-    ) -> Result<(), crate::ModelError> {
-        value.read_whole(doc).located(key)
     }
 
     /// What `#[resource]` declares of one verb, besides how it is built.

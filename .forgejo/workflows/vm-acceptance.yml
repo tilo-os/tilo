@@ -11,7 +11,8 @@ name: Dev / VM acceptance
 # before the ref, installed here exactly as Release / Dev VM disk installs it.
 # The ref's own code builds here in the native immutable CI builder. Paired
 # apps/runtime cohorts cross the pinned same-run artifact service and enter
-# through verified swap-artifact; other requests retain the host swap path:
+# through verified swap-artifact, run by this workflow's own tilo-vm in the
+# ref's exact checkout; other requests retain the host swap path:
 # the artifact route is explicitly opt-in; default swap planning is unchanged. P01
 # states the result as "base <commit> + <components> swapped from <ref>".
 #
@@ -35,7 +36,7 @@ on:
         required: false
         default: "default"
       prebuilt_cohort:
-        description: "Use the verified same-run signed cohort artifact route (requires the swap-artifact CLI in the exact ref)."
+        description: "With swap=apps+runtime: build the ref's paired launcher, install, shell and apps+runtime as signed layers here and install them through verified swap-artifact (the ref's tilo-vm packs; this workflow's tilo-vm verifies)."
         required: false
         default: "false"
       only:
@@ -255,6 +256,18 @@ jobs:
           (cd "$WORK/src" && cargo build --locked -p tilo-vm)
           install -m 0755 "$WORK/src/target/debug/tilo-vm" /usr/local/bin/tilo-vm
 
+      # The cohort's verifier is this workflow's own tilo-vm, not the ref's:
+      # the code under test does not verify its own artifacts, and a branch
+      # older than a consumer fix stays testable. It still runs in, and
+      # requires, the ref's exact checkout; the ref's tilo-vm stays the packer.
+      - name: Build the artifact consumer from the workflow checkout
+        if: github.event.inputs.prebuilt_cohort == 'true' && contains(format(',{0},', steps.plan.outputs.swap), ',apps+runtime,')
+        run: |
+          set -euo pipefail
+          cargo build --locked -p tilo-vm
+          install -m 0755 target/debug/tilo-vm /usr/local/bin/tilo-vm-artifact
+          echo "::notice::artifact consumer: tilo-vm of the workflow checkout $(git rev-parse HEAD)"
+
       # Root is the existing native CI build identity. The later acceptance
       # user receives only full signed layers, never builder access or keys.
       - name: Produce exact-source signed cohort layers
@@ -267,7 +280,7 @@ jobs:
           COMPONENTS: ${{ steps.plan.outputs.swap }}
         run: |
           set -euo pipefail
-          /usr/local/bin/tilo-vm swap-artifact --help >/dev/null
+          /usr/local/bin/tilo-vm-artifact swap-artifact --help >/dev/null
           digest=$(python3 scripts/vm-acceptance/layer_artifacts.py produce \
             --repo "$WORK/src" --directory "$WORK/cohort-produced" \
             --source "$SOURCE" --builder-image "$BUILDER_IMAGE" \
@@ -456,7 +469,8 @@ jobs:
           if [[ $PREBUILT_COHORT == true && ,$SWAP, == *,apps+runtime,* ]]; then
             args+=(--artifact-receipt "$WORK/cohort/manifest.json" --artifact-source "$SOURCE"
                    --artifact-builder-image "$BUILDER_IMAGE" --artifact-run-id "$GITHUB_RUN_ID"
-                   --artifact-run-attempt "$GITHUB_RUN_ATTEMPT" --artifact-receipt-sha256 "$RECEIPT_SHA256")
+                   --artifact-run-attempt "$GITHUB_RUN_ATTEMPT" --artifact-receipt-sha256 "$RECEIPT_SHA256"
+                   --artifact-tilo-vm /usr/local/bin/tilo-vm-artifact)
           fi
           [[ -z $ONLY ]] || args+=(--only "$ONLY")
           [[ $GL != on ]] || args+=(--gl)

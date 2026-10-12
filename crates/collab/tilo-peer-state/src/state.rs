@@ -149,6 +149,13 @@ pub struct SeedState {
     pub room_changes: Vec<Vec<u8>>,
     pub documents: Vec<SeedDocument>,
 }
+/// What [`StatePeer::plaintext_changes_since`] found: the change bytes and
+/// the heads of the document they complete.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaintextChanges {
+    pub heads: Vec<automerge::ChangeHash>,
+    pub bytes: Vec<u8>,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentRow {
     pub app_id: String,
@@ -1613,6 +1620,43 @@ impl StatePeer {
         }
         Some(entry.doc.base_heads())
     }
+
+    /// The changes a replica holding exactly the heads `since` lacks of a
+    /// plaintext, causally complete document, as Automerge change bytes, and
+    /// the heads they lead to. Built from the changes since `since` alone,
+    /// never from a copy or a save of the whole document. `None` when a
+    /// whole read must decide instead: the route is missing, encrypted or
+    /// incomplete, a `since` head is not in the document, nothing follows
+    /// `since`, or the changes are larger than `maximum` bytes.
+    #[must_use]
+    pub fn plaintext_changes_since(
+        &self,
+        app: &str,
+        record: &str,
+        since: &[automerge::ChangeHash],
+        maximum: usize,
+    ) -> Option<PlaintextChanges> {
+        let entry = self.core.documents.get(&Route {
+            app: app.into(),
+            record: record.into(),
+        })?;
+        if entry.encryption_required
+            || since.is_empty()
+            || !ReadDoc::get_missing_deps(&*entry.doc, &[]).is_empty()
+            || !ReadDoc::get_missing_deps(&*entry.doc, since).is_empty()
+        {
+            return None;
+        }
+        let document = entry.doc.committed_document();
+        let bytes = document.save_after(since);
+        if bytes.is_empty() || bytes.len() > maximum {
+            return None;
+        }
+        Some(PlaintextChanges {
+            heads: document.get_heads(),
+            bytes,
+        })
+    }
     pub fn document(&self, app: &str, record: &str) -> Option<Vec<u8>> {
         self.core
             .documents
@@ -1629,14 +1673,6 @@ impl StatePeer {
         backend::member::legacy(&self.core, source, now)
             .map(|(role, _)| role)
             .map_err(err)
-    }
-    /// Name, in every op this peer signs for an app, the surface `of`
-    /// returns for it: the content hash of the app's `surface.toml`.
-    pub fn name_app_surfaces(
-        &mut self,
-        of: impl Fn(&str) -> Option<[u8; 32]> + Send + Sync + 'static,
-    ) {
-        self.app_surfaces = AppSurfaces(Some(std::sync::Arc::new(of)));
     }
 
     /// Decide received changes by their claims against the app surfaces

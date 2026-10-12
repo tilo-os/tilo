@@ -376,22 +376,6 @@ impl Workbook {
         id
     }
 
-    /// Rename a sheet (no-op if the id is unknown).
-    ///
-    /// # Panics
-    /// Panics if `self.c.sheets` no longer resolves in `self.doc` — see the note on
-    /// [`Self::set_cell`].
-    #[allow(
-        clippy::unwrap_used,
-        reason = "self.c.sheets was resolved by open()/init() at construction and this API never invalidates it"
-    )]
-    pub fn rename_sheet(&mut self, id: &str, name: &str) {
-        if let Some(obj) = sheet_obj(&self.doc, &self.c, id) {
-            self.doc.put(&obj, SHEET_NAME, name).unwrap();
-            self.doc.commit();
-        }
-    }
-
     fn cells_container(&mut self, sheet_id: &str) -> Option<ObjId> {
         let obj = sheet_obj(&self.doc, &self.c, sheet_id)?;
         match self.doc.get(&obj, SHEET_CELLS) {

@@ -4347,59 +4347,6 @@ impl ShellNetwork {
             .collect())
     }
 
-    /// Revoke a pending invite by the digest returned from
-    /// [`Self::pending_invites`]. A digest from another room is never removed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the workspace or invite id is invalid, state is
-    /// unavailable, or the local user may not administer the workspace.
-    pub fn revoke_pending_invite(
-        &self,
-        local: crate::shell::state::WorkspaceId,
-        invite_id: &str,
-    ) -> Result<bool, String> {
-        let room = {
-            let replica = self
-                .replica
-                .lock()
-                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
-            let tree = replica.tree.read();
-            let workspace = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.id == local)
-                .ok_or_else(|| format!("no workspace {}", local.raw()))?;
-            let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
-            if !tree.governs_room(workspace.room) || !workspace.may_administer(&actor) {
-                return Err("only the governing workspace administrator can revoke invites".into());
-            }
-            let room = workspace.room;
-            drop(tree);
-            drop(replica);
-            room
-        };
-        let bytes =
-            hex::decode(invite_id).map_err(|_| "invite id is not hexadecimal".to_string())?;
-        let id: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| "invite id must encode exactly 32 bytes".to_string())?;
-        let mut pending = self
-            .pending_identity_admissions
-            .lock()
-            .map_err(|_| "invite admission state is unavailable".to_string())?;
-        if pending.get(&id).is_none_or(|invite| invite.room != room) {
-            return Ok(false);
-        }
-        pending.remove(&id);
-        if let Some(path) = self.pending_invitations_path.as_deref() {
-            persist_pending_invitations(path, &pending);
-        }
-        drop(pending);
-        Ok(true)
-    }
-
     /// Promote a transport-authenticated identity announcement through room
     /// governance and immediately publish the accepted Files projection.
     ///

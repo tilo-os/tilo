@@ -162,7 +162,9 @@ containerfile="$repo/os/Containerfile"
 # Windows compatibility is a system extension (windows-compat-sysext), not
 # rootfs content: Proton, the Steam runtime, the virtio-win media, the FEX
 # payload and the x86 guest are no longer copied into /usr here.
-expected_contract=0051c94345220ef3e9210e2fbc98268aaabd505fc57be6b32b63663f8a1e2f1b
+# The installer locale list is copied from the install-profile-model crate,
+# which compiles it in; the installed path is unchanged.
+expected_contract=342cf28f45fef67d1f14495fd12ca18c5e7b36cb9a79f33f6167b63d0634272a
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

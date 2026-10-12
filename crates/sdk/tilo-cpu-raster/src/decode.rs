@@ -164,8 +164,50 @@ impl DisplayList {
             transform_ix: None,
             style_ix: None,
             path: PathState::default(),
+            bounds: None,
+            complete: true,
         };
         walker.run();
+    }
+
+    /// Every pixel `encoding` can paint, as device-space rectangles: each
+    /// draw's path (control points, stroke reach included) or glyph
+    /// outlines under its transform, and the clip of every layer that
+    /// composites other than by source over. `None` when some draw cannot be
+    /// bounded (truncated data, a blending layer without a clip, bounds that
+    /// are not finite). Layers' clips are not applied: the bounds hold
+    /// whatever clips them. Nothing is rasterised and no image is decoded.
+    pub fn bounds(
+        &mut self,
+        encoding: &Encoding,
+        glyphs: &mut GlyphCache,
+        images: &mut ImageCache,
+        stats: &mut Stats,
+    ) -> Option<Vec<Rect>> {
+        self.ops.clear();
+        self.glyphs.clear();
+        self.open.clear();
+        self.paths_used = 0;
+        let mut walker = Walker {
+            encoding,
+            list: self,
+            glyph_cache: glyphs,
+            images,
+            stats,
+            ramps: Vec::new(),
+            image_patches: Vec::new(),
+            draw_ix: 0,
+            draw_data_ix: 0,
+            transform_ix: None,
+            style_ix: None,
+            path: PathState::default(),
+            bounds: Some(Vec::new()),
+            complete: true,
+        };
+        walker.run();
+        let complete = walker.complete;
+        let bounds = walker.bounds.take().unwrap_or_default();
+        (complete && bounds.iter().all(Rect::is_finite)).then_some(bounds)
     }
 }
 
@@ -198,6 +240,11 @@ struct Walker<'a> {
     transform_ix: Option<usize>,
     style_ix: Option<usize>,
     path: PathState,
+    /// Only bounds are collected ([`DisplayList::bounds`]): no draw is
+    /// listed and no brush decoded.
+    bounds: Option<Vec<Rect>>,
+    /// Every draw so far was walked in full.
+    complete: bool,
 }
 
 const IDENTITY: Transform = Transform::IDENTITY;
@@ -310,6 +357,47 @@ pub(crate) fn encoding_reads_backdrop(encoding: &Encoding) -> bool {
     false
 }
 
+/// Whether every layer still open after the first `draws` draw tags of
+/// `encoding` is a plain clip or a source-over group at full opacity, so a
+/// draw there lands on the target as if no layer were open (clipped). Walks
+/// the draw tags alone. `false` when `encoding` has fewer draw tags.
+pub(crate) fn plain_layers_open_at(encoding: &Encoding, draws: usize) -> bool {
+    let Some(tags) = encoding.draw_tags.get(..draws) else {
+        return false;
+    };
+    let mut offset = 0usize;
+    // Whether each open layer is plain, innermost last.
+    let mut open: Vec<bool> = Vec::new();
+    for tag in tags {
+        match *tag {
+            DrawTag::BEGIN_CLIP => {
+                let plain = match (
+                    encoding.draw_data.get(offset),
+                    encoding.draw_data.get(offset + 1),
+                ) {
+                    (Some(&bits), Some(&alpha)) => match blend_mode(bits) {
+                        LayerMode::Clip => true,
+                        LayerMode::Blend(mode, _) => {
+                            mode.mix == Mix::Normal
+                                && mode.compose == Compose::SrcOver
+                                && f32::from_bits(alpha) >= 1.0
+                        }
+                        LayerMode::LuminanceMask => false,
+                    },
+                    _ => false,
+                };
+                open.push(plain);
+            }
+            DrawTag::END_CLIP => {
+                open.pop();
+            }
+            _ => {}
+        }
+        offset += ((tag.0 >> 2) & 7) as usize;
+    }
+    open.iter().all(|plain| *plain)
+}
+
 fn blend_mode(bits: u32) -> LayerMode {
     if bits == DrawBeginClip::LUMINANCE_MASK_BLEND_MODE {
         return LayerMode::LuminanceMask;
@@ -409,7 +497,10 @@ impl Walker<'_> {
                 }
                 PathTag::STYLE => self.style_ix = Some(self.style_ix.map_or(0, |i| i + 1)),
                 PathTag::PATH => self.end_path(),
-                tag if tag.is_path_segment() && !self.segment(tag, data, &mut cursor) => return,
+                tag if tag.is_path_segment() && !self.segment(tag, data, &mut cursor) => {
+                    self.complete = false;
+                    return;
+                }
                 _ => {}
             }
         }
@@ -541,6 +632,14 @@ impl Walker<'_> {
             let local = Rect::from_points(path.min, path.max);
             (index, transform, local)
         });
+        if self.bounds.is_some() {
+            self.bound_draw(
+                tag,
+                offset,
+                geometry.map(|(_, transform, local)| (transform, local)),
+            );
+            return;
+        }
         match tag {
             DrawTag::END_CLIP => self.end_clip(),
             DrawTag::BEGIN_CLIP => {
@@ -632,6 +731,46 @@ impl Walker<'_> {
                     bbox,
                 });
             }
+        }
+    }
+
+    /// [`DisplayList::bounds`]' share of one draw: what it can paint.
+    fn bound_draw(&mut self, tag: DrawTag, offset: usize, geometry: Option<(Affine, Rect)>) {
+        let style = decode_style(self.style());
+        let reach = match tag {
+            DrawTag::END_CLIP => return,
+            DrawTag::BEGIN_CLIP => {
+                let Some(&bits) = self.encoding.draw_data.get(offset) else {
+                    self.complete = false;
+                    return;
+                };
+                match blend_mode(bits) {
+                    // A clip, or a group composited by source over at any
+                    // opacity, paints only where what it holds does.
+                    LayerMode::Clip | LayerMode::LuminanceMask => return,
+                    LayerMode::Blend(mode, _)
+                        if mode.mix == Mix::Normal && mode.compose == Compose::SrcOver =>
+                    {
+                        return;
+                    }
+                    // Any other blend reaches every pixel of its clip.
+                    LayerMode::Blend(..) => {
+                        geometry.map(|(transform, local)| device_bbox(local, transform, &style))
+                    }
+                }
+            }
+            DrawTag::BLUR_RECT => geometry.map(|(transform, local)| {
+                device_bbox(local, transform, &Style::Fill(Fill::NonZero))
+            }),
+            // A draw without geometry paints nothing.
+            _ => match geometry {
+                Some((transform, local)) => Some(device_bbox(local, transform, &style)),
+                None => return,
+            },
+        };
+        match (reach, self.bounds.as_mut()) {
+            (Some(rect), Some(bounds)) => bounds.push(rect),
+            _ => self.complete = false,
         }
     }
 
@@ -855,6 +994,12 @@ impl Walker<'_> {
         let Some((tag, offset)) = self.next_draw() else {
             return;
         };
+        if let Some(bounds) = self.bounds.as_mut() {
+            if start != end {
+                bounds.push(bbox);
+            }
+            return;
+        }
         let Some(brush) = self.brush(tag, offset, to_affine(&paint_transform)) else {
             return;
         };

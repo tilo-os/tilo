@@ -33,16 +33,6 @@ impl PublishedInvocationRequest {
             None => invoker,
         }
     }
-
-    /// The participant of a delivered invocation: the host-built delivery
-    /// context names it for this exact `actor`, or there is none
-    /// ([`tilo_actions::ActionInvoker::delivered`]).
-    pub fn delivered_participant(
-        actor: &str,
-        context: Option<&tilo_actions::ActionContext>,
-    ) -> Option<tilo_actions::ParticipantId> {
-        tilo_actions::ActionInvoker::delivered(actor, context).participant
-    }
 }
 
 thread_local! {

@@ -287,15 +287,20 @@ def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path,
             raise ValueError("artifact consumer source checkout does not match producer")
         components = verify_artifacts(artifact["receipt"], artifact["expected"],
                                       artifact["sha256"], components)
+    # The artifact consumer verifies the cohort; it may be a newer CLI than the ref's
+    # own (the workflow's checkout), so a branch older than a consumer fix stays testable.
+    consumer = (artifact or {}).get("consumer") or vm
     swapped, slots = [], set()
     for component in components:
         slot = "vm" if scopes.get(component) == "vm" else vm.slot
         entry = {"component": component, "slot": slot}
+        if artifact:
+            entry["consumer"] = consumer.binary
         started = time.monotonic()
         try:
             if artifact:
                 expected = artifact["expected"]
-                out = vm.run("--json", "swap-artifact", component, "--slot", slot,
+                out = consumer.run("--json", "swap-artifact", component, "--slot", slot,
                              "--receipt", str(artifact["receipt"]),
                              "--source", expected["source_commit"],
                              "--builder-image", expected["builder_image"],
@@ -368,6 +373,8 @@ def main() -> int:
     ap.add_argument("--artifact-run-id", type=int, help="producing workflow API run ID")
     ap.add_argument("--artifact-run-attempt", type=int)
     ap.add_argument("--artifact-receipt-sha256", help="receipt hash from authenticated producer output")
+    ap.add_argument("--artifact-tilo-vm", help="the tilo-vm that verifies and imports the artifacts "
+                    "(default: --tilo-vm); it still runs in, and checks, the --swap-from checkout")
     ap.add_argument("--owners", help="area=owner,... to name who each area routes to")
     ap.add_argument("--records", type=Path, help="write the run's performance records here "
                     "(JSON lines, tools/perf/record.py)")
@@ -384,6 +391,8 @@ def main() -> int:
     artifact = None
     handoff = (args.artifact_receipt, args.artifact_source, args.artifact_builder_image,
                args.artifact_run_id, args.artifact_run_attempt, args.artifact_receipt_sha256)
+    if args.artifact_tilo_vm and args.artifact_receipt is None:
+        ap.error("--artifact-tilo-vm needs artifact mode")
     if any(value is not None for value in handoff):
         if not swaps or any(value is None for value in handoff):
             ap.error("artifact mode requires swaps and all six --artifact-* identity arguments")
@@ -413,6 +422,11 @@ def main() -> int:
             sys.exit(f"VM {vm_name} is not in vms.toml")
         disk = Path(entry["image"]).expanduser() if entry.get("image") else None
     vm = TiloVm(binary, vm_name, args.slot, out / "tilo-vm.log")
+    if artifact and args.artifact_tilo_vm:
+        # Exactly the named consumer: no fallback to another tilo-vm on PATH.
+        if not os.access(args.artifact_tilo_vm, os.X_OK) or not Path(args.artifact_tilo_vm).is_file():
+            sys.exit(f"--artifact-tilo-vm {args.artifact_tilo_vm} is not an executable file")
+        artifact["consumer"] = TiloVm(args.artifact_tilo_vm, vm_name, args.slot, out / "tilo-vm.log")
 
     startup_vm = (TiloVm(find_tilo_vm(args.bootstrap_tilo_vm), vm_name, args.slot, out / "tilo-vm.log")
                   if args.bootstrap_tilo_vm else vm)

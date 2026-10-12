@@ -99,6 +99,12 @@ mod portable_committed {
         pub(crate) fn applied(&self) {
             match self.never {}
         }
+        pub(crate) fn applies_to(&self, _document: &impl automerge::ReadDoc) -> bool {
+            match self.never {}
+        }
+        pub(crate) fn refuse(&self) {
+            match self.never {}
+        }
     }
 }
 pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};
