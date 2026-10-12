@@ -108,7 +108,7 @@ fn wheel(frame: &mut FrameBuilder, dy: f64) {
 /// paragraphs into it, as a person types them; then leave the body, rest
 /// the pointer over it and scroll back to the top. Returns where the
 /// pointer rests, in layout pixels.
-fn write_a_long_note(frame: &mut FrameBuilder, label: &str, paragraphs: usize) -> Point {
+fn write_a_long_note(frame: &mut FrameBuilder, label: &str, reach: f64) -> Point {
     let _ = open_a_note(frame, label);
     // A new note may open naming itself: leave the title first.
     if with_notes_on_screen(&*frame, |_, notes| notes.main_title_editing_for_test()) {
@@ -126,46 +126,40 @@ fn write_a_long_note(frame: &mut FrameBuilder, label: &str, paragraphs: usize) -
     point_at(frame, body);
     press(frame, winit::event::MouseButton::Left);
     settle(frame, 3);
-    for paragraph in 0..paragraphs {
-        type_text(
-            frame,
-            &format!(
-                "Paragraph {paragraph}: the quick brown fox jumps over the lazy dog, \
-                 and a second clause so the line runs on a while."
-            ),
-        );
-        press_key(frame, &Key::Named(NamedKey::Enter));
-        if paragraph % 10 == 9 {
+    let max_scroll = |frame: &FrameBuilder| {
+        with_notes_on_screen(frame, |_, notes| {
+            notes.main_panel_mut().max_scroll_for_test()
+        })
+    };
+    // Paragraphs until the note scrolls `reach` past its window, laid out
+    // as they come (shaping can land a frame or two after the text).
+    let mut paragraph = 0_usize;
+    while max_scroll(frame) < reach && paragraph < 400 {
+        for _ in 0..10 {
+            type_text(
+                frame,
+                &format!(
+                    "Paragraph {paragraph}: the quick brown fox jumps over the lazy dog, \
+                     and a second clause so the line runs on a while."
+                ),
+            );
+            press_key(frame, &Key::Named(NamedKey::Enter));
+            paragraph += 1;
+        }
+        for _ in 0..5 {
+            frame.wake_mounted_components();
             settle(frame, 1);
+            if max_scroll(frame) >= reach {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }
     press_key(frame, &Key::Named(NamedKey::Escape));
     settle(frame, 3);
-    let text = with_notes_on_screen(&*frame, |_, notes| notes.editor_text_for_test());
-    let last = format!("Paragraph {}", paragraphs.saturating_sub(1));
     assert!(
-        text.contains(&last),
-        "{label}: the paragraphs reached the note's body: {:?}",
-        text.chars().take(200).collect::<String>()
-    );
-    // The paragraphs are laid out before the note can scroll.
-    for _ in 0..100 {
-        if with_notes_on_screen(&*frame, |_, notes| {
-            notes.main_panel_mut().max_scroll_for_test()
-        }) > 0.0
-        {
-            break;
-        }
-        frame.wake_mounted_components();
-        settle(frame, 1);
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert!(
-        with_notes_on_screen(&*frame, |_, notes| notes
-            .main_panel_mut()
-            .max_scroll_for_test())
-            > 0.0,
-        "{label}: the note overflows its window: {}",
+        max_scroll(frame) >= reach,
+        "{label}: the note scrolls {reach} px past its window after {paragraph} paragraphs: {}",
         with_notes_on_screen(&*frame, |_, notes| notes
             .main_panel_mut()
             .scroll_state_for_test())
@@ -246,7 +240,11 @@ fn scroll_and_present(
         );
         let previous = frame.last_produced_sections.clone();
         let painted = frame.paint_with_damage();
-        if painted.damage_regions.is_none() || painted.scroll_copies.is_none() {
+        let changed = painted
+            .damage_regions
+            .as_ref()
+            .is_none_or(|damage| !damage.is_empty());
+        if changed && painted.scroll_copies.is_none() {
             eprintln!(
                 "{label}: frame {index} copies={} damage={:?}: {}",
                 painted.scroll_copies.is_some(),
@@ -257,41 +255,21 @@ fn scroll_and_present(
                 part_refusals(previous.as_ref(), frame)
             );
         }
-        if index == 0 {
-            // What the workspace's comparison found, for a failure's log.
-            let found = previous
-                .as_ref()
-                .zip(frame.last_produced_sections.as_ref())
-                .and_then(|(old, new)| {
-                    Some(ui::scene_parts::damage_with_copies(
-                        &old.workspace,
-                        old.parts.workspace.as_ref()?,
-                        &new.workspace,
-                        new.parts.workspace.as_ref()?,
-                        &mut ui::scene_parts::DrawBounds::default(),
-                    ))
-                });
-            eprintln!(
-                "{label}: first frame copies={:?} damage={:?} workspace={found:?}",
-                painted
-                    .scroll_copies
-                    .as_ref()
-                    .map(|copies| copies.copies.len()),
-                painted
-                    .damage_regions
-                    .as_ref()
-                    .map(|damage| covered(damage, panel)),
-            );
+        let damage = SceneDamage {
+            revision: painted.revision,
+            previous_revision: painted.previous_revision,
+            regions: painted.damage_regions.as_deref(),
+        };
+        // An unchanged frame is kept, as the DRM presenter keeps it.
+        if presented.keep_unchanged(damage) {
+            run.frames += 1;
+            continue;
         }
         presented.stage_scroll_copies(Some(painted.revision), painted.scroll_copies.as_ref());
         presented
             .render_until(
                 &painted.scene,
-                SceneDamage {
-                    revision: painted.revision,
-                    previous_revision: painted.previous_revision,
-                    regions: painted.damage_regions.as_deref(),
-                },
+                damage,
                 Instant::now() + tilo_test_env::hang_bound(),
             )
             .unwrap_or_else(|error| panic!("{label}: frame {index}: {error}"));
@@ -342,7 +320,7 @@ fn scroll_a_long_note(
 ) -> (ScrollRun, ScrollRun) {
     let (mut frame, _clock, panel) = scroll_desktop(theme, scale, copies);
     let label = format!("scrolling a note at {scale}x");
-    let rest = write_a_long_note(&mut frame, &label, 60);
+    let rest = write_a_long_note(&mut frame, &label, 16.0 * 40.0 + 120.0);
     if peer {
         point_peer_at(&mut frame, (rest.x - 120.0, rest.y - 80.0));
     }
