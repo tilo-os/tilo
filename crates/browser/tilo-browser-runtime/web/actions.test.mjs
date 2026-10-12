@@ -194,6 +194,93 @@ test('a lost receipt leaves the outcome unknown until status observes the origin
   } finally { stop(); }
 });
 
+/** A clock and timers the test moves by hand; `fire` runs what is due. */
+function manualTime() {
+  let clock = 0;
+  const timers = new Set();
+  return {
+    now: () => clock,
+    setTimer: (callback, delay) => { const timer = {callback, at: clock + delay}; timers.add(timer); return timer; },
+    clearTimer: timer => { timers.delete(timer); },
+    /** Move the clock by `ms` without running anything: the page was stalled. */
+    stall(ms) { clock += ms; },
+    /** Run every timer due by now, as the page does once it runs again. */
+    fire() {
+      for (const timer of [...timers].filter(timer => timer.at <= clock)) {
+        timers.delete(timer);
+        timer.callback();
+      }
+    },
+    advance(ms) { clock += ms; this.fire(); },
+  };
+}
+
+/** A host whose answers are held back until `deliver()`, as a stalled page leaves them unread. */
+function heldHost() {
+  const peer = fakeHost();
+  const held = [];
+  return {
+    peer: {sendRemoteAction: (...args) => peer.sendRemoteAction(...args), takeRemoteActionEvents: () => JSON.stringify(held.splice(0))},
+    deliver() { held.push(...JSON.parse(peer.takeRemoteActionEvents())); },
+  };
+}
+
+test('an answer that reached a page stalled past the timeout is read, not reported as missing', async () => {
+  const time = manualTime();
+  const host = heldHost();
+  const actions = createActions({peer: host.peer, room: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
+    timeoutMs: 30_000, now: time.now, setTimer: time.setTimer, clearTimer: time.clearTimer});
+  try {
+    let outcome;
+    const page = actions.catalogue({provider: SHEET}).then(value => { outcome = 'answered'; return value; },
+      error => { outcome = error.code; throw error; });
+    // The page blocks for 31 s; the host answered within a second of the
+    // request, but the answer waits behind the stall with the expired timer.
+    time.stall(31_000);
+    time.fire();
+    host.deliver();
+    actions.pump();
+    assert.equal((await page).rows.length, ROWS.length);
+    assert.equal(outcome, 'answered');
+  } finally { actions.dispose(); }
+});
+
+test('a host still silent after a stalled page caught up is reported as not answering', async () => {
+  const time = manualTime();
+  const silent = {sendRemoteAction() {}, takeRemoteActionEvents: () => '[]'};
+  const actions = createActions({peer: silent, room: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
+    timeoutMs: 30_000, now: time.now, setTimer: time.setTimer, clearTimer: time.clearTimer});
+  try {
+    let outcome;
+    const page = actions.catalogue({provider: SHEET}).catch(error => { outcome = error; });
+    time.stall(31_000);
+    time.fire();
+    await Promise.resolve();
+    assert.equal(outcome, undefined, 'a stall is not the host\'s silence');
+    // The page runs again for as long as it was stalled past the deadline,
+    // and the host still says nothing.
+    time.advance(999);
+    await Promise.resolve();
+    assert.equal(outcome, undefined);
+    time.advance(1);
+    await page;
+    assert.equal(outcome?.code, 'timeout');
+    assert.equal(outcome?.message, 'the host did not answer');
+  } finally { actions.dispose(); }
+});
+
+test('a timer that fires on time reports a silent host at once', async () => {
+  const time = manualTime();
+  const silent = {sendRemoteAction() {}, takeRemoteActionEvents: () => '[]'};
+  const actions = createActions({peer: silent, room: ROOM, hostDevice: HOST, device: PAGE, userPublicKey: USER,
+    timeoutMs: 30_000, now: time.now, setTimer: time.setTimer, clearTimer: time.clearTimer});
+  try {
+    const page = actions.catalogue({provider: SHEET});
+    time.advance(30_000);
+    await assert.rejects(page, error => error.code === 'timeout');
+  } finally { actions.dispose(); }
+});
+
 test('a request the host never received is resent under the same id', async () => {
   const peer = fakeHost();
   let lost = false;

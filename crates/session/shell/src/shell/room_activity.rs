@@ -95,6 +95,7 @@ const SHORTCUT_RUN_LOOK_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) struct NativeActivityHost {
     broker: Option<crate::shell::collab_broker::AppActionBroker>,
     review: Option<super::task_review::NativeTaskReview>,
+    morning: Option<Rc<super::morning_sources::NativeMorningSources>>,
 }
 
 /// A document's revision when a waiting run last looked at it: the heads of
@@ -505,7 +506,10 @@ impl HistoryBatch {
 /// Palette actions use only this device's explicit choices for the active room.
 pub(crate) fn morning_source_actions(workspace: &Workspace) -> Vec<(String, String)> {
     use crate::shell::i18n::t;
-    use tilo_desktop::activity::morning::{MORNING_OPEN, MORNING_REMOVE, MorningPreferences};
+    use tilo_desktop::activity::morning::{
+        MORNING_DRAFT, MORNING_NEXT, MORNING_OPEN, MORNING_REFRESH, MORNING_REMOVE,
+        MorningPreferences,
+    };
     let choices: HashMap<u64, MorningPreferences> = load_history_map("morning_sources");
     choices
         .get(&workspace.id.raw())
@@ -518,10 +522,30 @@ pub(crate) fn morning_source_actions(workspace: &Workspace) -> Vec<(String, Stri
                         .unwrap_or_else(|| source.app.clone());
                     [
                         (
+                            format!("{MORNING_NEXT}{}.{}", workspace.room, source.key()),
+                            t("activity-morning-next"),
+                        ),
+                        (
                             format!("{MORNING_OPEN}{}.{}", workspace.room, source.key()),
                             format!(
                                 "{}: {app} · {}",
                                 t("activity-morning-open"),
+                                source.resource
+                            ),
+                        ),
+                        (
+                            format!("{MORNING_REFRESH}{}.{}", workspace.room, source.key()),
+                            format!(
+                                "{}: {app} · {}",
+                                t("activity-morning-refresh"),
+                                source.resource
+                            ),
+                        ),
+                        (
+                            format!("{MORNING_DRAFT}{}.{}", workspace.room, source.key()),
+                            format!(
+                                "{}: {app} · {}",
+                                t("activity-morning-draft"),
                                 source.resource
                             ),
                         ),
@@ -580,6 +604,34 @@ impl ActivityHost for NativeActivityHost {
             (!user.is_empty()).then_some(user)
         }
     }
+    fn morning_sources_available(&self) -> bool {
+        true
+    }
+    fn morning_payload(
+        &self,
+        room: &str,
+        source: &tilo_desktop::activity::morning::MorningSource,
+    ) -> Option<tilo_desktop::activity::morning::MorningPayload> {
+        self.morning.as_ref()?.payload(room, source)
+    }
+    fn submit_morning_command(
+        &self,
+        room: &str,
+        source: &tilo_desktop::activity::morning::MorningSource,
+        command: tilo_desktop::activity::morning::MorningCommand,
+    ) -> Result<(), String> {
+        self.morning
+            .as_ref()
+            .ok_or_else(|| super::i18n::t("activity-morning-command-unavailable"))?
+            .submit(room, source, command)
+    }
+    fn morning_command_status(
+        &self,
+        room: &str,
+        source: &tilo_desktop::activity::morning::MorningSource,
+    ) -> Option<String> {
+        self.morning.as_ref()?.command_status(room, source)
+    }
     fn load_morning_sources(
         &self,
     ) -> HashMap<u64, tilo_desktop::activity::morning::MorningPreferences> {
@@ -612,7 +664,7 @@ impl ActivityHost for NativeActivityHost {
     fn app_display_name(&self, app: &str) -> Option<String> {
         crate::shell::launcher::display_name_for_app_id(app)
     }
-    fn agent_members(&self, workspace: &Workspace) -> Vec<(String, collab_types::role::Role)> {
+    fn agent_members(&self, workspace: &Workspace) -> Vec<(String, tilo_action_policy::KindSet)> {
         workspace.agent_members()
     }
     fn agent_is_live(&self, room: &str, agent: &str) -> bool {
@@ -743,6 +795,9 @@ impl RoomActivityPane {
     pub fn attach_task_broker(&mut self, broker: crate::shell::collab_broker::AppActionBroker) {
         self.1 = Some(broker.clone());
         self.set_host(Rc::new(NativeActivityHost {
+            morning: Some(Rc::new(super::morning_sources::NativeMorningSources::new(
+                broker.clone(),
+            ))),
             broker: Some(broker),
             review: None,
         }));
@@ -750,6 +805,9 @@ impl RoomActivityPane {
     pub(crate) fn attach_task_review(&mut self, review: super::task_review::NativeTaskReview) {
         let broker = self.1.clone();
         self.set_host(Rc::new(NativeActivityHost {
+            morning: broker
+                .clone()
+                .map(|broker| Rc::new(super::morning_sources::NativeMorningSources::new(broker))),
             broker,
             review: Some(review),
         }));
@@ -1072,7 +1130,6 @@ mod tests {
             ui::record::init(doc, &record, &checkout.kind, &room.to_string());
             doc.put(automerge::ROOT, "draft", "Launch notes").unwrap();
             let context = ui::tilo_actions::ActionContext::for_resource(
-                "Write draft",
                 "fixture.drafts:inbox",
                 "fixture.drafts",
                 "Inbox",
@@ -1130,12 +1187,21 @@ mod tests {
     fn commit_draft_step(doc: &mut automerge::AutoCommit, run: tilo_automation::RunId) {
         doc.put(automerge::ROOT, "draft", "Launch notes").unwrap();
         let context = ui::tilo_actions::ActionContext::for_resource(
-            "Write draft",
             "fixture.drafts:inbox",
             "fixture.drafts",
             "Inbox",
         )
         .with_app("so.tilo.fixture-drafts", "Drafts")
+        .with_described(ui::tilo_actions::Described::new(
+            ui::tilo_actions::Did::verb(
+                ui::tilo_actions::ActionKey::new(
+                    "so.tilo.fixture-drafts",
+                    "fixture.drafts",
+                    "write-draft",
+                ),
+                [],
+            ),
+        ))
         .with_group(run.0.to_string(), "Publish a draft", "shortcut");
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
     }
@@ -1239,7 +1305,7 @@ mod tests {
         assert_eq!(runs[0].steps.len(), 1, "one step, for the closed record");
         assert_eq!(runs[0].steps[0].record, record.to_string());
         assert_eq!(runs[0].steps[0].app, "so.tilo.fixture-drafts");
-        assert_eq!(runs[0].steps[0].summary, "Write draft");
+        assert_eq!(runs[0].steps[0].sentence(), "Write draft");
         assert_eq!(
             runs[0].steps[0].run.start,
             ui::history_source::entry_id_from_hash(
@@ -1285,5 +1351,14 @@ mod tests {
         drop(pane);
         assert!(!still_pending, "given up once settled");
         assert!(ui::read_runs(&tree.doc).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod morning_host_regression {
+    use super::*;
+    #[test]
+    fn native_morning_sources_advertise_private_selection() {
+        assert!(NativeActivityHost::default().morning_sources_available());
     }
 }

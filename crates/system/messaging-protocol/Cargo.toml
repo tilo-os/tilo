@@ -21,7 +21,7 @@ serde.workspace = true
 serde_json.workspace = true
 zeroize.workspace = true
 uuid.workspace = true
-private-fs = { path = "../private-fs" }
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-secret-vault = { path = "../secret-vault" }
 tilo-advisory-lock = { path = "../advisory-lock" }
 tilo-secrets = { path = "../../platform/tilo-secrets" }

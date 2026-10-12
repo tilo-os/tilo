@@ -58,7 +58,7 @@ pub struct HelloAck {
     /// Ed25519 signature by the server's *device* signing key over
     /// `blake3(AUTH_NONCE_TAG || client_nonce)`. Proves the server
     /// holds the private key matching the cert.
-    #[serde(with = "crate::sig64")]
+    #[serde(with = "serde_bytes")]
     pub sig_over_client_nonce: [u8; 64],
 }
 
@@ -67,7 +67,7 @@ pub struct HelloAck {
 pub struct HelloAck2 {
     /// Ed25519 signature by the client's device signing key over
     /// `blake3(AUTH_NONCE_TAG || server_nonce)`.
-    #[serde(with = "crate::sig64")]
+    #[serde(with = "serde_bytes")]
     pub sig_over_server_nonce: [u8; 64],
 }
 
@@ -897,7 +897,7 @@ mod tests {
             pub capabilities: DeviceCapabilities,
             pub issued_at_ns: u64,
             pub expires_at_ns: Option<u64>,
-            #[serde(with = "crate::sig64")]
+            #[serde(with = "serde_bytes")]
             pub signature: [u8; 64],
         }
 

@@ -149,10 +149,12 @@ impl App {
             let author = Some(&self.collaboration.local_author);
             match request {
                 crate::undo::UndoRequest::Undo => {
-                    self.state.undo_as(author, current_focus_idx, current_meta)
+                    self.state
+                        .undo_as(author, current_focus_idx, current_meta, None)
                 }
                 crate::undo::UndoRequest::Redo => {
-                    self.state.redo_as(author, current_focus_idx, current_meta)
+                    self.state
+                        .redo_as(author, current_focus_idx, current_meta, None)
                 }
             }
         };

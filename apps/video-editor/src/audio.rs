@@ -1762,7 +1762,6 @@ mod tests {
                 fps: 0.0,
                 palette: 0,
                 path: crate::media::workspace_path("a.wav"),
-                hydration: crate::media::Hydration::Projected,
                 ..Default::default()
             });
             id

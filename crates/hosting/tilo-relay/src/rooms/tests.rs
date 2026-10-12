@@ -103,7 +103,10 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
         .await
         .unwrap();
     assert_eq!(policy.room, created.room);
-    assert_eq!(policy.role, collab_types::Role::Owner);
+    assert_eq!(
+        policy.standing.policy.role_of(&policy.standing.person),
+        Some(collab_types::Role::Owner)
+    );
     let source = tilo_browser_peer::DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: created.room.clone(),
@@ -319,9 +322,13 @@ fn a_long_tail_compacts_into_a_fresh_checkpoint() {
 }
 
 #[tokio::test]
-async fn legacy_window_write_respects_current_owner_capability_restrictions() {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one window write decided as the room's grants change keeps its fixture visible"
+)]
+async fn legacy_window_write_respects_current_member_grants() {
     use collab_types::Role;
-    use collab_types::caps::{CapOverride, Effect, Scope, Subject, Verb};
+    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject};
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let (relay, rooms) = {
@@ -350,22 +357,30 @@ async fn legacy_window_write_respects_current_owner_capability_restrictions() {
             .await,
         Some(Role::Owner)
     );
-    let mut restriction = CapOverride::new(
-        Subject::Role(Role::Owner),
-        Scope::Room(created.room.clone()),
-        Effect::Restrict,
-        Verb::Read,
-    );
-    restriction.id = "legacy-window-read-only-owner".into();
-    restriction =
-        restriction.with_expiry(tilo_clock::try_unix_now().unwrap().checked_add(5).unwrap());
+    // The owner's own device on an operating system Tilo does not control:
+    // held to the foreign-device bound, which the room may narrow.
+    let owner_root = SigningKey::from_bytes(&[1; 32]);
+    let foreign_key = SigningKey::from_bytes(&[6; 32]);
+    let mut capabilities = DeviceCapabilities::member();
+    capabilities.foreign = true;
+    let mut foreign = DeviceCert {
+        user_public_key: owner_root.verifying_key().to_bytes(),
+        device_public_key: foreign_key.verifying_key().to_bytes(),
+        device_label: "borrowed laptop".into(),
+        capabilities,
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut foreign, &owner_root).unwrap();
     let state = rooms.room(&created.room).await.unwrap();
+    let deadline = tilo_clock::try_unix_now().unwrap().checked_add(5).unwrap();
     {
         let mut room = state.lock().await;
         let now = SystemTime::now();
         let mut candidate = room.peer().clone();
         candidate
-            .put_governed_capabilities(&[restriction], &key, now)
+            .admit_certificate(foreign.clone(), &key, now)
             .unwrap();
         let collaboration = room.collaboration().clone();
         room.commit(candidate, &key, now, |_, _| Ok(collaboration))
@@ -373,17 +388,43 @@ async fn legacy_window_write_respects_current_owner_capability_restrictions() {
     }
     assert_eq!(
         rooms
-            .legacy_writer_role(&created.room, cert.device_public_key)
+            .legacy_writer_role(&created.room, foreign.device_public_key)
+            .await,
+        Some(Role::Owner),
+        "a foreign device changes the room's content"
+    );
+    {
+        let mut room = state.lock().await;
+        let now = SystemTime::now();
+        let mut candidate = room.peer().clone();
+        let read_only = Grant::new(
+            "legacy-window-read-only-foreign",
+            Subject::ForeignDevice,
+            tilo_action_policy::TreePath::room(&created.room),
+            KindSet::UNDOABLE,
+            Answer::Deny,
+            Subject::Person(hex::encode(cert.user_public_key)),
+        )
+        .with_lifetime(Lifetime::Until(deadline.saturating_mul(1000)));
+        candidate
+            .put_governed_grants(&[read_only], &key, now)
+            .unwrap();
+        let collaboration = room.collaboration().clone();
+        room.commit(candidate, &key, now, |_, _| Ok(collaboration))
+            .unwrap();
+    }
+    assert_eq!(
+        rooms
+            .legacy_writer_role(&created.room, foreign.device_public_key)
             .await,
         None,
-        "room ownership must not bypass a current read-only capability restriction"
+        "ownership must not bypass a current grant denying changes from foreign devices"
     );
-    // The restricted owner cannot rewrite governance to remove its own cap.
     // Expiration is an authorized transition and must be observed without restart.
-    tilo_test_env::within("the current read-only restriction expires", async {
+    tilo_test_env::within("the current read-only grant expires", async {
         loop {
             if rooms
-                .legacy_writer_role(&created.room, cert.device_public_key)
+                .legacy_writer_role(&created.room, foreign.device_public_key)
                 .await
                 == Some(Role::Owner)
             {
@@ -435,20 +476,22 @@ async fn app_authorship_grant_uses_current_owner_and_conflict_checked_retries() 
     let state = rooms.room(&created.room).await.unwrap();
     {
         let room = state.lock().await;
-        let (_, caps, _) = room
+        let now = std::time::SystemTime::now();
+        let policy = room
             .peer()
-            .permissions(cert.device_public_key, SystemTime::now())
-            .unwrap();
-        let grant = caps
+            .permissions(cert.device_public_key, now)
+            .unwrap()
+            .policy;
+        let grant = policy
+            .grants
             .iter()
-            .find(|cap| cap.id == "app-author:so.tilo.chat")
+            .find(|grant| grant.id.as_str() == "app-author:so.tilo.chat")
             .unwrap();
         assert_eq!(
             grant.subject,
-            collab_types::caps::Subject::app("so.tilo.chat")
+            tilo_action_policy::Subject::App("so.tilo.chat".into())
         );
-        assert_eq!(grant.verb, collab_types::caps::Verb::Write);
-        assert_eq!(grant.scope, collab_types::caps::Scope::Workspace);
+        assert!(policy.app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now),));
     }
     let mut conflict = request.clone();
     conflict.app = "so.tilo.ebook".into();
@@ -573,6 +616,10 @@ async fn assert_canonical_chat_preparation(
     clippy::significant_drop_tightening,
     reason = "the relay stays live through retained publication checks and its consuming shutdown"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one authoring pass: granted, written, read back through the native view and the voice binding"
+)]
 async fn governor_application_authoring_preserves_native_view_and_voice_binding() {
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     let scratch = tempfile::tempdir().unwrap();
@@ -639,10 +686,18 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
     );
     let voice = rooms
         .author_application(&created.room, &cert, &catalogue, "so.tilo.chat", |doc| {
-            chat::doc::ChatDoc::create_workspace(doc, "Fixture call");
+            chat::demo::apply_as(
+                doc,
+                "author",
+                chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
+                    name: "Fixture call".into(),
+                }),
+            )
+            .map_err(|error| error.to_string())?;
             doc.put(ROOT, "preserved_native_marker", true)
                 .map_err(|error| error.to_string())?;
-            Ok(chat::doc::ChatDoc::list_channels(doc)
+            Ok(chat::projection::read(doc)
+                .channel_rows()
                 .into_iter()
                 .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
                 .unwrap()

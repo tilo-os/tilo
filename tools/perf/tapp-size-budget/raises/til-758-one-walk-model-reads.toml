@@ -1,5 +1,0 @@
-reason = "TIL-758 reads a derived Model's fields and a Collection's entries in one walk of their map. Before it, the separate per-key lookups were 38 % of opening a 50,000-item list. TIL-765 moved the walk itself into the shared runtime, but each app still loads every field type from a read slot. That loading code put Themes, whose 13-field Theme sits 3,072 bytes from a 64 KiB boundary, over its aarch64 budget (Release / apps run 94326; it was 8,192 over before TIL-765)"
-run = 94326
-
-[apps."so.tilo.themes"]
-aarch64 = 65536

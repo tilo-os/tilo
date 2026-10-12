@@ -3,6 +3,7 @@ use crate::InputDisposition;
 use crate::TransportOrigin;
 use automerge::AutoCommit;
 use automerge::ROOT;
+use collab_types::CommitNamed as _;
 use tilo_user_identity::DeviceCert;
 use tilo_user_identity::RevocationList;
 
@@ -49,7 +50,7 @@ fn local_edit(
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, name, name).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     if !snapshot {
         return peer
             .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)
@@ -72,7 +73,7 @@ fn local_edit(
         collab_types::document_artifact_id("test.app", peer.room(), "tab:1"),
         author,
         collab_types::document_attestation_id("test.app", peer.room(), "tab:1"),
-        OpClass::Splice,
+        OpKind::Change,
         now,
         seq,
     );
@@ -381,7 +382,7 @@ fn local_outbox_watermark_and_half_checkpoint_never_acknowledge_missing_changes(
     unrelated.set_actor(automerge::ActorId::from(vec![99; 32]));
     let before = unrelated.get_heads();
     unrelated.put(ROOT, "same-value", "same-value").unwrap();
-    unrelated.commit();
+    unrelated.commit_edit("fixture", "same-value");
     let second = member
         .publish_incremental(
             "test.app",
@@ -633,6 +634,7 @@ fn local_outbox_history_queue_deduplicates_per_route_and_renews_after_expiry() {
     let (mut governor, mut member, governor_key, key, _, now) = fixture();
     let mut second = AutoCommit::new();
     second.put(ROOT, "second-seed", true).unwrap();
+    second.commit_edit("fixture", "second-seed");
     governor
         .publish_document("test.app", "tab:2", second.save(), &governor_key, now)
         .unwrap();
@@ -644,6 +646,7 @@ fn local_outbox_history_queue_deduplicates_per_route_and_renews_after_expiry() {
     ));
     let heads = second.get_heads();
     second.put(ROOT, "legacy-second", true).unwrap();
+    second.commit_edit("fixture", "legacy-second");
     let _missing_second = member
         .publish_incremental("test.app", "tab:2", second.save_after(&heads), &key, now)
         .unwrap();
@@ -703,6 +706,62 @@ fn local_outbox_history_queue_deduplicates_per_route_and_renews_after_expiry() {
     assert!(member.retained_local_history_retired(&history).unwrap());
     assert_eq!(history.durable().unwrap(), raw);
     assert_eq!(member.rows(), governor.rows());
+}
+
+/// What a committed edit costs while earlier ones wait for the governor: the
+/// owner reserves recovery for every pending publication, then validates that
+/// reservation. Each publication's history is built once, when it is new; a
+/// history built per pending publication per check made every edit cost the
+/// whole record again for each edit still waiting.
+#[test]
+fn local_outbox_builds_each_pending_publication_history_once() {
+    let (_, mut member, _, key, _, now) = fixture();
+    let selected = key.verifying_key().to_bytes();
+    let mut originals = Vec::new();
+    for edit in 0..6 {
+        originals.push(local_edit(
+            &mut member,
+            &key,
+            now,
+            false,
+            &format!("edit-{edit}"),
+        ));
+        let before = super::history::builds();
+        let rebuilt = super::history::rebuilds();
+        let reserved = member
+            .reserve_local_recovery(&originals, None, selected)
+            .unwrap();
+        assert_eq!(reserved.entries(), 1, "one route");
+        member
+            .validate_local_recovery_projection(&originals, None, &[], selected)
+            .unwrap();
+        assert_eq!(
+            member
+                .reserve_local_recovery(&originals, None, selected)
+                .unwrap(),
+            reserved
+        );
+        assert_eq!(
+            super::history::builds().saturating_sub(before),
+            1,
+            "edit {edit}: only the new publication's history is built"
+        );
+        if edit > 0 {
+            assert_eq!(
+                super::history::rebuilds(),
+                rebuilt,
+                "edit {edit}: the new history extends the previous edit's"
+            );
+        }
+        // What it remembered is what it computes from nothing.
+        super::history::forget();
+        assert_eq!(
+            member
+                .reserve_local_recovery(&originals, None, selected)
+                .unwrap(),
+            reserved
+        );
+    }
 }
 
 #[path = "projection_tests.rs"]

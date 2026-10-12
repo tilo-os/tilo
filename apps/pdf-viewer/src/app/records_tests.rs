@@ -8,30 +8,28 @@ use ui::widget::Edits;
 
 use super::*;
 use crate::actions::{
-    PdfViewerAction, add_annotation_on, delete_page_plan_action, encode, move_page_plan_action,
-    rotate_page_action, set_form_value_action,
+    add_annotation_on, delete_page_plan_action, move_page_plan_action, rotate_page_action,
+    set_form_value_action,
 };
-use crate::doc::PdfDoc;
+use crate::markup::PdfMarkup;
 use crate::model::{FormEntry, GeomSpace, MarkupStyle};
+use ui::tilo_resource::Invoke;
 
-fn apply(doc: &mut AutoCommit, action: &PdfViewerAction) {
-    tilo_actions::apply_local(doc, action, encode(action)).expect("action applies");
+fn apply(doc: &mut AutoCommit, action: Invoke<PdfMarkup>) {
+    PdfMarkup::apply_to(doc, action);
 }
 
 /// A record with a seeded three-page plan, saved and loaded twice: two
 /// replicas with their own actors and a shared history.
 fn replicas() -> (AutoCommit, AutoCommit) {
-    let mut base = AutoCommit::new();
-    PdfDoc::ensure_page_plan(&mut base, 3);
-    base.commit();
-    let bytes = base.save();
+    let bytes = PdfMarkup::planned(3);
     (
         AutoCommit::load(&bytes).expect("left"),
         AutoCommit::load(&bytes).expect("right"),
     )
 }
 
-fn highlight(id: &str, page_id: &str, y: f64) -> PdfViewerAction {
+fn highlight(id: &str, page_id: &str, y: f64) -> Invoke<PdfMarkup> {
     let a = Annotation {
         id: id.to_string(),
         chars: Some((10, 20)),
@@ -47,7 +45,7 @@ fn highlight(id: &str, page_id: &str, y: f64) -> PdfViewerAction {
             "Ada",
         )
     };
-    add_annotation_on(&a, Some(page_id))
+    add_annotation_on(&a, page_id)
 }
 
 fn merge_both(left: &mut AutoCommit, right: &mut AutoCommit) {
@@ -56,7 +54,8 @@ fn merge_both(left: &mut AutoCommit, right: &mut AutoCommit) {
 }
 
 fn ids(doc: &AutoCommit) -> Vec<(String, usize)> {
-    PdfDoc::list_annotations(doc)
+    PdfMarkup::of(doc)
+        .list_annotations()
         .into_iter()
         .map(|a| (a.id, a.page))
         .collect()
@@ -66,15 +65,16 @@ fn ids(doc: &AutoCommit) -> Vec<(String, usize)> {
 #[test]
 fn concurrent_markup_edits_converge_across_replicas() {
     let (mut left, mut right) = replicas();
-    apply(&mut left, &highlight("left", "source-2", 100.0));
-    apply(&mut right, &highlight("right", "source-2", 300.0));
+    apply(&mut left, highlight("left", "source-2", 100.0));
+    apply(&mut right, highlight("right", "source-2", 300.0));
     merge_both(&mut left, &mut right);
     let merged = ids(&left);
     assert_eq!(merged.len(), 2);
     assert!(merged.iter().all(|(_, page)| *page == 2));
     assert_eq!(merged, ids(&right), "both replicas converge on one list");
     // The stored geometry is user space with the text anchor preserved.
-    let a = PdfDoc::list_annotations(&left)
+    let a = PdfMarkup::of(&left)
+        .list_annotations()
         .into_iter()
         .find(|a| a.id == "left")
         .unwrap();
@@ -83,19 +83,24 @@ fn concurrent_markup_edits_converge_across_replicas() {
     assert_eq!(a.created_ms, 1_700_000_000_000);
 
     {
-        // Two peers open the document before either has synced anything: each
-        // creates the record's containers. Both peers' markup must survive.
-        let mut left = AutoCommit::new();
-        let mut right = AutoCommit::new();
-        apply(&mut left, &highlight("left", "source-1", 100.0));
-        apply(&mut right, &highlight("right", "source-1", 200.0));
+        // Two peers open the document before either has synced anything past
+        // its genesis: each lays out the page plan. Both peers' markup must
+        // survive.
+        let mut genesis = ui::tilo_resource::Replica::<PdfMarkup>::new();
+        let bytes = genesis.save();
+        let mut left = AutoCommit::load(&bytes).expect("left");
+        let mut right = AutoCommit::load(&bytes).expect("right");
+        apply(&mut left, PdfMarkup::START_PAGE_PLAN.with(2));
+        apply(&mut right, PdfMarkup::START_PAGE_PLAN.with(2));
+        apply(&mut left, highlight("left", "source-1", 100.0));
+        apply(&mut right, highlight("right", "source-1", 200.0));
         apply(
             &mut left,
-            &set_form_value_action("name", &FormEntry::Text("Ada".into())),
+            set_form_value_action("name", &FormEntry::Text("Ada".into())),
         );
         apply(
             &mut right,
-            &set_form_value_action(
+            set_form_value_action(
                 "agree",
                 &FormEntry::Checked {
                     on: true,
@@ -105,7 +110,8 @@ fn concurrent_markup_edits_converge_across_replicas() {
         );
         merge_both(&mut left, &mut right);
         let all = |doc: &AutoCommit| -> Vec<String> {
-            let mut ids: Vec<String> = PdfDoc::list_annotations_with_hidden(doc)
+            let mut ids: Vec<String> = PdfMarkup::of(doc)
+                .annotations_with_hidden()
                 .into_iter()
                 .map(|a| a.id)
                 .collect();
@@ -114,8 +120,11 @@ fn concurrent_markup_edits_converge_across_replicas() {
         };
         assert_eq!(all(&left), vec!["left", "right"]);
         assert_eq!(all(&left), all(&right));
-        assert_eq!(PdfDoc::form_values(&left).len(), 2);
-        assert_eq!(PdfDoc::form_values(&left), PdfDoc::form_values(&right));
+        assert_eq!(PdfMarkup::of(&left).form_values.len(), 2);
+        assert_eq!(
+            PdfMarkup::of(&left).form_values,
+            PdfMarkup::of(&right).form_values
+        );
     }
 
     {
@@ -123,11 +132,12 @@ fn concurrent_markup_edits_converge_across_replicas() {
         // Left moves page 1 to the end while right annotates it.
         apply(
             &mut left,
-            &move_page_plan_action("source-1", Some("source-3")),
+            move_page_plan_action("source-1", Some("source-3")),
         );
-        apply(&mut right, &highlight("on-first", "source-1", 120.0));
+        apply(&mut right, highlight("on-first", "source-1", 120.0));
         merge_both(&mut left, &mut right);
-        let order: Vec<String> = PdfDoc::list_page_plan(&left)
+        let order: Vec<String> = PdfMarkup::of(&left)
+            .page_plan()
             .into_iter()
             .map(|p| p.id)
             .collect();
@@ -136,44 +146,40 @@ fn concurrent_markup_edits_converge_across_replicas() {
         assert_eq!(ids(&left), ids(&right));
         // Concurrent moves of the same page still materialise it once.
         let (mut a, mut b) = replicas();
-        apply(&mut a, &move_page_plan_action("source-2", None));
-        apply(&mut b, &move_page_plan_action("source-2", Some("source-3")));
+        apply(&mut a, move_page_plan_action("source-2", None));
+        apply(&mut b, move_page_plan_action("source-2", Some("source-3")));
         merge_both(&mut a, &mut b);
-        assert_eq!(PdfDoc::list_page_plan(&a).len(), 3);
-        assert_eq!(PdfDoc::list_page_plan(&a), PdfDoc::list_page_plan(&b));
+        assert_eq!(PdfMarkup::of(&a).page_plan().len(), 3);
+        assert_eq!(PdfMarkup::of(&a).page_plan(), PdfMarkup::of(&b).page_plan());
     }
 
     {
         let mut app =
             ui::framework::testing::TestApp::<crate::PdfViewerShell>::new().expect("the reader");
-        app.invoke(
-            ui::tilo_resource::Invoke::apply(&PdfViewerAction::EnsurePagePlan {
-                source_page_count: 3,
-            })
-            .unwrap(),
-        )
-        .expect("the plan");
+        app.invoke(PdfMarkup::START_PAGE_PLAN.with(3))
+            .expect("the plan");
         let mut other = app.peer_document();
 
         // This user deletes page 2 as one undoable action…
-        app.invoke(ui::tilo_resource::Invoke::apply(&delete_page_plan_action("source-2")).unwrap())
+        app.invoke(delete_page_plan_action("source-2"))
             .expect("the owner deletes a page");
         // …while a collaborator, not yet seeing the delete, annotates it.
-        apply(&mut other, &highlight("late", "source-2", 200.0));
+        apply(&mut other, highlight("late", "source-2", 200.0));
         app.merge_peer(&mut other).expect("merge the collaborator");
         let doc = app.read_document(Clone::clone);
 
         // Defined outcome: the page is gone, its annotation is kept, attached to
         // the deleted page, and not shown anywhere else.
         assert!(ids(&doc).iter().all(|(id, _)| id != "late"));
-        let hidden: Vec<_> = PdfDoc::list_annotations_with_hidden(&doc)
+        let hidden: Vec<_> = PdfMarkup::of(&doc)
+            .annotations_with_hidden()
             .into_iter()
             .filter(|a| a.id == "late")
             .collect();
         assert_eq!(hidden.len(), 1);
         assert_eq!(hidden[0].page, 0);
         assert_eq!(
-            PdfDoc::annotation_page_id(&doc, "late").as_deref(),
+            PdfMarkup::of(&doc).annotation_page_id("late").as_deref(),
             Some("source-2")
         );
 
@@ -189,14 +195,14 @@ fn concurrent_markup_edits_converge_across_replicas() {
 
     {
         let (mut left, mut right) = replicas();
-        apply(&mut left, &rotate_page_action("source-1", 90));
+        apply(&mut left, rotate_page_action("source-1", 90));
         apply(
             &mut right,
-            &move_page_plan_action("source-1", Some("source-2")),
+            move_page_plan_action("source-1", Some("source-2")),
         );
         merge_both(&mut left, &mut right);
-        let plan = PdfDoc::list_page_plan(&left);
-        assert_eq!(plan, PdfDoc::list_page_plan(&right));
+        let plan = PdfMarkup::of(&left).page_plan();
+        assert_eq!(plan, PdfMarkup::of(&right).page_plan());
         let moved = plan.iter().find(|p| p.id == "source-1").unwrap();
         assert_eq!(
             moved.rotation, 90,
@@ -204,12 +210,12 @@ fn concurrent_markup_edits_converge_across_replicas() {
         );
         // Concurrent rotations resolve as one register too.
         let (mut a, mut b) = replicas();
-        apply(&mut a, &rotate_page_action("source-3", 90));
-        apply(&mut b, &rotate_page_action("source-3", 180));
+        apply(&mut a, rotate_page_action("source-3", 90));
+        apply(&mut b, rotate_page_action("source-3", 180));
         merge_both(&mut a, &mut b);
         assert_eq!(
-            PdfDoc::page_rotation(&a, "source-3"),
-            PdfDoc::page_rotation(&b, "source-3")
+            PdfMarkup::of(&a).page_rotation("source-3"),
+            PdfMarkup::of(&b).page_rotation("source-3")
         );
     }
 }
@@ -220,15 +226,15 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
     let (mut left, mut right) = replicas();
     apply(
         &mut left,
-        &set_form_value_action("name", &FormEntry::Text("Ada".into())),
+        set_form_value_action("name", &FormEntry::Text("Ada".into())),
     );
     apply(
         &mut right,
-        &set_form_value_action("name", &FormEntry::Text("Grace".into())),
+        set_form_value_action("name", &FormEntry::Text("Grace".into())),
     );
     apply(
         &mut right,
-        &set_form_value_action(
+        set_form_value_action(
             "agree",
             &FormEntry::Checked {
                 on: true,
@@ -237,8 +243,8 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         ),
     );
     merge_both(&mut left, &mut right);
-    let l = PdfDoc::form_values(&left);
-    let r = PdfDoc::form_values(&right);
+    let l = PdfMarkup::of(&left).form_values;
+    let r = PdfMarkup::of(&right).form_values;
     assert_eq!(l, r, "both replicas pick the same winner");
     let winner = l.get("name").cloned().unwrap();
     assert!(
@@ -246,7 +252,7 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         "the value is one of the concurrent writes, never a blend: {winner:?}"
     );
     // The losing write stays in the key's conflict set.
-    let Some((_, map)) = left.get(&automerge::ROOT, "form-values").unwrap() else {
+    let Some((_, map)) = left.get(&automerge::ROOT, "form_values").unwrap() else {
         panic!("form values map")
     };
     assert_eq!(left.get_all(&map, "name").unwrap().len(), 2);
@@ -260,11 +266,11 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
     // A later write supersedes both.
     apply(
         &mut left,
-        &set_form_value_action("name", &FormEntry::Text("Lin".into())),
+        set_form_value_action("name", &FormEntry::Text("Lin".into())),
     );
     right.merge_incoming(&mut left).unwrap();
     assert_eq!(
-        PdfDoc::form_values(&right).get("name"),
+        PdfMarkup::of(&right).form_values.get("name"),
         Some(&FormEntry::Text("Lin".into()))
     );
 
@@ -276,13 +282,13 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
 
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
-            &highlight("first", "source-1", 100.0),
+            highlight("first", "source-1", 100.0),
         );
         let history = state.revision_history();
         let after_first = history.heads().to_vec();
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
-            &highlight("second", "source-1", 300.0),
+            highlight("second", "source-1", 300.0),
         );
         assert!(ids(&state.doc).iter().any(|(id, _)| id == "second"));
 
@@ -318,16 +324,13 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         let mut app = crate::scenarios::sample_reader();
         let mut state = crate::scenarios::sample_state();
         app.sync_settled(&mut state.doc, &state.root);
-        let before = PdfDoc::list_annotations_with_hidden(&state.doc).len();
+        let before = PdfMarkup::of(&state.doc).annotations_with_hidden().len();
 
         // The host says the participant may only view.
         let as_role = |role| {
-            ui::framework::testing::dispatcher::<crate::PdfViewer>(APP_ID).with_permissions(
+            ui::framework::testing::dispatcher::<crate::PdfMarkup>(APP_ID).with_permissions(
                 ui::permissions::LivePermissions::fixed(
-                    ui::permissions::PermissionContext::from_capabilities(
-                        ui::permissions::Actor::person(Some(role), "participant"),
-                        Vec::new(),
-                    ),
+                    ui::permissions::PermissionContext::member("participant", role),
                 ),
             )
         };
@@ -344,45 +347,46 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         app.create_note(&mut Edits::lend(&mut state.doc), 1, (120.0, 300.0));
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
-            &rotate_page_action("source-1", 90),
+            rotate_page_action("source-1", 90),
         );
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
-            &set_form_value_action("name", &FormEntry::Text("x".into())),
+            set_form_value_action("name", &FormEntry::Text("x".into())),
         );
         assert_eq!(
-            PdfDoc::list_annotations_with_hidden(&state.doc).len(),
+            PdfMarkup::of(&state.doc).annotations_with_hidden().len(),
             before,
             "a viewer's markup is refused"
         );
-        assert_eq!(PdfDoc::page_rotation(&state.doc, "source-1"), 0);
-        assert!(PdfDoc::form_values(&state.doc).is_empty());
+        assert_eq!(PdfMarkup::of(&state.doc).page_rotation("source-1"), 0);
+        assert!(PdfMarkup::of(&state.doc).form_values.is_empty());
         assert!(
             app.status_note
                 .as_deref()
-                .is_some_and(|n| n.contains("not change")),
+                .is_some_and(|n| n.contains("view only")),
             "the refusal is explained"
         );
 
         // A commenter may reply to a thread but still not mark up the page.
         app.attach_framework(as_role(ui::permissions::Role::Commenter));
-        let thread = PdfDoc::list_comments(&state.doc)
+        let thread = PdfMarkup::of(&state.doc)
+            .list_comments()
             .first()
             .map(|c| c.id.clone())
             .expect("the sample has a thread");
-        let replies_before = PdfDoc::list_comments(&state.doc)[0].replies.len();
+        let replies_before = PdfMarkup::of(&state.doc).list_comments()[0].replies.len();
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
-            &crate::actions::add_reply_action(&thread, "commenter", "A reply"),
+            crate::actions::add_reply_action(&thread, "A reply"),
         );
         assert_eq!(
-            PdfDoc::list_comments(&state.doc)[0].replies.len(),
+            PdfMarkup::of(&state.doc).list_comments()[0].replies.len(),
             replies_before + 1,
             "a commenter's reply is added"
         );
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
-            &highlight("nope", "source-1", 50.0),
+            highlight("nope", "source-1", 50.0),
         );
         assert!(
             ids(&state.doc).iter().all(|(id, _)| id != "nope"),
@@ -395,52 +399,38 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
     {
         use ui::framework::testing::TestApp;
         let mut app = TestApp::<crate::PdfViewerShell>::new().expect("the reader");
-        let plan = PdfViewerAction::EnsurePagePlan {
-            source_page_count: 3,
-        };
-        for action in std::iter::once(plan).chain(crate::scenarios::sample_review()) {
-            app.invoke(ui::tilo_resource::Invoke::apply(&action).unwrap())
-                .expect("the owner reviews");
+        app.invoke(PdfMarkup::START_PAGE_PLAN.with(3))
+            .expect("the plan");
+        for edit in crate::scenarios::sample_review() {
+            app.invoke(Invoke::from(edit)).expect("the owner reviews");
         }
         let thread = crate::scenarios::NOTE_COMMENT;
-        app.call_on(
-            &format!("pdf.comment:{thread}"),
-            "reply",
-            serde_json::json!({ "value": "First" }),
-        )
-        .expect("the owner replies");
+        let item = ui::tilo_resource::items::item_resource_id::<PdfMarkup>(
+            "comments",
+            &ui::tilo_resource::Id::from_raw(thread),
+        );
+        app.call_on(&item, "reply", serde_json::json!({ "text": "First" }))
+            .expect("the owner replies");
         app.set_role(ui::permissions::Role::Commenter);
-        app.call_on(
-            &format!("pdf.comment:{thread}"),
-            "reply",
-            serde_json::json!({ "value": "Agreed" }),
-        )
-        .expect("a commenter replies");
+        app.call_on(&item, "reply", serde_json::json!({ "text": "Agreed" }))
+            .expect("a commenter replies");
         assert!(
             app.state()
                 .comments
                 .iter()
-                .any(|c| c.id == thread && c.replies.iter().any(|r| r.body == "Agreed"))
+                .any(|c| c.id == thread && c.replies.values().any(|r| r.text == "Agreed"))
         );
         assert!(
-            app.invoke(crate::actions::ADD_NOTE.with(("Mine".into(), 1)))
+            app.invoke(PdfMarkup::ADD_NOTE.with(("Mine".to_owned(), Some(1))))
                 .is_err(),
             "a commenter may not add a note to the page"
         );
-        // A typed edit needs what its value needs: a reply commenting, a
-        // highlight writing.
-        app.invoke(
-            ui::tilo_resource::Invoke::apply(&crate::actions::add_reply_action(
-                thread, "", "Typed",
-            ))
-            .unwrap(),
-        )
-        .expect("a commenter's typed reply");
+        // A typed edit needs what it changes: a reply commenting, a highlight
+        // writing.
+        app.invoke(crate::actions::add_reply_action(thread, "Typed"))
+            .expect("a commenter's typed reply");
         assert!(
-            app.invoke(
-                ui::tilo_resource::Invoke::apply(&highlight("typed", "source-1", 60.0)).unwrap()
-            )
-            .is_err(),
+            app.invoke(highlight("typed", "source-1", 60.0)).is_err(),
             "a commenter's typed highlight is refused"
         );
         assert!(app.state().annotations.iter().all(|a| a.id != "typed"));
@@ -472,14 +462,19 @@ fn exports_are_deterministic_and_carry_page_operations() {
         app.sync_viewport_frame();
 
         // The record pins the bytes it annotates.
-        let (pinned, len, _) = PdfDoc::source(&state.doc).expect("source pinned");
+        let pinned = PdfMarkup::of(&state.doc)
+            .pinned_source()
+            .expect("source pinned");
+        let (pinned, len) = (pinned.hash, pinned.len);
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(pinned, tilo_content::hash_bytes(&bytes));
         assert_eq!(len, bytes.len() as u64);
         assert!(
-            ui::record::blob_references(&state.doc)
-                .iter()
-                .any(|b| b.hash == pinned && b.relation == "source")
+            matches!(
+                PdfMarkup::of(&state.doc).source,
+                ui::tilo_resource::Bytes::Blob { len: stored, .. } if stored == len
+            ),
+            "the record references the bytes as a blob"
         );
 
         // Markup through the reader's own paths: an ink stroke and a note on the
@@ -517,7 +512,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
             .unwrap();
         app.activate_field(&mut Edits::lend(&mut state.doc), &colour);
         assert_eq!(
-            PdfDoc::form_values(&state.doc).get("colour"),
+            PdfMarkup::of(&state.doc).form_values.get("colour"),
             Some(&FormEntry::Choice("Green".into())),
             "a choice field steps to its next option"
         );
@@ -608,18 +603,18 @@ fn exports_are_deterministic_and_carry_page_operations() {
         app.author_annotation(&mut Edits::lend(&mut state.doc), &a);
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
-            &rotate_page_action("source-3", 90),
+            rotate_page_action("source-3", 90),
         );
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
-            &move_page_plan_action("source-3", None),
+            move_page_plan_action("source-3", None),
         );
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
-            &delete_page_plan_action("source-2"),
+            delete_page_plan_action("source-2"),
         );
         app.sync_settled(&mut state.doc, &state.root);
-        let stored = PdfDoc::list_annotations(&state.doc);
+        let stored = PdfMarkup::of(&state.doc).list_annotations();
         assert_eq!(stored.len(), 1);
         assert_eq!(
             stored[0].page, 1,

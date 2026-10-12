@@ -62,7 +62,6 @@ fn main() {
         height: probed.height,
         fps: probed.fps,
         path: clip.clone(),
-        hydration: video_editor::media::Hydration::Local,
         ..Default::default()
     });
     let tid = uuid::Uuid::new_v4();

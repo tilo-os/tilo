@@ -20,6 +20,17 @@ pub enum WorkspaceTaskStatus {
 }
 
 impl WorkspaceTaskStatus {
+    /// The status as task history records it.
+    pub const fn key(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::InProgress => "in-progress",
+            Self::Waiting => "waiting",
+            Self::Done => "done",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::Queued => "Queued",
@@ -83,11 +94,72 @@ pub struct WorkspaceAgentRequest {
     pub invocation: tilo_actions::InvocationId,
 }
 
+/// One event of a task's audit trail, as data: what was done to the task
+/// (a verb of [`TASK_KIND`] with its plain arguments), and what its actor
+/// wrote, when it wrote anything. Readers render the sentence.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceTaskAuditEvent {
     pub at: i64,
     pub actor: String,
-    pub summary: String,
+    pub what: tilo_actions::Did,
+    /// The actor's own words: an agent's outcome or progress, a reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// The resource kind task audit verbs are published on.
+pub const TASK_KIND: &str = "workspace-task";
+
+impl WorkspaceTaskAuditEvent {
+    /// `actor` did `action` (a task verb such as `create-task`) with the
+    /// plain `args`, at `at` (Unix seconds).
+    pub fn new(
+        at: i64,
+        actor: impl Into<String>,
+        action: &str,
+        args: impl IntoIterator<Item = (&'static str, tilo_actions::Scalar)>,
+    ) -> Self {
+        Self {
+            at,
+            actor: actor.into(),
+            what: tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new(
+                    crate::workspace::WORKSPACE_GOVERNANCE_APP_ID,
+                    TASK_KIND,
+                    action,
+                ),
+                args.into_iter()
+                    .map(|(name, value)| (name.to_owned(), value)),
+            ),
+            note: None,
+        }
+    }
+
+    /// With the actor's own words.
+    #[must_use]
+    pub fn noting(mut self, note: impl Into<String>) -> Self {
+        let note = note.into();
+        self.note = (!note.trim().is_empty()).then_some(note);
+        self
+    }
+
+    /// The verb the event records.
+    pub fn action(&self) -> &str {
+        match &self.what {
+            tilo_actions::Did::Verb(verb) => &verb.action.action,
+            _ => "",
+        }
+    }
+
+    /// The event as a history entry a reader renders.
+    pub fn entry(&self) -> tilo_actions::ActionContext {
+        tilo_actions::ActionContext::for_app(
+            crate::workspace::WORKSPACE_GOVERNANCE_APP_ID,
+            "Workspace",
+        )
+        .with_described(tilo_actions::Described::new(self.what.clone()))
+        .with_invoker(tilo_actions::ActionInvoker::actor(self.actor.clone()))
+    }
 }
 
 /// One person-authored revision to a task's current instructions.
@@ -261,9 +333,10 @@ pub struct WorkspaceEffectReceipt {
 
 impl WorkspaceEffectReceipt {
     /// The bounded public receipt of `invocation`'s terminal `status`: every
-    /// text is bounded and stripped of control characters, and the context
-    /// keeps only the receipt's own facets. Arbitrary application facets may
-    /// carry private argument summaries, so none enter this audit.
+    /// text is bounded and stripped of control characters, what was done
+    /// keeps none of its arguments, and the context keeps only the receipt's
+    /// own facets. Arbitrary application facets and arguments may carry
+    /// private values, so none enter this audit.
     #[must_use]
     pub fn redacted(
         invocation: tilo_actions::InvocationId,
@@ -272,12 +345,23 @@ impl WorkspaceEffectReceipt {
         status: tilo_actions::EffectReceiptStatus,
         completed_at: i64,
     ) -> Self {
-        let original_action = bounded_receipt_text(&context.action_label, 160);
-        context.action_label = if original_action.is_empty() {
-            status.label().to_string()
-        } else {
-            format!("{} · {original_action}", status.label())
-        };
+        if let Some(what) = &mut context.what {
+            what.forget_args();
+        }
+        Self::recorded(invocation, actor, context, status, completed_at)
+    }
+
+    /// [`Self::redacted`], keeping what was done with its arguments: for a
+    /// receipt whose arguments are the record itself, such as the grant a
+    /// person gave.
+    #[must_use]
+    pub fn recorded(
+        invocation: tilo_actions::InvocationId,
+        actor: &str,
+        mut context: tilo_actions::ActionContext,
+        status: tilo_actions::EffectReceiptStatus,
+        completed_at: i64,
+    ) -> Self {
         context.facets = vec![
             tilo_actions::ActionFacet::new("tilo.receipt", "effect"),
             tilo_actions::ActionFacet::new("tilo.invocation", invocation.0.to_string()),
@@ -291,8 +375,8 @@ impl WorkspaceEffectReceipt {
         }
     }
 
-    /// Whether this receipt is exactly what [`Self::redacted`] produces for
-    /// its own invocation, apart from the status label it already carries.
+    /// Whether this receipt is exactly what [`Self::recorded`] produces for
+    /// its own invocation.
     #[must_use]
     pub fn is_redacted(&self) -> bool {
         let facets = &self.context.facets;
@@ -324,7 +408,10 @@ fn bounded_receipt_text(value: &str, max: usize) -> String {
 fn bounded_receipt_context(
     mut context: tilo_actions::ActionContext,
 ) -> tilo_actions::ActionContext {
-    context.action_label = bounded_receipt_text(&context.action_label, 200);
+    if let Some(item) = &mut context.item {
+        item.id = bounded_receipt_text(&item.id, 512);
+        item.label = bounded_receipt_text(&item.label, 200);
+    }
     if let Some(app) = &mut context.app {
         app.id = bounded_receipt_text(&app.id, 160);
         app.label = bounded_receipt_text(&app.label, 160);
@@ -387,5 +474,46 @@ impl WorkspaceTask {
             }
         }
         context
+    }
+}
+
+#[cfg(test)]
+mod effect_receipt_redaction_tests {
+    #[test]
+    fn only_broker_owned_terminal_facets_and_no_arguments_enter_public_receipts() {
+        let invocation = tilo_actions::InvocationId::new();
+        let context = tilo_actions::ActionContext {
+            facets: vec![
+                tilo_actions::ActionFacet::new("private.argument", "secret text"),
+                tilo_actions::ActionFacet::new("tilo.invocation", "forged"),
+                tilo_actions::ActionFacet::new("tilo.receipt", "forged"),
+            ],
+            what: Some(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new("so.tilo.notes", "note", "append"),
+                [(
+                    "text".to_owned(),
+                    tilo_actions::Scalar::text("secret words"),
+                )],
+            )),
+            ..Default::default()
+        };
+        let receipt = super::WorkspaceEffectReceipt::redacted(
+            invocation,
+            "person",
+            context,
+            tilo_actions::EffectReceiptStatus::Succeeded,
+            0,
+        );
+        assert_eq!(
+            receipt.context.facets,
+            vec![
+                tilo_actions::ActionFacet::new("tilo.receipt", "effect"),
+                tilo_actions::ActionFacet::new("tilo.invocation", invocation.0.to_string()),
+            ]
+        );
+        let json = serde_json::to_string(&receipt).unwrap();
+        assert!(!json.contains("secret text"));
+        assert!(!json.contains("secret words"));
+        assert!(receipt.is_redacted());
     }
 }

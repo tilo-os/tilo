@@ -9,7 +9,11 @@ pub(super) struct CpuCanvas {
     pixels: Vec<u8>,
     size: (u32, u32),
     valid: bool,
+    /// What the last frame rasterized.
     regions: Vec<Region>,
+    /// What the last frame changed and [`Self::upload`] sends: what it
+    /// rasterized, and where its scroll copies landed.
+    uploads: Vec<Region>,
 }
 
 impl CpuCanvas {
@@ -23,6 +27,7 @@ impl CpuCanvas {
             size: (0, 0),
             valid: false,
             regions: Vec::new(),
+            uploads: Vec::new(),
         }
     }
 
@@ -51,7 +56,18 @@ impl CpuCanvas {
             self.pixels.resize(length, 0);
             self.size = size;
         }
-        self.regions = if frame.full_redraw || !self.valid {
+        // What a scroll keeps on screen moves before the damage around it
+        // is rasterized; a copy that cannot be made repaints everything.
+        let copied = !frame.full_redraw
+            && self.valid
+            && crate::scroll_copy::copy_pixels(
+                &mut self.pixels,
+                (frame.width, frame.height, stride as usize),
+                frame.scroll_copies,
+            );
+        let whole =
+            frame.full_redraw || !self.valid || (!copied && !frame.scroll_copies.is_empty());
+        self.regions = if whole {
             vec![Region::new(0, 0, frame.width, frame.height)]
         } else {
             bounded_present_damage(frame.width, frame.height, frame.damage_regions)
@@ -72,6 +88,14 @@ impl CpuCanvas {
             tilo_cpu_raster::color::AlphaColor::new(frame.base_color.components),
         );
         self.valid = true;
+        self.uploads.clone_from(&self.regions);
+        if !whole {
+            self.uploads
+                .extend(frame.scroll_copies.iter().filter_map(|copy| {
+                    let (x, y) = copy.destination(frame.width, frame.height)?;
+                    Some(Region::new(x, y, copy.width, copy.height))
+                }));
+        }
         Ok(self
             .regions
             .iter()
@@ -81,7 +105,7 @@ impl CpuCanvas {
 
     pub(super) fn upload(&self, queue: &vello::wgpu::Queue, texture: &vello::wgpu::Texture) {
         let stride = self.size.0.saturating_mul(4);
-        for region in &self.regions {
+        for region in &self.uploads {
             let offset = u64::from(region.y) * u64::from(stride) + u64::from(region.x) * 4;
             let Some(bytes) = usize::try_from(offset)
                 .ok()
@@ -145,6 +169,7 @@ mod tests {
                 height: 16,
                 base_color: Color::TRANSPARENT,
                 damage_regions: damage,
+                scroll_copies: &[],
                 full_redraw: full,
                 backdrop: &crate::backdrop::BackdropFrame::default(),
             })

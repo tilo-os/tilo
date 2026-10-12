@@ -11,7 +11,7 @@ fn headless_drain_keeps_independent_document_and_disposable_view_controls() {
         for failed_first in [false, true] {
             for view in [false, true] {
                 let (a, b, root) = independent_batch_fixture(case, failed_first, view);
-                let mut driver = Driver::new(State::new(), Box::new(root), (700, 400));
+                let mut driver = FrameHarness::new(State::new(), Box::new(root), (700, 400));
                 driver
                     .action_registry_mut()
                     .register::<SetValue>("controlled.legacy");

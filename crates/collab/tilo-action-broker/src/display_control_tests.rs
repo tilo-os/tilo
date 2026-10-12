@@ -216,7 +216,7 @@ async fn display_rpc_preserves_original_published_caller_and_refuses_missing_or_
             )
             .await;
             let mut contract = tilo_actions::ActionContract::view();
-            contract.permission = tilo_actions::PermissionRequirement::Admin;
+            contract.kind = tilo_actions::ActionKind::Outside;
             contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
             contract.result = tilo_actions::ResultSpec::Job;
             rig.worker
@@ -293,16 +293,16 @@ async fn display_rpc_preserves_original_published_caller_and_refuses_missing_or_
             );
             // A real published Agent invocation retains its original identity through
             // this Settings worker; it never borrows the worker's person certificate.
-            env.membership.write().workspaces[0].grant_capability(CapOverride::membership(
-                Subject::agent("display-agent"),
-                env.route.cluster_id.clone(),
-                Verb::Admin,
-            ));
-            env.membership.write().workspaces[0].grant_capability(CapOverride::grant(
-                Subject::agent("display-agent"),
-                collab_types::Scope::App(env.route.app_id.clone()),
-                Verb::Admin,
-            ));
+            {
+                use crate::test_support::{Grants as _, KindSet, Subject};
+                let workspace = &mut env.membership.write().workspaces[0];
+                workspace.admit_agent("display-agent", KindSet::ALL);
+                workspace.allow_app(
+                    Subject::agent("display-agent"),
+                    &env.route.app_id,
+                    KindSet::ALL,
+                );
+            }
             let agent = rig.caller(&env, 906, Some("display-agent")).await;
             let (_, receipt) = agent
                 .handle
@@ -467,7 +467,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
             )
             .await;
             let mut contract = tilo_actions::ActionContract::view();
-            contract.permission = tilo_actions::PermissionRequirement::Admin;
+            contract.kind = tilo_actions::ActionKind::Outside;
             contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
             contract.result = tilo_actions::ResultSpec::Job;
             rig.worker

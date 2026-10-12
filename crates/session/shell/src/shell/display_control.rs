@@ -2,13 +2,15 @@
 //! KMS stays in the compositor; this service writes its existing bounded
 //! preview transaction through the session-owned settings source.
 use super::state::{RoomId, WeakWorkspaceTreeHandle};
-use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_actor, role_caps};
 use settings_store::{
     SettingsSource,
     display_control::{DisplayCommand, MAX_DISPLAY_CONTROL_BYTES},
 };
 use std::sync::Arc;
 use tilo_action_broker::services::{DisplayControlContext, DisplayControlServices};
+
+/// The app whose outside effects display changes are.
+pub(crate) const SETTINGS_APP_ID: &str = "so.tilo.settings";
 
 pub(crate) struct NativeDisplayControl {
     pub tree: WeakWorkspaceTreeHandle,
@@ -37,21 +39,15 @@ fn authorize(
     if view.device().user_public_key != root_key || view.device().device_public_key != device {
         return Err("The Settings worker is not on this accepted owner device.".into());
     }
-    let now = std::time::SystemTime::now();
-    let (role, capabilities, person) = view.peer().permissions(device, now)?;
-    let actor = Actor::person(Some(role), person).in_room(room);
-    let seconds = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "The owner policy clock is unavailable.")?
-        .as_secs();
-    if decide_actor(
-        role_caps(role).is_some_and(|verb| verb.implies(Verb::Admin)),
-        Verb::Admin,
-        &actor,
-        &ResourceRef::App("so.tilo.settings".into()),
-        &capabilities,
-        Some(seconds),
-    ) != CapDecision::Allow
+    let member = view
+        .peer()
+        .permissions(device, std::time::SystemTime::now())?;
+    if member.policy.room != room
+        || !member.allows(
+            &member.policy.node().app(SETTINGS_APP_ID),
+            tilo_action_policy::ActionKind::Outside,
+            std::time::SystemTime::now(),
+        )
     {
         return Err("The current owner policy does not permit display changes.".into());
     }
@@ -125,7 +121,7 @@ mod tests {
                 let role = view
                     .peer()
                     .permissions(device, std::time::SystemTime::now())?
-                    .0;
+                    .role;
                 assert_eq!(role, collab_types::Role::Editor);
                 assert!(
                     authorize(view, root_key, device, &room).is_err(),

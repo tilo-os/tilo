@@ -106,7 +106,7 @@ fn build_toolbar(
     queue: &Queue,
     problems: usize,
     shown: bool,
-    actions: Option<&ui::framework::Actions<crate::resource::TypstEditor>>,
+    actions: Option<&ui::framework::Actions<crate::resource::Workspace>>,
 ) -> Toolbar {
     use crate::actions::TypstEffect;
     let label = problems_label(problems);
@@ -136,7 +136,7 @@ fn build_toolbar(
         )
         .push_button("Open", command(queue, Command::Open))
         .with_optional_action(
-            actions.and_then(|actions| actions.effect(&TypstEffect::Open { path: None })),
+            actions.and_then(|actions| actions.effect(&TypstEffect::OpenFile { path: None })),
         )
         .push_button("Export PDF", command(queue, Command::ExportPdf))
         .with_optional_action(
@@ -195,7 +195,7 @@ impl Chrome {
     /// Bind the actual toolbar commands to the resource's declared operations.
     pub(crate) fn attach_actions(
         &mut self,
-        actions: &ui::framework::Actions<crate::resource::TypstEditor>,
+        actions: &ui::framework::Actions<crate::resource::Workspace>,
     ) {
         self.toolbar = build_toolbar(
             &self.queue,

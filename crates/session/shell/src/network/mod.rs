@@ -1,4 +1,5 @@
 pub mod actor;
+pub(crate) mod agent_questions;
 pub mod behaviour;
 pub mod decoder;
 pub mod encoder;

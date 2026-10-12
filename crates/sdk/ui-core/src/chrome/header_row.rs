@@ -27,6 +27,8 @@
 //! let body = face.body();
 //! ```
 
+use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 
@@ -74,7 +76,7 @@ impl HeaderRowMetrics {
     #[must_use]
     pub fn leading_chip(&self, row: Rect, index: usize) -> Rect {
         let y = row.y0 + (row.height() - self.chip) / 2.0;
-        let x = row.x0 + self.inset + steps(index) * (self.chip + self.gap);
+        let x = row.x0 + self.inset + f64_of_usize(index) * (self.chip + self.gap);
         Rect::new(x, y, x + self.chip, y + self.chip)
     }
 
@@ -83,7 +85,7 @@ impl HeaderRowMetrics {
     #[must_use]
     pub fn trailing_chip(&self, row: Rect, index: usize) -> Rect {
         let y = row.y0 + (row.height() - self.chip) / 2.0;
-        let x1 = row.x1 - self.inset - steps(index) * (self.chip + self.gap);
+        let x1 = row.x1 - self.inset - f64_of_usize(index) * (self.chip + self.gap);
         Rect::new(x1 - self.chip, y, x1, y + self.chip)
     }
 }
@@ -92,10 +94,6 @@ impl Default for HeaderRowMetrics {
     fn default() -> Self {
         Self::resolve(&Theme::dark())
     }
-}
-
-fn steps(index: usize) -> f64 {
-    f64::from(u32::try_from(index).unwrap_or(u32::MAX))
 }
 
 /// The geometry of one header row. See the module docs.
@@ -244,14 +242,14 @@ impl HeaderRowFace {
     fn refresh(&mut self) {
         let m = self.metrics;
         let x0 = if self.leading > 0 {
-            self.row.x0 + m.inset + steps(self.leading) * (m.chip + m.gap)
+            self.row.x0 + m.inset + f64_of_usize(self.leading) * (m.chip + m.gap)
         } else if self.gutter_title {
             self.row.x0 + m.gutter
         } else {
             self.row.x0 + m.inset
         };
         let x1 = if self.trailing_count > 0 {
-            self.row.x1 - m.inset - steps(self.trailing_count) * (m.chip + m.gap) + m.gap
+            self.row.x1 - m.inset - f64_of_usize(self.trailing_count) * (m.chip + m.gap) + m.gap
         } else {
             self.row.x1 - m.inset
         };
@@ -383,7 +381,7 @@ pub(crate) fn paint_title_in(
     let pill_room = pill.map_or(0.0, |(_, (w, _))| w + related);
     let style = title_style(theme);
     let room = (band.width() - pill_room).max(0.0);
-    let shown = text.elide_to_width_style(title, to_f32(room), &style);
+    let shown = text.elide_to_width_style(title, f32_of_f64(room), &style);
     let (w, line_h) = text.measure_style(&shown, None, &style);
     let y = crate::text_metrics::centered_text_top(band.y0, band.height(), f64::from(line_h));
     text.draw_style(
@@ -428,14 +426,6 @@ pub(crate) fn paint_title_in(
         None,
         &style,
     );
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "on-screen layout extents fit f32 exactly at every UI scale"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
 }
 
 /// Paint the window's History control in `rect`: the History glyph as a

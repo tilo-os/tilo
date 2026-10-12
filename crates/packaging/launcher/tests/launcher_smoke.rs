@@ -1015,7 +1015,7 @@ fn capability_files_on_disk_become_binds_or_nothing() {
     // exact pair `run_with` uses: `resolve_capabilities` reads it,
     // `build_bwrap_argv` renders the result.
     {
-        use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+        use collab_types::caps::{Access, CapOverride, Scope, Subject};
 
         let dir = tempfile::tempdir().unwrap();
         let caps_file = dir.path().join("caps.json");
@@ -1023,17 +1023,25 @@ fn capability_files_on_disk_become_binds_or_nothing() {
             CapOverride::grant(
                 Subject::app("com.example.hello"),
                 Scope::FsPath("/var/workspace/books".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
             // Addressed to a different app: must not survive the crossing,
             // even though it sits in the same file.
             CapOverride::grant(
                 Subject::app("com.example.other"),
                 Scope::FsPath("/var/workspace/secrets".to_string()),
-                Verb::Write,
+                Access::Write,
             ),
         ];
-        std::fs::write(&caps_file, serde_json::to_vec(&caps).unwrap()).unwrap();
+        std::fs::write(
+            &caps_file,
+            serde_json::to_vec(&collab_types::caps::LaunchGrants {
+                authors: Vec::new(),
+                sandbox: caps,
+            })
+            .unwrap(),
+        )
+        .unwrap();
 
         let m = hello_manifest(dir.path(), BTreeMap::new());
         let opts = RunOptions {

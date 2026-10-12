@@ -615,6 +615,27 @@ impl HostContext {
         // The window's code finds it wherever it runs: an action applying,
         // an action's arguments being built.
         tilo_resource::content::register(&self.wake_scope.handle(), store.clone());
+        // The app's surface is content too: whoever decides its changes
+        // reads it by the hash its ops name.
+        if let Some(bytes) = crate::app_surface::bytes_of(&self.app_id)
+            && let Err(error) = store.put(bytes)
+        {
+            tracing::warn!(%error, "the app's surface could not be kept");
+        }
+        // The large parts of the actions this window records, and of those
+        // it replays, live here too.
+        let keep = store.clone();
+        let read = store.clone();
+        tilo_actions::keep_content_in(
+            move |content: tilo_actions::ContentParts| {
+                for (_, bytes) in content {
+                    if let Err(error) = keep.put(&bytes) {
+                        tracing::warn!(%error, "an action's content could not be kept");
+                    }
+                }
+            },
+            move |hash| read.read(hash),
+        );
         self.content = Some(store);
     }
     /// The content store the host lent, if any.
@@ -777,6 +798,20 @@ impl HostContext {
     /// The person's own records of this app, when the host keeps them.
     pub fn person_records(&self) -> Option<&crate::record::person::PersonRecords> {
         self.person.as_ref()
+    }
+    /// Bring the record up to the storage version its app reads, before it
+    /// is read: `migrate` makes at most one deterministic housekeeping change
+    /// (two devices migrating the same document make the same one) and
+    /// answers whether it changed anything.
+    /// # Errors
+    /// The record is not open here, or the migration failed.
+    pub fn migrate_record(
+        &self,
+        migrate: impl FnOnce(&mut AutoCommit) -> Result<bool, String>,
+    ) -> Result<bool, String> {
+        self.records
+            .with(&self.record.id, migrate)
+            .ok_or_else(|| "the record is not open".to_owned())?
     }
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors
@@ -1288,7 +1323,8 @@ impl AppComponent {
 
     /// Sample and deliver only after the caller has released its document loan.
     /// The same checked callback lifetime owns both the sample and the hook.
-    pub(crate) fn project_record_save_status(&mut self) {
+    /// Returns whether the delivered status changed.
+    pub(crate) fn project_record_save_status(&mut self) -> bool {
         let captured = self.callback_binding();
         let sampled = self
             .with_live_component(&captured, |binding, root, _registry| {
@@ -1304,7 +1340,7 @@ impl AppComponent {
             .ok()
             .flatten();
         let Some(status) = sampled else {
-            return;
+            return false;
         };
         let changed = self
             .record_save
@@ -1312,11 +1348,14 @@ impl AppComponent {
             .is_some_and(|(previous, _)| *previous != status);
         self.record_save = Some((status, crate::time::now()));
         if changed {
-            // The root synced before it was handed the new state; a frame of
-            // its own, with a sync of its own, shows it.
+            // The caller syncs the root again with the new state; a frame
+            // shows it. An `App` asks for that frame through
+            // `take_save_status_presentation`; a host that does not ask
+            // presents it as a structure change.
             self.save_status_changed = true;
             self.context.wake_handle().wake();
         }
+        changed
     }
 
     /// When the window must sync again without input: shortly after the

@@ -34,16 +34,6 @@ impl Widget for TwoKids {
             .collect();
         taffy.widget_node(taffy::Style::default(), &kids, node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         self.kids.iter().map(Box::as_ref).collect()
     }
@@ -55,9 +45,6 @@ impl Widget for TwoKids {
     }
     fn name(&self) -> &'static str {
         "two-kids"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 
@@ -103,16 +90,6 @@ impl Widget for ModalHost {
         kids.push(self.modal.build_layout(taffy, theme, node_map));
         taffy.widget_node(taffy::Style::default(), &kids, node_map, self)
     }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         let mut v: Vec<&dyn Widget> = self.outer.iter().map(Box::as_ref).collect();
         v.push(&self.modal);
@@ -129,9 +106,6 @@ impl Widget for ModalHost {
     }
     fn name(&self) -> &'static str {
         "modal-host"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 

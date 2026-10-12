@@ -7,6 +7,7 @@
 //! when it next needs a frame.
 
 use ui::a11y::AccessNode;
+use ui::num::f32_of_f64;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
@@ -60,16 +61,6 @@ impl StackBounds {
         self.min_y = self.min_y.min(y0);
         self.max_y = self.max_y.max(y1);
     }
-}
-
-/// Text-wrap widths are plain float pixel math for the renderer's `f32` wrap
-/// width; the precision this loses is imperceptible at UI scale.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "device-pixel wrap width; f32 is already the renderer's own unit"
-)]
-fn f64_to_f32_lossy(v: f64) -> f32 {
-    v as f32
 }
 
 #[derive(Clone, Debug)]
@@ -248,7 +239,7 @@ impl NotificationStack {
         ui::surface::panel(ctx.scene, ctx.transform, card_rect, radius, ctx.theme);
         let label = lock_suppressed_label(count);
         // Centre on the measured line, not the font size (HIG §7a).
-        let max_width = f64_to_f32_lossy(width - CARD_PADDING_X * 2.0);
+        let max_width = f32_of_f64(width - CARD_PADDING_X * 2.0);
         let (_, label_h) = ctx
             .text_renderer
             .measure_style(&label, Some(max_width), &title_style);
@@ -292,7 +283,7 @@ impl NotificationStack {
             status.to_string()
         };
         let text_x = x0 + CARD_PADDING_X + DOT_RADIUS * 2.0 + DOT_GAP;
-        let max_width = f64_to_f32_lossy(width - (text_x - x0) - CARD_PADDING_X);
+        let max_width = f32_of_f64(width - (text_x - x0) - CARD_PADDING_X);
         let (_, label_h) = ctx
             .text_renderer
             .measure_style(&label, Some(max_width), &body_style);

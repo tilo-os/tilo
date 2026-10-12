@@ -1,44 +1,26 @@
-//! Camera's exported **actions** and the **resource tree** it publishes to Ctrl+K.
+//! What Camera offers beyond its record's verbs: its effects, and the live
+//! rows the surface publishes.
 //!
-//! The camera's *pixels* are verified content-store bytes with an optional local file
-//! projection — a shutter press writes a PNG/JPEG, a recording writes a clip
-//! — and the *device I/O* around them
-//! (opening a lens, decoding a QR out of a frame, the live viewfinder) is
-//! external, not collaborative. What lives in the shared Automerge document
-//! (see [`crate::doc`]) is the *metadata*: portable capture registrations
-//! and scan history. Those durable records are [`CameraAction`]s: small serializable values that
-//! deterministically mutate the CRDT and therefore replicate, replay and undo
-//! for free.
+//! The camera's *pixels* are verified content-store bytes with an optional
+//! local file projection, and the *device I/O* around them (opening a lens,
+//! decoding a QR out of a frame, the live viewfinder) is not collaborative.
+//! The record ([`crate::record::Record`]) holds the portable metadata: the
+//! recent capture handoff and the scan history.
 //!
-//! ## What is *not* an action
-//!
-//! Capturing a photo/video (the frame write is device I/O), scanning codes
-//! and documents, switching screens, mode and lens, and changing the capture
-//! preferences (settings of the person and of this device, never document
-//! state) are the [`CameraEffect`] vocabulary. Media-library management is owned by Photos or Video Player.
-//! The one recent handoff, zoom, and an open chooser are presentation-only.
-//!
-//! ## Determinism contract
-//!
-//! Variants carry everything [`Action::apply`] needs (the item id, the scanned
-//! payload, and a timestamp minted at authoring time); `apply` never touches
-//! the RNG or the wall-clock. A malformed payload is an explicit
-//! [`ActionError::Refused`], so the invoker never mistakes a rejected durable
-//! mutation for success.
+//! Capturing a photo or video, scanning codes and documents, switching
+//! screens, mode and lens, and changing the capture preferences (settings of
+//! the person and of this device, never record state) are the
+//! [`CameraEffect`] vocabulary. Media-library management is owned by Photos
+//! or Video Player. Zoom and an open chooser are presentation-only.
 
-use automerge::ROOT;
-use serde::{Deserialize, Serialize};
-
-use tilo_actions::{Action, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource};
 use ui::framework::LiveRow;
+use ui::tilo_actions::ActionSpec;
 // `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource::{self, Effect};
 
-use crate::doc;
 use crate::model::{CaptureKind, CaptureMode, Facing, Settings};
+use crate::record::SharedCapture;
 
-/// Registry `type_id` for every Camera action.
-pub const CAMERA_ACTION_TYPE: &str = "camera.action";
 pub use ui::tilo_actions::remote::ApplicationLaunch;
 /// Device discovery is external and potentially hostile. Publishing a small,
 /// deterministic prefix keeps resource/search materialization bounded.
@@ -192,96 +174,6 @@ pub enum CameraEffect {
     RemovePage,
 }
 
-/// Every collaborative operation Camera exports on its shared capture/scan
-/// metadata. The pixels and the decode are external; these are the doc writes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CameraAction {
-    /// Atomically publish a bounded capture metadata row pointing only at
-    /// verified content-store bytes. This is the peer-replayable capture boundary.
-    RegisterCapture {
-        id: String,
-        media_id: String,
-        kind: CaptureKind,
-        ts: i64,
-        w: u32,
-        h: u32,
-        dur_ms: i64,
-        label: String,
-        facing: Facing,
-    },
-    /// Record a decoded code into the shared scan history. The QR/barcode
-    /// decode is device I/O (external); this metadata row-insert is the
-    /// replayable action. `ts` is minted at authoring time and carried here so
-    /// `apply` stays pure; the insert deduplicates and caps deterministically
-    /// against the replay base.
-    RecordScan { raw: String, ts: i64 },
-}
-
-impl Action for CameraAction {
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        match self {
-            CameraAction::RegisterCapture {
-                id,
-                media_id,
-                kind,
-                ts,
-                w,
-                h,
-                dur_ms,
-                label,
-                facing,
-            } => doc::register_recent_capture(
-                doc,
-                &ROOT,
-                &doc::SharedCapture {
-                    id: id.clone(),
-                    media_id: media_id.clone(),
-                    kind: *kind,
-                    ts: *ts,
-                    w: *w,
-                    h: *h,
-                    dur_ms: *dur_ms,
-                    label: label.clone(),
-                    facing: *facing,
-                },
-            )
-            .map_err(ActionError::Refused)?,
-            CameraAction::RecordScan { raw, ts } => {
-                doc::record_scan(doc, &ROOT, raw, *ts).map_err(ActionError::Refused)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn locus(&self) -> ExecutionLocus {
-        ExecutionLocus::ClientLocal
-    }
-}
-
-/// Encode any [`CameraAction`] into the wire form the palette and the on-screen
-/// affordances both dispatch. The single point that turns a Camera action into
-/// a replayable envelope.
-///
-/// # Errors
-///
-/// Returns an error if `action` cannot be serialized, which does not happen
-/// for the plain string/bool/i64 fields [`CameraAction`] carries today.
-pub fn encode(action: &CameraAction) -> Result<EncodedAction, ActionError> {
-    EncodedAction::encode(CAMERA_ACTION_TYPE, action)
-}
-
-// ===========================================================================
-// Action builders — the single source of truth shared by the on-screen
-// affordances (see `crate::app`) and the Ctrl+K resource tree below.
-// ===========================================================================
-
-pub fn record_scan_action(raw: &str, ts: i64) -> CameraAction {
-    CameraAction::RecordScan {
-        raw: raw.to_string(),
-        ts,
-    }
-}
-
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -398,13 +290,15 @@ pub(crate) fn capture_resource_id(it: &CaptureItem) -> String {
     )
 }
 
-pub(crate) fn capture_resource(it: &CaptureItem) -> Resource {
+/// The recent capture, offering to open its verified bytes in Photos or
+/// Video Player.
+pub(crate) fn recent_row(it: &CaptureItem) -> LiveRow {
     let kind = if it.is_video {
         "camera.video"
     } else {
         "camera.photo"
     };
-    let mut child = Resource::new(capture_resource_id(it), kind, item_label(it));
+    let mut row = LiveRow::new(capture_resource_id(it), kind, item_label(it));
     if let Some(content_hash) = it
         .media_id
         .as_deref()
@@ -418,37 +312,18 @@ pub(crate) fn capture_resource(it: &CaptureItem) -> Resource {
             &label,
             "Open the verified portable capture in its owning app",
         );
-        child = child.with_action(spec);
+        row = row.operation(spec);
     }
-    child
+    row
 }
 
-pub(crate) fn capture_item_from_shared(shared: &doc::SharedCapture) -> CaptureItem {
+pub(crate) fn capture_item_from_shared(shared: &SharedCapture) -> CaptureItem {
     CaptureItem {
         id: shared.id.clone(),
         label: shared.label.clone(),
         is_video: matches!(shared.kind, CaptureKind::Video),
         media_id: Some(shared.media_id.clone()).filter(|id| !id.is_empty()),
     }
-}
-
-/// Document-derived children: the recent handoff and scan history rows.
-pub(crate) fn publish_document_children(
-    recent: Option<&CaptureItem>,
-    scans: &[crate::model::ScanEntry],
-) -> Vec<Resource> {
-    let mut children = Vec::new();
-    if let Some(it) = recent {
-        children.push(capture_resource(it));
-    }
-    for scan in scans.iter().take(32) {
-        children.push(Resource::new(
-            format!("camera.scan:{}", scan.ts),
-            "camera.scan",
-            scan.raw.clone(),
-        ));
-    }
-    children
 }
 
 /// The row of the capture pipeline published by the surface.
@@ -585,46 +460,39 @@ fn document_row(ctx: &CameraResourceCtx) -> LiveRow {
     )
 }
 
-/// What the surface publishes beside the document: the capture pipeline
-/// with its cameras, the code scanner and the document scanner, each with
-/// the effects it offers now. Mode, lens and the capture preferences are
-/// effects on the resource.
+/// What the surface publishes beside the record's verbs: the capture
+/// pipeline with its cameras, the code scanner and the document scanner,
+/// each with the effects it offers now, and the recent capture with its
+/// handoff to the app that owns it. Mode, lens and the capture preferences
+/// are effects on the resource.
 pub(crate) fn live_rows(ctx: &CameraResourceCtx) -> Vec<LiveRow> {
-    vec![capture_row(ctx), scanner_row(ctx), document_row(ctx)]
+    let recent = ctx.recent.as_ref().map(recent_row);
+    [capture_row(ctx), scanner_row(ctx), document_row(ctx)]
+        .into_iter()
+        .chain(recent)
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::CameraApp;
-    use automerge::AutoCommit;
-    use tilo_actions::ActionInput;
-    use tilo_actions::ActionRegistry;
-    use ui::tilo_actions::OperationKind;
-    use ui::widget::Widget;
+    use crate::record::Record;
+    use ui::tilo_actions::{ActionInput, OperationKind, Resource};
 
-    fn registry() -> ActionRegistry {
-        ActionRegistry::with(<crate::resource::Camera as ui::tilo_resource::Resource>::register)
-    }
-
-    /// A hermetic Camera app synced with a record holding one recent capture.
-    fn seeded() -> (CameraApp, AutoCommit) {
-        let mut app = CameraApp::sample();
-        let mut doc = AutoCommit::new();
-        crate::resource::sample_capture().apply(&mut doc).unwrap();
-        app.sync(&doc, &ROOT);
-        app.present_record(
-            &<crate::resource::Camera as ui::tilo_resource::Resource>::read(&doc).unwrap(),
-        );
-        (app, doc)
+    /// A record holding the sample recent capture.
+    fn seeded() -> Record {
+        let mut record = ui::tilo_resource::Replica::<Record>::new();
+        record
+            .apply(Record::REGISTER_CAPTURE.with(crate::resource::sample_capture()))
+            .unwrap();
+        record.state().unwrap()
     }
 
     /// The resource `state` publishes, with the live rows of `ctx` beside it.
-    fn tree(ctx: &CameraResourceCtx, state: &crate::resource::CameraState) -> Vec<Resource> {
-        let mut resources = vec![ui::tilo_resource::publish::<crate::resource::Camera>(
-            crate::resource::CAMERA_RESOURCE_ID,
-            "Camera",
-            state,
+    fn tree(ctx: &CameraResourceCtx, state: &Record) -> Vec<Resource> {
+        let mut resources = vec![ui::tilo_resource::publish::<Record>(
+            "camera", "Camera", state,
         )];
         resources.extend(live_rows(ctx).into_iter().map(LiveRow::into_resource));
         resources
@@ -632,25 +500,7 @@ mod tests {
 
     /// The tree for `ctx` alone: its rows and recent capture.
     fn provide_resources(ctx: &CameraResourceCtx) -> Vec<Resource> {
-        let state = crate::resource::CameraState {
-            scans: Vec::new(),
-            recent: ctx.recent.as_ref().map(|item| doc::SharedCapture {
-                id: item.id.clone(),
-                media_id: item.media_id.clone().unwrap_or_default(),
-                kind: if item.is_video {
-                    CaptureKind::Video
-                } else {
-                    CaptureKind::Photo
-                },
-                ts: 0,
-                w: 0,
-                h: 0,
-                dur_ms: 0,
-                label: item.label.clone(),
-                facing: ctx.facing,
-            }),
-        };
-        tree(ctx, &state)
+        tree(ctx, &Record::default())
     }
 
     fn find_resource(resource: &Resource, id: &str) -> Option<Resource> {
@@ -663,48 +513,11 @@ mod tests {
             .find_map(|child| find_resource(child, id))
     }
 
-    /// The resource a sample Camera publishes once it has synced `doc`.
-    fn published(doc: &AutoCommit) -> Vec<Resource> {
+    /// What a sample Camera publishes once it shows `state`.
+    fn published(state: &Record) -> Vec<Resource> {
         let mut app = CameraApp::sample();
-        app.sync(&doc.clone(), &ROOT);
-        let state = <crate::resource::Camera as ui::tilo_resource::Resource>::read(doc).unwrap();
-        app.present_record(&state);
-        tree(&app.camera_resource_ctx(), &state)
-    }
-
-    fn encoded(action: &CameraAction) -> EncodedAction {
-        encode(action).unwrap()
-    }
-
-    ui::action_contract_tests! {
-        seed: seeded().1,
-        registry: registry(),
-        resources: |doc| published(doc),
-        palette: [
-            "Open Photos",
-        ],
-        replay: [
-            // The scan-history row-insert: dedup + cap run deterministically
-            // against the shared base on each replica.
-            record_scan => |_| encoded(&record_scan_action("https://example.test/hello", 1234)),
-            register_capture => |_| encoded(&CameraAction::RegisterCapture {
-                id: "IMG_peer.jpg".into(),
-                media_id: crate::media::store(
-                    &tilo_content::ContentStore::memory(),
-                    b"portable camera bytes",
-                ).unwrap(),
-                kind: crate::model::CaptureKind::Photo,
-                ts: 42,
-                w: 64,
-                h: 48,
-                dur_ms: 0,
-                label: "Peer photo".into(),
-                facing: Facing::Back,
-            }),
-        ],
-        undo: [
-            record_scan => |_| encoded(&record_scan_action("https://example.test/undo", 99)),
-        ],
+        app.present_record(state);
+        tree(&app.camera_resource_ctx(), state)
     }
 
     #[test]
@@ -717,9 +530,7 @@ mod tests {
         // Camera publishes capture/scanner/settings operations plus at most one
         // contextual handoff, never a media library management surface.
         {
-            let (app, doc) = seeded();
-            let resources = published(&doc);
-            let _ = app;
+            let resources = published(&seeded());
             assert!(
                 resources.len() >= 3,
                 "capture, scanner, document scanner, settings, and Camera discovery"
@@ -746,11 +557,13 @@ mod tests {
             assert_eq!(browse_payload["app_id"].as_str(), Some("so.tilo.photos"));
             assert!(browse_payload.get("content_hash").is_none());
             assert!(captures.children.len() <= 1);
-            let camera = resources
-                .iter()
-                .find(|resource| resource.id.as_str() == "camera")
-                .expect("camera resource");
-            for resource in camera.children.iter().filter(|resource| {
+            assert!(
+                resources
+                    .iter()
+                    .any(|resource| resource.kind.as_str() == "camera.photo"),
+                "the recent capture is offered"
+            );
+            for resource in resources.iter().filter(|resource| {
                 matches!(resource.kind.as_str(), "camera.photo" | "camera.video")
             }) {
                 let action = resource
@@ -823,10 +636,8 @@ mod tests {
             };
             let page = provide_resources(&ctx);
             assert_eq!(
-                page[0]
-                    .children
-                    .iter()
-                    .filter(|child| matches!(child.kind.as_str(), "camera.photo" | "camera.video"))
+                page.iter()
+                    .filter(|row| matches!(row.kind.as_str(), "camera.photo" | "camera.video"))
                     .count(),
                 1
             );
@@ -916,10 +727,9 @@ mod tests {
                 !capture.contract.availability.is_available(),
                 "a palette must not claim capture works without a feed"
             );
-            let unverified = resources[0]
-                .children
+            let unverified = resources
                 .iter()
-                .find(|child| child.kind.as_str() == "camera.photo")
+                .find(|row| row.kind.as_str() == "camera.photo")
                 .expect("recent handoff");
             assert!(unverified.actions.is_empty());
 

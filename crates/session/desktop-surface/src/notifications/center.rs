@@ -9,6 +9,7 @@
 //! shows through [`NotificationHost`].
 
 use std::collections::BTreeSet;
+use ui::num::{f32_of_f64, f64_of_usize, usize_of_f64};
 
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::text_render::{TextRenderer, TextWeight};
@@ -34,33 +35,6 @@ use ui::TextRole;
 
 /// Rows the panel asks room for before it starts paging.
 const PREFERRED_ROWS: usize = 7;
-
-/// Lossy but bounded: row counts never approach f64's exact-integer range.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "row counts stay far below f64's exact-integer range"
-)]
-fn usize_to_f64_lossy(n: usize) -> f64 {
-    n as f64
-}
-
-/// Floors a row-count computation; a negative input saturates to 0.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "float-to-usize casts saturate; a negative input already floors to 0"
-)]
-fn f64_floor_to_usize_saturating(v: f64) -> usize {
-    v.floor() as usize
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "device-pixel wrap width; f32 is already the renderer's own unit"
-)]
-pub(super) fn f64_to_f32_lossy(v: f64) -> f32 {
-    v as f32
-}
 
 /// Rows promise one line per field; the complete text remains in their
 /// accessible description. Use toolkit shaping/elision, including graphemes.
@@ -297,7 +271,7 @@ impl CenterLayout {
     }
     /// The `index`th visible row.
     pub fn row(&self, index: usize) -> Rect {
-        let y0 = self.rows_top() + usize_to_f64_lossy(index) * self.pitch();
+        let y0 = self.rows_top() + f64_of_usize(index) * self.pitch();
         Rect::new(
             self.panel.x0 + qs::PANEL_PAD,
             y0,
@@ -318,7 +292,7 @@ impl CenterLayout {
     /// Complete rows that fit above `bottom_reserve` at the panel's foot.
     fn rows_that_fit(&self, bottom_reserve: f64) -> usize {
         let available = self.panel.y1 - bottom_reserve - self.rows_top() + qs::RELATED_GAP;
-        f64_floor_to_usize_saturating(available / self.pitch())
+        usize_of_f64(available / self.pitch())
     }
     /// Complete rows the panel shows of `total`. A history that fits ends on
     /// the panel padding and has no pager; only one that overflows gives the
@@ -346,9 +320,9 @@ impl CenterLayout {
             qs::PANEL_PAD
         };
         l.rows_top()
-            + usize_to_f64_lossy(rows) * l.row_h()
+            + f64_of_usize(rows) * l.row_h()
             // `rows` is non-zero past the early return, so this never saturates.
-            + usize_to_f64_lossy(rows.saturating_sub(1)) * qs::RELATED_GAP
+            + f64_of_usize(rows.saturating_sub(1)) * qs::RELATED_GAP
             + foot
     }
     /// Trailing icon buttons of a row: dismiss on the trailing edge,
@@ -1464,7 +1438,7 @@ impl NotificationCenter {
         );
         let title_style = label_style.clone().with_weight(TextWeight::Semibold);
         let title_rect = layout.title_rect();
-        let title_width = f64_to_f32_lossy(title_rect.width().max(1.0));
+        let title_width = f32_of_f64(title_rect.width().max(1.0));
         let title = preview_line(
             text_renderer,
             &t("notification-center-title"),
@@ -1558,7 +1532,7 @@ impl NotificationCenter {
             &position,
             colors.text_dim,
             transform.pre_translate((rect.x0 + qs::PANEL_PAD, layout.position_y()).into()),
-            Some(f64_to_f32_lossy(rect.width() - 2.0 * qs::PANEL_PAD)),
+            Some(f32_of_f64(rect.width() - 2.0 * qs::PANEL_PAD)),
             &caption_style,
         );
 
@@ -1653,7 +1627,7 @@ impl NotificationCenter {
             // label, so the fold reads as a hierarchy.
             let x = row.x0 + qs::CONTROL_INSET + if grouped { qs::GLYPH } else { 0.0 };
             let source_y = row.y0 + qs::CONTROL_PAD;
-            let source_width = f64_to_f32_lossy(
+            let source_width = f32_of_f64(
                 (row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP - x).max(0.0),
             );
             let source = preview_line(text_renderer, &source, source_width, &caption_style);
@@ -1662,7 +1636,7 @@ impl NotificationCenter {
                 &source,
                 colors.text_dim,
                 transform.pre_translate((x, source_y).into()),
-                Some(f64_to_f32_lossy(
+                Some(f32_of_f64(
                     row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP - x,
                 )),
                 &caption_style,
@@ -1678,7 +1652,7 @@ impl NotificationCenter {
                 &caption_style,
             );
             let title_y = source_y + layout.caption_lh;
-            let preview_width = f64_to_f32_lossy((text_right - x).max(0.0));
+            let preview_width = f32_of_f64((text_right - x).max(0.0));
             let title_style = label_style.clone().with_weight(TextWeight::Semibold);
             let title = preview_line(
                 text_renderer,
@@ -1691,7 +1665,7 @@ impl NotificationCenter {
                 &title,
                 colors.text_primary,
                 transform.pre_translate((x, title_y).into()),
-                Some(f64_to_f32_lossy(text_right - x)),
+                Some(f32_of_f64(text_right - x)),
                 &label_style.clone().with_weight(TextWeight::Semibold),
             );
             if notification.show_preview && !notification.body.is_empty() {
@@ -1706,7 +1680,7 @@ impl NotificationCenter {
                     &body,
                     colors.text_dim,
                     transform.pre_translate((x, title_y + layout.label_lh).into()),
-                    Some(f64_to_f32_lossy(text_right - x)),
+                    Some(f32_of_f64(text_right - x)),
                     &caption_style,
                 );
             }
@@ -1774,7 +1748,7 @@ impl NotificationCenter {
                     )
                         .into(),
                 ),
-                Some(f64_to_f32_lossy(footer.width() - 2.0 * qs::CONTROL_INSET)),
+                Some(f32_of_f64(footer.width() - 2.0 * qs::CONTROL_INSET)),
                 &caption_style,
             );
         }
@@ -1828,7 +1802,7 @@ impl NotificationCenter {
             &t("notification-center-cleared"),
             colors.text_primary,
             transform.pre_translate((label.x0, label.y0).into()),
-            Some(f64_to_f32_lossy(label.width().max(1.0))),
+            Some(f32_of_f64(label.width().max(1.0))),
             &style,
         );
         Self::chip(
@@ -1883,7 +1857,7 @@ impl NotificationCenter {
             &count_label,
             colors.text_dim,
             transform.pre_translate((x, source_y).into()),
-            Some(f64_to_f32_lossy(
+            Some(f32_of_f64(
                 row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP - x,
             )),
             &caption_style,
@@ -1898,7 +1872,7 @@ impl NotificationCenter {
             None,
             &caption_style,
         );
-        let text_w = f64_to_f32_lossy(dismiss.x0 - qs::RELATED_GAP - x);
+        let text_w = f32_of_f64(dismiss.x0 - qs::RELATED_GAP - x);
         let title_y = source_y + layout.caption_lh;
         let title_style = label_style.with_weight(TextWeight::Semibold);
         let label = preview_line(text_renderer, label, text_w, &title_style);

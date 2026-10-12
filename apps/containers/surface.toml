@@ -1,0 +1,20 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "containers.engine"
+label = "Containers"
+version = 1
+fields = [
+  { path = "draft", type = "CreateDraft", stored = "record" },
+  { path = "draft.name", type = "String" },
+  { path = "draft.image", type = "String" },
+  { path = "draft.ports", type = "String" },
+  { path = "draft.env", type = "String" },
+  { path = "draft.volumes", type = "String" },
+  { path = "draft.command", type = "String" },
+]
+
+[[resources.verbs]]
+id = "clear-create"
+kind = "undoable"
+

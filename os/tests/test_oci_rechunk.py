@@ -317,8 +317,34 @@ class Rechunk(unittest.TestCase):
                      "usr/bin", "etc", "sysroot/ostree"):
             (rootfs / path).mkdir(parents=True)
         (rootfs / "usr/lib/libz.so.1").write_text("z")
-        self.assertEqual(runner.outside(rootfs, "/usr/lib/tilo/windows-runners"), [
+        self.assertEqual(runner.outside(rootfs, ["/usr/lib/tilo/windows-runners"]), [
             "/etc", "/sysroot", "/usr/bin", "/usr/lib/libz.so.1", "/usr/lib/sysimage", "/usr/lib/tilo/fonts"])
+
+    def test_a_file_set_run_keeps_only_its_files_and_their_parents(self) -> None:
+        rootfs = self.work / "rootfs"
+        for path in ("usr/lib/tilo-runtime/2026.07+native.ab/lib", "usr/lib/tilo-runtime/2026.10.9-chromium",
+                     "usr/share/tilo", "etc/tilo", "usr/bin"):
+            (rootfs / path).mkdir(parents=True)
+        for path in ("usr/lib/tilo-runtime/2026.07+native.ab/bundle.toml",
+                     "usr/lib/tilo-runtime/2026.07+native.ab/lib/libruntime_dylib.so",
+                     "usr/lib/tilo-runtime/2026.10.9-chromium/bundle.toml",
+                     "usr/share/tilo/runtime-bundle-publisher.hex", "usr/share/tilo/catalog.toml",
+                     "etc/tilo/runtime-bundle-trusted-publishers.txt", "etc/tilo/other.conf", "etc/hostname"):
+            (rootfs / path).write_text(path)
+        # A link is no file of the set: chunkah would follow nothing, and the
+        # main run keeps it.
+        (rootfs / "usr/share/tilo/app-publisher.hex").symlink_to("runtime-bundle-publisher.hex")
+        files = runner.matches(rootfs, runner.FILE_SETS["build-signatures"])
+        self.assertEqual(files, [
+            "/etc/tilo/runtime-bundle-trusted-publishers.txt",
+            "/usr/lib/tilo-runtime/2026.07+native.ab/bundle.toml",
+            "/usr/lib/tilo-runtime/2026.10.9-chromium/bundle.toml",
+            "/usr/share/tilo/runtime-bundle-publisher.hex",
+        ])
+        self.assertEqual(runner.outside(rootfs, files), [
+            "/etc/hostname", "/etc/tilo/other.conf", "/usr/bin",
+            "/usr/lib/tilo-runtime/2026.07+native.ab/lib",
+            "/usr/share/tilo/app-publisher.hex", "/usr/share/tilo/catalog.toml"])
 
     def test_the_runner_gives_present_trees_their_own_run(self) -> None:
         rootfs = self.work / "rootfs"
@@ -337,21 +363,166 @@ class Rechunk(unittest.TestCase):
         (fake / "chunkah").chmod(0o755)
         environment = {"PATH": f"{fake}:/usr/bin:/bin", "SOURCE_DATE_EPOCH": "1700000000"}
         out = self.work / "out"
+        (rootfs / "etc/tilo").mkdir()
+        (rootfs / "etc/tilo/runtime-bundle-trusted-publishers.txt").write_text("ab\n")
         subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs), str(out), "128"],
                        check=True, env=environment)
-        main, tree = calls.read_text().splitlines()
+        main, tree, tilo, signatures = calls.read_text().splitlines()
         self.assertIn("--max-layers 128", main)
-        self.assertIn("--prune /sysroot/ --prune /usr/lib/tilo/windows-runners/", main)
+        # /usr/lib/tilo is the tilo tree's, Proton inside it the windows-runners tree's.
+        self.assertIn("--prune /sysroot/ --prune /usr/lib/tilo"
+                      " --prune /etc/tilo/runtime-bundle-trusted-publishers.txt", main)
         self.assertIn("--max-layers 16", tree)
         self.assertIn("--prune /etc", tree)
+        self.assertIn("--max-layers 56", tilo)
+        self.assertIn("--prune /usr/lib/tilo/windows-runners ", tilo + " ")
+        self.assertIn("--max-layers 1 ", signatures)
+        self.assertIn("--prune /usr", signatures)
+        self.assertNotIn("--prune /etc/tilo", signatures)
         self.assertTrue((out / "image").is_dir() and (out / "components.json").is_file())
         self.assertTrue((out / "trees" / "windows-runners" / "image").is_dir())
+        self.assertTrue((out / "trees" / "build-signatures" / "image").is_dir())
         # No epoch, no run: two builds must share it to share layers.
         failed = subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs),
                                  str(self.work / "out2"), "128"], env={"PATH": environment["PATH"]},
                                 capture_output=True, text=True)
         self.assertNotEqual(failed.returncode, 0)
         self.assertIn("SOURCE_DATE_EPOCH", failed.stderr)
+
+    def test_the_app_store_index_leaves_the_app_store_tree_for_a_layer_of_its_own(self) -> None:
+        rootfs = self.work / "rootfs"
+        store = rootfs / "usr/share/tilo-apps"
+        for path in ("pkgs/ab/bin", "pkgs/ab.pkg", "cohort", "../../bin"):
+            (store / path).mkdir(parents=True)
+        for path in ("registry.toml", "pkgs/ab/bin/calculator", "pkgs/ab.pkg/manifest.toml",
+                     "pkgs/ab.pkg/signed-root", "cohort/so.tilo.calculator.tapp"):
+            (store / path).write_text(path)
+        calls = self.work / "calls"
+        fake = self.work / "bin"
+        fake.mkdir()
+        (fake / "chunkah").write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$*\" >> {calls}\n"
+            "while [ $# -gt 0 ]; do\n"
+            "  case $1 in --output) mkdir -p \"${2#oci:}\";; --write-manifest-to) echo {} > \"$2\";; esac\n"
+            "  shift\n"
+            "done\n")
+        (fake / "chunkah").chmod(0o755)
+        environment = {"PATH": f"{fake}:/usr/bin:/bin", "SOURCE_DATE_EPOCH": "1700000000"}
+        subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs), str(self.work / "out"),
+                        "128"], check=True, env=environment)
+        main, store_run, index = calls.read_text().splitlines()
+        # The main run leaves the whole store to the tree's run and the set's.
+        self.assertIn("--prune /usr/share/tilo-apps ", main + " ")
+        self.assertNotIn("registry.toml", main)
+        self.assertIn("--max-layers 32", store_run)
+        self.assertIn("--prune /usr/bin", store_run)
+        for path in ("registry.toml", "pkgs/ab.pkg/manifest.toml", "pkgs/ab.pkg/signed-root"):
+            self.assertIn(f"--prune /usr/share/tilo-apps/{path}", store_run)
+        self.assertNotIn("calculator", store_run)
+        self.assertIn("--max-layers 1 ", index)
+        self.assertIn("--prune /usr/share/tilo-apps/cohort", index)
+        self.assertIn("--prune /usr/share/tilo-apps/pkgs/ab ", index + " ")
+        self.assertNotIn("registry.toml", index)
+        self.assertNotIn("ab.pkg", index)
+
+    def test_runtimes_and_tilo_programs_leave_the_main_run_for_trees_of_their_own(self) -> None:
+        rootfs = self.work / "rootfs"
+        native = "usr/lib/tilo-runtime/2026.07+native.ab"
+        for path in (f"{native}/lib/fonts", "usr/lib/tilo-runtime/2026.10.9-chromium/lib",
+                     "usr/share/fonts/tilo", "usr/share/fonts/dejavu", "usr/share/tilo/font-catalogs/c1",
+                     "usr/lib/tilo/windows-runners/proton", "usr/bin", "usr/libexec/sssd", "usr/libexec/tilo",
+                     "boot/EFI/Linux", "etc", "sysroot/ostree"):
+            (rootfs / path).mkdir(parents=True)
+        for path in (f"{native}/bundle.toml", f"{native}/lib/libruntime_dylib.so",
+                     "usr/lib/tilo-runtime/2026.10.9-chromium/bundle.toml",
+                     "usr/lib/tilo-runtime/2026.10.9-chromium/lib/libcef.so",
+                     "usr/share/fonts/dejavu/DejaVuSans.ttf", "usr/share/tilo/catalog.toml",
+                     "usr/share/tilo/app-publisher.hex", "usr/lib/tilo/windows-runners/proton/wine",
+                     "usr/lib/tilo/helper", "usr/bin/shell", "usr/bin/tilo", "usr/bin/tilo-greeter",
+                     "usr/bin/bash", "usr/bin/fsck",
+                     "usr/libexec/tilo-ush", "usr/libexec/tilo/session", "usr/libexec/sssd/krb5_child",
+                     "boot/EFI/Linux/7.2.8.efi", "etc/hostname"):
+            (rootfs / path).write_text(path)
+        # The runtime's fonts carry two more names, outside its directory.
+        font = rootfs / native / "lib/fonts/NotoSans.ttf"
+        font.write_text("glyphs")
+        (rootfs / "usr/share/fonts/tilo/NotoSans.ttf").hardlink_to(font)
+        (rootfs / "usr/share/tilo/font-catalogs/c1/NotoSans.ttf").hardlink_to(font)
+        (rootfs / "usr/bin/tilo-control").symlink_to("tilo-greeter")
+        calls = self.work / "calls"
+        fake = self.work / "bin"
+        fake.mkdir()
+        (fake / "chunkah").write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$*\" >> {calls}\n"
+            "while [ $# -gt 0 ]; do\n"
+            "  case $1 in --output) mkdir -p \"${2#oci:}\";; --write-manifest-to) echo {} > \"$2\";; esac\n"
+            "  shift\n"
+            "done\n")
+        (fake / "chunkah").chmod(0o755)
+        environment = {"PATH": f"{fake}:/usr/bin:/bin", "SOURCE_DATE_EPOCH": "1700000000"}
+        out = self.work / "out"
+        subprocess.run([sys.executable, str(SCRIPTS / "rechunk-chunkah.py"), str(rootfs), str(out), "96"],
+                       check=True, env=environment)
+
+        def run(line: str) -> tuple[int, set[str]]:
+            words = line.split()
+            prunes = {words[i + 1] for i, word in enumerate(words) if word == "--prune"}
+            return int(words[words.index("--max-layers") + 1]), prunes
+
+        lines = calls.read_text().splitlines()
+        self.assertEqual(len(lines), 6)
+        main, windows, runtime, browser, tilo, signatures = map(run, lines)
+        # The main run keeps the RPMs' files and leaves every tree to its own run.
+        self.assertEqual(main, (96, {
+            "/sysroot/", f"/{native}", "/usr/share/fonts/tilo", "/usr/lib/tilo-runtime/2026.10.9-chromium",
+            "/boot/EFI/Linux", "/usr/bin/shell", "/usr/bin/tilo", "/usr/bin/tilo-control", "/usr/bin/tilo-greeter",
+            "/usr/libexec/tilo", "/usr/libexec/tilo-ush", "/usr/lib/tilo", "/usr/share/tilo"}))
+        # Whole, directory included: the runtime's directory is named by a
+        # digest, and its entry in the main run renewed one of its layers at
+        # every rename.
+        self.assertNotIn(f"/{native}/", main[1])
+        # Proton, inside the tilo tree's /usr/lib/tilo, is its own.
+        self.assertEqual(windows[0], 16)
+        self.assertIn("/usr/lib/tilo/helper", windows[1])
+        self.assertNotIn("/usr/lib/tilo/windows-runners", windows[1])
+        # The native runtime keeps its fonts' other names, so the hard links
+        # stay one group; its signature is the build-signatures set's.
+        self.assertEqual(runtime[0], 4)
+        self.assertTrue({"/usr/lib/tilo-runtime/2026.10.9-chromium", "/usr/share/fonts/dejavu",
+                         "/usr/share/tilo/catalog.toml", "/usr/share/tilo/app-publisher.hex",
+                         f"/{native}/bundle.toml", "/usr/bin", "/etc", "/boot"} <= runtime[1])
+        self.assertFalse({f"/{native}", "/usr/share/fonts/tilo", "/usr/share/tilo/font-catalogs",
+                          f"/{native}/lib"} & runtime[1])
+        self.assertEqual(browser[0], 4)
+        self.assertIn(f"/{native}", browser[1])
+        self.assertIn("/usr/lib/tilo-runtime/2026.10.9-chromium/bundle.toml", browser[1])
+        self.assertNotIn("/usr/lib/tilo-runtime/2026.10.9-chromium", browser[1])
+        # Tilo's programs: more layers than components, so nothing is packed;
+        # the trees inside it and the per-build keys are not its own.
+        self.assertEqual(tilo[0], 56)
+        self.assertTrue({"/usr/bin/bash", "/usr/bin/fsck", "/usr/libexec/sssd", "/usr/lib/tilo/windows-runners",
+                         "/usr/share/tilo/font-catalogs", "/usr/share/tilo/app-publisher.hex",
+                         "/usr/lib/tilo-runtime", "/usr/share/fonts", "/etc", "/sysroot"} <= tilo[1])
+        self.assertFalse({"/usr/bin/shell", "/usr/bin/tilo-greeter", "/usr/bin/tilo-control", "/usr/libexec/tilo",
+                          "/usr/libexec/tilo-ush", "/usr/lib/tilo", "/usr/lib/tilo/helper", "/usr/share/tilo",
+                          "/usr/share/tilo/catalog.toml", "/boot", "/boot/EFI/Linux"} & tilo[1])
+        self.assertEqual(signatures[0], 1)
+        self.assertFalse({f"/{native}/bundle.toml", "/usr/lib/tilo-runtime/2026.10.9-chromium/bundle.toml",
+                          "/usr/share/tilo/app-publisher.hex"} & signatures[1])
+        for name in ("windows-runners", "native-runtime", "browser-runtime", "tilo", "build-signatures"):
+            self.assertTrue((out / "trees" / name / "image").is_dir(), name)
+
+    def test_two_trees_may_not_name_one_path(self) -> None:
+        rootfs = self.work / "rootfs"
+        (rootfs / "usr/lib/tilo-runtime/2026.07+native.ab").mkdir(parents=True)
+        trees = dict(runner.TREES)
+        self.addCleanup(setattr, runner, "TREES", runner.TREES)
+        runner.TREES = {**trees, "browser-runtime": ["/usr/lib/tilo-runtime/*"]}
+        with self.assertRaises(SystemExit) as raised:
+            runner.tree_roots(rootfs)
+        self.assertIn("is in two trees", str(raised.exception))
 
     def test_opaque_root_and_replaced_directory(self) -> None:
         tree = rechunk.Tree()

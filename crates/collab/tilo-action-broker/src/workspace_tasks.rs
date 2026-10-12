@@ -256,6 +256,9 @@ pub(super) fn actions(
             Vec::new(),
             true,
         ));
+        if !task.status.is_finished() {
+            result.extend(task_grant_actions(&target, &task.title));
+        }
         if task.status == tilo_desktop_model::WorkspaceTaskStatus::Queued
             && !manual(task)
             && task.assigned_agent.is_some()
@@ -320,6 +323,48 @@ pub(super) fn actions(
     result
 }
 
+/// The actions that edit an open task's grant set.
+fn task_grant_actions(target: &str, title: &str) -> [PublishedAction; 2] {
+    use tilo_actions::{ActionParam, ParamType};
+    let mut grant = action(
+        target,
+        "grant",
+        title,
+        "Allow in this task",
+        vec![
+            ActionParam::required(
+                "node",
+                ParamType::Text,
+                "Where, as a path below the room, e.g. app:so.tilo.mail",
+            ),
+            ActionParam::required(
+                "kinds",
+                ParamType::Array,
+                "The kinds of action it covers: read, undoable, outside",
+            ),
+            ActionParam::required("answer", ParamType::Text, "allow, ask or deny"),
+        ],
+        false,
+    );
+    grant.description = Some(
+        "Work done in this task gets this answer there while the task is open. A task's grants only bound its work: they give nobody more than they hold.".into(),
+    );
+    let mut revoke = action(
+        target,
+        "revoke",
+        title,
+        "Remove from this task's grants",
+        vec![ActionParam::required(
+            "grant",
+            ParamType::Text,
+            "The grant's id, as inspect lists it",
+        )],
+        false,
+    );
+    revoke.description = Some("Take one grant out of this task's grant set.".into());
+    [grant, revoke]
+}
+
 fn approve_action(target: &str, title: &str) -> PublishedAction {
     use tilo_actions::{ActionParam, ParamType};
     action(
@@ -358,7 +403,7 @@ fn action(
         description: Some(if inspect { "Inspect current task coordination and execution policy; no execution result is asserted." } else if operation == "approve-run" { "Approve the observed queued task for its assigned agent. Existing workspace and action permissions still apply; approval does not assert execution or completion." } else { "Manual coordination only. Attachments are shared resource references; no agent run, execution, integration or verification is asserted." }.into()),
         operation_kind: if inspect { tilo_actions::OperationKind::View } else { tilo_actions::OperationKind::Document }, params,
         contract: tilo_actions::ActionContract {
-            permission: if inspect { tilo_actions::PermissionRequirement::Read } else { tilo_actions::PermissionRequirement::Write },
+            kind: if inspect { tilo_actions::ActionKind::Read } else { tilo_actions::ActionKind::Undoable },
             result: tilo_actions::ResultSpec::Json { schema: serde_json::json!({"type":"object"}) },
             ..Default::default()
         }, view: None, input: PublishedInput::None,
@@ -389,7 +434,26 @@ pub(super) fn inspect(
         .controls
         .get(task_id)
         .ok_or("task control is absent")?;
-    let mut output = serde_json::json!({"task":task,"coordination_only":manual(task),
+    let subject = tilo_action_policy::Subject::Task(task.id.clone());
+    let held: Vec<tilo_action_policy::Grant> = snapshot
+        .grants
+        .iter()
+        .filter(|grant| grant.subject == subject)
+        .cloned()
+        .collect();
+    let grants: Vec<serde_json::Value> = held
+        .iter()
+        .map(|grant| {
+            serde_json::json!({
+                "id": grant.id,
+                "node": grant.node,
+                "kinds": grant.kinds,
+                "answer": grant.answer,
+            })
+        })
+        .collect();
+    let mut output = serde_json::json!({"task":task,"grants":grants,
+        "grants_read":tilo_action_policy::describe(&held, &tilo_action_policy::Ids),"coordination_only":manual(task),
         "managed_route":!manual(task), "run_epoch":control.run_epoch,
         "execution_budget":control.execution_budget,
         "active_run":control.active_run.is_some(),
@@ -535,10 +599,9 @@ mod tests {
 
     #[test]
     fn public_queue_commits_an_admitted_agent_and_retains_a_receipt_without_a_run() {
+        use tilo_action_policy::roles::AgentPreset;
         use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-        use tilo_peer_state::workspace_membership::{
-            AgentMembershipPreset, WorkspaceMembershipCommand,
-        };
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
         use tilo_peer_state::workspace_task::WorkspaceTaskAuthority;
         let (_directory, owner, certificate, key) = enrolled_queue_owner();
         let now = std::time::SystemTime::now();
@@ -553,7 +616,7 @@ mod tests {
         };
         let enrolled = membership(WorkspaceMembershipCommand::AddAgent {
             agent: "scribe".into(),
-            preset: AgentMembershipPreset::Contributor,
+            preset: AgentPreset::Contributor,
         });
         owner
             .commit_workspace_membership_command(enrolled.clone(), &certificate, &key, now)
@@ -565,10 +628,7 @@ mod tests {
             .into_iter()
             .find(|row| row.action == "queue-agent-task")
             .unwrap();
-        assert_eq!(
-            published.contract.permission,
-            tilo_actions::PermissionRequirement::Write
-        );
+        assert_eq!(published.contract.kind, tilo_actions::ActionKind::Undoable);
         let mut public = envelope(
             &serde_json::json!({"title":"Inspect chip proof", "assigned_agent":"scribe", "planning":"model"}),
         );
@@ -744,17 +804,21 @@ mod tests {
             tilo_desktop_model::WorkspaceTaskControl::default(),
         );
         let catalogue = actions(&snapshot, "Workspace");
-        assert_eq!(catalogue.len(), 4);
+        // An open task offers its grant set's grant and revoke beside its
+        // own actions.
+        assert_eq!(catalogue.len(), 6);
+        assert!(
+            ["grant", "revoke"]
+                .iter()
+                .all(|id| catalogue.iter().any(|row| row.action == *id))
+        );
         assert_eq!(catalogue[0].resource_label, "Workspace");
         assert_eq!(catalogue[0].resource_kind, "workspace-membership");
         let inspect_action = catalogue
             .iter()
             .find(|row| row.action == "inspect")
             .unwrap();
-        assert_eq!(
-            inspect_action.contract.permission,
-            tilo_actions::PermissionRequirement::Read
-        );
+        assert_eq!(inspect_action.contract.kind, tilo_actions::ActionKind::Read);
         let mut request = envelope(&serde_json::json!({}));
         request.resource = format!("desktop:{}", task.id);
         request.action = "inspect".into();
@@ -764,7 +828,7 @@ mod tests {
         task.route = WorkspaceTaskRoute::Model;
         snapshot.tasks = vec![task];
         let managed = actions(&snapshot, "Workspace");
-        assert_eq!(managed.len(), 5);
+        assert_eq!(managed.len(), 7);
         assert!(managed.iter().any(|row| row.action == "approve-run"));
         assert!(
             managed

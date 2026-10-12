@@ -485,17 +485,21 @@ impl PhotosApp {
             return commands;
         }
         commands.push(
-            Command::icon(Hit::RotateLeft, tr("photos-rotate-left"), Icon::RotateCcw)
-                .after_separator(),
+            Command::icon(
+                Hit::RotateLeft,
+                tr("photos-command-rotate-left"),
+                Icon::RotateCcw,
+            )
+            .after_separator(),
         );
         commands.push(Command::icon(
             Hit::RotateRight,
-            tr("photos-rotate-right"),
+            tr("photos-command-rotate-right"),
             Icon::RotateCw,
         ));
         commands.push(Command::icon(
             Hit::CropToView,
-            tr("photos-crop"),
+            tr("photos-command-crop"),
             Icon::Scissors,
         ));
         if self

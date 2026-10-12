@@ -4836,6 +4836,11 @@ async fn enqueue_state_inner(
                                     .map_or(0, |stats| stats.peak_metadata_entries),
                             );
                         }
+                        if !build.holds_scratch() {
+                            // A plain delta made no scratch, so the owner has
+                            // nothing to dispose of after this job.
+                            state.retention_scratch = None;
+                        }
                         persist_metrics.add_bytes_queued(written);
                         current.persisted_bytes = written;
                         retained_build = None;
@@ -5401,6 +5406,17 @@ async fn handle_delta(
         }));
     };
     trace_native_publication("server_authorized", &env, None);
+    // The change itself must say what it does and stay inside what its app
+    // publishes, before the relay keeps or forwards it.
+    let standings = ws.lock().await.standings.clone();
+    if let Envelope::Delta { delta, .. } = &env
+        && let Some(reason) = crate::surfaces::refusal(delta, standings.as_deref())
+    {
+        // Neither kept nor forwarded. The session stays: one bad change
+        // is not a membership decision.
+        tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a document change");
+        return Ok(None);
+    }
     let observed = match (&env, session.compactor) {
         (Envelope::Delta { delta, .. }, Some(_)) => crate::compaction::Compactor::observe(delta),
         _ => None,
@@ -5939,22 +5955,6 @@ fn checkpoint_prefix_recovery_allowed(
         && source.authorized(runtime)
 }
 
-/// The coalescing slot of a co-edit presence body (TIL-710): latest-state
-/// presence (a pointer, a caret) has one, events do not. Only the two
-/// `NeighbourMsg` variants that can have one are decoded, to tell which;
-/// the body is forwarded as it came.
-fn presence_slot(body: &[u8]) -> Option<tilo_peer_state::PresenceSlot> {
-    if !body
-        .first()
-        .is_some_and(|tag| tilo_peer_state::NeighbourMsg::SLOTTED_PRESENCE_TAGS.contains(tag))
-    {
-        return None;
-    }
-    postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(body)
-        .ok()?
-        .presence_slot()
-}
-
 /// Handle an inbound `Presence`: fan it out to every other subscriber.
 /// Ephemeral, with device attribution stamped from the authenticated session.
 #[expect(
@@ -5987,7 +5987,7 @@ async fn handle_presence(
         // A sender's claim is not transport evidence, even if that other
         // device has a valid certificate in the same workspace.
         attributed.author = peer.device_public_key;
-        slot = presence_slot(&attributed.body);
+        slot = crate::coedit::presence_slot(&attributed.body);
         *payload = attributed
             .encode()
             .map_err(|error| PeerError::Protocol(error.to_string()))?;
@@ -6013,9 +6013,7 @@ async fn handle_presence(
                     Some(rooms) => rooms
                         .legacy_writer_role(authority.room(), peer.device_public_key)
                         .await
-                        .is_some_and(|role| {
-                            room_access::role_grants(role, collab_types::caps::Verb::Write)
-                        }),
+                        .is_some_and(room_access::role_writes),
                     None => false,
                 };
             }
@@ -10669,7 +10667,6 @@ mod private_transport_tests {
                 tilo_relay_protocol::agents::AgentScope {
                     rooms: vec![room.to_string()],
                     apps: Vec::new(),
-                    may_confirm: false,
                 },
                 1,
                 2,

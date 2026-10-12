@@ -57,7 +57,9 @@ uuid = { workspace = true, features = ["js"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time"] }
+tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time", "test-util"] }
+# Builds the toolkit presence bodies the pointer pacing tests classify.
+collab-types = { path = "../../collab/collab-types" }
 tilo-automerge-isolate.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 

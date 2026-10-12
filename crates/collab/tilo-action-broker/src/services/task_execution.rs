@@ -15,16 +15,20 @@ pub struct NativeTaskBinding {
 #[derive(Clone, Debug)]
 pub struct NativeTaskActionRequirement {
     pub app: String,
+    pub resource_kind: String,
     pub resource: String,
     pub action: String,
-    pub permission: tilo_actions::PermissionRequirement,
+    pub need: tilo_actions::ActionNeed,
 }
 
 impl NativeTaskActionRequirement {
-    /// Apply the existing action capability rule to the live admitted document.
+    /// Apply the room's grants for the agent to this action, on the live
+    /// admitted document, held to the grant set of every task the agent
+    /// runs. An unattended run has nobody to ask, so only an action the
+    /// agent and its task are allowed passes.
     ///
     /// # Errors
-    /// The room is unavailable or the current agent lacks this action capability.
+    /// The room is unavailable or the current agent is not allowed this action.
     pub fn check(
         &self,
         peer: &tilo_peer_state::StatePeer,
@@ -32,24 +36,40 @@ impl NativeTaskActionRequirement {
         agent: &str,
         now: std::time::SystemTime,
     ) -> Result<(), String> {
-        use collab_types::caps::{Actor, CapDecision, ResourceRef, decide_capability};
+        use tilo_action_policy::{Answer, Authority, Context, Subject};
         let doc = peer
             .admitted_room()
             .ok_or("native action policy unavailable")?;
-        let (_, _, caps) = tilo_peer_state::room::extract_governed_fields(doc);
-        let seconds = now
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .map_err(|_| "native action clock unavailable")?
-            .as_secs();
-        let actor = Actor::agent(agent).in_room(room);
-        let resource = ResourceRef::Action {
-            app: self.app.clone(),
-            resource: self.resource.clone(),
-            action: self.action.clone(),
+        let policy = tilo_desktop_model::projection::room_policy_of(doc, room);
+        let node = tilo_actions::action_node(
+            &policy.node(),
+            &self.app,
+            &self.resource_kind,
+            &self.resource,
+            self.need.field.as_deref(),
+            &self.action,
+        );
+        let cx = Context::at_time(now);
+        let verdict = Authority::person(policy.party_of(Subject::agent(agent))).decide(
+            &node,
+            self.need.kind,
+            &cx,
+        );
+        let verdict = if self.need.privileged {
+            verdict.privileged()
+        } else {
+            verdict
         };
-        if crate::collab_broker_capnp::permission_verb(self.permission).is_some_and(|verb| {
-            decide_capability(&actor, &resource, verb, &caps, Some(seconds)) != CapDecision::Allow
-        }) {
+        // The run is held to its task's grant set too.
+        let tasks = tilo_desktop_model::projection::workspace_tasks_of(doc);
+        let task = tilo_desktop_model::task_bound(
+            &policy,
+            &tasks,
+            (Some(agent), None),
+            (&node, self.need.kind),
+            &cx,
+        );
+        if verdict.answer != Answer::Allow || task.is_some_and(|answer| answer != Answer::Allow) {
             return Err("native task action is no longer authorized by its owner".into());
         }
         Ok(())

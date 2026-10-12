@@ -26,7 +26,7 @@ use ui::icons::Icon;
 use ui::prelude::*;
 use ui::widget::{ButtonRole, ControlSize};
 
-use crate::resource::ArtworkResource;
+use crate::model::Artwork;
 
 /// Small dimmed text beside a value.
 pub(crate) fn caption(text: &str) -> Element {
@@ -41,10 +41,10 @@ pub(crate) fn heading(id: &str) -> Element {
 /// An icon-only button invoking `invoke`, `name` its tooltip and the name
 /// a screen reader announces.
 pub(crate) fn icon_button(
-    cx: &ViewCx<ArtworkResource>,
+    cx: &ViewCx<Artwork>,
     icon: Icon,
     name: &str,
-    invoke: Invoke<ArtworkResource>,
+    invoke: Invoke<Artwork>,
 ) -> Button {
     cx.button("", invoke)
         .with_icon(icon)

@@ -1,5 +1,5 @@
 use super::*;
-use collab_types::{CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject, Verb};
+use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject};
 use std::sync::Mutex;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, persist, sign_device_cert};
 
@@ -8,7 +8,7 @@ fn files_grant(person: [u8; 32]) -> CapOverride {
         id: String::default(),
         subject: Subject::User(Ed25519PublicKey(person)),
         scope: Scope::FsPath("/".into()),
-        verb: Verb::Admin,
+        access: Access::Write,
         effect: Effect::Grant,
         expiry: Expiry::Never,
         granted_by: None,

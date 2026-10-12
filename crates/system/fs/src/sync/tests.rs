@@ -6,7 +6,7 @@ use crate::record_publisher::RecordPublisher;
 use crate::record_replication::{
     RecordAction, RecordAuthorizer, RecordEnvelopeV1, RecordOperationV1,
 };
-use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Scope, Subject};
 use fs_protocol::{
     ContentHash, ContentRevisionV1, FILE_BINDING_VERSION, FILE_MUTATION_TRANSACTION_VERSION,
     FileActor, FileBindingV1, FileMetadataV1, FileMutationOperation, FileMutationParticipant,
@@ -155,7 +155,7 @@ fn signed_read_authority(
                 Subject::User(Ed25519PublicKey(owner)),
                 Scope::FsPath("/".into()),
                 Effect::Grant,
-                Verb::Read,
+                Access::Read,
             ),
             CapOverride::new(
                 Subject::User(Ed25519PublicKey(collaborator)),
@@ -165,7 +165,7 @@ fn signed_read_authority(
                 } else {
                     Effect::Grant
                 },
-                Verb::Read,
+                Access::Read,
             ),
         ],
         false,

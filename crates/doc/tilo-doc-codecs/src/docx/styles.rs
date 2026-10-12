@@ -42,22 +42,6 @@ pub(super) fn parse_half_point(e: &BytesStart) -> Option<i64> {
         .map(|hp| (hp / 2.0).round() as i64)
 }
 
-pub(super) fn generic_font(name: &str) -> String {
-    let n = name.to_ascii_lowercase();
-    if n.contains("mono") || n.contains("courier") || n.contains("consol") {
-        "mono".into()
-    } else if (n.contains("serif") && !n.contains("sans"))
-        || n.contains("times")
-        || n.contains("georgia")
-        || n.contains("garamond")
-        || n.contains("roman")
-    {
-        "serif".into()
-    } else {
-        "sans".into()
-    }
-}
-
 pub(super) fn map_jc(v: &str) -> String {
     match v {
         "center" => "center".into(),
@@ -105,7 +89,12 @@ pub(super) fn mark_from_rpr_child(e: &BytesStart) -> Option<(String, MarkValue)>
         b"w:sz" => parse_half_point(e).map(|n| ("fontSize".into(), MarkValue::Int(n))),
         b"w:rFonts" => attr_val(e, b"w:ascii")
             .or_else(|| attr_val(e, b"w:hAnsi"))
-            .map(|f| ("fontFamily".into(), MarkValue::Str(generic_font(&f)))),
+            .map(|f| {
+                (
+                    "fontFamily".into(),
+                    MarkValue::Str(crate::generic_font_family(&f).to_owned()),
+                )
+            }),
         b"w:color" => attr_val(e, b"w:val")
             .and_then(|v| normalize_color(&v))
             .map(|c| ("color".into(), MarkValue::Str(c))),
@@ -326,7 +315,7 @@ impl StyleAccum {
                     b"w:rFonts" => {
                         if let Some(f) = attr_val(e, b"w:ascii").or_else(|| attr_val(e, b"w:hAnsi"))
                         {
-                            self.font = Some(generic_font(&f));
+                            self.font = Some(crate::generic_font_family(&f).to_owned());
                         }
                     }
                     _ => {}

@@ -41,7 +41,7 @@ mod wayland;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web;
 
-pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability};
 
 /// The Wayland backend, for the compositor's clipboard tests. Apps use
 /// [`system`].

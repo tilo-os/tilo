@@ -1,40 +1,34 @@
-//! Shared current capability decisions.
-use super::{
-    Actor, ArtifactKind, CapDecision, CapOverride, Principal, ResourceRef, Role, SystemTime, Verb,
-    decide_capability, now_secs,
-};
+//! Shared current authority decisions.
+use super::SystemTime;
+use tilo_action_policy::{ActionKind, Answer, Authority, TreePath};
 
+/// Whether `authority` may read the record `record` of `app` in `room`.
 pub(in crate::state) fn document_read(
-    role: Role,
-    caps: &[CapOverride],
-    person: &str,
+    authority: &Authority<'_>,
     room: &str,
     app: &str,
     record: &str,
     now: SystemTime,
 ) -> bool {
-    let actor = Actor::person(Some(role), person)
-        .with_principal(Principal::App(app.into()))
-        .in_room(room.to_owned());
-    let resource = ResourceRef::Artifact {
-        app: Some(app.into()),
-        kind: ArtifactKind::Note,
-        instance: collab_types::document_artifact_id(app, room, record),
-    };
-    decide_capability(&actor, &resource, Verb::Read, caps, Some(now_secs(now)))
-        == CapDecision::Allow
+    authority
+        .decide(
+            &collab_types::document_node(room, app, record),
+            ActionKind::Read,
+            &tilo_action_policy::Context::at_time(now),
+        )
+        .answer
+        == Answer::Allow
 }
+
+/// Whether `authority` may read the room, and change it (`Undoable` on the room
+/// itself: its windows, tasks and contents).
 pub(in crate::state) fn room(
-    role: Role,
-    caps: &[CapOverride],
-    person: &str,
+    authority: &Authority<'_>,
     room: &str,
     now: SystemTime,
 ) -> (bool, bool) {
-    let actor = Actor::person(Some(role), person).in_room(room.to_owned());
-    let resource = ResourceRef::Room(room.to_owned());
-    let allowed = |verb| {
-        decide_capability(&actor, &resource, verb, caps, Some(now_secs(now))) == CapDecision::Allow
-    };
-    (allowed(Verb::Read), allowed(Verb::Write))
+    let node = TreePath::room(room);
+    let cx = tilo_action_policy::Context::at_time(now);
+    let allowed = |kind| authority.decide(&node, kind, &cx).answer == Answer::Allow;
+    (allowed(ActionKind::Read), allowed(ActionKind::Undoable))
 }
