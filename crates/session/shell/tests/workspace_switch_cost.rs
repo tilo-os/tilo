@@ -21,16 +21,15 @@ use std::time::Duration;
 
 use crate::idle_wakeups::{Desktop, notes_desktop};
 
-/// Most thread CPU one tick of a switch back may take, in milliseconds, in
-/// this debug build. (The release build on the VM is held to two refresh
-/// intervals at 60 Hz, 33.4 ms, by W16.)
+/// Most thread CPU one tick of a switch back may take, in milliseconds: two
+/// refresh intervals at 60 Hz, W16's `frame_cpu_ms_max`, held here in a debug
+/// build.
 ///
 /// Measured on CI's shared x86-64 runner (headless, llvmpipe, debug build).
 /// Rebuilding the workspace, as every switch back did before its content was
 /// kept: 90–108 ms in each switch back (scene 78–97 ms). Putting the kept
-/// content back: 19 ms, and no tick of the window over 27 ms. The budget
-/// leaves room for a loaded runner and sits far below a rebuild.
-const SWITCH_BACK_TICK_CPU_BUDGET_MS: f64 = 45.0;
+/// content back: the costliest tick of four timed switch backs 19.5–19.9 ms.
+const SWITCH_BACK_TICK_CPU_BUDGET_MS: f64 = 33.4;
 
 /// The frame loop writes its trace a tick at least this long after the last
 /// write, so a window is on disk once two ticks this far apart have run.
