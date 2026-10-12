@@ -304,6 +304,168 @@ fn classify_newest(count: usize) -> std::time::Duration {
 }
 
 #[test]
+fn exact_restore_preserves_colliding_keys_and_unrelated_work() {
+    let mut doc = document();
+    add(&mut doc, ALICE, "same", "red");
+    add(&mut doc, ALICE, "other", "green");
+    let cards = doc.put_object(ROOT, "cards", ObjType::Map).unwrap();
+    doc.put(&cards, "same", "old card").unwrap();
+    doc.put(ROOT, "title", "old title").unwrap();
+    let target = doc.get_heads();
+    recolour(&mut doc, BOB, "same", "blue");
+    recolour(&mut doc, BOB, "other", "yellow");
+    doc.put(&cards, "same", "new card").unwrap();
+    doc.put(ROOT, "title", "new title").unwrap();
+    doc.put(ROOT, "tilo:receipt", "keep").unwrap();
+    let current = doc.get_heads();
+    assert!(
+        changed_items(&mut doc, &current, &target)
+            .iter()
+            .any(|item| item.path == "marks/same")
+    );
+    assert!(restore_paths(&mut doc, &target, &["marks/same".into()]).unwrap() > 0);
+    assert_eq!(colour(&doc, "same").as_deref(), Some("red"));
+    assert_eq!(colour(&doc, "other").as_deref(), Some("yellow"));
+    assert_eq!(
+        doc.get(&cards, "same").unwrap().unwrap().0.as_str(),
+        Some("new card")
+    );
+    assert_eq!(
+        doc.get(ROOT, "title").unwrap().unwrap().0.as_str(),
+        Some("new title")
+    );
+    doc.commit();
+    restore_paths(&mut doc, &target, &["title".into()]).unwrap();
+    assert_eq!(
+        doc.get(ROOT, "title").unwrap().unwrap().0.as_str(),
+        Some("old title")
+    );
+    assert_eq!(
+        doc.get(ROOT, "tilo:receipt").unwrap().unwrap().0.as_str(),
+        Some("keep")
+    );
+}
+
+#[test]
+fn exact_restore_refuses_pending_edits_without_committing_them() {
+    let mut doc = document();
+    add(&mut doc, ALICE, "same", "red");
+    let target = doc.get_heads();
+    recolour(&mut doc, BOB, "same", "blue");
+    doc.put(ROOT, "draft", true).unwrap();
+    let before = (doc.base_heads(), doc.pending_ops(), doc.get_actor().clone());
+    for paths in [
+        vec!["marks/same".into()],
+        vec!["marks/same".into(), "missing".into()],
+    ] {
+        assert!(restore_paths(&mut doc, &target, &paths).is_err());
+        assert_eq!(
+            (doc.base_heads(), doc.pending_ops(), doc.get_actor().clone()),
+            before
+        );
+    }
+}
+
+#[test]
+fn exact_frontiers_are_immutable_and_canonical() {
+    let mut doc = document();
+    let first = doc.get_heads()[0];
+    add(&mut doc, ALICE, "same", "red");
+    let second = doc.get_heads()[0];
+    // A checkpoint called the hash must not redirect an exact read.
+    checkpoint(&mut doc, &first.to_string()).unwrap();
+    doc.commit();
+    assert_eq!(resolve(&doc, &first.to_string()).unwrap(), vec![first]);
+    assert!(resolve(&doc, &format!("{first}+{second}")).is_err());
+    assert!(resolve(&doc, &format!("{second}+{second}")).is_err());
+    assert!(resolve(&doc, &format!("{second}+{}", "0".repeat(64))).is_err());
+}
+
+#[test]
+fn exact_restore_rejects_the_entire_invalid_selection_without_writes() {
+    let mut doc = document();
+    add(&mut doc, ALICE, "same", "red");
+    let target = doc.get_heads();
+    recolour(&mut doc, BOB, "same", "blue");
+    let current = doc.get_heads();
+    for paths in [
+        vec![],
+        vec!["marks/same".into(), "missing".into()],
+        vec!["marks".into()],
+        vec!["tilo:receipt".into()],
+        vec!["marks/same/colour".into()],
+        vec!["marks/~same".into()],
+        vec!["marks/".into()],
+        vec!["marks/same".into(); MAX_RESTORE_PATHS + 1],
+        vec!["x".repeat(MAX_RESTORE_PATH_BYTES + 1)],
+    ] {
+        assert!(
+            restore_paths(&mut doc, &target, &paths).is_err(),
+            "{paths:?}"
+        );
+        assert_eq!(doc.pending_ops(), 0);
+        assert_eq!(doc.get_heads(), current);
+        assert_eq!(colour(&doc, "same").as_deref(), Some("blue"));
+    }
+    assert!(restore_paths(&mut doc, &[ChangeHash([99; 32])], &["marks/same".into()]).is_err());
+    assert_eq!(doc.pending_ops(), 0);
+    assert!(restore_paths(&mut doc, &current, &["marks/same".into()]).is_err());
+    assert_eq!(doc.pending_ops(), 0);
+}
+
+#[test]
+fn exact_restore_adds_removed_items_and_removes_added_items() {
+    let mut doc = document();
+    add(&mut doc, ALICE, "removed", "red");
+    let target = doc.get_heads();
+    let map = marks(&mut doc);
+    doc.delete(&map, "removed").unwrap();
+    add(&mut doc, BOB, "added", "blue");
+    add(&mut doc, BOB, "unrelated", "green");
+    restore_paths(
+        &mut doc,
+        &target,
+        &["marks/removed".into(), "marks/added".into()],
+    )
+    .unwrap();
+    assert_eq!(ids(&doc), ["removed", "unrelated"]);
+    assert_eq!(colour(&doc, "removed").as_deref(), Some("red"));
+    assert_eq!(colour(&doc, "unrelated").as_deref(), Some("green"));
+}
+
+#[test]
+fn exact_restore_root_selection_is_whole_value_and_legacy_ambiguity_is_refused() {
+    let mut doc = document();
+    add(&mut doc, ALICE, "one", "red");
+    add(&mut doc, ALICE, "two", "blue");
+    let target = doc.get_heads();
+    // Deleting a root selects the whole root, not one arbitrarily found key.
+    doc.delete(ROOT, "marks").unwrap();
+    let absent = doc.get_heads();
+    assert!(restore_paths(&mut doc, &target, &["marks/one".into()]).is_err());
+    assert_eq!(doc.pending_ops(), 0);
+    assert!(doc.get(ROOT, "marks").unwrap().is_none());
+    restore_paths(&mut doc, &target, &["marks".into()]).unwrap();
+    assert_eq!(ids(&doc), ["one", "two"]);
+    assert_eq!(colour(&doc, "one").as_deref(), Some("red"));
+    assert_eq!(colour(&doc, "two").as_deref(), Some("blue"));
+    doc.commit();
+    assert!(restore_paths(&mut doc, &absent, &["marks".into()]).unwrap() > 0);
+    assert!(doc.get(ROOT, "marks").unwrap().is_none());
+
+    let mut doc = document();
+    add(&mut doc, ALICE, "same", "red");
+    doc.put(ROOT, "marks/same", "old").unwrap();
+    let target = doc.get_heads();
+    recolour(&mut doc, BOB, "same", "blue");
+    doc.put(ROOT, "marks/same", "new").unwrap();
+    doc.get_heads();
+    assert!(restore_paths(&mut doc, &target, &["marks/same".into()]).is_err());
+    assert_eq!(doc.pending_ops(), 0);
+    assert_eq!(colour(&doc, "same").as_deref(), Some("blue"));
+}
+
+#[test]
 fn classifying_a_change_costs_the_same_however_large_the_document() {
     let small = classify_newest(50);
     let large = classify_newest(20_000);

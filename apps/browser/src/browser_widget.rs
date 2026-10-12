@@ -4159,7 +4159,9 @@ impl BrowserWidget {
     /// The row a history or download hit opens, beyond the published page
     /// of rows too.
     pub(crate) fn search_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
-        self.search_index.resource(id).map(live_row)
+        self.search_index
+            .resource(id)
+            .map(ui::framework::LiveRow::from_resource)
     }
 
     /// What only this window knows, as rows beneath the browser resource:
@@ -4171,7 +4173,7 @@ impl BrowserWidget {
         self.published()
             .children
             .into_iter()
-            .map(live_row)
+            .map(ui::framework::LiveRow::from_resource)
             .collect()
     }
 
@@ -4460,25 +4462,6 @@ impl BrowserWidget {
         browser.children.extend(bookmark_rows);
         browser
     }
-}
-
-/// `resource` as the live row it is published as.
-fn live_row(resource: Resource) -> ui::framework::LiveRow {
-    let mut row = ui::framework::LiveRow::new(
-        resource.id.as_str(),
-        resource.kind.clone(),
-        resource.label.clone(),
-    );
-    if let Some(presentation) = resource.presentation {
-        row = row.presentation(presentation);
-    }
-    for action in resource.actions {
-        row = row.operation(action);
-    }
-    for child in resource.children {
-        row = row.row(live_row(child));
-    }
-    row
 }
 
 impl ui::widget::controls::ActionControls for BrowserWidget {

@@ -799,9 +799,6 @@ impl App {
                 | CollabEvent::ActionCatalogue { .. }
                 | CollabEvent::ActionDirectoryPage { .. }
                 | CollabEvent::PublishedActionResolution { .. }
-                | CollabEvent::EnrolledTask(_)
-                | CollabEvent::EnrolledTaskReply { .. }
-                | CollabEvent::EnrolledTaskDisconnected { .. }
                 | CollabEvent::NativeMediaCommandResult { .. }
                 | CollabEvent::TaskRun(_)
                 | CollabEvent::TaskActionInvocationResult { .. }
@@ -904,9 +901,6 @@ impl App {
             | CollabEvent::ActionCatalogue { .. }
             | CollabEvent::ActionDirectoryPage { .. }
             | CollabEvent::PublishedActionResolution { .. }
-            | CollabEvent::EnrolledTask(_)
-            | CollabEvent::EnrolledTaskReply { .. }
-            | CollabEvent::EnrolledTaskDisconnected { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }

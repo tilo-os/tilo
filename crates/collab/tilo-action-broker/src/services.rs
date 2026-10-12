@@ -449,7 +449,26 @@ pub struct AuthenticatedApplicationLaunch {
     pub continuation_instance: Option<u64>,
 }
 
+/// Content-free progress of the existing executing-process custody handshake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutingBindingPhase {
+    Started,
+    Challenge,
+    Answer,
+    Admitted,
+    Refused,
+    TimedOut,
+}
+
 pub trait LauncherServices: Send + Sync {
+    /// Bind an optional diagnostic observation to the host's current exact
+    /// launcher task. The returned ID is correlation only, never authority.
+    fn begin_executing_binding_observation(&self, _launcher_pid: u32) -> Option<u64> {
+        None
+    }
+    /// Optional host-side observation only. It grants no authority and receives
+    /// neither challenge bytes nor credentials, document or application output.
+    fn observe_executing_binding(&self, _observation: u64, _phase: ExecutingBindingPhase) {}
     fn applications(&self) -> Vec<LaunchableApplication>;
     /// Launches `app` into `workspace`, its view of `record` (else the
     /// record it opens by default) opening at `place`.

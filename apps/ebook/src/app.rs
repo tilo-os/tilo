@@ -5399,14 +5399,17 @@ impl BooksApp {
 
     /// Where the reader is in the open book, as the row it publishes.
     pub(crate) fn reading_row(&self) -> Option<ui::framework::LiveRow> {
-        self.current_book_resource_context()
-            .map(|ctx| live_row(crate::actions::reading_resource(&ctx)))
+        self.current_book_resource_context().map(|ctx| {
+            ui::framework::LiveRow::from_resource(crate::actions::reading_resource(&ctx))
+        })
     }
 
     /// The book, chapter, annotation or location a search hit names, with
     /// what opens it. Its edits are the library's own, on the published row.
     pub(crate) fn search_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
-        self.book_search.resolve(id).map(live_row)
+        self.book_search
+            .resolve(id)
+            .map(ui::framework::LiveRow::from_resource)
     }
 
     /// Where a search hit or an agent's `open` queues what to show.
@@ -5426,21 +5429,6 @@ impl BooksApp {
             }
         }
     }
-}
-
-/// `resource`, something the reader shows, as a row: its view and effect
-/// operations, nested as it nests.
-fn live_row(resource: tilo_actions::Resource) -> ui::framework::LiveRow {
-    let mut row = ui::framework::LiveRow::new(resource.id.as_str(), resource.kind, resource.label);
-    for action in resource.actions {
-        if action.kind != tilo_actions::OperationKind::Document {
-            row = row.operation(action);
-        }
-    }
-    for child in resource.children {
-        row = row.row(live_row(child));
-    }
-    row
 }
 
 impl BooksApp {
