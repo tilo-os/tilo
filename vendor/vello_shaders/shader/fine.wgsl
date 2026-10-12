@@ -1052,6 +1052,17 @@ fn ppt8_subgroup_x(pixel_x_base: u32, subgroup: u32) -> f32 {
 // to wire this so it's a dynamic choice (even per-path).
 //
 // FIXME: This should return an array when https://github.com/gfx-rs/naga/issues/1930 is fixed.
+//
+// A pixel's coverage by a line's crossing of it is the mean, over the
+// crossing's x extent [xmin, xmax], of the area right of x (1 - clamp(x)):
+// ((b - xmin) - (c - d) * (c + d) / 2) / (xmax - xmin). It is evaluated in
+// that factored form, not as b + (d * d - c * c) / 2 - xmin: for a vertical
+// or near-vertical edge the extent is the 1e-6 nudge, and the expanded form
+// rounds its two squares and their sum at the magnitude of x, so the edge
+// pixel came out up to 15 channel steps off, by an error that depends on the
+// exact bits of x — on where the shape sits, not only on its fraction of a
+// pixel. Both differences of the factored form are of nearby values (exact),
+// so a shape moved by whole pixels rasterises the same coverage.
 fn fill_path(fill: CmdFill, xy: vec2<f32>, result: ptr<function, array<f32, PIXELS_PER_THREAD>>) {
     let n_segs = fill_segment_count(fill);
     let even_odd = (fill.size_and_rule & 1u) != 0u;
@@ -1092,7 +1103,7 @@ fn fill_path(fill: CmdFill, xy: vec2<f32>, result: ptr<function, array<f32, PIXE
                 let b = min(xmax, 1.0);
                 let c = max(b, 0.0);
                 let d = max(xmin, 0.0);
-                let a = (b + 0.5 * (d * d - c * c) - xmin) / (xmax - xmin);
+                let a = ((b - xmin) - 0.5 * ((c - d) * (c + d))) / (xmax - xmin);
                 area[i] += a * dy;
             }
         }
@@ -1154,7 +1165,8 @@ fn fill_path_ppt8(fill: CmdFill, local_x_base: u32, local_y: u32, result: ptr<fu
                     let b = min(xmax, 1.0);
                     let c = max(b, 0.0);
                     let d = max(xmin, 0.0);
-                    let a = (b + 0.5 * (d * d - c * c) - xmin) / (xmax - xmin);
+                    // As `fill_path`: the factored, translation-stable form.
+                    let a = ((b - xmin) - 0.5 * ((c - d) * (c + d))) / (xmax - xmin);
                     area[i] += a * dy;
                 }
             }
