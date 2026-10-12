@@ -602,6 +602,7 @@ decorator_trait! {
             payload: &[u8],
         ) -> bool;
         fn take_structure_dirty() -> bool;
+        fn remount_children(remount: &mut crate::widget::Remount<'_>) -> bool;
         fn mark_drawn();
         fn release_scene_cache();
         fn draw_overlay(

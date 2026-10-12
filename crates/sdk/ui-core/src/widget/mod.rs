@@ -833,6 +833,12 @@ pub enum StructureChange {
     /// Nothing was inserted or removed.
     #[default]
     None,
+    /// The widgets that reported it mount and unmount children of their own,
+    /// and every widget stays alive: they carry it out in the retained tree,
+    /// in place ([`Widget::remount_children`]), and their own damage this
+    /// frame covers every pixel that changed with it. A host that cannot
+    /// rebuilds its tree, as for [`Self::Described`].
+    Children,
     /// The host rebuilds its tree, but the frame's damage still describes it:
     /// the widget that reported it replaced only widgets of its own, and its
     /// own damage this frame covers every pixel that changed with them.
@@ -849,7 +855,8 @@ impl StructureChange {
         if dirty { Self::Rebuild } else { Self::None }
     }
 
-    /// Whether the host rebuilds its tree for it.
+    /// Whether the host rebuilds its tree for it, or (for
+    /// [`Self::Children`]) changes it in place.
     #[must_use]
     pub fn rebuilds(self) -> bool {
         self != Self::None
@@ -1883,11 +1890,13 @@ pub trait Widget {
 
     /// Whether [`Self::accessibility`] reports this subtree hidden, for a
     /// host that asks it of every node to prune focus traversal. Widgets
-    /// whose node is costly to build (text values, per-block children) and is
-    /// never hidden answer without building it; any override must agree with
-    /// `accessibility()`.
+    /// whose node is costly to build (text values, per-block children, a
+    /// translated name) answer without building it: the focus walk asks
+    /// every widget in the window on every recomputation. Any override must
+    /// agree with `accessibility()`; debug builds check it in the walk.
     fn accessibility_hidden(&self) -> bool {
-        self.accessibility().is_some_and(|node| node.state.hidden)
+        self.accessibility_root()
+            .is_some_and(|node| node.state.hidden)
     }
 
     /// [`Self::accessibility`]'s own node with its `children` left empty:
@@ -2335,6 +2344,19 @@ pub trait Widget {
     /// this.
     fn take_structure_change(&mut self) -> StructureChange {
         StructureChange::of(self.take_structure_dirty())
+    }
+
+    /// Carry out a [`StructureChange::Children`] this widget or one under it
+    /// reported, in the retained layout tree, through `remount` (see
+    /// [`remount`](crate::widget::remount)). Returns `false` when it cannot be
+    /// carried out in place: the host then rebuilds its tree, and the change
+    /// is carried out by [`Self::build_layout`]. A widget reports such a
+    /// change until either has carried it out. The default carries out its
+    /// children's.
+    fn remount_children(&mut self, remount: &mut Remount<'_>) -> bool {
+        self.children_mut()
+            .into_iter()
+            .all(|child| child.remount_children(remount))
     }
 
     /// Work already requested by this view whose completion will replace a
@@ -2922,6 +2944,8 @@ pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 
 pub(crate) mod layout;
+pub mod remount;
+pub use remount::Remount;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
 pub use layout::{

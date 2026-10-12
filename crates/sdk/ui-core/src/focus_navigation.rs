@@ -52,6 +52,24 @@ pub(crate) fn next(
 
 use crate::widget::Widget;
 use taffy::TaffyTree;
+
+/// Whether `widget` and what it holds stay out of the focus order: the
+/// `hidden` flag of its accessibility node, read through
+/// [`Widget::accessibility_hidden`] so traversal does not build each node
+/// (and resolve its translated name) for one flag. Debug builds build the
+/// node anyway and check that the two agree.
+pub(crate) fn hidden(widget: &dyn Widget) -> bool {
+    let hidden = widget.accessibility_hidden();
+    debug_assert_eq!(
+        hidden,
+        widget
+            .accessibility_root()
+            .is_some_and(|node| node.state.hidden),
+        "{}: Widget::accessibility_hidden disagrees with the hidden flag of its accessibility node",
+        widget.name(),
+    );
+    hidden
+}
 fn collect_focusable(
     node_id: NodeId,
     widget: &dyn Widget,
@@ -251,15 +269,14 @@ pub(crate) fn walks_layout_map(
 
 /// What the focus walk asks of one node: whether it takes focus, whether it
 /// traps it, and whether it is hidden from assistive technology (which
-/// hides its subtree from focus too). Reads the node's own accessibility
-/// entry, never the subtree a document exports.
+/// hides its subtree from focus too). Reads the node's own `hidden` flag
+/// ([`hidden`]), never its accessibility node or the subtree a document
+/// exports.
 pub(crate) fn probe(widget: &dyn Widget) -> (bool, bool, bool) {
     (
         widget.is_focusable() && widget.is_enabled(),
         widget.traps_focus(),
-        widget
-            .accessibility_root()
-            .is_some_and(|node| node.state.hidden),
+        hidden(widget),
     )
 }
 
@@ -415,5 +432,64 @@ mod trap_tests {
             None
         );
         assert_eq!(before, None);
+    }
+}
+
+#[cfg(test)]
+mod hidden_tests {
+    use super::*;
+    use crate::widget::command_palette::CommandPalette;
+    use crate::widget::popover::Popover;
+    use crate::widget::{Column, ContextMenu, ModalDialog, Tooltip};
+
+    /// `widget` answers [`Widget::accessibility_hidden`] as its accessibility
+    /// node's `hidden` flag says; returns the flag.
+    fn agreed(widget: &dyn Widget) -> bool {
+        let hidden = widget.accessibility_hidden();
+        assert_eq!(
+            hidden,
+            widget.accessibility().is_some_and(|node| node.state.hidden),
+            "{}",
+            widget.name()
+        );
+        hidden
+    }
+
+    #[test]
+    fn widgets_that_hide_answer_accessibility_hidden_as_their_node() {
+        assert!(agreed(&Tooltip::new("Tip")), "an unrevealed tooltip");
+
+        let mut menu = ContextMenu::new();
+        assert!(agreed(&menu), "a closed menu");
+        menu.open_at([0.0, 0.0]);
+        assert!(!agreed(&menu), "an open menu");
+
+        let mut dialog = ModalDialog::new("Title", Column::new());
+        assert!(agreed(&dialog), "a closed dialog");
+        dialog.set_open(true);
+        assert!(!agreed(&dialog), "an open dialog");
+
+        let mut palette = CommandPalette::new();
+        assert!(agreed(&palette), "a closed command palette");
+        palette.open();
+        assert!(!agreed(&palette), "an open command palette");
+
+        let mut options = Popover::new()
+            .with_label("Interval")
+            .with_items(["1 s", "2 s"]);
+        assert!(agreed(&options), "a closed options menu");
+        options.set_open(true);
+        assert!(!agreed(&options), "an open options menu");
+
+        let mut panel = Popover::with_content(Column::new()).with_label("Share");
+        assert!(agreed(&panel), "a closed labelled panel");
+        panel.set_open(true);
+        assert!(!agreed(&panel), "an open labelled panel");
+        assert!(
+            !agreed(&Popover::with_content(Column::new())),
+            "an unlabelled panel has no node of its own"
+        );
+
+        assert!(!agreed(&Column::new()), "a container is never hidden");
     }
 }

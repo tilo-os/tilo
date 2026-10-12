@@ -128,6 +128,25 @@ fn task_row(row: &ViewCx<Checklist, Task>) -> Element {
     ])
 }
 
+/// The same list outside a scroll view: nothing clips it, so every row is
+/// mounted.
+struct ShownWindow;
+
+impl ResourceApp for ShownWindow {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.test-window-shown-checklist";
+    const TITLE: &'static str = "Checklist";
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
+    }
+
+    fn view(cx: &mut ViewCx<Checklist>) -> Element {
+        let rows = cx.each(|list| &list.tasks, task_row);
+        Box::new(Column::new().push(Box::new(rows)))
+    }
+}
+
 /// The same list, whose rows each bind an edit into the published tree:
 /// the last task's row offers `finish-last`.
 struct BindingWindow;
@@ -194,7 +213,7 @@ fn list_items<A: ResourceApp>(app: &mut TestApp<A>) -> Vec<(usize, usize)> {
         .collect()
 }
 
-fn task_id(app: &TestApp<Window>, index: usize) -> Id {
+fn task_id<A: ResourceApp<Resource = Checklist>>(app: &TestApp<A>, index: usize) -> Id {
     app.state().tasks.ids().nth(index).cloned().unwrap()
 }
 
@@ -265,7 +284,7 @@ fn the_published_tree_lists_every_row_while_only_the_window_is_mounted() {
     assert!(app.state().tasks.get(&far).unwrap().done);
 }
 
-fn mounted(app: &mut TestApp<Window>, id: &Id) -> bool {
+fn mounted<A: ResourceApp>(app: &mut TestApp<A>, id: &Id) -> bool {
     app.harness().targets().contains_key(&control(id))
 }
 
@@ -343,6 +362,72 @@ fn adding_an_item_away_from_the_view_keeps_the_window_tree() {
     let total = usize::try_from(TASKS).unwrap().saturating_add(1);
     assert_eq!(items.len(), before, "no row mounted or dropped");
     assert!(items.iter().all(|&(_, size)| size == total), "{items:?}");
+}
+
+/// What assistive technology reads of the window: each node's role, name
+/// and place in its set, in a stable order.
+fn read_rows<A: ResourceApp>(app: &mut TestApp<A>) -> Vec<String> {
+    let mut read = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .map(|(_, node)| {
+            format!(
+                "{:?} {:?} {:?}/{:?}",
+                node.role(),
+                node.label(),
+                node.position_in_set(),
+                node.size_of_set()
+            )
+        })
+        .collect::<Vec<_>>();
+    read.sort();
+    read
+}
+
+#[test]
+fn adding_an_item_to_a_list_showing_every_row_mounts_its_row_in_place() {
+    let mut app = TestApp::<ShownWindow>::for_person("ada").unwrap();
+    app.call("seed", serde_json::json!({ "count": 40 }))
+        .unwrap();
+    app.harness().relayout();
+    let nodes = app.harness().layout_node_ids();
+    let rebuilt = app.harness().rebuilt_frames();
+
+    app.call("seed", serde_json::json!({ "count": 1 })).unwrap();
+    app.harness().relayout();
+
+    assert_eq!(
+        app.harness().rebuilt_frames(),
+        rebuilt,
+        "the row is mounted into the window's tree, which is not rebuilt"
+    );
+    let after = app.harness().layout_node_ids();
+    assert!(
+        nodes.iter().all(|node| after.contains(node)) && after.len() > nodes.len(),
+        "every node the window had stays, beside the new row's"
+    );
+    let added = task_id(&app, 40);
+    assert!(mounted(&mut app, &added), "the new row is mounted");
+    app.harness()
+        .verify_retained_geometry()
+        .expect("the window laid out in place as a full relayout lays it out");
+    let read = read_rows(&mut app);
+    app.harness().set_full_relayout(Some(true));
+    app.harness().relayout();
+    app.harness().set_full_relayout(None);
+    assert_eq!(
+        read,
+        read_rows(&mut app),
+        "assistive technology reads what a full relayout shows"
+    );
+
+    app.harness().click_named(&control(&added)).unwrap();
+    app.harness().relayout();
+    assert!(
+        app.state().tasks.get(&added).unwrap().done,
+        "the mounted row's checkbox acts on its item"
+    );
 }
 
 #[test]
