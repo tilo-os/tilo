@@ -118,8 +118,15 @@ enum Cmd {
         #[arg(long, requires = "from")]
         payload_from: Option<String>,
     },
-    /// List installed packages.
-    List,
+    /// List the authoritative installed selections.
+    List {
+        /// Emit selected rows for maintained automation.
+        #[arg(long)]
+        json: bool,
+        /// Include resolved per-user runtime locations for coherent updates.
+        #[arg(long, requires = "json")]
+        runtime_paths: bool,
+    },
     /// Uninstall a package: payload, registry entry, PATH shims, and
     /// (opt-in) its saved state.
     #[command(alias = "remove")]
@@ -1045,14 +1052,16 @@ fn install(
 /// Where the launcher reads the runtime publishers it accepts; the
 /// launcher's developer override names another list, and the installer
 /// follows it so both judge a bundle alike.
-fn trusted_runtime_publishers() -> Result<Option<Vec<String>>, Error> {
+fn trusted_runtime_publishers(
+    bundle: &Path,
+) -> Result<runtime_bundle::component_pins::BundleTrust, Error> {
     let path = std::env::var_os("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE")
         .filter(|value| !value.is_empty())
         .map_or_else(
             || PathBuf::from(runtime_bundle::TRUSTED_PUBLISHERS_FILE),
             PathBuf::from,
         );
-    runtime_bundle::component_pins::load_with_components(&path)
+    runtime_bundle::component_pins::load_for_bundle(&path, bundle)
         .map_err(|error| Error::RuntimeBundle(error.to_string()))
 }
 
@@ -1345,19 +1354,9 @@ fn check_runtime_bundle(
             manifest.version
         )));
     }
-    if let Some(trusted) = trusted_runtime_publishers()?.filter(|list| !list.is_empty()) {
-        let publisher = manifest
-            .publisher_hex
-            .as_deref()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if !trusted.contains(&publisher) {
-            return Err(Error::RuntimeBundle(format!(
-                "runtime {version} is signed by ed25519:{publisher}, which this device does not \
-                 trust for runtimes; the launcher would refuse to mount it"
-            )));
-        }
-    }
+    trusted_runtime_publishers(tree)?
+        .check(&manifest)
+        .map_err(|error| Error::RuntimeBundle(error.to_string()))?;
     Ok(manifest)
 }
 
@@ -1726,6 +1725,42 @@ fn update_one(
         install::state::human_bytes(install::state::total_bytes(&rooms))
     );
     Ok(UpdateOutcome::Swapped)
+}
+
+fn list_json(include_runtime_paths: bool) -> Result<(), Error> {
+    let rows = list_catalog()?;
+    if rows.len() > 512 {
+        return Err(Error::RegistryRead(
+            "selected package count exceeds automation bound".into(),
+        ));
+    }
+    let value = if include_runtime_paths {
+        let mut paths = std::collections::BTreeMap::new();
+        for row in &rows {
+            if let Some(version) = row.runtime.strip_prefix("tilo-runtime/") {
+                let path = runtime_bundle::default_bundle_path(version)
+                    .map_err(|error| Error::RuntimeBundle(error.to_string()))?;
+                if path
+                    .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME)
+                    .is_file()
+                {
+                    paths.insert(version, path);
+                }
+            }
+        }
+        serde_json::json!({"apps": rows, "runtime_paths": paths})
+    } else {
+        serde_json::json!(rows)
+    };
+    let json =
+        serde_json::to_string(&value).map_err(|error| Error::RegistryRead(error.to_string()))?;
+    if json.len() > 8 * 1024 * 1024 {
+        return Err(Error::RegistryRead(
+            "selected package metadata exceeds automation bound".into(),
+        ));
+    }
+    println!("{json}");
+    Ok(())
 }
 
 fn list() -> Result<(), Error> {
@@ -2649,7 +2684,11 @@ fn dispatch(cmd: Cmd) -> Result<(), Error> {
                 payload_from: payload_from.map(app_registry::HttpBlobs::new),
             },
         ),
-        Cmd::List => list(),
+        Cmd::List {
+            json: true,
+            runtime_paths,
+        } => list_json(runtime_paths),
+        Cmd::List { json: false, .. } => list(),
         Cmd::Uninstall {
             pkg_id,
             purge,
