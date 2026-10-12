@@ -5602,6 +5602,26 @@ impl CapnpBrokerState {
         Ok(InvocationJob { id, completion: rx })
     }
 
+    /// Retire only this run's transient presence, preserving its pending jobs.
+    pub fn retire_execution(&self, caller: &tilo_actions::remote::Caller) {
+        caller.retire_execution();
+        if let Ok(mut pending) = self.pending_invocations.lock() {
+            for invocation in pending.values_mut() {
+                if invocation
+                    .activity
+                    .as_ref()
+                    .is_some_and(|target| target.belongs_to(caller))
+                {
+                    self.execution_activity
+                        .publish_status(invocation.activity.as_ref(), ExecutionStatus::Ended);
+                    if let Some(target) = &mut invocation.activity {
+                        target.retire_scope();
+                    }
+                }
+            }
+        }
+    }
+
     /// Observe subsequent broker execution events without scheduling app work.
     /// Report an invocation's progress on the observation bus, and in the
     /// view it runs in for an actor that view does not already show: an

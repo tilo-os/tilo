@@ -1127,6 +1127,73 @@ mod tests {
         assert_eq!(app.try_recv().expect("delivered").actor, "owner");
     }
 
+    #[tokio::test]
+    async fn retiring_a_delegated_run_preserves_its_running_actions_view() {
+        use super::super::ExecutionStatus;
+        use ui::collaboration::{CollabEvent, PresencePayload};
+        let (state, room, fanout) = broker_with_fanout(&workspace());
+        state.surfaces.lock().unwrap().insert(5, surface(5, &room));
+        let mut app = state.capture_invocations_for_test(5);
+        let (seen, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        let _subscription = fanout.subscribe_rooms(
+            vec![room.clone()],
+            Box::new(move |event, _| {
+                let _ = seen.send(event.clone());
+            }),
+        );
+        let mut events = state.subscribe_execution_activity();
+        let owner = Caller::local_person("owner")
+            .in_room(&room)
+            .in_new_execution();
+        let client = owner.clone().delegated_to("mcp-1");
+        invoke(&state, &client, "5", "new-window", None).unwrap();
+        let delivered = app.try_recv().unwrap();
+        let accepted = events.try_recv().unwrap();
+        assert_eq!(accepted.principal, "agent:mcp-1");
+        assert!(matches!(
+            heard.try_recv().unwrap(),
+            CollabEvent::RemotePresenceUpdate {
+                payload: PresencePayload::Interaction(interaction), ..
+            } if interaction.phase == tilo_actions::InteractionPhase::Applying
+        ));
+
+        // Certified runtime sessions retain the person's admitted caller,
+        // while their app work runs as the delegated agent on the same lease.
+        state.retire_execution(&owner);
+        let ended = events.try_recv().unwrap();
+        assert_eq!(ended.status, ExecutionStatus::Ended);
+        assert_eq!(ended.execution, owner.execution_id().unwrap());
+        assert!(!accepted.execution_is_live());
+        assert!(!client.execution_is_live());
+        assert!(heard.try_recv().is_err(), "retirement is not a job outcome");
+        state.retire_execution(&client);
+        assert!(events.try_recv().is_err(), "retirement is idempotent");
+        state
+            .apply_invocation_update(
+                5,
+                delivered.id,
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: delivered.invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(events.try_recv().is_err(), "the transport run stays ended");
+        assert!(
+            matches!(
+                heard.try_recv().unwrap(),
+                CollabEvent::RemotePresenceUpdate {
+                    payload: PresencePayload::Interaction(interaction), ..
+                } if interaction.invocation == delivered.invocation
+                    && interaction.actor.id == "agent:mcp-1"
+                    && interaction.phase == tilo_actions::InteractionPhase::Committed
+            ),
+            "the view receives the running action's actual outcome"
+        );
+    }
+
     /// An application target reaches an app that never ran in the workspace:
     /// it launches the app and delivers once the app offers the action, and
     /// reaches the running app without launching it again.

@@ -2010,6 +2010,21 @@ mod tests {
             host.cancel(&second, &id),
             Err(ActionHostError::UnknownInvocation)
         );
+        let retained = first.clone();
+        let hash = |caller: &Caller| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(caller, &mut hasher);
+            std::hash::Hasher::finish(&hasher)
+        };
+        let before = hash(&first);
+        host.retire_execution(&first);
+        assert!(!retained.execution_is_live());
+        assert!(second.execution_is_live());
+        assert_eq!(first, retained);
+        assert_eq!(hash(&first), before);
+        let reconnected = retained.in_new_execution();
+        assert!(reconnected.execution_is_live());
+        assert_ne!(reconnected.execution_id(), first.execution_id());
         host.finish(&first, &id);
         assert!(matches!(
             now(host.invoke(&first, archive(id))).unwrap().status,
